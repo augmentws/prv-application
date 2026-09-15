@@ -105,6 +105,43 @@ def test_batch_membership_group_snapshot_runs_and_comparison(
     assert batch["document_count"] == len(document_ids)
     assert batch["coding_groups"]
 
+    review_run = client.post(f"{base}/{batch['id']}/review-run", headers=auth(root_token))
+    assert review_run.status_code == 200, review_run.text
+    resumed = client.post(f"{base}/{batch['id']}/review-run", headers=auth(root_token))
+    assert resumed.status_code == 200
+    assert resumed.json()["id"] == review_run.json()["id"]
+    documents = client.get(
+        f"{base}/{batch['id']}/documents",
+        headers=auth(root_token),
+        params={"run_id": review_run.json()["id"]},
+    )
+    assert documents.status_code == 200, documents.text
+    assert documents.json()[0]["collection_item_id"]
+    review_value_payload = {
+        "matter_document_id": document_ids[0],
+        "fields": [{"metadata_definition_id": str(definition_id), "values": [True]}],
+    }
+    saved_review = client.put(
+        f"{base}/{batch['id']}/runs/{review_run.json()['id']}/documents/{document_ids[0]}/values",
+        headers=auth(root_token),
+        json=review_value_payload,
+    )
+    assert saved_review.status_code == 200, saved_review.text
+    coding = client.get(
+        f"{base}/{batch['id']}/runs/{review_run.json()['id']}/documents/{document_ids[0]}",
+        headers=auth(root_token),
+    )
+    assert coding.status_code == 200
+    assert coding.json()["review_status"] == "COMPLETED"
+    assert coding.json()["values"][0]["value"] is True
+    progress = client.get(
+        f"{base}/{batch['id']}/runs/{review_run.json()['id']}/progress",
+        headers=auth(root_token),
+    )
+    assert progress.status_code == 200
+    assert progress.json()["completed_count"] == 1
+    assert progress.json()["not_started_count"] == len(document_ids) - 1
+
     random_batch = client.post(
         base,
         headers=auth(root_token),

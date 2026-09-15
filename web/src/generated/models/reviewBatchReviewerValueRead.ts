@@ -5,12 +5,12 @@
  * Phase-one Core API for authentication, hierarchical tenants, clients, matters, and matter metadata definitions.
  * OpenAPI spec version: 0.1.0
  */
+import type { MatterSavedSearchUserRead } from './matterSavedSearchUserRead';
 
-export interface ReviewBatchRunValueRead {
+export interface ReviewBatchReviewerValueRead {
   review_batch_run_id: string;
-  matter_document_id: string;
+  actor_user_id: string;
+  actor_user: MatterSavedSearchUserRead;
   metadata_definition_id: string;
-  value_ordinal: number;
-  value: unknown;
-  confidence: number | null;
+  values: unknown[];
 }

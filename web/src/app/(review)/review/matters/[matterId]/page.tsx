@@ -1,5 +1,6 @@
 import type { Metadata } from "next";
 
+import { BatchReviewWorkspace } from "@/components/batch-review-workspace";
 import { ReviewWorkspace } from "@/components/review-workspace";
 import type { MatterSearchRequestSearchMode } from "@/generated/models";
 
@@ -14,6 +15,11 @@ export default async function ReviewPage({
 }) {
   const { matterId } = await params;
   const query = await searchParams;
+  const batchId = Array.isArray(query.batch) ? query.batch[0] : query.batch;
+  const initialDocumentId = Array.isArray(query.document) ? query.document[0] : query.document;
+  if (batchId) {
+    return <BatchReviewWorkspace matterId={matterId} batchId={batchId} initialDocumentId={initialDocumentId} />;
+  }
   const initialFilters: Record<string, string[]> = {};
 
   for (const [key, value] of Object.entries(query)) {
@@ -33,7 +39,7 @@ export default async function ReviewPage({
       matterId={matterId}
       initialQuery={(Array.isArray(query.q) ? query.q[0] : query.q) ?? ""}
       initialFilters={initialFilters}
-      initialDocumentId={Array.isArray(query.document) ? query.document[0] : query.document}
+      initialDocumentId={initialDocumentId}
       initialPage={Number.isFinite(page) && page > 0 ? page : 1}
       initialSearchMode={searchMode}
     />

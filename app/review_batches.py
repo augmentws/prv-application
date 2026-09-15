@@ -140,15 +140,16 @@ def materialize_review_batch(db: Session, batch_id: uuid.UUID, settings: Setting
 
 
 def refresh_run_document_count(db: Session, run_id: uuid.UUID) -> int:
-    from app.models import ReviewBatchRun, ReviewBatchRunValue
+    from app.models import ReviewBatchRun, ReviewBatchRunDocument
 
     run = db.get(ReviewBatchRun, run_id)
     if run is None:
         raise ValueError("Review batch run not found")
     run.processed_document_count = int(
         db.scalar(
-            select(func.count(func.distinct(ReviewBatchRunValue.matter_document_id))).where(
-                ReviewBatchRunValue.review_batch_run_id == run.id
+            select(func.count(ReviewBatchRunDocument.matter_document_id)).where(
+                ReviewBatchRunDocument.review_batch_run_id == run.id,
+                ReviewBatchRunDocument.status.in_(["COMPLETED", "SKIPPED"]),
             )
         )
         or 0

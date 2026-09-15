@@ -94,12 +94,14 @@ import type {
   ReviewBatchAssignmentUpdate,
   ReviewBatchComparisonRead,
   ReviewBatchCreate,
+  ReviewBatchDocumentCodingRead,
   ReviewBatchDocumentRead,
   ReviewBatchNoteCreate,
   ReviewBatchNoteRead,
   ReviewBatchRead,
   ReviewBatchRunCreate,
   ReviewBatchRunDocumentValues,
+  ReviewBatchRunProgressRead,
   ReviewBatchRunRead,
   ReviewBatchRunValueRead,
   SearchCollectionItemsV1CollectionsCollectionIdSearchGetParams,
@@ -5107,6 +5109,168 @@ export const listReviewBatchRunsV1MattersMatterIdReviewBatchesBatchIdRunsGet = a
 
 
 
+export type startOrResumeReviewBatchRunV1MattersMatterIdReviewBatchesBatchIdReviewRunPostResponse200 = {
+  data: ReviewBatchRunRead
+  status: 200
+}
+
+export type startOrResumeReviewBatchRunV1MattersMatterIdReviewBatchesBatchIdReviewRunPostResponse422 = {
+  data: HTTPValidationError
+  status: 422
+}
+
+export type startOrResumeReviewBatchRunV1MattersMatterIdReviewBatchesBatchIdReviewRunPostResponseSuccess = (startOrResumeReviewBatchRunV1MattersMatterIdReviewBatchesBatchIdReviewRunPostResponse200) & {
+  headers: Headers;
+};
+export type startOrResumeReviewBatchRunV1MattersMatterIdReviewBatchesBatchIdReviewRunPostResponseError = (startOrResumeReviewBatchRunV1MattersMatterIdReviewBatchesBatchIdReviewRunPostResponse422) & {
+  headers: Headers;
+};
+
+export type startOrResumeReviewBatchRunV1MattersMatterIdReviewBatchesBatchIdReviewRunPostResponse = (startOrResumeReviewBatchRunV1MattersMatterIdReviewBatchesBatchIdReviewRunPostResponseSuccess | startOrResumeReviewBatchRunV1MattersMatterIdReviewBatchesBatchIdReviewRunPostResponseError)
+
+export const getStartOrResumeReviewBatchRunV1MattersMatterIdReviewBatchesBatchIdReviewRunPostUrl = (matterId: string,
+    batchId: string,) => {
+
+
+
+
+  return `/api/core/v1/matters/${matterId}/review-batches/${batchId}/review-run`
+}
+
+/**
+ * @summary Start Or Resume Review Batch Run
+ */
+export const startOrResumeReviewBatchRunV1MattersMatterIdReviewBatchesBatchIdReviewRunPost = async (matterId: string,
+    batchId: string, options?: RequestInit): Promise<startOrResumeReviewBatchRunV1MattersMatterIdReviewBatchesBatchIdReviewRunPostResponse> => {
+
+  const res = await fetch(getStartOrResumeReviewBatchRunV1MattersMatterIdReviewBatchesBatchIdReviewRunPostUrl(matterId,batchId),
+  {
+    ...options,
+    method: 'POST'
+
+
+  }
+)
+
+
+  const body = [204, 205, 304].includes(res.status) ? null : await res.text();
+
+  const data: startOrResumeReviewBatchRunV1MattersMatterIdReviewBatchesBatchIdReviewRunPostResponse['data'] = body ? JSON.parse(body) : {}
+  return { data, status: res.status, headers: res.headers } as startOrResumeReviewBatchRunV1MattersMatterIdReviewBatchesBatchIdReviewRunPostResponse
+}
+
+
+
+export type getReviewBatchRunProgressV1MattersMatterIdReviewBatchesBatchIdRunsRunIdProgressGetResponse200 = {
+  data: ReviewBatchRunProgressRead
+  status: 200
+}
+
+export type getReviewBatchRunProgressV1MattersMatterIdReviewBatchesBatchIdRunsRunIdProgressGetResponse422 = {
+  data: HTTPValidationError
+  status: 422
+}
+
+export type getReviewBatchRunProgressV1MattersMatterIdReviewBatchesBatchIdRunsRunIdProgressGetResponseSuccess = (getReviewBatchRunProgressV1MattersMatterIdReviewBatchesBatchIdRunsRunIdProgressGetResponse200) & {
+  headers: Headers;
+};
+export type getReviewBatchRunProgressV1MattersMatterIdReviewBatchesBatchIdRunsRunIdProgressGetResponseError = (getReviewBatchRunProgressV1MattersMatterIdReviewBatchesBatchIdRunsRunIdProgressGetResponse422) & {
+  headers: Headers;
+};
+
+export type getReviewBatchRunProgressV1MattersMatterIdReviewBatchesBatchIdRunsRunIdProgressGetResponse = (getReviewBatchRunProgressV1MattersMatterIdReviewBatchesBatchIdRunsRunIdProgressGetResponseSuccess | getReviewBatchRunProgressV1MattersMatterIdReviewBatchesBatchIdRunsRunIdProgressGetResponseError)
+
+export const getGetReviewBatchRunProgressV1MattersMatterIdReviewBatchesBatchIdRunsRunIdProgressGetUrl = (matterId: string,
+    batchId: string,
+    runId: string,) => {
+
+
+
+
+  return `/api/core/v1/matters/${matterId}/review-batches/${batchId}/runs/${runId}/progress`
+}
+
+/**
+ * @summary Get Review Batch Run Progress
+ */
+export const getReviewBatchRunProgressV1MattersMatterIdReviewBatchesBatchIdRunsRunIdProgressGet = async (matterId: string,
+    batchId: string,
+    runId: string, options?: RequestInit): Promise<getReviewBatchRunProgressV1MattersMatterIdReviewBatchesBatchIdRunsRunIdProgressGetResponse> => {
+
+  const res = await fetch(getGetReviewBatchRunProgressV1MattersMatterIdReviewBatchesBatchIdRunsRunIdProgressGetUrl(matterId,batchId,runId),
+  {
+    ...options,
+    method: 'GET'
+
+
+  }
+)
+
+
+  const body = [204, 205, 304].includes(res.status) ? null : await res.text();
+
+  const data: getReviewBatchRunProgressV1MattersMatterIdReviewBatchesBatchIdRunsRunIdProgressGetResponse['data'] = body ? JSON.parse(body) : {}
+  return { data, status: res.status, headers: res.headers } as getReviewBatchRunProgressV1MattersMatterIdReviewBatchesBatchIdRunsRunIdProgressGetResponse
+}
+
+
+
+export type getReviewBatchDocumentCodingV1MattersMatterIdReviewBatchesBatchIdRunsRunIdDocumentsDocumentIdGetResponse200 = {
+  data: ReviewBatchDocumentCodingRead
+  status: 200
+}
+
+export type getReviewBatchDocumentCodingV1MattersMatterIdReviewBatchesBatchIdRunsRunIdDocumentsDocumentIdGetResponse422 = {
+  data: HTTPValidationError
+  status: 422
+}
+
+export type getReviewBatchDocumentCodingV1MattersMatterIdReviewBatchesBatchIdRunsRunIdDocumentsDocumentIdGetResponseSuccess = (getReviewBatchDocumentCodingV1MattersMatterIdReviewBatchesBatchIdRunsRunIdDocumentsDocumentIdGetResponse200) & {
+  headers: Headers;
+};
+export type getReviewBatchDocumentCodingV1MattersMatterIdReviewBatchesBatchIdRunsRunIdDocumentsDocumentIdGetResponseError = (getReviewBatchDocumentCodingV1MattersMatterIdReviewBatchesBatchIdRunsRunIdDocumentsDocumentIdGetResponse422) & {
+  headers: Headers;
+};
+
+export type getReviewBatchDocumentCodingV1MattersMatterIdReviewBatchesBatchIdRunsRunIdDocumentsDocumentIdGetResponse = (getReviewBatchDocumentCodingV1MattersMatterIdReviewBatchesBatchIdRunsRunIdDocumentsDocumentIdGetResponseSuccess | getReviewBatchDocumentCodingV1MattersMatterIdReviewBatchesBatchIdRunsRunIdDocumentsDocumentIdGetResponseError)
+
+export const getGetReviewBatchDocumentCodingV1MattersMatterIdReviewBatchesBatchIdRunsRunIdDocumentsDocumentIdGetUrl = (matterId: string,
+    batchId: string,
+    runId: string,
+    documentId: string,) => {
+
+
+
+
+  return `/api/core/v1/matters/${matterId}/review-batches/${batchId}/runs/${runId}/documents/${documentId}`
+}
+
+/**
+ * @summary Get Review Batch Document Coding
+ */
+export const getReviewBatchDocumentCodingV1MattersMatterIdReviewBatchesBatchIdRunsRunIdDocumentsDocumentIdGet = async (matterId: string,
+    batchId: string,
+    runId: string,
+    documentId: string, options?: RequestInit): Promise<getReviewBatchDocumentCodingV1MattersMatterIdReviewBatchesBatchIdRunsRunIdDocumentsDocumentIdGetResponse> => {
+
+  const res = await fetch(getGetReviewBatchDocumentCodingV1MattersMatterIdReviewBatchesBatchIdRunsRunIdDocumentsDocumentIdGetUrl(matterId,batchId,runId,documentId),
+  {
+    ...options,
+    method: 'GET'
+
+
+  }
+)
+
+
+  const body = [204, 205, 304].includes(res.status) ? null : await res.text();
+
+  const data: getReviewBatchDocumentCodingV1MattersMatterIdReviewBatchesBatchIdRunsRunIdDocumentsDocumentIdGetResponse['data'] = body ? JSON.parse(body) : {}
+  return { data, status: res.status, headers: res.headers } as getReviewBatchDocumentCodingV1MattersMatterIdReviewBatchesBatchIdRunsRunIdDocumentsDocumentIdGetResponse
+}
+
+
+
 export type replaceReviewBatchRunValuesV1MattersMatterIdReviewBatchesBatchIdRunsRunIdDocumentsDocumentIdValuesPutResponse200 = {
   data: ReviewBatchRunValueRead[]
   status: 200
@@ -5174,6 +5338,62 @@ const res = await fetch(getReplaceReviewBatchRunValuesV1MattersMatterIdReviewBat
 
   const data: replaceReviewBatchRunValuesV1MattersMatterIdReviewBatchesBatchIdRunsRunIdDocumentsDocumentIdValuesPutResponse['data'] = body ? JSON.parse(body) : {}
   return { data, status: res.status, headers: res.headers } as replaceReviewBatchRunValuesV1MattersMatterIdReviewBatchesBatchIdRunsRunIdDocumentsDocumentIdValuesPutResponse
+}
+
+
+
+export type skipReviewBatchDocumentV1MattersMatterIdReviewBatchesBatchIdRunsRunIdDocumentsDocumentIdSkipPostResponse200 = {
+  data: ReviewBatchDocumentCodingRead
+  status: 200
+}
+
+export type skipReviewBatchDocumentV1MattersMatterIdReviewBatchesBatchIdRunsRunIdDocumentsDocumentIdSkipPostResponse422 = {
+  data: HTTPValidationError
+  status: 422
+}
+
+export type skipReviewBatchDocumentV1MattersMatterIdReviewBatchesBatchIdRunsRunIdDocumentsDocumentIdSkipPostResponseSuccess = (skipReviewBatchDocumentV1MattersMatterIdReviewBatchesBatchIdRunsRunIdDocumentsDocumentIdSkipPostResponse200) & {
+  headers: Headers;
+};
+export type skipReviewBatchDocumentV1MattersMatterIdReviewBatchesBatchIdRunsRunIdDocumentsDocumentIdSkipPostResponseError = (skipReviewBatchDocumentV1MattersMatterIdReviewBatchesBatchIdRunsRunIdDocumentsDocumentIdSkipPostResponse422) & {
+  headers: Headers;
+};
+
+export type skipReviewBatchDocumentV1MattersMatterIdReviewBatchesBatchIdRunsRunIdDocumentsDocumentIdSkipPostResponse = (skipReviewBatchDocumentV1MattersMatterIdReviewBatchesBatchIdRunsRunIdDocumentsDocumentIdSkipPostResponseSuccess | skipReviewBatchDocumentV1MattersMatterIdReviewBatchesBatchIdRunsRunIdDocumentsDocumentIdSkipPostResponseError)
+
+export const getSkipReviewBatchDocumentV1MattersMatterIdReviewBatchesBatchIdRunsRunIdDocumentsDocumentIdSkipPostUrl = (matterId: string,
+    batchId: string,
+    runId: string,
+    documentId: string,) => {
+
+
+
+
+  return `/api/core/v1/matters/${matterId}/review-batches/${batchId}/runs/${runId}/documents/${documentId}/skip`
+}
+
+/**
+ * @summary Skip Review Batch Document
+ */
+export const skipReviewBatchDocumentV1MattersMatterIdReviewBatchesBatchIdRunsRunIdDocumentsDocumentIdSkipPost = async (matterId: string,
+    batchId: string,
+    runId: string,
+    documentId: string, options?: RequestInit): Promise<skipReviewBatchDocumentV1MattersMatterIdReviewBatchesBatchIdRunsRunIdDocumentsDocumentIdSkipPostResponse> => {
+
+  const res = await fetch(getSkipReviewBatchDocumentV1MattersMatterIdReviewBatchesBatchIdRunsRunIdDocumentsDocumentIdSkipPostUrl(matterId,batchId,runId,documentId),
+  {
+    ...options,
+    method: 'POST'
+
+
+  }
+)
+
+
+  const body = [204, 205, 304].includes(res.status) ? null : await res.text();
+
+  const data: skipReviewBatchDocumentV1MattersMatterIdReviewBatchesBatchIdRunsRunIdDocumentsDocumentIdSkipPostResponse['data'] = body ? JSON.parse(body) : {}
+  return { data, status: res.status, headers: res.headers } as skipReviewBatchDocumentV1MattersMatterIdReviewBatchesBatchIdRunsRunIdDocumentsDocumentIdSkipPostResponse
 }
 
 

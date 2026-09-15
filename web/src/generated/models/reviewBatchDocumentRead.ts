@@ -9,7 +9,8 @@ import type { ReviewBatchDocumentReadReviewStatus } from './reviewBatchDocumentR
 
 export interface ReviewBatchDocumentRead {
   matter_document_id: string;
+  source_collection_id: string;
+  collection_item_id: string;
   sequence_number: number;
   review_status: ReviewBatchDocumentReadReviewStatus;
-  original_filename?: string | null;
 }

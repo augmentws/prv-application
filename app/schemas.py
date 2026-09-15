@@ -558,9 +558,10 @@ class ReviewBatchRead(BaseModel):
 
 class ReviewBatchDocumentRead(BaseModel):
     matter_document_id: uuid.UUID
+    source_collection_id: uuid.UUID
+    collection_item_id: uuid.UUID
     sequence_number: int
     review_status: Literal["NOT_STARTED", "IN_PROGRESS", "COMPLETED", "SKIPPED"]
-    original_filename: str | None = None
 
 
 class ReviewBatchNoteCreate(BaseModel):
@@ -625,13 +626,45 @@ class ReviewBatchRunDocumentValues(BaseModel):
     matter_document_id: uuid.UUID
     fields: list[ReviewBatchRunFieldValue] = Field(max_length=100)
 
+    @model_validator(mode="after")
+    def validate_unique_fields(self) -> "ReviewBatchRunDocumentValues":
+        field_ids = [field.metadata_definition_id for field in self.fields]
+        if len(field_ids) != len(set(field_ids)):
+            raise ValueError("Each coding field may appear only once per document save")
+        return self
+
 
 class ReviewBatchRunValueRead(BaseModel):
+    review_batch_run_id: uuid.UUID
     matter_document_id: uuid.UUID
     metadata_definition_id: uuid.UUID
     value_ordinal: int
     value: Any
     confidence: float | None
+
+
+class ReviewBatchReviewerValueRead(BaseModel):
+    review_batch_run_id: uuid.UUID
+    actor_user_id: uuid.UUID
+    actor_user: MatterSavedSearchUserRead
+    metadata_definition_id: uuid.UUID
+    values: list[Any]
+
+
+class ReviewBatchDocumentCodingRead(BaseModel):
+    matter_document_id: uuid.UUID
+    review_status: Literal["NOT_STARTED", "IN_PROGRESS", "COMPLETED", "SKIPPED"]
+    values: list[ReviewBatchRunValueRead]
+    reviewer_values: list[ReviewBatchReviewerValueRead]
+
+
+class ReviewBatchRunProgressRead(BaseModel):
+    review_batch_run_id: uuid.UUID
+    document_count: int
+    not_started_count: int
+    in_progress_count: int
+    completed_count: int
+    skipped_count: int
 
 
 class ReviewBatchComparisonFieldRead(BaseModel):

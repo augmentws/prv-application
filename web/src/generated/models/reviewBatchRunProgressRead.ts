@@ -6,11 +6,11 @@
  * OpenAPI spec version: 0.1.0
  */
 
-export interface ReviewBatchRunValueRead {
+export interface ReviewBatchRunProgressRead {
   review_batch_run_id: string;
-  matter_document_id: string;
-  metadata_definition_id: string;
-  value_ordinal: number;
-  value: unknown;
-  confidence: number | null;
+  document_count: number;
+  not_started_count: number;
+  in_progress_count: number;
+  completed_count: number;
+  skipped_count: number;
 }

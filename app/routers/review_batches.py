@@ -5,7 +5,7 @@ from datetime import datetime, timezone
 from typing import Any
 
 from fastapi import APIRouter, Depends, HTTPException, Query, status
-from sqlalchemy import delete, or_, select
+from sqlalchemy import and_, delete, func, or_, select
 from sqlalchemy.orm import Session
 
 from app.audit import record_audit
@@ -17,6 +17,7 @@ from app.models import (
     AgentDefinition,
     AgentDefinitionVersion,
     Matter,
+    MatterDocument,
     MetadataDefinition,
     MetadataGroup,
     MetadataGroupField,
@@ -26,6 +27,7 @@ from app.models import (
     ReviewBatchDocument,
     ReviewBatchNote,
     ReviewBatchRun,
+    ReviewBatchRunDocument,
     ReviewBatchRunValue,
     User,
 )
@@ -38,12 +40,15 @@ from app.schemas import (
     ReviewBatchComparisonFieldRead,
     ReviewBatchComparisonRead,
     ReviewBatchCreate,
+    ReviewBatchDocumentCodingRead,
     ReviewBatchDocumentRead,
     ReviewBatchNoteCreate,
     ReviewBatchNoteRead,
     ReviewBatchRead,
+    ReviewBatchReviewerValueRead,
     ReviewBatchRunCreate,
     ReviewBatchRunDocumentValues,
+    ReviewBatchRunProgressRead,
     ReviewBatchRunRead,
     ReviewBatchRunValueRead,
 )
@@ -324,21 +329,42 @@ def update_review_batch_assignment(
 def list_review_batch_documents(
     matter_id: uuid.UUID,
     batch_id: uuid.UUID,
+    run_id: uuid.UUID | None = None,
     offset: int = Query(default=0, ge=0),
     limit: int = Query(default=100, ge=1, le=500),
     principal: Principal = Depends(get_principal),
     db: Session = Depends(get_db),
 ) -> list[ReviewBatchDocumentRead]:
     _matter(db, matter_id, principal)
-    _batch(db, matter_id, batch_id)
+    batch = _batch(db, matter_id, batch_id)
+    if run_id is not None:
+        run = _run(db, batch.id, run_id)
+        _require_human_reviewer(run, principal)
     rows = db.execute(
-        select(ReviewBatchDocument)
+        select(ReviewBatchDocument, MatterDocument, ReviewBatchRunDocument.status)
+        .join(MatterDocument, MatterDocument.id == ReviewBatchDocument.matter_document_id)
+        .outerjoin(
+            ReviewBatchRunDocument,
+            and_(
+                ReviewBatchRunDocument.review_batch_run_id == run_id,
+                ReviewBatchRunDocument.matter_document_id == ReviewBatchDocument.matter_document_id,
+            ),
+        )
         .where(ReviewBatchDocument.review_batch_id == batch_id)
         .order_by(ReviewBatchDocument.sequence_number)
         .offset(offset)
         .limit(limit)
-    ).scalars()
-    return [ReviewBatchDocumentRead.model_validate(row, from_attributes=True) for row in rows]
+    ).all()
+    return [
+        ReviewBatchDocumentRead(
+            matter_document_id=member.matter_document_id,
+            source_collection_id=document.source_collection_id,
+            collection_item_id=document.collection_item_id,
+            sequence_number=member.sequence_number,
+            review_status=run_status or "NOT_STARTED",
+        )
+        for member, document, run_status in rows
+    ]
 
 
 @router.get("/{batch_id}/notes", response_model=list[ReviewBatchNoteRead])
@@ -400,6 +426,22 @@ def _run(db: Session, batch_id: uuid.UUID, run_id: uuid.UUID) -> ReviewBatchRun:
     if run is None:
         raise HTTPException(status_code=404, detail="Review batch run not found")
     return run
+
+
+def _require_human_reviewer(run: ReviewBatchRun, principal: Principal) -> None:
+    if run.run_type == "HUMAN" and run.actor_user_id != principal.user.id:
+        raise HTTPException(status_code=403, detail="A human run can only be opened by its reviewer")
+
+
+def _run_value_read(row: ReviewBatchRunValue) -> ReviewBatchRunValueRead:
+    return ReviewBatchRunValueRead(
+        review_batch_run_id=row.review_batch_run_id,
+        matter_document_id=row.matter_document_id,
+        metadata_definition_id=row.metadata_definition_id,
+        value_ordinal=row.value_ordinal,
+        value=event_value(row),
+        confidence=row.confidence,
+    )
 
 
 @router.post("/{batch_id}/runs", response_model=ReviewBatchRunRead, status_code=201)
@@ -492,6 +534,189 @@ def list_review_batch_runs(
     )
 
 
+@router.post("/{batch_id}/review-run", response_model=ReviewBatchRunRead)
+def start_or_resume_review_batch_run(
+    matter_id: uuid.UUID,
+    batch_id: uuid.UUID,
+    principal: Principal = Depends(get_principal),
+    db: Session = Depends(get_db),
+) -> ReviewBatchRun:
+    matter = _matter(db, matter_id, principal)
+    batch = db.scalar(
+        select(ReviewBatch)
+        .where(ReviewBatch.id == batch_id, ReviewBatch.matter_id == matter_id)
+        .with_for_update()
+    )
+    if batch is None:
+        raise HTTPException(status_code=404, detail="Review batch not found")
+    if batch.status != "READY":
+        raise HTTPException(status_code=409, detail="Review batch is not ready")
+    if batch.assigned_user_id not in {None, principal.user.id}:
+        raise HTTPException(status_code=403, detail="This review batch is assigned to another user")
+    if batch.assigned_user_id is None:
+        batch.assigned_user_id = principal.user.id
+        batch.assigned_by_user_id = principal.user.id
+        batch.assigned_at = utcnow()
+
+    run = db.scalar(
+        select(ReviewBatchRun)
+        .where(
+            ReviewBatchRun.review_batch_id == batch.id,
+            ReviewBatchRun.run_type == "HUMAN",
+            ReviewBatchRun.purpose == "REVIEW",
+            ReviewBatchRun.actor_user_id == principal.user.id,
+            ReviewBatchRun.status == "RUNNING",
+        )
+        .order_by(ReviewBatchRun.created_at.desc())
+        .limit(1)
+    )
+    if run is None:
+        completed = db.scalar(
+            select(ReviewBatchRun)
+            .where(
+                ReviewBatchRun.review_batch_id == batch.id,
+                ReviewBatchRun.run_type == "HUMAN",
+                ReviewBatchRun.purpose == "REVIEW",
+                ReviewBatchRun.actor_user_id == principal.user.id,
+                ReviewBatchRun.status == "COMPLETED",
+            )
+            .order_by(ReviewBatchRun.completed_at.desc())
+            .limit(1)
+        )
+        if completed is not None:
+            db.commit()
+            return completed
+        run = ReviewBatchRun(
+            review_batch_id=batch.id,
+            run_type="HUMAN",
+            purpose="REVIEW",
+            status="RUNNING",
+            result_policy="ISOLATED",
+            actor_user_id=principal.user.id,
+            configuration_snapshot={"reviewer_value_visibility": batch.reviewer_value_visibility},
+            initiated_by_user_id=principal.user.id,
+        )
+        db.add(run)
+        db.flush()
+        record_audit(
+            db,
+            tenant_id=matter.client.tenant_id,
+            actor_user_id=principal.user.id,
+            action="review_batch.review.started",
+            target_type="review_batch_run",
+            target_id=run.id,
+            details={"batch_id": str(batch.id)},
+        )
+    db.commit()
+    return run
+
+
+@router.get("/{batch_id}/runs/{run_id}/progress", response_model=ReviewBatchRunProgressRead)
+def get_review_batch_run_progress(
+    matter_id: uuid.UUID,
+    batch_id: uuid.UUID,
+    run_id: uuid.UUID,
+    principal: Principal = Depends(get_principal),
+    db: Session = Depends(get_db),
+) -> ReviewBatchRunProgressRead:
+    _matter(db, matter_id, principal)
+    batch = _batch(db, matter_id, batch_id)
+    run = _run(db, batch.id, run_id)
+    _require_human_reviewer(run, principal)
+    counts = dict(
+        db.execute(
+            select(ReviewBatchRunDocument.status, func.count())
+            .where(ReviewBatchRunDocument.review_batch_run_id == run.id)
+            .group_by(ReviewBatchRunDocument.status)
+        ).all()
+    )
+    in_progress = int(counts.get("IN_PROGRESS", 0))
+    completed = int(counts.get("COMPLETED", 0))
+    skipped = int(counts.get("SKIPPED", 0))
+    return ReviewBatchRunProgressRead(
+        review_batch_run_id=run.id,
+        document_count=batch.document_count,
+        not_started_count=max(0, batch.document_count - in_progress - completed - skipped),
+        in_progress_count=in_progress,
+        completed_count=completed,
+        skipped_count=skipped,
+    )
+
+
+@router.get(
+    "/{batch_id}/runs/{run_id}/documents/{document_id}",
+    response_model=ReviewBatchDocumentCodingRead,
+)
+def get_review_batch_document_coding(
+    matter_id: uuid.UUID,
+    batch_id: uuid.UUID,
+    run_id: uuid.UUID,
+    document_id: uuid.UUID,
+    principal: Principal = Depends(get_principal),
+    db: Session = Depends(get_db),
+) -> ReviewBatchDocumentCodingRead:
+    _matter(db, matter_id, principal)
+    batch = _batch(db, matter_id, batch_id)
+    run = _run(db, batch.id, run_id)
+    _require_human_reviewer(run, principal)
+    if db.get(ReviewBatchDocument, (batch.id, document_id)) is None:
+        raise HTTPException(status_code=404, detail="Document is not in this review batch")
+    state = db.get(ReviewBatchRunDocument, (run.id, document_id))
+    values = list(
+        db.scalars(
+            select(ReviewBatchRunValue)
+            .where(
+                ReviewBatchRunValue.review_batch_run_id == run.id,
+                ReviewBatchRunValue.matter_document_id == document_id,
+            )
+            .order_by(ReviewBatchRunValue.metadata_definition_id, ReviewBatchRunValue.value_ordinal)
+        )
+    )
+    reviewer_values: list[ReviewBatchReviewerValueRead] = []
+    if batch.reviewer_value_visibility == "ALL_REVIEWER_VALUES" and run.run_type == "HUMAN":
+        other_rows = db.execute(
+            select(ReviewBatchRunValue, ReviewBatchRun, User)
+            .join(ReviewBatchRun, ReviewBatchRun.id == ReviewBatchRunValue.review_batch_run_id)
+            .join(User, User.id == ReviewBatchRun.actor_user_id)
+            .where(
+                ReviewBatchRun.review_batch_id == batch.id,
+                ReviewBatchRun.run_type == "HUMAN",
+                ReviewBatchRun.id != run.id,
+                ReviewBatchRunValue.matter_document_id == document_id,
+            )
+            .order_by(
+                ReviewBatchRun.created_at.desc(),
+                ReviewBatchRunValue.metadata_definition_id,
+                ReviewBatchRunValue.value_ordinal,
+            )
+        ).all()
+        grouped: dict[tuple[uuid.UUID, uuid.UUID], ReviewBatchReviewerValueRead] = {}
+        for value, other_run, user in other_rows:
+            key = (other_run.id, value.metadata_definition_id)
+            visible = grouped.get(key)
+            if visible is None:
+                visible = ReviewBatchReviewerValueRead(
+                    review_batch_run_id=other_run.id,
+                    actor_user_id=user.id,
+                    actor_user=MatterSavedSearchUserRead(
+                        id=user.id,
+                        display_name=user.display_name,
+                        email=user.email,
+                    ),
+                    metadata_definition_id=value.metadata_definition_id,
+                    values=[],
+                )
+                grouped[key] = visible
+            visible.values.append(event_value(value))
+        reviewer_values = list(grouped.values())
+    return ReviewBatchDocumentCodingRead(
+        matter_document_id=document_id,
+        review_status=state.status if state else "NOT_STARTED",
+        values=[_run_value_read(value) for value in values],
+        reviewer_values=reviewer_values,
+    )
+
+
 @router.put("/{batch_id}/runs/{run_id}/documents/{document_id}/values", response_model=list[ReviewBatchRunValueRead])
 def replace_review_batch_run_values(
     matter_id: uuid.UUID,
@@ -507,8 +732,7 @@ def replace_review_batch_run_values(
     run = _run(db, batch.id, run_id)
     if run.status != "RUNNING":
         raise HTTPException(status_code=409, detail="Only running batch runs accept values")
-    if run.run_type == "HUMAN" and run.actor_user_id != principal.user.id:
-        raise HTTPException(status_code=403, detail="A human run can only be coded by its reviewer")
+    _require_human_reviewer(run, principal)
     if payload.matter_document_id != document_id:
         raise HTTPException(status_code=422, detail="Document id does not match the request path")
     member = db.get(ReviewBatchDocument, (batch.id, document_id))
@@ -558,10 +782,25 @@ def replace_review_batch_run_values(
                     **columns,
                 )
             )
-    member.review_status = "IN_PROGRESS"
-    member.started_at = member.started_at or utcnow()
+    now = utcnow()
+    run_document = db.get(ReviewBatchRunDocument, (run.id, document_id))
+    if run_document is None:
+        run_document = ReviewBatchRunDocument(
+            review_batch_run_id=run.id,
+            matter_document_id=document_id,
+            status="COMPLETED",
+            started_at=now,
+            completed_at=now,
+        )
+        db.add(run_document)
+    else:
+        run_document.status = "COMPLETED"
+        run_document.completed_at = now
     db.flush()
     refresh_run_document_count(db, run.id)
+    if run.processed_document_count >= batch.document_count:
+        run.status = "COMPLETED"
+        run.completed_at = now
     db.commit()
     rows = list(
         db.scalars(
@@ -574,15 +813,59 @@ def replace_review_batch_run_values(
         )
     )
     return [
-        ReviewBatchRunValueRead(
-            matter_document_id=row.matter_document_id,
-            metadata_definition_id=row.metadata_definition_id,
-            value_ordinal=row.value_ordinal,
-            value=event_value(row),
-            confidence=row.confidence,
-        )
+        _run_value_read(row)
         for row in rows
     ]
+
+
+@router.post(
+    "/{batch_id}/runs/{run_id}/documents/{document_id}/skip",
+    response_model=ReviewBatchDocumentCodingRead,
+)
+def skip_review_batch_document(
+    matter_id: uuid.UUID,
+    batch_id: uuid.UUID,
+    run_id: uuid.UUID,
+    document_id: uuid.UUID,
+    principal: Principal = Depends(get_principal),
+    db: Session = Depends(get_db),
+) -> ReviewBatchDocumentCodingRead:
+    _matter(db, matter_id, principal)
+    batch = _batch(db, matter_id, batch_id)
+    run = _run(db, batch.id, run_id)
+    if run.status != "RUNNING":
+        raise HTTPException(status_code=409, detail="Only running batch runs can skip documents")
+    _require_human_reviewer(run, principal)
+    if db.get(ReviewBatchDocument, (batch.id, document_id)) is None:
+        raise HTTPException(status_code=404, detail="Document is not in this review batch")
+    now = utcnow()
+    run_document = db.get(ReviewBatchRunDocument, (run.id, document_id))
+    if run_document is None:
+        run_document = ReviewBatchRunDocument(
+            review_batch_run_id=run.id,
+            matter_document_id=document_id,
+            status="SKIPPED",
+            started_at=now,
+            completed_at=now,
+        )
+        db.add(run_document)
+    else:
+        run_document.status = "SKIPPED"
+        run_document.completed_at = now
+    db.flush()
+    refresh_run_document_count(db, run.id)
+    if run.processed_document_count >= batch.document_count:
+        run.status = "COMPLETED"
+        run.completed_at = now
+    db.commit()
+    return get_review_batch_document_coding(
+        matter_id=matter_id,
+        batch_id=batch_id,
+        run_id=run_id,
+        document_id=document_id,
+        principal=principal,
+        db=db,
+    )
 
 
 @router.post("/{batch_id}/runs/{run_id}/complete", response_model=ReviewBatchRunRead)

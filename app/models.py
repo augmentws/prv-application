@@ -818,6 +818,28 @@ class ReviewBatchRun(TimestampMixin, Base):
     completed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
 
 
+class ReviewBatchRunDocument(Base):
+    __tablename__ = "review_batch_run_document"
+    __table_args__ = (
+        CheckConstraint(
+            "status IN ('IN_PROGRESS', 'COMPLETED', 'SKIPPED')",
+            name="ck_review_batch_run_document_status",
+        ),
+        Index("ix_review_batch_run_document_run_status", "review_batch_run_id", "status"),
+    )
+
+    review_batch_run_id: Mapped[uuid.UUID] = mapped_column(
+        Uuid, ForeignKey("review_batch_run.id", ondelete="CASCADE"), primary_key=True
+    )
+    matter_document_id: Mapped[uuid.UUID] = mapped_column(
+        Uuid, ForeignKey("matter_document.id", ondelete="CASCADE"), primary_key=True, index=True
+    )
+    status: Mapped[str] = mapped_column(String(20), default="IN_PROGRESS")
+    started_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+    completed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow, onupdate=utcnow)
+
+
 class ReviewBatchRunValue(Base):
     __tablename__ = "review_batch_run_value"
     __table_args__ = (

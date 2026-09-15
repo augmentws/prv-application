@@ -7,6 +7,7 @@
  */
 
 export type ListReviewBatchDocumentsV1MattersMatterIdReviewBatchesBatchIdDocumentsGetParams = {
+run_id?: string | null;
 /**
  * @minimum 0
  */

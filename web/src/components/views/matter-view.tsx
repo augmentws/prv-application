@@ -233,7 +233,8 @@ export function MatterView({ clientId, matterId, requestedTab, selectedJobId }: 
     { id: "assignee", header: "Assigned to", cell: ({ row }) => <Select value={row.original.assigned_user_id ?? "unassigned"} onValueChange={(value) => assignReviewBatchMutation.mutate({ batchId: row.original.id, userId: value === "unassigned" ? null : value })} disabled={assignReviewBatchMutation.isPending}><SelectTrigger className="w-48"><SelectValue /></SelectTrigger><SelectContent><SelectItem value="unassigned">Unassigned</SelectItem>{(tenantUsers.data ?? []).filter((user) => user.status === "ACTIVE").map((user) => <SelectItem key={user.id} value={user.id}>{user.display_name}</SelectItem>)}</SelectContent></Select> },
     { accessorKey: "status", header: "Status", cell: ({ row }) => <div><StatusBadge status={row.original.status} />{row.original.error_message ? <p className="mt-1 max-w-64 truncate text-xs text-destructive" title={row.original.error_message}>{row.original.error_message}</p> : null}</div> },
     { accessorKey: "created_at", header: "Created", cell: ({ row }) => <span className="whitespace-nowrap text-muted-foreground">{formatDate(row.original.created_at)}</span> },
-  ], [assignReviewBatchMutation, tenantUsers.data]);
+    { id: "actions", header: "", cell: ({ row }) => row.original.status === "READY" ? <Button asChild size="sm"><Link href={`/review/matters/${matterId}?batch=${row.original.id}`}><FileSearch />Open review</Link></Button> : null },
+  ], [assignReviewBatchMutation, matterId, tenantUsers.data]);
 
   if (client.isPending || matter.isPending) return <TableLoading />;
   if (client.error || matter.error) return <QueryError message={client.error?.message ?? matter.error?.message} />;

@@ -28,6 +28,16 @@ A batch normally moves from **Queued** to **Building** to **Ready**. Its documen
 
 A batch can have one current human assignee. **Only the reviewer’s values** keeps human coding isolated while a reviewer works. **Values from all reviewers** allows reviewers to see one another’s coding. Agent outputs are always isolated by run.
 
+## Review a batch
+
+When a batch is **Ready**, select **Open review** from the Batches table. If the batch is unassigned, opening it assigns it to you. A batch assigned to someone else cannot be opened for coding.
+
+The review workspace shows the batch documents in their frozen sequence, the selected document, and the batch's snapshotted coding groups. Select **Save & next** to save all displayed coding fields as one isolated reviewer result, mark the document reviewed, and advance. A document with no selected field values can still be saved as reviewed. Select **Skip** when the document should remain uncoded but count as processed.
+
+The progress bar counts saved and skipped documents for your review run. Reopening an unfinished batch resumes the same run. When every document has been saved or skipped, the run is complete and becomes read-only.
+
+If the batch uses **Values from all reviewers**, earlier human-review values appear beneath the corresponding field with the reviewer's name. Your edits remain stored under your own run identity. Agent results are not mixed into this panel.
+
 ## Agent evaluation
 
 Each human or agent pass receives a separate run identity. Re-running an updated agent against the same batch creates a new run and preserves the earlier output. The two runs—or an agent run and a human reference run—can then be compared field by field.
@@ -36,4 +46,4 @@ Run results do not change the matter’s ordinary metadata or search index. Publ
 
 ## Current limitations
 
-The Batches tab currently creates and monitors batches. Keyword query batches are supported; semantic and hybrid result sets are not yet available for batch creation. Reviewer navigation, agent-run launch controls, adjudication, and publish-to-matter controls are planned next.
+Keyword query batches are supported; semantic and hybrid result sets are not yet available for batch creation. Agent-run launch controls, adjudication, and publish-to-matter controls are planned next.
