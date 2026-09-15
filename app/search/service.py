@@ -25,6 +25,7 @@ from app.models import (
 )
 from app.search.client import OpenSearchClient
 from app.search.mappings import compile_document_index, schema_hash
+from app.search.schema import SearchReindexRequired, plan_schema_change
 from embedding_service.config import get_embedding_settings
 
 logger = logging.getLogger(__name__)
@@ -201,6 +202,52 @@ class SearchIndexManager:
         actions.append({"add": {"index": generation.index_name, "alias": generation.alias_name}})
         self.client.update_aliases(actions)
 
+    def _cleanup_obsolete_generations(self, active: SearchIndexGeneration) -> None:
+        """Remove non-active physical indexes first, then their tracking rows."""
+
+        try:
+            generations = list(
+                self.db.scalars(
+                    select(SearchIndexGeneration).where(
+                        SearchIndexGeneration.matter_id == active.matter_id,
+                        SearchIndexGeneration.id != active.id,
+                    )
+                )
+            )
+            physical_indices = set(self.client.resolve_indices(f"{active.alias_name}-v*"))
+            physical_indices.update(generation.index_name for generation in generations)
+            for index_name in sorted(physical_indices):
+                if index_name != active.index_name:
+                    self.client.delete_index(index_name)
+            generation_by_id = {generation.id: generation for generation in generations}
+            batches = list(
+                self.db.scalars(
+                    select(ReviewBatch).where(ReviewBatch.search_index_generation_id.in_(generation_by_id))
+                )
+            )
+            for batch in batches:
+                generation = generation_by_id[batch.search_index_generation_id]
+                if "search_index_generation" not in batch.selection_definition:
+                    batch.selection_definition = {
+                        **batch.selection_definition,
+                        "search_index_generation": {
+                            "generation": generation.generation,
+                            "index_name": generation.index_name,
+                            "schema_hash": generation.schema_hash,
+                            "activated_at": generation.activated_at.isoformat() if generation.activated_at else None,
+                        },
+                    }
+            for generation in generations:
+                self.db.delete(generation)
+            self.db.commit()
+        except Exception:
+            self.db.rollback()
+            logger.exception(
+                "Search generation cleanup failed matter_id=%s active_index=%s",
+                active.matter_id,
+                active.index_name,
+            )
+
     def ensure(self, matter_id: uuid.UUID, *, force: bool = False) -> SearchIndexGeneration:
         self._lock_matter_search(matter_id)
         matter = self.db.get(Matter, matter_id)
@@ -221,7 +268,27 @@ class SearchIndexManager:
         active = self.active(matter_id)
         if active is not None and active.schema_hash == fingerprint and not force:
             self._activate_alias(active)
+            self._cleanup_obsolete_generations(active)
             return active
+
+        if active is not None and not force:
+            plan = plan_schema_change(active.schema_snapshot, index_body)
+            if plan.action in {"NO_CHANGE", "IN_PLACE"}:
+                if plan.mapping_update:
+                    self.client.update_mapping(active.index_name, plan.mapping_update)
+                active.schema_hash = fingerprint
+                active.schema_snapshot = index_body
+                active.error_message = None
+                self.db.commit()
+                self._cleanup_obsolete_generations(active)
+                logger.info(
+                    "Applied search schema in place matter_id=%s index=%s reasons=%s",
+                    matter_id,
+                    active.index_name,
+                    list(plan.reasons),
+                )
+                return active
+            raise SearchReindexRequired(plan)
 
         latest = self.db.scalar(
             select(func.max(SearchIndexGeneration.generation)).where(SearchIndexGeneration.matter_id == matter_id)
@@ -258,6 +325,7 @@ class SearchIndexManager:
             generation.document_count = count
             generation.activated_at = utcnow()
             self.db.commit()
+            self._cleanup_obsolete_generations(generation)
             return generation
         except Exception as exc:
             if not self.db.is_active:
@@ -478,6 +546,17 @@ def process_search_operation(operation_id: uuid.UUID) -> None:
                 operation.id,
                 operation.kind,
                 operation.matter_id,
+            )
+        except SearchReindexRequired as exc:
+            operation.status = "AWAITING_USER"
+            operation.payload = {**operation.payload, "schema_change": exc.plan.as_dict()}
+            operation.error_message = None
+            db.commit()
+            logger.info(
+                "Search projection requires confirmation operation_id=%s matter_id=%s reasons=%s",
+                operation.id,
+                operation.matter_id,
+                list(exc.plan.reasons),
             )
         except Exception as exc:
             operation.status = "FAILED"

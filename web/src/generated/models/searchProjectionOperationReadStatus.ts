@@ -12,6 +12,7 @@ export type SearchProjectionOperationReadStatus = typeof SearchProjectionOperati
 export const SearchProjectionOperationReadStatus = {
   QUEUED: 'QUEUED',
   RUNNING: 'RUNNING',
+  AWAITING_USER: 'AWAITING_USER',
   COMPLETED: 'COMPLETED',
   FAILED: 'FAILED',
 } as const;

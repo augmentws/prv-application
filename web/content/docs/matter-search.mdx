@@ -17,11 +17,13 @@ User-driven document updates use the highest queue priority so an interactive ta
 
 Search work is serialized per matter with a PostgreSQL advisory transaction lock. It does not lock the authoritative matter row, so slow artifact reads and OpenSearch writes cannot block document ingestion through the matter foreign key. Different matters may still project concurrently. If an interrupted generation attempt leaves a physical OpenSearch index without a committed Core generation record, the next attempt skips that orphaned name and allocates a new generation.
 
-Each schema version creates a new physical index. After existing documents are populated and the index refreshes successfully, the worker atomically moves the matter's stable alias to the new generation. Previous generations are marked `RETIRED` and retained; they are not searched or deleted automatically. Failed generations remain visible for diagnosis.
+Schema changes are planned before they are applied. A compatible additive field with its own bounded backfill can be added to the active index in place. Changes that alter how existing documents must be interpreted or populated pause for administrator confirmation. These include field type or analyzer changes, vector configuration changes, removing or renaming fields, nested/object shape changes, and searchable metadata changes that require historical values to be projected.
 
-The matter's **Search index** tab shows the active generation, indexed and authoritative document counts, current workflow activity, generation history, and recent projection operations. A matter administrator can request a complete rebuild there. The current active index remains searchable until its replacement is fully populated and activated.
+After confirmation, the worker creates and populates a new physical index and atomically moves the matter's stable alias only when the replacement is ready. It then deletes non-active physical indexes followed by their generation records. Recent projection operations remain available as the audit and diagnostic history.
 
-The same status and control surfaces are available through the API. Use `GET /v1/matters/{matter_id}/search-operations` to inspect queued, running, completed, or failed work. Use `GET /v1/matters/{matter_id}/search-indexes` to inspect physical generations. An administrator can request a complete rebuild with `POST /v1/matters/{matter_id}/search-indexes/rebuild`.
+The matter's **Search index** tab shows the active generation, indexed and authoritative document counts, current workflow activity, and recent projection operations. When a schema change requires reindexing, the tab explains why and asks a matter administrator to confirm. An administrator can also request a complete rebuild directly. The current active index remains searchable until its replacement is fully populated and activated.
+
+The same status and control surfaces are available through the API. Use `GET /v1/matters/{matter_id}/search-operations` to inspect queued, running, action-required, completed, or failed work. Use `GET /v1/matters/{matter_id}/search-indexes` to inspect the active physical generation. Confirm a requested schema reindex with `POST /v1/matters/{matter_id}/search-operations/{operation_id}/confirm-reindex`. An administrator can request a complete rebuild directly with `POST /v1/matters/{matter_id}/search-indexes/rebuild`.
 
 ## Query behavior
 
@@ -35,6 +37,127 @@ The same status and control surfaces are available through the API. Use `GET /v1
 - pagination.
 
 Text fields use versioned eDiscovery analyzer names for indexing, ordinary search, and phrase search. The initial three profiles all use the standard tokenizer plus lowercase normalization, preserve token positions and offsets, and do not remove stop words. This supports ordinary keyword queries and quoted phrases while allowing the profiles to evolve independently later. Facetable text fields also receive an exact keyword subfield; identifiers and enum values remain keywords.
+
+## Keyword search syntax
+
+Keyword and the keyword portion of Hybrid search use OpenSearch's `simple_query_string` parser. This intentionally provides a forgiving, controlled syntax: malformed fragments are ignored instead of causing the entire search to fail. It is not the full OpenSearch Query DSL.
+
+Unquoted text is case-insensitive and is analyzed into words. All terms are required by default, so:
+
+```text
+price coordination
+```
+
+finds documents containing both `price` and `coordination`. The words do not need to be adjacent or in that order. Punctuation normally separates words. There is no stemming or stop-word removal, so `investigate` and `investigation` are different terms unless you use a prefix or fuzzy search.
+
+### Operators
+
+| Purpose | Syntax | Example | Meaning |
+| --- | --- | --- | --- |
+| AND | a space or `+` | `price + coordination` | Require both clauses. Because AND is the default, `price coordination` has the same effect. |
+| OR | `\|` | `terminate \| cancel` | Match either clause. |
+| NOT | `-` immediately before a term or group | `pricing -draft` | Require `pricing` and exclude documents containing `draft`. |
+| Exact phrase | double quotes | `"price coordination"` | Match the analyzed words next to one another and in the stated order. |
+| Grouping | parentheses | `pricing + (fixing \| coordination)` | Control how mixed Boolean clauses are combined. |
+| Prefix | `*` at the end of a term | `investigat*` | Match terms beginning with `investigat`, such as `investigate` and `investigation`. |
+| Fuzzy term | `~n` after a term | `recieve~1` | Allow approximately `n` character edits, useful for misspellings and OCR errors. |
+| Phrase proximity | `~n` after a quoted phrase | `"price meeting"~3` | Allow the phrase terms to occur within the specified positional distance. |
+
+Use symbolic operators exactly as shown. `AND`, `OR`, and `NOT` typed as words are searched as ordinary words; they are not Boolean operators in this search box.
+
+When combining AND and OR, always use parentheses to make the intent explicit:
+
+```text
+(contract | agreement) + (terminate | cancel*) -draft
+```
+
+This requires either `contract` or `agreement`, also requires either `terminate` or a word beginning with `cancel`, and excludes `draft`.
+
+For exclusion, include a positive clause whenever possible. For example, use `responsive -privileged` rather than a negative-only query such as `-privileged`. A positive anchor produces clearer and more predictable matching and scoring.
+
+### Phrases and proximity
+
+Quotes mean an analyzed phrase, not a byte-for-byte substring. Search remains case-insensitive, and punctuation is handled by the tokenizer:
+
+```text
+"Project Falcon"
+```
+
+matches the adjacent tokens `project` and `falcon`. To allow intervening words, add phrase proximity:
+
+```text
+"Project Falcon"~4
+```
+
+Use a small proximity value first. Larger values broaden the search and can reduce precision.
+
+### Prefixes, wildcards, and fuzzy terms
+
+The supported wildcard form is a trailing `*`, which performs prefix matching:
+
+```text
+privileg*
+```
+
+Leading or embedded wildcards such as `*ileged` or `priv*ged`, the `?` single-character wildcard, regular expressions, and SQL `%` wildcards are not supported by the current matter search syntax. Use a normal term, trailing prefix, fuzzy term, phrase, or metadata filter instead.
+
+Fuzzy matching uses edit distance:
+
+```text
+seperate~1
+```
+
+This can compensate for a small spelling or OCR error. Prefer `~1` or `~2`; broad fuzzy clauses can match surprising terms and cost more to evaluate. Do not combine fuzzy and prefix operators on the same term.
+
+### Escaping reserved characters
+
+The reserved syntax characters are:
+
+```text
++ | - * " ( ) ~ \
+```
+
+Type a backslash before a reserved character when it should not act as an operator. In the browser search box, use one backslash, such as `\-` for a literal hyphen or `\*` for a literal asterisk. Escaping prevents syntax interpretation, but punctuation can still be removed by the text analyzer and therefore may not be independently searchable.
+
+### Syntax that is not supported in the search box
+
+Do not use the following full-query-string or Query DSL forms:
+
+- `field:value` field qualification;
+- `[10 TO 20]`, `>10`, or other inline ranges;
+- `/regular expressions/`;
+- leading, embedded, or `?` wildcards;
+- raw OpenSearch JSON; or
+- SQL or PPL expressions.
+
+Use the field controls and typed metadata filters for exact values, field restriction, dates, numbers, and ranges. The browser never sends raw OpenSearch DSL.
+
+### Search mode interaction
+
+- **Keyword** interprets all of the syntax above.
+- **Semantic** treats the complete entry as natural-language text. Boolean and wildcard characters do not constrain semantic retrieval.
+- **Hybrid** interprets the syntax in its keyword branch and also sends the complete entry to semantic retrieval. For the cleanest semantic meaning, avoid unnecessarily complicated Boolean expressions in Hybrid searches.
+
+The implementation follows the [OpenSearch simple query string syntax](https://docs.opensearch.org/latest/query-dsl/full-text/simple-query-string/), with AND configured as the default operator and wildcard analysis enabled.
+
+## Metadata filters, fields, facets, and sorting
+
+Search-box syntax is for analyzed text. Structured metadata is handled separately so values can be validated against the matter's active searchable field definitions.
+
+| Filter | Supported fields | Behavior |
+| --- | --- | --- |
+| `EQ` | Any searchable field except JSON | Exact matching for enums and facetable fields. Non-facetable Text and Long text use analyzed phrase matching. |
+| `IN` | Facetable fields | Match any value in the supplied list. Values within one `IN` filter are ORed. |
+| `RANGE` | Integer, Decimal, Date, and Datetime | Inclusive lower and upper bounds. Either bound may be omitted. |
+| `EXISTS` | Any searchable field except JSON | Require that the field has an indexed value. |
+
+Separate filters are ANDed. In the workspace, selecting several values in one facet broadens that facet, while selecting values in different facets narrows the result. A negated metadata filter and `NOT EXISTS` are not currently exposed; the `-term` operator excludes an analyzed text term, not a typed metadata value.
+
+Enum filters use stable enum keys rather than display labels. Date values use ISO `YYYY-MM-DD`; date-times use ISO 8601, preferably with `Z` or an explicit UTC offset. JSON fields cannot be filtered, faceted, or sorted. `IN` requires a facetable field.
+
+The API's `query_fields` option can restrict keyword matching to active searchable Text or Long text metadata field keys. It does not accept OpenSearch field paths. Without that option, the search covers filenames, email subject and address headers, custodians, source path, body text, and all active searchable Text and Long text metadata. Filename and email-subject matches receive a built-in relevance boost.
+
+Facets can be requested only for fields configured as facetable. Sort supports `_score`, `created_at`, and sortable active metadata fields. Non-facetable Text, Long text, and JSON cannot be sorted. Semantic and Hybrid modes support relevance sorting only.
 
 **Keyword** searches exact words and phrases across the configured text fields.
 **Semantic** embeds the query with the matter's configured model and compares it

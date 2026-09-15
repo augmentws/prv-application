@@ -33,7 +33,7 @@ The person who creates a matter receives matter-level **ADMIN** membership. Priv
 
 The matter **Overview** shows the current document count and the number of distinct custodians represented by those documents. These values come from the Core database and update as document-import jobs finish; they do not require the planned search index.
 
-The **Search index** tab shows whether the matter's rebuildable search projection is ready, building, behind, or failed. It compares indexed documents with the authoritative Core count, records generation and operation history, and lets a matter administrator request a full rebuild.
+The **Search index** tab shows whether the matter's rebuildable search projection is ready, building, behind, needs confirmation, or failed. It compares indexed documents with the authoritative Core count, records operation history, asks before a schema change requires a full reindex, and lets a matter administrator request a full rebuild directly.
 
 When reusable templates are available, the **Configuration** choice in the creation dialog can use one instead of the standard profile. See [Matter templates and cloning](/docs/matter-templates).
 

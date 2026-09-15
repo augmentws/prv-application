@@ -5898,6 +5898,58 @@ export const listSearchOperationsV1MattersMatterIdSearchOperationsGet = async (m
 
 
 
+export type confirmSearchReindexV1MattersMatterIdSearchOperationsOperationIdConfirmReindexPostResponse202 = {
+  data: SearchProjectionOperationRead
+  status: 202
+}
+
+export type confirmSearchReindexV1MattersMatterIdSearchOperationsOperationIdConfirmReindexPostResponse422 = {
+  data: HTTPValidationError
+  status: 422
+}
+
+export type confirmSearchReindexV1MattersMatterIdSearchOperationsOperationIdConfirmReindexPostResponseSuccess = (confirmSearchReindexV1MattersMatterIdSearchOperationsOperationIdConfirmReindexPostResponse202) & {
+  headers: Headers;
+};
+export type confirmSearchReindexV1MattersMatterIdSearchOperationsOperationIdConfirmReindexPostResponseError = (confirmSearchReindexV1MattersMatterIdSearchOperationsOperationIdConfirmReindexPostResponse422) & {
+  headers: Headers;
+};
+
+export type confirmSearchReindexV1MattersMatterIdSearchOperationsOperationIdConfirmReindexPostResponse = (confirmSearchReindexV1MattersMatterIdSearchOperationsOperationIdConfirmReindexPostResponseSuccess | confirmSearchReindexV1MattersMatterIdSearchOperationsOperationIdConfirmReindexPostResponseError)
+
+export const getConfirmSearchReindexV1MattersMatterIdSearchOperationsOperationIdConfirmReindexPostUrl = (matterId: string,
+    operationId: string,) => {
+
+
+
+
+  return `/api/core/v1/matters/${matterId}/search-operations/${operationId}/confirm-reindex`
+}
+
+/**
+ * @summary Confirm Search Reindex
+ */
+export const confirmSearchReindexV1MattersMatterIdSearchOperationsOperationIdConfirmReindexPost = async (matterId: string,
+    operationId: string, options?: RequestInit): Promise<confirmSearchReindexV1MattersMatterIdSearchOperationsOperationIdConfirmReindexPostResponse> => {
+
+  const res = await fetch(getConfirmSearchReindexV1MattersMatterIdSearchOperationsOperationIdConfirmReindexPostUrl(matterId,operationId),
+  {
+    ...options,
+    method: 'POST'
+
+
+  }
+)
+
+
+  const body = [204, 205, 304].includes(res.status) ? null : await res.text();
+
+  const data: confirmSearchReindexV1MattersMatterIdSearchOperationsOperationIdConfirmReindexPostResponse['data'] = body ? JSON.parse(body) : {}
+  return { data, status: res.status, headers: res.headers } as confirmSearchReindexV1MattersMatterIdSearchOperationsOperationIdConfirmReindexPostResponse
+}
+
+
+
 export type rebuildSearchIndexV1MattersMatterIdSearchIndexesRebuildPostResponse202 = {
   data: SearchProjectionOperationRead
   status: 202

@@ -162,6 +162,14 @@ export function MatterView({ clientId, matterId, requestedTab, selectedJobId }: 
     },
     onError: (error) => toast.error(error instanceof Error ? error.message : "The search index rebuild could not be requested."),
   });
+  const confirmReindexMutation = useMutation({
+    mutationFn: (operationId: string) => coreApi<SearchProjectionOperationRead>(`/v1/matters/${matterId}/search-operations/${operationId}/confirm-reindex`, { method: "POST" }),
+    onSuccess: (operation) => {
+      queryClient.setQueryData<SearchProjectionOperationRead[]>(["search-operations", matterId], (current) => current?.map((item) => item.id === operation.id ? operation : item));
+      toast.success("The full search reindex was confirmed and queued.");
+    },
+    onError: (error) => toast.error(error instanceof Error ? error.message : "The search reindex could not be confirmed."),
+  });
   const createReviewBatchMutation = useMutation({
     mutationFn: (values: ReviewBatchCreate) => coreApi<ReviewBatchRead>(`/v1/matters/${matterId}/review-batches`, { method: "POST", body: JSON.stringify(values) }),
     onSuccess: (created) => {
@@ -272,7 +280,7 @@ export function MatterView({ clientId, matterId, requestedTab, selectedJobId }: 
             <DataTable columns={jobColumns} data={jobs.data} emptyMessage="No document import jobs have been started for this matter." />
           </section>
         </div>
-        : searchIndexes.isPending || searchOperations.isPending || overviewCounts.isPending ? <TableLoading /> : searchIndexes.error || searchOperations.error || overviewCounts.error ? <QueryError message={searchIndexes.error?.message ?? searchOperations.error?.message ?? overviewCounts.error?.message} /> : <SearchIndexPanel coreDocumentCount={overviewCounts.data.document_count} indexes={searchIndexes.data} operations={searchOperations.data} onRebuild={() => rebuildSearchMutation.mutateAsync().then(() => undefined)} rebuilding={rebuildSearchMutation.isPending} />}
+        : searchIndexes.isPending || searchOperations.isPending || overviewCounts.isPending ? <TableLoading /> : searchIndexes.error || searchOperations.error || overviewCounts.error ? <QueryError message={searchIndexes.error?.message ?? searchOperations.error?.message ?? overviewCounts.error?.message} /> : <SearchIndexPanel coreDocumentCount={overviewCounts.data.document_count} indexes={searchIndexes.data} operations={searchOperations.data} onRebuild={() => rebuildSearchMutation.mutateAsync().then(() => undefined)} rebuilding={rebuildSearchMutation.isPending} onConfirmReindex={(operationId) => confirmReindexMutation.mutateAsync(operationId).then(() => undefined)} confirmingReindex={confirmReindexMutation.isPending} />}
     </>
   );
 }

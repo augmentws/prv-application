@@ -331,7 +331,7 @@ SearchFilterOperator = Literal["EQ", "IN", "RANGE", "EXISTS"]
 SearchSortDirection = Literal["ASC", "DESC"]
 SearchMode = Literal["KEYWORD", "SEMANTIC", "HYBRID"]
 SearchOperationKind = Literal["SCHEMA_SYNC", "REBUILD", "DOCUMENT_UPSERT", "DOCUMENT_DELETE"]
-SearchOperationStatus = Literal["QUEUED", "RUNNING", "COMPLETED", "FAILED"]
+SearchOperationStatus = Literal["QUEUED", "RUNNING", "AWAITING_USER", "COMPLETED", "FAILED"]
 SearchIndexStatus = Literal["CREATING", "ACTIVE", "RETIRED", "FAILED"]
 
 
@@ -707,6 +707,7 @@ class SearchProjectionOperationRead(ORMModel):
     id: uuid.UUID
     matter_id: uuid.UUID
     kind: SearchOperationKind
+    payload: dict[str, Any]
     status: SearchOperationStatus
     workflow_id: str
     created_by_user_id: uuid.UUID | None

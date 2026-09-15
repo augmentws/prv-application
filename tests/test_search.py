@@ -1,4 +1,5 @@
 import uuid
+from copy import deepcopy
 from types import SimpleNamespace
 from unittest.mock import Mock
 
@@ -12,15 +13,25 @@ from app.artifact_gateway import SearchItemSnapshot
 from app.config import Settings
 from app.embeddings.chunking import TextChunk
 from app.embeddings.parquet import write_chunk_set, write_vector_set
-from app.models import Client, Matter, MatterDocumentImportJob, MetadataDefinition, SearchIndexGeneration, Tenant
+from app.models import (
+    Client,
+    Matter,
+    MatterDocumentImportJob,
+    MetadataDefinition,
+    SearchIndexGeneration,
+    SearchProjectionOperation,
+    Tenant,
+)
 from app.schemas import MatterSearchRequest
 from app.search.mappings import (
     INDEX_ANALYZER,
     QUOTE_ANALYZER,
     SEARCH_ANALYZER,
     compile_document_index,
+    schema_hash,
 )
 from app.search.query import compile_facet_values_request, compile_search_request, execute_facet_values, execute_search
+from app.search.schema import SearchReindexRequired
 from app.search.service import SearchIndexManager, build_document_projection
 
 
@@ -447,6 +458,8 @@ class FakeIndexClient:
         self.alias_actions: list[list[dict]] = []
         self.aliases: dict[str, set[str]] = {}
         self.refreshed: list[str] = []
+        self.mapping_updates: list[tuple[str, dict]] = []
+        self.deleted: list[str] = []
 
     def create_index(self, name: str, body: dict) -> None:
         assert body["mappings"]["dynamic"] == "strict"
@@ -455,6 +468,17 @@ class FakeIndexClient:
 
     def index_exists(self, name: str) -> bool:
         return name in self.existing
+
+    def update_mapping(self, name: str, body: dict) -> None:
+        self.mapping_updates.append((name, body))
+
+    def delete_index(self, name: str) -> None:
+        self.deleted.append(name)
+        self.existing.discard(name)
+
+    def resolve_indices(self, pattern: str) -> list[str]:
+        prefix = pattern.removesuffix("*")
+        return sorted(name for name in self.existing if name.startswith(prefix))
 
     def update_aliases(self, actions: list[dict]) -> None:
         self.alias_actions.append(actions)
@@ -476,7 +500,7 @@ class FakeIndexClient:
         self.refreshed.append(index)
 
 
-def test_index_manager_versions_mapping_changes_and_retires_without_deleting(db: Session) -> None:
+def test_index_manager_requires_confirmation_then_rebuilds_and_cleans(db: Session) -> None:
     tenant = Tenant(slug="search-tenant", name="Search Tenant", status="ACTIVE", is_root=True)
     db.add(tenant)
     db.flush()
@@ -502,19 +526,47 @@ def test_index_manager_versions_mapping_changes_and_retires_without_deleting(db:
     added.allowed_values = [{"key": "conduct", "label": "Conduct", "active": True}]
     db.add(added)
     db.commit()
-    second = manager.ensure(matter.id)
+    with pytest.raises(SearchReindexRequired) as required:
+        manager.ensure(matter.id)
+    assert "metadata" in " ".join(required.value.plan.reasons)
+    second = manager.ensure(matter.id, force=True)
 
     assert second.generation == 2
-    assert first.status == "RETIRED"
     assert len(fake.created) == 2
     assert fake.alias_actions[-1] == [
         {"remove": {"index": first.index_name, "alias": first.alias_name}},
         {"add": {"index": second.index_name, "alias": second.alias_name}},
     ]
-    generations = list(
-        db.scalars(select(SearchIndexGeneration).where(SearchIndexGeneration.matter_id == matter.id))
-    )
-    assert {generation.status for generation in generations} == {"ACTIVE", "RETIRED"}
+    generations = list(db.scalars(select(SearchIndexGeneration).where(SearchIndexGeneration.matter_id == matter.id)))
+    assert [generation.id for generation in generations] == [second.id]
+    assert fake.deleted == [first.index_name]
+
+
+def test_index_manager_applies_allowlisted_additive_mapping_in_place(db: Session) -> None:
+    tenant = Tenant(slug="in-place-tenant", name="In-place Tenant", status="ACTIVE", is_root=True)
+    db.add(tenant)
+    db.flush()
+    client_record = Client(tenant_id=tenant.id, name="In-place Client", status="ACTIVE")
+    db.add(client_record)
+    db.flush()
+    matter = Matter(client_id=client_record.id, name="In-place Matter", status="ACTIVE")
+    db.add(matter)
+    db.commit()
+
+    fake = FakeIndexClient()
+    manager = SearchIndexManager(db, fake, Settings(opensearch_index_prefix="test"))  # type: ignore[arg-type]
+    active = manager.ensure(matter.id)
+    legacy = deepcopy(active.schema_snapshot)
+    legacy["mappings"]["properties"].pop("batch_ids")
+    active.schema_snapshot = legacy
+    active.schema_hash = schema_hash(legacy)
+    db.commit()
+
+    same = manager.ensure(matter.id)
+
+    assert same.id == active.id
+    assert len(fake.created) == 1
+    assert fake.mapping_updates == [(active.index_name, {"properties": {"batch_ids": {"type": "keyword"}}})]
 
 
 def test_index_manager_repairs_an_alias_with_multiple_generations(db: Session) -> None:
@@ -574,6 +626,7 @@ def test_index_manager_skips_an_orphaned_physical_index(db: Session) -> None:
     assert active.generation == 2
     assert active.index_name.endswith("-v000002")
     assert fake.created == [active.index_name]
+    assert fake.deleted == [orphaned]
 
 
 def test_matter_creation_queues_index_and_search_waits_for_active_generation(
@@ -604,3 +657,47 @@ def test_matter_creation_queues_index_and_search_waits_for_active_generation(
     )
     assert search_response.status_code == 409
     assert search_response.json()["error"]["message"] == "Matter search index is not ready"
+
+
+def test_reindex_confirmation_requeues_the_schema_operation(
+    client: TestClient,
+    root_token: str,
+    db: Session,
+) -> None:
+    headers = auth(root_token)
+    tenant_id = client.get("/v1/auth/me", headers=headers).json()["tenant_id"]
+    created_client = client.post(
+        f"/v1/tenants/{tenant_id}/clients",
+        headers=headers,
+        json={"name": "Confirmation Client"},
+    ).json()
+    matter = client.post(
+        f"/v1/clients/{created_client['id']}/matters",
+        headers=headers,
+        json={"name": "Confirmation Matter"},
+    ).json()
+    db.expire_all()
+    operation = db.scalar(
+        select(SearchProjectionOperation).where(SearchProjectionOperation.matter_id == uuid.UUID(matter["id"]))
+    )
+    assert operation is not None
+    operation.status = "AWAITING_USER"
+    operation.payload = {
+        "schema_change": {
+            "action": "REINDEX_REQUIRED",
+            "desired_schema_hash": "a" * 64,
+            "reasons": ["Existing field mappings changed: metadata."],
+        }
+    }
+    db.commit()
+
+    response = client.post(
+        f"/v1/matters/{matter['id']}/search-operations/{operation.id}/confirm-reindex",
+        headers=headers,
+    )
+
+    assert response.status_code == 202, response.text
+    confirmed = response.json()
+    assert confirmed["kind"] == "REBUILD"
+    assert confirmed["status"] == "QUEUED"
+    assert confirmed["payload"]["confirmation"]["confirmed_by_user_id"]

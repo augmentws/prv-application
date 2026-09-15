@@ -5813,6 +5813,64 @@
         }
       }
     },
+    "/v1/matters/{matter_id}/search-operations/{operation_id}/confirm-reindex": {
+      "post": {
+        "tags": [
+          "matter search"
+        ],
+        "summary": "Confirm Search Reindex",
+        "operationId": "confirm_search_reindex_v1_matters__matter_id__search_operations__operation_id__confirm_reindex_post",
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "matter_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid",
+              "title": "Matter Id"
+            }
+          },
+          {
+            "name": "operation_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid",
+              "title": "Operation Id"
+            }
+          }
+        ],
+        "responses": {
+          "202": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SearchProjectionOperationRead"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/v1/matters/{matter_id}/search-indexes/rebuild": {
       "post": {
         "tags": [
@@ -13779,11 +13837,17 @@
             ],
             "title": "Kind"
           },
+          "payload": {
+            "additionalProperties": true,
+            "type": "object",
+            "title": "Payload"
+          },
           "status": {
             "type": "string",
             "enum": [
               "QUEUED",
               "RUNNING",
+              "AWAITING_USER",
               "COMPLETED",
               "FAILED"
             ],
@@ -13860,6 +13924,7 @@
           "id",
           "matter_id",
           "kind",
+          "payload",
           "status",
           "workflow_id",
           "created_by_user_id",

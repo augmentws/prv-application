@@ -561,7 +561,7 @@ class SearchProjectionOperation(TimestampMixin, Base):
             name="ck_search_projection_kind",
         ),
         CheckConstraint(
-            "status IN ('QUEUED', 'RUNNING', 'COMPLETED', 'FAILED')",
+            "status IN ('QUEUED', 'RUNNING', 'AWAITING_USER', 'COMPLETED', 'FAILED')",
             name="ck_search_projection_status",
         ),
         Index("ix_search_projection_matter_created", "matter_id", "created_at"),

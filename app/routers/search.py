@@ -1,5 +1,6 @@
 import logging
 import uuid
+from datetime import datetime, timezone
 from typing import Any
 
 from fastapi import APIRouter, Depends, HTTPException, Query, status
@@ -22,6 +23,7 @@ from app.schemas import (
 from app.search.client import OpenSearchClient, OpenSearchError
 from app.search.operations import create_search_operation
 from app.search.query import execute_facet_values, execute_search
+from app.workflows.dispatcher import enqueue_search_projection
 
 router = APIRouter(prefix="/v1/matters/{matter_id}", tags=["matter search"])
 logger = logging.getLogger(__name__)
@@ -249,6 +251,54 @@ def list_search_operations(
             .limit(limit)
         )
     )
+
+
+@router.post(
+    "/search-operations/{operation_id}/confirm-reindex",
+    response_model=SearchProjectionOperationRead,
+    status_code=status.HTTP_202_ACCEPTED,
+)
+def confirm_search_reindex(
+    matter_id: uuid.UUID,
+    operation_id: uuid.UUID,
+    principal: Principal = Depends(get_principal),
+    db: Session = Depends(get_db),
+) -> SearchProjectionOperation:
+    matter = _matter(db, matter_id, principal)
+    operation = db.scalar(
+        select(SearchProjectionOperation)
+        .where(
+            SearchProjectionOperation.id == operation_id,
+            SearchProjectionOperation.matter_id == matter.id,
+        )
+        .with_for_update()
+    )
+    if operation is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Search operation not found")
+    if operation.status != "AWAITING_USER":
+        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="Search operation is not awaiting confirmation")
+    schema_change = operation.payload.get("schema_change")
+    if not isinstance(schema_change, dict) or schema_change.get("action") != "REINDEX_REQUIRED":
+        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="Search operation has no reindex plan")
+
+    confirmed_at = datetime.now(timezone.utc)
+    operation.kind = "REBUILD"
+    operation.status = "QUEUED"
+    operation.workflow_id = f"search-projection:{operation.id}:confirmed:{uuid.uuid4()}"
+    operation.payload = {
+        **operation.payload,
+        "confirmation": {
+            "confirmed_at": confirmed_at.isoformat(),
+            "confirmed_by_user_id": str(principal.user.id),
+        },
+    }
+    operation.started_at = None
+    operation.completed_at = None
+    operation.error_message = None
+    enqueue_search_projection(db, operation.workflow_id, str(operation.id), priority=1000)
+    db.commit()
+    db.refresh(operation)
+    return operation
 
 
 @router.post("/search-indexes/rebuild", response_model=SearchProjectionOperationRead, status_code=status.HTTP_202_ACCEPTED)

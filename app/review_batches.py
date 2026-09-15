@@ -66,6 +66,15 @@ def _search_document_ids(
     if generation is None:
         raise ValueError("The matter search index must be ready before creating a search-query batch")
     batch.search_index_generation_id = generation.id
+    batch.selection_definition = {
+        **batch.selection_definition,
+        "search_index_generation": {
+            "generation": generation.generation,
+            "index_name": generation.index_name,
+            "schema_hash": generation.schema_hash,
+            "activated_at": generation.activated_at.isoformat() if generation.activated_at else None,
+        },
+    }
     request = MatterSearchRequest.model_validate(batch.selection_definition["search"])
     definitions = list(db.scalars(select(MetadataDefinition).where(MetadataDefinition.matter_id == matter.id)))
     body = compile_search_request(

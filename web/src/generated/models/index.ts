@@ -237,6 +237,7 @@ export * from './searchIndexGenerationRead';
 export * from './searchIndexGenerationReadStatus';
 export * from './searchProjectionOperationRead';
 export * from './searchProjectionOperationReadKind';
+export * from './searchProjectionOperationReadPayload';
 export * from './searchProjectionOperationReadStatus';
 export * from './sourceContainerUploadResponse';
 export * from './tenantAdminCreate';

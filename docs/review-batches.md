@@ -21,7 +21,7 @@ Run values intentionally do not update `metadata_event`, `document_metadata_curr
 ## Selection behavior
 
 - `ALL_MATTER` freezes every document currently in the matter.
-- `SEARCH_QUERY` re-executes a controlled keyword query and records the active physical search-index generation used to build the batch.
+- `SEARCH_QUERY` re-executes a controlled keyword query and records the active physical search-index generation used to build the batch. The selection definition snapshots its generation number, physical name, schema hash, and activation time so provenance survives normal index-generation cleanup.
 - `RANDOM_MATTER` deterministically orders all current matter documents by the stored seed and optionally takes a sample.
 - `RANDOM_BATCH` applies the same deterministic sampling to an existing ready batch.
 
