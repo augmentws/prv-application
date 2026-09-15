@@ -1,10 +1,10 @@
 "use client";
 
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { ArrowLeft, Check, ChevronLeft, ChevronRight, FileText, Save, SkipForward, X } from "lucide-react";
+import { ArrowLeft, Check, ChevronDown, ChevronLeft, ChevronRight, FileText, Save, Search, SkipForward, X } from "lucide-react";
 import Link from "next/link";
 import { useRouter } from "next/navigation";
-import { type FormEvent, useMemo, useState } from "react";
+import { type FormEvent, useEffect, useMemo, useState } from "react";
 import { toast } from "sonner";
 
 import { BrandMark } from "@/components/brand-mark";
@@ -18,8 +18,17 @@ import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@
 import { Skeleton } from "@/components/ui/skeleton";
 import { Textarea } from "@/components/ui/textarea";
 import type {
+  ClientRead,
   CollectionItemRead,
+  CustodianRead,
   MatterRead,
+  MatterFacetValuesResponse,
+  MatterSearchFilter,
+  MatterSearchHit,
+  MatterSearchRequest,
+  MatterSearchRequestSearchMode,
+  MatterSearchResponse,
+  MetadataDefinitionRead,
   ReviewBatchCodingFieldRead,
   ReviewBatchDocumentCodingRead,
   ReviewBatchDocumentRead,
@@ -31,7 +40,48 @@ import type {
 import { coreApi } from "@/lib/api-client";
 import { cn } from "@/lib/utils";
 
-const PAGE_SIZE = 100;
+const PAGE_SIZE = 50;
+const PREFERRED_FACETS = ["custodian", "file_extension", "responsiveness", "privilege", "key_document", "topics"];
+const SEARCH_PLACEHOLDERS: Record<MatterSearchRequestSearchMode, string> = {
+  KEYWORD: "Search this batch's body, filenames, paths, email headers, and metadata",
+  SEMANTIC: "Find documents in this batch by concept or meaning",
+  HYBRID: "Combine exact words with conceptually related batch results",
+};
+
+type SelectedFilters = Record<string, string[]>;
+
+function objectValue(value: unknown): Record<string, unknown> {
+  return value !== null && typeof value === "object" && !Array.isArray(value) ? value as Record<string, unknown> : {};
+}
+
+function displayValue(value: unknown): string {
+  if (value === null || value === undefined || value === "") return "—";
+  if (Array.isArray(value)) return value.length ? value.map(displayValue).join(", ") : "—";
+  if (typeof value === "boolean") return value ? "Yes" : "No";
+  if (typeof value === "object") return JSON.stringify(value);
+  return String(value);
+}
+
+function resultTitle(hit: MatterSearchHit) {
+  const metadata = objectValue(hit.fields.metadata);
+  return displayValue(hit.fields.email_subject || metadata.document_title || hit.fields.original_filename || "Untitled document");
+}
+
+function resultFileType(hit: MatterSearchHit) {
+  const metadata = objectValue(hit.fields.metadata);
+  const extension = displayValue(metadata.file_extension);
+  return extension === "—" ? displayValue(hit.fields.record_type) : extension.replace(/^\./, "").toUpperCase();
+}
+
+function facetToken(value: unknown) {
+  return typeof value === "string" ? value : JSON.stringify(value);
+}
+
+function typedFacetValue(token: string, definition: MetadataDefinitionRead): unknown {
+  if (definition.type === "BOOLEAN") return token === "true";
+  if (definition.type === "INTEGER" || definition.type === "DECIMAL") return Number(token);
+  return token;
+}
 
 interface SnapshotOption {
   key: string;
@@ -109,10 +159,28 @@ export function BatchReviewWorkspace({ matterId, batchId, initialDocumentId }: {
 }) {
   const router = useRouter();
   const queryClient = useQueryClient();
+  const [draftQuery, setDraftQuery] = useState("");
+  const [query, setQuery] = useState("");
+  const [searchMode, setSearchMode] = useState<MatterSearchRequestSearchMode>("KEYWORD");
+  const [filters, setFilters] = useState<SelectedFilters>({});
   const [offset, setOffset] = useState(0);
   const [selectedDocumentId, setSelectedDocumentId] = useState(initialDocumentId ?? "");
 
   const matter = useQuery({ queryKey: ["matter", matterId], queryFn: () => coreApi<MatterRead>(`/v1/matters/${matterId}`) });
+  const client = useQuery({
+    queryKey: ["client", matter.data?.client_id],
+    queryFn: () => coreApi<ClientRead>(`/v1/clients/${matter.data!.client_id}`),
+    enabled: Boolean(matter.data?.client_id),
+  });
+  const custodians = useQuery({
+    queryKey: ["custodians", matter.data?.client_id],
+    queryFn: () => coreApi<CustodianRead[]>(`/v1/clients/${matter.data!.client_id}/custodians`),
+    enabled: Boolean(matter.data?.client_id),
+  });
+  const definitions = useQuery({
+    queryKey: ["metadata-definitions", matterId],
+    queryFn: () => coreApi<MetadataDefinitionRead[]>(`/v1/matters/${matterId}/metadata-definitions`),
+  });
   const batch = useQuery({ queryKey: ["review-batch", matterId, batchId], queryFn: () => coreApi<ReviewBatchRead>(`/v1/matters/${matterId}/review-batches/${batchId}`) });
   const run = useQuery({
     queryKey: ["review-batch-run", matterId, batchId],
@@ -120,27 +188,63 @@ export function BatchReviewWorkspace({ matterId, batchId, initialDocumentId }: {
     enabled: batch.data?.status === "READY",
     retry: false,
   });
-  const documents = useQuery({
-    queryKey: ["review-batch-documents", matterId, batchId, run.data?.id, offset],
-    queryFn: () => coreApi<ReviewBatchDocumentRead[]>(`/v1/matters/${matterId}/review-batches/${batchId}/documents?run_id=${run.data!.id}&offset=${offset}&limit=${PAGE_SIZE}`),
-    enabled: Boolean(run.data?.id),
-  });
   const progress = useQuery({
     queryKey: ["review-batch-progress", matterId, batchId, run.data?.id],
     queryFn: () => coreApi<ReviewBatchRunProgressRead>(`/v1/matters/${matterId}/review-batches/${batchId}/runs/${run.data!.id}/progress`),
     enabled: Boolean(run.data?.id),
   });
 
-  const effectiveDocumentId = documents.data?.some((document) => document.matter_document_id === selectedDocumentId)
+  const facetDefinitions = useMemo(() => (definitions.data ?? [])
+    .filter((definition) => definition.status === "ACTIVE" && definition.searchable && definition.facetable && ["TEXT", "ENUM", "BOOLEAN"].includes(definition.type))
+    .sort((left, right) => {
+      const leftRank = PREFERRED_FACETS.indexOf(left.key);
+      const rightRank = PREFERRED_FACETS.indexOf(right.key);
+      return (leftRank < 0 ? 1000 : leftRank) - (rightRank < 0 ? 1000 : rightRank) || left.display_name.localeCompare(right.display_name);
+    }), [definitions.data]);
+  const searchRequest = useMemo<MatterSearchRequest>(() => {
+    const definitionByKey = new Map(facetDefinitions.map((definition) => [definition.key, definition]));
+    const searchFilters: MatterSearchFilter[] = Object.entries(filters).flatMap(([key, values]) => {
+      const definition = definitionByKey.get(key);
+      return definition && values.length ? [{ field: key, operator: "IN", values: values.map((value) => typedFacetValue(value, definition)) }] : [];
+    });
+    return {
+      query: query.trim() || null,
+      search_mode: query.trim() ? searchMode : "KEYWORD",
+      filters: searchFilters,
+      facets: [],
+      sort: query.trim() ? [{ field: "_score", direction: "DESC" }] : [{ field: "created_at", direction: "DESC" }],
+      offset,
+      size: PAGE_SIZE,
+    };
+  }, [facetDefinitions, filters, offset, query, searchMode]);
+  const searchResults = useQuery({
+    queryKey: ["review-batch-search", matterId, batchId, searchRequest],
+    queryFn: () => coreApi<MatterSearchResponse>(`/v1/matters/${matterId}/review-batches/${batchId}/search`, { method: "POST", body: JSON.stringify(searchRequest) }),
+    enabled: batch.data?.search_status === "READY" && Boolean(definitions.data),
+    placeholderData: (previous) => previous,
+  });
+  const pageDocumentIds = searchResults.data?.hits.map((hit) => hit.document_id) ?? [];
+  const statusQuery = useQuery({
+    queryKey: ["review-batch-document-statuses", matterId, batchId, run.data?.id, pageDocumentIds],
+    queryFn: () => {
+      const params = new URLSearchParams({ run_id: run.data!.id, offset: "0", limit: String(PAGE_SIZE) });
+      for (const documentId of pageDocumentIds) params.append("document_id", documentId);
+      return coreApi<ReviewBatchDocumentRead[]>(`/v1/matters/${matterId}/review-batches/${batchId}/documents?${params}`);
+    },
+    enabled: Boolean(run.data?.id && pageDocumentIds.length),
+  });
+  const statusByDocument = useMemo(() => new Map((statusQuery.data ?? []).map((document) => [document.matter_document_id, document])), [statusQuery.data]);
+  const effectiveDocumentId = searchResults.data?.hits.some((hit) => hit.document_id === selectedDocumentId)
     ? selectedDocumentId
-    : documents.data?.find((document) => document.review_status === "NOT_STARTED")?.matter_document_id
-      ?? documents.data?.[0]?.matter_document_id
+    : searchResults.data?.hits.find((hit) => statusByDocument.get(hit.document_id)?.review_status === "NOT_STARTED")?.document_id
+      ?? searchResults.data?.hits[0]?.document_id
       ?? "";
-  const selectedDocument = documents.data?.find((document) => document.matter_document_id === effectiveDocumentId);
+  const selectedHit = searchResults.data?.hits.find((hit) => hit.document_id === effectiveDocumentId);
+  const selectedCollectionItemId = typeof selectedHit?.fields.collection_item_id === "string" ? selectedHit.fields.collection_item_id : "";
   const collectionItem = useQuery({
-    queryKey: ["collection-item", selectedDocument?.collection_item_id],
-    queryFn: () => coreApi<CollectionItemRead>(`/v1/collection-items/${selectedDocument!.collection_item_id}`),
-    enabled: Boolean(selectedDocument?.collection_item_id),
+    queryKey: ["collection-item", selectedCollectionItemId],
+    queryFn: () => coreApi<CollectionItemRead>(`/v1/collection-items/${selectedCollectionItemId}`),
+    enabled: Boolean(selectedCollectionItemId),
   });
   const coding = useQuery({
     queryKey: ["review-batch-document-coding", matterId, batchId, run.data?.id, effectiveDocumentId],
@@ -148,14 +252,44 @@ export function BatchReviewWorkspace({ matterId, batchId, initialDocumentId }: {
     enabled: Boolean(run.data?.id && effectiveDocumentId),
   });
 
+  const syncUrl = (documentId?: string) => {
+    const params = new URLSearchParams({ batch: batchId });
+    if (query.trim()) params.set("q", query.trim());
+    if (searchMode !== "KEYWORD") params.set("mode", searchMode.toLowerCase());
+    if (offset) params.set("page", String(Math.floor(offset / PAGE_SIZE) + 1));
+    for (const [key, values] of Object.entries(filters)) {
+      for (const value of values) params.append(`f_${key}`, value);
+    }
+    if (documentId) params.set("document", documentId);
+    router.replace(`/review/matters/${matterId}?${params}`, { scroll: false });
+  };
   const selectDocument = (documentId: string) => {
     setSelectedDocumentId(documentId);
-    router.replace(`/review/matters/${matterId}?batch=${batchId}&document=${documentId}`, { scroll: false });
+    syncUrl(documentId);
+  };
+
+  const submitSearch = (event: FormEvent) => {
+    event.preventDefault();
+    setQuery(draftQuery);
+    setOffset(0);
+    setSelectedDocumentId("");
+  };
+
+  const toggleFilter = (key: string, value: string) => {
+    setFilters((current) => {
+      const next = { ...current };
+      const selected = next[key] ?? [];
+      next[key] = selected.includes(value) ? selected.filter((item) => item !== value) : [...selected, value];
+      if (!next[key].length) delete next[key];
+      return next;
+    });
+    setOffset(0);
+    setSelectedDocumentId("");
   };
 
   const refreshReview = async () => {
     await Promise.all([
-      queryClient.invalidateQueries({ queryKey: ["review-batch-documents", matterId, batchId] }),
+      queryClient.invalidateQueries({ queryKey: ["review-batch-document-statuses", matterId, batchId] }),
       queryClient.invalidateQueries({ queryKey: ["review-batch-progress", matterId, batchId] }),
       queryClient.invalidateQueries({ queryKey: ["review-batch-document-coding", matterId, batchId] }),
       queryClient.invalidateQueries({ queryKey: ["review-batch-run", matterId, batchId] }),
@@ -164,10 +298,10 @@ export function BatchReviewWorkspace({ matterId, batchId, initialDocumentId }: {
   };
 
   const moveNext = () => {
-    const index = documents.data?.findIndex((document) => document.matter_document_id === effectiveDocumentId) ?? -1;
-    const next = documents.data?.[index + 1];
-    if (next) selectDocument(next.matter_document_id);
-    else if (offset + PAGE_SIZE < (batch.data?.document_count ?? 0)) {
+    const index = searchResults.data?.hits.findIndex((hit) => hit.document_id === effectiveDocumentId) ?? -1;
+    const next = searchResults.data?.hits[index + 1];
+    if (next) selectDocument(next.document_id);
+    else if (offset + PAGE_SIZE < (searchResults.data?.total ?? 0)) {
       setOffset((current) => current + PAGE_SIZE);
       setSelectedDocumentId("");
     }
@@ -192,10 +326,10 @@ export function BatchReviewWorkspace({ matterId, batchId, initialDocumentId }: {
     onError: (error) => toast.error(error instanceof Error ? error.message : "The document could not be skipped."),
   });
 
-  const currentIndex = documents.data?.findIndex((document) => document.matter_document_id === effectiveDocumentId) ?? -1;
+  const currentIndex = searchResults.data?.hits.findIndex((hit) => hit.document_id === effectiveDocumentId) ?? -1;
   const processed = (progress.data?.completed_count ?? 0) + (progress.data?.skipped_count ?? 0);
   const percent = progress.data?.document_count ? Math.round((processed / progress.data.document_count) * 100) : 0;
-  const fatalError = matter.error ?? batch.error ?? run.error ?? documents.error;
+  const fatalError = matter.error ?? client.error ?? custodians.error ?? definitions.error ?? batch.error ?? run.error ?? searchResults.error;
 
   if (fatalError) return <main className="grid h-dvh place-items-center p-6"><QueryError message={fatalError.message} /></main>;
 
@@ -207,11 +341,20 @@ export function BatchReviewWorkspace({ matterId, batchId, initialDocumentId }: {
           <Button asChild variant="ghost" size="sm"><Link href={matter.data ? `/app/clients/${matter.data.client_id}/matters/${matterId}?tab=batches` : "/app/clients"}><ArrowLeft />Batches</Link></Button>
           <div className="min-w-0 flex-1 border-l pl-3">
             <h1 className="truncate text-sm font-semibold">{batch.data?.name ?? "Opening batch…"}</h1>
-            <p className="truncate text-xs text-muted-foreground">{matter.data?.name ?? "Batch review"}</p>
+            <p className="truncate text-xs text-muted-foreground">{client.data?.name ? `${client.data.name} · ` : ""}{matter.data?.name ?? "Batch review"}</p>
           </div>
+          {batch.data?.search_status && batch.data.search_status !== "READY" ? <Badge variant="outline">Search {batch.data.search_status.toLowerCase().replace("_", " ")}</Badge> : null}
           {run.data?.status === "COMPLETED" ? <Badge variant="accent"><Check />Review complete</Badge> : null}
           <ThemeToggle />
         </div>
+        <form onSubmit={submitSearch} role="search" className="flex items-center gap-2 border-t px-3 py-2">
+          <Select value={searchMode} onValueChange={(value) => { setSearchMode(value as MatterSearchRequestSearchMode); setOffset(0); setSelectedDocumentId(""); }} disabled={batch.data?.search_status !== "READY"}>
+            <SelectTrigger className="w-32 shrink-0" aria-label="Search mode"><SelectValue /></SelectTrigger>
+            <SelectContent><SelectItem value="KEYWORD">Keyword</SelectItem><SelectItem value="SEMANTIC">Semantic</SelectItem><SelectItem value="HYBRID">Hybrid</SelectItem></SelectContent>
+          </Select>
+          <div className="relative min-w-0 flex-1"><Search className="pointer-events-none absolute left-3 top-1/2 size-4 -translate-y-1/2 text-muted-foreground" /><Input value={draftQuery} onChange={(event) => setDraftQuery(event.target.value)} className="pl-9" placeholder={SEARCH_PLACEHOLDERS[searchMode]} aria-label="Search batch documents" disabled={batch.data?.search_status !== "READY"} /></div>
+          <Button type="submit" disabled={batch.data?.search_status !== "READY"}>Search</Button>
+        </form>
         <div className="flex h-10 items-center gap-3 border-t px-3 text-xs text-muted-foreground">
           <div className="h-1.5 min-w-24 flex-1 overflow-hidden rounded-full bg-muted" aria-label={`${percent}% reviewed`}><div className="h-full rounded-full bg-primary transition-[width]" style={{ width: `${percent}%` }} /></div>
           <span className="shrink-0 tabular-nums">{processed.toLocaleString()} of {(progress.data?.document_count ?? batch.data?.document_count ?? 0).toLocaleString()} reviewed · {percent}%</span>
@@ -219,25 +362,32 @@ export function BatchReviewWorkspace({ matterId, batchId, initialDocumentId }: {
       </header>
 
       <div className="flex min-h-0 flex-1 overflow-hidden">
-        <aside className="flex w-80 shrink-0 flex-col border-r bg-card" aria-label="Batch documents">
+        <aside className="flex w-96 shrink-0 flex-col border-r bg-card" aria-label="Batch documents">
           <div className="flex h-11 shrink-0 items-center justify-between border-b px-3">
-            <h2 className="text-sm font-semibold">Documents</h2>
-            <span className="text-xs text-muted-foreground">{offset + 1}–{Math.min(offset + PAGE_SIZE, batch.data?.document_count ?? 0)}</span>
+            <h2 className="text-sm font-semibold">Batch results</h2>
+            <span className="text-xs text-muted-foreground">{searchResults.data ? `${searchResults.data.total.toLocaleString()} matches` : ""}</span>
           </div>
-          {documents.isPending ? <div className="space-y-2 p-3">{Array.from({ length: 8 }, (_, index) => <Skeleton key={index} className="h-16" />)}</div>
-            : documents.data?.length ? <ol className="min-h-0 flex-1 overflow-y-auto">{documents.data.map((document) => {
-              const selected = document.matter_document_id === effectiveDocumentId;
-              return <li key={document.matter_document_id} className="border-b"><button type="button" onClick={() => selectDocument(document.matter_document_id)} aria-current={selected ? "true" : undefined} className={cn("w-full border-l-[3px] px-3 py-3 text-left outline-none hover:bg-muted/70 focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-ring", selected ? "border-l-accent bg-primary/8" : "border-l-transparent")}><div className="flex items-center gap-3"><span className="w-8 shrink-0 font-mono text-xs tabular-nums text-muted-foreground">{document.sequence_number}</span><div className="min-w-0 flex-1"><p className="truncate text-sm font-semibold">Document {document.sequence_number.toLocaleString()}</p><p className="truncate text-xs text-muted-foreground">{document.collection_item_id}</p></div><Badge variant={document.review_status === "COMPLETED" ? "accent" : "outline"}>{statusLabel(document.review_status)}</Badge></div></button></li>;
-            })}</ol>
-              : <div className="grid flex-1 place-items-center p-5 text-center text-sm text-muted-foreground">This batch has no documents.</div>}
+          <div className="max-h-[40%] shrink-0 divide-y overflow-y-auto border-b">
+            {facetDefinitions.map((definition) => <BatchFacetSection key={definition.id} matterId={matterId} batchId={batchId} searchRequest={searchRequest} definition={definition} selected={filters[definition.key] ?? []} custodianNames={new Map((custodians.data ?? []).map((custodian) => [custodian.id, custodian.display_name]))} onToggle={toggleFilter} />)}
+            {!facetDefinitions.length ? <p className="p-3 text-xs text-muted-foreground">No batch filters are configured.</p> : null}
+          </div>
+          {batch.data?.search_status !== "READY" ? <div className="grid min-h-0 flex-1 place-items-center p-5 text-center"><div><p className="font-semibold">Preparing batch search</p><p className="mt-1 text-sm text-muted-foreground">Review search and document titles will appear when the batch projection is ready.</p>{batch.data?.search_error_message ? <p className="mt-2 text-xs text-destructive">{batch.data.search_error_message}</p> : null}</div></div>
+            : searchResults.isPending ? <div className="space-y-2 p-3">{Array.from({ length: 8 }, (_, index) => <Skeleton key={index} className="h-20" />)}</div>
+              : searchResults.data?.hits.length ? <ol className="min-h-0 flex-1 overflow-y-auto">{searchResults.data.hits.map((hit, index) => {
+                const selected = hit.document_id === effectiveDocumentId;
+                const state = statusByDocument.get(hit.document_id);
+                return <li key={hit.document_id} className="border-b"><button type="button" onClick={() => selectDocument(hit.document_id)} aria-current={selected ? "true" : undefined} className={cn("w-full border-l-[3px] px-3 py-3 text-left outline-none hover:bg-muted/70 focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-ring", selected ? "border-l-accent bg-primary/8" : "border-l-transparent")}><div className="flex items-start gap-2"><span className="mt-0.5 w-8 shrink-0 font-mono text-xs tabular-nums text-muted-foreground">{state?.sequence_number ?? offset + index + 1}</span><div className="min-w-0 flex-1"><p className="line-clamp-2 text-sm font-semibold">{resultTitle(hit)}</p>{hit.best_passage ? <p className="mt-1 line-clamp-2 text-xs text-foreground/80">{hit.best_passage.text}</p> : null}<p className="mt-1 truncate text-xs text-muted-foreground">{displayValue(hit.fields.source_path)}</p></div><div className="flex shrink-0 flex-col items-end gap-1"><Badge variant="outline">{resultFileType(hit)}</Badge>{state ? <Badge variant={state.review_status === "COMPLETED" ? "accent" : "outline"}>{statusLabel(state.review_status)}</Badge> : null}</div></div></button></li>;
+              })}</ol>
+                : <div className="grid flex-1 place-items-center p-5 text-center text-sm text-muted-foreground">No documents match this batch search.</div>}
           <div className="flex h-12 shrink-0 items-center justify-between border-t px-2">
             <Button variant="ghost" size="sm" disabled={!offset} onClick={() => { setOffset(Math.max(0, offset - PAGE_SIZE)); setSelectedDocumentId(""); }}><ChevronLeft />Previous</Button>
-            <Button variant="ghost" size="sm" disabled={offset + PAGE_SIZE >= (batch.data?.document_count ?? 0)} onClick={() => { setOffset(offset + PAGE_SIZE); setSelectedDocumentId(""); }}>Next<ChevronRight /></Button>
+            <span className="text-xs tabular-nums text-muted-foreground">{searchResults.data?.total ? `${offset + 1}–${Math.min(offset + PAGE_SIZE, searchResults.data.total)}` : "0"}</span>
+            <Button variant="ghost" size="sm" disabled={offset + PAGE_SIZE >= (searchResults.data?.total ?? 0)} onClick={() => { setOffset(offset + PAGE_SIZE); setSelectedDocumentId(""); }}>Next<ChevronRight /></Button>
           </div>
         </aside>
 
         <section className="flex min-h-0 min-w-0 flex-1 bg-background" aria-label="Selected document">
-          {collectionItem.isPending && selectedDocument ? <div className="w-full space-y-3 p-5">{Array.from({ length: 10 }, (_, index) => <Skeleton key={index} className="h-5" />)}</div>
+          {collectionItem.isPending && selectedHit ? <div className="w-full space-y-3 p-5">{Array.from({ length: 10 }, (_, index) => <Skeleton key={index} className="h-5" />)}</div>
             : collectionItem.error ? <div className="w-full p-5"><QueryError message={collectionItem.error.message} /></div>
               : collectionItem.data ? <DocumentViewerSurface item={collectionItem.data} className="h-full w-full" />
                 : <div className="grid h-full w-full place-items-center p-8 text-center"><div><FileText className="mx-auto text-muted-foreground" /><p className="mt-3 font-semibold">Select a document</p></div></div>}
@@ -260,11 +410,72 @@ export function BatchReviewWorkspace({ matterId, batchId, initialDocumentId }: {
         </aside>
       </div>
       <div className="flex h-11 shrink-0 items-center justify-center gap-2 border-t bg-card px-3">
-        <Button variant="ghost" size="sm" disabled={currentIndex <= 0} onClick={() => documents.data?.[currentIndex - 1] && selectDocument(documents.data[currentIndex - 1].matter_document_id)}><ChevronLeft />Previous document</Button>
-        <Button variant="ghost" size="sm" disabled={currentIndex < 0 || currentIndex >= (documents.data?.length ?? 0) - 1} onClick={() => documents.data?.[currentIndex + 1] && selectDocument(documents.data[currentIndex + 1].matter_document_id)}>Next document<ChevronRight /></Button>
+        <Button variant="ghost" size="sm" disabled={currentIndex <= 0} onClick={() => searchResults.data?.hits[currentIndex - 1] && selectDocument(searchResults.data.hits[currentIndex - 1].document_id)}><ChevronLeft />Previous document</Button>
+        <Button variant="ghost" size="sm" disabled={currentIndex < 0 || currentIndex >= (searchResults.data?.hits.length ?? 0) - 1} onClick={() => searchResults.data?.hits[currentIndex + 1] && selectDocument(searchResults.data.hits[currentIndex + 1].document_id)}>Next document<ChevronRight /></Button>
       </div>
     </main>
   );
+}
+
+function useDebouncedValue(value: string, delay: number) {
+  const [debounced, setDebounced] = useState(value);
+  useEffect(() => {
+    const timer = window.setTimeout(() => setDebounced(value), delay);
+    return () => window.clearTimeout(timer);
+  }, [delay, value]);
+  return debounced;
+}
+
+function BatchFacetSection({ matterId, batchId, searchRequest, definition, selected, custodianNames, onToggle }: {
+  matterId: string;
+  batchId: string;
+  searchRequest: MatterSearchRequest;
+  definition: MetadataDefinitionRead;
+  selected: string[];
+  custodianNames: Map<string, string>;
+  onToggle: (key: string, value: string) => void;
+}) {
+  const [open, setOpen] = useState(false);
+  const [valueQuery, setValueQuery] = useState("");
+  const debouncedQuery = useDebouncedValue(valueQuery.trim(), 250);
+  const enumLabels = useMemo(() => new Map((definition.allowed_values ?? []).map((option) => [option.key, option.label])), [definition.allowed_values]);
+  const values = useQuery({
+    queryKey: ["review-batch-facet-values", matterId, batchId, definition.key, searchRequest, debouncedQuery],
+    queryFn: () => coreApi<MatterFacetValuesResponse>(`/v1/matters/${matterId}/review-batches/${batchId}/facets/${definition.key}/values`, {
+      method: "POST",
+      body: JSON.stringify({ search: searchRequest, query: debouncedQuery || null, size: debouncedQuery ? 20 : 8 }),
+    }),
+    enabled: open,
+    placeholderData: (previous) => previous,
+  });
+  const options = useMemo(() => {
+    const available = new Map((values.data?.values ?? []).map((option) => [facetToken(option.value), option]));
+    for (const token of selected) {
+      if (!available.has(token)) available.set(token, { value: token, count: 0 });
+    }
+    return [...available.values()];
+  }, [selected, values.data?.values]);
+  const labelFor = (token: string) => definition.key === "custodian" ? custodianNames.get(token) ?? token
+    : definition.type === "ENUM" ? enumLabels.get(token) ?? token
+      : definition.type === "BOOLEAN" ? token === "true" ? "Yes" : "No"
+        : definition.key === "file_extension" ? `.${token.replace(/^\./, "")}` : token;
+
+  return <section>
+    <button type="button" aria-expanded={open} onClick={() => setOpen((current) => !current)} className="flex min-h-10 w-full items-center gap-2 px-3 py-2 text-left text-sm font-semibold hover:bg-muted/60">
+      {open ? <ChevronDown className="size-4 shrink-0 text-muted-foreground" /> : <ChevronRight className="size-4 shrink-0 text-muted-foreground" />}
+      <span className="min-w-0 flex-1 truncate">{definition.display_name}</span>{selected.length ? <Badge variant="accent">{selected.length}</Badge> : null}
+    </button>
+    {open ? <div className="space-y-2 px-3 pb-3">
+      {definition.type !== "BOOLEAN" ? <div className="relative"><Search className="pointer-events-none absolute left-2.5 top-1/2 size-3.5 -translate-y-1/2 text-muted-foreground" /><Input value={valueQuery} onChange={(event) => setValueQuery(event.target.value)} className="h-8 pl-8 text-sm" placeholder={`Find ${definition.display_name.toLowerCase()}…`} aria-label={`Find ${definition.display_name} values`} /></div> : null}
+      {values.isPending ? <p className="text-xs text-muted-foreground">Loading values…</p>
+        : values.error ? <p className="text-xs text-destructive">Values could not be loaded.</p>
+          : options.length ? <div className="space-y-0.5">{options.map((option) => {
+            const token = facetToken(option.value);
+            const label = labelFor(token);
+            return <label key={token} className="flex min-h-8 cursor-pointer items-center gap-2 overflow-hidden rounded-md px-1.5 py-1 text-sm hover:bg-muted"><input type="checkbox" checked={selected.includes(token)} onChange={() => onToggle(definition.key, token)} className="size-4 shrink-0 accent-primary" /><span className="min-w-0 flex-1 truncate" title={label}>{label}</span><span className="font-mono text-xs tabular-nums text-muted-foreground">{option.count.toLocaleString()}</span></label>;
+          })}</div> : <p className="text-xs text-muted-foreground">No matching values.</p>}
+    </div> : null}
+  </section>;
 }
 
 function BatchCodingForm({ batch, coding, disabled, saving, onSave, onSkip }: {

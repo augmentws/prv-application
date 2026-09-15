@@ -651,6 +651,10 @@ class ReviewBatch(TimestampMixin, Base):
             "status IN ('QUEUED', 'BUILDING', 'READY', 'FAILED', 'ARCHIVED')",
             name="ck_review_batch_status",
         ),
+        CheckConstraint(
+            "search_status IN ('QUEUED', 'SYNCING', 'READY', 'FAILED', 'NOT_CONFIGURED')",
+            name="ck_review_batch_search_status",
+        ),
         CheckConstraint("document_count >= 0", name="ck_review_batch_document_count"),
         CheckConstraint("sample_size IS NULL OR sample_size > 0", name="ck_review_batch_sample_size"),
         Index("ix_review_batch_matter_created", "matter_id", "created_at"),
@@ -679,6 +683,8 @@ class ReviewBatch(TimestampMixin, Base):
     assigned_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     reviewer_value_visibility: Mapped[str] = mapped_column(String(30), default="OWN_VALUES")
     status: Mapped[str] = mapped_column(String(20), default="QUEUED", index=True)
+    search_status: Mapped[str] = mapped_column(String(20), default="QUEUED", index=True)
+    search_error_message: Mapped[str | None] = mapped_column(Text)
     workflow_id: Mapped[str] = mapped_column(String(255), unique=True)
     document_count: Mapped[int] = mapped_column(Integer, default=0)
     error_message: Mapped[str | None] = mapped_column(Text)

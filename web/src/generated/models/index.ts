@@ -214,6 +214,7 @@ export * from './reviewBatchNoteRead';
 export * from './reviewBatchNoteReadAuthorType';
 export * from './reviewBatchRead';
 export * from './reviewBatchReadReviewerValueVisibility';
+export * from './reviewBatchReadSearchStatus';
 export * from './reviewBatchReadSelectionDefinition';
 export * from './reviewBatchReadSelectionType';
 export * from './reviewBatchReadStatus';

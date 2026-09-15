@@ -28,6 +28,8 @@ const batch = {
   assigned_user: { id: "user-1", display_name: "Reviewer", email: "reviewer@example.com" },
   reviewer_value_visibility: "OWN_VALUES",
   status: "READY",
+  search_status: "READY",
+  search_error_message: null,
   workflow_id: "review-batch:batch-1",
   document_count: 1,
   error_message: null,
@@ -66,7 +68,30 @@ describe("BatchReviewWorkspace", () => {
   it("starts the reviewer run and saves the coding panel as one document request", async () => {
     vi.mocked(coreApi).mockImplementation(async (path, init) => {
       if (path === "/v1/matters/matter-1") return { id: "matter-1", client_id: "client-1", name: "Investigation", status: "ACTIVE", created_at: "2026-09-15T12:00:00Z" } as never;
+      if (path === "/v1/clients/client-1") return { id: "client-1", name: "Batch Client" } as never;
+      if (path === "/v1/clients/client-1/custodians") return [] as never;
+      if (path === "/v1/matters/matter-1/metadata-definitions") return [] as never;
       if (path === "/v1/matters/matter-1/review-batches/batch-1" && !init?.method) return batch as never;
+      if (path === "/v1/matters/matter-1/review-batches/batch-1/search" && init?.method === "POST") return {
+        total: 1,
+        took_ms: 2,
+        timed_out: false,
+        hits: [{
+          document_id: "document-1",
+          score: null,
+          fields: {
+            collection_item_id: "item-1",
+            email_subject: "Contract review request",
+            original_filename: "contract.eml",
+            record_type: "EMAIL",
+            source_path: "mailbox/contract.eml",
+            metadata: {},
+          },
+          highlights: {},
+          best_passage: null,
+        }],
+        facets: {},
+      } as never;
       if (path.endsWith("/review-run") && init?.method === "POST") return { id: "run-1", review_batch_id: "batch-1", run_type: "HUMAN", purpose: "REVIEW", status: "RUNNING", result_policy: "ISOLATED", parent_run_id: null, actor_user_id: "user-1", agent_definition_version_id: null, configuration_snapshot: {}, initiated_by_user_id: "user-1", processed_document_count: 0, error_message: null, started_at: "2026-09-15T12:00:00Z", completed_at: null, created_at: "2026-09-15T12:00:00Z", updated_at: "2026-09-15T12:00:00Z" } as never;
       if (path.includes("/documents?run_id=run-1")) return [{ matter_document_id: "document-1", source_collection_id: "collection-1", collection_item_id: "item-1", sequence_number: 1, review_status: "NOT_STARTED" }] as never;
       if (path.endsWith("/runs/run-1/progress")) return { review_batch_run_id: "run-1", document_count: 1, not_started_count: 1, in_progress_count: 0, completed_count: 0, skipped_count: 0 } as never;
@@ -79,6 +104,7 @@ describe("BatchReviewWorkspace", () => {
     const user = userEvent.setup();
     render(<QueryClientProvider client={queryClient}><BatchReviewWorkspace matterId="matter-1" batchId="batch-1" /></QueryClientProvider>);
 
+    expect(await screen.findByText("Contract review request")).toBeInTheDocument();
     expect(await screen.findByText("contract.eml")).toBeInTheDocument();
     await user.click(screen.getByRole("combobox", { name: "Responsiveness" }));
     await user.click(screen.getByRole("option", { name: "Responsive" }));

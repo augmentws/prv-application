@@ -4535,6 +4535,151 @@
         }
       }
     },
+    "/v1/matters/{matter_id}/review-batches/{batch_id}/search": {
+      "post": {
+        "tags": [
+          "review batches"
+        ],
+        "summary": "Search Review Batch",
+        "operationId": "search_review_batch_v1_matters__matter_id__review_batches__batch_id__search_post",
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "matter_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid",
+              "title": "Matter Id"
+            }
+          },
+          {
+            "name": "batch_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid",
+              "title": "Batch Id"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/MatterSearchRequest"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/MatterSearchResponse"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v1/matters/{matter_id}/review-batches/{batch_id}/facets/{field}/values": {
+      "post": {
+        "tags": [
+          "review batches"
+        ],
+        "summary": "Search Review Batch Facet Values",
+        "operationId": "search_review_batch_facet_values_v1_matters__matter_id__review_batches__batch_id__facets__field__values_post",
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "matter_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid",
+              "title": "Matter Id"
+            }
+          },
+          {
+            "name": "batch_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid",
+              "title": "Batch Id"
+            }
+          },
+          {
+            "name": "field",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Field"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/MatterFacetValuesRequest"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/MatterFacetValuesResponse"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/v1/matters/{matter_id}/review-batches/{batch_id}/documents": {
       "get": {
         "tags": [
@@ -4583,6 +4728,20 @@
                 }
               ],
               "title": "Run Id"
+            }
+          },
+          {
+            "name": "document_id",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "array",
+              "items": {
+                "type": "string",
+                "format": "uuid"
+              },
+              "default": [],
+              "title": "Document Id"
             }
           },
           {
@@ -12992,6 +13151,28 @@
             ],
             "title": "Status"
           },
+          "search_status": {
+            "type": "string",
+            "enum": [
+              "QUEUED",
+              "SYNCING",
+              "READY",
+              "FAILED",
+              "NOT_CONFIGURED"
+            ],
+            "title": "Search Status"
+          },
+          "search_error_message": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Search Error Message"
+          },
           "workflow_id": {
             "type": "string",
             "title": "Workflow Id"
@@ -13062,6 +13243,8 @@
           "assigned_user",
           "reviewer_value_visibility",
           "status",
+          "search_status",
+          "search_error_message",
           "workflow_id",
           "document_count",
           "error_message",

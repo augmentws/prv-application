@@ -18,6 +18,8 @@ from app.models import (
     MatterDocument,
     MatterDocumentImportJob,
     MetadataDefinition,
+    ReviewBatch,
+    ReviewBatchDocument,
     SearchIndexGeneration,
     SearchProjectionOperation,
 )
@@ -65,6 +67,8 @@ def build_document_projection(
     db: Session,
     document: MatterDocument,
     definitions: list[MetadataDefinition],
+    *,
+    batch_ids: list[uuid.UUID] | None = None,
 ) -> dict[str, Any]:
     matter = db.get(Matter, document.matter_id)
     if matter is None:
@@ -143,6 +147,7 @@ def build_document_projection(
         "matter_id": str(matter.id),
         "source_collection_id": str(document.source_collection_id),
         "collection_item_id": str(document.collection_item_id),
+        "batch_ids": [str(value) for value in (batch_ids or [])],
         "created_at": document.created_at.isoformat(),
         "record_type": snapshot.record_type,
         "processing_status": snapshot.processing_status,
@@ -326,10 +331,107 @@ class SearchIndexManager:
         batch_size = self.settings.search_bulk_batch_size
         for offset in range(0, len(documents), batch_size):
             batch = documents[offset : offset + batch_size]
+            memberships: dict[uuid.UUID, list[uuid.UUID]] = {document.id: [] for document in batch}
+            rows = self.db.execute(
+                select(ReviewBatchDocument.matter_document_id, ReviewBatchDocument.review_batch_id)
+                .join(ReviewBatch, ReviewBatch.id == ReviewBatchDocument.review_batch_id)
+                .where(
+                    ReviewBatchDocument.matter_document_id.in_(memberships),
+                    ReviewBatch.status == "READY",
+                )
+                .order_by(ReviewBatchDocument.review_batch_id)
+            ).all()
+            for document_id, review_batch_id in rows:
+                memberships[document_id].append(review_batch_id)
             self.client.bulk(
                 index_name,
-                (("index", str(document.id), build_document_projection(self.db, document, definitions)) for document in batch),
+                (
+                    (
+                        "index",
+                        str(document.id),
+                        build_document_projection(
+                            self.db,
+                            document,
+                            definitions,
+                            batch_ids=memberships[document.id],
+                        ),
+                    )
+                    for document in batch
+                ),
             )
+
+
+def sync_review_batch_search(batch_id: uuid.UUID, settings: Settings | None = None) -> None:
+    settings = settings or get_settings()
+    with SessionLocal() as db:
+        batch = db.get(ReviewBatch, batch_id)
+        if batch is None:
+            raise ValueError("Review batch not found")
+        if batch.status != "READY":
+            raise ValueError("Review batch membership is not ready")
+        if not settings.search_enabled:
+            batch.search_status = "NOT_CONFIGURED"
+            batch.search_error_message = None
+            db.commit()
+            return
+        batch.search_status = "SYNCING"
+        batch.search_error_message = None
+        db.commit()
+        client = OpenSearchClient(settings)
+        try:
+            manager = SearchIndexManager(db, client, settings)
+            generation = manager.ensure(batch.matter_id)
+            manager._lock_matter_search(batch.matter_id)
+            document_ids = list(
+                db.scalars(
+                    select(ReviewBatchDocument.matter_document_id)
+                    .where(ReviewBatchDocument.review_batch_id == batch.id)
+                    .order_by(ReviewBatchDocument.sequence_number)
+                )
+            )
+            for offset in range(0, len(document_ids), settings.search_bulk_batch_size):
+                page = document_ids[offset : offset + settings.search_bulk_batch_size]
+                client.bulk(
+                    generation.index_name,
+                    (
+                        (
+                            "update",
+                            str(document_id),
+                            {
+                                "script": {
+                                    "source": (
+                                        "if (ctx._source.batch_ids == null) { ctx._source.batch_ids = []; } "
+                                        "if (!ctx._source.batch_ids.contains(params.batch_id)) { "
+                                        "ctx._source.batch_ids.add(params.batch_id); }"
+                                    ),
+                                    "params": {"batch_id": str(batch.id)},
+                                }
+                            },
+                        )
+                        for document_id in page
+                    ),
+                )
+            client.refresh(generation.index_name)
+            batch.search_status = "READY"
+            batch.search_error_message = None
+            db.commit()
+            logger.info(
+                "Completed review batch search projection batch_id=%s matter_id=%s documents=%s",
+                batch.id,
+                batch.matter_id,
+                len(document_ids),
+            )
+        except Exception as exc:
+            db.rollback()
+            failed = db.get(ReviewBatch, batch_id)
+            if failed is not None:
+                failed.search_status = "FAILED"
+                failed.search_error_message = str(exc)[:4000]
+                db.commit()
+            logger.exception("Review batch search projection failed batch_id=%s", batch_id)
+            raise
+        finally:
+            client.close()
 
 
 def process_search_operation(operation_id: uuid.UUID) -> None:

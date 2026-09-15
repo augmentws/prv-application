@@ -160,11 +160,13 @@ def compile_search_request(
     tenant_id: str,
     matter_id: str,
     query_vector: list[float] | None = None,
+    required_filters: list[dict[str, Any]] | None = None,
 ) -> dict[str, Any]:
     catalog = _definition_map(definitions)
     filters: list[dict[str, Any]] = [
         {"term": {"tenant_id": tenant_id}},
         {"term": {"matter_id": matter_id}},
+        *(required_filters or []),
     ]
     for search_filter in request.filters:
         definition = catalog.get(search_filter.field)
@@ -266,6 +268,7 @@ def compile_facet_values_request(
     size: int,
     include_values: list[str] | None = None,
     query_vector: list[float] | None = None,
+    required_filters: list[dict[str, Any]] | None = None,
 ) -> dict[str, Any]:
     catalog = _definition_map(definitions)
     definition = catalog.get(field)
@@ -285,6 +288,7 @@ def compile_facet_values_request(
         tenant_id=tenant_id,
         matter_id=matter_id,
         query_vector=query_vector,
+        required_filters=required_filters,
     )
     body["size"] = 0
     body.pop("highlight", None)
@@ -336,6 +340,7 @@ def execute_search(
     tenant_id: str,
     matter_id: str,
     query_vector: list[float] | None = None,
+    required_filters: list[dict[str, Any]] | None = None,
 ) -> MatterSearchResponse:
     body = compile_search_request(
         request,
@@ -343,6 +348,7 @@ def execute_search(
         tenant_id=tenant_id,
         matter_id=matter_id,
         query_vector=query_vector,
+        required_filters=required_filters,
     )
     if request.search_mode == "HYBRID":
         client.ensure_rrf_search_pipeline(RRF_SEARCH_PIPELINE)
@@ -392,6 +398,7 @@ def execute_facet_values(
     size: int,
     include_values: list[str] | None = None,
     query_vector: list[float] | None = None,
+    required_filters: list[dict[str, Any]] | None = None,
 ) -> MatterFacetValuesResponse:
     if include_values == []:
         return MatterFacetValuesResponse(field=field, values=[])
@@ -405,6 +412,7 @@ def execute_facet_values(
         size=size,
         include_values=include_values,
         query_vector=query_vector,
+        required_filters=required_filters,
     )
     if request.search_mode == "HYBRID":
         client.ensure_rrf_search_pipeline(RRF_SEARCH_PIPELINE)

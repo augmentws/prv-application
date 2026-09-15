@@ -10,7 +10,9 @@ from app.models import (
     MetadataDefinition,
     MetadataGroup,
     MetadataGroupField,
+    ReviewBatch,
 )
+from app.schemas import MatterSearchResponse
 
 
 def auth(token: str) -> dict[str, str]:
@@ -102,6 +104,7 @@ def test_batch_membership_group_snapshot_runs_and_comparison(
     assert created.status_code == 202, created.text
     batch = created.json()
     assert batch["status"] == "READY"
+    assert batch["search_status"] == "NOT_CONFIGURED"
     assert batch["document_count"] == len(document_ids)
     assert batch["coding_groups"]
 
@@ -196,3 +199,41 @@ def test_batch_selection_validation(client: TestClient, root_token: str, root_ad
         json={"name": "Bad search batch", "selection_type": "SEARCH_QUERY"},
     )
     assert response.status_code == 422
+
+
+def test_batch_search_injects_authoritative_membership_filter(
+    client: TestClient,
+    root_token: str,
+    root_admin,
+    monkeypatch,
+) -> None:
+    matter_id = create_matter(client, root_token, str(root_admin.tenant_id))
+    add_documents(matter_id, root_admin.id, count=1)
+    base = f"/v1/matters/{matter_id}/review-batches"
+    created = client.post(
+        base,
+        headers=auth(root_token),
+        json={"name": "Searchable batch", "selection_type": "ALL_MATTER"},
+    )
+    assert created.status_code == 202, created.text
+    batch_id = created.json()["id"]
+    with TestingSessionLocal() as db:
+        batch = db.get(ReviewBatch, uuid.UUID(batch_id))
+        assert batch is not None
+        batch.search_status = "READY"
+        db.commit()
+
+    captured: dict = {}
+
+    def fake_search(_matter, _payload, **kwargs):
+        captured.update(kwargs)
+        return MatterSearchResponse(total=0, took_ms=1, timed_out=False, hits=[], facets={})
+
+    monkeypatch.setattr("app.routers.review_batches.execute_matter_search", fake_search)
+    response = client.post(
+        f"{base}/{batch_id}/search",
+        headers=auth(root_token),
+        json={"query": "agreement", "search_mode": "KEYWORD"},
+    )
+    assert response.status_code == 200, response.text
+    assert captured["required_filters"] == [{"term": {"batch_ids": batch_id}}]

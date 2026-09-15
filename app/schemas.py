@@ -474,6 +474,7 @@ class MatterSavedSearchExecute(BaseModel):
 ReviewBatchSelectionType = Literal["ALL_MATTER", "SEARCH_QUERY", "RANDOM_MATTER", "RANDOM_BATCH"]
 ReviewBatchValueVisibility = Literal["OWN_VALUES", "ALL_REVIEWER_VALUES"]
 ReviewBatchStatus = Literal["QUEUED", "BUILDING", "READY", "FAILED", "ARCHIVED"]
+ReviewBatchSearchStatus = Literal["QUEUED", "SYNCING", "READY", "FAILED", "NOT_CONFIGURED"]
 ReviewBatchRunType = Literal["HUMAN", "AGENT"]
 ReviewBatchRunPurpose = Literal["REVIEW", "REFERENCE", "CANDIDATE"]
 ReviewBatchRunStatus = Literal["QUEUED", "RUNNING", "COMPLETED", "FAILED", "CANCELED"]
@@ -546,6 +547,8 @@ class ReviewBatchRead(BaseModel):
     assigned_user: MatterSavedSearchUserRead | None
     reviewer_value_visibility: ReviewBatchValueVisibility
     status: ReviewBatchStatus
+    search_status: ReviewBatchSearchStatus
+    search_error_message: str | None
     workflow_id: str
     document_count: int
     error_message: str | None

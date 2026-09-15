@@ -69,6 +69,7 @@ def test_mapping_uses_versioned_ediscovery_analyzers_and_numeric_types() -> None
     assert all(value["filter"] == ["lowercase"] for value in analyzers.values())
 
     properties = mapping["mappings"]["properties"]["metadata"]["properties"]
+    assert mapping["mappings"]["properties"]["batch_ids"] == {"type": "keyword"}
     assert properties["notes"]["search_analyzer"] == SEARCH_ANALYZER
     assert properties["notes"]["search_quote_analyzer"] == QUOTE_ANALYZER
     assert properties["notes"]["index_options"] == "offsets"
@@ -91,10 +92,18 @@ def test_query_compiler_injects_scope_and_validates_matter_fields() -> None:
             "facets": ["issue"],
         }
     )
-    body = compile_search_request(request, definitions, tenant_id="tenant-1", matter_id="matter-1")
+    batch_filter = {"term": {"batch_ids": "batch-1"}}
+    body = compile_search_request(
+        request,
+        definitions,
+        tenant_id="tenant-1",
+        matter_id="matter-1",
+        required_filters=[batch_filter],
+    )
 
     assert {"term": {"tenant_id": "tenant-1"}} in body["query"]["bool"]["filter"]
     assert {"term": {"matter_id": "matter-1"}} in body["query"]["bool"]["filter"]
+    assert batch_filter in body["query"]["bool"]["filter"]
     assert {"terms": {"metadata.issue.exact": ["conduct"]}} in body["query"]["bool"]["filter"]
     assert body["aggs"]["issue"]["terms"]["field"] == "metadata.issue.exact"
     assert body["aggs"]["issue"]["terms"]["size"] == 8
@@ -141,12 +150,14 @@ def test_facet_value_query_is_limited_searchable_and_self_excluding() -> None:
         matter_id="matter-1",
         value_query="trade",
         size=20,
+        required_filters=[{"term": {"batch_ids": "batch-1"}}],
     )
 
     assert body["size"] == 0
     assert "highlight" not in body
     assert {"terms": {"metadata.issue.exact": ["pricing"]}} not in body["query"]["bool"]["filter"]
     assert {"terms": {"metadata.privilege": ["privileged"]}} in body["query"]["bool"]["filter"]
+    assert {"term": {"batch_ids": "batch-1"}} in body["query"]["bool"]["filter"]
     assert body["aggs"]["issue"]["terms"]["size"] == 20
     assert body["aggs"]["issue"]["terms"]["include"] == ".*trade.*"
 
@@ -169,6 +180,7 @@ def test_query_compiler_builds_filtered_nested_semantic_and_hybrid_queries() -> 
         tenant_id="tenant-1",
         matter_id="matter-1",
         query_vector=query_vector,
+        required_filters=[{"term": {"batch_ids": "batch-1"}}],
     )
 
     nested = semantic_body["query"]["nested"]
@@ -176,6 +188,7 @@ def test_query_compiler_builds_filtered_nested_semantic_and_hybrid_queries() -> 
     assert knn["vector"] == query_vector
     assert knn["k"] == 100
     assert {"terms": {"metadata.issue.exact": ["conduct"]}} in knn["filter"]["bool"]["filter"]
+    assert {"term": {"batch_ids": "batch-1"}} in knn["filter"]["bool"]["filter"]
     assert nested["score_mode"] == "max"
     assert nested["inner_hits"]["size"] == 1
     assert "highlight" not in semantic_body
@@ -361,9 +374,11 @@ def test_document_projection_includes_artifact_body_text(monkeypatch: pytest.Mon
     monkeypatch.setattr("app.search.service.load_current_chunk_artifacts", lambda **_: None)
     monkeypatch.setattr("app.search.service.current_metadata_values", lambda *_: {})
 
-    projection = build_document_projection(db, document, [])
+    batch_ids = [uuid.uuid4(), uuid.uuid4()]
+    projection = build_document_projection(db, document, [], batch_ids=batch_ids)
 
     assert projection["body_text"] == "The confidential project is Juniper."
+    assert projection["batch_ids"] == [str(value) for value in batch_ids]
 
 
 def test_document_projection_attaches_nested_chunk_vectors(monkeypatch: pytest.MonkeyPatch) -> None:

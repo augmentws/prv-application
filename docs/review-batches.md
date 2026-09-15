@@ -6,7 +6,7 @@ Review batches freeze a reproducible set of matter documents for reviewer assign
 
 ## Data model
 
-`review_batch` stores the matter, selection provenance, one optional assignee, visibility policy, workflow state, and final document count. `review_batch_document` is the permanent many-to-many membership snapshot and carries the stable sequence.
+`review_batch` stores the matter, selection provenance, one optional assignee, visibility policy, workflow state, search-projection state, and final document count. `review_batch_document` is the permanent many-to-many membership snapshot and carries the stable sequence. PostgreSQL remains authoritative for membership.
 
 `review_batch_coding_group` and `review_batch_coding_field` snapshot the selected matter metadata groups. The snapshot stores labels, ordering, and field schemas while retaining references to the source groups and definitions. This makes an evaluation reproducible if a matter administrator later edits a group.
 
@@ -29,7 +29,11 @@ The initial search-query builder supports keyword searches only. Semantic and hy
 
 ## Workflow and resilience
 
-Creation commits the batch and enqueues `review_batch_build` in the same transaction. The worker materializes membership idempotently. The batch moves through `QUEUED`, `BUILDING`, and `READY`; failures retain the error message. Deployments with DBOS disabled materialize inline for local development and tests.
+Creation commits the batch and enqueues `review_batch_build` in the same transaction. The worker first materializes membership idempotently, then projects that membership into the matter search index. The batch's membership state moves through `QUEUED`, `BUILDING`, and `READY`; its independent `search_status` moves through `QUEUED`, `SYNCING`, and `READY` (or `NOT_CONFIGURED` when search is disabled). Failures retain the relevant error message. Deployments with DBOS disabled materialize inline for local development and tests.
+
+Each matter search document has a keyword-array `batch_ids` projection. A full index rebuild derives this array from ready `review_batch_document` rows, so OpenSearch never becomes the source of truth. The batch-search and batch-facet endpoints inject the required `batch_ids` filter on the server; callers cannot omit or replace it. A newly materialized batch is unavailable for batch review search until its projection is `READY`.
+
+The batch review workspace uses those scoped endpoints for keyword, semantic, and hybrid search, facets, type-ahead facet values, indexed document titles, and passages. It separately loads the current run status for each visible result from Core. Search result order may change with the active query and sort, while `review_batch_document.sequence_number` remains the stable frozen order and is shown with each result.
 
 ## Comparisons
 

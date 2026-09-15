@@ -22,7 +22,7 @@ Select one or more shared metadata groups to define the coding fields. The syste
 
 ## Status
 
-A batch normally moves from **Queued** to **Building** to **Ready**. Its document count is final when it is ready. A failed batch remains visible with its error so the selection can be diagnosed. Search-query batches require a ready matter search index.
+A batch normally moves from **Queued** to **Building** to **Ready**. Its document count is final when it is ready. The system then prepares the batch for search; review opens with searchable documents when that projection is ready. A failed batch remains visible with its error so the selection can be diagnosed. Search-query batches require a ready matter search index.
 
 ## Assignment and value visibility
 
@@ -32,7 +32,9 @@ A batch can have one current human assignee. **Only the reviewer’s values** ke
 
 When a batch is **Ready**, select **Open review** from the Batches table. If the batch is unassigned, opening it assigns it to you. A batch assigned to someone else cannot be opened for coding.
 
-The review workspace shows the batch documents in their frozen sequence, the selected document, and the batch's snapshotted coding groups. Select **Save & next** to save all displayed coding fields as one isolated reviewer result, mark the document reviewed, and advance. A document with no selected field values can still be saved as reviewed. Select **Skip** when the document should remain uncoded but count as processed.
+The review workspace shows indexed document titles, the selected document, and the batch's snapshotted coding groups. Search is always restricted to the batch and supports keyword, semantic, and hybrid modes. Facets and facet value type-ahead also remain restricted to the batch. The number beside each result is its stable position in the original frozen batch, even when a query changes the visible order.
+
+Select **Save & next** to save all displayed coding fields as one isolated reviewer result, mark the document reviewed, and advance. A document with no selected field values can still be saved as reviewed. Select **Skip** when the document should remain uncoded but count as processed.
 
 The progress bar counts saved and skipped documents for your review run. Reopening an unfinished batch resumes the same run. When every document has been saved or skipped, the run is complete and becomes read-only.
 

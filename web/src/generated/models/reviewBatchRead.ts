@@ -8,6 +8,7 @@
 import type { MatterSavedSearchUserRead } from './matterSavedSearchUserRead';
 import type { ReviewBatchCodingGroupRead } from './reviewBatchCodingGroupRead';
 import type { ReviewBatchReadReviewerValueVisibility } from './reviewBatchReadReviewerValueVisibility';
+import type { ReviewBatchReadSearchStatus } from './reviewBatchReadSearchStatus';
 import type { ReviewBatchReadSelectionDefinition } from './reviewBatchReadSelectionDefinition';
 import type { ReviewBatchReadSelectionType } from './reviewBatchReadSelectionType';
 import type { ReviewBatchReadStatus } from './reviewBatchReadStatus';
@@ -27,6 +28,8 @@ export interface ReviewBatchRead {
   assigned_user: MatterSavedSearchUserRead | null;
   reviewer_value_visibility: ReviewBatchReadReviewerValueVisibility;
   status: ReviewBatchReadStatus;
+  search_status: ReviewBatchReadSearchStatus;
+  search_error_message: string | null;
   workflow_id: string;
   document_count: number;
   error_message: string | null;

@@ -1,5 +1,6 @@
 import logging
 import uuid
+from typing import Any
 
 from fastapi import APIRouter, Depends, HTTPException, Query, status
 from sqlalchemy import func, select
@@ -53,6 +54,7 @@ def execute_matter_search(
     *,
     db: Session,
     settings: Settings,
+    required_filters: list[dict[str, Any]] | None = None,
 ) -> MatterSearchResponse:
     if not settings.search_enabled:
         raise HTTPException(status_code=status.HTTP_503_SERVICE_UNAVAILABLE, detail="Search is disabled")
@@ -96,6 +98,7 @@ def execute_matter_search(
             tenant_id=str(matter.client.tenant_id),
             matter_id=str(matter.id),
             query_vector=query_vector,
+            required_filters=required_filters,
         )
     except OpenSearchError as exc:
         raise HTTPException(status_code=status.HTTP_503_SERVICE_UNAVAILABLE, detail="Search is temporarily unavailable") from exc
@@ -103,16 +106,15 @@ def execute_matter_search(
         client.close()
 
 
-@router.post("/facets/{field}/values", response_model=MatterFacetValuesResponse)
-def search_facet_values(
-    matter_id: uuid.UUID,
+def execute_matter_facet_values(
+    matter: Matter,
     field: str,
     payload: MatterFacetValuesRequest,
-    principal: Principal = Depends(get_principal),
-    db: Session = Depends(get_db),
-    settings: Settings = Depends(get_settings),
+    *,
+    db: Session,
+    settings: Settings,
+    required_filters: list[dict[str, Any]] | None = None,
 ) -> MatterFacetValuesResponse:
-    matter = _matter(db, matter_id, principal)
     if not settings.search_enabled:
         raise HTTPException(status_code=status.HTTP_503_SERVICE_UNAVAILABLE, detail="Search is disabled")
     generation = db.scalar(
@@ -194,11 +196,25 @@ def search_facet_values(
             size=payload.size,
             include_values=include_values,
             query_vector=query_vector,
+            required_filters=required_filters,
         )
     except OpenSearchError as exc:
         raise HTTPException(status_code=status.HTTP_503_SERVICE_UNAVAILABLE, detail="Search is temporarily unavailable") from exc
     finally:
         client.close()
+
+
+@router.post("/facets/{field}/values", response_model=MatterFacetValuesResponse)
+def search_facet_values(
+    matter_id: uuid.UUID,
+    field: str,
+    payload: MatterFacetValuesRequest,
+    principal: Principal = Depends(get_principal),
+    db: Session = Depends(get_db),
+    settings: Settings = Depends(get_settings),
+) -> MatterFacetValuesResponse:
+    matter = _matter(db, matter_id, principal)
+    return execute_matter_facet_values(matter, field, payload, db=db, settings=settings)
 
 
 @router.get("/search-indexes", response_model=list[SearchIndexGenerationRead])

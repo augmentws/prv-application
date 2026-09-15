@@ -32,8 +32,13 @@ from app.models import (
     User,
 )
 from app.review_batches import materialize_review_batch, refresh_run_document_count
+from app.routers.search import execute_matter_facet_values, execute_matter_search
 from app.schemas import (
+    MatterFacetValuesRequest,
+    MatterFacetValuesResponse,
     MatterSavedSearchUserRead,
+    MatterSearchRequest,
+    MatterSearchResponse,
     ReviewBatchAssignmentUpdate,
     ReviewBatchCodingFieldRead,
     ReviewBatchCodingGroupRead,
@@ -52,6 +57,7 @@ from app.schemas import (
     ReviewBatchRunRead,
     ReviewBatchRunValueRead,
 )
+from app.search.service import sync_review_batch_search
 from app.workflows.dispatcher import enqueue_review_batch
 
 router = APIRouter(prefix="/v1/matters/{matter_id}/review-batches", tags=["review batches"])
@@ -140,6 +146,8 @@ def _read_batch(db: Session, batch: ReviewBatch) -> ReviewBatchRead:
         else None,
         reviewer_value_visibility=batch.reviewer_value_visibility,
         status=batch.status,
+        search_status=batch.search_status,
+        search_error_message=batch.search_error_message,
         workflow_id=batch.workflow_id,
         document_count=batch.document_count,
         error_message=batch.error_message,
@@ -277,6 +285,13 @@ def create_review_batch(
     db.commit()
     if not settings.dbos_enabled:
         materialize_review_batch(db, batch.id, settings)
+        if settings.search_enabled and db.get_bind().dialect.name == "postgresql":
+            sync_review_batch_search(batch.id, settings)
+        else:
+            batch = db.get(ReviewBatch, batch.id) or batch
+            batch.search_status = "NOT_CONFIGURED"
+            batch.search_error_message = None
+            db.commit()
         batch = db.get(ReviewBatch, batch.id) or batch
     return _read_batch(db, batch)
 
@@ -325,11 +340,62 @@ def update_review_batch_assignment(
     return _read_batch(db, batch)
 
 
+def _require_batch_search(batch: ReviewBatch) -> None:
+    if batch.search_status != "READY":
+        detail = batch.search_error_message or f"Batch search is {batch.search_status.lower().replace('_', ' ')}"
+        raise HTTPException(status_code=409, detail=detail)
+
+
+@router.post("/{batch_id}/search", response_model=MatterSearchResponse)
+def search_review_batch(
+    matter_id: uuid.UUID,
+    batch_id: uuid.UUID,
+    payload: MatterSearchRequest,
+    principal: Principal = Depends(get_principal),
+    db: Session = Depends(get_db),
+    settings: Settings = Depends(get_settings),
+) -> MatterSearchResponse:
+    matter = _matter(db, matter_id, principal)
+    batch = _batch(db, matter_id, batch_id)
+    _require_batch_search(batch)
+    return execute_matter_search(
+        matter,
+        payload,
+        db=db,
+        settings=settings,
+        required_filters=[{"term": {"batch_ids": str(batch.id)}}],
+    )
+
+
+@router.post("/{batch_id}/facets/{field}/values", response_model=MatterFacetValuesResponse)
+def search_review_batch_facet_values(
+    matter_id: uuid.UUID,
+    batch_id: uuid.UUID,
+    field: str,
+    payload: MatterFacetValuesRequest,
+    principal: Principal = Depends(get_principal),
+    db: Session = Depends(get_db),
+    settings: Settings = Depends(get_settings),
+) -> MatterFacetValuesResponse:
+    matter = _matter(db, matter_id, principal)
+    batch = _batch(db, matter_id, batch_id)
+    _require_batch_search(batch)
+    return execute_matter_facet_values(
+        matter,
+        field,
+        payload,
+        db=db,
+        settings=settings,
+        required_filters=[{"term": {"batch_ids": str(batch.id)}}],
+    )
+
+
 @router.get("/{batch_id}/documents", response_model=list[ReviewBatchDocumentRead])
 def list_review_batch_documents(
     matter_id: uuid.UUID,
     batch_id: uuid.UUID,
     run_id: uuid.UUID | None = None,
+    document_id: list[uuid.UUID] = Query(default=[]),
     offset: int = Query(default=0, ge=0),
     limit: int = Query(default=100, ge=1, le=500),
     principal: Principal = Depends(get_principal),
@@ -340,7 +406,7 @@ def list_review_batch_documents(
     if run_id is not None:
         run = _run(db, batch.id, run_id)
         _require_human_reviewer(run, principal)
-    rows = db.execute(
+    statement = (
         select(ReviewBatchDocument, MatterDocument, ReviewBatchRunDocument.status)
         .join(MatterDocument, MatterDocument.id == ReviewBatchDocument.matter_document_id)
         .outerjoin(
@@ -354,7 +420,10 @@ def list_review_batch_documents(
         .order_by(ReviewBatchDocument.sequence_number)
         .offset(offset)
         .limit(limit)
-    ).all()
+    )
+    if document_id:
+        statement = statement.where(ReviewBatchDocument.matter_document_id.in_(set(document_id)))
+    rows = db.execute(statement).all()
     return [
         ReviewBatchDocumentRead(
             matter_document_id=member.matter_document_id,
