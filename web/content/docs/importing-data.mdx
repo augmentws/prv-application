@@ -1,0 +1,49 @@
+---
+title: Importing data
+description: Use the local OpenAPI-driven importer to load dataset files into a client collection.
+---
+
+The current importer is a command-line tool for administrators and data operators. It preprocesses local data, creates evidence relationships, and uploads source containers and individual native items through the Artifact API.
+
+## Before importing
+
+Make sure:
+
+- the Core and Artifact APIs are running;
+- PostgreSQL and MinIO are running;
+- the root administrator has been bootstrapped;
+- the target tenant, client, and collection exist; and
+- the import environment variables contain the API URL, target tenant ID and slug, user email, password, client ID, and collection ID. The tenant values identify the upload target and artifact storage; authentication itself uses only email and password.
+
+Do not commit passwords or access credentials.
+
+## Run an adapter
+
+From the repository root, run an adapter by its identifier:
+
+```bash
+pipenv run python -m scripts.import_client enron-csv
+```
+
+`enron-csv` is the adapter name, not the collection name. Collection names may contain spaces because the importer targets a collection by its ID from configuration.
+
+The included dataset adapters are:
+
+- `enron-csv` for the Enron `file,message` CSV format, including multiline message values; and
+- `emc2` for the EMC-2 source layout.
+
+Use the importer's command help to see adapter-specific source arguments and dry-run options:
+
+```bash
+pipenv run python -m scripts.import_client --help
+```
+
+## What the base importer handles
+
+The shared importer handles iteration, MBOX and ZIP traversal, common email headers, attachments, family relationships, and source-container lineage. Dataset adapters handle only source discovery and mappings unique to that dataset.
+
+MIME transfer encodings are decoded before attachment bytes are uploaded. A malformed encoded attachment stops the import rather than being silently stored as encoded text. The published EMC-2 dataset contains one known malformed base64 attachment, `crisis_team_evaluation.txt`; the EMC-2 adapter applies an exact, hash-verified repair and records the repair details in the item's raw import metadata.
+
+Original MBOX, CSV, or ZIP inputs are retained as **SOURCE_CONTAINER** artifacts. Extracted files and messages become collection items with **NATIVE** artifacts. Attachments are related to their parent message and family.
+
+Chunk sets and vector chunk sets are not created during initial import. Later processing stores each set as its own Parquet artifact.

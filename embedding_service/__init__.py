@@ -1,0 +1,1 @@
+"""Configurable text-embedding service."""

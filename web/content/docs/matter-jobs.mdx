@@ -1,0 +1,95 @@
+---
+title: Matter jobs
+description: Add large collection selections to a matter and follow durable background progress.
+---
+
+Matter jobs add collection documents and run durable document processing. The matter stores a link to each source collection item; the Artifact Service continues to own native files and derived artifacts.
+
+Matter **ADMIN** users can start and cancel these jobs. The source collection and destination matter must belong to the same client, and the matter must be active.
+
+## Start from collection documents
+
+1. Open a client's collection and stay on **Documents**.
+2. Search or choose any facet filters you need. Leave them empty to select the entire collection.
+3. Select **Add all matching**.
+4. Choose an active destination matter and select **Start job**.
+
+The application redirects to the matter's **Jobs** tab. The job freezes the matching IDs before processing, so an upload or metadata change made after that point does not silently change the running selection.
+
+## Start from custodians
+
+1. Open a collection's **Custodians** tab.
+2. Select one or more custodians.
+3. Select **Add documents to matter**, choose a matter, and start the job.
+
+Documents associated with any selected custodian are included. A document associated with multiple selected custodians is added only once.
+
+## Understand status and counts
+
+- **Queued** means Core accepted the request and the workflow is waiting for a worker.
+- **Snapshotting** means the current collection query is being frozen.
+- **Running** means durable batches are adding matter links.
+- **Completed** means every batch finished.
+- **Failed** means processing stopped; the job detail shows the available error.
+- **Canceled** means no further documents will be added by the job. Documents already added remain in the matter.
+
+**Matched** is the frozen selection size. **Processed** is the number visited by completed batches. **Added** counts new matter links. **Already present** counts items that were previously linked by this or another job. Retrying or overlapping selections therefore does not duplicate matter documents.
+
+During import, source custodian relationships are copied into Core-owned matter-document associations. The matter **Overview** uses those associations to show a distinct custodian count alongside the document count.
+
+## Generate document embeddings
+
+Open the matter's **Jobs** tab and select **Generate embeddings**. The job freezes the matter's current document list, then processes it in durable batches. Documents added after planning begins are handled by a later job.
+
+For each document, Priv-View chooses extracted text first, then OCR text, then a supported text-based native file. It creates a sentence-aware chunk-set Parquet artifact and a matching vector-set Parquet artifact. Both artifacts remain associated with the source collection item and record their source lineage. The search index receives the chunks as nested records under the owning matter document.
+
+The embedding job reports:
+
+- **Generated** for documents that received a new vector set;
+- **Skipped** for documents whose matching artifacts already exist or that have no usable text;
+- **Chunks** for the total chunks represented by processed documents;
+- **Failed** for individual documents that could not be processed.
+
+Rerunning a job is safe. Priv-View reuses artifacts when the source content, chunking settings, model revision, dimensions, and normalization configuration match. Changing any of those inputs produces a distinct derivation without overwriting earlier artifacts.
+
+## Cluster document topics
+
+Topic clustering requires at least one completed embedding job with usable chunks. Open the matter's **Jobs** tab and select **Cluster topics**.
+
+Choose an operating mode:
+
+- **Automatic discovery** learns a natural topic count from the sample and can leave unrelated material unassigned.
+- **Fixed topic count** creates the exact requested number of sample clusters. Use this when a predictable taxonomy size matters more than learning the natural count.
+
+**Sample chunks** controls how many chunk vectors are used to discover the clusters. Assignment still visits every matter document in durable batches; increasing the sample improves corpus coverage but uses more clustering time and memory. Long documents are capped during sampling so they do not dominate discovery.
+
+**Replace existing topic values** is selected by default. Each processed document receives a metadata `CLEAR` event followed by its newly assigned topics. The current values are replaced, while the complete metadata event history remains available. Clear the option to append newly discovered topics instead.
+
+The job automatically creates an active, facetable, multi-value `topics` enum field when the matter does not already have one. It also creates an **Analysis** metadata group and places the field there. If `topics` already exists, it must be an active, asserted, multi-value enum. Stable enum keys identify clusters even when their generated display names are similar.
+
+Topic names are generated from the strongest terms in representative sample chunks. During assignment, every available chunk is compared with the learned topic centroids, and a document receives its strongest qualifying topics. Documents without a qualifying topic are counted as unassigned. Published values are written through the same metadata ledger and search-projection path as other agent-authored metadata, so they are searchable and facetable after their batch finishes.
+
+## Reliability and cleanup
+
+Jobs use a durable workflow worker and can resume after an application or worker restart. Import selections are removed after their deterministic batches have been durably queued. Embedding and topic jobs retain compact batch snapshots containing the document IDs so their scope cannot drift. Core job records remain available for progress and audit history.
+
+The **Jobs** tab refreshes while work is active; it is safe to close the browser. Canceling is best effort for work already executing, so the final added count can include a batch that completed at the same time as the cancellation request.
+
+The Core API terminal shows repeated job-list requests while the Jobs tab is open.
+Those requests only refresh the displayed status. Model loading, sampling, topic
+discovery, batch counts, document failures, and completion are reported in the
+separate workflow-worker terminal. The first embedding batch can take longer while
+the configured model loads; later batches reuse the loaded model.
+
+## Current limitations
+
+The worker process must be running; otherwise an accepted job remains queued. After
+an embedding-library or model-configuration change, restart the worker before
+starting a new job. A job that already recorded document failures should be canceled
+and rerun after correcting the cause; the rerun safely reuses any artifacts that were
+successfully created. Embedding generation currently works only when a document has
+extracted text, OCR text, or a supported text-based native artifact. Dense vectors
+are indexed for semantic and hybrid search. Topic names currently use extractive
+keywords rather than generative model labeling, and a new run creates a new set of
+stable topic values rather than merging equivalent topics across runs. Image-only
+and unsupported binary documents require an extraction or OCR workflow first.

@@ -1,0 +1,46 @@
+---
+title: Clients and matters
+description: Create client workspaces and organize matters within them.
+---
+
+## Clients
+
+A client belongs to a tenant and acts as the long-lived boundary for matters, custodians, and evidence collections.
+
+To create a client:
+
+1. Select **Clients** in the sidebar.
+2. Select **Create client**.
+3. Enter the client's name and optional descriptive details.
+4. Confirm creation.
+
+The person who creates a client receives client-level **ADMIN** membership.
+
+Open a client to view its matters and evidence collections.
+
+## Matters
+
+A matter belongs to one client. It holds matter-specific configuration such as metadata field definitions and a review corpus linked from selected collection items.
+
+To create a matter:
+
+1. Open a client.
+2. Find the matters section and select **Create matter**.
+3. Enter the matter name and requested details.
+4. Confirm creation, then open the matter.
+
+The person who creates a matter receives matter-level **ADMIN** membership. Priv-View also creates the 24-field **edrm-core-v1** metadata profile and its seven standard groups in the same operation, including mandatory custodian and family fields and default review-coding fields.
+
+The matter **Overview** shows the current document count and the number of distinct custodians represented by those documents. These values come from the Core database and update as document-import jobs finish; they do not require the planned search index.
+
+The **Search index** tab shows whether the matter's rebuildable search projection is ready, building, behind, or failed. It compares indexed documents with the authoritative Core count, records generation and operation history, and lets a matter administrator request a full rebuild.
+
+When reusable templates are available, the **Configuration** choice in the creation dialog can use one instead of the standard profile. See [Matter templates and cloning](/docs/matter-templates).
+
+## Matter jobs
+
+The **Jobs** tab records background work for a matter. Adding collection documents redirects there so you can follow the matched, processed, added, and already-present counts. You can also generate document embeddings and run topic clustering in automatic or fixed-count mode. Topic jobs publish named, facetable values into the matter's `topics` metadata field. See [Matter jobs](/docs/matter-jobs).
+
+## Current scope
+
+Matter creation, automatic default metadata definitions and groups, custom groups, visibility preferences, reusable templates, configuration cloning, additional matter-level metadata definitions, linking collection documents into matters, and administrative search-index monitoring are available. Assigning document metadata, interactive search, and document review are planned phases and are not yet available.

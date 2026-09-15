@@ -1,0 +1,48 @@
+---
+title: System agents
+description: Create, configure, version, and publish reusable agents at the root tenant.
+---
+
+The **Agents** administration area manages system-level agents that can be reused across descendant tenants and matters. Only a root administrator can create or change a system agent. Publishing makes a version eligible for a compatible, code-implemented workflow; it does not automatically place an arbitrary agent into every agent selector.
+
+## Create an agent
+
+Open **Agents** in the root administration navigation and select **Create agent**. Enter:
+
+- A readable name and permanent stable key.
+- A description of where the agent is used.
+- A system prompt defining responsibilities, process, boundaries, and approval behavior.
+- The platform model policy and execution limits.
+- Any code-owned tools the agent may call.
+- A JSON output schema.
+
+Creating an agent saves version 1 as a **draft**. Draft agents are not available to matter workflows.
+
+Tools marked **approval** can propose a state change, but the change is not executed until an authorized user approves it. The current Matter Definition toolset can create or update editable metadata definitions, add or revise enum labels and descriptions, deactivate enum values, and save a replacement guidance draft. Stable field and enum keys are not changed by update tools, and enum values are deactivated rather than deleted so historical coding remains valid.
+
+## Version and publish
+
+Open an agent to inspect its current and published versions. Editing the prompt or tool configuration creates a new immutable draft version; it never changes a version already used by a conversation. Select **Publish** to make the current draft available to new conversations. Existing conversations remain pinned to the version with which they started.
+
+Publishing a new version retires the previously published version. Retired versions remain visible for audit history.
+
+## Lifecycle status
+
+- **Active** agents can receive new versions, be published, and start new conversations.
+- **Suspended** agents remain in history but cannot be versioned, published, or selected for a new matter conversation.
+- **Archived** agents are retained for audit and can be restored by a root administrator.
+
+Changing lifecycle status does not alter existing versions or conversation history.
+
+## Model configuration
+
+Agent definitions select a code-owned model policy key. Provider credentials and the concrete provider model are platform settings and are never stored in the agent prompt or exposed to the browser. The current implementation provides the `configured-default` policy backed by `AGENT_DEFAULT_MODEL` and the provider API key configured on the API and workflow-worker processes.
+
+## Current limitations
+
+- The administration UI currently manages root-owned system agents. Tenant-agent APIs exist, but a tenant administration screen is not yet available.
+- Agents can only be launched by workflows implemented in the application. The current interactive workflow is Matter Definition setup.
+- The Matter Definition workflow currently uses the standard `matter_definition_setup` agent key. General root-managed workflow bindings and rollback controls are not yet available.
+- Agent execution analytics and cross-matter run monitoring are not yet available in the administration UI.
+
+Existing installations keep previously published agent versions unchanged. To grant an existing Matter Definition agent the new metadata tools, create and publish a new version in **Agents** with the desired tools selected. New installations bootstrap the standard agent with the complete Matter Definition toolset.

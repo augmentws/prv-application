@@ -1,0 +1,147 @@
+---
+title: Metadata definitions
+description: Configure the fields that a matter will use for search, review, filtering, and agent output.
+---
+
+A metadata definition describes a field available within one matter. Every new matter receives the versioned **edrm-core-v1** default profile. Definitions provide the schema for immutable document-value events and their resolved current values.
+
+## Default matter profile
+
+Matter creation automatically adds 24 definitions covering:
+
+- identification, including control number, original filename, and document title;
+- family and custodian relationships;
+- source path and source-system timestamps;
+- email sender, recipients, subject, sent date, and received date;
+- file extension, size, page count, MD5, and SHA-256; and
+- responsiveness, privilege, key-document coding, and review notes.
+
+The **Source** column identifies how values will be supplied:
+
+- **System** fields resolve from Priv-View relationships. Custodian and family ID are mandatory system fields.
+- **Imported** fields come from the promoted collection item and retain source provenance.
+- **Asserted** fields accept reviewer assertions through the Core API and are ready for later agent assertions through the same command service.
+
+The profile is copied into the matter as ordinary database rows, so later matter-specific configuration does not mutate the application template or another matter.
+
+### Complete default field catalog
+
+| Group | Field key | Type | Values | Source |
+| --- | --- | --- | --- | --- |
+| Identification | `control_number` | Text | Single | Imported |
+| Identification | `original_filename` | Text | Single | Imported |
+| Identification | `document_title` | Text | Single | Imported |
+| Family | `family_id` | Text | Single | System |
+| Custodian & Source | `custodian` | Text | Multiple | System reference |
+| Custodian & Source | `source_path` | Long text | Single | Imported |
+| Email | `email_from` | Text | Single | Imported |
+| Email | `email_to` | Text | Multiple | Imported |
+| Email | `email_cc` | Text | Multiple | Imported |
+| Email | `email_bcc` | Text | Multiple | Imported |
+| Email | `email_subject` | Text | Single | Imported |
+| Email | `email_sent_at` | Datetime | Single | Imported |
+| Email | `email_received_at` | Datetime | Single | Imported |
+| File Details | `file_extension` | Text | Single | Imported |
+| File Details | `file_size` | Integer | Single | Imported |
+| File Details | `page_count` | Integer | Single | Imported |
+| File Details | `md5_hash` | Text | Single | Imported |
+| File Details | `sha256_hash` | Text | Single | Imported |
+| Source Dates | `source_created_at` | Datetime | Single | Imported |
+| Source Dates | `source_modified_at` | Datetime | Single | Imported |
+| Review Coding | `responsiveness` | Enum | Single | Asserted |
+| Review Coding | `privilege` | Enum | Single | Asserted |
+| Review Coding | `key_document` | Boolean | Single | Asserted |
+| Review Coding | `review_notes` | Long text | Single | Asserted |
+
+Responsiveness options are **Responsive**, **Not responsive**, and **Needs review**. Privilege options are **Privileged**, **Not privileged**, and **Needs review**.
+
+## Add a field
+
+1. Open a client, then open a matter.
+2. Select the **Metadata definitions** tab.
+3. Select **Add field**.
+4. Enter a display name and stable field key.
+5. Choose the value type and cardinality.
+6. Configure field behavior and create the field.
+
+Field keys use lowercase letters, numbers, and underscores and must begin with a letter. Treat the key as a stable machine-facing identifier; use the display name for human-readable wording.
+
+## Value types
+
+| Type | Use |
+| --- | --- |
+| Text | Short text and identifiers whose formatting must be preserved. |
+| Long text | Larger bodies of text that should not be used as facets. |
+| Integer | Signed whole numbers backed by a 64-bit integer. |
+| Decimal | Floating-point numeric values. Do not use it when exact fixed-precision arithmetic is required. |
+| Boolean | True or false values. |
+| Date | Calendar dates without a time of day. |
+| Datetime | A date and time. |
+| Enum | One or more values from a controlled option list. |
+| JSON | Structured data that does not fit a simpler type. |
+
+Numeric identifiers that contain non-numeric characters, preserve leading zeroes, or have significant formatting should use **Text**, not Integer or Decimal.
+
+## Document values and history
+
+Asserted document metadata does not add a database column for every matter field. The Core API stores each change as an immutable event tied to a matter document and that matter's field definition. A separate current-value projection is resolved from those events for efficient reads and search indexing.
+
+Supported operations are:
+
+- **Set** and **Clear** for single-valued fields;
+- **Add**, **Remove**, and **Clear** for multi-valued fields; and
+- **Confirm** and **Reject** for reviewing an earlier assertion.
+
+The field's assertion and resolution policies determine whether a new assertion is immediately effective, pending confirmation, or conflicting with another assertion. Events retain their actor, source, confidence, relationships, and creation time even after they stop contributing to the current value.
+
+Every write uses one Core transaction to append the event, recompute the affected field projection, add its audit entry, and create a durable search-refresh operation. This is application behavior rather than a database trigger. Search refresh can finish asynchronously; the Core event ledger and current projection remain authoritative.
+
+The current-value and history APIs are:
+
+```text
+GET  /v1/matters/{matter_id}/documents/{document_id}/metadata-values
+GET  /v1/matters/{matter_id}/documents/{document_id}/metadata-values/{definition_id}
+GET  /v1/matters/{matter_id}/documents/{document_id}/metadata-values/{definition_id}/events
+POST /v1/matters/{matter_id}/documents/{document_id}/metadata-values/{definition_id}/events
+```
+
+System and imported fields are read-only through this event API because their authoritative values come from Core relationships or the promoted collection item. Browser-based document coding controls are still planned; the current implementation exposes the complete storage and API foundation.
+
+## Cardinality
+
+- **Single value** allows one current value for the field.
+- **Multiple values** allows a set of values.
+
+## Behavior settings
+
+- **Searchable** makes the field eligible for future search operations.
+- **Available as a filter** makes the field eligible for faceting. Long text and JSON cannot be faceted.
+- **Visible to reviewers** marks the field for reviewer-facing experiences.
+- **Agents may assign values** allows processing agents to propose or assign values when agent workflows are implemented.
+
+For Enum fields, enter one option per line as `stable_key | Display label`.
+
+The Matter Definition setup agent can also propose creation or configuration changes for matter-owned **Asserted** fields. Each proposal requires an authorized matter administrator to approve it before execution. Enum keys remain stable: the agent may add a value, update its label or description, or deactivate it, but does not delete historical values. System and Imported definitions are not editable through these tools.
+
+## Metadata groups
+
+Open the **Metadata groups** tab to see the seven standard groups. The initial table/document visibility is:
+
+| Group | Results table | Document view |
+| --- | --- | --- |
+| Identification | Shown | Shown |
+| Family | Shown | Shown |
+| Custodian & Source | Shown | Shown |
+| Email | Hidden | Shown |
+| File Details | Hidden | Shown |
+| Source Dates | Hidden | Shown |
+| Review Coding | Shown | Shown |
+
+Use the **Table** and **Document** controls on a group to save your own visibility choices. Your preference overrides the matter default without changing what another user sees.
+
+Select **Create group** to collect existing fields into either:
+
+- a personal group visible only to you; or
+- a matter group available to everyone who can access the matter.
+
+Personal groups and personal visibility preferences are never included in templates or clones. Matter groups, field order, and default visibility are included.

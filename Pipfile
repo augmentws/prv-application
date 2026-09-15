@@ -1,0 +1,31 @@
+[[source]]
+url = "https://pypi.org/simple"
+verify_ssl = true
+name = "pypi"
+
+[packages]
+fastapi = "*"
+uvicorn = {extras = ["standard"], version = "*"}
+sqlalchemy = "*"
+alembic = "*"
+psycopg = {extras = ["binary"], version = "*"}
+pydantic-settings = "*"
+pyjwt = "*"
+pwdlib = {extras = ["argon2"], version = "*"}
+email-validator = "*"
+boto3 = "*"
+python-multipart = "*"
+httpx = "*"
+dbos = "*"
+pydantic-ai = {extras = ["dbos"], version = "*"}
+pyarrow = "*"
+scikit-learn = "==1.9.1"
+sentence-transformers = "==5.2.2"
+transformers = "==4.57.6"
+
+[dev-packages]
+pytest = "*"
+ruff = "*"
+
+[requires]
+python_version = "3.11"

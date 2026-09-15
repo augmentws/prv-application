@@ -1,0 +1,257 @@
+import logging
+import uuid
+
+from fastapi import APIRouter, Depends, HTTPException, Query, status
+from sqlalchemy import func, select
+from sqlalchemy.orm import Session
+
+from app.config import Settings, get_settings
+from app.database import get_db
+from app.dependencies import Principal, can_admin_matter, get_principal
+from app.embedding_gateway import get_embedding_gateway
+from app.models import Custodian, Matter, MetadataDefinition, SearchIndexGeneration, SearchProjectionOperation
+from app.schemas import (
+    MatterFacetValuesRequest,
+    MatterFacetValuesResponse,
+    MatterSearchRequest,
+    MatterSearchResponse,
+    SearchIndexGenerationRead,
+    SearchProjectionOperationRead,
+)
+from app.search.client import OpenSearchClient, OpenSearchError
+from app.search.operations import create_search_operation
+from app.search.query import execute_facet_values, execute_search
+
+router = APIRouter(prefix="/v1/matters/{matter_id}", tags=["matter search"])
+logger = logging.getLogger(__name__)
+
+
+def _matter(db: Session, matter_id: uuid.UUID, principal: Principal) -> Matter:
+    matter = db.get(Matter, matter_id)
+    if matter is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Matter not found")
+    if not can_admin_matter(db, principal, matter):
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Matter ADMIN required")
+    return matter
+
+
+@router.post("/search", response_model=MatterSearchResponse)
+def search_matter(
+    matter_id: uuid.UUID,
+    payload: MatterSearchRequest,
+    principal: Principal = Depends(get_principal),
+    db: Session = Depends(get_db),
+    settings: Settings = Depends(get_settings),
+) -> MatterSearchResponse:
+    matter = _matter(db, matter_id, principal)
+    return execute_matter_search(matter, payload, db=db, settings=settings)
+
+
+def execute_matter_search(
+    matter: Matter,
+    payload: MatterSearchRequest,
+    *,
+    db: Session,
+    settings: Settings,
+) -> MatterSearchResponse:
+    if not settings.search_enabled:
+        raise HTTPException(status_code=status.HTTP_503_SERVICE_UNAVAILABLE, detail="Search is disabled")
+    generation = db.scalar(
+        select(SearchIndexGeneration).where(
+            SearchIndexGeneration.matter_id == matter.id,
+            SearchIndexGeneration.status == "ACTIVE",
+        )
+    )
+    if generation is None:
+        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="Matter search index is not ready")
+    definitions = list(
+        db.scalars(
+            select(MetadataDefinition).where(
+                MetadataDefinition.matter_id == matter.id,
+                MetadataDefinition.status == "ACTIVE",
+            )
+        )
+    )
+    client = OpenSearchClient(settings)
+    try:
+        query_vector = None
+        if payload.search_mode != "KEYWORD":
+            try:
+                query_vector = get_embedding_gateway().embed([payload.query or ""], "query").embeddings[0]
+            except Exception as exc:
+                logger.exception(
+                    "Query embedding failed matter_id=%s search_mode=%s",
+                    matter.id,
+                    payload.search_mode,
+                )
+                raise HTTPException(
+                    status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+                    detail="Semantic query embedding is temporarily unavailable",
+                ) from exc
+        return execute_search(
+            client,
+            generation.alias_name,
+            payload,
+            definitions,
+            tenant_id=str(matter.client.tenant_id),
+            matter_id=str(matter.id),
+            query_vector=query_vector,
+        )
+    except OpenSearchError as exc:
+        raise HTTPException(status_code=status.HTTP_503_SERVICE_UNAVAILABLE, detail="Search is temporarily unavailable") from exc
+    finally:
+        client.close()
+
+
+@router.post("/facets/{field}/values", response_model=MatterFacetValuesResponse)
+def search_facet_values(
+    matter_id: uuid.UUID,
+    field: str,
+    payload: MatterFacetValuesRequest,
+    principal: Principal = Depends(get_principal),
+    db: Session = Depends(get_db),
+    settings: Settings = Depends(get_settings),
+) -> MatterFacetValuesResponse:
+    matter = _matter(db, matter_id, principal)
+    if not settings.search_enabled:
+        raise HTTPException(status_code=status.HTTP_503_SERVICE_UNAVAILABLE, detail="Search is disabled")
+    generation = db.scalar(
+        select(SearchIndexGeneration).where(
+            SearchIndexGeneration.matter_id == matter.id,
+            SearchIndexGeneration.status == "ACTIVE",
+        )
+    )
+    if generation is None:
+        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="Matter search index is not ready")
+    definitions = list(
+        db.scalars(
+            select(MetadataDefinition).where(
+                MetadataDefinition.matter_id == matter.id,
+                MetadataDefinition.status == "ACTIVE",
+            )
+        )
+    )
+    definition = next((item for item in definitions if item.key == field and item.facetable), None)
+    if definition is None:
+        raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_CONTENT, detail="Unknown or non-facetable field")
+
+    value_query = (payload.query or "").strip()
+    include_values: list[str] | None = None
+    if value_query and definition.type == "ENUM":
+        needle = value_query.casefold()
+        include_values = [
+            str(option["key"])
+            for option in definition.allowed_values or []
+            if option.get("active", True)
+            and (needle in str(option.get("label", "")).casefold() or needle in str(option["key"]).casefold())
+        ]
+    elif value_query and definition.reference_target == "CUSTODIAN":
+        include_values = [
+            str(value)
+            for value in db.scalars(
+                select(Custodian.id)
+                .where(
+                    Custodian.client_id == matter.client_id,
+                    Custodian.status == "ACTIVE",
+                    func.lower(Custodian.display_name).contains(value_query.casefold()),
+                )
+                .limit(500)
+            )
+        ]
+    elif value_query and definition.type == "BOOLEAN":
+        needle = value_query.casefold()
+        include_values = [
+            value
+            for value, labels in (("true", ("true", "yes")), ("false", ("false", "no")))
+            if any(needle in label for label in labels)
+        ]
+
+    query_vector = None
+    if payload.search.search_mode != "KEYWORD":
+        try:
+            query_vector = get_embedding_gateway().embed([payload.search.query or ""], "query").embeddings[0]
+        except Exception as exc:
+            logger.exception(
+                "Facet query embedding failed matter_id=%s search_mode=%s",
+                matter.id,
+                payload.search.search_mode,
+            )
+            raise HTTPException(
+                status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+                detail="Semantic query embedding is temporarily unavailable",
+            ) from exc
+    client = OpenSearchClient(settings)
+    try:
+        return execute_facet_values(
+            client,
+            generation.alias_name,
+            payload.search,
+            definitions,
+            field=field,
+            tenant_id=str(matter.client.tenant_id),
+            matter_id=str(matter.id),
+            value_query=value_query or None,
+            size=payload.size,
+            include_values=include_values,
+            query_vector=query_vector,
+        )
+    except OpenSearchError as exc:
+        raise HTTPException(status_code=status.HTTP_503_SERVICE_UNAVAILABLE, detail="Search is temporarily unavailable") from exc
+    finally:
+        client.close()
+
+
+@router.get("/search-indexes", response_model=list[SearchIndexGenerationRead])
+def list_search_indexes(
+    matter_id: uuid.UUID,
+    principal: Principal = Depends(get_principal),
+    db: Session = Depends(get_db),
+) -> list[SearchIndexGeneration]:
+    _matter(db, matter_id, principal)
+    return list(
+        db.scalars(
+            select(SearchIndexGeneration)
+            .where(SearchIndexGeneration.matter_id == matter_id)
+            .order_by(SearchIndexGeneration.generation.desc())
+        )
+    )
+
+
+@router.get("/search-operations", response_model=list[SearchProjectionOperationRead])
+def list_search_operations(
+    matter_id: uuid.UUID,
+    limit: int = Query(default=100, ge=1, le=500),
+    principal: Principal = Depends(get_principal),
+    db: Session = Depends(get_db),
+) -> list[SearchProjectionOperation]:
+    _matter(db, matter_id, principal)
+    return list(
+        db.scalars(
+            select(SearchProjectionOperation)
+            .where(SearchProjectionOperation.matter_id == matter_id)
+            .order_by(SearchProjectionOperation.created_at.desc())
+            .limit(limit)
+        )
+    )
+
+
+@router.post("/search-indexes/rebuild", response_model=SearchProjectionOperationRead, status_code=status.HTTP_202_ACCEPTED)
+def rebuild_search_index(
+    matter_id: uuid.UUID,
+    principal: Principal = Depends(get_principal),
+    db: Session = Depends(get_db),
+    settings: Settings = Depends(get_settings),
+) -> SearchProjectionOperation:
+    matter = _matter(db, matter_id, principal)
+    if not settings.search_enabled:
+        raise HTTPException(status_code=status.HTTP_503_SERVICE_UNAVAILABLE, detail="Search is disabled")
+    operation = create_search_operation(
+        db,
+        matter_id=matter.id,
+        kind="REBUILD",
+        created_by_user_id=principal.user.id,
+        priority=1000,
+    )
+    db.commit()
+    db.refresh(operation)
+    return operation

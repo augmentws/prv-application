@@ -1,0 +1,57 @@
+---
+title: Collections
+description: Create client-level evidence collections, search documents with facets, and inspect collection custodians.
+---
+
+A collection is a client-level set of source evidence. It can be queried and inspected before any items are selected for a matter. This keeps original evidence separate from matter-specific review documents.
+
+## Create a collection
+
+1. Open **Clients** and select a client.
+2. In the collections section, select **Create collection**.
+3. Enter a name and optional description.
+4. Confirm creation.
+
+Creating an empty collection does not upload evidence. Data is currently loaded with an import client described in [Importing data](/docs/importing-data).
+
+## Browse a collection
+
+The collection workspace has two tabs:
+
+- **Documents** shows the collection's imported items and provides search, faceted filters, and the content viewer.
+- **Custodians** shows only custodians represented by at least one item in the collection, along with their contact details, source reference, status, and document count.
+
+Custodian counts cover the entire collection and are not limited to the current page of documents.
+
+On the **Custodians** tab, select one or more custodians and choose **Add documents to matter**. A document associated with any selected custodian is included once, even when it is associated with several of them.
+
+## Browse collection documents
+
+Open a collection to see its imported items. The table shows the original filename, record type, subject or source path, custodian, source date, native size, and processing status.
+
+Use **Open** on a row to inspect supported email or text content. In an email preview, the metadata header scrolls independently from the message body. Drag the divider below the metadata up or down to resize it, or focus the divider and use the up and down arrow keys.
+
+Use **Add all matching** to send every result from the current search and filters to a matter. Choose the destination matter, then select **Start job**. Priv-View redirects to that matter's **Jobs** tab immediately; you do not need to keep the collection page open.
+
+## Search and filter documents
+
+Enter part of a filename or original source path and choose **Search**. Search is case-insensitive and covers those two fields; it does not search document content.
+
+Use the filter panel to narrow results by:
+
+- **Custodian**
+- **File extension**
+- **Record type**
+- **Processing status**
+
+You can select multiple values in a group. Values within one group are combined as alternatives—for example, PDF or DOCX—while selections in different groups must all match. Counts show how many documents would match each value together with filters from the other groups.
+
+Selected filters appear above the table. Select a filter to remove it, or use **Clear all** to reset the search and every facet. Results are displayed in pages of up to 50 items; use **Previous** and **Next** to move between pages.
+
+The current implementation calculates results and facet counts from the collection database. Document-content search and Elasticsearch-backed indexing are planned for a later phase.
+
+Selections are evaluated when the background job begins, then frozen so later collection changes cannot alter the running job. See [Matter jobs](/docs/matter-jobs) for status and duplicate behavior.
+
+## Evidence organization
+
+Each collection item is a logical evidence record and does not contain a storage path. One or more typed artifacts represent its native file or later derived content. The current importer creates the native artifact during initial load; chunk and vector-set artifacts are later processing outputs.

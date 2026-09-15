@@ -1,0 +1,95 @@
+---
+title: Matter search
+description: Search matter documents with keyword, semantic, or hybrid retrieval plus metadata filters and facets.
+---
+
+Matter search is a rebuildable OpenSearch projection of authoritative Core and Artifact data. An OpenSearch outage or indexing delay does not change the source document or metadata records.
+
+## Who can use it
+
+Matter administrators can submit searches, inspect index generations and projection operations, and request a rebuild. Core authorization always adds the current tenant and matter scope; callers cannot replace that scope or submit raw OpenSearch Query DSL.
+
+## Index lifecycle
+
+Creating a matter records a durable schema-sync operation. Adding searchable metadata definitions records another sync, while adding documents or changing a searchable asserted metadata value records document-upsert operations. The workflow worker applies these operations asynchronously. Metadata writes update the Core current-value projection before they commit, so an indexing delay affects only search freshness—not the document view or metadata history.
+
+User-driven document updates use the highest queue priority so an interactive tag or text change is not trapped behind a corpus job. Import and agent batches use lower priority, and full rebuilds use the lowest priority. All lanes use the same idempotent projection workflow and remain observable as operations.
+
+Search work is serialized per matter with a PostgreSQL advisory transaction lock. It does not lock the authoritative matter row, so slow artifact reads and OpenSearch writes cannot block document ingestion through the matter foreign key. Different matters may still project concurrently. If an interrupted generation attempt leaves a physical OpenSearch index without a committed Core generation record, the next attempt skips that orphaned name and allocates a new generation.
+
+Each schema version creates a new physical index. After existing documents are populated and the index refreshes successfully, the worker atomically moves the matter's stable alias to the new generation. Previous generations are marked `RETIRED` and retained; they are not searched or deleted automatically. Failed generations remain visible for diagnosis.
+
+The matter's **Search index** tab shows the active generation, indexed and authoritative document counts, current workflow activity, generation history, and recent projection operations. A matter administrator can request a complete rebuild there. The current active index remains searchable until its replacement is fully populated and activated.
+
+The same status and control surfaces are available through the API. Use `GET /v1/matters/{matter_id}/search-operations` to inspect queued, running, completed, or failed work. Use `GET /v1/matters/{matter_id}/search-indexes` to inspect physical generations. An administrator can request a complete rebuild with `POST /v1/matters/{matter_id}/search-indexes/rebuild`.
+
+## Query behavior
+
+`POST /v1/matters/{matter_id}/search` accepts a controlled request containing:
+
+- a query and `KEYWORD`, `SEMANTIC`, or `HYBRID` search mode;
+- optional searchable field keys;
+- typed `EQ`, `IN`, `RANGE`, and `EXISTS` filters;
+- configured facetable field keys;
+- controlled sort fields; and
+- pagination.
+
+Text fields use versioned eDiscovery analyzer names for indexing, ordinary search, and phrase search. The initial three profiles all use the standard tokenizer plus lowercase normalization, preserve token positions and offsets, and do not remove stop words. This supports ordinary keyword queries and quoted phrases while allowing the profiles to evolve independently later. Facetable text fields also receive an exact keyword subfield; identifiers and enum values remain keywords.
+
+**Keyword** searches exact words and phrases across the configured text fields.
+**Semantic** embeds the query with the matter's configured model and compares it
+with nested document-chunk vectors. Each result includes its highest-scoring
+passage so the reviewer can see why it matched. **Hybrid** runs both retrieval
+methods and combines their document ranks with reciprocal-rank fusion. Hybrid is
+the best general starting point when the user wants both precise names or phrases
+and conceptually related language.
+
+Semantic and hybrid modes require a query and support relevance sorting. Active
+tenant, matter, and metadata filters are applied inside vector retrieval. Facet
+counts describe the retrieved candidate set for semantic and hybrid searches;
+they are not a count of every vector in the matter.
+
+Integer metadata maps to OpenSearch `long`. Floating-point metadata maps to `double`. Dates, date-times, booleans, enums, and unindexed JSON use corresponding controlled mappings generated from the matter field catalog.
+
+## Search and review workspace
+
+Open a matter and select **Search & Review** to enter the full-screen review workspace. This workspace removes the ordinary administration navigation so the available screen can be used for finding, reading, and coding documents. Use **Matter** in the upper-left corner to return to matter administration.
+
+The workspace has four coordinated areas on a wide desktop:
+
+- **Filters** starts with every facet group closed so the panel remains compact. Open a group to see its eight most common values and current counts. Type in **Find** to retrieve up to 20 matching values beyond that initial list. Counts respect the current query and filters in other groups, while ignoring the group's own selections so alternatives remain discoverable. Selecting more than one value within a field broadens that field, while selections across different fields narrow the result set. Long values are clipped within the panel instead of creating horizontal scrolling.
+- **Results** shows the matching documents. Select a row to open the source artifact without leaving the search.
+- **Document viewer** displays email and text content inline. Email metadata has its own scrollable panel; drag the horizontal divider beneath it up or down to give the message body more or less room. Focus the divider and use the up and down arrow keys for keyboard resizing. Other native file types can be downloaded and opened in their native application.
+- **Document details** has separate **Coding** and **Metadata** tabs. Coding contains only editable asserted fields and stages changes until **Save changes** is selected. Metadata shows all fields in document-visible groups as read-only values, including imported, system, and current asserted values.
+
+On desktop, drag the separators between Filters, Results, Document, and Document details to allocate space to the current task. The document viewer grows or shrinks as its neighboring panels are resized. The separators can also be focused and adjusted with the left and right arrow keys.
+
+Choose **Keyword**, **Semantic**, or **Hybrid** beside the search box. Keyword
+search covers filenames, source paths, email headers, custodians, searchable
+metadata, and indexed document body text. Semantic search is useful for natural
+language descriptions such as “messages discussing concealment of pricing
+decisions,” even when those exact words are absent. Hybrid search combines both
+approaches. When semantic retrieval contributes to a result, its best matching
+passage appears beneath the result title.
+
+For body text, the indexer uses extracted text when available, then OCR text, then compatible native content such as EML or plain text. Search terms, mode, active facet values, the page, and the selected document are retained in the address, so the current workspace can be bookmarked or reopened. On smaller screens, filters and coding open as focused panels and results and document viewing become separate views.
+
+Metadata coding updates Core immediately and queues a high-priority search projection update. After saving, the workspace reports that search is updating, watches the projection operation, and refreshes the result and facet data when it completes. If projection fails, the workspace reports the index error while preserving the successfully saved Core value.
+
+## Saved searches
+
+Use **Save search** in the Search & Review header to preserve the current query, search mode, filters, selected search fields, and sort. Pagination is not preserved: a saved search always opens at the first page.
+
+Choose who can use the saved search:
+
+- **Private** is visible only to you.
+- **Public** is visible to everyone who can access the matter.
+- **Shared** is visible to you and the active matter users you select.
+
+Open **Saved searches** to see every search available to you. Select **Run** to load its query and filters. Running a saved search performs a new search against the matter's current index; it does not reopen a snapshot of the documents that matched when the search was saved. Results can therefore change after documents, coding values, or the search index change.
+
+Only the owner can delete a saved search. Sharing with user groups is planned but is not available yet; select individual users for now.
+
+## Current limitations
+
+The search projection covers document identity, collection-item metadata, email headers, family, custodian data, resolved current metadata values, and body text. At most 10 MiB of text is loaded from an artifact by default; administrators can change this deployment setting. Existing matter documents must be reindexed after body indexing is enabled or after a preferred extracted/OCR artifact is added. Native binary formats without extracted or OCR text do not have a searchable body. Documents without completed chunk-vector artifacts cannot appear from semantic retrieval, although hybrid search can still find them through keyword matching. Semantic retrieval is an approximate nearest-neighbor search over a bounded candidate set, so its total and facet counts describe those candidates rather than every potentially related document. Bulk coding, review queues, hit-term navigation, family navigation, group-based saved-search sharing, and a specialized virtualized result grid are not yet available.

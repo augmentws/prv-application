@@ -1,0 +1,55 @@
+---
+title: Matter templates and cloning
+description: Reuse shared metadata definitions, groups, ordering, and default visibility in a new matter.
+---
+
+Matter templates prevent administrators from recreating the same review fields and shared layouts for every matter. A template is an immutable snapshot of the source matter's reusable configuration.
+
+## Save a matter as a template
+
+1. Open the source matter.
+2. Select **Save as template**.
+3. Enter a clear name and optional description.
+4. Choose where the template is available:
+   - **All clients in this tenant** creates a tenant template.
+   - **Only this client** creates a client-specific template.
+5. Select **Save template**.
+
+The saved version captures:
+
+- all active shared metadata definitions and enum choices;
+- system and matter-scoped metadata groups;
+- group field membership and ordering; and
+- default table and document visibility.
+
+It does not capture personal groups or individual visibility preferences.
+
+## Create a matter from a template
+
+1. Open a client and select **Add matter**.
+2. Enter the new matter name.
+3. Choose a template under **Configuration**.
+4. Select **Create matter**.
+
+Tenant templates are offered for every client in the tenant. Client templates are offered only for their client. The new matter receives independent database records and is not live-linked to the template.
+
+## Clone a configuration
+
+Open a source matter and select **Clone configuration**. Enter the new matter name to create another matter under the same client.
+
+Cloning copies the source matter's current shared definitions and system/matter groups without first creating a named reusable template.
+
+## Never copied
+
+Templates and clones do not copy:
+
+- documents, collection selections, or artifacts;
+- document metadata values or review decisions;
+- custodians or custodian assignments;
+- matter members or permissions;
+- personal metadata groups or visibility preferences;
+- processing or agent runs;
+- audit history; or
+- integration mappings.
+
+This boundary prevents evidence, user-specific layouts, and authorization state from leaking into a new matter.

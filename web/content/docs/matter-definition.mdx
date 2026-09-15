@@ -1,0 +1,53 @@
+---
+title: Matter Definition
+description: Draft reviewer guidance, reconcile it with matter metadata through an agent, and publish an approved revision.
+---
+
+The **Matter definition** tab is the workspace for a matter's reviewer guidance. The same Markdown is intended to guide human reviewers and, later, document-coding agents. Matter administrators can save immutable draft revisions, work with the Matter Definition setup agent, approve or reject proposed edits, and explicitly publish a revision.
+
+## Before you start
+
+- You must have `ADMIN` access to the matter.
+- At least one active, published Matter Definition agent must be available from the root tenant or the matter's tenant. The application bootstrap provisions the standard system agent idempotently.
+- `AGENT_DEFAULT_MODEL` and the selected provider credentials must be configured for the workflow worker.
+- The DBOS workflow worker must be running for agent turns to execute.
+
+After upgrading an existing installation, rerun `pipenv run python -m app.bootstrap` once to provision the standard agent if it does not already exist.
+
+## Add the source guidance
+
+Open the matter and select **Matter definition**. You can paste or type Markdown directly into the editor, or import a `.md`, `.markdown`, or `.txt` file. Imported text remains unsaved until you select **Save draft**.
+
+Every save creates a new immutable revision. Existing revisions are not overwritten. If an agent creates a newer revision while you have unsaved edits, the editor preserves your text and asks you to reload the latest revision before saving, preventing an accidental overwrite.
+
+DOCX upload and server-side source normalization are not available in this slice. Convert DOCX guidance to Markdown or plain text before importing it.
+
+## Work with the setup agent
+
+Select **Start agent conversation**, then ask the agent to review the saved guidance. Useful requests include:
+
+- identify coding fields referenced by the guidance;
+- compare those fields with the matter's editable metadata definitions;
+- propose missing editable fields;
+- review enum terminology and propose additions, wording changes, or deactivation;
+- find unclear or conflicting reviewer instructions;
+- propose a clearer complete draft.
+
+The screen polls the durable conversation records while the agent works. A queued or running turn disables the composer until it completes or requests approval.
+
+## Approve proposed changes
+
+State-changing proposals appear as separate **Approval required** cards. Metadata cards identify the field or enum value and include the proposed configuration and reason. For a proposed draft edit, expand **Review proposed Markdown** to inspect the complete replacement content. You may add an optional note and then select **Approve change** or **Reject**.
+
+Approval records your decision but does not bypass authorization. The server checks your matter access again when the tool executes. Approved metadata operations use the same audited matter command service and search-schema synchronization as direct administrator changes. An approved draft edit creates a new immutable revision; it does not publish the guidance.
+
+## Publish guidance
+
+Review and save the current draft, then select **Publish current draft**. Publishing moves the matter's published-revision pointer after a confirmation. The full revision history remains available, and later drafts do not replace the published guidance until explicitly published.
+
+## Current limitations
+
+- Conversation updates use polling rather than streamed response tokens.
+- DOCX source ingestion and Artifact Service source preservation are planned but not yet available.
+- Field type, cardinality, and stable-key migrations are not performed by the setup agent. Create a replacement field or use a future explicit migration workflow when stored values already exist.
+- Root system-agent management is available. Tenant-agent APIs exist, but a tenant administration screen is not yet available.

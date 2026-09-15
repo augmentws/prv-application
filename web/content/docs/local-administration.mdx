@@ -1,0 +1,47 @@
+---
+title: Local administration
+description: Start the current local development stack and understand the supporting services.
+---
+
+This page is for administrators and developers running Priv-View locally.
+
+## Supporting services
+
+The Docker Compose configuration runs:
+
+- PostgreSQL for the Core database named `pvr-core`;
+- PostgreSQL for the independent Artifact database named `pvr-artifact`; and
+- MinIO for S3-compatible object storage.
+
+MinIO is a Docker container in the local stack. Its API is used by the Artifact Service; its console is an administrative inspection tool, not the end-user application.
+
+Set the MinIO access key, secret key, endpoint, and related object-storage settings in the local `.env` file using `.env.example` as the template. Never commit `.env` or real credentials.
+
+## Start the backend
+
+From the repository root:
+
+```bash
+cp .env.example .env
+pipenv install --dev
+docker compose up -d
+pipenv run alembic upgrade head
+pipenv run alembic -c artifact_alembic.ini upgrade head
+pipenv run python -m app.bootstrap
+pipenv run uvicorn app.main:app --reload
+```
+
+## Start the web application
+
+From the `web` directory:
+
+```bash
+pnpm install
+pnpm dev
+```
+
+The web application is the browser-facing layer. It keeps authentication tokens in protected cookies and forwards API requests to FastAPI.
+
+## API references
+
+FastAPI exposes the OpenAPI contract at `/openapi.json` and interactive API documentation at the backend `/docs` route. The application help center you are reading is the frontend `/docs` route, so local deployments normally use different ports for the frontend and backend.

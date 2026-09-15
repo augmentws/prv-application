@@ -1,0 +1,41 @@
+---
+title: Tenants and users
+description: Manage the tenant hierarchy and local user accounts in the current administration model.
+---
+
+## Tenant hierarchy
+
+Priv-View has one root tenant. Subtenants are created beneath it and provide separate organizational and data boundaries. Each tenant has its own users, clients, and artifact-storage bucket.
+
+The bootstrapped root super administrator can:
+
+- create subtenants;
+- switch between tenants;
+- create users in the root tenant or a selected subtenant; and
+- administer the resources in those tenants.
+
+## Create a tenant
+
+1. Select **Tenants** in the sidebar.
+2. Select **Create tenant**.
+3. Enter a name and slug.
+4. Confirm the new tenant.
+
+The slug is the tenant's stable, URL-safe identifier for administration and storage. It is not a sign-in credential.
+
+## Create a user
+
+1. Select the tenant the user should belong to.
+2. Open **Users**.
+3. Select **Create user**.
+4. Enter the user's display name, email address, and initial password.
+
+Users sign in with their email address and password. Priv-View resolves their tenant from the authenticated account on the server. Each user belongs to one tenant in the current release, and email addresses must be unique across Priv-View.
+
+## Roles and status
+
+The current authorization model uses an **ADMIN** role at tenant, client, and matter scope. Administrators can perform all available actions within their authorized scope. More granular roles are planned but are not implemented.
+
+Resources can use the statuses **ACTIVE**, **SUSPENDED**, and **ARCHIVED**. The UI displays the current status where it is relevant.
+
+External identity providers are anticipated by the account model, but sign-in currently uses local passwords.

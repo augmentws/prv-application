@@ -1,0 +1,202 @@
+services:
+  postgres:
+    image: postgres:17
+    environment:
+      POSTGRES_DB: pvr-core
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: postgres
+    ports:
+      - "5432:5432"
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres -d pvr-core"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+    volumes:
+      - pvr_core_postgres:/var/lib/postgresql/data
+      - ./docker/postgres/init:/docker-entrypoint-initdb.d:ro
+
+  minio:
+    image: quay.io/minio/minio:RELEASE.2025-06-13T11-33-47Z
+    command: server /data --console-address ":9001"
+    environment:
+      MINIO_ROOT_USER: minioadmin
+      MINIO_ROOT_PASSWORD: minioadmin
+    ports:
+      - "9000:9000"
+      - "9001:9001"
+    volumes:
+      - pvr_artifact_minio:/data
+
+  opensearch:
+    image: opensearchproject/opensearch:3.8.0
+    environment:
+      discovery.type: single-node
+      DISABLE_SECURITY_PLUGIN: "true"
+      bootstrap.memory_lock: "true"
+      OPENSEARCH_JAVA_OPTS: -Xms1g -Xmx1g
+    ulimits:
+      memlock:
+        soft: -1
+        hard: -1
+    ports:
+      - "9200:9200"
+      - "9600:9600"
+    healthcheck:
+      test: ["CMD-SHELL", "curl -fs http://localhost:9200/_cluster/health >/dev/null"]
+      interval: 10s
+      timeout: 5s
+      retries: 20
+    volumes:
+      - pvr_opensearch:/usr/share/opensearch/data
+
+  embedding-api:
+    profiles: ["split", "embeddings"]
+    build: .
+    command: uvicorn embedding_service.main:app --host 0.0.0.0 --port 8002
+    environment:
+      EMBEDDING_PROVIDER: sentence_transformers
+      EMBEDDING_MODEL: voyageai/voyage-4-nano
+      EMBEDDING_DIMENSIONS: 1024
+      EMBEDDING_DEVICE: cpu
+      EMBEDDING_NORMALIZE: "true"
+      EMBEDDING_TRUST_REMOTE_CODE: "true"
+      EMBEDDING_BATCH_SIZE: 32
+      EMBEDDING_MAX_INPUTS: 256
+      EMBEDDING_MAX_INPUT_CHARACTERS: 200000
+      EMBEDDING_SERVICE_TOKEN: development-embedding-service-token
+      HF_HOME: /models
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8002/health')"]
+      interval: 10s
+      timeout: 5s
+      retries: 20
+    ports:
+      - "8002:8002"
+    volumes:
+      - pvr_embedding_models:/models
+
+  artifact-api:
+    profiles: ["split"]
+    build: .
+    command: >-
+      sh -c "alembic -c artifact_alembic.ini upgrade head &&
+      uvicorn artifact_service.main:app --host 0.0.0.0 --port 8001"
+    environment:
+      ARTIFACT_DATABASE_URL: postgresql+psycopg://postgres:postgres@postgres:5432/pvr-artifact
+      ARTIFACT_STORAGE_ENDPOINT_URL: http://minio:9000
+      ARTIFACT_STORAGE_ACCESS_KEY: minioadmin
+      ARTIFACT_STORAGE_SECRET_KEY: minioadmin
+      ARTIFACT_STORAGE_REGION: us-east-1
+      ARTIFACT_BUCKET_PREFIX: pv-artifacts
+      ARTIFACT_BUCKET_SUFFIX_LENGTH: 10
+      ARTIFACT_DELEGATION_SECRET: development-artifact-delegation-secret
+      ARTIFACT_DELEGATION_ISSUER: priv-view-core
+      ARTIFACT_DELEGATION_AUDIENCE: priv-view-artifact
+    depends_on:
+      postgres:
+        condition: service_healthy
+      minio:
+        condition: service_started
+    ports:
+      - "8001:8001"
+
+  core-api:
+    profiles: ["split"]
+    build: .
+    command: >-
+      sh -c "alembic upgrade head &&
+      uvicorn app.main:app --host 0.0.0.0 --port 8000"
+    environment:
+      DATABASE_URL: postgresql+psycopg://postgres:postgres@postgres:5432/pvr-core
+      JWT_SECRET: development-only-change-me-please
+      JWT_ISSUER: priv-view-core
+      JWT_AUDIENCE: priv-view-api
+      ARTIFACT_MODE: remote
+      ARTIFACT_BASE_URL: http://artifact-api:8001
+      ARTIFACT_DELEGATION_SECRET: development-artifact-delegation-secret
+      ARTIFACT_DELEGATION_ISSUER: priv-view-core
+      ARTIFACT_DELEGATION_AUDIENCE: priv-view-artifact
+      DBOS_ENABLED: "true"
+      DBOS_SYSTEM_DATABASE_URL: postgresql+psycopg://postgres:postgres@postgres:5432/pvr-core
+      DBOS_SYSTEM_SCHEMA: dbos
+      DBOS_APPLICATION_NAME: priv-view-workflows
+      DBOS_APPLICATION_VERSION: 0.1.0
+      MATTER_IMPORT_BATCH_SIZE: 1000
+      SEARCH_ENABLED: "true"
+      OPENSEARCH_URL: http://opensearch:9200
+      OPENSEARCH_VERIFY_TLS: "false"
+      OPENSEARCH_INDEX_PREFIX: pvr
+      EMBEDDING_MODE: remote
+      EMBEDDING_MODEL: voyageai/voyage-4-nano
+      EMBEDDING_DIMENSIONS: 1024
+      EMBEDDING_BASE_URL: http://embedding-api:8002
+      EMBEDDING_SERVICE_TOKEN: development-embedding-service-token
+      MATTER_EMBEDDING_BATCH_SIZE: 25
+      MATTER_TOPIC_BATCH_SIZE: 100
+      EMBEDDING_TEXT_MAX_BYTES: 10485760
+      CHUNK_TARGET_CHARACTERS: 1800
+      CHUNK_MAX_CHARACTERS: 2600
+      CHUNK_OVERLAP_CHARACTERS: 200
+    depends_on:
+      postgres:
+        condition: service_healthy
+      artifact-api:
+        condition: service_started
+      opensearch:
+        condition: service_healthy
+      embedding-api:
+        condition: service_healthy
+    ports:
+      - "8000:8000"
+
+  workflow-worker:
+    profiles: ["split"]
+    build: .
+    command: >-
+      sh -c "alembic upgrade head &&
+      python -m app.workflow_worker"
+    environment:
+      DATABASE_URL: postgresql+psycopg://postgres:postgres@postgres:5432/pvr-core
+      ARTIFACT_MODE: remote
+      ARTIFACT_BASE_URL: http://artifact-api:8001
+      ARTIFACT_DATABASE_URL: postgresql+psycopg://postgres:postgres@postgres:5432/pvr-artifact
+      ARTIFACT_DELEGATION_SECRET: development-artifact-delegation-secret
+      ARTIFACT_DELEGATION_ISSUER: priv-view-core
+      ARTIFACT_DELEGATION_AUDIENCE: priv-view-artifact
+      DBOS_ENABLED: "true"
+      DBOS_SYSTEM_DATABASE_URL: postgresql+psycopg://postgres:postgres@postgres:5432/pvr-core
+      DBOS_SYSTEM_SCHEMA: dbos
+      DBOS_APPLICATION_NAME: priv-view-workflows
+      DBOS_APPLICATION_VERSION: 0.1.0
+      MATTER_IMPORT_BATCH_SIZE: 1000
+      SEARCH_ENABLED: "true"
+      OPENSEARCH_URL: http://opensearch:9200
+      OPENSEARCH_VERIFY_TLS: "false"
+      OPENSEARCH_INDEX_PREFIX: pvr
+      EMBEDDING_MODE: remote
+      EMBEDDING_MODEL: voyageai/voyage-4-nano
+      EMBEDDING_DIMENSIONS: 1024
+      EMBEDDING_BASE_URL: http://embedding-api:8002
+      EMBEDDING_SERVICE_TOKEN: development-embedding-service-token
+      MATTER_EMBEDDING_BATCH_SIZE: 25
+      MATTER_TOPIC_BATCH_SIZE: 100
+      EMBEDDING_TEXT_MAX_BYTES: 10485760
+      CHUNK_TARGET_CHARACTERS: 1800
+      CHUNK_MAX_CHARACTERS: 2600
+      CHUNK_OVERLAP_CHARACTERS: 200
+    depends_on:
+      postgres:
+        condition: service_healthy
+      artifact-api:
+        condition: service_started
+      opensearch:
+        condition: service_healthy
+      embedding-api:
+        condition: service_healthy
+
+volumes:
+  pvr_core_postgres:
+  pvr_artifact_minio:
+  pvr_opensearch:
+  pvr_embedding_models:

@@ -1,0 +1,40 @@
+---
+title: Glossary
+description: The product terms used throughout Priv-View and how their boundaries differ.
+---
+
+## Tenant
+
+An organizational and security boundary. Tenants are hierarchical, and every user belongs to one tenant in the current release.
+
+## Client
+
+A tenant-owned workspace for a legal client or similar long-lived entity. Clients contain matters, custodians, and collections.
+
+## Matter
+
+A client-owned legal matter. It contains matter-specific configuration and will later contain review documents selected from collections.
+
+## Custodian
+
+Client-scoped evidence metadata identifying the person, account, device, or other source from which material was collected. A custodian is not a Priv-View user.
+
+## Collection
+
+A client-level, artifact-backed set of source evidence. A collection can be inspected and queried before material is promoted into a matter.
+
+## Collection item
+
+The logical database record for one imported email, attachment, file, chat, transcript, or other source item. It stores evidence metadata and relationships, not an object-storage path.
+
+## Artifact
+
+A typed stored file or derived binary asset associated with a collection or collection item. Examples include a source container, native file, extracted text, chunk set, or vector chunk set.
+
+## Document
+
+A future matter-level review entity created from a collection item. A document participates in review, matter metadata, and intelligence workflows. It is not the native file itself and is not interchangeable with an artifact.
+
+## Source container
+
+The original MBOX, CSV, ZIP, or later DAT input preserved for provenance and lineage.

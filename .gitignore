@@ -1,0 +1,64 @@
+# Environment and secret files
+.env
+.env.*
+!.env.example
+!**/.env.example
+*.pem
+*.key
+
+# Python environments and caches
+.venv/
+venv/
+__pycache__/
+*.py[cod]
+*$py.class
+.pytest_cache/
+.ruff_cache/
+.mypy_cache/
+.pyright/
+.tox/
+.nox/
+
+# Python build and coverage output
+build/
+dist/
+*.egg-info/
+.coverage
+.coverage.*
+coverage.xml
+htmlcov/
+
+# Local databases
+*.db
+*.sqlite
+*.sqlite3
+
+# JavaScript dependencies and generated output
+node_modules/
+.next/
+out/
+.source/
+.turbo/
+.pnpm-store/
+coverage/
+playwright-report/
+test-results/
+blob-report/
+.eslintcache
+.vercel/
+*.tsbuildinfo
+next-env.d.ts
+
+# Logs and temporary files
+*.log
+*.pid
+.cache/
+tmp/
+temp/
+
+# Editors and operating systems
+.DS_Store
+.idea/
+.vscode/
+*.swp
+*.swo

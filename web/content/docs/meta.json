@@ -1,0 +1,18 @@
+{
+  "title": "Priv-View Help",
+  "pages": [
+    "index",
+    "getting-started",
+    "tenants-and-users",
+    "clients-and-matters",
+    "collections",
+    "viewing-documents",
+    "metadata-definitions",
+    "matter-templates",
+    "matter-jobs",
+    "matter-search",
+    "importing-data",
+    "local-administration",
+    "glossary"
+  ]
+}
