@@ -127,6 +127,16 @@ Numeric metadata needs two storage categories:
 - Explicit user shares use a separate join table. Future group sharing must use a separate group-share relation without changing the saved search definition or overloading user shares.
 - Saved-search access is enforced in the Core API for list, read, execute, update, and delete operations. UI visibility is not an authorization boundary.
 
+### Review Batches and Evaluation Runs
+
+- A review batch is a matter-scoped, permanent frozen set of matter-document IDs. Documents may belong to multiple batches. `ALL_MATTER` means every document currently in the matter; search-query and random selections record their complete provenance, including the physical search generation or deterministic random seed.
+- Batch membership is materialized by a durable DBOS workflow. Creating a batch does not create a temporary copy of document content and does not depend on the later state of the search query.
+- A batch has a name, description, chronological notes, at most one current human assignee, and a reviewer-value visibility policy of `OWN_VALUES` or `ALL_REVIEWER_VALUES`.
+- Reuse matter metadata groups as coding field sets. Snapshot the selected shared groups, field order, and field schemas into the batch so later configuration changes do not silently change an active review or evaluation corpus. Personal groups cannot be assigned to a batch.
+- Each human or agent coding pass has its own immutable `review_batch_run` identity. An agent run pins the published `agent_definition_version` and copies its prompt, model, policy, output schema, and limits into a configuration snapshot. A rerun creates a new run; it never mutates an earlier run.
+- Batch-run values are isolated from the matter-wide `metadata_event` ledger and `document_metadata_current` projection. Run-to-run and human-to-agent comparisons read the isolated run values. A future explicit publish operation may append new matter-scope metadata events, but must never move or reinterpret run results in place.
+- Agent batch runs are created through the authorized Core API. Agent execution orchestration and publish-to-matter behavior remain follow-on work; the current run-value API supports recording typed results and comparing independent runs without contaminating matter coding.
+
 ### Agent Runtime and Matter Definitions
 
 - Use one stable, generic Pydantic AI harness with DBOS durability. Agent definitions are versioned data; tenant definitions must not dynamically register Python workflow classes.

@@ -18,6 +18,7 @@ from app.routers import (
     matters,
     metadata,
     metadata_groups,
+    review_batches,
     saved_searches,
     search,
     tenants,
@@ -71,6 +72,7 @@ app.include_router(metadata.router)
 app.include_router(metadata_groups.router)
 app.include_router(matter_templates.router)
 app.include_router(saved_searches.router)
+app.include_router(review_batches.router)
 app.include_router(search.router)
 if get_settings().artifact_mode == "embedded":
     app.include_router(build_artifact_router(get_embedded_artifact_principal))

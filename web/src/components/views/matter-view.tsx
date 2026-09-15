@@ -12,6 +12,7 @@ import { DataTable } from "@/components/data-table";
 import { CloneMatterDialog, type CloneMatterValues } from "@/components/forms/clone-matter-dialog";
 import { CreateMetadataDialog } from "@/components/forms/create-metadata-dialog";
 import { type CreateMetadataGroupValues } from "@/components/forms/create-metadata-group-dialog";
+import { CreateReviewBatchDialog } from "@/components/forms/create-review-batch-dialog";
 import { SaveMatterTemplateDialog, type SaveMatterTemplateValues } from "@/components/forms/save-matter-template-dialog";
 import { CreateTopicJobDialog } from "@/components/forms/create-topic-job-dialog";
 import { HelpLink } from "@/components/help-link";
@@ -24,11 +25,12 @@ import { StatusBadge } from "@/components/status-badge";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
-import type { ClientRead, MatterDocumentImportRead, MatterEmbeddingJobRead, MatterOverviewCounts, MatterRead, MatterTemplateRead, MatterTopicJobCreate, MatterTopicJobRead, MetadataDefinitionCreate, MetadataDefinitionRead, MetadataGroupRead, SearchIndexGenerationRead, SearchProjectionOperationRead } from "@/generated/models";
+import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
+import type { ClientRead, MatterDocumentImportRead, MatterEmbeddingJobRead, MatterOverviewCounts, MatterRead, MatterTemplateRead, MatterTopicJobCreate, MatterTopicJobRead, MetadataDefinitionCreate, MetadataDefinitionRead, MetadataGroupRead, ReviewBatchCreate, ReviewBatchRead, SearchIndexGenerationRead, SearchProjectionOperationRead, UserRead } from "@/generated/models";
 import { coreApi } from "@/lib/api-client";
 import { formatDate } from "@/lib/format";
 
-type MatterTab = "overview" | "metadata" | "groups" | "definition" | "jobs" | "search";
+type MatterTab = "overview" | "metadata" | "groups" | "definition" | "batches" | "jobs" | "search";
 
 export function MatterView({ clientId, matterId, requestedTab, selectedJobId }: {
   clientId: string;
@@ -36,7 +38,7 @@ export function MatterView({ clientId, matterId, requestedTab, selectedJobId }: 
   requestedTab?: string;
   selectedJobId?: string;
 }) {
-  const tab: MatterTab = requestedTab === "overview" || requestedTab === "groups" || requestedTab === "definition" || requestedTab === "jobs" || requestedTab === "search" ? requestedTab : "metadata";
+  const tab: MatterTab = requestedTab === "overview" || requestedTab === "groups" || requestedTab === "definition" || requestedTab === "batches" || requestedTab === "jobs" || requestedTab === "search" ? requestedTab : "metadata";
   const router = useRouter();
   const queryClient = useQueryClient();
   const client = useQuery({ queryKey: ["client", clientId], queryFn: () => coreApi<ClientRead>(`/v1/clients/${clientId}`) });
@@ -65,6 +67,17 @@ export function MatterView({ clientId, matterId, requestedTab, selectedJobId }: 
     queryFn: () => coreApi<MatterTopicJobRead[]>(`/v1/matters/${matterId}/topic-jobs`),
     enabled: tab === "jobs",
     refetchInterval: (query) => query.state.data?.some((job) => ["QUEUED", "SAMPLING", "CLUSTERING", "PUBLISHING"].includes(job.status)) ? 2000 : false,
+  });
+  const reviewBatches = useQuery({
+    queryKey: ["review-batches", matterId],
+    queryFn: () => coreApi<ReviewBatchRead[]>(`/v1/matters/${matterId}/review-batches`),
+    enabled: tab === "batches",
+    refetchInterval: (query) => query.state.data?.some((batch) => ["QUEUED", "BUILDING"].includes(batch.status)) ? 2000 : false,
+  });
+  const tenantUsers = useQuery({
+    queryKey: ["tenant-users", client.data?.tenant_id],
+    queryFn: () => coreApi<UserRead[]>(`/v1/tenants/${client.data!.tenant_id}/users`),
+    enabled: tab === "batches" && Boolean(client.data?.tenant_id),
   });
   const searchIndexes = useQuery({
     queryKey: ["search-indexes", matterId],
@@ -149,10 +162,27 @@ export function MatterView({ clientId, matterId, requestedTab, selectedJobId }: 
     },
     onError: (error) => toast.error(error instanceof Error ? error.message : "The search index rebuild could not be requested."),
   });
+  const createReviewBatchMutation = useMutation({
+    mutationFn: (values: ReviewBatchCreate) => coreApi<ReviewBatchRead>(`/v1/matters/${matterId}/review-batches`, { method: "POST", body: JSON.stringify(values) }),
+    onSuccess: (created) => {
+      queryClient.setQueryData<ReviewBatchRead[]>(["review-batches", matterId], (current) => current ? [created, ...current] : [created]);
+      toast.success(`${created.name} was created.`);
+    },
+    onError: (error) => toast.error(error instanceof Error ? error.message : "The review batch could not be created."),
+  });
+  const assignReviewBatchMutation = useMutation({
+    mutationFn: ({ batchId, userId }: { batchId: string; userId: string | null }) => coreApi<ReviewBatchRead>(`/v1/matters/${matterId}/review-batches/${batchId}/assignment`, { method: "PUT", body: JSON.stringify({ assigned_user_id: userId }) }),
+    onSuccess: (updated) => {
+      queryClient.setQueryData<ReviewBatchRead[]>(["review-batches", matterId], (current) => current?.map((batch) => batch.id === updated.id ? updated : batch));
+      toast.success(updated.assigned_user ? `${updated.name} was assigned to ${updated.assigned_user.display_name}.` : `${updated.name} is now unassigned.`);
+    },
+    onError: (error) => toast.error(error instanceof Error ? error.message : "The batch assignment could not be changed."),
+  });
   const createGroup = useCallback((values: CreateMetadataGroupValues) => groupMutation.mutateAsync(values).then(() => undefined), [groupMutation]);
   const changeVisibility = useCallback((group: MetadataGroupRead, surface: "TABLE" | "DOCUMENT", visible: boolean) => visibilityMutation.mutateAsync({ group, surface, visible }).then(() => undefined), [visibilityMutation]);
   const saveTemplate = useCallback((values: SaveMatterTemplateValues) => templateMutation.mutateAsync(values).then(() => undefined), [templateMutation]);
   const cloneMatter = useCallback((values: CloneMatterValues) => cloneMutation.mutateAsync(values).then(() => undefined), [cloneMutation]);
+  const createReviewBatch = useCallback((values: ReviewBatchCreate) => createReviewBatchMutation.mutateAsync(values).then(() => undefined), [createReviewBatchMutation]);
   const columns = useMemo<ColumnDef<MetadataDefinitionRead>[]>(() => [
     { accessorKey: "display_name", header: "Field", cell: ({ row }) => <div><p className="font-semibold">{row.original.display_name}</p><code className="text-xs text-muted-foreground">{row.original.key}</code></div> },
     { accessorKey: "type", header: "Type", cell: ({ row }) => <Badge>{row.original.type.toLowerCase().replace("_", " ")}</Badge> },
@@ -195,6 +225,15 @@ export function MatterView({ clientId, matterId, requestedTab, selectedJobId }: 
     { accessorKey: "created_at", header: "Created", cell: ({ row }) => <span className="whitespace-nowrap text-muted-foreground">{formatDate(row.original.created_at)}</span> },
     { id: "actions", header: "", cell: ({ row }) => ["QUEUED", "SAMPLING", "CLUSTERING", "PUBLISHING"].includes(row.original.status) ? <Button size="sm" variant="outline" onClick={() => cancelTopicJobMutation.mutate(row.original.id)}><Ban />Cancel</Button> : null },
   ], [cancelTopicJobMutation]);
+  const reviewBatchColumns = useMemo<ColumnDef<ReviewBatchRead>[]>(() => [
+    { accessorKey: "name", header: "Batch", cell: ({ row }) => <div><p className="font-semibold">{row.original.name}</p>{row.original.description ? <p className="max-w-md truncate text-xs text-muted-foreground" title={row.original.description}>{row.original.description}</p> : null}</div> },
+    { accessorKey: "selection_type", header: "Created from", cell: ({ row }) => <span className="text-muted-foreground">{batchSelectionLabel(row.original.selection_type)}</span> },
+    { accessorKey: "document_count", header: "Documents", cell: ({ row }) => <span className="tabular-nums">{row.original.document_count.toLocaleString()}</span> },
+    { id: "coding", header: "Coding", cell: ({ row }) => <span className="text-muted-foreground">{row.original.coding_groups.length ? `${row.original.coding_groups.length} group${row.original.coding_groups.length === 1 ? "" : "s"}` : "No groups"}</span> },
+    { id: "assignee", header: "Assigned to", cell: ({ row }) => <Select value={row.original.assigned_user_id ?? "unassigned"} onValueChange={(value) => assignReviewBatchMutation.mutate({ batchId: row.original.id, userId: value === "unassigned" ? null : value })} disabled={assignReviewBatchMutation.isPending}><SelectTrigger className="w-48"><SelectValue /></SelectTrigger><SelectContent><SelectItem value="unassigned">Unassigned</SelectItem>{(tenantUsers.data ?? []).filter((user) => user.status === "ACTIVE").map((user) => <SelectItem key={user.id} value={user.id}>{user.display_name}</SelectItem>)}</SelectContent></Select> },
+    { accessorKey: "status", header: "Status", cell: ({ row }) => <div><StatusBadge status={row.original.status} />{row.original.error_message ? <p className="mt-1 max-w-64 truncate text-xs text-destructive" title={row.original.error_message}>{row.original.error_message}</p> : null}</div> },
+    { accessorKey: "created_at", header: "Created", cell: ({ row }) => <span className="whitespace-nowrap text-muted-foreground">{formatDate(row.original.created_at)}</span> },
+  ], [assignReviewBatchMutation, tenantUsers.data]);
 
   if (client.isPending || matter.isPending) return <TableLoading />;
   if (client.error || matter.error) return <QueryError message={client.error?.message ?? matter.error?.message} />;
@@ -208,6 +247,7 @@ export function MatterView({ clientId, matterId, requestedTab, selectedJobId }: 
         <button role="tab" aria-selected={tab === "metadata"} onClick={() => openTab("metadata")} className={tabClass(tab === "metadata")}>Metadata definitions</button>
         <button role="tab" aria-selected={tab === "groups"} onClick={() => openTab("groups")} className={tabClass(tab === "groups")}>Metadata groups</button>
         <button role="tab" aria-selected={tab === "definition"} onClick={() => openTab("definition")} className={tabClass(tab === "definition")}>Matter definition</button>
+        <button role="tab" aria-selected={tab === "batches"} onClick={() => openTab("batches")} className={tabClass(tab === "batches")}>Batches</button>
         <button role="tab" aria-selected={tab === "jobs"} onClick={() => openTab("jobs")} className={tabClass(tab === "jobs")}>Jobs</button>
         <button role="tab" aria-selected={tab === "search"} onClick={() => openTab("search")} className={tabClass(tab === "search")}>Search index</button>
       </div>
@@ -215,6 +255,7 @@ export function MatterView({ clientId, matterId, requestedTab, selectedJobId }: 
         : tab === "metadata" ? definitions.isPending ? <TableLoading /> : definitions.error ? <QueryError message={definitions.error.message} /> : <DataTable columns={columns} data={definitions.data} emptyMessage="No metadata fields yet. Add the first field definition for this matter." />
         : tab === "groups" ? definitions.isPending || groups.isPending ? <TableLoading /> : definitions.error || groups.error ? <QueryError message={definitions.error?.message ?? groups.error?.message} /> : <MetadataGroupsPanel definitions={definitions.data} groups={groups.data} onCreate={createGroup} onVisibilityChange={changeVisibility} />
         : tab === "definition" ? <MatterDefinitionPanel matterId={matterId} />
+        : tab === "batches" ? reviewBatches.isPending || groups.isPending || tenantUsers.isPending ? <TableLoading /> : reviewBatches.error || groups.error || tenantUsers.error ? <QueryError message={reviewBatches.error?.message ?? groups.error?.message ?? tenantUsers.error?.message} /> : <div className="space-y-4"><div className="flex flex-wrap items-start justify-between gap-3"><div><h2 className="text-lg font-semibold">Review batches</h2><p className="text-sm text-muted-foreground">Freeze document sets for assignment, repeatable agent runs, and coding comparisons.</p></div><CreateReviewBatchDialog groups={groups.data} batches={reviewBatches.data} onCreate={createReviewBatch} /></div><DataTable columns={reviewBatchColumns} data={reviewBatches.data} emptyMessage="No review batches have been created for this matter." /></div>
         : tab === "jobs" ? jobs.isPending || embeddingJobs.isPending || topicJobs.isPending ? <TableLoading /> : jobs.error || embeddingJobs.error || topicJobs.error ? <QueryError message={jobs.error?.message ?? embeddingJobs.error?.message ?? topicJobs.error?.message} /> : <div className="space-y-8">
           <section className="space-y-4">
             <div className="flex flex-wrap items-start justify-between gap-3"><div><h2 className="text-lg font-semibold">Document embeddings</h2><p className="text-sm text-muted-foreground">Create sentence-aware chunks and vectors for every document in this matter.</p></div><Button onClick={() => createEmbeddingJobMutation.mutate()} disabled={createEmbeddingJobMutation.isPending || embeddingJobs.data.some((job) => ["QUEUED", "PLANNING", "RUNNING"].includes(job.status))}><Play />Generate embeddings</Button></div>
@@ -237,6 +278,10 @@ export function MatterView({ clientId, matterId, requestedTab, selectedJobId }: 
 
 function tabClass(active: boolean) {
   return `relative px-4 py-3 text-sm font-semibold outline-none transition focus-visible:ring-2 focus-visible:ring-ring ${active ? "text-primary after:absolute after:inset-x-1 after:bottom-0 after:h-0.5 after:bg-accent" : "text-muted-foreground hover:text-foreground"}`;
+}
+
+function batchSelectionLabel(value: ReviewBatchRead["selection_type"]) {
+  return { ALL_MATTER: "All matter documents", SEARCH_QUERY: "Keyword search", RANDOM_MATTER: "Random matter sample", RANDOM_BATCH: "Random batch sample" }[value];
 }
 
 function Summary({ icon: Icon, label, value }: { icon: typeof ListChecks; label: string; value: number | string }) {

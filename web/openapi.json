@@ -4301,6 +4301,819 @@
         }
       }
     },
+    "/v1/matters/{matter_id}/review-batches": {
+      "post": {
+        "tags": [
+          "review batches"
+        ],
+        "summary": "Create Review Batch",
+        "operationId": "create_review_batch_v1_matters__matter_id__review_batches_post",
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "matter_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid",
+              "title": "Matter Id"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ReviewBatchCreate"
+              }
+            }
+          }
+        },
+        "responses": {
+          "202": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ReviewBatchRead"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      },
+      "get": {
+        "tags": [
+          "review batches"
+        ],
+        "summary": "List Review Batches",
+        "operationId": "list_review_batches_v1_matters__matter_id__review_batches_get",
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "matter_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid",
+              "title": "Matter Id"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "array",
+                  "items": {
+                    "$ref": "#/components/schemas/ReviewBatchRead"
+                  },
+                  "title": "Response List Review Batches V1 Matters  Matter Id  Review Batches Get"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v1/matters/{matter_id}/review-batches/{batch_id}": {
+      "get": {
+        "tags": [
+          "review batches"
+        ],
+        "summary": "Get Review Batch",
+        "operationId": "get_review_batch_v1_matters__matter_id__review_batches__batch_id__get",
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "matter_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid",
+              "title": "Matter Id"
+            }
+          },
+          {
+            "name": "batch_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid",
+              "title": "Batch Id"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ReviewBatchRead"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v1/matters/{matter_id}/review-batches/{batch_id}/assignment": {
+      "put": {
+        "tags": [
+          "review batches"
+        ],
+        "summary": "Update Review Batch Assignment",
+        "operationId": "update_review_batch_assignment_v1_matters__matter_id__review_batches__batch_id__assignment_put",
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "matter_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid",
+              "title": "Matter Id"
+            }
+          },
+          {
+            "name": "batch_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid",
+              "title": "Batch Id"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ReviewBatchAssignmentUpdate"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ReviewBatchRead"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v1/matters/{matter_id}/review-batches/{batch_id}/documents": {
+      "get": {
+        "tags": [
+          "review batches"
+        ],
+        "summary": "List Review Batch Documents",
+        "operationId": "list_review_batch_documents_v1_matters__matter_id__review_batches__batch_id__documents_get",
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "matter_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid",
+              "title": "Matter Id"
+            }
+          },
+          {
+            "name": "batch_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid",
+              "title": "Batch Id"
+            }
+          },
+          {
+            "name": "offset",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "integer",
+              "minimum": 0,
+              "default": 0,
+              "title": "Offset"
+            }
+          },
+          {
+            "name": "limit",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "integer",
+              "maximum": 500,
+              "minimum": 1,
+              "default": 100,
+              "title": "Limit"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "array",
+                  "items": {
+                    "$ref": "#/components/schemas/ReviewBatchDocumentRead"
+                  },
+                  "title": "Response List Review Batch Documents V1 Matters  Matter Id  Review Batches  Batch Id  Documents Get"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v1/matters/{matter_id}/review-batches/{batch_id}/notes": {
+      "get": {
+        "tags": [
+          "review batches"
+        ],
+        "summary": "List Review Batch Notes",
+        "operationId": "list_review_batch_notes_v1_matters__matter_id__review_batches__batch_id__notes_get",
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "matter_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid",
+              "title": "Matter Id"
+            }
+          },
+          {
+            "name": "batch_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid",
+              "title": "Batch Id"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "array",
+                  "items": {
+                    "$ref": "#/components/schemas/ReviewBatchNoteRead"
+                  },
+                  "title": "Response List Review Batch Notes V1 Matters  Matter Id  Review Batches  Batch Id  Notes Get"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      },
+      "post": {
+        "tags": [
+          "review batches"
+        ],
+        "summary": "Create Review Batch Note",
+        "operationId": "create_review_batch_note_v1_matters__matter_id__review_batches__batch_id__notes_post",
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "matter_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid",
+              "title": "Matter Id"
+            }
+          },
+          {
+            "name": "batch_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid",
+              "title": "Batch Id"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ReviewBatchNoteCreate"
+              }
+            }
+          }
+        },
+        "responses": {
+          "201": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ReviewBatchNoteRead"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v1/matters/{matter_id}/review-batches/{batch_id}/runs": {
+      "post": {
+        "tags": [
+          "review batches"
+        ],
+        "summary": "Create Review Batch Run",
+        "operationId": "create_review_batch_run_v1_matters__matter_id__review_batches__batch_id__runs_post",
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "matter_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid",
+              "title": "Matter Id"
+            }
+          },
+          {
+            "name": "batch_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid",
+              "title": "Batch Id"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ReviewBatchRunCreate"
+              }
+            }
+          }
+        },
+        "responses": {
+          "201": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ReviewBatchRunRead"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      },
+      "get": {
+        "tags": [
+          "review batches"
+        ],
+        "summary": "List Review Batch Runs",
+        "operationId": "list_review_batch_runs_v1_matters__matter_id__review_batches__batch_id__runs_get",
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "matter_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid",
+              "title": "Matter Id"
+            }
+          },
+          {
+            "name": "batch_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid",
+              "title": "Batch Id"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "array",
+                  "items": {
+                    "$ref": "#/components/schemas/ReviewBatchRunRead"
+                  },
+                  "title": "Response List Review Batch Runs V1 Matters  Matter Id  Review Batches  Batch Id  Runs Get"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v1/matters/{matter_id}/review-batches/{batch_id}/runs/{run_id}/documents/{document_id}/values": {
+      "put": {
+        "tags": [
+          "review batches"
+        ],
+        "summary": "Replace Review Batch Run Values",
+        "operationId": "replace_review_batch_run_values_v1_matters__matter_id__review_batches__batch_id__runs__run_id__documents__document_id__values_put",
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "matter_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid",
+              "title": "Matter Id"
+            }
+          },
+          {
+            "name": "batch_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid",
+              "title": "Batch Id"
+            }
+          },
+          {
+            "name": "run_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid",
+              "title": "Run Id"
+            }
+          },
+          {
+            "name": "document_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid",
+              "title": "Document Id"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ReviewBatchRunDocumentValues"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "array",
+                  "items": {
+                    "$ref": "#/components/schemas/ReviewBatchRunValueRead"
+                  },
+                  "title": "Response Replace Review Batch Run Values V1 Matters  Matter Id  Review Batches  Batch Id  Runs  Run Id  Documents  Document Id  Values Put"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v1/matters/{matter_id}/review-batches/{batch_id}/runs/{run_id}/complete": {
+      "post": {
+        "tags": [
+          "review batches"
+        ],
+        "summary": "Complete Review Batch Run",
+        "operationId": "complete_review_batch_run_v1_matters__matter_id__review_batches__batch_id__runs__run_id__complete_post",
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "matter_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid",
+              "title": "Matter Id"
+            }
+          },
+          {
+            "name": "batch_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid",
+              "title": "Batch Id"
+            }
+          },
+          {
+            "name": "run_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid",
+              "title": "Run Id"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ReviewBatchRunRead"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v1/matters/{matter_id}/review-batches/{batch_id}/comparisons": {
+      "get": {
+        "tags": [
+          "review batches"
+        ],
+        "summary": "Compare Review Batch Runs",
+        "operationId": "compare_review_batch_runs_v1_matters__matter_id__review_batches__batch_id__comparisons_get",
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "matter_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid",
+              "title": "Matter Id"
+            }
+          },
+          {
+            "name": "batch_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid",
+              "title": "Batch Id"
+            }
+          },
+          {
+            "name": "left_run_id",
+            "in": "query",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid",
+              "title": "Left Run Id"
+            }
+          },
+          {
+            "name": "right_run_id",
+            "in": "query",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid",
+              "title": "Right Run Id"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ReviewBatchComparisonRead"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/v1/matters/{matter_id}/search": {
       "post": {
         "tags": [
@@ -11260,6 +12073,991 @@
           "refresh_token"
         ],
         "title": "RefreshRequest"
+      },
+      "ReviewBatchAssignmentUpdate": {
+        "properties": {
+          "assigned_user_id": {
+            "anyOf": [
+              {
+                "type": "string",
+                "format": "uuid"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Assigned User Id"
+          }
+        },
+        "type": "object",
+        "required": [
+          "assigned_user_id"
+        ],
+        "title": "ReviewBatchAssignmentUpdate"
+      },
+      "ReviewBatchCodingFieldRead": {
+        "properties": {
+          "id": {
+            "type": "string",
+            "format": "uuid",
+            "title": "Id"
+          },
+          "metadata_definition_id": {
+            "type": "string",
+            "format": "uuid",
+            "title": "Metadata Definition Id"
+          },
+          "sort_order": {
+            "type": "integer",
+            "title": "Sort Order"
+          },
+          "definition_snapshot": {
+            "additionalProperties": true,
+            "type": "object",
+            "title": "Definition Snapshot"
+          }
+        },
+        "type": "object",
+        "required": [
+          "id",
+          "metadata_definition_id",
+          "sort_order",
+          "definition_snapshot"
+        ],
+        "title": "ReviewBatchCodingFieldRead"
+      },
+      "ReviewBatchCodingGroupRead": {
+        "properties": {
+          "id": {
+            "type": "string",
+            "format": "uuid",
+            "title": "Id"
+          },
+          "source_metadata_group_id": {
+            "anyOf": [
+              {
+                "type": "string",
+                "format": "uuid"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Source Metadata Group Id"
+          },
+          "display_name": {
+            "type": "string",
+            "title": "Display Name"
+          },
+          "description": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Description"
+          },
+          "sort_order": {
+            "type": "integer",
+            "title": "Sort Order"
+          },
+          "fields": {
+            "items": {
+              "$ref": "#/components/schemas/ReviewBatchCodingFieldRead"
+            },
+            "type": "array",
+            "title": "Fields"
+          }
+        },
+        "type": "object",
+        "required": [
+          "id",
+          "source_metadata_group_id",
+          "display_name",
+          "description",
+          "sort_order",
+          "fields"
+        ],
+        "title": "ReviewBatchCodingGroupRead"
+      },
+      "ReviewBatchComparisonFieldRead": {
+        "properties": {
+          "metadata_definition_id": {
+            "type": "string",
+            "format": "uuid",
+            "title": "Metadata Definition Id"
+          },
+          "display_name": {
+            "type": "string",
+            "title": "Display Name"
+          },
+          "compared_count": {
+            "type": "integer",
+            "title": "Compared Count"
+          },
+          "match_count": {
+            "type": "integer",
+            "title": "Match Count"
+          },
+          "mismatch_count": {
+            "type": "integer",
+            "title": "Mismatch Count"
+          },
+          "missing_left_count": {
+            "type": "integer",
+            "title": "Missing Left Count"
+          },
+          "missing_right_count": {
+            "type": "integer",
+            "title": "Missing Right Count"
+          },
+          "agreement": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Agreement"
+          }
+        },
+        "type": "object",
+        "required": [
+          "metadata_definition_id",
+          "display_name",
+          "compared_count",
+          "match_count",
+          "mismatch_count",
+          "missing_left_count",
+          "missing_right_count",
+          "agreement"
+        ],
+        "title": "ReviewBatchComparisonFieldRead"
+      },
+      "ReviewBatchComparisonRead": {
+        "properties": {
+          "left_run_id": {
+            "type": "string",
+            "format": "uuid",
+            "title": "Left Run Id"
+          },
+          "right_run_id": {
+            "type": "string",
+            "format": "uuid",
+            "title": "Right Run Id"
+          },
+          "document_count": {
+            "type": "integer",
+            "title": "Document Count"
+          },
+          "fields": {
+            "items": {
+              "$ref": "#/components/schemas/ReviewBatchComparisonFieldRead"
+            },
+            "type": "array",
+            "title": "Fields"
+          }
+        },
+        "type": "object",
+        "required": [
+          "left_run_id",
+          "right_run_id",
+          "document_count",
+          "fields"
+        ],
+        "title": "ReviewBatchComparisonRead"
+      },
+      "ReviewBatchCreate": {
+        "properties": {
+          "name": {
+            "type": "string",
+            "maxLength": 200,
+            "minLength": 1,
+            "title": "Name"
+          },
+          "description": {
+            "anyOf": [
+              {
+                "type": "string",
+                "maxLength": 4000
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Description"
+          },
+          "selection_type": {
+            "type": "string",
+            "enum": [
+              "ALL_MATTER",
+              "SEARCH_QUERY",
+              "RANDOM_MATTER",
+              "RANDOM_BATCH"
+            ],
+            "title": "Selection Type"
+          },
+          "search": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/MatterSearchRequest"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "source_batch_id": {
+            "anyOf": [
+              {
+                "type": "string",
+                "format": "uuid"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Source Batch Id"
+          },
+          "sample_size": {
+            "anyOf": [
+              {
+                "type": "integer",
+                "maximum": 10000000.0,
+                "minimum": 1.0
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Sample Size"
+          },
+          "random_seed": {
+            "anyOf": [
+              {
+                "type": "string",
+                "maxLength": 100,
+                "minLength": 1
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Random Seed"
+          },
+          "assigned_user_id": {
+            "anyOf": [
+              {
+                "type": "string",
+                "format": "uuid"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Assigned User Id"
+          },
+          "reviewer_value_visibility": {
+            "type": "string",
+            "enum": [
+              "OWN_VALUES",
+              "ALL_REVIEWER_VALUES"
+            ],
+            "title": "Reviewer Value Visibility",
+            "default": "OWN_VALUES"
+          },
+          "coding_group_ids": {
+            "items": {
+              "type": "string",
+              "format": "uuid"
+            },
+            "type": "array",
+            "maxItems": 100,
+            "title": "Coding Group Ids"
+          },
+          "note": {
+            "anyOf": [
+              {
+                "type": "string",
+                "maxLength": 4000
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Note"
+          }
+        },
+        "type": "object",
+        "required": [
+          "name",
+          "selection_type"
+        ],
+        "title": "ReviewBatchCreate"
+      },
+      "ReviewBatchDocumentRead": {
+        "properties": {
+          "matter_document_id": {
+            "type": "string",
+            "format": "uuid",
+            "title": "Matter Document Id"
+          },
+          "sequence_number": {
+            "type": "integer",
+            "title": "Sequence Number"
+          },
+          "review_status": {
+            "type": "string",
+            "enum": [
+              "NOT_STARTED",
+              "IN_PROGRESS",
+              "COMPLETED",
+              "SKIPPED"
+            ],
+            "title": "Review Status"
+          },
+          "original_filename": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Original Filename"
+          }
+        },
+        "type": "object",
+        "required": [
+          "matter_document_id",
+          "sequence_number",
+          "review_status"
+        ],
+        "title": "ReviewBatchDocumentRead"
+      },
+      "ReviewBatchNoteCreate": {
+        "properties": {
+          "body": {
+            "type": "string",
+            "maxLength": 4000,
+            "minLength": 1,
+            "title": "Body"
+          }
+        },
+        "type": "object",
+        "required": [
+          "body"
+        ],
+        "title": "ReviewBatchNoteCreate"
+      },
+      "ReviewBatchNoteRead": {
+        "properties": {
+          "id": {
+            "type": "string",
+            "format": "uuid",
+            "title": "Id"
+          },
+          "review_batch_id": {
+            "type": "string",
+            "format": "uuid",
+            "title": "Review Batch Id"
+          },
+          "body": {
+            "type": "string",
+            "title": "Body"
+          },
+          "author_type": {
+            "type": "string",
+            "enum": [
+              "USER",
+              "AGENT"
+            ],
+            "title": "Author Type"
+          },
+          "author_user_id": {
+            "anyOf": [
+              {
+                "type": "string",
+                "format": "uuid"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Author User Id"
+          },
+          "author_run_id": {
+            "anyOf": [
+              {
+                "type": "string",
+                "format": "uuid"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Author Run Id"
+          },
+          "created_at": {
+            "type": "string",
+            "format": "date-time",
+            "title": "Created At"
+          }
+        },
+        "type": "object",
+        "required": [
+          "id",
+          "review_batch_id",
+          "body",
+          "author_type",
+          "author_user_id",
+          "author_run_id",
+          "created_at"
+        ],
+        "title": "ReviewBatchNoteRead"
+      },
+      "ReviewBatchRead": {
+        "properties": {
+          "id": {
+            "type": "string",
+            "format": "uuid",
+            "title": "Id"
+          },
+          "matter_id": {
+            "type": "string",
+            "format": "uuid",
+            "title": "Matter Id"
+          },
+          "name": {
+            "type": "string",
+            "title": "Name"
+          },
+          "description": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Description"
+          },
+          "selection_type": {
+            "type": "string",
+            "enum": [
+              "ALL_MATTER",
+              "SEARCH_QUERY",
+              "RANDOM_MATTER",
+              "RANDOM_BATCH"
+            ],
+            "title": "Selection Type"
+          },
+          "selection_definition": {
+            "additionalProperties": true,
+            "type": "object",
+            "title": "Selection Definition"
+          },
+          "source_batch_id": {
+            "anyOf": [
+              {
+                "type": "string",
+                "format": "uuid"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Source Batch Id"
+          },
+          "search_index_generation_id": {
+            "anyOf": [
+              {
+                "type": "string",
+                "format": "uuid"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Search Index Generation Id"
+          },
+          "sample_size": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Sample Size"
+          },
+          "random_seed": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Random Seed"
+          },
+          "assigned_user_id": {
+            "anyOf": [
+              {
+                "type": "string",
+                "format": "uuid"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Assigned User Id"
+          },
+          "assigned_user": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/MatterSavedSearchUserRead"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "reviewer_value_visibility": {
+            "type": "string",
+            "enum": [
+              "OWN_VALUES",
+              "ALL_REVIEWER_VALUES"
+            ],
+            "title": "Reviewer Value Visibility"
+          },
+          "status": {
+            "type": "string",
+            "enum": [
+              "QUEUED",
+              "BUILDING",
+              "READY",
+              "FAILED",
+              "ARCHIVED"
+            ],
+            "title": "Status"
+          },
+          "workflow_id": {
+            "type": "string",
+            "title": "Workflow Id"
+          },
+          "document_count": {
+            "type": "integer",
+            "title": "Document Count"
+          },
+          "error_message": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Error Message"
+          },
+          "created_by_user_id": {
+            "type": "string",
+            "format": "uuid",
+            "title": "Created By User Id"
+          },
+          "coding_groups": {
+            "items": {
+              "$ref": "#/components/schemas/ReviewBatchCodingGroupRead"
+            },
+            "type": "array",
+            "title": "Coding Groups"
+          },
+          "created_at": {
+            "type": "string",
+            "format": "date-time",
+            "title": "Created At"
+          },
+          "updated_at": {
+            "type": "string",
+            "format": "date-time",
+            "title": "Updated At"
+          },
+          "completed_at": {
+            "anyOf": [
+              {
+                "type": "string",
+                "format": "date-time"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Completed At"
+          }
+        },
+        "type": "object",
+        "required": [
+          "id",
+          "matter_id",
+          "name",
+          "description",
+          "selection_type",
+          "selection_definition",
+          "source_batch_id",
+          "search_index_generation_id",
+          "sample_size",
+          "random_seed",
+          "assigned_user_id",
+          "assigned_user",
+          "reviewer_value_visibility",
+          "status",
+          "workflow_id",
+          "document_count",
+          "error_message",
+          "created_by_user_id",
+          "coding_groups",
+          "created_at",
+          "updated_at",
+          "completed_at"
+        ],
+        "title": "ReviewBatchRead"
+      },
+      "ReviewBatchRunCreate": {
+        "properties": {
+          "run_type": {
+            "type": "string",
+            "enum": [
+              "HUMAN",
+              "AGENT"
+            ],
+            "title": "Run Type"
+          },
+          "purpose": {
+            "type": "string",
+            "enum": [
+              "REVIEW",
+              "REFERENCE",
+              "CANDIDATE"
+            ],
+            "title": "Purpose",
+            "default": "REVIEW"
+          },
+          "actor_user_id": {
+            "anyOf": [
+              {
+                "type": "string",
+                "format": "uuid"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Actor User Id"
+          },
+          "agent_definition_version_id": {
+            "anyOf": [
+              {
+                "type": "string",
+                "format": "uuid"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Agent Definition Version Id"
+          },
+          "parent_run_id": {
+            "anyOf": [
+              {
+                "type": "string",
+                "format": "uuid"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Parent Run Id"
+          }
+        },
+        "type": "object",
+        "required": [
+          "run_type"
+        ],
+        "title": "ReviewBatchRunCreate"
+      },
+      "ReviewBatchRunDocumentValues": {
+        "properties": {
+          "matter_document_id": {
+            "type": "string",
+            "format": "uuid",
+            "title": "Matter Document Id"
+          },
+          "fields": {
+            "items": {
+              "$ref": "#/components/schemas/ReviewBatchRunFieldValue"
+            },
+            "type": "array",
+            "maxItems": 100,
+            "title": "Fields"
+          }
+        },
+        "type": "object",
+        "required": [
+          "matter_document_id",
+          "fields"
+        ],
+        "title": "ReviewBatchRunDocumentValues"
+      },
+      "ReviewBatchRunFieldValue": {
+        "properties": {
+          "metadata_definition_id": {
+            "type": "string",
+            "format": "uuid",
+            "title": "Metadata Definition Id"
+          },
+          "values": {
+            "items": {},
+            "type": "array",
+            "maxItems": 1000,
+            "title": "Values"
+          },
+          "confidence": {
+            "anyOf": [
+              {
+                "type": "number",
+                "maximum": 1.0,
+                "minimum": 0.0
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Confidence"
+          }
+        },
+        "type": "object",
+        "required": [
+          "metadata_definition_id",
+          "values"
+        ],
+        "title": "ReviewBatchRunFieldValue"
+      },
+      "ReviewBatchRunRead": {
+        "properties": {
+          "id": {
+            "type": "string",
+            "format": "uuid",
+            "title": "Id"
+          },
+          "review_batch_id": {
+            "type": "string",
+            "format": "uuid",
+            "title": "Review Batch Id"
+          },
+          "run_type": {
+            "type": "string",
+            "enum": [
+              "HUMAN",
+              "AGENT"
+            ],
+            "title": "Run Type"
+          },
+          "purpose": {
+            "type": "string",
+            "enum": [
+              "REVIEW",
+              "REFERENCE",
+              "CANDIDATE"
+            ],
+            "title": "Purpose"
+          },
+          "status": {
+            "type": "string",
+            "enum": [
+              "QUEUED",
+              "RUNNING",
+              "COMPLETED",
+              "FAILED",
+              "CANCELED"
+            ],
+            "title": "Status"
+          },
+          "result_policy": {
+            "type": "string",
+            "enum": [
+              "ISOLATED",
+              "PUBLISH_TO_MATTER"
+            ],
+            "title": "Result Policy"
+          },
+          "parent_run_id": {
+            "anyOf": [
+              {
+                "type": "string",
+                "format": "uuid"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Parent Run Id"
+          },
+          "actor_user_id": {
+            "anyOf": [
+              {
+                "type": "string",
+                "format": "uuid"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Actor User Id"
+          },
+          "agent_definition_version_id": {
+            "anyOf": [
+              {
+                "type": "string",
+                "format": "uuid"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Agent Definition Version Id"
+          },
+          "configuration_snapshot": {
+            "additionalProperties": true,
+            "type": "object",
+            "title": "Configuration Snapshot"
+          },
+          "initiated_by_user_id": {
+            "type": "string",
+            "format": "uuid",
+            "title": "Initiated By User Id"
+          },
+          "processed_document_count": {
+            "type": "integer",
+            "title": "Processed Document Count"
+          },
+          "error_message": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Error Message"
+          },
+          "started_at": {
+            "anyOf": [
+              {
+                "type": "string",
+                "format": "date-time"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Started At"
+          },
+          "completed_at": {
+            "anyOf": [
+              {
+                "type": "string",
+                "format": "date-time"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Completed At"
+          },
+          "created_at": {
+            "type": "string",
+            "format": "date-time",
+            "title": "Created At"
+          },
+          "updated_at": {
+            "type": "string",
+            "format": "date-time",
+            "title": "Updated At"
+          }
+        },
+        "type": "object",
+        "required": [
+          "id",
+          "review_batch_id",
+          "run_type",
+          "purpose",
+          "status",
+          "result_policy",
+          "parent_run_id",
+          "actor_user_id",
+          "agent_definition_version_id",
+          "configuration_snapshot",
+          "initiated_by_user_id",
+          "processed_document_count",
+          "error_message",
+          "started_at",
+          "completed_at",
+          "created_at",
+          "updated_at"
+        ],
+        "title": "ReviewBatchRunRead"
+      },
+      "ReviewBatchRunValueRead": {
+        "properties": {
+          "matter_document_id": {
+            "type": "string",
+            "format": "uuid",
+            "title": "Matter Document Id"
+          },
+          "metadata_definition_id": {
+            "type": "string",
+            "format": "uuid",
+            "title": "Metadata Definition Id"
+          },
+          "value_ordinal": {
+            "type": "integer",
+            "title": "Value Ordinal"
+          },
+          "value": {
+            "title": "Value"
+          },
+          "confidence": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Confidence"
+          }
+        },
+        "type": "object",
+        "required": [
+          "matter_document_id",
+          "metadata_definition_id",
+          "value_ordinal",
+          "value",
+          "confidence"
+        ],
+        "title": "ReviewBatchRunValueRead"
       },
       "SearchIndexGenerationRead": {
         "properties": {

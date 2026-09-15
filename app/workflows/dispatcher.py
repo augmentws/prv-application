@@ -70,6 +70,19 @@ def cancel_matter_topics(workflow_id: str) -> None:
         get_dbos_client().cancel_workflow(workflow_id, cancel_children=True)
 
 
+def enqueue_review_batch(db: Session, workflow_id: str, batch_id: str) -> None:
+    settings = get_settings()
+    if not settings.dbos_enabled:
+        return
+    options: EnqueueOptions = {
+        "workflow_name": "review_batch_build",
+        "queue_name": "review-batch-builds",
+        "workflow_id": workflow_id,
+        "application_name": settings.dbos_application_name,
+    }
+    get_dbos_client().enqueue_in_transaction(db, options, batch_id)
+
+
 def enqueue_search_projection(
     db: Session,
     workflow_id: str,

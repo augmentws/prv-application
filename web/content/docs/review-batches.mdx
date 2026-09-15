@@ -1,0 +1,39 @@
+---
+title: Review batches
+description: Freeze document sets for assignment, repeated agent runs, and coding comparisons.
+---
+
+Review batches give a matter a stable set of documents for review or evaluation. A document can appear in more than one batch, and creating a batch does not copy its file or remove it from the matter.
+
+## Create a batch
+
+Open a matter and select **Batches**, then select **Create batch**. Give the batch a clear name and description. The description is useful for review instructions, evaluation goals, and notes about why the sample exists.
+
+Choose how to select documents:
+
+- **All matter documents** includes every document currently in the matter.
+- **Keyword search results** runs the entered query against filenames, paths, searchable metadata, email fields, and document body text.
+- **Random matter sample** selects a repeatable random sample from the matter.
+- **Random sample from batch** selects from an existing ready batch.
+
+Leaving the random sample size empty includes all source documents in a randomized order. The system stores the random seed, so the selection is reproducible.
+
+Select one or more shared metadata groups to define the coding fields. The system snapshots those fields when the batch is created. Later edits to the matter group do not silently change the batch.
+
+## Status
+
+A batch normally moves from **Queued** to **Building** to **Ready**. Its document count is final when it is ready. A failed batch remains visible with its error so the selection can be diagnosed. Search-query batches require a ready matter search index.
+
+## Assignment and value visibility
+
+A batch can have one current human assignee. **Only the reviewer’s values** keeps human coding isolated while a reviewer works. **Values from all reviewers** allows reviewers to see one another’s coding. Agent outputs are always isolated by run.
+
+## Agent evaluation
+
+Each human or agent pass receives a separate run identity. Re-running an updated agent against the same batch creates a new run and preserves the earlier output. The two runs—or an agent run and a human reference run—can then be compared field by field.
+
+Run results do not change the matter’s ordinary metadata or search index. Publishing accepted evaluation results into matter coding is planned as a separate explicit action.
+
+## Current limitations
+
+The Batches tab currently creates and monitors batches. Keyword query batches are supported; semantic and hybrid result sets are not yet available for batch creation. Reviewer navigation, agent-run launch controls, adjudication, and publish-to-matter controls are planned next.
