@@ -1,10 +1,12 @@
 import uuid
 
-from dbos import DBOS
+from dbos import DBOS, Queue
 
 from app.config import get_settings
 from app.database import SessionLocal
 from app.review_batches import materialize_review_batch
+
+BUILD_QUEUE = Queue("review-batch-builds", global_concurrency=2)
 
 
 @DBOS.step(name="materialize_review_batch", retries_allowed=True, max_attempts=5)
