@@ -206,6 +206,9 @@ Add a `MatterDefinitionAssessmentRun` Core record with:
 - pinned physical `SearchIndexGeneration`;
 - resulting review-batch ID;
 - configuration and binding snapshot;
+- requested maximum document count, with a default of 500;
+- any large-run warning acknowledgment, including the acknowledging user and time;
+- estimated analysis input and output tokens, estimator method and version, and the model used for estimation;
 - candidate, selected, summarized, skipped, and failed counts;
 - status, error, and timestamps.
 
@@ -254,6 +257,35 @@ labels whether it is published. This permits evaluation of a draft before public
 Add an approval-required tool such as `matter_definition.start_assessment`. Approval does not bypass
 authorization. At execution time the tool reauthorizes the approving user and calls the same Core command as
 the UI.
+
+## Assessment size and initial usage estimate
+
+The requested maximum document count defaults to 500. A server-configured large-run warning threshold defaults
+to 1,000 documents. A request above the warning threshold is not rejected: the UI or initiating agent must show
+the requested count and require the user to acknowledge the warning explicitly before the shared Core command
+starts the workflow. The acknowledgment is included in the immutable configuration snapshot. The initial
+version does not impose a hard document-count, token, or currency ceiling beyond ordinary API and data-integrity
+limits.
+
+Estimate analysis usage after candidate selection from the exact source text that the document-analysis skill
+will receive. Count the stable prompt prefix, Matter Definition, document text, map/reduce overhead for long
+documents, and expected structured output. Use the tokenizer for the selected analysis model when one is
+available. For OpenAI-compatible tokenization, make `tiktoken` a direct dependency rather than relying on its
+current transitive installation. For a model without a local tokenizer, use a versioned conservative
+character-based estimator and label the result as approximate.
+
+Embedding provider usage is currently recorded at embedding batch and job scope, not per document. The stored
+chunk artifacts provide per-document text and character spans but no token count. Embedding token totals may be
+used to calibrate a coarse matter-level fallback, but they are not the primary estimate because embedding and
+analysis models may tokenize the same text differently and embedding requests may combine several documents.
+
+Persist the estimate, estimator version, model, selected-document count, and source-text hashes so the estimate
+can be explained and compared with actual `ModelInvocation` usage. Display the estimate once the assessment
+batch has been materialized; it is informational in the initial version and does not pause or reject the run.
+
+Future cost-control work may add tenant-specific token or currency budgets, price-aware estimates, preflight
+approval thresholds, budget reservation, and enforcement during fan-out. Those controls are deliberately out
+of scope for the first assessment workflow.
 
 ## Phase 1: retrieval planning
 
@@ -502,9 +534,13 @@ workflow-role bindings. They will not permit arbitrary workflow graph creation.
 ### Matter Definition
 
 - Add **Assess against corpus**.
-- Select an immutable definition revision, maximum document count, and control-sample size.
+- Select an immutable definition revision, maximum document count, and control-sample size; default the maximum
+  document count to 500.
+- Warn when the requested maximum exceeds 1,000 documents and require an explicit **Continue with N documents**
+  acknowledgment without preventing the user from proceeding.
 - Show whether the selected revision is draft or published.
 - Show progress through planning, retrieval, batch construction, summarization, and synthesis.
+- Show the estimated analysis tokens, estimator method, and selected-document count after batch materialization.
 - Show the generated query plan and retrieval reasons.
 - Link to the generated batch and final questions.
 
@@ -564,11 +600,14 @@ workflow-role bindings. They will not permit arbitrary workflow graph creation.
 
 ### Retrieval and batches
 
+- Omitting the maximum document count uses 500.
+- A maximum above the server warning threshold requires a recorded user acknowledgment but is not rejected.
 - Every query uses the pinned physical search generation.
 - The planner cannot submit raw OpenSearch DSL.
 - Candidate merging is deterministic and honors per-criterion quotas.
 - A document matched by several queries appears once with all retrieval reasons.
 - The batch membership and provenance remain unchanged after search-index replacement.
+- The usage estimate is reproducible from the estimator version, model, source hashes, and workflow configuration.
 
 ### Document analysis
 
