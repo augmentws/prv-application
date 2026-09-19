@@ -2,7 +2,7 @@ import uuid
 from datetime import datetime
 from typing import Annotated, Any, Literal
 
-from pydantic import BaseModel, ConfigDict, Field, StringConstraints, model_validator
+from pydantic import BaseModel, ConfigDict, Field, StringConstraints, field_validator, model_validator
 
 CollectionStatus = Literal["OPEN", "SEALED", "ARCHIVED", "DELETING"]
 RecordType = Literal["EMAIL", "FILE", "CHAT", "TRANSCRIPT", "OTHER"]
@@ -196,6 +196,13 @@ class EmailRecipientInput(BaseModel):
     display_name: str | None = Field(default=None, max_length=500)
     email_address: str | None = Field(default=None, max_length=500)
 
+    @field_validator("display_name", "email_address", mode="before")
+    @classmethod
+    def reject_nul_characters(cls, value: Any) -> Any:
+        if isinstance(value, str) and "\x00" in value:
+            raise ValueError("must not contain NUL characters")
+        return value
+
 
 class EmailMetadataInput(BaseModel):
     sender: str | None = Field(default=None, max_length=4000)
@@ -204,6 +211,13 @@ class EmailMetadataInput(BaseModel):
     received_at: datetime | None = None
     message_id: str | None = Field(default=None, max_length=1000)
     recipients: list[EmailRecipientInput] = Field(default_factory=list, max_length=10000)
+
+    @field_validator("sender", "subject", "message_id", mode="before")
+    @classmethod
+    def reject_nul_characters(cls, value: Any) -> Any:
+        if isinstance(value, str) and "\x00" in value:
+            raise ValueError("must not contain NUL characters")
+        return value
 
 
 class CollectionItemUploadMetadata(BaseModel):

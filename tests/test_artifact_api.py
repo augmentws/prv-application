@@ -3,16 +3,25 @@ import uuid
 from datetime import datetime, timedelta, timezone
 
 import jwt
+import pytest
 from fastapi.testclient import TestClient
+from pydantic import ValidationError
 
 from artifact_service.api import MAX_DATE_HISTOGRAM_BUCKETS, _fill_date_buckets
 from artifact_service.config import get_artifact_settings
-from artifact_service.schemas import TextProcessingRule
+from artifact_service.schemas import EmailMetadataInput, EmailRecipientInput, TextProcessingRule
 from artifact_service.text_processing import process_text
 
 
 def auth(token: str) -> dict[str, str]:
     return {"Authorization": f"Bearer {token}"}
+
+
+def test_email_upload_metadata_rejects_nul_characters_before_database_write() -> None:
+    with pytest.raises(ValidationError, match="must not contain NUL characters"):
+        EmailMetadataInput(subject="energy savings\x00")
+    with pytest.raises(ValidationError, match="must not contain NUL characters"):
+        EmailRecipientInput(recipient_type="TO", display_name="recipient\x00name")
 
 
 def test_date_histogram_does_not_fill_extreme_empty_ranges() -> None:

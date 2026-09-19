@@ -19,7 +19,13 @@ from typing import Any
 from scripts.import_client.adapters.base import DatasetAdapter
 from scripts.import_client.api import OpenApiClient
 from scripts.import_client.email_parser import email_metadata, parse_message
-from scripts.import_client.models import CustodianSpec, EmailMetadata, ImportItem, SourceContainer
+from scripts.import_client.models import CustodianSpec, EmailMetadata, EmailRecipient, ImportItem, SourceContainer
+
+EMAIL_SENDER_MAX_LENGTH = 4000
+EMAIL_SUBJECT_MAX_LENGTH = 10000
+EMAIL_MESSAGE_ID_MAX_LENGTH = 1000
+EMAIL_RECIPIENT_VALUE_MAX_LENGTH = 500
+EMAIL_RECIPIENTS_MAX_LENGTH = 10000
 
 
 @dataclass
@@ -64,6 +70,90 @@ def _email_payload(email: EmailMetadata | None) -> dict[str, Any] | None:
         "message_id": email.message_id,
         "recipients": [asdict(recipient) for recipient in email.recipients],
     }
+
+
+def _sanitize_email_text(
+    value: str | None,
+    *,
+    field: str,
+    max_length: int,
+    warnings: list[str],
+    omit_when_oversized: bool = False,
+) -> str | None:
+    if value is None:
+        return None
+    nul_count = value.count("\x00")
+    cleaned = value.replace("\x00", " ")
+    if nul_count:
+        warnings.append(
+            f"{field} contained {nul_count} NUL {('character' if nul_count == 1 else 'characters')}; replaced with spaces"
+        )
+    if len(cleaned) <= max_length:
+        return cleaned
+    if omit_when_oversized:
+        warnings.append(
+            f"{field} exceeded {max_length} characters ({len(cleaned)}); omitted from normalized metadata"
+        )
+        return None
+    warnings.append(
+        f"{field} exceeded {max_length} characters ({len(cleaned)}); truncated in normalized metadata"
+    )
+    return cleaned[:max_length]
+
+
+def _sanitize_email_metadata(email: EmailMetadata) -> tuple[EmailMetadata, list[str]]:
+    warnings: list[str] = []
+    recipients = email.recipients
+    if len(recipients) > EMAIL_RECIPIENTS_MAX_LENGTH:
+        warnings.append(
+            "email.recipients exceeded "
+            f"{EMAIL_RECIPIENTS_MAX_LENGTH} entries ({len(recipients)}); extra recipients omitted from normalized metadata"
+        )
+        recipients = recipients[:EMAIL_RECIPIENTS_MAX_LENGTH]
+    sanitized_recipients = tuple(
+        EmailRecipient(
+            recipient_type=recipient.recipient_type,
+            display_name=_sanitize_email_text(
+                recipient.display_name,
+                field=f"email.recipients[{index}].display_name",
+                max_length=EMAIL_RECIPIENT_VALUE_MAX_LENGTH,
+                warnings=warnings,
+            ),
+            email_address=_sanitize_email_text(
+                recipient.email_address,
+                field=f"email.recipients[{index}].email_address",
+                max_length=EMAIL_RECIPIENT_VALUE_MAX_LENGTH,
+                warnings=warnings,
+            ),
+        )
+        for index, recipient in enumerate(recipients)
+    )
+    return (
+        replace(
+            email,
+            sender=_sanitize_email_text(
+                email.sender,
+                field="email.sender",
+                max_length=EMAIL_SENDER_MAX_LENGTH,
+                warnings=warnings,
+            ),
+            subject=_sanitize_email_text(
+                email.subject,
+                field="email.subject",
+                max_length=EMAIL_SUBJECT_MAX_LENGTH,
+                warnings=warnings,
+            ),
+            message_id=_sanitize_email_text(
+                email.message_id,
+                field="email.message_id",
+                max_length=EMAIL_MESSAGE_ID_MAX_LENGTH,
+                warnings=warnings,
+                omit_when_oversized=True,
+            ),
+            recipients=sanitized_recipients,
+        ),
+        warnings,
+    )
 
 
 def _bounded_source_id(value: str) -> str:
@@ -510,6 +600,19 @@ class BaseImporter:
                     raise RuntimeError(
                         f"Parent item {item.parent_source_item_id!r} must be uploaded before its child"
                     ) from exc
+        email = item.email
+        email_warnings: list[str] = []
+        if email is not None:
+            email, email_warnings = _sanitize_email_metadata(email)
+            for warning in email_warnings:
+                self.progress(f"Warning {item.source_item_id}: {warning}")
+        raw_metadata = dict(item.raw_metadata)
+        if email_warnings:
+            existing_warnings = raw_metadata.get("email_metadata_warnings")
+            raw_metadata["email_metadata_warnings"] = [
+                *(existing_warnings if isinstance(existing_warnings, list) else []),
+                *email_warnings,
+            ]
         metadata = {
             "source_item_id": item.source_item_id,
             "record_type": item.record_type,
@@ -522,8 +625,8 @@ class BaseImporter:
             "source_created_at": _datetime(item.source_created_at),
             "source_modified_at": _datetime(item.source_modified_at),
             "processing_status": item.processing_status,
-            "email": _email_payload(item.email),
-            "raw_metadata": item.raw_metadata,
+            "email": _email_payload(email),
+            "raw_metadata": raw_metadata,
             "unmapped_metadata": item.unmapped_metadata,
             "source_container_artifact_id": source_artifact_id,
         }

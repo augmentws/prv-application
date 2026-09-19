@@ -22,7 +22,7 @@ from scripts.import_client.adapters.jeb_bush_inventory import (
 )
 from scripts.import_client.api import OpenApiClient, _valid_json_unicode
 from scripts.import_client.importer import BaseImporter
-from scripts.import_client.models import CustodianSpec, ImportItem, SourceContainer
+from scripts.import_client.models import CustodianSpec, EmailMetadata, EmailRecipient, ImportItem, SourceContainer
 
 REPOSITORY_ROOT = Path(__file__).resolve().parents[1]
 
@@ -562,6 +562,40 @@ class ParallelContainerAdapter(DatasetAdapter):
         yield ImportItem("source", "second", "FILE", "second.txt", b"second", (custodian,))
 
 
+class DirtyEmailContainerAdapter(DatasetAdapter):
+    dataset_name = "dirty-email-test"
+    default_collection_name = "Dirty email test"
+
+    def __init__(self, source: Path) -> None:
+        self.source = source
+
+    def source_containers(self):
+        yield SourceContainer("source", self.source, "message/rfc822", "dirty.eml")
+
+    def custom_items(self, source_container):
+        yield ImportItem(
+            source_container_key="source",
+            source_item_id="dirty-email",
+            record_type="EMAIL",
+            original_filename="dirty.eml",
+            content=b"Subject: original dirty headers\n\nBody",
+            custodians=(CustodianSpec("Custodian"),),
+            media_type="message/rfc822",
+            email=EmailMetadata(
+                sender="s" * 4001,
+                subject=("Before\x00After" + ("x" * 10000)),
+                message_id="m" * 1001,
+                recipients=(
+                    EmailRecipient(
+                        recipient_type="TO",
+                        display_name="d" * 501,
+                        email_address="e" * 501,
+                    ),
+                ),
+            ),
+        )
+
+
 class FakeApi:
     def __init__(self) -> None:
         self.item_metadata = []
@@ -652,3 +686,35 @@ def test_base_importer_uploads_independent_items_concurrently(tmp_path: Path) ->
     assert report.items_created == 2
     assert report.bytes_submitted == 11
     assert api.maximum_active_uploads == 2
+
+
+def test_base_importer_warns_and_uploads_dirty_email_metadata(tmp_path: Path) -> None:
+    source = tmp_path / "dirty.eml"
+    source.write_bytes(b"container")
+    api = FakeApi()
+    progress: list[str] = []
+    importer = BaseImporter(
+        api,  # type: ignore[arg-type]
+        tenant_id="tenant",
+        tenant_slug="root",
+        client_id="client",
+        collection_name="Collection",
+        progress=progress.append,
+    )
+
+    report = importer.run(DirtyEmailContainerAdapter(source))
+
+    assert report.failures == []
+    assert report.items_created == 1
+    payload = api.item_metadata[0]
+    email = payload["email"]
+    assert len(email["sender"]) == 4000
+    assert len(email["subject"]) == 10000
+    assert "\x00" not in email["subject"]
+    assert email["message_id"] is None
+    assert len(email["recipients"][0]["display_name"]) == 500
+    assert len(email["recipients"][0]["email_address"]) == 500
+    recorded_warnings = payload["raw_metadata"]["email_metadata_warnings"]
+    assert len(recorded_warnings) == 6
+    assert any("email.subject contained 1 NUL character" in message for message in progress)
+    assert any("email.message_id exceeded 1000 characters" in message for message in progress)
