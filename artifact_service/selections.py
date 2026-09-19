@@ -33,6 +33,8 @@ def create_collection_selection(
         extensions=normalize_extensions(payload.file_extensions),
         record_types=list(dict.fromkeys(payload.record_types)),
         processing_statuses=list(dict.fromkeys(payload.processing_statuses)),
+        file_date_from=payload.file_date_from,
+        file_date_to=payload.file_date_to,
         explicit_item_ids=list(dict.fromkeys(payload.item_ids)) if payload.mode == "EXPLICIT" else None,
     )
     total_count = db.scalar(select(func.count()).select_from(matched_ids.subquery())) or 0

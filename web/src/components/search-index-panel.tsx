@@ -1,6 +1,6 @@
 "use client";
 
-import { Activity, AlertTriangle, Clock3, Database, LoaderCircle, RefreshCw } from "lucide-react";
+import { Activity, AlertTriangle, Clock3, Database, LoaderCircle, RefreshCw, RotateCcw } from "lucide-react";
 import { useState } from "react";
 
 import { Badge } from "@/components/ui/badge";
@@ -19,17 +19,24 @@ interface SearchIndexPanelProps {
   rebuilding: boolean;
   onConfirmReindex: (operationId: string) => Promise<void>;
   confirmingReindex: boolean;
+  onRetryFailed: () => Promise<void>;
+  retryingFailed: boolean;
 }
 
 type IndexHealth = "NOT_CREATED" | "BUILDING" | "ACTION_REQUIRED" | "READY" | "BEHIND" | "FAILED";
 
-export function SearchIndexPanel({ coreDocumentCount, indexes, operations, onRebuild, rebuilding, onConfirmReindex, confirmingReindex }: SearchIndexPanelProps) {
+export function SearchIndexPanel({ coreDocumentCount, indexes, operations, onRebuild, rebuilding, onConfirmReindex, confirmingReindex, onRetryFailed, retryingFailed }: SearchIndexPanelProps) {
   const activeIndex = indexes.find((index) => index.status === "ACTIVE");
   const latestIndex = indexes[0];
   const activeOperation = operations.find((operation) => operation.status === "QUEUED" || operation.status === "RUNNING");
   const awaitingOperation = operations.find((operation) => operation.status === "AWAITING_USER");
   const latestStructuralOperation = operations.find((operation) => operation.kind === "REBUILD" || operation.kind === "SCHEMA_SYNC");
   const failedOperations = operations.filter((operation) => operation.status === "FAILED");
+  const failedDocumentUpserts = failedOperations.filter((operation) => operation.kind === "DOCUMENT_UPSERT");
+  const failedDocumentCount = failedDocumentUpserts.reduce((count, operation) => {
+    const documentIds = operation.payload.document_ids;
+    return count + (Array.isArray(documentIds) ? documentIds.length : 0);
+  }, 0);
   const indexedDocumentCount = activeIndex?.document_count ?? 0;
   const countDelta = coreDocumentCount - indexedDocumentCount;
   const health = deriveHealth({ activeIndex, activeOperation, awaitingOperation, latestStructuralOperation, countDelta });
@@ -41,7 +48,10 @@ export function SearchIndexPanel({ coreDocumentCount, indexes, operations, onReb
           <h2 className="text-lg font-semibold">Search index</h2>
           <p className="mt-1 max-w-2xl text-sm leading-6 text-muted-foreground">Monitor the matter&apos;s rebuildable search projection. Core remains authoritative while indexing work runs.</p>
         </div>
-        <RebuildDialog onRebuild={onRebuild} rebuilding={rebuilding} />
+        <div className="flex flex-wrap items-center gap-2">
+          {failedDocumentUpserts.length ? <RetryFailedDialog operationCount={failedDocumentUpserts.length} documentCount={failedDocumentCount} onRetry={onRetryFailed} retrying={retryingFailed} /> : null}
+          <RebuildDialog onRebuild={onRebuild} rebuilding={rebuilding} />
+        </div>
       </div>
 
       <div className="grid gap-4 sm:grid-cols-2 xl:grid-cols-4">
@@ -78,6 +88,37 @@ export function SearchIndexPanel({ coreDocumentCount, indexes, operations, onReb
         </Card>
       </section>
     </div>
+  );
+}
+
+function RetryFailedDialog({ operationCount, documentCount, onRetry, retrying }: {
+  operationCount: number;
+  documentCount: number;
+  onRetry: () => Promise<void>;
+  retrying: boolean;
+}) {
+  const [open, setOpen] = useState(false);
+  const [error, setError] = useState<string>();
+
+  async function retry() {
+    setError(undefined);
+    try {
+      await onRetry();
+      setOpen(false);
+    } catch (caught) {
+      setError(caught instanceof Error ? caught.message : "The failed search jobs could not be requeued.");
+    }
+  }
+
+  return (
+    <Dialog open={open} onOpenChange={(nextOpen) => { setOpen(nextOpen); if (!nextOpen) setError(undefined); }}>
+      <DialogTrigger asChild><Button><RotateCcw />Requeue failed jobs</Button></DialogTrigger>
+      <DialogContent>
+        <DialogHeader><DialogTitle>Requeue failed document updates?</DialogTitle><DialogDescription>This will retry {operationCount.toLocaleString()} failed {operationCount === 1 ? "job" : "jobs"} covering {documentCount.toLocaleString()} {documentCount === 1 ? "document" : "documents"}. Existing indexed records are updated without creating duplicates.</DialogDescription></DialogHeader>
+        {error ? <p role="alert" className="mt-4 text-sm text-destructive">{error}</p> : null}
+        <DialogFooter><Button type="button" variant="outline" onClick={() => setOpen(false)} disabled={retrying}>Cancel</Button><Button type="button" onClick={() => void retry()} disabled={retrying}>{retrying ? <LoaderCircle className="animate-spin" /> : <RotateCcw />}{retrying ? "Requeueing…" : "Confirm requeue"}</Button></DialogFooter>
+      </DialogContent>
+    </Dialog>
   );
 }
 

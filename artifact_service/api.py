@@ -1,7 +1,7 @@
 import json
 import uuid
 from collections.abc import Callable
-from datetime import datetime
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Annotated
 from urllib.parse import quote
@@ -16,18 +16,22 @@ from sqlalchemy.orm import Session
 from artifact_service.auth import ArtifactPrincipal, require_client, require_tenant
 from artifact_service.config import ArtifactSettings, get_artifact_settings
 from artifact_service.database import get_artifact_db
+from artifact_service.deletion import create_deletion_job, fail_deletion, retry_deletion_job
 from artifact_service.derived import store_derived_artifact
 from artifact_service.models import (
     Artifact,
     ArtifactLineage,
     ClientCollection,
     CollectionArtifact,
+    CollectionDeletionJob,
     CollectionItem,
     CollectionItemArtifact,
     CollectionItemCustodian,
     CollectionItemEmail,
     CollectionItemEmailRecipient,
     CollectionSelection,
+    CollectionTextProcessingProfile,
+    CollectionTextProcessingRun,
     ContentBlob,
     TenantStorage,
 )
@@ -36,17 +40,28 @@ from artifact_service.schemas import (
     ArtifactRead,
     CollectionCreate,
     CollectionCustodianSummary,
+    CollectionDateHistogramResponse,
+    CollectionDeletionFailure,
+    CollectionDeletionJobRead,
+    CollectionFacetKey,
     CollectionItemRead,
     CollectionItemSearchResponse,
     CollectionItemUploadMetadata,
     CollectionItemUploadResponse,
     CollectionRead,
-    CollectionSearchFacets,
     CollectionSelectionBatch,
     CollectionSelectionBatchCustodian,
     CollectionSelectionBatchItem,
     CollectionSelectionCreate,
     CollectionSelectionRead,
+    CollectionTextProcessingProfileRead,
+    CollectionTextProcessingProfileUpdate,
+    CollectionTextProcessingRunRead,
+    CollectionTextProcessingTestItem,
+    CollectionTextProcessingTestRequest,
+    CollectionTextProcessingTestResponse,
+    DateHistogramBucket,
+    DateHistogramInterval,
     DerivedArtifactUploadMetadata,
     DerivedArtifactUploadResponse,
     EmailMetadataInput,
@@ -57,6 +72,7 @@ from artifact_service.schemas import (
     SourceContainerUploadResponse,
     TenantStorageEnsure,
     TenantStorageRead,
+    TextProcessingRule,
 )
 from artifact_service.search import collection_item_ids, normalize_extensions
 from artifact_service.selections import (
@@ -73,8 +89,66 @@ from artifact_service.service import (
     stage_upload,
 )
 from artifact_service.storage import BlobStorage, get_storage, iter_file
+from artifact_service.text_processing import (
+    DEFAULT_RULES,
+    MAX_TEST_TEXT_CHARS,
+    PROCESSOR_VERSION,
+    configuration_hash,
+    load_source_text,
+    process_text,
+    validate_rules,
+)
+
+
+def _date_bucket_start(value: datetime, interval: DateHistogramInterval) -> datetime:
+    value = value.astimezone(timezone.utc) if value.tzinfo else value.replace(tzinfo=timezone.utc)
+    value = value.replace(hour=0, minute=0, second=0, microsecond=0)
+    if interval == "week":
+        return value - timedelta(days=value.weekday())
+    if interval == "month":
+        return value.replace(day=1)
+    return value.replace(month=1, day=1)
+
+
+def _next_date_bucket(value: datetime, interval: DateHistogramInterval) -> datetime:
+    if interval == "week":
+        return value + timedelta(days=7)
+    if interval == "month":
+        return value.replace(
+            year=value.year + (value.month == 12),
+            month=1 if value.month == 12 else value.month + 1,
+        )
+    return value.replace(year=value.year + 1)
+
+
+MAX_DATE_HISTOGRAM_BUCKETS = 2_000
+
+
+def _fill_date_buckets(
+    rows: list[tuple[datetime, int]], interval: DateHistogramInterval
+) -> list[DateHistogramBucket]:
+    counts = {_date_bucket_start(start, interval): count for start, count in rows}
+    if not counts:
+        return []
+    current = min(counts)
+    last = max(counts)
+    buckets: list[DateHistogramBucket] = []
+    while current <= last and len(buckets) < MAX_DATE_HISTOGRAM_BUCKETS:
+        buckets.append(DateHistogramBucket(start=current, count=counts.get(current, 0)))
+        current = _next_date_bucket(current, interval)
+    if current <= last:
+        return [DateHistogramBucket(start=start, count=count) for start, count in sorted(counts.items())]
+    return buckets
 
 PrincipalDependency = Callable[..., ArtifactPrincipal]
+
+
+def _utc_timestamp(value: datetime | None) -> datetime | None:
+    if value is None:
+        return None
+    if value.tzinfo is None:
+        return value.replace(tzinfo=timezone.utc)
+    return value.astimezone(timezone.utc)
 
 
 def _parse_metadata(value: str) -> CollectionItemUploadMetadata:
@@ -91,8 +165,17 @@ def _parse_derived_metadata(value: str) -> DerivedArtifactUploadMetadata:
         raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_CONTENT, detail=str(exc)) from exc
 
 
-def _get_collection(db: Session, collection_id: uuid.UUID, principal: ArtifactPrincipal) -> ClientCollection:
-    collection = db.get(ClientCollection, collection_id)
+def _get_collection(
+    db: Session,
+    collection_id: uuid.UUID,
+    principal: ArtifactPrincipal,
+    *,
+    for_update: bool = False,
+) -> ClientCollection:
+    statement = select(ClientCollection).where(ClientCollection.id == collection_id)
+    if for_update:
+        statement = statement.with_for_update()
+    collection = db.scalar(statement)
     if collection is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Collection not found")
     require_client(principal, collection.tenant_id, collection.client_id)
@@ -150,6 +233,7 @@ def _artifact_read(db: Session, artifact: Artifact) -> ArtifactRead:
         collection_id=collection_id,
         collection_item_id=collection_item_id,
         derivation_key=item_link.derivation_key if item_link else None,
+        processing_run_id=item_link.processing_run_id if item_link else None,
         metadata=artifact.artifact_metadata or {},
     )
 
@@ -210,6 +294,7 @@ def _item_read(db: Session, item: CollectionItem) -> CollectionItemRead:
         original_source_path=item.original_source_path,
         source_created_at=item.source_created_at,
         source_modified_at=item.source_modified_at,
+        file_date=_utc_timestamp(item.file_date),
         family_id=item.family_id,
         parent_collection_item_id=item.parent_collection_item_id,
         processing_status=item.processing_status,
@@ -222,7 +307,11 @@ def _item_read(db: Session, item: CollectionItem) -> CollectionItemRead:
     )
 
 
-def build_router(principal_dependency: PrincipalDependency) -> APIRouter:
+def build_router(
+    principal_dependency: PrincipalDependency,
+    *,
+    expose_internal_deletion_control: bool = False,
+) -> APIRouter:
     router = APIRouter(prefix="/v1", tags=["artifacts"])
 
     @router.post(
@@ -303,6 +392,201 @@ def build_router(principal_dependency: PrincipalDependency) -> APIRouter:
     ) -> ClientCollection:
         return _get_collection(db, collection_id, principal)
 
+    @router.get(
+        "/collections/{collection_id}/text-processing/profile",
+        response_model=CollectionTextProcessingProfileRead,
+    )
+    def get_text_processing_profile(
+        collection_id: uuid.UUID,
+        principal: ArtifactPrincipal = Depends(principal_dependency),
+        db: Session = Depends(get_artifact_db),
+    ) -> CollectionTextProcessingProfileRead:
+        collection = _get_collection(db, collection_id, principal)
+        profile = db.get(CollectionTextProcessingProfile, collection.id)
+        return CollectionTextProcessingProfileRead(
+            collection_id=collection.id,
+            processor_version=PROCESSOR_VERSION,
+            revision=profile.revision if profile else 0,
+            default_rules=DEFAULT_RULES,
+            rules=profile.custom_rules if profile else [],
+            active_run_id=collection.active_text_processing_run_id,
+            updated_at=profile.updated_at if profile else None,
+        )
+
+    @router.put(
+        "/collections/{collection_id}/text-processing/profile",
+        response_model=CollectionTextProcessingProfileRead,
+    )
+    def update_text_processing_profile(
+        collection_id: uuid.UUID,
+        payload: CollectionTextProcessingProfileUpdate,
+        principal: ArtifactPrincipal = Depends(principal_dependency),
+        db: Session = Depends(get_artifact_db),
+    ) -> CollectionTextProcessingProfileRead:
+        collection = _get_collection(db, collection_id, principal, for_update=True)
+        if collection.status == "DELETING":
+            raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="Collection is being deleted")
+        try:
+            validate_rules(payload.rules)
+        except ValueError as exc:
+            raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_CONTENT, detail=str(exc)) from exc
+        profile = db.get(CollectionTextProcessingProfile, collection.id)
+        if profile is None:
+            profile = CollectionTextProcessingProfile(
+                collection_id=collection.id,
+                revision=1,
+                custom_rules=[rule.model_dump(mode="json") for rule in payload.rules],
+                updated_by_user_id=principal.actor_user_id,
+            )
+            db.add(profile)
+        else:
+            profile.revision += 1
+            profile.custom_rules = [rule.model_dump(mode="json") for rule in payload.rules]
+            profile.updated_by_user_id = principal.actor_user_id
+        db.commit()
+        db.refresh(profile)
+        return CollectionTextProcessingProfileRead(
+            collection_id=collection.id,
+            processor_version=PROCESSOR_VERSION,
+            revision=profile.revision,
+            default_rules=DEFAULT_RULES,
+            rules=profile.custom_rules,
+            active_run_id=collection.active_text_processing_run_id,
+            updated_at=profile.updated_at,
+        )
+
+    @router.post(
+        "/collections/{collection_id}/text-processing:test",
+        response_model=CollectionTextProcessingTestResponse,
+    )
+    def test_text_processing(
+        collection_id: uuid.UUID,
+        payload: CollectionTextProcessingTestRequest,
+        principal: ArtifactPrincipal = Depends(principal_dependency),
+        db: Session = Depends(get_artifact_db),
+        storage: BlobStorage = Depends(get_storage),
+    ) -> CollectionTextProcessingTestResponse:
+        collection = _get_collection(db, collection_id, principal)
+        try:
+            validate_rules(payload.rules)
+        except ValueError as exc:
+            raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_CONTENT, detail=str(exc)) from exc
+        items = list(
+            db.scalars(
+                select(CollectionItem).where(
+                    CollectionItem.collection_id == collection.id,
+                    CollectionItem.id.in_(payload.item_ids),
+                )
+            )
+        )
+        by_id = {item.id: item for item in items}
+        if len(by_id) != len(set(payload.item_ids)):
+            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="One or more collection items were not found")
+        results: list[CollectionTextProcessingTestItem] = []
+        for item_id in payload.item_ids:
+            item = by_id[item_id]
+            source = load_source_text(db, storage, item)
+            if source is None:
+                results.append(
+                    CollectionTextProcessingTestItem(
+                        item_id=item.id,
+                        filename=item.original_filename,
+                        source_role=None,
+                        original_text=None,
+                        normalized_text=None,
+                        original_char_count=0,
+                        normalized_char_count=0,
+                        changes=[],
+                        warnings=["No supported source text is available for this item."],
+                    )
+                )
+                continue
+            original = source.text[:MAX_TEST_TEXT_CHARS]
+            result = process_text(original, payload.rules)
+            warnings = list(result.warnings)
+            if len(source.text) > MAX_TEST_TEXT_CHARS:
+                warnings.append("The test preview is limited to the first 100,000 characters.")
+            results.append(
+                CollectionTextProcessingTestItem(
+                    item_id=item.id,
+                    filename=item.original_filename,
+                    source_role=source.role,
+                    original_text=original,
+                    normalized_text=result.text,
+                    original_char_count=len(original),
+                    normalized_char_count=len(result.text),
+                    changes=result.changes,
+                    warnings=warnings,
+                )
+            )
+        return CollectionTextProcessingTestResponse(processor_version=PROCESSOR_VERSION, items=results)
+
+    @router.post(
+        "/collections/{collection_id}/text-processing/runs",
+        response_model=CollectionTextProcessingRunRead,
+        status_code=status.HTTP_202_ACCEPTED,
+    )
+    def start_text_processing_run(
+        collection_id: uuid.UUID,
+        principal: ArtifactPrincipal = Depends(principal_dependency),
+        db: Session = Depends(get_artifact_db),
+    ) -> CollectionTextProcessingRun:
+        collection = _get_collection(db, collection_id, principal, for_update=True)
+        if collection.status != "OPEN":
+            raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="Collection is not open")
+        active = db.scalar(
+            select(CollectionTextProcessingRun).where(
+                CollectionTextProcessingRun.collection_id == collection.id,
+                CollectionTextProcessingRun.status.in_(("QUEUED", "RUNNING")),
+            )
+        )
+        if active is not None:
+            raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="A text processing run is already active")
+        profile = db.get(CollectionTextProcessingProfile, collection.id)
+        rules = profile.custom_rules if profile else []
+        parsed_rules = [TextProcessingRule.model_validate(value) for value in rules]
+        run = CollectionTextProcessingRun(
+            collection_id=collection.id,
+            status="QUEUED",
+            processor_version=PROCESSOR_VERSION,
+            profile_revision=profile.revision if profile else 0,
+            rules_snapshot=rules,
+            configuration_hash=configuration_hash(parsed_rules),
+            requested_by_user_id=principal.actor_user_id,
+        )
+        db.add(run)
+        db.commit()
+        db.refresh(run)
+        from app.workflows.dispatcher import enqueue_collection_text_processing
+
+        try:
+            enqueue_collection_text_processing(str(run.id))
+        except Exception as exc:
+            run.status = "FAILED"
+            run.error_message = f"Unable to enqueue processing: {exc}"[:4000]
+            db.commit()
+            raise HTTPException(status_code=status.HTTP_503_SERVICE_UNAVAILABLE, detail=run.error_message) from exc
+        return run
+
+    @router.get(
+        "/collections/{collection_id}/text-processing/runs",
+        response_model=list[CollectionTextProcessingRunRead],
+    )
+    def list_text_processing_runs(
+        collection_id: uuid.UUID,
+        principal: ArtifactPrincipal = Depends(principal_dependency),
+        db: Session = Depends(get_artifact_db),
+    ) -> list[CollectionTextProcessingRun]:
+        collection = _get_collection(db, collection_id, principal)
+        return list(
+            db.scalars(
+                select(CollectionTextProcessingRun)
+                .where(CollectionTextProcessingRun.collection_id == collection.id)
+                .order_by(CollectionTextProcessingRun.created_at.desc())
+                .limit(25)
+            )
+        )
+
     @router.post(
         "/collections/{collection_id}/selections",
         response_model=CollectionSelectionRead,
@@ -314,7 +598,9 @@ def build_router(principal_dependency: PrincipalDependency) -> APIRouter:
         principal: ArtifactPrincipal = Depends(principal_dependency),
         db: Session = Depends(get_artifact_db),
     ) -> CollectionSelection:
-        collection = _get_collection(db, collection_id, principal)
+        collection = _get_collection(db, collection_id, principal, for_update=True)
+        if collection.status == "DELETING":
+            raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="Collection is being deleted")
         try:
             selection = create_collection_selection(db, collection, payload)
             db.commit()
@@ -419,7 +705,7 @@ def build_router(principal_dependency: PrincipalDependency) -> APIRouter:
         db: Session = Depends(get_artifact_db),
         storage: BlobStorage = Depends(get_storage),
     ) -> SourceContainerUploadResponse:
-        collection = _get_collection(db, collection_id, principal)
+        collection = _get_collection(db, collection_id, principal, for_update=True)
         if collection.status != "OPEN":
             raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="Collection is not open")
         tenant_storage = require_tenant_storage(db, collection.tenant_id)
@@ -478,7 +764,7 @@ def build_router(principal_dependency: PrincipalDependency) -> APIRouter:
         storage: BlobStorage = Depends(get_storage),
     ) -> CollectionItemUploadResponse:
         payload = _parse_metadata(metadata)
-        collection = _get_collection(db, collection_id, principal)
+        collection = _get_collection(db, collection_id, principal, for_update=True)
         if collection.status != "OPEN":
             raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="Collection is not open")
         invalid_custodians = [
@@ -488,6 +774,7 @@ def build_router(principal_dependency: PrincipalDependency) -> APIRouter:
         ]
         if invalid_custodians:
             raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_CONTENT, detail="Invalid custodian scope")
+        parent: CollectionItem | None = None
         if payload.parent_collection_item_id is not None:
             parent = db.get(CollectionItem, payload.parent_collection_item_id)
             if parent is None or parent.collection_id != collection.id:
@@ -537,6 +824,13 @@ def build_router(principal_dependency: PrincipalDependency) -> APIRouter:
                 original_source_path=payload.original_source_path,
                 source_created_at=payload.source_created_at,
                 source_modified_at=payload.source_modified_at,
+                file_date=_utc_timestamp(
+                    payload.email.sent_at
+                    if payload.email is not None
+                    else parent.file_date
+                    if parent is not None
+                    else payload.source_modified_at
+                ),
                 family_id=payload.family_id,
                 parent_collection_item_id=payload.parent_collection_item_id,
                 processing_status=payload.processing_status,
@@ -630,6 +924,8 @@ def build_router(principal_dependency: PrincipalDependency) -> APIRouter:
         processing_status: Annotated[list[ProcessingStatus] | None, Query()] = None,
         source_created_from: datetime | None = None,
         source_created_to: datetime | None = None,
+        file_date_from: datetime | None = None,
+        file_date_to: datetime | None = None,
         limit: Annotated[int, Query(ge=1, le=1000)] = 50,
         offset: Annotated[int, Query(ge=0)] = 0,
         principal: ArtifactPrincipal = Depends(principal_dependency),
@@ -650,6 +946,8 @@ def build_router(principal_dependency: PrincipalDependency) -> APIRouter:
             "processing_statuses": processing_statuses,
             "source_created_from": source_created_from,
             "source_created_to": source_created_to,
+            "file_date_from": file_date_from,
+            "file_date_to": file_date_to,
         }
 
         matched_ids = collection_item_ids(**filters)
@@ -664,46 +962,111 @@ def build_router(principal_dependency: PrincipalDependency) -> APIRouter:
             )
         )
 
-        custodian_scope = collection_item_ids(**filters, exclude_facet="custodians")
-        custodian_rows = db.execute(
-            select(
-                CollectionItemCustodian.custodian_id,
-                func.count(func.distinct(CollectionItem.id)),
-            )
-            .join(CollectionItem, CollectionItem.id == CollectionItemCustodian.collection_item_id)
-            .where(CollectionItem.id.in_(custodian_scope))
-            .group_by(CollectionItemCustodian.custodian_id)
-        ).all()
-        extension_scope = collection_item_ids(**filters, exclude_facet="file_extensions")
-        extension_rows = db.execute(
-            select(CollectionItem.original_extension, func.count(CollectionItem.id))
-            .where(CollectionItem.id.in_(extension_scope))
-            .group_by(CollectionItem.original_extension)
-        ).all()
-        record_type_scope = collection_item_ids(**filters, exclude_facet="record_types")
-        record_type_rows = db.execute(
-            select(CollectionItem.record_type, func.count(CollectionItem.id))
-            .where(CollectionItem.id.in_(record_type_scope))
-            .group_by(CollectionItem.record_type)
-        ).all()
-        processing_status_scope = collection_item_ids(**filters, exclude_facet="processing_statuses")
-        processing_status_rows = db.execute(
-            select(CollectionItem.processing_status, func.count(CollectionItem.id))
-            .where(CollectionItem.id.in_(processing_status_scope))
-            .group_by(CollectionItem.processing_status)
-        ).all()
-
         return CollectionItemSearchResponse(
             items=[_item_read(db, item) for item in items],
             total=total,
             limit=limit,
             offset=offset,
-            facets=CollectionSearchFacets(
-                custodians=_facet_values(custodian_rows),
-                file_extensions=_facet_values(extension_rows, extension=True),
-                record_types=_facet_values(record_type_rows),
-                processing_statuses=_facet_values(processing_status_rows),
-            ),
+        )
+
+    @router.get(
+        "/collections/{collection_id}/search/facets/{facet}",
+        response_model=list[FacetValue],
+    )
+    def collection_search_facet(
+        collection_id: uuid.UUID,
+        facet: CollectionFacetKey,
+        q: Annotated[str | None, Query(max_length=500)] = None,
+        custodian_id: Annotated[list[uuid.UUID] | None, Query()] = None,
+        extension: Annotated[list[str] | None, Query()] = None,
+        record_type: Annotated[list[RecordType] | None, Query()] = None,
+        processing_status: Annotated[list[ProcessingStatus] | None, Query()] = None,
+        source_created_from: datetime | None = None,
+        source_created_to: datetime | None = None,
+        file_date_from: datetime | None = None,
+        file_date_to: datetime | None = None,
+        principal: ArtifactPrincipal = Depends(principal_dependency),
+        db: Session = Depends(get_artifact_db),
+    ) -> list[FacetValue]:
+        collection = _get_collection(db, collection_id, principal)
+        filters = {
+            "collection_id": collection.id,
+            "search": q.strip() if q and q.strip() else None,
+            "custodian_ids": list(dict.fromkeys(custodian_id or [])),
+            "extensions": normalize_extensions(extension or []),
+            "record_types": list(dict.fromkeys(record_type or [])),
+            "processing_statuses": list(dict.fromkeys(processing_status or [])),
+            "source_created_from": source_created_from,
+            "source_created_to": source_created_to,
+            "file_date_from": file_date_from,
+            "file_date_to": file_date_to,
+        }
+        scope = collection_item_ids(**filters, exclude_facet=facet)
+        if facet == "custodians":
+            rows = db.execute(
+                select(
+                    CollectionItemCustodian.custodian_id,
+                    func.count(func.distinct(CollectionItem.id)),
+                )
+                .join(CollectionItem, CollectionItem.id == CollectionItemCustodian.collection_item_id)
+                .where(CollectionItem.id.in_(scope))
+                .group_by(CollectionItemCustodian.custodian_id)
+            ).all()
+            return _facet_values(rows)
+        column = {
+            "file_extensions": CollectionItem.original_extension,
+            "record_types": CollectionItem.record_type,
+            "processing_statuses": CollectionItem.processing_status,
+        }[facet]
+        rows = db.execute(
+            select(column, func.count(CollectionItem.id))
+            .where(CollectionItem.id.in_(scope))
+            .group_by(column)
+        ).all()
+        return _facet_values(rows, extension=facet == "file_extensions")
+
+    @router.get(
+        "/collections/{collection_id}/date-histogram",
+        response_model=CollectionDateHistogramResponse,
+    )
+    def collection_date_histogram(
+        collection_id: uuid.UUID,
+        interval: Annotated[DateHistogramInterval, Query()] = "month",
+        principal: ArtifactPrincipal = Depends(principal_dependency),
+        db: Session = Depends(get_artifact_db),
+    ) -> CollectionDateHistogramResponse:
+        collection = _get_collection(db, collection_id, principal)
+        dated = (
+            CollectionItem.collection_id == collection.id,
+            CollectionItem.file_date.is_not(None),
+        )
+        if db.bind is not None and db.bind.dialect.name == "postgresql":
+            bucket = func.date_trunc(interval, func.timezone("UTC", CollectionItem.file_date)).label("bucket")
+            rows = [
+                (start, int(count))
+                for start, count in db.execute(
+                    select(bucket, func.count(CollectionItem.id))
+                    .where(*dated)
+                    .group_by(bucket)
+                    .order_by(bucket)
+                ).all()
+            ]
+        else:
+            counts: dict[datetime, int] = {}
+            for value in db.scalars(select(CollectionItem.file_date).where(*dated)):
+                start = _date_bucket_start(value, interval)
+                counts[start] = counts.get(start, 0) + 1
+            rows = sorted(counts.items())
+        missing_count = db.scalar(
+            select(func.count(CollectionItem.id)).where(
+                CollectionItem.collection_id == collection.id,
+                CollectionItem.file_date.is_(None),
+            )
+        ) or 0
+        return CollectionDateHistogramResponse(
+            interval=interval,
+            buckets=_fill_date_buckets(rows, interval),
+            missing_count=missing_count,
         )
 
     @router.get("/collections/{collection_id}/items", response_model=list[CollectionItemRead])
@@ -714,6 +1077,8 @@ def build_router(principal_dependency: PrincipalDependency) -> APIRouter:
         filename: str | None = None,
         source_created_from: datetime | None = None,
         source_created_to: datetime | None = None,
+        file_date_from: datetime | None = None,
+        file_date_to: datetime | None = None,
         sha256: Annotated[str | None, Query(pattern=r"^[0-9a-fA-F]{64}$")] = None,
         min_size: Annotated[int | None, Query(ge=0)] = None,
         max_size: Annotated[int | None, Query(ge=0)] = None,
@@ -734,6 +1099,10 @@ def build_router(principal_dependency: PrincipalDependency) -> APIRouter:
             query = query.where(CollectionItem.source_created_at >= source_created_from)
         if source_created_to is not None:
             query = query.where(CollectionItem.source_created_at <= source_created_to)
+        if file_date_from is not None:
+            query = query.where(CollectionItem.file_date >= file_date_from)
+        if file_date_to is not None:
+            query = query.where(CollectionItem.file_date <= file_date_to)
         if sha256 is not None or min_size is not None or max_size is not None:
             query = (
                 query.join(CollectionItemArtifact)
@@ -805,6 +1174,9 @@ def build_router(principal_dependency: PrincipalDependency) -> APIRouter:
         if item is None:
             raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Collection item not found")
         require_client(principal, item.tenant_id, item.client_id)
+        collection = _get_collection(db, item.collection_id, principal, for_update=True)
+        if collection.status == "DELETING":
+            raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="Collection is being deleted")
         content = file.file.read()
         try:
             artifact, created = store_derived_artifact(
@@ -882,5 +1254,125 @@ def build_router(principal_dependency: PrincipalDependency) -> APIRouter:
             "ETag": artifact.content_hash,
         }
         return StreamingResponse(iter_file(content), media_type=artifact.media_type, headers=headers)
+
+    if expose_internal_deletion_control:
+
+        @router.post(
+            "/internal/collections/{collection_id}/deletions",
+            response_model=CollectionDeletionJobRead,
+            status_code=status.HTTP_202_ACCEPTED,
+            include_in_schema=False,
+        )
+        def create_internal_collection_deletion(
+            collection_id: uuid.UUID,
+            principal: ArtifactPrincipal = Depends(principal_dependency),
+            db: Session = Depends(get_artifact_db),
+        ) -> CollectionDeletionJob:
+            collection = _get_collection(db, collection_id, principal)
+            try:
+                job = create_deletion_job(db, collection.id, principal.actor_user_id)
+                db.commit()
+            except ValueError as exc:
+                db.rollback()
+                raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=str(exc)) from exc
+            return job
+
+        @router.get(
+            "/internal/collections/{collection_id}/deletions/latest",
+            response_model=CollectionDeletionJobRead,
+            include_in_schema=False,
+        )
+        def get_latest_internal_collection_deletion(
+            collection_id: uuid.UUID,
+            principal: ArtifactPrincipal = Depends(principal_dependency),
+            db: Session = Depends(get_artifact_db),
+        ) -> CollectionDeletionJob:
+            collection = db.get(ClientCollection, collection_id)
+            job = db.scalar(
+                select(CollectionDeletionJob)
+                .where(CollectionDeletionJob.collection_id == collection_id)
+                .order_by(CollectionDeletionJob.created_at.desc())
+            )
+            if collection is not None:
+                require_client(principal, collection.tenant_id, collection.client_id)
+            elif job is not None:
+                require_client(principal, job.tenant_id, job.client_id)
+            if job is None:
+                raise HTTPException(
+                    status_code=status.HTTP_404_NOT_FOUND,
+                    detail="Collection deletion job not found",
+                )
+            return job
+
+        @router.get(
+            "/internal/collection-deletions/{job_id}",
+            response_model=CollectionDeletionJobRead,
+            include_in_schema=False,
+        )
+        def get_internal_collection_deletion(
+            job_id: uuid.UUID,
+            principal: ArtifactPrincipal = Depends(principal_dependency),
+            db: Session = Depends(get_artifact_db),
+        ) -> CollectionDeletionJob:
+            job = db.get(CollectionDeletionJob, job_id)
+            if job is None:
+                raise HTTPException(
+                    status_code=status.HTTP_404_NOT_FOUND,
+                    detail="Collection deletion job not found",
+                )
+            require_client(principal, job.tenant_id, job.client_id)
+            return job
+
+        @router.post(
+            "/internal/collection-deletions/{job_id}/retry",
+            response_model=CollectionDeletionJobRead,
+            status_code=status.HTTP_202_ACCEPTED,
+            include_in_schema=False,
+        )
+        def retry_internal_collection_deletion(
+            job_id: uuid.UUID,
+            principal: ArtifactPrincipal = Depends(principal_dependency),
+            db: Session = Depends(get_artifact_db),
+        ) -> CollectionDeletionJob:
+            current = db.get(CollectionDeletionJob, job_id)
+            if current is None:
+                raise HTTPException(
+                    status_code=status.HTTP_404_NOT_FOUND,
+                    detail="Collection deletion job not found",
+                )
+            require_client(principal, current.tenant_id, current.client_id)
+            try:
+                job = retry_deletion_job(db, job_id)
+                db.commit()
+            except ValueError as exc:
+                db.rollback()
+                raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=str(exc)) from exc
+            return job
+
+        @router.post(
+            "/internal/collection-deletions/{job_id}/failure",
+            response_model=CollectionDeletionJobRead,
+            include_in_schema=False,
+        )
+        def fail_internal_collection_deletion(
+            job_id: uuid.UUID,
+            payload: CollectionDeletionFailure,
+            principal: ArtifactPrincipal = Depends(principal_dependency),
+            db: Session = Depends(get_artifact_db),
+        ) -> CollectionDeletionJob:
+            current = db.get(CollectionDeletionJob, job_id)
+            if current is None:
+                raise HTTPException(
+                    status_code=status.HTTP_404_NOT_FOUND,
+                    detail="Collection deletion job not found",
+                )
+            require_client(principal, current.tenant_id, current.client_id)
+            job = fail_deletion(db, job_id, payload.message)
+            if job is None:
+                raise HTTPException(
+                    status_code=status.HTTP_404_NOT_FOUND,
+                    detail="Collection deletion job not found",
+                )
+            return job
 
     return router

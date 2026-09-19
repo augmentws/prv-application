@@ -20,8 +20,10 @@ dbos = "*"
 pydantic-ai = {extras = ["dbos"], version = "*"}
 pyarrow = "*"
 scikit-learn = "==1.9.1"
+umap-learn = "*"
 sentence-transformers = "==5.2.2"
 transformers = "==4.57.6"
+regex = "*"
 
 [dev-packages]
 pytest = "*"

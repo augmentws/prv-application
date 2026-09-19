@@ -9,6 +9,7 @@ from app.routers import (
     agents,
     auth,
     clients,
+    collection_deletions,
     document_metadata,
     matter_definitions,
     matter_embeddings,
@@ -18,6 +19,7 @@ from app.routers import (
     matters,
     metadata,
     metadata_groups,
+    provider_usage,
     review_batches,
     saved_searches,
     search,
@@ -62,6 +64,7 @@ app.include_router(agents.router)
 app.include_router(agent_conversations.router)
 app.include_router(tenants.router)
 app.include_router(clients.router)
+app.include_router(collection_deletions.router)
 app.include_router(matters.router)
 app.include_router(matter_definitions.router)
 app.include_router(matter_imports.router)
@@ -70,6 +73,7 @@ app.include_router(matter_topics.router)
 app.include_router(document_metadata.router)
 app.include_router(metadata.router)
 app.include_router(metadata_groups.router)
+app.include_router(provider_usage.router)
 app.include_router(matter_templates.router)
 app.include_router(saved_searches.router)
 app.include_router(review_batches.router)

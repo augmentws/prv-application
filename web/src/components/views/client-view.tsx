@@ -27,6 +27,7 @@ export function ClientView({ clientId }: { clientId: string }) {
     queryKey: ["collections", client.data?.tenant_id, clientId],
     queryFn: () => coreApi<CollectionRead[]>(`/v1/tenants/${client.data!.tenant_id}/clients/${clientId}/collections`),
     enabled: Boolean(client.data),
+    refetchInterval: (query) => query.state.data?.some((collection) => collection.status === "DELETING") ? 2_000 : false,
   });
   const matterMutation = useMutation({
     mutationFn: (values: CreateMatterValues) => coreApi<MatterRead>(`/v1/clients/${clientId}/matters`, { method: "POST", body: JSON.stringify(values) }),

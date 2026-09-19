@@ -24,6 +24,10 @@ export interface MatterEmbeddingJobRead {
   skipped_count: number;
   failed_count: number;
   chunk_count: number;
+  provider_request_count: number;
+  input_tokens: number;
+  output_tokens: number;
+  total_tokens: number;
   error_message: string | null;
   created_by_user_id: string;
   started_at: string | null;

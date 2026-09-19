@@ -14,6 +14,7 @@ from scripts.import_client.models import CustodianSpec, ImportItem, RecordType, 
 class DatasetAdapter(ABC):
     dataset_name: str
     default_collection_name: str
+    expand_email_attachments = True
 
     @abstractmethod
     def source_containers(self) -> Iterable[SourceContainer]:

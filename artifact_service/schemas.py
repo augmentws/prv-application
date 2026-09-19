@@ -4,9 +4,10 @@ from typing import Annotated, Any, Literal
 
 from pydantic import BaseModel, ConfigDict, Field, StringConstraints, model_validator
 
-CollectionStatus = Literal["OPEN", "SEALED", "ARCHIVED"]
+CollectionStatus = Literal["OPEN", "SEALED", "ARCHIVED", "DELETING"]
 RecordType = Literal["EMAIL", "FILE", "CHAT", "TRANSCRIPT", "OTHER"]
 ProcessingStatus = Literal["NOT_PROCESSED", "METADATA_INCOMPLETE", "READY", "FAILED"]
+DateHistogramInterval = Literal["week", "month", "year"]
 RecipientType = Literal["TO", "CC", "BCC"]
 SourceItemId = Annotated[str, StringConstraints(strip_whitespace=True, min_length=1, max_length=500)]
 
@@ -43,6 +44,144 @@ class CollectionRead(ORMModel):
     description: str | None
     status: CollectionStatus
     created_by_user_id: uuid.UUID
+    created_at: datetime
+    updated_at: datetime
+    active_text_processing_run_id: uuid.UUID | None
+
+
+class CollectionDeletionJobRead(ORMModel):
+    id: uuid.UUID
+    collection_id: uuid.UUID
+    tenant_id: uuid.UUID
+    client_id: uuid.UUID
+    collection_name: str
+    status: Literal[
+        "QUEUED",
+        "VALIDATING",
+        "DELETING_DATABASE_ROWS",
+        "DELETING_BLOBS",
+        "COMPLETED",
+        "FAILED",
+    ]
+    workflow_id: str
+    attempt_count: int
+    item_count: int
+    artifact_count: int
+    blob_count: int
+    deleted_item_count: int
+    deleted_artifact_count: int
+    deleted_blob_count: int
+    error_message: str | None
+    requested_by_user_id: uuid.UUID
+    started_at: datetime | None
+    completed_at: datetime | None
+    created_at: datetime
+    updated_at: datetime
+
+
+class CollectionDeletionFailure(BaseModel):
+    message: str = Field(min_length=1, max_length=4000)
+
+
+TextProcessingRuleAction = Literal["REMOVE_LINE", "REMOVE_BLOCK", "REPLACE"]
+
+
+class TextProcessingRule(BaseModel):
+    id: Annotated[str, StringConstraints(strip_whitespace=True, pattern=r"^[a-z][a-z0-9_-]{0,63}$")]
+    name: str = Field(min_length=1, max_length=120)
+    description: str | None = Field(default=None, max_length=500)
+    action: TextProcessingRuleAction
+    pattern: str = Field(min_length=1, max_length=1000)
+    end_pattern: str | None = Field(default=None, max_length=1000)
+    replacement: str = Field(default="", max_length=2000)
+    case_sensitive: bool = False
+    enabled: bool = True
+
+    @model_validator(mode="after")
+    def validate_action_fields(self) -> "TextProcessingRule":
+        if self.action == "REMOVE_BLOCK" and not self.end_pattern:
+            raise ValueError("REMOVE_BLOCK requires end_pattern")
+        if self.action != "REMOVE_BLOCK" and self.end_pattern is not None:
+            raise ValueError("end_pattern is only valid for REMOVE_BLOCK")
+        if self.action != "REPLACE" and self.replacement:
+            raise ValueError("replacement is only valid for REPLACE")
+        return self
+
+
+class CollectionTextProcessingProfileUpdate(BaseModel):
+    rules: list[TextProcessingRule] = Field(default_factory=list, max_length=50)
+
+    @model_validator(mode="after")
+    def validate_unique_rule_ids(self) -> "CollectionTextProcessingProfileUpdate":
+        ids = [rule.id for rule in self.rules]
+        if len(ids) != len(set(ids)):
+            raise ValueError("Rule IDs must be unique")
+        return self
+
+
+class SystemTextProcessingRule(BaseModel):
+    id: str
+    name: str
+    description: str
+    action: str
+    match_description: str
+
+
+class CollectionTextProcessingProfileRead(BaseModel):
+    collection_id: uuid.UUID
+    processor_version: str
+    revision: int
+    default_rules: list[SystemTextProcessingRule]
+    rules: list[TextProcessingRule]
+    active_run_id: uuid.UUID | None
+    updated_at: datetime | None
+
+
+class CollectionTextProcessingTestRequest(BaseModel):
+    item_ids: list[uuid.UUID] = Field(min_length=1, max_length=10)
+    rules: list[TextProcessingRule] = Field(default_factory=list, max_length=50)
+
+
+class TextProcessingChange(BaseModel):
+    rule_id: str
+    rule_name: str
+    match_count: int = Field(ge=1)
+
+
+class CollectionTextProcessingTestItem(BaseModel):
+    item_id: uuid.UUID
+    filename: str
+    source_role: str | None
+    original_text: str | None
+    normalized_text: str | None
+    original_char_count: int = Field(ge=0)
+    normalized_char_count: int = Field(ge=0)
+    changes: list[TextProcessingChange]
+    warnings: list[str]
+
+
+class CollectionTextProcessingTestResponse(BaseModel):
+    processor_version: str
+    items: list[CollectionTextProcessingTestItem]
+
+
+class CollectionTextProcessingRunRead(ORMModel):
+    id: uuid.UUID
+    collection_id: uuid.UUID
+    status: Literal["QUEUED", "RUNNING", "COMPLETED", "COMPLETED_WITH_ERRORS", "FAILED"]
+    processor_version: str
+    profile_revision: int
+    configuration_hash: str
+    total_count: int
+    processed_count: int
+    created_count: int
+    reused_count: int
+    skipped_count: int
+    failed_count: int
+    error_message: str | None
+    requested_by_user_id: uuid.UUID
+    started_at: datetime | None
+    completed_at: datetime | None
     created_at: datetime
     updated_at: datetime
 
@@ -115,6 +254,7 @@ class ArtifactRead(BaseModel):
     collection_id: uuid.UUID | None = None
     collection_item_id: uuid.UUID | None = None
     derivation_key: str | None = None
+    processing_run_id: uuid.UUID | None = None
     metadata: dict[str, Any] = Field(default_factory=dict)
 
 
@@ -166,6 +306,7 @@ class CollectionItemRead(BaseModel):
     original_source_path: str | None
     source_created_at: datetime | None
     source_modified_at: datetime | None
+    file_date: datetime | None
     family_id: uuid.UUID | None
     parent_collection_item_id: uuid.UUID | None
     processing_status: ProcessingStatus
@@ -182,11 +323,7 @@ class FacetValue(BaseModel):
     count: int = Field(ge=1)
 
 
-class CollectionSearchFacets(BaseModel):
-    custodians: list[FacetValue]
-    file_extensions: list[FacetValue]
-    record_types: list[FacetValue]
-    processing_statuses: list[FacetValue]
+CollectionFacetKey = Literal["custodians", "file_extensions", "record_types", "processing_statuses"]
 
 
 class CollectionItemSearchResponse(BaseModel):
@@ -194,7 +331,17 @@ class CollectionItemSearchResponse(BaseModel):
     total: int = Field(ge=0)
     limit: int = Field(ge=1)
     offset: int = Field(ge=0)
-    facets: CollectionSearchFacets
+
+
+class DateHistogramBucket(BaseModel):
+    start: datetime
+    count: int = Field(ge=0)
+
+
+class CollectionDateHistogramResponse(BaseModel):
+    interval: DateHistogramInterval
+    buckets: list[DateHistogramBucket]
+    missing_count: int = Field(ge=0)
 
 
 class CollectionSelectionCreate(BaseModel):
@@ -205,6 +352,8 @@ class CollectionSelectionCreate(BaseModel):
     file_extensions: list[str] = Field(default_factory=list, max_length=1000)
     record_types: list[RecordType] = Field(default_factory=list, max_length=20)
     processing_statuses: list[ProcessingStatus] = Field(default_factory=list, max_length=20)
+    file_date_from: datetime | None = None
+    file_date_to: datetime | None = None
     item_ids: list[uuid.UUID] = Field(default_factory=list, max_length=5000)
 
     @model_validator(mode="after")

@@ -1,3 +1,4 @@
+import hashlib
 import logging
 import math
 import random
@@ -7,11 +8,14 @@ from datetime import datetime, timezone
 
 import numpy as np
 from sklearn.cluster import HDBSCAN, MiniBatchKMeans
-from sklearn.feature_extraction.text import TfidfVectorizer
+from sklearn.decomposition import PCA
+from sklearn.feature_extraction.text import ENGLISH_STOP_WORDS, TfidfVectorizer
+from sklearn.metrics import silhouette_score
 from sklearn.random_projection import GaussianRandomProjection
 from sqlalchemy import delete, func, select
 from sqlalchemy.orm import Session
 from sqlalchemy.orm.attributes import flag_modified
+from umap import UMAP
 
 from app.artifact_gateway import load_current_chunk_artifacts
 from app.audit import record_audit
@@ -34,6 +38,28 @@ from app.search.service import process_search_operation
 
 logger = logging.getLogger(__name__)
 
+MIN_TOPIC_SAMPLE_CHARACTERS = 80
+PCA_TOPIC_DIMENSIONS = 50
+UMAP_TOPIC_DIMENSIONS = 10
+UMAP_TOPIC_NEIGHBORS = 15
+AUTOMATIC_TOPIC_CANDIDATES = (10, 20, 30, 40, 50)
+AUTOMATIC_TOPIC_EVALUATION_SIZE = 2_000
+TOPIC_NAME_STOP_WORDS = {
+    "bcc",
+    "cc",
+    "com",
+    "ect",
+    "email",
+    "enron",
+    "hou",
+    "http",
+    "mailto",
+    "subject",
+    "thank",
+    "thanks",
+    "www",
+}
+
 
 def utcnow() -> datetime:
     return datetime.now(timezone.utc)
@@ -46,11 +72,29 @@ class DiscoveredTopic:
     keywords: list[str]
     centroid: list[float]
     sampled_chunk_count: int
+    representative_excerpts: list[str]
 
 
 def _normalize(values: np.ndarray) -> np.ndarray:
     norms = np.linalg.norm(values, axis=1, keepdims=True)
     return values / np.maximum(norms, 1e-12)
+
+
+def _topic_sample_key(text: str) -> bytes | None:
+    normalized = " ".join(text.split())
+    if len(normalized) < MIN_TOPIC_SAMPLE_CHARACTERS:
+        return None
+    return hashlib.sha256(normalized.casefold().encode()).digest()
+
+
+def _evenly_spaced_indexes(item_count: int, limit: int) -> list[int]:
+    if item_count <= 0 or limit <= 0:
+        return []
+    if item_count <= limit:
+        return list(range(item_count))
+    if limit == 1:
+        return [item_count // 2]
+    return [round(position * (item_count - 1) / (limit - 1)) for position in range(limit)]
 
 
 def _topic_terms(texts: list[str], labels: np.ndarray, topic_labels: list[int]) -> dict[int, list[str]]:
@@ -75,6 +119,89 @@ def _topic_terms(texts: list[str], labels: np.ndarray, topic_labels: list[int]) 
     return result
 
 
+def _cluster_discriminative_terms(
+    texts: list[str],
+    labels: np.ndarray,
+    topic_labels: list[int],
+) -> dict[int, list[str]]:
+    cluster_texts = [
+        " ".join(texts[index][:2000] for index in np.flatnonzero(labels == label))
+        for label in topic_labels
+    ]
+    vectorizer = TfidfVectorizer(
+        stop_words=sorted(ENGLISH_STOP_WORDS | TOPIC_NAME_STOP_WORDS),
+        ngram_range=(1, 2),
+        max_features=10_000,
+        max_df=0.85,
+        sublinear_tf=True,
+        token_pattern=r"(?u)\b[a-zA-Z][a-zA-Z]{2,}\b",
+    )
+    try:
+        matrix = vectorizer.fit_transform(cluster_texts)
+    except ValueError:
+        return {label: [] for label in topic_labels}
+    names = np.asarray(vectorizer.get_feature_names_out())
+    result: dict[int, list[str]] = {}
+    for row, label in enumerate(topic_labels):
+        scores = np.asarray(matrix[row].todense()).ravel()
+        order = scores.argsort()[::-1]
+        result[label] = [str(names[index]) for index in order if scores[index] > 0][:8]
+    return result
+
+
+def _automatic_kmeans_labels(
+    reduced: np.ndarray,
+    *,
+    max_topics: int,
+    random_seed: int,
+) -> np.ndarray:
+    distinct_count = len(np.unique(reduced, axis=0))
+    maximum = min(max_topics, distinct_count, len(reduced) // 5)
+    candidates = [value for value in AUTOMATIC_TOPIC_CANDIDATES if value <= maximum]
+    if not candidates and maximum >= 2:
+        candidates = [maximum]
+    if not candidates:
+        raise ValueError("Automatic topic discovery requires at least ten eligible, distinct sampled chunks")
+
+    rng = np.random.default_rng(random_seed)
+    evaluation_indexes = (
+        np.arange(len(reduced))
+        if len(reduced) <= AUTOMATIC_TOPIC_EVALUATION_SIZE
+        else np.sort(rng.choice(len(reduced), size=AUTOMATIC_TOPIC_EVALUATION_SIZE, replace=False))
+    )
+    best_labels: np.ndarray | None = None
+    best_score = float("-inf")
+    for topic_count in candidates:
+        labels = MiniBatchKMeans(
+            n_clusters=topic_count,
+            random_state=random_seed,
+            n_init="auto",
+            batch_size=min(2048, max(32, len(reduced))),
+        ).fit_predict(reduced)
+        if len(np.unique(labels)) != topic_count:
+            continue
+        evaluation_labels = labels[evaluation_indexes]
+        if len(np.unique(evaluation_labels)) < 2:
+            continue
+        separation = float(silhouette_score(reduced[evaluation_indexes], evaluation_labels, metric="euclidean"))
+        largest_cluster_fraction = float(np.bincount(labels).max() / len(labels))
+        balance_penalty = max(0.0, largest_cluster_fraction - 0.25)
+        score = separation - balance_penalty
+        logger.info(
+            "Automatic topic candidate topics=%s silhouette=%.4f largest_cluster=%.4f score=%.4f",
+            topic_count,
+            separation,
+            largest_cluster_fraction,
+            score,
+        )
+        if score > best_score:
+            best_score = score
+            best_labels = labels
+    if best_labels is None:
+        raise ValueError("Automatic topic discovery could not produce a valid candidate solution")
+    return best_labels
+
+
 def discover_topics(
     vectors: list[list[float]],
     texts: list[str],
@@ -83,11 +210,16 @@ def discover_topics(
     requested_topic_count: int | None,
     max_topics: int,
     random_seed: int,
+    clustering_version: int = 3,
 ) -> list[DiscoveredTopic]:
     if len(vectors) != len(texts) or not vectors:
         raise ValueError("Topic discovery requires matching, non-empty vectors and texts")
+    if operating_mode not in {"AUTO", "FIXED"}:
+        raise ValueError(f"Unsupported topic operating mode: {operating_mode}")
+    if clustering_version not in {1, 2, 3}:
+        raise ValueError(f"Unsupported topic clustering version: {clustering_version}")
     matrix = _normalize(np.asarray(vectors, dtype=np.float32))
-    if operating_mode == "FIXED":
+    if clustering_version == 1 and operating_mode == "FIXED":
         if requested_topic_count is None:
             raise ValueError("FIXED topic mode requires a topic count")
         if requested_topic_count > len(matrix):
@@ -98,9 +230,9 @@ def discover_topics(
             n_init="auto",
             batch_size=min(2048, max(32, len(matrix))),
         ).fit_predict(matrix)
-    elif len(matrix) < 6:
+    elif clustering_version == 1 and len(matrix) < 6:
         labels = np.zeros(len(matrix), dtype=np.int32)
-    else:
+    elif clustering_version == 1:
         reduced_dimensions = min(50, matrix.shape[1], len(matrix) - 1)
         reduced = GaussianRandomProjection(
             n_components=reduced_dimensions,
@@ -116,9 +248,75 @@ def discover_topics(
         ).fit_predict(reduced)
         if not np.any(labels >= 0):
             labels = np.zeros(len(matrix), dtype=np.int32)
+    else:
+        pca_dimensions = min(PCA_TOPIC_DIMENSIONS, matrix.shape[1], len(matrix) - 1)
+        if pca_dimensions < 2:
+            raise ValueError("Topic discovery requires at least three distinct sampled chunks")
+        reduced = PCA(
+            n_components=pca_dimensions,
+            random_state=random_seed,
+            svd_solver="auto",
+        ).fit_transform(matrix)
+        if operating_mode == "FIXED":
+            if requested_topic_count is None:
+                raise ValueError("FIXED topic mode requires a topic count")
+            if requested_topic_count > len(reduced):
+                raise ValueError("The requested topic count exceeds the number of sampled chunks")
+            labels = MiniBatchKMeans(
+                n_clusters=requested_topic_count,
+                random_state=random_seed,
+                n_init="auto",
+                batch_size=min(2048, max(32, len(reduced))),
+            ).fit_predict(reduced)
+        elif clustering_version == 2:
+            if len(reduced) < 6:
+                raise ValueError("Automatic topic discovery requires at least six eligible sampled chunks")
+            umap_dimensions = min(UMAP_TOPIC_DIMENSIONS, reduced.shape[1], len(reduced) - 2)
+            neighborhood = min(UMAP_TOPIC_NEIGHBORS, len(reduced) - 1)
+            reduced = UMAP(
+                n_components=umap_dimensions,
+                n_neighbors=neighborhood,
+                min_dist=0.0,
+                metric="cosine",
+                random_state=random_seed,
+                transform_seed=random_seed,
+                n_jobs=1,
+            ).fit_transform(reduced)
+            minimum_topic_size = max(5, math.ceil(len(matrix) / max_topics))
+            labels = HDBSCAN(
+                min_cluster_size=minimum_topic_size,
+                min_samples=max(2, min(10, minimum_topic_size // 3)),
+                metric="euclidean",
+                allow_single_cluster=False,
+                copy=True,
+            ).fit_predict(reduced)
+        else:
+            labels = _automatic_kmeans_labels(
+                reduced,
+                max_topics=max_topics,
+                random_seed=random_seed,
+            )
 
     topic_labels = sorted(int(value) for value in np.unique(labels) if value >= 0)
-    terms_by_label = _topic_terms([text[:2000] for text in texts], labels, topic_labels)
+    if clustering_version == 2 and operating_mode == "AUTO" and len(topic_labels) < 2:
+        raise ValueError(
+            "Automatic topic discovery found fewer than two useful topics; use fixed mode or a larger sample"
+        )
+    if (
+        clustering_version in {2, 3}
+        and operating_mode == "FIXED"
+        and requested_topic_count is not None
+        and len(topic_labels) != requested_topic_count
+    ):
+        raise ValueError(
+            f"Fixed topic discovery produced {len(topic_labels)} distinct topics instead of {requested_topic_count}"
+        )
+    term_texts = [text[:2000] for text in texts]
+    terms_by_label = (
+        _cluster_discriminative_terms(term_texts, labels, topic_labels)
+        if clustering_version == 3
+        else _topic_terms(term_texts, labels, topic_labels)
+    )
     topics: list[DiscoveredTopic] = []
     used_names: set[str] = set()
     for ordinal, label in enumerate(topic_labels, start=1):
@@ -136,6 +334,15 @@ def discover_topics(
             if description_terms
             else f"Automatically discovered topic {ordinal}."
         )
+        similarities = members @ centroid
+        member_rows = np.flatnonzero(labels == label)
+        representative_excerpts: list[str] = []
+        for member_index in similarities.argsort()[::-1]:
+            excerpt = " ".join(texts[int(member_rows[int(member_index)])].split())[:500]
+            if excerpt and excerpt not in representative_excerpts:
+                representative_excerpts.append(excerpt)
+            if len(representative_excerpts) == 3:
+                break
         topics.append(
             DiscoveredTopic(
                 name=name,
@@ -143,6 +350,7 @@ def discover_topics(
                 keywords=keywords,
                 centroid=centroid.astype(float).tolist(),
                 sampled_chunk_count=len(members),
+                representative_excerpts=representative_excerpts,
             )
         )
     return topics
@@ -176,11 +384,20 @@ def _sample(job: MatterTopicJob, documents: list[MatterDocument]) -> tuple[list[
     per_document_limit = max(1, min(10, math.ceil(job.sample_size / max(1, len(shuffled)) * 2)))
     vectors: list[list[float]] = []
     texts: list[str] = []
+    seen_chunk_text: set[bytes] = set()
     for document in shuffled:
         _, document_texts, document_vectors = _load_document_chunks(job, document)
-        indexes = list(range(len(document_vectors)))
-        rng.shuffle(indexes)
-        for index in indexes[:per_document_limit]:
+        eligible: list[tuple[int, bytes]] = []
+        document_seen = set(seen_chunk_text)
+        for index, text in enumerate(document_texts):
+            key = _topic_sample_key(text)
+            if key is None or key in document_seen:
+                continue
+            document_seen.add(key)
+            eligible.append((index, key))
+        for eligible_index in _evenly_spaced_indexes(len(eligible), per_document_limit):
+            index, key = eligible[eligible_index]
+            seen_chunk_text.add(key)
             vectors.append(document_vectors[index])
             texts.append(document_texts[index])
             if len(vectors) >= job.sample_size:
@@ -188,7 +405,11 @@ def _sample(job: MatterTopicJob, documents: list[MatterDocument]) -> tuple[list[
     return vectors, texts
 
 
-def _ensure_topic_definition(db: Session, job: MatterTopicJob, topics: list[DiscoveredTopic]) -> tuple[MetadataDefinition, bool]:
+def _ensure_topic_definition(
+    db: Session,
+    job: MatterTopicJob,
+    topics: list[MatterTopicCluster],
+) -> tuple[MetadataDefinition, bool]:
     definition = db.scalar(
         select(MetadataDefinition).where(
             MetadataDefinition.matter_id == job.matter_id,
@@ -275,8 +496,8 @@ def _ensure_topic_definition(db: Session, job: MatterTopicJob, topics: list[Disc
 
     existing = {item["key"] for item in definition.allowed_values or []}
     options = list(definition.allowed_values or [])
-    for ordinal, topic in enumerate(topics):
-        key = f"topic_{job.id.hex[:12]}_{ordinal + 1}"
+    for topic in topics:
+        key = topic.topic_key
         if key not in existing:
             options.append(
                 {"key": key, "label": topic.name, "description": topic.description, "active": True}
@@ -312,14 +533,13 @@ def _sync_topic_schema(job_id: uuid.UUID) -> None:
     process_search_operation(operation_id)
 
 
-def discover_and_plan(job_id: uuid.UUID) -> list[uuid.UUID]:
-    definition_created = False
+def discover_and_plan(job_id: uuid.UUID) -> int:
     with SessionLocal() as db:
         job = db.get(MatterTopicJob, job_id)
         if job is None:
             raise ValueError("Matter topic job not found")
         if job.status == "CANCELED":
-            return []
+            return 0
         existing = list(
             db.scalars(
                 select(MatterTopicBatch.id)
@@ -328,7 +548,9 @@ def discover_and_plan(job_id: uuid.UUID) -> list[uuid.UUID]:
             )
         )
         if existing:
-            return existing
+            job.status = "AWAITING_REVIEW"
+            db.commit()
+            return job.topic_count
         job.status = "SAMPLING"
         job.started_at = job.started_at or utcnow()
         documents = list(
@@ -356,9 +578,8 @@ def discover_and_plan(job_id: uuid.UUID) -> list[uuid.UUID]:
             requested_topic_count=job.requested_topic_count,
             max_topics=int(job.configuration["max_topics"]),
             random_seed=int(job.configuration["random_seed"]),
+            clustering_version=int(job.configuration.get("clustering_version", 1)),
         )
-        definition, definition_created = _ensure_topic_definition(db, job, topics)
-        job.metadata_definition_id = definition.id
         for ordinal, topic in enumerate(topics):
             db.add(
                 MatterTopicCluster(
@@ -370,10 +591,11 @@ def discover_and_plan(job_id: uuid.UUID) -> list[uuid.UUID]:
                     keywords=topic.keywords,
                     centroid=topic.centroid,
                     sampled_chunk_count=topic.sampled_chunk_count,
+                    representative_excerpts=topic.representative_excerpts,
+                    included=True,
                 )
             )
         batch_size = get_settings().matter_topic_batch_size
-        batch_ids: list[uuid.UUID] = []
         for batch_number, offset in enumerate(range(0, len(documents), batch_size)):
             ids = [str(document.id) for document in documents[offset : offset + batch_size]]
             batch = MatterTopicBatch(
@@ -384,13 +606,45 @@ def discover_and_plan(job_id: uuid.UUID) -> list[uuid.UUID]:
             )
             db.add(batch)
             db.flush()
-            batch_ids.append(batch.id)
         job.topic_count = len(topics)
-        job.status = "PUBLISHING"
+        if not topics:
+            raise ValueError("Topic discovery did not produce any proposals")
+        job.status = "AWAITING_REVIEW"
         db.commit()
-    if definition_created:
-        _sync_topic_schema(job_id)
-    return batch_ids
+    return len(topics)
+
+
+def prepare_application(db: Session, job: MatterTopicJob, *, reviewer_user_id: uuid.UUID) -> None:
+    if job.status != "AWAITING_REVIEW":
+        raise ValueError("Topic proposals are not awaiting review")
+    topics = [topic for topic in job.clusters if topic.included]
+    if not topics:
+        raise ValueError("At least one topic must be included")
+    definition, _ = _ensure_topic_definition(db, job, topics)
+    job.metadata_definition_id = definition.id
+    job.topic_count = len(topics)
+    job.reviewed_by_user_id = reviewer_user_id
+    job.reviewed_at = utcnow()
+    job.status = "PUBLISHING"
+
+
+def application_batch_ids(job_id: uuid.UUID) -> list[uuid.UUID]:
+    _sync_topic_schema(job_id)
+    with SessionLocal() as db:
+        job = db.get(MatterTopicJob, job_id)
+        if job is None:
+            raise ValueError("Matter topic job not found")
+        if job.status == "CANCELED":
+            return []
+        if job.status != "PUBLISHING" or job.metadata_definition_id is None:
+            raise ValueError("Topic proposals have not been approved")
+        return list(
+            db.scalars(
+                select(MatterTopicBatch.id)
+                .where(MatterTopicBatch.job_id == job.id)
+                .order_by(MatterTopicBatch.batch_number)
+            )
+        )
 
 
 def _assign_document(job: MatterTopicJob, document: MatterDocument, clusters: list[MatterTopicCluster]):
@@ -467,7 +721,7 @@ def process_batch(batch_id: uuid.UUID) -> dict[str, int]:
         clusters = list(
             db.scalars(
                 select(MatterTopicCluster)
-                .where(MatterTopicCluster.job_id == job.id)
+                .where(MatterTopicCluster.job_id == job.id, MatterTopicCluster.included.is_(True))
                 .order_by(MatterTopicCluster.ordinal)
             )
         )

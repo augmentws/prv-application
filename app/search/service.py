@@ -17,6 +17,8 @@ from app.models import (
     Matter,
     MatterDocument,
     MatterDocumentImportJob,
+    MatterEmbeddingBatch,
+    MatterEmbeddingJob,
     MetadataDefinition,
     ReviewBatch,
     ReviewBatchDocument,
@@ -371,11 +373,64 @@ class SearchIndexManager:
         )
         self._bulk_upsert(generation.index_name, documents, definitions)
         self.client.refresh(generation.index_name)
-        generation.document_count = int(
-            self.db.scalar(select(func.count()).select_from(MatterDocument).where(MatterDocument.matter_id == matter_id)) or 0
-        )
+        generation.document_count = self.client.count(generation.index_name)
         self.db.commit()
         return len(documents)
+
+    def upsert_embedding_job(
+        self,
+        matter_id: uuid.UUID,
+        embedding_job_id: uuid.UUID,
+    ) -> int:
+        generation = self.ensure(matter_id)
+        job = self.db.get(MatterEmbeddingJob, embedding_job_id)
+        if job is None or job.matter_id != matter_id:
+            raise ValueError("Matter embedding job not found")
+        definitions = list(
+            self.db.scalars(
+                select(MetadataDefinition).where(
+                    MetadataDefinition.matter_id == matter_id,
+                    MetadataDefinition.status == "ACTIVE",
+                )
+            )
+        )
+        indexed_count = 0
+        document_ids: list[uuid.UUID] = []
+
+        def flush() -> None:
+            nonlocal indexed_count
+            if not document_ids:
+                return
+            documents = list(
+                self.db.scalars(
+                    select(MatterDocument).where(
+                        MatterDocument.matter_id == matter_id,
+                        MatterDocument.id.in_(document_ids),
+                    )
+                )
+            )
+            self._bulk_upsert(generation.index_name, documents, definitions)
+            indexed_count += len(documents)
+            document_ids.clear()
+
+        batch_document_ids = self.db.scalars(
+            select(MatterEmbeddingBatch.document_ids)
+            .where(
+                MatterEmbeddingBatch.job_id == job.id,
+                MatterEmbeddingBatch.status == "COMPLETED",
+            )
+            .order_by(MatterEmbeddingBatch.batch_number)
+        )
+        for batch_ids in batch_document_ids:
+            for value in batch_ids:
+                document_ids.append(uuid.UUID(value))
+                if len(document_ids) >= self.settings.search_bulk_batch_size:
+                    flush()
+        flush()
+        self.client.refresh(generation.index_name)
+        generation.document_count = self.client.count(generation.index_name)
+        self.db.commit()
+        return indexed_count
 
     def delete_documents(self, matter_id: uuid.UUID, document_ids: list[uuid.UUID]) -> int:
         self._lock_matter_search(matter_id)
@@ -384,9 +439,7 @@ class SearchIndexManager:
             return 0
         self.client.bulk(generation.index_name, (("delete", str(document_id), None) for document_id in document_ids))
         self.client.refresh(generation.index_name)
-        generation.document_count = int(
-            self.db.scalar(select(func.count()).select_from(MatterDocument).where(MatterDocument.matter_id == matter_id)) or 0
-        )
+        generation.document_count = self.client.count(generation.index_name)
         self.db.commit()
         return len(document_ids)
 
@@ -526,10 +579,17 @@ def process_search_operation(operation_id: uuid.UUID) -> None:
             if operation.kind in {"SCHEMA_SYNC", "REBUILD"}:
                 manager.ensure(operation.matter_id, force=operation.kind == "REBUILD")
             elif operation.kind == "DOCUMENT_UPSERT":
-                manager.upsert_documents(
-                    operation.matter_id,
-                    [uuid.UUID(value) for value in operation.payload.get("document_ids", [])],
-                )
+                embedding_job_id = operation.payload.get("embedding_job_id")
+                if embedding_job_id:
+                    manager.upsert_embedding_job(
+                        operation.matter_id,
+                        uuid.UUID(embedding_job_id),
+                    )
+                else:
+                    manager.upsert_documents(
+                        operation.matter_id,
+                        [uuid.UUID(value) for value in operation.payload.get("document_ids", [])],
+                    )
             elif operation.kind == "DOCUMENT_DELETE":
                 manager.delete_documents(
                     operation.matter_id,

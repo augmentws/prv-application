@@ -12,6 +12,7 @@ import type { MatterSearchSort } from './matterSearchSort';
 export interface MatterSearchRequest {
   query?: string | null;
   search_mode?: MatterSearchRequestSearchMode;
+  minimum_similarity?: number | null;
   /**
      * @maxItems 100
      * @items.pattern ^[a-z][a-z0-9_]{0,99}$

@@ -34,4 +34,12 @@ A rebuild creates a new numbered physical index while the current alias remains 
 
 After that commit, cleanup resolves every physical index matching the matter's versioned index pattern. It deletes every index except the active one, then deletes every non-active `search_index_generation` row. If cleanup fails, the active index remains valid and the surviving tracking rows allow a later cleanup attempt. `search_projection_operation` records are retained as the audit and diagnostic history.
 
+The maintenance utility `scripts/cleanup_search_indexes.py` applies the same policy to generations left behind by interrupted cleanup. It is a dry run unless `--execute` is supplied. Before deleting anything it requires exactly one database-active generation, requires the matter alias to resolve only to that physical index, validates every index name against the versioned naming contract, and takes the same matter advisory lock as projection workers. Physical indexes are deleted before obsolete generation rows, and review-batch generation provenance is copied into the immutable selection definition before a referenced row is pruned.
+
+```text
+pipenv run python scripts/cleanup_search_indexes.py
+pipenv run python scripts/cleanup_search_indexes.py --execute
+pipenv run python scripts/cleanup_search_indexes.py --matter-id <matter-uuid>
+```
+
 Search-query review batches copy the generation number, physical name, schema hash, and activation time into their immutable selection definition. Their provenance therefore remains available after the generation tracking row is removed.

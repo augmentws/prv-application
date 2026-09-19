@@ -13,4 +13,5 @@ export const CollectionReadStatus = {
   OPEN: 'OPEN',
   SEALED: 'SEALED',
   ARCHIVED: 'ARCHIVED',
+  DELETING: 'DELETING',
 } as const;

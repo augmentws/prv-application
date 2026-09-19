@@ -5,11 +5,11 @@
  * Phase-one Core API for authentication, hierarchical tenants, clients, matters, and matter metadata definitions.
  * OpenAPI spec version: 0.1.0
  */
-import type { FacetValue } from './facetValue';
 
-export interface CollectionSearchFacets {
-  custodians: FacetValue[];
-  file_extensions: FacetValue[];
-  record_types: FacetValue[];
-  processing_statuses: FacetValue[];
+export interface SystemTextProcessingRule {
+  id: string;
+  name: string;
+  description: string;
+  action: string;
+  match_description: string;
 }

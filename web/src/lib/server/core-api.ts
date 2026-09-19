@@ -16,13 +16,33 @@ export interface TokenPair {
 
 const CORE_API_URL = (process.env.CORE_API_URL ?? "http://127.0.0.1:8000").replace(/\/$/, "");
 
+function configuredAppOrigin() {
+  const value = process.env.APP_ORIGIN?.trim();
+  if (!value) return null;
+  try {
+    const url = new URL(value);
+    if (!["http:", "https:"].includes(url.protocol)) throw new Error();
+    return url.origin;
+  } catch {
+    throw new Error("APP_ORIGIN must be an absolute HTTP or HTTPS URL");
+  }
+}
+
 export function coreUrl(path: string) {
   return `${CORE_API_URL}/${path.replace(/^\//, "")}`;
 }
 
 export function isSameOrigin(request: Request) {
   const origin = request.headers.get("origin");
-  return origin !== null && origin === new URL(request.url).origin;
+  if (origin === null) return false;
+  const trustedOrigins = new Set([new URL(request.url).origin]);
+  const appOrigin = configuredAppOrigin();
+  if (appOrigin) trustedOrigins.add(appOrigin);
+  return trustedOrigins.has(origin);
+}
+
+export function appUrl(request: Request, path: string) {
+  return new URL(path, configuredAppOrigin() ?? request.url);
 }
 
 export async function requestCore(path: string, init: RequestInit = {}) {

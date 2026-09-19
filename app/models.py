@@ -192,6 +192,59 @@ class MatterMembership(Base):
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
 
 
+class ExternalProviderUsage(Base):
+    """Immutable token-usage ledger for billable external provider calls."""
+
+    __tablename__ = "external_provider_usage"
+    __table_args__ = (
+        UniqueConstraint("idempotency_key", name="uq_external_provider_usage_idempotency_key"),
+        CheckConstraint(
+            "request_count >= 0 AND input_tokens >= 0 AND output_tokens >= 0",
+            name="ck_external_provider_usage_counts",
+        ),
+        Index("ix_external_provider_usage_tenant_job_date", "tenant_id", "job_created_at"),
+        Index("ix_external_provider_usage_job", "job_type", "job_id"),
+        Index("ix_external_provider_usage_provider_date", "provider", "job_created_at"),
+    )
+
+    id: Mapped[uuid.UUID] = mapped_column(Uuid, primary_key=True, default=uuid.uuid4)
+    tenant_id: Mapped[uuid.UUID] = mapped_column(Uuid, ForeignKey("tenant.id", ondelete="RESTRICT"), index=True)
+    client_id: Mapped[uuid.UUID | None] = mapped_column(
+        Uuid, ForeignKey("client.id", ondelete="RESTRICT"), nullable=True, index=True
+    )
+    matter_id: Mapped[uuid.UUID | None] = mapped_column(
+        Uuid, ForeignKey("matter.id", ondelete="SET NULL"), nullable=True, index=True
+    )
+    started_by_user_id: Mapped[uuid.UUID] = mapped_column(
+        Uuid, ForeignKey("app_user.id", ondelete="RESTRICT"), index=True
+    )
+    job_type: Mapped[str] = mapped_column(String(80), index=True)
+    job_id: Mapped[uuid.UUID] = mapped_column(Uuid, index=True)
+    job_created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), index=True)
+    provider: Mapped[str] = mapped_column(String(100), index=True)
+    model: Mapped[str] = mapped_column(String(500))
+    request_count: Mapped[int] = mapped_column(Integer, default=1)
+    input_tokens: Mapped[int] = mapped_column(BigInteger, default=0)
+    output_tokens: Mapped[int] = mapped_column(BigInteger, default=0)
+    idempotency_key: Mapped[str] = mapped_column(String(500))
+    details: Mapped[dict[str, Any]] = mapped_column(JSON, default=dict)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+
+    started_by: Mapped[User] = relationship()
+
+    @property
+    def total_tokens(self) -> int:
+        return self.input_tokens + self.output_tokens
+
+    @property
+    def started_by_email(self) -> str:
+        return self.started_by.email
+
+    @property
+    def started_by_display_name(self) -> str:
+        return self.started_by.display_name
+
+
 class MatterDocumentImportJob(TimestampMixin, Base):
     __tablename__ = "matter_document_import_job"
     __table_args__ = (
@@ -326,11 +379,31 @@ class MatterEmbeddingJob(TimestampMixin, Base):
     matter: Mapped[Matter] = relationship()
     created_by: Mapped[User] = relationship()
 
+    # API reporting fields are aggregated from the immutable provider-usage
+    # ledger; these defaults let the ORM object validate before the router
+    # overlays the current aggregate values.
+    @property
+    def provider_request_count(self) -> int:
+        return 0
+
+    @property
+    def input_tokens(self) -> int:
+        return 0
+
+    @property
+    def output_tokens(self) -> int:
+        return 0
+
+    @property
+    def total_tokens(self) -> int:
+        return 0
+
 
 class MatterEmbeddingBatch(TimestampMixin, Base):
     __tablename__ = "matter_embedding_batch"
     __table_args__ = (
         UniqueConstraint("job_id", "batch_number", name="uq_matter_embedding_batch_number"),
+        UniqueConstraint("provider_batch_id", name="uq_matter_embedding_batch_provider_batch_id"),
         CheckConstraint(
             "status IN ('QUEUED', 'RUNNING', 'COMPLETED', 'FAILED', 'CANCELED')",
             name="ck_matter_embedding_batch_status",
@@ -339,6 +412,10 @@ class MatterEmbeddingBatch(TimestampMixin, Base):
             "item_count >= 0 AND processed_count >= 0 AND embedded_count >= 0 AND "
             "skipped_count >= 0 AND failed_count >= 0 AND chunk_count >= 0",
             name="ck_matter_embedding_batch_counts",
+        ),
+        CheckConstraint(
+            "provider_request_count >= 0",
+            name="ck_matter_embedding_batch_provider_request_count",
         ),
     )
 
@@ -356,13 +433,21 @@ class MatterEmbeddingBatch(TimestampMixin, Base):
     failed_count: Mapped[int] = mapped_column(Integer, default=0)
     chunk_count: Mapped[int] = mapped_column(Integer, default=0)
     error_message: Mapped[str | None] = mapped_column(Text)
+    provider_input_file_id: Mapped[str | None] = mapped_column(String(255))
+    provider_batch_id: Mapped[str | None] = mapped_column(String(255))
+    provider_output_file_id: Mapped[str | None] = mapped_column(String(255))
+    provider_error_file_id: Mapped[str | None] = mapped_column(String(255))
+    provider_status: Mapped[str | None] = mapped_column(String(40))
+    provider_request_count: Mapped[int] = mapped_column(Integer, default=0)
+    provider_manifest: Mapped[dict[str, Any] | None] = mapped_column(JSON)
+    provider_last_polled_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
 
 
 class MatterTopicJob(TimestampMixin, Base):
     __tablename__ = "matter_topic_job"
     __table_args__ = (
         CheckConstraint(
-            "status IN ('QUEUED', 'SAMPLING', 'CLUSTERING', 'PUBLISHING', 'COMPLETED', "
+            "status IN ('QUEUED', 'SAMPLING', 'CLUSTERING', 'AWAITING_REVIEW', 'PUBLISHING', 'COMPLETED', "
             "'COMPLETED_WITH_ERRORS', 'FAILED', 'CANCELED')",
             name="ck_matter_topic_job_status",
         ),
@@ -384,8 +469,8 @@ class MatterTopicJob(TimestampMixin, Base):
             "uq_matter_topic_job_active",
             "matter_id",
             unique=True,
-            postgresql_where=text("status IN ('QUEUED', 'SAMPLING', 'CLUSTERING', 'PUBLISHING')"),
-            sqlite_where=text("status IN ('QUEUED', 'SAMPLING', 'CLUSTERING', 'PUBLISHING')"),
+            postgresql_where=text("status IN ('QUEUED', 'SAMPLING', 'CLUSTERING', 'AWAITING_REVIEW', 'PUBLISHING')"),
+            sqlite_where=text("status IN ('QUEUED', 'SAMPLING', 'CLUSTERING', 'AWAITING_REVIEW', 'PUBLISHING')"),
         ),
     )
 
@@ -416,14 +501,19 @@ class MatterTopicJob(TimestampMixin, Base):
     created_by_user_id: Mapped[uuid.UUID] = mapped_column(
         Uuid, ForeignKey("app_user.id", ondelete="RESTRICT"), index=True
     )
+    reviewed_by_user_id: Mapped[uuid.UUID | None] = mapped_column(
+        Uuid, ForeignKey("app_user.id", ondelete="RESTRICT"), nullable=True, index=True
+    )
     started_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    reviewed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     completed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     canceled_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
 
     matter: Mapped[Matter] = relationship()
     embedding_job: Mapped[MatterEmbeddingJob] = relationship()
     metadata_definition: Mapped["MetadataDefinition | None"] = relationship()
-    created_by: Mapped[User] = relationship()
+    created_by: Mapped[User] = relationship(foreign_keys=[created_by_user_id])
+    reviewed_by: Mapped[User | None] = relationship(foreign_keys=[reviewed_by_user_id])
     clusters: Mapped[list["MatterTopicCluster"]] = relationship(
         back_populates="job", cascade="all, delete-orphan", order_by="MatterTopicCluster.ordinal"
     )
@@ -448,6 +538,8 @@ class MatterTopicCluster(TimestampMixin, Base):
     description: Mapped[str | None] = mapped_column(Text)
     keywords: Mapped[list[str]] = mapped_column(JSON, default=list)
     centroid: Mapped[list[float]] = mapped_column(JSON)
+    representative_excerpts: Mapped[list[str]] = mapped_column(JSON, default=list)
+    included: Mapped[bool] = mapped_column(Boolean, default=True)
     sampled_chunk_count: Mapped[int] = mapped_column(Integer, default=0)
     assigned_chunk_count: Mapped[int] = mapped_column(Integer, default=0)
     assigned_document_count: Mapped[int] = mapped_column(Integer, default=0)

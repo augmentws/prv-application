@@ -14,6 +14,8 @@ record_type?: ('EMAIL' | 'FILE' | 'CHAT' | 'TRANSCRIPT' | 'OTHER')[] | null;
 processing_status?: ('NOT_PROCESSED' | 'METADATA_INCOMPLETE' | 'READY' | 'FAILED')[] | null;
 source_created_from?: string | null;
 source_created_to?: string | null;
+file_date_from?: string | null;
+file_date_to?: string | null;
 /**
  * @minimum 1
  * @maximum 1000

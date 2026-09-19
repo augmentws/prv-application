@@ -10,19 +10,22 @@ from sqlalchemy.orm import Session
 from app.config import Settings, get_settings
 from app.database import get_db
 from app.dependencies import Principal, can_admin_matter, get_principal
-from app.embedding_gateway import get_embedding_gateway
+from app.embedding_gateway import get_query_embedding_gateway
 from app.models import Custodian, Matter, MetadataDefinition, SearchIndexGeneration, SearchProjectionOperation
 from app.schemas import (
+    MatterDateHistogramRequest,
+    MatterDateHistogramResponse,
     MatterFacetValuesRequest,
     MatterFacetValuesResponse,
     MatterSearchRequest,
     MatterSearchResponse,
     SearchIndexGenerationRead,
     SearchProjectionOperationRead,
+    SearchProjectionRetryResponse,
 )
 from app.search.client import OpenSearchClient, OpenSearchError
 from app.search.operations import create_search_operation
-from app.search.query import execute_facet_values, execute_search
+from app.search.query import execute_date_histogram, execute_facet_values, execute_search
 from app.workflows.dispatcher import enqueue_search_projection
 
 router = APIRouter(prefix="/v1/matters/{matter_id}", tags=["matter search"])
@@ -81,7 +84,7 @@ def execute_matter_search(
         query_vector = None
         if payload.search_mode != "KEYWORD":
             try:
-                query_vector = get_embedding_gateway().embed([payload.query or ""], "query").embeddings[0]
+                query_vector = get_query_embedding_gateway().embed([payload.query or ""], "query").embeddings[0]
             except Exception as exc:
                 logger.exception(
                     "Query embedding failed matter_id=%s search_mode=%s",
@@ -173,7 +176,7 @@ def execute_matter_facet_values(
     query_vector = None
     if payload.search.search_mode != "KEYWORD":
         try:
-            query_vector = get_embedding_gateway().embed([payload.search.query or ""], "query").embeddings[0]
+            query_vector = get_query_embedding_gateway().embed([payload.search.query or ""], "query").embeddings[0]
         except Exception as exc:
             logger.exception(
                 "Facet query embedding failed matter_id=%s search_mode=%s",
@@ -219,6 +222,78 @@ def search_facet_values(
     return execute_matter_facet_values(matter, field, payload, db=db, settings=settings)
 
 
+@router.post("/facets/{field}/date-histogram", response_model=MatterDateHistogramResponse)
+def search_date_histogram(
+    matter_id: uuid.UUID,
+    field: str,
+    payload: MatterDateHistogramRequest,
+    principal: Principal = Depends(get_principal),
+    db: Session = Depends(get_db),
+    settings: Settings = Depends(get_settings),
+) -> MatterDateHistogramResponse:
+    matter = _matter(db, matter_id, principal)
+    if not settings.search_enabled:
+        raise HTTPException(status_code=status.HTTP_503_SERVICE_UNAVAILABLE, detail="Search is disabled")
+    generation = db.scalar(
+        select(SearchIndexGeneration).where(
+            SearchIndexGeneration.matter_id == matter.id,
+            SearchIndexGeneration.status == "ACTIVE",
+        )
+    )
+    if generation is None:
+        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="Matter search index is not ready")
+    definitions = list(
+        db.scalars(
+            select(MetadataDefinition).where(
+                MetadataDefinition.matter_id == matter.id,
+                MetadataDefinition.status == "ACTIVE",
+            )
+        )
+    )
+    definition = next(
+        (
+            item
+            for item in definitions
+            if item.key == field and item.searchable and item.type in {"DATE", "DATETIME"}
+        ),
+        None,
+    )
+    if definition is None:
+        raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_CONTENT, detail="Unknown or non-date field")
+
+    query_vector = None
+    if payload.search.search_mode != "KEYWORD":
+        try:
+            query_vector = get_query_embedding_gateway().embed([payload.search.query or ""], "query").embeddings[0]
+        except Exception as exc:
+            logger.exception(
+                "Date histogram query embedding failed matter_id=%s search_mode=%s",
+                matter.id,
+                payload.search.search_mode,
+            )
+            raise HTTPException(
+                status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+                detail="Semantic query embedding is temporarily unavailable",
+            ) from exc
+    client = OpenSearchClient(settings)
+    try:
+        return execute_date_histogram(
+            client,
+            generation.alias_name,
+            payload.search,
+            definitions,
+            field=field,
+            interval=payload.interval,
+            tenant_id=str(matter.client.tenant_id),
+            matter_id=str(matter.id),
+            query_vector=query_vector,
+        )
+    except OpenSearchError as exc:
+        raise HTTPException(status_code=status.HTTP_503_SERVICE_UNAVAILABLE, detail="Search is temporarily unavailable") from exc
+    finally:
+        client.close()
+
+
 @router.get("/search-indexes", response_model=list[SearchIndexGenerationRead])
 def list_search_indexes(
     matter_id: uuid.UUID,
@@ -250,6 +325,69 @@ def list_search_operations(
             .order_by(SearchProjectionOperation.created_at.desc())
             .limit(limit)
         )
+    )
+
+
+@router.post(
+    "/search-operations/retry-failed",
+    response_model=SearchProjectionRetryResponse,
+    status_code=status.HTTP_202_ACCEPTED,
+)
+def retry_failed_search_operations(
+    matter_id: uuid.UUID,
+    principal: Principal = Depends(get_principal),
+    db: Session = Depends(get_db),
+    settings: Settings = Depends(get_settings),
+) -> SearchProjectionRetryResponse:
+    matter = _matter(db, matter_id, principal)
+    if not settings.search_enabled:
+        raise HTTPException(status_code=status.HTTP_503_SERVICE_UNAVAILABLE, detail="Search is disabled")
+
+    operations = list(
+        db.scalars(
+            select(SearchProjectionOperation)
+            .where(
+                SearchProjectionOperation.matter_id == matter.id,
+                SearchProjectionOperation.kind == "DOCUMENT_UPSERT",
+                SearchProjectionOperation.status == "FAILED",
+            )
+            .order_by(SearchProjectionOperation.created_at, SearchProjectionOperation.id)
+            .with_for_update()
+        )
+    )
+    retried_at = datetime.now(timezone.utc)
+    document_count = 0
+    for operation in operations:
+        document_ids = operation.payload.get("document_ids")
+        if isinstance(document_ids, list):
+            document_count += len(document_ids)
+        retry_history = operation.payload.get("retry_history")
+        if not isinstance(retry_history, list):
+            retry_history = []
+        operation.payload = {
+            **operation.payload,
+            "retry_history": [
+                *retry_history,
+                {
+                    "workflow_id": operation.workflow_id,
+                    "attempt_count": operation.attempt_count,
+                    "error_message": operation.error_message,
+                    "retried_at": retried_at.isoformat(),
+                    "retried_by_user_id": str(principal.user.id),
+                },
+            ],
+        }
+        operation.status = "QUEUED"
+        operation.workflow_id = f"search-projection:{operation.id}:retry:{uuid.uuid4()}"
+        operation.error_message = None
+        operation.started_at = None
+        operation.completed_at = None
+        enqueue_search_projection(db, operation.workflow_id, str(operation.id), priority=100)
+
+    db.commit()
+    return SearchProjectionRetryResponse(
+        requeued_operation_count=len(operations),
+        requeued_document_count=document_count,
     )
 
 

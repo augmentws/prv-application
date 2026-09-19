@@ -106,6 +106,18 @@ describe("BatchReviewWorkspace", () => {
 
     expect(await screen.findByText("Contract review request")).toBeInTheDocument();
     expect(await screen.findByText("contract.eml")).toBeInTheDocument();
+    await user.click(screen.getByRole("combobox", { name: "Search mode" }));
+    await user.click(screen.getByRole("option", { name: "Semantic" }));
+    await user.type(screen.getByRole("spinbutton", { name: "Minimum semantic similarity" }), "0.8");
+    await user.type(screen.getByRole("textbox", { name: "Search batch documents" }), "contract termination risk");
+    await user.click(screen.getByRole("button", { name: "Search" }));
+
+    await waitFor(() => {
+      const searchCalls = vi.mocked(coreApi).mock.calls.filter(([path, init]) => path.endsWith("/search") && init?.method === "POST");
+      const lastRequest = JSON.parse(String(searchCalls.at(-1)?.[1]?.body)) as { search_mode: string; minimum_similarity: number };
+      expect(lastRequest).toMatchObject({ search_mode: "SEMANTIC", minimum_similarity: 0.8 });
+    });
+
     await user.click(screen.getByRole("combobox", { name: "Responsiveness" }));
     await user.click(screen.getByRole("option", { name: "Responsive" }));
     await user.click(screen.getByRole("button", { name: "Save & next" }));

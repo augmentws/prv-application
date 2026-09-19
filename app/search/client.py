@@ -115,6 +115,10 @@ class OpenSearchClient:
     def refresh(self, index: str) -> None:
         self._request("POST", f"/{index}/_refresh")
 
+    def count(self, index: str) -> int:
+        result = self._request("GET", f"/{index}/_count")
+        return int(result.get("count", 0))
+
     def ensure_rrf_search_pipeline(self, pipeline_id: str) -> None:
         self._request(
             "PUT",

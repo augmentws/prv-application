@@ -21,15 +21,20 @@ Schema changes are planned before they are applied. A compatible additive field 
 
 After confirmation, the worker creates and populates a new physical index and atomically moves the matter's stable alias only when the replacement is ready. It then deletes non-active physical indexes followed by their generation records. Recent projection operations remain available as the audit and diagnostic history.
 
-The matter's **Search index** tab shows the active generation, indexed and authoritative document counts, current workflow activity, and recent projection operations. When a schema change requires reindexing, the tab explains why and asks a matter administrator to confirm. An administrator can also request a complete rebuild directly. The current active index remains searchable until its replacement is fully populated and activated.
+The matter's **Search index** tab shows the active generation, indexed and authoritative document counts, current workflow activity, and recent projection operations. The indexed count is read from the active OpenSearch generation after each successful update, so it may trail Core while import batches are still projecting. When a schema change requires reindexing, the tab explains why and asks a matter administrator to confirm. An administrator can also request a complete rebuild directly. The current active index remains searchable until its replacement is fully populated and activated.
 
-The same status and control surfaces are available through the API. Use `GET /v1/matters/{matter_id}/search-operations` to inspect queued, running, action-required, completed, or failed work. Use `GET /v1/matters/{matter_id}/search-indexes` to inspect the active physical generation. Confirm a requested schema reindex with `POST /v1/matters/{matter_id}/search-operations/{operation_id}/confirm-reindex`. An administrator can request a complete rebuild directly with `POST /v1/matters/{matter_id}/search-indexes/rebuild`.
+If one or more document-update jobs fail, select **Requeue failed jobs** on the Search index tab. Confirming the action assigns each failed operation a fresh durable workflow ID and queues it again. Already indexed document IDs are updated idempotently rather than duplicated. The action retries only failed document updates; failed full rebuilds and schema operations remain visible for separate diagnosis.
+
+The same status and control surfaces are available through the API. Use `GET /v1/matters/{matter_id}/search-operations` to inspect queued, running, action-required, completed, or failed work. Use `GET /v1/matters/{matter_id}/search-indexes` to inspect the active physical generation. Retry all currently failed document updates with `POST /v1/matters/{matter_id}/search-operations/retry-failed`. Confirm a requested schema reindex with `POST /v1/matters/{matter_id}/search-operations/{operation_id}/confirm-reindex`. An administrator can request a complete rebuild directly with `POST /v1/matters/{matter_id}/search-indexes/rebuild`.
 
 ## Query behavior
+
+Semantic and hybrid searches may use a dedicated query embedding model. With `EMBEDDING_QUERY_MODEL=voyageai/voyage-4-nano`, document vectors can remain on hosted `voyage-4-lite` while query vectors are generated locally in the compatible Voyage 4 embedding space. Query inference uses `input_type=query` and the same dimensions and normalization as document vectors.
 
 `POST /v1/matters/{matter_id}/search` accepts a controlled request containing:
 
 - a query and `KEYWORD`, `SEMANTIC`, or `HYBRID` search mode;
+- an optional `minimum_similarity` from `0` to `1` for thresholded Semantic searches;
 - optional searchable field keys;
 - typed `EQ`, `IN`, `RANGE`, and `EXISTS` filters;
 - configured facetable field keys;
@@ -37,6 +42,10 @@ The same status and control surfaces are available through the API. Use `GET /v1
 - pagination.
 
 Text fields use versioned eDiscovery analyzer names for indexing, ordinary search, and phrase search. The initial three profiles all use the standard tokenizer plus lowercase normalization, preserve token positions and offsets, and do not remove stop words. This supports ordinary keyword queries and quoted phrases while allowing the profiles to evolve independently later. Facetable text fields also receive an exact keyword subfield; identifiers and enum values remain keywords.
+
+Semantic vectors use the OpenSearch FAISS engine with an HNSW index and cosine similarity. Keyword search continues to use Lucene, while Hybrid search combines the keyword and FAISS-backed semantic result lists through the matter search pipeline. Changing the vector engine or HNSW configuration requires a new physical index generation and a full reprojection.
+
+Semantic search without a minimum similarity is top-k retrieval: it ranks a bounded candidate set, and every eligible vector has some nearest-neighbor score. The UI therefore labels the count as semantic candidates rather than exact matches. Set **Min similarity** to a cosine-similarity value from `0` through `1` to use FAISS radial search; decimal values such as `.035` are accepted. Lower values include more loosely related documents, while higher values return fewer, more closely related documents. Leave the field blank to use the configured candidate limit. The application converts the user-facing cosine value into OpenSearch's internal FAISS score. Thresholds are supported only for Semantic search because Hybrid's reciprocal-rank-fusion score is on a different scale.
 
 ## Keyword search syntax
 
@@ -168,9 +177,11 @@ the best general starting point when the user wants both precise names or phrase
 and conceptually related language.
 
 Semantic and hybrid modes require a query and support relevance sorting. Active
-tenant, matter, and metadata filters are applied inside vector retrieval. Facet
-counts describe the retrieved candidate set for semantic and hybrid searches;
-they are not a count of every vector in the matter.
+tenant, matter, and metadata filters are applied inside vector retrieval. Without
+a Semantic threshold, facet counts describe the retrieved candidate set rather
+than every vector in the matter. With a threshold, Semantic counts describe the
+documents meeting that similarity floor. Hybrid facet counts continue to describe
+its bounded fused candidate set.
 
 Integer metadata maps to OpenSearch `long`. Floating-point metadata maps to `double`. Dates, date-times, booleans, enums, and unindexed JSON use corresponding controlled mappings generated from the matter field catalog.
 
@@ -180,7 +191,7 @@ Open a matter and select **Search & Review** to enter the full-screen review wor
 
 The workspace has four coordinated areas on a wide desktop:
 
-- **Filters** starts with every facet group closed so the panel remains compact. Open a group to see its eight most common values and current counts. Type in **Find** to retrieve up to 20 matching values beyond that initial list. Counts respect the current query and filters in other groups, while ignoring the group's own selections so alternatives remain discoverable. Selecting more than one value within a field broadens that field, while selections across different fields narrow the result set. Long values are clipped within the panel instead of creating horizontal scrolling.
+- **Filters** starts with every filter group closed so the panel remains compact. Open an ordinary facet to see its eight most common values and current counts. Type in **Find** to retrieve up to 20 matching values beyond that initial list. Active searchable Date and Datetime definitions instead open a date histogram plus an inclusive **From** and **To** range. Choose Week, Month, or Year for the calendar buckets, or select a non-empty bucket to apply its range. Datetime bounds cover the complete selected UTC days. Counts respect the current query and filters in other groups, while ignoring the date field's own selection so its full matching distribution remains visible. Selecting more than one value within a field broadens that field, while selections across different fields narrow the result set. Long values are clipped within the panel instead of creating horizontal scrolling.
 - **Results** shows the matching documents. Select a row to open the source artifact without leaving the search.
 - **Document viewer** displays email and text content inline. Email metadata has its own scrollable panel; drag the horizontal divider beneath it up or down to give the message body more or less room. Focus the divider and use the up and down arrow keys for keyboard resizing. Other native file types can be downloaded and opened in their native application.
 - **Document details** has separate **Coding** and **Metadata** tabs. Coding contains only editable asserted fields and stages changes until **Save changes** is selected. Metadata shows all fields in document-visible groups as read-only values, including imported, system, and current asserted values.
@@ -195,7 +206,11 @@ decisions,” even when those exact words are absent. Hybrid search combines bot
 approaches. When semantic retrieval contributes to a result, its best matching
 passage appears beneath the result title.
 
-For body text, the indexer uses extracted text when available, then OCR text, then compatible native content such as EML or plain text. Search terms, mode, active facet values, the page, and the selected document are retained in the address, so the current workspace can be bookmarked or reopened. On smaller screens, filters and coding open as focused panels and results and document viewing become separate views.
+When **Semantic** is selected, **Min similarity** appears beside the query. Leave it empty to retrieve and rank the top semantic candidates. Enter a value from `0` to `1` to count and return only documents meeting that threshold. Thresholds are retained in the URL and in saved searches.
+
+The results footer supports previous and next navigation, direct entry of a page number, and a **Last** action. Changing pages clears the selected document and preserves the active query, filters, search mode, threshold, and page in the address.
+
+For body text, the indexer uses extracted text when available, then OCR text, then compatible native content such as EML or plain text. Search terms, mode, active facet values and date ranges, the page, and the selected document are retained in the address, so the current workspace can be bookmarked or reopened. On smaller screens, filters and coding open as focused panels and results and document viewing become separate views.
 
 Metadata coding updates Core immediately and queues a high-priority search projection update. After saving, the workspace reports that search is updating, watches the projection operation, and refreshes the result and facet data when it completes. If projection fails, the workspace reports the index error while preserving the successfully saved Core value.
 
@@ -215,4 +230,4 @@ Only the owner can delete a saved search. Sharing with user groups is planned bu
 
 ## Current limitations
 
-The search projection covers document identity, collection-item metadata, email headers, family, custodian data, resolved current metadata values, and body text. At most 10 MiB of text is loaded from an artifact by default; administrators can change this deployment setting. Existing matter documents must be reindexed after body indexing is enabled or after a preferred extracted/OCR artifact is added. Native binary formats without extracted or OCR text do not have a searchable body. Documents without completed chunk-vector artifacts cannot appear from semantic retrieval, although hybrid search can still find them through keyword matching. Semantic retrieval is an approximate nearest-neighbor search over a bounded candidate set, so its total and facet counts describe those candidates rather than every potentially related document. Bulk coding, review queues, hit-term navigation, family navigation, group-based saved-search sharing, and a specialized virtualized result grid are not yet available.
+The search projection covers document identity, collection-item metadata, email headers, family, custodian data, resolved current metadata values, and body text. At most 10 MiB of text is loaded from an artifact by default; administrators can change this deployment setting. Existing matter documents must be reindexed after body indexing is enabled or after a preferred extracted/OCR artifact is added. Native binary formats without extracted or OCR text do not have a searchable body. Documents without completed chunk-vector artifacts cannot appear from semantic retrieval, although hybrid search can still find them through keyword matching. Unthresholded semantic retrieval is an approximate nearest-neighbor search over a bounded candidate set, so its total and facet counts describe those candidates rather than every potentially related document. Bulk coding, review queues, hit-term navigation, family navigation, group-based saved-search sharing, and a specialized virtualized result grid are not yet available.

@@ -30,7 +30,8 @@ class Settings(BaseSettings):
     agent_default_model: str | None = None
     agent_turn_queue_concurrency: int = Field(default=4, ge=1, le=100)
     agent_approval_timeout_seconds: int = Field(default=7 * 24 * 60 * 60, ge=60, le=30 * 24 * 60 * 60)
-    matter_embedding_batch_size: int = Field(default=25, ge=1, le=500)
+    matter_embedding_batch_size: int = Field(default=250, ge=1, le=500)
+    matter_embedding_document_concurrency: int = Field(default=8, ge=1, le=32)
     matter_topic_batch_size: int = Field(default=100, ge=1, le=1000)
     embedding_text_max_bytes: int = Field(default=10 * 1024 * 1024, ge=1024, le=100 * 1024 * 1024)
     chunk_target_characters: int = Field(default=1800, ge=200, le=20000)

@@ -31,7 +31,9 @@ export interface MatterTopicJobRead {
   failed_count: number;
   error_message: string | null;
   created_by_user_id: string;
+  reviewed_by_user_id: string | null;
   started_at: string | null;
+  reviewed_at: string | null;
   completed_at: string | null;
   canceled_at: string | null;
   created_at: string;

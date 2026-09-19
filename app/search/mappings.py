@@ -101,7 +101,7 @@ def compile_document_index(
                             "dimension": embedding_dimensions,
                             "method": {
                                 "name": "hnsw",
-                                "engine": "lucene",
+                                "engine": "faiss",
                                 "space_type": "cosinesimil",
                                 "parameters": {"ef_construction": 128, "m": 16},
                             },

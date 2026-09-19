@@ -1694,6 +1694,244 @@
         }
       }
     },
+    "/v1/collections/{collection_id}": {
+      "delete": {
+        "tags": [
+          "collection deletions"
+        ],
+        "summary": "Delete Collection",
+        "operationId": "delete_collection_v1_collections__collection_id__delete",
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "collection_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid",
+              "title": "Collection Id"
+            }
+          }
+        ],
+        "responses": {
+          "202": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/CollectionDeletionJobRead"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      },
+      "get": {
+        "tags": [
+          "artifacts"
+        ],
+        "summary": "Get Collection",
+        "operationId": "get_collection_v1_collections__collection_id__get",
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "collection_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid",
+              "title": "Collection Id"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/CollectionRead"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v1/collections/{collection_id}/deletion": {
+      "get": {
+        "tags": [
+          "collection deletions"
+        ],
+        "summary": "Get Collection Deletion",
+        "operationId": "get_collection_deletion_v1_collections__collection_id__deletion_get",
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "collection_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid",
+              "title": "Collection Id"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/CollectionDeletionJobRead"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v1/collection-deletions/{job_id}": {
+      "get": {
+        "tags": [
+          "collection deletions"
+        ],
+        "summary": "Get Collection Deletion Job",
+        "operationId": "get_collection_deletion_job_v1_collection_deletions__job_id__get",
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "job_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid",
+              "title": "Job Id"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/CollectionDeletionJobRead"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v1/collection-deletions/{job_id}/retry": {
+      "post": {
+        "tags": [
+          "collection deletions"
+        ],
+        "summary": "Retry Collection Deletion",
+        "operationId": "retry_collection_deletion_v1_collection_deletions__job_id__retry_post",
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "job_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid",
+              "title": "Job Id"
+            }
+          }
+        ],
+        "responses": {
+          "202": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/CollectionDeletionJobRead"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/v1/clients/{client_id}/matters": {
       "post": {
         "tags": [
@@ -2650,6 +2888,68 @@
         }
       }
     },
+    "/v1/matters/{matter_id}/embedding-jobs/{job_id}/batches": {
+      "get": {
+        "tags": [
+          "matter jobs"
+        ],
+        "summary": "List Embedding Batches",
+        "operationId": "list_embedding_batches_v1_matters__matter_id__embedding_jobs__job_id__batches_get",
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "matter_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid",
+              "title": "Matter Id"
+            }
+          },
+          {
+            "name": "job_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid",
+              "title": "Job Id"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "array",
+                  "items": {
+                    "$ref": "#/components/schemas/MatterEmbeddingBatchRead"
+                  },
+                  "title": "Response List Embedding Batches V1 Matters  Matter Id  Embedding Jobs  Job Id  Batches Get"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/v1/matters/{matter_id}/embedding-jobs/{job_id}/cancel": {
       "post": {
         "tags": [
@@ -2864,6 +3164,74 @@
         ],
         "responses": {
           "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/MatterTopicJobRead"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v1/matters/{matter_id}/topic-jobs/{job_id}/apply": {
+      "post": {
+        "tags": [
+          "matter jobs"
+        ],
+        "summary": "Apply Topic Job",
+        "operationId": "apply_topic_job_v1_matters__matter_id__topic_jobs__job_id__apply_post",
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "matter_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid",
+              "title": "Matter Id"
+            }
+          },
+          {
+            "name": "job_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid",
+              "title": "Job Id"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/MatterTopicApplyRequest"
+              }
+            }
+          }
+        },
+        "responses": {
+          "202": {
             "description": "Successful Response",
             "content": {
               "application/json": {
@@ -3825,6 +4193,166 @@
               "application/json": {
                 "schema": {
                   "$ref": "#/components/schemas/MetadataGroupRead"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v1/tenants/{tenant_id}/provider-usage": {
+      "get": {
+        "tags": [
+          "provider usage"
+        ],
+        "summary": "List External Provider Usage",
+        "operationId": "list_external_provider_usage_v1_tenants__tenant_id__provider_usage_get",
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "tenant_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid",
+              "title": "Tenant Id"
+            }
+          },
+          {
+            "name": "provider",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string",
+                  "maxLength": 100
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Provider"
+            }
+          },
+          {
+            "name": "job_type",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string",
+                  "maxLength": 80
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Job Type"
+            }
+          },
+          {
+            "name": "started_by_user_id",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string",
+                  "format": "uuid"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Started By User Id"
+            }
+          },
+          {
+            "name": "job_created_after",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string",
+                  "format": "date-time"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Job Created After"
+            }
+          },
+          {
+            "name": "job_created_before",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string",
+                  "format": "date-time"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Job Created Before"
+            }
+          },
+          {
+            "name": "offset",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "integer",
+              "minimum": 0,
+              "default": 0,
+              "title": "Offset"
+            }
+          },
+          {
+            "name": "limit",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "integer",
+              "maximum": 500,
+              "minimum": 1,
+              "default": 100,
+              "title": "Limit"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "array",
+                  "items": {
+                    "$ref": "#/components/schemas/ExternalProviderUsageRead"
+                  },
+                  "title": "Response List External Provider Usage V1 Tenants  Tenant Id  Provider Usage Get"
                 }
               }
             }
@@ -5697,6 +6225,73 @@
         }
       }
     },
+    "/v1/matters/{matter_id}/facets/{field}/date-histogram": {
+      "post": {
+        "tags": [
+          "matter search"
+        ],
+        "summary": "Search Date Histogram",
+        "operationId": "search_date_histogram_v1_matters__matter_id__facets__field__date_histogram_post",
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "matter_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid",
+              "title": "Matter Id"
+            }
+          },
+          {
+            "name": "field",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Field"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/MatterDateHistogramRequest"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/MatterDateHistogramResponse"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/v1/matters/{matter_id}/search-indexes": {
       "get": {
         "tags": [
@@ -5796,6 +6391,54 @@
                     "$ref": "#/components/schemas/SearchProjectionOperationRead"
                   },
                   "title": "Response List Search Operations V1 Matters  Matter Id  Search Operations Get"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v1/matters/{matter_id}/search-operations/retry-failed": {
+      "post": {
+        "tags": [
+          "matter search"
+        ],
+        "summary": "Retry Failed Search Operations",
+        "operationId": "retry_failed_search_operations_v1_matters__matter_id__search_operations_retry_failed_post",
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "matter_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid",
+              "title": "Matter Id"
+            }
+          }
+        ],
+        "responses": {
+          "202": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SearchProjectionRetryResponse"
                 }
               }
             }
@@ -6105,13 +6748,13 @@
         }
       }
     },
-    "/v1/collections/{collection_id}": {
+    "/v1/collections/{collection_id}/text-processing/profile": {
       "get": {
         "tags": [
           "artifacts"
         ],
-        "summary": "Get Collection",
-        "operationId": "get_collection_v1_collections__collection_id__get",
+        "summary": "Get Text Processing Profile",
+        "operationId": "get_text_processing_profile_v1_collections__collection_id__text_processing_profile_get",
         "security": [
           {
             "HTTPBearer": []
@@ -6135,7 +6778,219 @@
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/CollectionRead"
+                  "$ref": "#/components/schemas/CollectionTextProcessingProfileRead"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      },
+      "put": {
+        "tags": [
+          "artifacts"
+        ],
+        "summary": "Update Text Processing Profile",
+        "operationId": "update_text_processing_profile_v1_collections__collection_id__text_processing_profile_put",
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "collection_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid",
+              "title": "Collection Id"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/CollectionTextProcessingProfileUpdate"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/CollectionTextProcessingProfileRead"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v1/collections/{collection_id}/text-processing:test": {
+      "post": {
+        "tags": [
+          "artifacts"
+        ],
+        "summary": "Test Text Processing",
+        "operationId": "test_text_processing_v1_collections__collection_id__text_processing_test_post",
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "collection_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid",
+              "title": "Collection Id"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/CollectionTextProcessingTestRequest"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/CollectionTextProcessingTestResponse"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v1/collections/{collection_id}/text-processing/runs": {
+      "post": {
+        "tags": [
+          "artifacts"
+        ],
+        "summary": "Start Text Processing Run",
+        "operationId": "start_text_processing_run_v1_collections__collection_id__text_processing_runs_post",
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "collection_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid",
+              "title": "Collection Id"
+            }
+          }
+        ],
+        "responses": {
+          "202": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/CollectionTextProcessingRunRead"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      },
+      "get": {
+        "tags": [
+          "artifacts"
+        ],
+        "summary": "List Text Processing Runs",
+        "operationId": "list_text_processing_runs_v1_collections__collection_id__text_processing_runs_get",
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "collection_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid",
+              "title": "Collection Id"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "array",
+                  "items": {
+                    "$ref": "#/components/schemas/CollectionTextProcessingRunRead"
+                  },
+                  "title": "Response List Text Processing Runs V1 Collections  Collection Id  Text Processing Runs Get"
                 }
               }
             }
@@ -6656,6 +7511,40 @@
             }
           },
           {
+            "name": "file_date_from",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string",
+                  "format": "date-time"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "File Date From"
+            }
+          },
+          {
+            "name": "file_date_to",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string",
+                  "format": "date-time"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "File Date To"
+            }
+          },
+          {
             "name": "limit",
             "in": "query",
             "required": false,
@@ -6686,6 +7575,311 @@
               "application/json": {
                 "schema": {
                   "$ref": "#/components/schemas/CollectionItemSearchResponse"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v1/collections/{collection_id}/search/facets/{facet}": {
+      "get": {
+        "tags": [
+          "artifacts"
+        ],
+        "summary": "Collection Search Facet",
+        "operationId": "collection_search_facet_v1_collections__collection_id__search_facets__facet__get",
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "collection_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid",
+              "title": "Collection Id"
+            }
+          },
+          {
+            "name": "facet",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "enum": [
+                "custodians",
+                "file_extensions",
+                "record_types",
+                "processing_statuses"
+              ],
+              "type": "string",
+              "title": "Facet"
+            }
+          },
+          {
+            "name": "q",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string",
+                  "maxLength": 500
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Q"
+            }
+          },
+          {
+            "name": "custodian_id",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "array",
+                  "items": {
+                    "type": "string",
+                    "format": "uuid"
+                  }
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Custodian Id"
+            }
+          },
+          {
+            "name": "extension",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "array",
+                  "items": {
+                    "type": "string"
+                  }
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Extension"
+            }
+          },
+          {
+            "name": "record_type",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "array",
+                  "items": {
+                    "enum": [
+                      "EMAIL",
+                      "FILE",
+                      "CHAT",
+                      "TRANSCRIPT",
+                      "OTHER"
+                    ],
+                    "type": "string"
+                  }
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Record Type"
+            }
+          },
+          {
+            "name": "processing_status",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "array",
+                  "items": {
+                    "enum": [
+                      "NOT_PROCESSED",
+                      "METADATA_INCOMPLETE",
+                      "READY",
+                      "FAILED"
+                    ],
+                    "type": "string"
+                  }
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Processing Status"
+            }
+          },
+          {
+            "name": "source_created_from",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string",
+                  "format": "date-time"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Source Created From"
+            }
+          },
+          {
+            "name": "source_created_to",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string",
+                  "format": "date-time"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Source Created To"
+            }
+          },
+          {
+            "name": "file_date_from",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string",
+                  "format": "date-time"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "File Date From"
+            }
+          },
+          {
+            "name": "file_date_to",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string",
+                  "format": "date-time"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "File Date To"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "array",
+                  "items": {
+                    "$ref": "#/components/schemas/FacetValue"
+                  },
+                  "title": "Response Collection Search Facet V1 Collections  Collection Id  Search Facets  Facet  Get"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v1/collections/{collection_id}/date-histogram": {
+      "get": {
+        "tags": [
+          "artifacts"
+        ],
+        "summary": "Collection Date Histogram",
+        "operationId": "collection_date_histogram_v1_collections__collection_id__date_histogram_get",
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "collection_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid",
+              "title": "Collection Id"
+            }
+          },
+          {
+            "name": "interval",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "enum": [
+                "week",
+                "month",
+                "year"
+              ],
+              "type": "string",
+              "default": "month",
+              "title": "Interval"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/CollectionDateHistogramResponse"
                 }
               }
             }
@@ -6807,6 +8001,40 @@
                 }
               ],
               "title": "Source Created To"
+            }
+          },
+          {
+            "name": "file_date_from",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string",
+                  "format": "date-time"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "File Date From"
+            }
+          },
+          {
+            "name": "file_date_to",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string",
+                  "format": "date-time"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "File Date To"
             }
           },
           {
@@ -8443,6 +9671,18 @@
             ],
             "title": "Derivation Key"
           },
+          "processing_run_id": {
+            "anyOf": [
+              {
+                "type": "string",
+                "format": "uuid"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Processing Run Id"
+          },
           "metadata": {
             "additionalProperties": true,
             "type": "object",
@@ -8633,6 +9873,184 @@
         ],
         "title": "CollectionCustodianSummary"
       },
+      "CollectionDateHistogramResponse": {
+        "properties": {
+          "interval": {
+            "type": "string",
+            "enum": [
+              "week",
+              "month",
+              "year"
+            ],
+            "title": "Interval"
+          },
+          "buckets": {
+            "items": {
+              "$ref": "#/components/schemas/DateHistogramBucket"
+            },
+            "type": "array",
+            "title": "Buckets"
+          },
+          "missing_count": {
+            "type": "integer",
+            "minimum": 0.0,
+            "title": "Missing Count"
+          }
+        },
+        "type": "object",
+        "required": [
+          "interval",
+          "buckets",
+          "missing_count"
+        ],
+        "title": "CollectionDateHistogramResponse"
+      },
+      "CollectionDeletionJobRead": {
+        "properties": {
+          "id": {
+            "type": "string",
+            "format": "uuid",
+            "title": "Id"
+          },
+          "collection_id": {
+            "type": "string",
+            "format": "uuid",
+            "title": "Collection Id"
+          },
+          "tenant_id": {
+            "type": "string",
+            "format": "uuid",
+            "title": "Tenant Id"
+          },
+          "client_id": {
+            "type": "string",
+            "format": "uuid",
+            "title": "Client Id"
+          },
+          "collection_name": {
+            "type": "string",
+            "title": "Collection Name"
+          },
+          "status": {
+            "type": "string",
+            "enum": [
+              "QUEUED",
+              "VALIDATING",
+              "DELETING_DATABASE_ROWS",
+              "DELETING_BLOBS",
+              "COMPLETED",
+              "FAILED"
+            ],
+            "title": "Status"
+          },
+          "workflow_id": {
+            "type": "string",
+            "title": "Workflow Id"
+          },
+          "attempt_count": {
+            "type": "integer",
+            "title": "Attempt Count"
+          },
+          "item_count": {
+            "type": "integer",
+            "title": "Item Count"
+          },
+          "artifact_count": {
+            "type": "integer",
+            "title": "Artifact Count"
+          },
+          "blob_count": {
+            "type": "integer",
+            "title": "Blob Count"
+          },
+          "deleted_item_count": {
+            "type": "integer",
+            "title": "Deleted Item Count"
+          },
+          "deleted_artifact_count": {
+            "type": "integer",
+            "title": "Deleted Artifact Count"
+          },
+          "deleted_blob_count": {
+            "type": "integer",
+            "title": "Deleted Blob Count"
+          },
+          "error_message": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Error Message"
+          },
+          "requested_by_user_id": {
+            "type": "string",
+            "format": "uuid",
+            "title": "Requested By User Id"
+          },
+          "started_at": {
+            "anyOf": [
+              {
+                "type": "string",
+                "format": "date-time"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Started At"
+          },
+          "completed_at": {
+            "anyOf": [
+              {
+                "type": "string",
+                "format": "date-time"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Completed At"
+          },
+          "created_at": {
+            "type": "string",
+            "format": "date-time",
+            "title": "Created At"
+          },
+          "updated_at": {
+            "type": "string",
+            "format": "date-time",
+            "title": "Updated At"
+          }
+        },
+        "type": "object",
+        "required": [
+          "id",
+          "collection_id",
+          "tenant_id",
+          "client_id",
+          "collection_name",
+          "status",
+          "workflow_id",
+          "attempt_count",
+          "item_count",
+          "artifact_count",
+          "blob_count",
+          "deleted_item_count",
+          "deleted_artifact_count",
+          "deleted_blob_count",
+          "error_message",
+          "requested_by_user_id",
+          "started_at",
+          "completed_at",
+          "created_at",
+          "updated_at"
+        ],
+        "title": "CollectionDeletionJobRead"
+      },
       "CollectionItemRead": {
         "properties": {
           "id": {
@@ -8720,6 +10138,18 @@
             ],
             "title": "Source Modified At"
           },
+          "file_date": {
+            "anyOf": [
+              {
+                "type": "string",
+                "format": "date-time"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "File Date"
+          },
           "family_id": {
             "anyOf": [
               {
@@ -8804,6 +10234,7 @@
           "original_source_path",
           "source_created_at",
           "source_modified_at",
+          "file_date",
           "family_id",
           "parent_collection_item_id",
           "processing_status",
@@ -8839,9 +10270,6 @@
             "type": "integer",
             "minimum": 0.0,
             "title": "Offset"
-          },
-          "facets": {
-            "$ref": "#/components/schemas/CollectionSearchFacets"
           }
         },
         "type": "object",
@@ -8849,8 +10277,7 @@
           "items",
           "total",
           "limit",
-          "offset",
-          "facets"
+          "offset"
         ],
         "title": "CollectionItemSearchResponse"
       },
@@ -8908,7 +10335,8 @@
             "enum": [
               "OPEN",
               "SEALED",
-              "ARCHIVED"
+              "ARCHIVED",
+              "DELETING"
             ],
             "title": "Status"
           },
@@ -8926,6 +10354,18 @@
             "type": "string",
             "format": "date-time",
             "title": "Updated At"
+          },
+          "active_text_processing_run_id": {
+            "anyOf": [
+              {
+                "type": "string",
+                "format": "uuid"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Active Text Processing Run Id"
           }
         },
         "type": "object",
@@ -8938,49 +10378,10 @@
           "status",
           "created_by_user_id",
           "created_at",
-          "updated_at"
+          "updated_at",
+          "active_text_processing_run_id"
         ],
         "title": "CollectionRead"
-      },
-      "CollectionSearchFacets": {
-        "properties": {
-          "custodians": {
-            "items": {
-              "$ref": "#/components/schemas/FacetValue"
-            },
-            "type": "array",
-            "title": "Custodians"
-          },
-          "file_extensions": {
-            "items": {
-              "$ref": "#/components/schemas/FacetValue"
-            },
-            "type": "array",
-            "title": "File Extensions"
-          },
-          "record_types": {
-            "items": {
-              "$ref": "#/components/schemas/FacetValue"
-            },
-            "type": "array",
-            "title": "Record Types"
-          },
-          "processing_statuses": {
-            "items": {
-              "$ref": "#/components/schemas/FacetValue"
-            },
-            "type": "array",
-            "title": "Processing Statuses"
-          }
-        },
-        "type": "object",
-        "required": [
-          "custodians",
-          "file_extensions",
-          "record_types",
-          "processing_statuses"
-        ],
-        "title": "CollectionSearchFacets"
       },
       "CollectionSelectionBatch": {
         "properties": {
@@ -9151,6 +10552,30 @@
             "maxItems": 20,
             "title": "Processing Statuses"
           },
+          "file_date_from": {
+            "anyOf": [
+              {
+                "type": "string",
+                "format": "date-time"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "File Date From"
+          },
+          "file_date_to": {
+            "anyOf": [
+              {
+                "type": "string",
+                "format": "date-time"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "File Date To"
+          },
           "item_ids": {
             "items": {
               "type": "string",
@@ -9230,6 +10655,350 @@
           "created_at"
         ],
         "title": "CollectionSelectionRead"
+      },
+      "CollectionTextProcessingProfileRead": {
+        "properties": {
+          "collection_id": {
+            "type": "string",
+            "format": "uuid",
+            "title": "Collection Id"
+          },
+          "processor_version": {
+            "type": "string",
+            "title": "Processor Version"
+          },
+          "revision": {
+            "type": "integer",
+            "title": "Revision"
+          },
+          "default_rules": {
+            "items": {
+              "$ref": "#/components/schemas/SystemTextProcessingRule"
+            },
+            "type": "array",
+            "title": "Default Rules"
+          },
+          "rules": {
+            "items": {
+              "$ref": "#/components/schemas/TextProcessingRule"
+            },
+            "type": "array",
+            "title": "Rules"
+          },
+          "active_run_id": {
+            "anyOf": [
+              {
+                "type": "string",
+                "format": "uuid"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Active Run Id"
+          },
+          "updated_at": {
+            "anyOf": [
+              {
+                "type": "string",
+                "format": "date-time"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Updated At"
+          }
+        },
+        "type": "object",
+        "required": [
+          "collection_id",
+          "processor_version",
+          "revision",
+          "default_rules",
+          "rules",
+          "active_run_id",
+          "updated_at"
+        ],
+        "title": "CollectionTextProcessingProfileRead"
+      },
+      "CollectionTextProcessingProfileUpdate": {
+        "properties": {
+          "rules": {
+            "items": {
+              "$ref": "#/components/schemas/TextProcessingRule"
+            },
+            "type": "array",
+            "maxItems": 50,
+            "title": "Rules"
+          }
+        },
+        "type": "object",
+        "title": "CollectionTextProcessingProfileUpdate"
+      },
+      "CollectionTextProcessingRunRead": {
+        "properties": {
+          "id": {
+            "type": "string",
+            "format": "uuid",
+            "title": "Id"
+          },
+          "collection_id": {
+            "type": "string",
+            "format": "uuid",
+            "title": "Collection Id"
+          },
+          "status": {
+            "type": "string",
+            "enum": [
+              "QUEUED",
+              "RUNNING",
+              "COMPLETED",
+              "COMPLETED_WITH_ERRORS",
+              "FAILED"
+            ],
+            "title": "Status"
+          },
+          "processor_version": {
+            "type": "string",
+            "title": "Processor Version"
+          },
+          "profile_revision": {
+            "type": "integer",
+            "title": "Profile Revision"
+          },
+          "configuration_hash": {
+            "type": "string",
+            "title": "Configuration Hash"
+          },
+          "total_count": {
+            "type": "integer",
+            "title": "Total Count"
+          },
+          "processed_count": {
+            "type": "integer",
+            "title": "Processed Count"
+          },
+          "created_count": {
+            "type": "integer",
+            "title": "Created Count"
+          },
+          "reused_count": {
+            "type": "integer",
+            "title": "Reused Count"
+          },
+          "skipped_count": {
+            "type": "integer",
+            "title": "Skipped Count"
+          },
+          "failed_count": {
+            "type": "integer",
+            "title": "Failed Count"
+          },
+          "error_message": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Error Message"
+          },
+          "requested_by_user_id": {
+            "type": "string",
+            "format": "uuid",
+            "title": "Requested By User Id"
+          },
+          "started_at": {
+            "anyOf": [
+              {
+                "type": "string",
+                "format": "date-time"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Started At"
+          },
+          "completed_at": {
+            "anyOf": [
+              {
+                "type": "string",
+                "format": "date-time"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Completed At"
+          },
+          "created_at": {
+            "type": "string",
+            "format": "date-time",
+            "title": "Created At"
+          },
+          "updated_at": {
+            "type": "string",
+            "format": "date-time",
+            "title": "Updated At"
+          }
+        },
+        "type": "object",
+        "required": [
+          "id",
+          "collection_id",
+          "status",
+          "processor_version",
+          "profile_revision",
+          "configuration_hash",
+          "total_count",
+          "processed_count",
+          "created_count",
+          "reused_count",
+          "skipped_count",
+          "failed_count",
+          "error_message",
+          "requested_by_user_id",
+          "started_at",
+          "completed_at",
+          "created_at",
+          "updated_at"
+        ],
+        "title": "CollectionTextProcessingRunRead"
+      },
+      "CollectionTextProcessingTestItem": {
+        "properties": {
+          "item_id": {
+            "type": "string",
+            "format": "uuid",
+            "title": "Item Id"
+          },
+          "filename": {
+            "type": "string",
+            "title": "Filename"
+          },
+          "source_role": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Source Role"
+          },
+          "original_text": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Original Text"
+          },
+          "normalized_text": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Normalized Text"
+          },
+          "original_char_count": {
+            "type": "integer",
+            "minimum": 0.0,
+            "title": "Original Char Count"
+          },
+          "normalized_char_count": {
+            "type": "integer",
+            "minimum": 0.0,
+            "title": "Normalized Char Count"
+          },
+          "changes": {
+            "items": {
+              "$ref": "#/components/schemas/TextProcessingChange"
+            },
+            "type": "array",
+            "title": "Changes"
+          },
+          "warnings": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array",
+            "title": "Warnings"
+          }
+        },
+        "type": "object",
+        "required": [
+          "item_id",
+          "filename",
+          "source_role",
+          "original_text",
+          "normalized_text",
+          "original_char_count",
+          "normalized_char_count",
+          "changes",
+          "warnings"
+        ],
+        "title": "CollectionTextProcessingTestItem"
+      },
+      "CollectionTextProcessingTestRequest": {
+        "properties": {
+          "item_ids": {
+            "items": {
+              "type": "string",
+              "format": "uuid"
+            },
+            "type": "array",
+            "maxItems": 10,
+            "minItems": 1,
+            "title": "Item Ids"
+          },
+          "rules": {
+            "items": {
+              "$ref": "#/components/schemas/TextProcessingRule"
+            },
+            "type": "array",
+            "maxItems": 50,
+            "title": "Rules"
+          }
+        },
+        "type": "object",
+        "required": [
+          "item_ids"
+        ],
+        "title": "CollectionTextProcessingTestRequest"
+      },
+      "CollectionTextProcessingTestResponse": {
+        "properties": {
+          "processor_version": {
+            "type": "string",
+            "title": "Processor Version"
+          },
+          "items": {
+            "items": {
+              "$ref": "#/components/schemas/CollectionTextProcessingTestItem"
+            },
+            "type": "array",
+            "title": "Items"
+          }
+        },
+        "type": "object",
+        "required": [
+          "processor_version",
+          "items"
+        ],
+        "title": "CollectionTextProcessingTestResponse"
       },
       "CustodianCreate": {
         "properties": {
@@ -9327,6 +11096,26 @@
           "created_at"
         ],
         "title": "CustodianRead"
+      },
+      "DateHistogramBucket": {
+        "properties": {
+          "start": {
+            "type": "string",
+            "format": "date-time",
+            "title": "Start"
+          },
+          "count": {
+            "type": "integer",
+            "minimum": 0.0,
+            "title": "Count"
+          }
+        },
+        "type": "object",
+        "required": [
+          "start",
+          "count"
+        ],
+        "title": "DateHistogramBucket"
       },
       "DerivedArtifactUploadResponse": {
         "properties": {
@@ -9637,6 +11426,127 @@
         ],
         "title": "EnumValue"
       },
+      "ExternalProviderUsageRead": {
+        "properties": {
+          "id": {
+            "type": "string",
+            "format": "uuid",
+            "title": "Id"
+          },
+          "tenant_id": {
+            "type": "string",
+            "format": "uuid",
+            "title": "Tenant Id"
+          },
+          "client_id": {
+            "anyOf": [
+              {
+                "type": "string",
+                "format": "uuid"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Client Id"
+          },
+          "matter_id": {
+            "anyOf": [
+              {
+                "type": "string",
+                "format": "uuid"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Matter Id"
+          },
+          "started_by_user_id": {
+            "type": "string",
+            "format": "uuid",
+            "title": "Started By User Id"
+          },
+          "started_by_email": {
+            "type": "string",
+            "title": "Started By Email"
+          },
+          "started_by_display_name": {
+            "type": "string",
+            "title": "Started By Display Name"
+          },
+          "job_type": {
+            "type": "string",
+            "title": "Job Type"
+          },
+          "job_id": {
+            "type": "string",
+            "format": "uuid",
+            "title": "Job Id"
+          },
+          "job_created_at": {
+            "type": "string",
+            "format": "date-time",
+            "title": "Job Created At"
+          },
+          "provider": {
+            "type": "string",
+            "title": "Provider"
+          },
+          "model": {
+            "type": "string",
+            "title": "Model"
+          },
+          "request_count": {
+            "type": "integer",
+            "title": "Request Count"
+          },
+          "input_tokens": {
+            "type": "integer",
+            "title": "Input Tokens"
+          },
+          "output_tokens": {
+            "type": "integer",
+            "title": "Output Tokens"
+          },
+          "total_tokens": {
+            "type": "integer",
+            "title": "Total Tokens"
+          },
+          "details": {
+            "additionalProperties": true,
+            "type": "object",
+            "title": "Details"
+          },
+          "created_at": {
+            "type": "string",
+            "format": "date-time",
+            "title": "Created At"
+          }
+        },
+        "type": "object",
+        "required": [
+          "id",
+          "tenant_id",
+          "client_id",
+          "matter_id",
+          "started_by_user_id",
+          "started_by_email",
+          "started_by_display_name",
+          "job_type",
+          "job_id",
+          "job_created_at",
+          "provider",
+          "model",
+          "request_count",
+          "input_tokens",
+          "output_tokens",
+          "total_tokens",
+          "details",
+          "created_at"
+        ],
+        "title": "ExternalProviderUsageRead"
+      },
       "FacetValue": {
         "properties": {
           "value": {
@@ -9729,6 +11639,80 @@
           "name"
         ],
         "title": "MatterCreate"
+      },
+      "MatterDateHistogramBucket": {
+        "properties": {
+          "start": {
+            "type": "string",
+            "format": "date-time",
+            "title": "Start"
+          },
+          "count": {
+            "type": "integer",
+            "minimum": 0.0,
+            "title": "Count"
+          }
+        },
+        "type": "object",
+        "required": [
+          "start",
+          "count"
+        ],
+        "title": "MatterDateHistogramBucket"
+      },
+      "MatterDateHistogramRequest": {
+        "properties": {
+          "search": {
+            "$ref": "#/components/schemas/MatterSearchRequest"
+          },
+          "interval": {
+            "type": "string",
+            "enum": [
+              "week",
+              "month",
+              "year"
+            ],
+            "title": "Interval",
+            "default": "month"
+          }
+        },
+        "type": "object",
+        "required": [
+          "search"
+        ],
+        "title": "MatterDateHistogramRequest"
+      },
+      "MatterDateHistogramResponse": {
+        "properties": {
+          "field": {
+            "type": "string",
+            "pattern": "^[a-z][a-z0-9_]{0,99}$",
+            "title": "Field"
+          },
+          "interval": {
+            "type": "string",
+            "enum": [
+              "week",
+              "month",
+              "year"
+            ],
+            "title": "Interval"
+          },
+          "buckets": {
+            "items": {
+              "$ref": "#/components/schemas/MatterDateHistogramBucket"
+            },
+            "type": "array",
+            "title": "Buckets"
+          }
+        },
+        "type": "object",
+        "required": [
+          "field",
+          "interval",
+          "buckets"
+        ],
+        "title": "MatterDateHistogramResponse"
       },
       "MatterDefinitionRead": {
         "properties": {
@@ -10258,6 +12242,30 @@
             "maxItems": 20,
             "title": "Processing Statuses"
           },
+          "file_date_from": {
+            "anyOf": [
+              {
+                "type": "string",
+                "format": "date-time"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "File Date From"
+          },
+          "file_date_to": {
+            "anyOf": [
+              {
+                "type": "string",
+                "format": "date-time"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "File Date To"
+          },
           "item_ids": {
             "items": {
               "type": "string",
@@ -10270,6 +12278,139 @@
         },
         "type": "object",
         "title": "MatterDocumentSelection"
+      },
+      "MatterEmbeddingBatchRead": {
+        "properties": {
+          "id": {
+            "type": "string",
+            "format": "uuid",
+            "title": "Id"
+          },
+          "job_id": {
+            "type": "string",
+            "format": "uuid",
+            "title": "Job Id"
+          },
+          "batch_number": {
+            "type": "integer",
+            "title": "Batch Number"
+          },
+          "status": {
+            "type": "string",
+            "enum": [
+              "QUEUED",
+              "RUNNING",
+              "COMPLETED",
+              "FAILED",
+              "CANCELED"
+            ],
+            "title": "Status"
+          },
+          "item_count": {
+            "type": "integer",
+            "title": "Item Count"
+          },
+          "processed_count": {
+            "type": "integer",
+            "title": "Processed Count"
+          },
+          "embedded_count": {
+            "type": "integer",
+            "title": "Embedded Count"
+          },
+          "skipped_count": {
+            "type": "integer",
+            "title": "Skipped Count"
+          },
+          "failed_count": {
+            "type": "integer",
+            "title": "Failed Count"
+          },
+          "chunk_count": {
+            "type": "integer",
+            "title": "Chunk Count"
+          },
+          "error_message": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Error Message"
+          },
+          "provider_batch_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Provider Batch Id"
+          },
+          "provider_status": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Provider Status"
+          },
+          "provider_request_count": {
+            "type": "integer",
+            "title": "Provider Request Count"
+          },
+          "provider_last_polled_at": {
+            "anyOf": [
+              {
+                "type": "string",
+                "format": "date-time"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Provider Last Polled At"
+          },
+          "created_at": {
+            "type": "string",
+            "format": "date-time",
+            "title": "Created At"
+          },
+          "updated_at": {
+            "type": "string",
+            "format": "date-time",
+            "title": "Updated At"
+          }
+        },
+        "type": "object",
+        "required": [
+          "id",
+          "job_id",
+          "batch_number",
+          "status",
+          "item_count",
+          "processed_count",
+          "embedded_count",
+          "skipped_count",
+          "failed_count",
+          "chunk_count",
+          "error_message",
+          "provider_batch_id",
+          "provider_status",
+          "provider_request_count",
+          "provider_last_polled_at",
+          "created_at",
+          "updated_at"
+        ],
+        "title": "MatterEmbeddingBatchRead"
       },
       "MatterEmbeddingJobRead": {
         "properties": {
@@ -10355,6 +12496,22 @@
             "type": "integer",
             "title": "Chunk Count"
           },
+          "provider_request_count": {
+            "type": "integer",
+            "title": "Provider Request Count"
+          },
+          "input_tokens": {
+            "type": "integer",
+            "title": "Input Tokens"
+          },
+          "output_tokens": {
+            "type": "integer",
+            "title": "Output Tokens"
+          },
+          "total_tokens": {
+            "type": "integer",
+            "title": "Total Tokens"
+          },
           "error_message": {
             "anyOf": [
               {
@@ -10436,6 +12593,10 @@
           "skipped_count",
           "failed_count",
           "chunk_count",
+          "provider_request_count",
+          "input_tokens",
+          "output_tokens",
+          "total_tokens",
           "error_message",
           "created_by_user_id",
           "started_at",
@@ -10997,6 +13158,19 @@
             "title": "Search Mode",
             "default": "KEYWORD"
           },
+          "minimum_similarity": {
+            "anyOf": [
+              {
+                "type": "number",
+                "maximum": 1.0,
+                "minimum": 0.0
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Minimum Similarity"
+          },
           "query_fields": {
             "items": {
               "type": "string",
@@ -11272,6 +13446,24 @@
         ],
         "title": "MatterTemplateRead"
       },
+      "MatterTopicApplyRequest": {
+        "properties": {
+          "topics": {
+            "items": {
+              "$ref": "#/components/schemas/MatterTopicProposalReview"
+            },
+            "type": "array",
+            "maxItems": 200,
+            "minItems": 1,
+            "title": "Topics"
+          }
+        },
+        "type": "object",
+        "required": [
+          "topics"
+        ],
+        "title": "MatterTopicApplyRequest"
+      },
       "MatterTopicClusterRead": {
         "properties": {
           "id": {
@@ -11309,6 +13501,17 @@
             "type": "array",
             "title": "Keywords"
           },
+          "representative_excerpts": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array",
+            "title": "Representative Excerpts"
+          },
+          "included": {
+            "type": "boolean",
+            "title": "Included"
+          },
           "sampled_chunk_count": {
             "type": "integer",
             "title": "Sampled Chunk Count"
@@ -11330,6 +13533,8 @@
           "name",
           "description",
           "keywords",
+          "representative_excerpts",
+          "included",
           "sampled_chunk_count",
           "assigned_chunk_count",
           "assigned_document_count"
@@ -11415,6 +13620,7 @@
               "QUEUED",
               "SAMPLING",
               "CLUSTERING",
+              "AWAITING_REVIEW",
               "PUBLISHING",
               "COMPLETED",
               "COMPLETED_WITH_ERRORS",
@@ -11506,6 +13712,18 @@
             "format": "uuid",
             "title": "Created By User Id"
           },
+          "reviewed_by_user_id": {
+            "anyOf": [
+              {
+                "type": "string",
+                "format": "uuid"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Reviewed By User Id"
+          },
           "started_at": {
             "anyOf": [
               {
@@ -11517,6 +13735,18 @@
               }
             ],
             "title": "Started At"
+          },
+          "reviewed_at": {
+            "anyOf": [
+              {
+                "type": "string",
+                "format": "date-time"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Reviewed At"
           },
           "completed_at": {
             "anyOf": [
@@ -11582,13 +13812,53 @@
           "failed_count",
           "error_message",
           "created_by_user_id",
+          "reviewed_by_user_id",
           "started_at",
+          "reviewed_at",
           "completed_at",
           "canceled_at",
           "created_at",
           "updated_at"
         ],
         "title": "MatterTopicJobRead"
+      },
+      "MatterTopicProposalReview": {
+        "properties": {
+          "id": {
+            "type": "string",
+            "format": "uuid",
+            "title": "Id"
+          },
+          "name": {
+            "type": "string",
+            "maxLength": 200,
+            "minLength": 1,
+            "title": "Name"
+          },
+          "description": {
+            "anyOf": [
+              {
+                "type": "string",
+                "maxLength": 2000
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Description"
+          },
+          "included": {
+            "type": "boolean",
+            "title": "Included",
+            "default": true
+          }
+        },
+        "type": "object",
+        "required": [
+          "id",
+          "name"
+        ],
+        "title": "MatterTopicProposalReview"
       },
       "MetadataDefinitionCreate": {
         "properties": {
@@ -13937,6 +16207,26 @@
         ],
         "title": "SearchProjectionOperationRead"
       },
+      "SearchProjectionRetryResponse": {
+        "properties": {
+          "requeued_operation_count": {
+            "type": "integer",
+            "minimum": 0.0,
+            "title": "Requeued Operation Count"
+          },
+          "requeued_document_count": {
+            "type": "integer",
+            "minimum": 0.0,
+            "title": "Requeued Document Count"
+          }
+        },
+        "type": "object",
+        "required": [
+          "requeued_operation_count",
+          "requeued_document_count"
+        ],
+        "title": "SearchProjectionRetryResponse"
+      },
       "SourceContainerUploadResponse": {
         "properties": {
           "artifact": {
@@ -13948,6 +16238,39 @@
           "artifact"
         ],
         "title": "SourceContainerUploadResponse"
+      },
+      "SystemTextProcessingRule": {
+        "properties": {
+          "id": {
+            "type": "string",
+            "title": "Id"
+          },
+          "name": {
+            "type": "string",
+            "title": "Name"
+          },
+          "description": {
+            "type": "string",
+            "title": "Description"
+          },
+          "action": {
+            "type": "string",
+            "title": "Action"
+          },
+          "match_description": {
+            "type": "string",
+            "title": "Match Description"
+          }
+        },
+        "type": "object",
+        "required": [
+          "id",
+          "name",
+          "description",
+          "action",
+          "match_description"
+        ],
+        "title": "SystemTextProcessingRule"
       },
       "TenantAdminCreate": {
         "properties": {
@@ -14136,6 +16459,108 @@
           "created_at"
         ],
         "title": "TenantStorageRead"
+      },
+      "TextProcessingChange": {
+        "properties": {
+          "rule_id": {
+            "type": "string",
+            "title": "Rule Id"
+          },
+          "rule_name": {
+            "type": "string",
+            "title": "Rule Name"
+          },
+          "match_count": {
+            "type": "integer",
+            "minimum": 1.0,
+            "title": "Match Count"
+          }
+        },
+        "type": "object",
+        "required": [
+          "rule_id",
+          "rule_name",
+          "match_count"
+        ],
+        "title": "TextProcessingChange"
+      },
+      "TextProcessingRule": {
+        "properties": {
+          "id": {
+            "type": "string",
+            "pattern": "^[a-z][a-z0-9_-]{0,63}$",
+            "title": "Id"
+          },
+          "name": {
+            "type": "string",
+            "maxLength": 120,
+            "minLength": 1,
+            "title": "Name"
+          },
+          "description": {
+            "anyOf": [
+              {
+                "type": "string",
+                "maxLength": 500
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Description"
+          },
+          "action": {
+            "type": "string",
+            "enum": [
+              "REMOVE_LINE",
+              "REMOVE_BLOCK",
+              "REPLACE"
+            ],
+            "title": "Action"
+          },
+          "pattern": {
+            "type": "string",
+            "maxLength": 1000,
+            "minLength": 1,
+            "title": "Pattern"
+          },
+          "end_pattern": {
+            "anyOf": [
+              {
+                "type": "string",
+                "maxLength": 1000
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "End Pattern"
+          },
+          "replacement": {
+            "type": "string",
+            "maxLength": 2000,
+            "title": "Replacement",
+            "default": ""
+          },
+          "case_sensitive": {
+            "type": "boolean",
+            "title": "Case Sensitive",
+            "default": false
+          },
+          "enabled": {
+            "type": "boolean",
+            "title": "Enabled",
+            "default": true
+          }
+        },
+        "type": "object",
+        "required": [
+          "id",
+          "name",
+          "action",
+          "pattern"
+        ],
+        "title": "TextProcessingRule"
       },
       "TokenPair": {
         "properties": {

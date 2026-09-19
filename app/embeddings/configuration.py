@@ -30,6 +30,19 @@ def processing_configuration(settings: Settings, embeddings: EmbeddingSettings) 
     }
 
 
+def embedding_execution_configuration(embeddings: EmbeddingSettings) -> dict[str, Any]:
+    return {
+        "mode": (
+            "voyage_batch"
+            if embeddings.provider == "voyage_api" and embeddings.voyage_batch_enabled
+            else "voyage_realtime"
+            if embeddings.provider == "voyage_api"
+            else "synchronous"
+        ),
+        "poll_seconds": embeddings.voyage_batch_poll_seconds,
+    }
+
+
 def canonical_hash(value: dict[str, Any]) -> str:
     serialized = json.dumps(value, sort_keys=True, separators=(",", ":"))
     return hashlib.sha256(serialized.encode("utf-8")).hexdigest()

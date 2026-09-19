@@ -11,11 +11,17 @@ from app.database import get_db
 from app.dependencies import Principal, can_admin_matter, get_principal
 from app.embeddings.configuration import canonical_hash
 from app.models import Matter, MatterEmbeddingJob, MatterTopicJob
-from app.schemas import MatterTopicJobCreate, MatterTopicJobRead
-from app.workflows.dispatcher import cancel_matter_topics, enqueue_matter_topics
+from app.schemas import MatterTopicApplyRequest, MatterTopicJobCreate, MatterTopicJobRead
+from app.topic_clustering import prepare_application
+from app.workflows.dispatcher import (
+    cancel_matter_topic_application,
+    cancel_matter_topics,
+    enqueue_matter_topic_application,
+    enqueue_matter_topics,
+)
 
 router = APIRouter(prefix="/v1/matters/{matter_id}/topic-jobs", tags=["matter jobs"])
-ACTIVE_STATUSES = {"QUEUED", "SAMPLING", "CLUSTERING", "PUBLISHING"}
+ACTIVE_STATUSES = {"QUEUED", "SAMPLING", "CLUSTERING", "AWAITING_REVIEW", "PUBLISHING"}
 
 
 def utcnow() -> datetime:
@@ -72,7 +78,8 @@ def create_topic_job(
         )
 
     configuration = {
-        "schema_version": 1,
+        "schema_version": 3,
+        "clustering_version": 3,
         "operating_mode": payload.operating_mode,
         "sample_size": payload.sample_size,
         "requested_topic_count": payload.requested_topic_count,
@@ -81,6 +88,11 @@ def create_topic_job(
         "max_topics_per_document": 3,
         "minimum_assignment_confidence": 0.35,
         "random_seed": 42,
+        "dimensionality_reduction": {
+            "pca_dimensions": 50,
+        },
+        "automatic_topic_candidates": [10, 20, 30, 40, 50],
+        "automatic_evaluation_sample_size": 2000,
         "embedding_configuration_hash": embedding_job.configuration_hash,
         "embedding_dimensions": embedding_job.embedding_dimensions,
     }
@@ -157,6 +169,68 @@ def get_topic_job(
     return job
 
 
+@router.post("/{job_id}/apply", response_model=MatterTopicJobRead, status_code=status.HTTP_202_ACCEPTED)
+def apply_topic_job(
+    matter_id: uuid.UUID,
+    job_id: uuid.UUID,
+    payload: MatterTopicApplyRequest,
+    principal: Principal = Depends(get_principal),
+    db: Session = Depends(get_db),
+) -> MatterTopicJob:
+    matter = _matter(db, matter_id, principal)
+    job = db.scalar(
+        _job_query(matter_id).where(MatterTopicJob.id == job_id).with_for_update()
+    )
+    if job is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Topic job not found")
+    if job.status != "AWAITING_REVIEW":
+        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="Topic proposals are not awaiting review")
+
+    proposals_by_id = {proposal.id: proposal for proposal in payload.topics}
+    cluster_ids = {cluster.id for cluster in job.clusters}
+    if len(proposals_by_id) != len(payload.topics) or set(proposals_by_id) != cluster_ids:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail="Submit each current topic proposal exactly once",
+        )
+    if not any(proposal.included for proposal in payload.topics):
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail="Include at least one topic before applying",
+        )
+
+    for cluster in job.clusters:
+        proposal = proposals_by_id[cluster.id]
+        cluster.name = proposal.name.strip()
+        cluster.description = proposal.description.strip() if proposal.description else None
+        cluster.included = proposal.included
+    prepare_application(db, job, reviewer_user_id=principal.user.id)
+    record_audit(
+        db,
+        tenant_id=matter.client.tenant_id,
+        actor_user_id=principal.user.id,
+        action="matter.topic_job.approved",
+        target_type="matter_topic_job",
+        target_id=job.id,
+        details={
+            "matter_id": str(matter.id),
+            "included_topic_count": sum(proposal.included for proposal in payload.topics),
+            "excluded_topic_count": sum(not proposal.included for proposal in payload.topics),
+        },
+    )
+    try:
+        db.flush()
+        enqueue_matter_topic_application(db, str(job.id))
+        db.commit()
+    except Exception as exc:
+        db.rollback()
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="The approved topics could not be queued for application",
+        ) from exc
+    return db.scalar(_job_query(matter.id).where(MatterTopicJob.id == job.id))
+
+
 @router.post("/{job_id}/cancel", response_model=MatterTopicJobRead)
 def cancel_topic_job(
     matter_id: uuid.UUID,
@@ -170,6 +244,7 @@ def cancel_topic_job(
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Topic job not found")
     if job.status not in ACTIVE_STATUSES:
         raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="Topic job is not active")
+    previous_status = job.status
     job.status = "CANCELED"
     job.canceled_at = utcnow()
     record_audit(
@@ -182,5 +257,8 @@ def cancel_topic_job(
         details={"matter_id": str(matter.id)},
     )
     db.commit()
-    cancel_matter_topics(job.workflow_id)
+    if previous_status in {"QUEUED", "SAMPLING", "CLUSTERING"}:
+        cancel_matter_topics(job.workflow_id)
+    elif previous_status == "PUBLISHING":
+        cancel_matter_topic_application(str(job.id))
     return job

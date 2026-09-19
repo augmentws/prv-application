@@ -153,6 +153,27 @@ class MatterRead(ORMModel):
     created_at: datetime
 
 
+class ExternalProviderUsageRead(ORMModel):
+    id: uuid.UUID
+    tenant_id: uuid.UUID
+    client_id: uuid.UUID | None
+    matter_id: uuid.UUID | None
+    started_by_user_id: uuid.UUID
+    started_by_email: str
+    started_by_display_name: str
+    job_type: str
+    job_id: uuid.UUID
+    job_created_at: datetime
+    provider: str
+    model: str
+    request_count: int
+    input_tokens: int
+    output_tokens: int
+    total_tokens: int
+    details: dict[str, Any]
+    created_at: datetime
+
+
 MatterDocumentSelectionType = Literal["QUERY", "EXPLICIT"]
 MatterDocumentImportStatus = Literal["QUEUED", "SNAPSHOTTING", "RUNNING", "COMPLETED", "FAILED", "CANCELED"]
 MatterEmbeddingJobStatus = Literal[
@@ -168,6 +189,7 @@ MatterTopicJobStatus = Literal[
     "QUEUED",
     "SAMPLING",
     "CLUSTERING",
+    "AWAITING_REVIEW",
     "PUBLISHING",
     "COMPLETED",
     "COMPLETED_WITH_ERRORS",
@@ -187,6 +209,8 @@ class MatterDocumentSelection(BaseModel):
     file_extensions: list[str] = Field(default_factory=list, max_length=1000)
     record_types: list[CollectionRecordType] = Field(default_factory=list, max_length=20)
     processing_statuses: list[CollectionProcessingStatus] = Field(default_factory=list, max_length=20)
+    file_date_from: datetime | None = None
+    file_date_to: datetime | None = None
     item_ids: list[uuid.UUID] = Field(default_factory=list, max_length=5000)
 
     @model_validator(mode="after")
@@ -260,11 +284,35 @@ class MatterEmbeddingJobRead(ORMModel):
     skipped_count: int
     failed_count: int
     chunk_count: int
+    provider_request_count: int
+    input_tokens: int
+    output_tokens: int
+    total_tokens: int
     error_message: str | None
     created_by_user_id: uuid.UUID
     started_at: datetime | None
     completed_at: datetime | None
     canceled_at: datetime | None
+    created_at: datetime
+    updated_at: datetime
+
+
+class MatterEmbeddingBatchRead(ORMModel):
+    id: uuid.UUID
+    job_id: uuid.UUID
+    batch_number: int
+    status: Literal["QUEUED", "RUNNING", "COMPLETED", "FAILED", "CANCELED"]
+    item_count: int
+    processed_count: int
+    embedded_count: int
+    skipped_count: int
+    failed_count: int
+    chunk_count: int
+    error_message: str | None
+    provider_batch_id: str | None
+    provider_status: str | None
+    provider_request_count: int
+    provider_last_polled_at: datetime | None
     created_at: datetime
     updated_at: datetime
 
@@ -293,6 +341,8 @@ class MatterTopicClusterRead(ORMModel):
     name: str
     description: str | None
     keywords: list[str]
+    representative_excerpts: list[str]
+    included: bool
     sampled_chunk_count: int
     assigned_chunk_count: int
     assigned_document_count: int
@@ -319,12 +369,25 @@ class MatterTopicJobRead(ORMModel):
     failed_count: int
     error_message: str | None
     created_by_user_id: uuid.UUID
+    reviewed_by_user_id: uuid.UUID | None
     started_at: datetime | None
+    reviewed_at: datetime | None
     completed_at: datetime | None
     canceled_at: datetime | None
     created_at: datetime
     updated_at: datetime
     clusters: list[MatterTopicClusterRead] = Field(default_factory=list)
+
+
+class MatterTopicProposalReview(BaseModel):
+    id: uuid.UUID
+    name: str = Field(min_length=1, max_length=200)
+    description: str | None = Field(default=None, max_length=2000)
+    included: bool = True
+
+
+class MatterTopicApplyRequest(BaseModel):
+    topics: list[MatterTopicProposalReview] = Field(min_length=1, max_length=200)
 
 
 SearchFilterOperator = Literal["EQ", "IN", "RANGE", "EXISTS"]
@@ -333,6 +396,7 @@ SearchMode = Literal["KEYWORD", "SEMANTIC", "HYBRID"]
 SearchOperationKind = Literal["SCHEMA_SYNC", "REBUILD", "DOCUMENT_UPSERT", "DOCUMENT_DELETE"]
 SearchOperationStatus = Literal["QUEUED", "RUNNING", "AWAITING_USER", "COMPLETED", "FAILED"]
 SearchIndexStatus = Literal["CREATING", "ACTIVE", "RETIRED", "FAILED"]
+DateHistogramInterval = Literal["week", "month", "year"]
 
 
 class MatterSearchFilter(BaseModel):
@@ -366,6 +430,7 @@ class MatterSearchSort(BaseModel):
 class MatterSearchRequest(BaseModel):
     query: str | None = Field(default=None, max_length=2000)
     search_mode: SearchMode = "KEYWORD"
+    minimum_similarity: float | None = Field(default=None, ge=0, le=1)
     query_fields: list[MetadataKey] = Field(default_factory=list, max_length=100)
     filters: list[MatterSearchFilter] = Field(default_factory=list, max_length=100)
     facets: list[MetadataKey] = Field(default_factory=list, max_length=50)
@@ -379,6 +444,8 @@ class MatterSearchRequest(BaseModel):
             raise ValueError(f"{self.search_mode} search requires a query")
         if self.search_mode != "KEYWORD" and any(item.field != "_score" for item in self.sort):
             raise ValueError(f"{self.search_mode} search only supports relevance sorting")
+        if self.minimum_similarity is not None and self.search_mode != "SEMANTIC":
+            raise ValueError("minimum_similarity is supported only for SEMANTIC search")
         return self
 
 
@@ -386,6 +453,22 @@ class MatterFacetValuesRequest(BaseModel):
     search: MatterSearchRequest
     query: str | None = Field(default=None, max_length=200)
     size: int = Field(default=20, ge=1, le=50)
+
+
+class MatterDateHistogramRequest(BaseModel):
+    search: MatterSearchRequest
+    interval: DateHistogramInterval = "month"
+
+
+class MatterDateHistogramBucket(BaseModel):
+    start: datetime
+    count: int = Field(ge=0)
+
+
+class MatterDateHistogramResponse(BaseModel):
+    field: MetadataKey
+    interval: DateHistogramInterval
+    buckets: list[MatterDateHistogramBucket]
 
 
 class MatterSearchPassage(BaseModel):
@@ -717,6 +800,11 @@ class SearchProjectionOperationRead(ORMModel):
     completed_at: datetime | None
     created_at: datetime
     updated_at: datetime
+
+
+class SearchProjectionRetryResponse(BaseModel):
+    requeued_operation_count: int = Field(ge=0)
+    requeued_document_count: int = Field(ge=0)
 
 
 class EnumValue(BaseModel):

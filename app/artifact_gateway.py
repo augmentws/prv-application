@@ -18,11 +18,13 @@ from app.search.text import (
 from artifact_service.auth import ArtifactPrincipal, mint_artifact_delegation
 from artifact_service.config import get_artifact_settings
 from artifact_service.database import ArtifactSessionLocal
+from artifact_service.deletion import create_deletion_job, fail_deletion, retry_deletion_job
 from artifact_service.derived import find_derived_artifact
 from artifact_service.derived import store_derived_artifact as persist_derived_artifact
 from artifact_service.models import (
     Artifact,
     ClientCollection,
+    CollectionDeletionJob,
     CollectionItem,
     CollectionItemArtifact,
     CollectionItemCustodian,
@@ -31,7 +33,7 @@ from artifact_service.models import (
     CollectionSelection,
     ContentBlob,
 )
-from artifact_service.schemas import CollectionSelectionCreate
+from artifact_service.schemas import CollectionDeletionJobRead, CollectionSelectionCreate
 from artifact_service.selections import (
     create_collection_selection,
     delete_collection_selection,
@@ -87,6 +89,7 @@ class SearchTextArtifact:
     media_type: str
     content_blob_id: uuid.UUID | None = None
     content_hash: str | None = None
+    processing_run_id: uuid.UUID | None = None
 
 
 @dataclass(frozen=True)
@@ -102,6 +105,15 @@ class DerivedArtifactReference:
     content_hash: str
     derivation_key: str
     metadata: dict[str, Any]
+
+
+@dataclass(frozen=True)
+class CollectionSnapshot:
+    id: uuid.UUID
+    tenant_id: uuid.UUID
+    client_id: uuid.UUID
+    name: str
+    status: str
 
 
 def _search_text_candidate(
@@ -123,6 +135,7 @@ def _search_text_candidate(
 
 
 def _embedded_body_text(db: Session, item: CollectionItem, max_bytes: int) -> str | None:
+    collection = db.get(ClientCollection, item.collection_id)
     role_order = case(
         (CollectionItemArtifact.artifact_role == "EXTRACTED_TEXT", 0),
         (CollectionItemArtifact.artifact_role == "OCR_TEXT", 1),
@@ -136,6 +149,10 @@ def _embedded_body_text(db: Session, item: CollectionItem, max_bytes: int) -> st
             CollectionItemArtifact.collection_item_id == item.id,
             CollectionItemArtifact.artifact_role.in_(SEARCH_TEXT_ROLES),
             Artifact.status == "FINALIZED",
+            (
+                (CollectionItemArtifact.artifact_role != "NORMALIZED_TEXT")
+                | (CollectionItemArtifact.processing_run_id == collection.active_text_processing_run_id)
+            ),
         )
         .order_by(role_order, Artifact.created_at.desc())
     ).all()
@@ -147,6 +164,7 @@ def _embedded_body_text(db: Session, item: CollectionItem, max_bytes: int) -> st
             media_type=artifact.media_type,
             content_blob_id=artifact.content_blob_id,
             content_hash=artifact.content_hash,
+            processing_run_id=None,
         )
         for role, artifact in rows
     ]
@@ -173,6 +191,7 @@ def _remote_body_text(
     headers: dict[str, str],
     record_type: str,
     max_bytes: int,
+    active_run_id: str | None,
 ) -> str | None:
     candidates = [
         SearchTextArtifact(
@@ -180,9 +199,15 @@ def _remote_body_text(
             role=artifact["role"],
             original_filename=artifact["original_filename"],
             media_type=artifact["media_type"],
+            processing_run_id=(uuid.UUID(artifact["processing_run_id"]) if artifact.get("processing_run_id") else None),
         )
         for artifact in artifacts
-        if artifact.get("status") == "FINALIZED" and artifact.get("role") in SEARCH_TEXT_ROLES
+        if artifact.get("status") == "FINALIZED"
+        and artifact.get("role") in SEARCH_TEXT_ROLES
+        and (
+            artifact.get("role") != "NORMALIZED_TEXT"
+            or (active_run_id and artifact.get("processing_run_id") == active_run_id)
+        )
     ]
     candidate = _search_text_candidate(candidates, record_type=record_type)
     if candidate is None:
@@ -221,6 +246,178 @@ def _headers(actor_user_id: uuid.UUID, tenant_id: uuid.UUID, client_id: uuid.UUI
     return {"authorization": f"Bearer {token}"}
 
 
+def _delegated_headers(principal: ArtifactPrincipal) -> dict[str, str]:
+    token = mint_artifact_delegation(principal, get_artifact_settings())
+    return {"authorization": f"Bearer {token}"}
+
+
+def get_collection_snapshot(
+    collection_id: uuid.UUID,
+    principal: ArtifactPrincipal,
+    artifact_db: Session | None = None,
+) -> CollectionSnapshot | None:
+    settings = get_settings()
+    if settings.artifact_mode == "embedded":
+        if artifact_db is None:
+            raise ValueError("Embedded Artifact access requires a database session")
+        collection = artifact_db.get(ClientCollection, collection_id)
+        if collection is None:
+            return None
+        if not principal.can_access_client(collection.tenant_id, collection.client_id):
+            raise PermissionError("Client artifact access denied")
+        return CollectionSnapshot(
+            id=collection.id,
+            tenant_id=collection.tenant_id,
+            client_id=collection.client_id,
+            name=collection.name,
+            status=collection.status,
+        )
+    with httpx.Client(base_url=settings.artifact_base_url, timeout=30) as client:
+        response = client.get(
+            f"/v1/collections/{collection_id}",
+            headers=_delegated_headers(principal),
+        )
+    if response.status_code == 404:
+        return None
+    if response.status_code == 403:
+        raise PermissionError("Client artifact access denied")
+    response.raise_for_status()
+    data = response.json()
+    return CollectionSnapshot(
+        id=uuid.UUID(data["id"]),
+        tenant_id=uuid.UUID(data["tenant_id"]),
+        client_id=uuid.UUID(data["client_id"]),
+        name=data["name"],
+        status=data["status"],
+    )
+
+
+def create_collection_deletion(
+    collection_id: uuid.UUID,
+    principal: ArtifactPrincipal,
+    artifact_db: Session | None = None,
+) -> CollectionDeletionJobRead:
+    settings = get_settings()
+    if settings.artifact_mode == "embedded":
+        if artifact_db is None:
+            raise ValueError("Embedded Artifact access requires a database session")
+        job = create_deletion_job(artifact_db, collection_id, principal.actor_user_id)
+        artifact_db.commit()
+        return CollectionDeletionJobRead.model_validate(job)
+    with httpx.Client(base_url=settings.artifact_base_url, timeout=30) as client:
+        response = client.post(
+            f"/v1/internal/collections/{collection_id}/deletions",
+            headers=_delegated_headers(principal),
+        )
+    if response.status_code == 409:
+        raise ValueError(response.json().get("error", {}).get("message", "Collection cannot be deleted"))
+    response.raise_for_status()
+    return CollectionDeletionJobRead.model_validate(response.json())
+
+
+def get_collection_deletion_job(
+    job_id: uuid.UUID,
+    principal: ArtifactPrincipal,
+    artifact_db: Session | None = None,
+) -> CollectionDeletionJobRead | None:
+    settings = get_settings()
+    if settings.artifact_mode == "embedded":
+        if artifact_db is None:
+            raise ValueError("Embedded Artifact access requires a database session")
+        job = artifact_db.get(CollectionDeletionJob, job_id)
+        if job is None:
+            return None
+        if not principal.can_access_client(job.tenant_id, job.client_id):
+            raise PermissionError("Client artifact access denied")
+        return CollectionDeletionJobRead.model_validate(job)
+    with httpx.Client(base_url=settings.artifact_base_url, timeout=30) as client:
+        response = client.get(
+            f"/v1/internal/collection-deletions/{job_id}",
+            headers=_delegated_headers(principal),
+        )
+    if response.status_code == 404:
+        return None
+    response.raise_for_status()
+    return CollectionDeletionJobRead.model_validate(response.json())
+
+
+def get_latest_collection_deletion(
+    collection_id: uuid.UUID,
+    principal: ArtifactPrincipal,
+    artifact_db: Session | None = None,
+) -> CollectionDeletionJobRead | None:
+    settings = get_settings()
+    if settings.artifact_mode == "embedded":
+        if artifact_db is None:
+            raise ValueError("Embedded Artifact access requires a database session")
+        job = artifact_db.scalar(
+            select(CollectionDeletionJob)
+            .where(CollectionDeletionJob.collection_id == collection_id)
+            .order_by(CollectionDeletionJob.created_at.desc())
+        )
+        if job is None:
+            return None
+        if not principal.can_access_client(job.tenant_id, job.client_id):
+            raise PermissionError("Client artifact access denied")
+        return CollectionDeletionJobRead.model_validate(job)
+    with httpx.Client(base_url=settings.artifact_base_url, timeout=30) as client:
+        response = client.get(
+            f"/v1/internal/collections/{collection_id}/deletions/latest",
+            headers=_delegated_headers(principal),
+        )
+    if response.status_code == 404:
+        return None
+    response.raise_for_status()
+    return CollectionDeletionJobRead.model_validate(response.json())
+
+
+def retry_collection_deletion(
+    job_id: uuid.UUID,
+    principal: ArtifactPrincipal,
+    artifact_db: Session | None = None,
+) -> CollectionDeletionJobRead:
+    settings = get_settings()
+    if settings.artifact_mode == "embedded":
+        if artifact_db is None:
+            raise ValueError("Embedded Artifact access requires a database session")
+        job = retry_deletion_job(artifact_db, job_id)
+        artifact_db.commit()
+        return CollectionDeletionJobRead.model_validate(job)
+    with httpx.Client(base_url=settings.artifact_base_url, timeout=30) as client:
+        response = client.post(
+            f"/v1/internal/collection-deletions/{job_id}/retry",
+            headers=_delegated_headers(principal),
+        )
+    if response.status_code == 409:
+        raise ValueError(response.json().get("error", {}).get("message", "Deletion cannot be retried"))
+    response.raise_for_status()
+    return CollectionDeletionJobRead.model_validate(response.json())
+
+
+def fail_collection_deletion_job(
+    job_id: uuid.UUID,
+    message: str,
+    principal: ArtifactPrincipal,
+    artifact_db: Session | None = None,
+) -> CollectionDeletionJobRead | None:
+    settings = get_settings()
+    if settings.artifact_mode == "embedded":
+        if artifact_db is None:
+            raise ValueError("Embedded Artifact access requires a database session")
+        job = fail_deletion(artifact_db, job_id, message)
+        return CollectionDeletionJobRead.model_validate(job) if job is not None else None
+    with httpx.Client(base_url=settings.artifact_base_url, timeout=30) as client:
+        response = client.post(
+            f"/v1/internal/collection-deletions/{job_id}/failure",
+            json={"message": message[:4000]},
+            headers=_delegated_headers(principal),
+        )
+    if response.status_code == 404:
+        return None
+    response.raise_for_status()
+    return CollectionDeletionJobRead.model_validate(response.json())
+
+
 def ensure_collection_scope(
     collection_id: uuid.UUID,
     tenant_id: uuid.UUID,
@@ -236,6 +433,8 @@ def ensure_collection_scope(
                 raise ValueError("Collection not found")
             if collection.tenant_id != tenant_id or collection.client_id != client_id:
                 raise PermissionError("Collection is not available to this matter")
+            if collection.status == "DELETING":
+                raise ValueError("Collection is being deleted")
         else:
             with ArtifactSessionLocal() as db:
                 collection = db.get(ClientCollection, collection_id)
@@ -243,6 +442,8 @@ def ensure_collection_scope(
                     raise ValueError("Collection not found")
                 if collection.tenant_id != tenant_id or collection.client_id != client_id:
                     raise PermissionError("Collection is not available to this matter")
+                if collection.status == "DELETING":
+                    raise ValueError("Collection is being deleted")
         return
 
     with httpx.Client(base_url=settings.artifact_base_url, timeout=30) as client:
@@ -258,6 +459,8 @@ def ensure_collection_scope(
     data = response.json()
     if uuid.UUID(data["client_id"]) != client_id or uuid.UUID(data["tenant_id"]) != tenant_id:
         raise PermissionError("Collection is not available to this matter")
+    if data.get("status") == "DELETING":
+        raise ValueError("Collection is being deleted")
 
 
 def create_selection(
@@ -278,6 +481,8 @@ def create_selection(
                 raise ValueError("Collection not found")
             if collection.tenant_id != tenant_id or collection.client_id != client_id:
                 raise PermissionError("Collection is not available to this matter")
+            if collection.status == "DELETING":
+                raise ValueError("Collection is being deleted")
             frozen = create_collection_selection(db, collection, payload)
             db.commit()
             return frozen.id, frozen.total_count
@@ -453,12 +658,15 @@ def get_search_item_snapshot(
             headers=headers,
         )
         artifacts_response.raise_for_status()
+        collection_response = client.get(f"/v1/collections/{data['collection_id']}", headers=headers)
+        collection_response.raise_for_status()
         body_text = _remote_body_text(
             client,
             artifacts_response.json(),
             headers=headers,
             record_type=data["record_type"],
             max_bytes=settings.search_body_text_max_bytes,
+            active_run_id=collection_response.json().get("active_text_processing_run_id"),
         )
 
         recipients: dict[str, list[str]] = {"TO": [], "CC": [], "BCC": []}
@@ -523,6 +731,13 @@ def get_embedding_text_source(
                     CollectionItemArtifact.collection_item_id == item.id,
                     CollectionItemArtifact.artifact_role.in_(SEARCH_TEXT_ROLES),
                     Artifact.status == "FINALIZED",
+                    (
+                        (CollectionItemArtifact.artifact_role != "NORMALIZED_TEXT")
+                        | (
+                            CollectionItemArtifact.processing_run_id
+                            == db.get(ClientCollection, item.collection_id).active_text_processing_run_id
+                        )
+                    ),
                 )
                 .order_by(Artifact.created_at.desc())
             ).all()
@@ -563,6 +778,9 @@ def get_embedding_text_source(
             headers=headers,
         )
         artifacts_response.raise_for_status()
+        collection_response = client.get(f"/v1/collections/{item['collection_id']}", headers=headers)
+        collection_response.raise_for_status()
+        active_run_id = collection_response.json().get("active_text_processing_run_id")
         candidates = [
             SearchTextArtifact(
                 id=uuid.UUID(artifact["id"]),
@@ -570,9 +788,15 @@ def get_embedding_text_source(
                 original_filename=artifact["original_filename"],
                 media_type=artifact["media_type"],
                 content_hash=artifact["sha256"],
+                processing_run_id=(uuid.UUID(artifact["processing_run_id"]) if artifact.get("processing_run_id") else None),
             )
             for artifact in artifacts_response.json()
-            if artifact.get("status") == "FINALIZED" and artifact.get("role") in SEARCH_TEXT_ROLES
+            if artifact.get("status") == "FINALIZED"
+            and artifact.get("role") in SEARCH_TEXT_ROLES
+            and (
+                artifact.get("role") != "NORMALIZED_TEXT"
+                or (active_run_id and artifact.get("processing_run_id") == active_run_id)
+            )
         ]
         candidate = _search_text_candidate(candidates, record_type=item["record_type"])
         if candidate is None or candidate.content_hash is None:

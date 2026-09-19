@@ -10,6 +10,8 @@ import { toast } from "sonner";
 import { BrandMark } from "@/components/brand-mark";
 import { DocumentViewerSurface } from "@/components/document-viewer-dialog";
 import { QueryError } from "@/components/query-state";
+import { ResultPagination } from "@/components/result-pagination";
+import { parseMinimumSimilarity, SemanticThresholdControl } from "@/components/semantic-threshold-control";
 import { ThemeToggle } from "@/components/theme-toggle";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
@@ -152,18 +154,21 @@ function statusLabel(status: ReviewBatchDocumentRead["review_status"]) {
   return status.toLowerCase().replace("_", " ");
 }
 
-export function BatchReviewWorkspace({ matterId, batchId, initialDocumentId }: {
+export function BatchReviewWorkspace({ matterId, batchId, initialDocumentId, initialPage = 1 }: {
   matterId: string;
   batchId: string;
   initialDocumentId?: string;
+  initialPage?: number;
 }) {
   const router = useRouter();
   const queryClient = useQueryClient();
   const [draftQuery, setDraftQuery] = useState("");
   const [query, setQuery] = useState("");
   const [searchMode, setSearchMode] = useState<MatterSearchRequestSearchMode>("KEYWORD");
+  const [draftMinimumSimilarity, setDraftMinimumSimilarity] = useState("");
+  const [minimumSimilarity, setMinimumSimilarity] = useState<number | null>(null);
   const [filters, setFilters] = useState<SelectedFilters>({});
-  const [offset, setOffset] = useState(0);
+  const [offset, setOffset] = useState(Math.max(0, initialPage - 1) * PAGE_SIZE);
   const [selectedDocumentId, setSelectedDocumentId] = useState(initialDocumentId ?? "");
 
   const matter = useQuery({ queryKey: ["matter", matterId], queryFn: () => coreApi<MatterRead>(`/v1/matters/${matterId}`) });
@@ -207,16 +212,18 @@ export function BatchReviewWorkspace({ matterId, batchId, initialDocumentId }: {
       const definition = definitionByKey.get(key);
       return definition && values.length ? [{ field: key, operator: "IN", values: values.map((value) => typedFacetValue(value, definition)) }] : [];
     });
+    const effectiveMode = query.trim() ? searchMode : "KEYWORD";
     return {
       query: query.trim() || null,
-      search_mode: query.trim() ? searchMode : "KEYWORD",
+      search_mode: effectiveMode,
+      minimum_similarity: effectiveMode === "SEMANTIC" ? minimumSimilarity : null,
       filters: searchFilters,
       facets: [],
       sort: query.trim() ? [{ field: "_score", direction: "DESC" }] : [{ field: "created_at", direction: "DESC" }],
       offset,
       size: PAGE_SIZE,
     };
-  }, [facetDefinitions, filters, offset, query, searchMode]);
+  }, [facetDefinitions, filters, minimumSimilarity, offset, query, searchMode]);
   const searchResults = useQuery({
     queryKey: ["review-batch-search", matterId, batchId, searchRequest],
     queryFn: () => coreApi<MatterSearchResponse>(`/v1/matters/${matterId}/review-batches/${batchId}/search`, { method: "POST", body: JSON.stringify(searchRequest) }),
@@ -252,11 +259,14 @@ export function BatchReviewWorkspace({ matterId, batchId, initialDocumentId }: {
     enabled: Boolean(run.data?.id && effectiveDocumentId),
   });
 
-  const syncUrl = (documentId?: string) => {
+  const syncUrl = (documentId?: string, nextOffset = offset) => {
     const params = new URLSearchParams({ batch: batchId });
     if (query.trim()) params.set("q", query.trim());
     if (searchMode !== "KEYWORD") params.set("mode", searchMode.toLowerCase());
-    if (offset) params.set("page", String(Math.floor(offset / PAGE_SIZE) + 1));
+    if (query.trim() && searchMode === "SEMANTIC" && minimumSimilarity !== null) {
+      params.set("similarity", String(minimumSimilarity));
+    }
+    if (nextOffset) params.set("page", String(Math.floor(nextOffset / PAGE_SIZE) + 1));
     for (const [key, values] of Object.entries(filters)) {
       for (const value of values) params.append(`f_${key}`, value);
     }
@@ -267,10 +277,25 @@ export function BatchReviewWorkspace({ matterId, batchId, initialDocumentId }: {
     setSelectedDocumentId(documentId);
     syncUrl(documentId);
   };
+  const changePage = (nextOffset: number) => {
+    setOffset(nextOffset);
+    setSelectedDocumentId("");
+    syncUrl(undefined, nextOffset);
+  };
 
   const submitSearch = (event: FormEvent) => {
     event.preventDefault();
+    setMinimumSimilarity(
+      searchMode === "SEMANTIC" ? parseMinimumSimilarity(draftMinimumSimilarity) : null,
+    );
     setQuery(draftQuery);
+    setOffset(0);
+    setSelectedDocumentId("");
+  };
+
+  const changeSearchMode = (nextMode: MatterSearchRequestSearchMode) => {
+    setSearchMode(nextMode);
+    setMinimumSimilarity(nextMode === "SEMANTIC" ? parseMinimumSimilarity(draftMinimumSimilarity) : null);
     setOffset(0);
     setSelectedDocumentId("");
   };
@@ -348,11 +373,12 @@ export function BatchReviewWorkspace({ matterId, batchId, initialDocumentId }: {
           <ThemeToggle />
         </div>
         <form onSubmit={submitSearch} role="search" className="flex items-center gap-2 border-t px-3 py-2">
-          <Select value={searchMode} onValueChange={(value) => { setSearchMode(value as MatterSearchRequestSearchMode); setOffset(0); setSelectedDocumentId(""); }} disabled={batch.data?.search_status !== "READY"}>
+          <Select value={searchMode} onValueChange={(value) => changeSearchMode(value as MatterSearchRequestSearchMode)} disabled={batch.data?.search_status !== "READY"}>
             <SelectTrigger className="w-32 shrink-0" aria-label="Search mode"><SelectValue /></SelectTrigger>
             <SelectContent><SelectItem value="KEYWORD">Keyword</SelectItem><SelectItem value="SEMANTIC">Semantic</SelectItem><SelectItem value="HYBRID">Hybrid</SelectItem></SelectContent>
           </Select>
           <div className="relative min-w-0 flex-1"><Search className="pointer-events-none absolute left-3 top-1/2 size-4 -translate-y-1/2 text-muted-foreground" /><Input value={draftQuery} onChange={(event) => setDraftQuery(event.target.value)} className="pl-9" placeholder={SEARCH_PLACEHOLDERS[searchMode]} aria-label="Search batch documents" disabled={batch.data?.search_status !== "READY"} /></div>
+          {searchMode === "SEMANTIC" ? <SemanticThresholdControl value={draftMinimumSimilarity} onChange={setDraftMinimumSimilarity} disabled={batch.data?.search_status !== "READY"} /> : null}
           <Button type="submit" disabled={batch.data?.search_status !== "READY"}>Search</Button>
         </form>
         <div className="flex h-10 items-center gap-3 border-t px-3 text-xs text-muted-foreground">
@@ -365,7 +391,7 @@ export function BatchReviewWorkspace({ matterId, batchId, initialDocumentId }: {
         <aside className="flex w-96 shrink-0 flex-col border-r bg-card" aria-label="Batch documents">
           <div className="flex h-11 shrink-0 items-center justify-between border-b px-3">
             <h2 className="text-sm font-semibold">Batch results</h2>
-            <span className="text-xs text-muted-foreground">{searchResults.data ? `${searchResults.data.total.toLocaleString()} matches` : ""}</span>
+            <span className="text-xs text-muted-foreground">{searchResults.data ? query.trim() && searchMode === "SEMANTIC" && minimumSimilarity === null ? `Top ${searchResults.data.total.toLocaleString()} candidates` : `${searchResults.data.total.toLocaleString()} matches` : ""}</span>
           </div>
           <div className="max-h-[40%] shrink-0 divide-y overflow-y-auto border-b">
             {facetDefinitions.map((definition) => <BatchFacetSection key={definition.id} matterId={matterId} batchId={batchId} searchRequest={searchRequest} definition={definition} selected={filters[definition.key] ?? []} custodianNames={new Map((custodians.data ?? []).map((custodian) => [custodian.id, custodian.display_name]))} onToggle={toggleFilter} />)}
@@ -376,13 +402,11 @@ export function BatchReviewWorkspace({ matterId, batchId, initialDocumentId }: {
               : searchResults.data?.hits.length ? <ol className="min-h-0 flex-1 overflow-y-auto">{searchResults.data.hits.map((hit, index) => {
                 const selected = hit.document_id === effectiveDocumentId;
                 const state = statusByDocument.get(hit.document_id);
-                return <li key={hit.document_id} className="border-b"><button type="button" onClick={() => selectDocument(hit.document_id)} aria-current={selected ? "true" : undefined} className={cn("w-full border-l-[3px] px-3 py-3 text-left outline-none hover:bg-muted/70 focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-ring", selected ? "border-l-accent bg-primary/8" : "border-l-transparent")}><div className="flex items-start gap-2"><span className="mt-0.5 w-8 shrink-0 font-mono text-xs tabular-nums text-muted-foreground">{state?.sequence_number ?? offset + index + 1}</span><div className="min-w-0 flex-1"><p className="line-clamp-2 text-sm font-semibold">{resultTitle(hit)}</p>{hit.best_passage ? <p className="mt-1 line-clamp-2 text-xs text-foreground/80">{hit.best_passage.text}</p> : null}<p className="mt-1 truncate text-xs text-muted-foreground">{displayValue(hit.fields.source_path)}</p></div><div className="flex shrink-0 flex-col items-end gap-1"><Badge variant="outline">{resultFileType(hit)}</Badge>{state ? <Badge variant={state.review_status === "COMPLETED" ? "accent" : "outline"}>{statusLabel(state.review_status)}</Badge> : null}</div></div></button></li>;
+                return <li key={hit.document_id} className="border-b"><button type="button" onClick={() => selectDocument(hit.document_id)} aria-current={selected ? "true" : undefined} className={cn("w-full border-l-[3px] px-3 py-3 text-left outline-none hover:bg-muted/70 focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-ring", selected ? "border-l-accent bg-primary/8" : "border-l-transparent")}><div className="flex items-start gap-2"><span aria-label={`Result ${offset + index + 1}`} className="mt-0.5 w-8 shrink-0 font-mono text-xs tabular-nums text-muted-foreground">{offset + index + 1}</span><div className="min-w-0 flex-1"><p className="line-clamp-2 text-sm font-semibold">{resultTitle(hit)}</p>{hit.best_passage ? <p className="mt-1 line-clamp-2 text-xs text-foreground/80">{hit.best_passage.text}</p> : null}<p className="mt-1 truncate text-xs text-muted-foreground">{displayValue(hit.fields.source_path)}</p></div><div className="flex shrink-0 flex-col items-end gap-1"><Badge variant="outline">{resultFileType(hit)}</Badge>{state ? <Badge variant={state.review_status === "COMPLETED" ? "accent" : "outline"}>{statusLabel(state.review_status)}</Badge> : null}</div></div></button></li>;
               })}</ol>
                 : <div className="grid flex-1 place-items-center p-5 text-center text-sm text-muted-foreground">No documents match this batch search.</div>}
-          <div className="flex h-12 shrink-0 items-center justify-between border-t px-2">
-            <Button variant="ghost" size="sm" disabled={!offset} onClick={() => { setOffset(Math.max(0, offset - PAGE_SIZE)); setSelectedDocumentId(""); }}><ChevronLeft />Previous</Button>
-            <span className="text-xs tabular-nums text-muted-foreground">{searchResults.data?.total ? `${offset + 1}–${Math.min(offset + PAGE_SIZE, searchResults.data.total)}` : "0"}</span>
-            <Button variant="ghost" size="sm" disabled={offset + PAGE_SIZE >= (searchResults.data?.total ?? 0)} onClick={() => { setOffset(offset + PAGE_SIZE); setSelectedDocumentId(""); }}>Next<ChevronRight /></Button>
+          <div className="flex min-h-12 shrink-0 items-center border-t px-2 py-2">
+            <ResultPagination total={searchResults.data?.total ?? 0} offset={offset} pageSize={PAGE_SIZE} disabled={searchResults.isFetching} onPageChange={changePage} />
           </div>
         </aside>
 

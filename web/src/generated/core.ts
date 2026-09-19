@@ -33,37 +33,52 @@ import type {
   ClientRead,
   CollectionCreate,
   CollectionCustodianSummary,
+  CollectionDateHistogramResponse,
+  CollectionDateHistogramV1CollectionsCollectionIdDateHistogramGetParams,
+  CollectionDeletionJobRead,
   CollectionItemRead,
   CollectionItemSearchResponse,
   CollectionItemUploadResponse,
   CollectionRead,
+  CollectionSearchFacetV1CollectionsCollectionIdSearchFacetsFacetGetParams,
   CollectionSelectionBatch,
   CollectionSelectionCreate,
   CollectionSelectionRead,
+  CollectionTextProcessingProfileRead,
+  CollectionTextProcessingProfileUpdate,
+  CollectionTextProcessingRunRead,
+  CollectionTextProcessingTestRequest,
+  CollectionTextProcessingTestResponse,
   CompareReviewBatchRunsV1MattersMatterIdReviewBatchesBatchIdComparisonsGetParams,
   CountMatterDocumentsV1MattersMatterIdDocumentsCountGet200,
   CustodianCreate,
   CustodianRead,
   DerivedArtifactUploadResponse,
   DocumentMetadataFieldRead,
+  ExternalProviderUsageRead,
+  FacetValue,
   GetSelectionItemsV1CollectionSelectionsSelectionIdItemsGetParams,
   HTTPValidationError,
   HealthHealthGet200,
   ListCollectionItemsV1CollectionsCollectionIdItemsGetParams,
   ListDocumentImportsV1MattersMatterIdDocumentImportsGetParams,
   ListEmbeddingJobsV1MattersMatterIdEmbeddingJobsGetParams,
+  ListExternalProviderUsageV1TenantsTenantIdProviderUsageGetParams,
   ListMatterDocumentsV1MattersMatterIdDocumentsGetParams,
   ListReviewBatchDocumentsV1MattersMatterIdReviewBatchesBatchIdDocumentsGetParams,
   ListSearchOperationsV1MattersMatterIdSearchOperationsGetParams,
   ListTopicJobsV1MattersMatterIdTopicJobsGetParams,
   LoginRequest,
   MatterCreate,
+  MatterDateHistogramRequest,
+  MatterDateHistogramResponse,
   MatterDefinitionRead,
   MatterDefinitionRevisionCreate,
   MatterDefinitionRevisionRead,
   MatterDocumentImportCreate,
   MatterDocumentImportRead,
   MatterDocumentRead,
+  MatterEmbeddingBatchRead,
   MatterEmbeddingJobRead,
   MatterFacetValuesRequest,
   MatterFacetValuesResponse,
@@ -77,6 +92,7 @@ import type {
   MatterSearchResponse,
   MatterTemplateCreate,
   MatterTemplateRead,
+  MatterTopicApplyRequest,
   MatterTopicJobCreate,
   MatterTopicJobRead,
   MetadataDefinitionCreate,
@@ -107,6 +123,7 @@ import type {
   SearchCollectionItemsV1CollectionsCollectionIdSearchGetParams,
   SearchIndexGenerationRead,
   SearchProjectionOperationRead,
+  SearchProjectionRetryResponse,
   SourceContainerUploadResponse,
   TenantCreate,
   TenantCreated,
@@ -2063,6 +2080,256 @@ export const listCustodiansV1ClientsClientIdCustodiansGet = async (clientId: str
 
 
 
+export type deleteCollectionV1CollectionsCollectionIdDeleteResponse202 = {
+  data: CollectionDeletionJobRead
+  status: 202
+}
+
+export type deleteCollectionV1CollectionsCollectionIdDeleteResponse422 = {
+  data: HTTPValidationError
+  status: 422
+}
+
+export type deleteCollectionV1CollectionsCollectionIdDeleteResponseSuccess = (deleteCollectionV1CollectionsCollectionIdDeleteResponse202) & {
+  headers: Headers;
+};
+export type deleteCollectionV1CollectionsCollectionIdDeleteResponseError = (deleteCollectionV1CollectionsCollectionIdDeleteResponse422) & {
+  headers: Headers;
+};
+
+export type deleteCollectionV1CollectionsCollectionIdDeleteResponse = (deleteCollectionV1CollectionsCollectionIdDeleteResponseSuccess | deleteCollectionV1CollectionsCollectionIdDeleteResponseError)
+
+export const getDeleteCollectionV1CollectionsCollectionIdDeleteUrl = (collectionId: string,) => {
+
+
+
+
+  return `/api/core/v1/collections/${collectionId}`
+}
+
+/**
+ * @summary Delete Collection
+ */
+export const deleteCollectionV1CollectionsCollectionIdDelete = async (collectionId: string, options?: RequestInit): Promise<deleteCollectionV1CollectionsCollectionIdDeleteResponse> => {
+
+  const res = await fetch(getDeleteCollectionV1CollectionsCollectionIdDeleteUrl(collectionId),
+  {
+    ...options,
+    method: 'DELETE'
+
+
+  }
+)
+
+
+  const body = [204, 205, 304].includes(res.status) ? null : await res.text();
+
+  const data: deleteCollectionV1CollectionsCollectionIdDeleteResponse['data'] = body ? JSON.parse(body) : {}
+  return { data, status: res.status, headers: res.headers } as deleteCollectionV1CollectionsCollectionIdDeleteResponse
+}
+
+
+
+export type getCollectionV1CollectionsCollectionIdGetResponse200 = {
+  data: CollectionRead
+  status: 200
+}
+
+export type getCollectionV1CollectionsCollectionIdGetResponse422 = {
+  data: HTTPValidationError
+  status: 422
+}
+
+export type getCollectionV1CollectionsCollectionIdGetResponseSuccess = (getCollectionV1CollectionsCollectionIdGetResponse200) & {
+  headers: Headers;
+};
+export type getCollectionV1CollectionsCollectionIdGetResponseError = (getCollectionV1CollectionsCollectionIdGetResponse422) & {
+  headers: Headers;
+};
+
+export type getCollectionV1CollectionsCollectionIdGetResponse = (getCollectionV1CollectionsCollectionIdGetResponseSuccess | getCollectionV1CollectionsCollectionIdGetResponseError)
+
+export const getGetCollectionV1CollectionsCollectionIdGetUrl = (collectionId: string,) => {
+
+
+
+
+  return `/api/core/v1/collections/${collectionId}`
+}
+
+/**
+ * @summary Get Collection
+ */
+export const getCollectionV1CollectionsCollectionIdGet = async (collectionId: string, options?: RequestInit): Promise<getCollectionV1CollectionsCollectionIdGetResponse> => {
+
+  const res = await fetch(getGetCollectionV1CollectionsCollectionIdGetUrl(collectionId),
+  {
+    ...options,
+    method: 'GET'
+
+
+  }
+)
+
+
+  const body = [204, 205, 304].includes(res.status) ? null : await res.text();
+
+  const data: getCollectionV1CollectionsCollectionIdGetResponse['data'] = body ? JSON.parse(body) : {}
+  return { data, status: res.status, headers: res.headers } as getCollectionV1CollectionsCollectionIdGetResponse
+}
+
+
+
+export type getCollectionDeletionV1CollectionsCollectionIdDeletionGetResponse200 = {
+  data: CollectionDeletionJobRead
+  status: 200
+}
+
+export type getCollectionDeletionV1CollectionsCollectionIdDeletionGetResponse422 = {
+  data: HTTPValidationError
+  status: 422
+}
+
+export type getCollectionDeletionV1CollectionsCollectionIdDeletionGetResponseSuccess = (getCollectionDeletionV1CollectionsCollectionIdDeletionGetResponse200) & {
+  headers: Headers;
+};
+export type getCollectionDeletionV1CollectionsCollectionIdDeletionGetResponseError = (getCollectionDeletionV1CollectionsCollectionIdDeletionGetResponse422) & {
+  headers: Headers;
+};
+
+export type getCollectionDeletionV1CollectionsCollectionIdDeletionGetResponse = (getCollectionDeletionV1CollectionsCollectionIdDeletionGetResponseSuccess | getCollectionDeletionV1CollectionsCollectionIdDeletionGetResponseError)
+
+export const getGetCollectionDeletionV1CollectionsCollectionIdDeletionGetUrl = (collectionId: string,) => {
+
+
+
+
+  return `/api/core/v1/collections/${collectionId}/deletion`
+}
+
+/**
+ * @summary Get Collection Deletion
+ */
+export const getCollectionDeletionV1CollectionsCollectionIdDeletionGet = async (collectionId: string, options?: RequestInit): Promise<getCollectionDeletionV1CollectionsCollectionIdDeletionGetResponse> => {
+
+  const res = await fetch(getGetCollectionDeletionV1CollectionsCollectionIdDeletionGetUrl(collectionId),
+  {
+    ...options,
+    method: 'GET'
+
+
+  }
+)
+
+
+  const body = [204, 205, 304].includes(res.status) ? null : await res.text();
+
+  const data: getCollectionDeletionV1CollectionsCollectionIdDeletionGetResponse['data'] = body ? JSON.parse(body) : {}
+  return { data, status: res.status, headers: res.headers } as getCollectionDeletionV1CollectionsCollectionIdDeletionGetResponse
+}
+
+
+
+export type getCollectionDeletionJobV1CollectionDeletionsJobIdGetResponse200 = {
+  data: CollectionDeletionJobRead
+  status: 200
+}
+
+export type getCollectionDeletionJobV1CollectionDeletionsJobIdGetResponse422 = {
+  data: HTTPValidationError
+  status: 422
+}
+
+export type getCollectionDeletionJobV1CollectionDeletionsJobIdGetResponseSuccess = (getCollectionDeletionJobV1CollectionDeletionsJobIdGetResponse200) & {
+  headers: Headers;
+};
+export type getCollectionDeletionJobV1CollectionDeletionsJobIdGetResponseError = (getCollectionDeletionJobV1CollectionDeletionsJobIdGetResponse422) & {
+  headers: Headers;
+};
+
+export type getCollectionDeletionJobV1CollectionDeletionsJobIdGetResponse = (getCollectionDeletionJobV1CollectionDeletionsJobIdGetResponseSuccess | getCollectionDeletionJobV1CollectionDeletionsJobIdGetResponseError)
+
+export const getGetCollectionDeletionJobV1CollectionDeletionsJobIdGetUrl = (jobId: string,) => {
+
+
+
+
+  return `/api/core/v1/collection-deletions/${jobId}`
+}
+
+/**
+ * @summary Get Collection Deletion Job
+ */
+export const getCollectionDeletionJobV1CollectionDeletionsJobIdGet = async (jobId: string, options?: RequestInit): Promise<getCollectionDeletionJobV1CollectionDeletionsJobIdGetResponse> => {
+
+  const res = await fetch(getGetCollectionDeletionJobV1CollectionDeletionsJobIdGetUrl(jobId),
+  {
+    ...options,
+    method: 'GET'
+
+
+  }
+)
+
+
+  const body = [204, 205, 304].includes(res.status) ? null : await res.text();
+
+  const data: getCollectionDeletionJobV1CollectionDeletionsJobIdGetResponse['data'] = body ? JSON.parse(body) : {}
+  return { data, status: res.status, headers: res.headers } as getCollectionDeletionJobV1CollectionDeletionsJobIdGetResponse
+}
+
+
+
+export type retryCollectionDeletionV1CollectionDeletionsJobIdRetryPostResponse202 = {
+  data: CollectionDeletionJobRead
+  status: 202
+}
+
+export type retryCollectionDeletionV1CollectionDeletionsJobIdRetryPostResponse422 = {
+  data: HTTPValidationError
+  status: 422
+}
+
+export type retryCollectionDeletionV1CollectionDeletionsJobIdRetryPostResponseSuccess = (retryCollectionDeletionV1CollectionDeletionsJobIdRetryPostResponse202) & {
+  headers: Headers;
+};
+export type retryCollectionDeletionV1CollectionDeletionsJobIdRetryPostResponseError = (retryCollectionDeletionV1CollectionDeletionsJobIdRetryPostResponse422) & {
+  headers: Headers;
+};
+
+export type retryCollectionDeletionV1CollectionDeletionsJobIdRetryPostResponse = (retryCollectionDeletionV1CollectionDeletionsJobIdRetryPostResponseSuccess | retryCollectionDeletionV1CollectionDeletionsJobIdRetryPostResponseError)
+
+export const getRetryCollectionDeletionV1CollectionDeletionsJobIdRetryPostUrl = (jobId: string,) => {
+
+
+
+
+  return `/api/core/v1/collection-deletions/${jobId}/retry`
+}
+
+/**
+ * @summary Retry Collection Deletion
+ */
+export const retryCollectionDeletionV1CollectionDeletionsJobIdRetryPost = async (jobId: string, options?: RequestInit): Promise<retryCollectionDeletionV1CollectionDeletionsJobIdRetryPostResponse> => {
+
+  const res = await fetch(getRetryCollectionDeletionV1CollectionDeletionsJobIdRetryPostUrl(jobId),
+  {
+    ...options,
+    method: 'POST'
+
+
+  }
+)
+
+
+  const body = [204, 205, 304].includes(res.status) ? null : await res.text();
+
+  const data: retryCollectionDeletionV1CollectionDeletionsJobIdRetryPostResponse['data'] = body ? JSON.parse(body) : {}
+  return { data, status: res.status, headers: res.headers } as retryCollectionDeletionV1CollectionDeletionsJobIdRetryPostResponse
+}
+
+
+
 export type createMatterV1ClientsClientIdMattersPostResponse201 = {
   data: MatterRead
   status: 201
@@ -2993,6 +3260,58 @@ export const getEmbeddingJobV1MattersMatterIdEmbeddingJobsJobIdGet = async (matt
 
 
 
+export type listEmbeddingBatchesV1MattersMatterIdEmbeddingJobsJobIdBatchesGetResponse200 = {
+  data: MatterEmbeddingBatchRead[]
+  status: 200
+}
+
+export type listEmbeddingBatchesV1MattersMatterIdEmbeddingJobsJobIdBatchesGetResponse422 = {
+  data: HTTPValidationError
+  status: 422
+}
+
+export type listEmbeddingBatchesV1MattersMatterIdEmbeddingJobsJobIdBatchesGetResponseSuccess = (listEmbeddingBatchesV1MattersMatterIdEmbeddingJobsJobIdBatchesGetResponse200) & {
+  headers: Headers;
+};
+export type listEmbeddingBatchesV1MattersMatterIdEmbeddingJobsJobIdBatchesGetResponseError = (listEmbeddingBatchesV1MattersMatterIdEmbeddingJobsJobIdBatchesGetResponse422) & {
+  headers: Headers;
+};
+
+export type listEmbeddingBatchesV1MattersMatterIdEmbeddingJobsJobIdBatchesGetResponse = (listEmbeddingBatchesV1MattersMatterIdEmbeddingJobsJobIdBatchesGetResponseSuccess | listEmbeddingBatchesV1MattersMatterIdEmbeddingJobsJobIdBatchesGetResponseError)
+
+export const getListEmbeddingBatchesV1MattersMatterIdEmbeddingJobsJobIdBatchesGetUrl = (matterId: string,
+    jobId: string,) => {
+
+
+
+
+  return `/api/core/v1/matters/${matterId}/embedding-jobs/${jobId}/batches`
+}
+
+/**
+ * @summary List Embedding Batches
+ */
+export const listEmbeddingBatchesV1MattersMatterIdEmbeddingJobsJobIdBatchesGet = async (matterId: string,
+    jobId: string, options?: RequestInit): Promise<listEmbeddingBatchesV1MattersMatterIdEmbeddingJobsJobIdBatchesGetResponse> => {
+
+  const res = await fetch(getListEmbeddingBatchesV1MattersMatterIdEmbeddingJobsJobIdBatchesGetUrl(matterId,jobId),
+  {
+    ...options,
+    method: 'GET'
+
+
+  }
+)
+
+
+  const body = [204, 205, 304].includes(res.status) ? null : await res.text();
+
+  const data: listEmbeddingBatchesV1MattersMatterIdEmbeddingJobsJobIdBatchesGetResponse['data'] = body ? JSON.parse(body) : {}
+  return { data, status: res.status, headers: res.headers } as listEmbeddingBatchesV1MattersMatterIdEmbeddingJobsJobIdBatchesGetResponse
+}
+
+
+
 export type cancelEmbeddingJobV1MattersMatterIdEmbeddingJobsJobIdCancelPostResponse200 = {
   data: MatterEmbeddingJobRead
   status: 200
@@ -3217,6 +3536,73 @@ export const getTopicJobV1MattersMatterIdTopicJobsJobIdGet = async (matterId: st
 
   const data: getTopicJobV1MattersMatterIdTopicJobsJobIdGetResponse['data'] = body ? JSON.parse(body) : {}
   return { data, status: res.status, headers: res.headers } as getTopicJobV1MattersMatterIdTopicJobsJobIdGetResponse
+}
+
+
+
+export type applyTopicJobV1MattersMatterIdTopicJobsJobIdApplyPostResponse202 = {
+  data: MatterTopicJobRead
+  status: 202
+}
+
+export type applyTopicJobV1MattersMatterIdTopicJobsJobIdApplyPostResponse422 = {
+  data: HTTPValidationError
+  status: 422
+}
+
+export type applyTopicJobV1MattersMatterIdTopicJobsJobIdApplyPostResponseSuccess = (applyTopicJobV1MattersMatterIdTopicJobsJobIdApplyPostResponse202) & {
+  headers: Headers;
+};
+export type applyTopicJobV1MattersMatterIdTopicJobsJobIdApplyPostResponseError = (applyTopicJobV1MattersMatterIdTopicJobsJobIdApplyPostResponse422) & {
+  headers: Headers;
+};
+
+export type applyTopicJobV1MattersMatterIdTopicJobsJobIdApplyPostResponse = (applyTopicJobV1MattersMatterIdTopicJobsJobIdApplyPostResponseSuccess | applyTopicJobV1MattersMatterIdTopicJobsJobIdApplyPostResponseError)
+
+export const getApplyTopicJobV1MattersMatterIdTopicJobsJobIdApplyPostUrl = (matterId: string,
+    jobId: string,) => {
+
+
+
+
+  return `/api/core/v1/matters/${matterId}/topic-jobs/${jobId}/apply`
+}
+
+/**
+ * @summary Apply Topic Job
+ */
+export const applyTopicJobV1MattersMatterIdTopicJobsJobIdApplyPost = async (matterId: string,
+    jobId: string,
+    matterTopicApplyRequest: MatterTopicApplyRequest, options?: RequestInit): Promise<applyTopicJobV1MattersMatterIdTopicJobsJobIdApplyPostResponse> => {
+
+    const getHeaders = (h?: NonNullable<RequestInit['headers']>): Record<string, string | readonly string[]> => {
+    if (!h) return {};
+    if (h instanceof Headers) return Object.fromEntries(h.entries());
+    if (Symbol.iterator in h) {
+      return Object.fromEntries(
+        Array.from(h as Iterable<Iterable<string>>, (entry) => Array.from(entry) as [string, string]),
+      );
+    }
+    const headers: Record<string, string | readonly string[]> = {};
+    for (const [name, value] of Object.entries<string | readonly string[] | undefined>(h)) {
+      if (value !== undefined) headers[name] = value;
+    }
+    return headers;
+  };
+const res = await fetch(getApplyTopicJobV1MattersMatterIdTopicJobsJobIdApplyPostUrl(matterId,jobId),
+  {
+    ...options,
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json', ...getHeaders(options?.headers) },
+    body: JSON.stringify(matterTopicApplyRequest)
+  }
+)
+
+
+  const body = [204, 205, 304].includes(res.status) ? null : await res.text();
+
+  const data: applyTopicJobV1MattersMatterIdTopicJobsJobIdApplyPostResponse['data'] = body ? JSON.parse(body) : {}
+  return { data, status: res.status, headers: res.headers } as applyTopicJobV1MattersMatterIdTopicJobsJobIdApplyPostResponse
 }
 
 
@@ -4104,6 +4490,65 @@ const res = await fetch(getSetMetadataGroupVisibilityV1MattersMatterIdMetadataGr
 
   const data: setMetadataGroupVisibilityV1MattersMatterIdMetadataGroupsGroupIdVisibilityPutResponse['data'] = body ? JSON.parse(body) : {}
   return { data, status: res.status, headers: res.headers } as setMetadataGroupVisibilityV1MattersMatterIdMetadataGroupsGroupIdVisibilityPutResponse
+}
+
+
+
+export type listExternalProviderUsageV1TenantsTenantIdProviderUsageGetResponse200 = {
+  data: ExternalProviderUsageRead[]
+  status: 200
+}
+
+export type listExternalProviderUsageV1TenantsTenantIdProviderUsageGetResponse422 = {
+  data: HTTPValidationError
+  status: 422
+}
+
+export type listExternalProviderUsageV1TenantsTenantIdProviderUsageGetResponseSuccess = (listExternalProviderUsageV1TenantsTenantIdProviderUsageGetResponse200) & {
+  headers: Headers;
+};
+export type listExternalProviderUsageV1TenantsTenantIdProviderUsageGetResponseError = (listExternalProviderUsageV1TenantsTenantIdProviderUsageGetResponse422) & {
+  headers: Headers;
+};
+
+export type listExternalProviderUsageV1TenantsTenantIdProviderUsageGetResponse = (listExternalProviderUsageV1TenantsTenantIdProviderUsageGetResponseSuccess | listExternalProviderUsageV1TenantsTenantIdProviderUsageGetResponseError)
+
+export const getListExternalProviderUsageV1TenantsTenantIdProviderUsageGetUrl = (tenantId: string,
+    params?: ListExternalProviderUsageV1TenantsTenantIdProviderUsageGetParams,) => {
+  const normalizedParams = new URLSearchParams();
+
+  Object.entries(params || {}).forEach(([key, value]) => {
+
+    if (value !== undefined) {
+      normalizedParams.append(key, value === null ? 'null' : String(value))
+    }
+  });
+
+  const stringifiedParams = normalizedParams.toString();
+
+  return stringifiedParams.length > 0 ? `/api/core/v1/tenants/${tenantId}/provider-usage?${stringifiedParams}` : `/api/core/v1/tenants/${tenantId}/provider-usage`
+}
+
+/**
+ * @summary List External Provider Usage
+ */
+export const listExternalProviderUsageV1TenantsTenantIdProviderUsageGet = async (tenantId: string,
+    params?: ListExternalProviderUsageV1TenantsTenantIdProviderUsageGetParams, options?: RequestInit): Promise<listExternalProviderUsageV1TenantsTenantIdProviderUsageGetResponse> => {
+
+  const res = await fetch(getListExternalProviderUsageV1TenantsTenantIdProviderUsageGetUrl(tenantId,params),
+  {
+    ...options,
+    method: 'GET'
+
+
+  }
+)
+
+
+  const body = [204, 205, 304].includes(res.status) ? null : await res.text();
+
+  const data: listExternalProviderUsageV1TenantsTenantIdProviderUsageGetResponse['data'] = body ? JSON.parse(body) : {}
+  return { data, status: res.status, headers: res.headers } as listExternalProviderUsageV1TenantsTenantIdProviderUsageGetResponse
 }
 
 
@@ -5789,6 +6234,73 @@ const res = await fetch(getSearchFacetValuesV1MattersMatterIdFacetsFieldValuesPo
 
 
 
+export type searchDateHistogramV1MattersMatterIdFacetsFieldDateHistogramPostResponse200 = {
+  data: MatterDateHistogramResponse
+  status: 200
+}
+
+export type searchDateHistogramV1MattersMatterIdFacetsFieldDateHistogramPostResponse422 = {
+  data: HTTPValidationError
+  status: 422
+}
+
+export type searchDateHistogramV1MattersMatterIdFacetsFieldDateHistogramPostResponseSuccess = (searchDateHistogramV1MattersMatterIdFacetsFieldDateHistogramPostResponse200) & {
+  headers: Headers;
+};
+export type searchDateHistogramV1MattersMatterIdFacetsFieldDateHistogramPostResponseError = (searchDateHistogramV1MattersMatterIdFacetsFieldDateHistogramPostResponse422) & {
+  headers: Headers;
+};
+
+export type searchDateHistogramV1MattersMatterIdFacetsFieldDateHistogramPostResponse = (searchDateHistogramV1MattersMatterIdFacetsFieldDateHistogramPostResponseSuccess | searchDateHistogramV1MattersMatterIdFacetsFieldDateHistogramPostResponseError)
+
+export const getSearchDateHistogramV1MattersMatterIdFacetsFieldDateHistogramPostUrl = (matterId: string,
+    field: string,) => {
+
+
+
+
+  return `/api/core/v1/matters/${matterId}/facets/${field}/date-histogram`
+}
+
+/**
+ * @summary Search Date Histogram
+ */
+export const searchDateHistogramV1MattersMatterIdFacetsFieldDateHistogramPost = async (matterId: string,
+    field: string,
+    matterDateHistogramRequest: MatterDateHistogramRequest, options?: RequestInit): Promise<searchDateHistogramV1MattersMatterIdFacetsFieldDateHistogramPostResponse> => {
+
+    const getHeaders = (h?: NonNullable<RequestInit['headers']>): Record<string, string | readonly string[]> => {
+    if (!h) return {};
+    if (h instanceof Headers) return Object.fromEntries(h.entries());
+    if (Symbol.iterator in h) {
+      return Object.fromEntries(
+        Array.from(h as Iterable<Iterable<string>>, (entry) => Array.from(entry) as [string, string]),
+      );
+    }
+    const headers: Record<string, string | readonly string[]> = {};
+    for (const [name, value] of Object.entries<string | readonly string[] | undefined>(h)) {
+      if (value !== undefined) headers[name] = value;
+    }
+    return headers;
+  };
+const res = await fetch(getSearchDateHistogramV1MattersMatterIdFacetsFieldDateHistogramPostUrl(matterId,field),
+  {
+    ...options,
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json', ...getHeaders(options?.headers) },
+    body: JSON.stringify(matterDateHistogramRequest)
+  }
+)
+
+
+  const body = [204, 205, 304].includes(res.status) ? null : await res.text();
+
+  const data: searchDateHistogramV1MattersMatterIdFacetsFieldDateHistogramPostResponse['data'] = body ? JSON.parse(body) : {}
+  return { data, status: res.status, headers: res.headers } as searchDateHistogramV1MattersMatterIdFacetsFieldDateHistogramPostResponse
+}
+
+
+
 export type listSearchIndexesV1MattersMatterIdSearchIndexesGetResponse200 = {
   data: SearchIndexGenerationRead[]
   status: 200
@@ -5894,6 +6406,56 @@ export const listSearchOperationsV1MattersMatterIdSearchOperationsGet = async (m
 
   const data: listSearchOperationsV1MattersMatterIdSearchOperationsGetResponse['data'] = body ? JSON.parse(body) : {}
   return { data, status: res.status, headers: res.headers } as listSearchOperationsV1MattersMatterIdSearchOperationsGetResponse
+}
+
+
+
+export type retryFailedSearchOperationsV1MattersMatterIdSearchOperationsRetryFailedPostResponse202 = {
+  data: SearchProjectionRetryResponse
+  status: 202
+}
+
+export type retryFailedSearchOperationsV1MattersMatterIdSearchOperationsRetryFailedPostResponse422 = {
+  data: HTTPValidationError
+  status: 422
+}
+
+export type retryFailedSearchOperationsV1MattersMatterIdSearchOperationsRetryFailedPostResponseSuccess = (retryFailedSearchOperationsV1MattersMatterIdSearchOperationsRetryFailedPostResponse202) & {
+  headers: Headers;
+};
+export type retryFailedSearchOperationsV1MattersMatterIdSearchOperationsRetryFailedPostResponseError = (retryFailedSearchOperationsV1MattersMatterIdSearchOperationsRetryFailedPostResponse422) & {
+  headers: Headers;
+};
+
+export type retryFailedSearchOperationsV1MattersMatterIdSearchOperationsRetryFailedPostResponse = (retryFailedSearchOperationsV1MattersMatterIdSearchOperationsRetryFailedPostResponseSuccess | retryFailedSearchOperationsV1MattersMatterIdSearchOperationsRetryFailedPostResponseError)
+
+export const getRetryFailedSearchOperationsV1MattersMatterIdSearchOperationsRetryFailedPostUrl = (matterId: string,) => {
+
+
+
+
+  return `/api/core/v1/matters/${matterId}/search-operations/retry-failed`
+}
+
+/**
+ * @summary Retry Failed Search Operations
+ */
+export const retryFailedSearchOperationsV1MattersMatterIdSearchOperationsRetryFailedPost = async (matterId: string, options?: RequestInit): Promise<retryFailedSearchOperationsV1MattersMatterIdSearchOperationsRetryFailedPostResponse> => {
+
+  const res = await fetch(getRetryFailedSearchOperationsV1MattersMatterIdSearchOperationsRetryFailedPostUrl(matterId),
+  {
+    ...options,
+    method: 'POST'
+
+
+  }
+)
+
+
+  const body = [204, 205, 304].includes(res.status) ? null : await res.text();
+
+  const data: retryFailedSearchOperationsV1MattersMatterIdSearchOperationsRetryFailedPostResponse['data'] = body ? JSON.parse(body) : {}
+  return { data, status: res.status, headers: res.headers } as retryFailedSearchOperationsV1MattersMatterIdSearchOperationsRetryFailedPostResponse
 }
 
 
@@ -6184,39 +6746,39 @@ export const listCollectionsV1TenantsTenantIdClientsClientIdCollectionsGet = asy
 
 
 
-export type getCollectionV1CollectionsCollectionIdGetResponse200 = {
-  data: CollectionRead
+export type getTextProcessingProfileV1CollectionsCollectionIdTextProcessingProfileGetResponse200 = {
+  data: CollectionTextProcessingProfileRead
   status: 200
 }
 
-export type getCollectionV1CollectionsCollectionIdGetResponse422 = {
+export type getTextProcessingProfileV1CollectionsCollectionIdTextProcessingProfileGetResponse422 = {
   data: HTTPValidationError
   status: 422
 }
 
-export type getCollectionV1CollectionsCollectionIdGetResponseSuccess = (getCollectionV1CollectionsCollectionIdGetResponse200) & {
+export type getTextProcessingProfileV1CollectionsCollectionIdTextProcessingProfileGetResponseSuccess = (getTextProcessingProfileV1CollectionsCollectionIdTextProcessingProfileGetResponse200) & {
   headers: Headers;
 };
-export type getCollectionV1CollectionsCollectionIdGetResponseError = (getCollectionV1CollectionsCollectionIdGetResponse422) & {
+export type getTextProcessingProfileV1CollectionsCollectionIdTextProcessingProfileGetResponseError = (getTextProcessingProfileV1CollectionsCollectionIdTextProcessingProfileGetResponse422) & {
   headers: Headers;
 };
 
-export type getCollectionV1CollectionsCollectionIdGetResponse = (getCollectionV1CollectionsCollectionIdGetResponseSuccess | getCollectionV1CollectionsCollectionIdGetResponseError)
+export type getTextProcessingProfileV1CollectionsCollectionIdTextProcessingProfileGetResponse = (getTextProcessingProfileV1CollectionsCollectionIdTextProcessingProfileGetResponseSuccess | getTextProcessingProfileV1CollectionsCollectionIdTextProcessingProfileGetResponseError)
 
-export const getGetCollectionV1CollectionsCollectionIdGetUrl = (collectionId: string,) => {
-
-
+export const getGetTextProcessingProfileV1CollectionsCollectionIdTextProcessingProfileGetUrl = (collectionId: string,) => {
 
 
-  return `/api/core/v1/collections/${collectionId}`
+
+
+  return `/api/core/v1/collections/${collectionId}/text-processing/profile`
 }
 
 /**
- * @summary Get Collection
+ * @summary Get Text Processing Profile
  */
-export const getCollectionV1CollectionsCollectionIdGet = async (collectionId: string, options?: RequestInit): Promise<getCollectionV1CollectionsCollectionIdGetResponse> => {
+export const getTextProcessingProfileV1CollectionsCollectionIdTextProcessingProfileGet = async (collectionId: string, options?: RequestInit): Promise<getTextProcessingProfileV1CollectionsCollectionIdTextProcessingProfileGetResponse> => {
 
-  const res = await fetch(getGetCollectionV1CollectionsCollectionIdGetUrl(collectionId),
+  const res = await fetch(getGetTextProcessingProfileV1CollectionsCollectionIdTextProcessingProfileGetUrl(collectionId),
   {
     ...options,
     method: 'GET'
@@ -6228,8 +6790,238 @@ export const getCollectionV1CollectionsCollectionIdGet = async (collectionId: st
 
   const body = [204, 205, 304].includes(res.status) ? null : await res.text();
 
-  const data: getCollectionV1CollectionsCollectionIdGetResponse['data'] = body ? JSON.parse(body) : {}
-  return { data, status: res.status, headers: res.headers } as getCollectionV1CollectionsCollectionIdGetResponse
+  const data: getTextProcessingProfileV1CollectionsCollectionIdTextProcessingProfileGetResponse['data'] = body ? JSON.parse(body) : {}
+  return { data, status: res.status, headers: res.headers } as getTextProcessingProfileV1CollectionsCollectionIdTextProcessingProfileGetResponse
+}
+
+
+
+export type updateTextProcessingProfileV1CollectionsCollectionIdTextProcessingProfilePutResponse200 = {
+  data: CollectionTextProcessingProfileRead
+  status: 200
+}
+
+export type updateTextProcessingProfileV1CollectionsCollectionIdTextProcessingProfilePutResponse422 = {
+  data: HTTPValidationError
+  status: 422
+}
+
+export type updateTextProcessingProfileV1CollectionsCollectionIdTextProcessingProfilePutResponseSuccess = (updateTextProcessingProfileV1CollectionsCollectionIdTextProcessingProfilePutResponse200) & {
+  headers: Headers;
+};
+export type updateTextProcessingProfileV1CollectionsCollectionIdTextProcessingProfilePutResponseError = (updateTextProcessingProfileV1CollectionsCollectionIdTextProcessingProfilePutResponse422) & {
+  headers: Headers;
+};
+
+export type updateTextProcessingProfileV1CollectionsCollectionIdTextProcessingProfilePutResponse = (updateTextProcessingProfileV1CollectionsCollectionIdTextProcessingProfilePutResponseSuccess | updateTextProcessingProfileV1CollectionsCollectionIdTextProcessingProfilePutResponseError)
+
+export const getUpdateTextProcessingProfileV1CollectionsCollectionIdTextProcessingProfilePutUrl = (collectionId: string,) => {
+
+
+
+
+  return `/api/core/v1/collections/${collectionId}/text-processing/profile`
+}
+
+/**
+ * @summary Update Text Processing Profile
+ */
+export const updateTextProcessingProfileV1CollectionsCollectionIdTextProcessingProfilePut = async (collectionId: string,
+    collectionTextProcessingProfileUpdate: CollectionTextProcessingProfileUpdate, options?: RequestInit): Promise<updateTextProcessingProfileV1CollectionsCollectionIdTextProcessingProfilePutResponse> => {
+
+    const getHeaders = (h?: NonNullable<RequestInit['headers']>): Record<string, string | readonly string[]> => {
+    if (!h) return {};
+    if (h instanceof Headers) return Object.fromEntries(h.entries());
+    if (Symbol.iterator in h) {
+      return Object.fromEntries(
+        Array.from(h as Iterable<Iterable<string>>, (entry) => Array.from(entry) as [string, string]),
+      );
+    }
+    const headers: Record<string, string | readonly string[]> = {};
+    for (const [name, value] of Object.entries<string | readonly string[] | undefined>(h)) {
+      if (value !== undefined) headers[name] = value;
+    }
+    return headers;
+  };
+const res = await fetch(getUpdateTextProcessingProfileV1CollectionsCollectionIdTextProcessingProfilePutUrl(collectionId),
+  {
+    ...options,
+    method: 'PUT',
+    headers: { 'Content-Type': 'application/json', ...getHeaders(options?.headers) },
+    body: JSON.stringify(collectionTextProcessingProfileUpdate)
+  }
+)
+
+
+  const body = [204, 205, 304].includes(res.status) ? null : await res.text();
+
+  const data: updateTextProcessingProfileV1CollectionsCollectionIdTextProcessingProfilePutResponse['data'] = body ? JSON.parse(body) : {}
+  return { data, status: res.status, headers: res.headers } as updateTextProcessingProfileV1CollectionsCollectionIdTextProcessingProfilePutResponse
+}
+
+
+
+export type testTextProcessingV1CollectionsCollectionIdTextProcessingTestPostResponse200 = {
+  data: CollectionTextProcessingTestResponse
+  status: 200
+}
+
+export type testTextProcessingV1CollectionsCollectionIdTextProcessingTestPostResponse422 = {
+  data: HTTPValidationError
+  status: 422
+}
+
+export type testTextProcessingV1CollectionsCollectionIdTextProcessingTestPostResponseSuccess = (testTextProcessingV1CollectionsCollectionIdTextProcessingTestPostResponse200) & {
+  headers: Headers;
+};
+export type testTextProcessingV1CollectionsCollectionIdTextProcessingTestPostResponseError = (testTextProcessingV1CollectionsCollectionIdTextProcessingTestPostResponse422) & {
+  headers: Headers;
+};
+
+export type testTextProcessingV1CollectionsCollectionIdTextProcessingTestPostResponse = (testTextProcessingV1CollectionsCollectionIdTextProcessingTestPostResponseSuccess | testTextProcessingV1CollectionsCollectionIdTextProcessingTestPostResponseError)
+
+export const getTestTextProcessingV1CollectionsCollectionIdTextProcessingTestPostUrl = (collectionId: string,) => {
+
+
+
+
+  return `/api/core/v1/collections/${collectionId}/text-processing:test`
+}
+
+/**
+ * @summary Test Text Processing
+ */
+export const testTextProcessingV1CollectionsCollectionIdTextProcessingTestPost = async (collectionId: string,
+    collectionTextProcessingTestRequest: CollectionTextProcessingTestRequest, options?: RequestInit): Promise<testTextProcessingV1CollectionsCollectionIdTextProcessingTestPostResponse> => {
+
+    const getHeaders = (h?: NonNullable<RequestInit['headers']>): Record<string, string | readonly string[]> => {
+    if (!h) return {};
+    if (h instanceof Headers) return Object.fromEntries(h.entries());
+    if (Symbol.iterator in h) {
+      return Object.fromEntries(
+        Array.from(h as Iterable<Iterable<string>>, (entry) => Array.from(entry) as [string, string]),
+      );
+    }
+    const headers: Record<string, string | readonly string[]> = {};
+    for (const [name, value] of Object.entries<string | readonly string[] | undefined>(h)) {
+      if (value !== undefined) headers[name] = value;
+    }
+    return headers;
+  };
+const res = await fetch(getTestTextProcessingV1CollectionsCollectionIdTextProcessingTestPostUrl(collectionId),
+  {
+    ...options,
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json', ...getHeaders(options?.headers) },
+    body: JSON.stringify(collectionTextProcessingTestRequest)
+  }
+)
+
+
+  const body = [204, 205, 304].includes(res.status) ? null : await res.text();
+
+  const data: testTextProcessingV1CollectionsCollectionIdTextProcessingTestPostResponse['data'] = body ? JSON.parse(body) : {}
+  return { data, status: res.status, headers: res.headers } as testTextProcessingV1CollectionsCollectionIdTextProcessingTestPostResponse
+}
+
+
+
+export type startTextProcessingRunV1CollectionsCollectionIdTextProcessingRunsPostResponse202 = {
+  data: CollectionTextProcessingRunRead
+  status: 202
+}
+
+export type startTextProcessingRunV1CollectionsCollectionIdTextProcessingRunsPostResponse422 = {
+  data: HTTPValidationError
+  status: 422
+}
+
+export type startTextProcessingRunV1CollectionsCollectionIdTextProcessingRunsPostResponseSuccess = (startTextProcessingRunV1CollectionsCollectionIdTextProcessingRunsPostResponse202) & {
+  headers: Headers;
+};
+export type startTextProcessingRunV1CollectionsCollectionIdTextProcessingRunsPostResponseError = (startTextProcessingRunV1CollectionsCollectionIdTextProcessingRunsPostResponse422) & {
+  headers: Headers;
+};
+
+export type startTextProcessingRunV1CollectionsCollectionIdTextProcessingRunsPostResponse = (startTextProcessingRunV1CollectionsCollectionIdTextProcessingRunsPostResponseSuccess | startTextProcessingRunV1CollectionsCollectionIdTextProcessingRunsPostResponseError)
+
+export const getStartTextProcessingRunV1CollectionsCollectionIdTextProcessingRunsPostUrl = (collectionId: string,) => {
+
+
+
+
+  return `/api/core/v1/collections/${collectionId}/text-processing/runs`
+}
+
+/**
+ * @summary Start Text Processing Run
+ */
+export const startTextProcessingRunV1CollectionsCollectionIdTextProcessingRunsPost = async (collectionId: string, options?: RequestInit): Promise<startTextProcessingRunV1CollectionsCollectionIdTextProcessingRunsPostResponse> => {
+
+  const res = await fetch(getStartTextProcessingRunV1CollectionsCollectionIdTextProcessingRunsPostUrl(collectionId),
+  {
+    ...options,
+    method: 'POST'
+
+
+  }
+)
+
+
+  const body = [204, 205, 304].includes(res.status) ? null : await res.text();
+
+  const data: startTextProcessingRunV1CollectionsCollectionIdTextProcessingRunsPostResponse['data'] = body ? JSON.parse(body) : {}
+  return { data, status: res.status, headers: res.headers } as startTextProcessingRunV1CollectionsCollectionIdTextProcessingRunsPostResponse
+}
+
+
+
+export type listTextProcessingRunsV1CollectionsCollectionIdTextProcessingRunsGetResponse200 = {
+  data: CollectionTextProcessingRunRead[]
+  status: 200
+}
+
+export type listTextProcessingRunsV1CollectionsCollectionIdTextProcessingRunsGetResponse422 = {
+  data: HTTPValidationError
+  status: 422
+}
+
+export type listTextProcessingRunsV1CollectionsCollectionIdTextProcessingRunsGetResponseSuccess = (listTextProcessingRunsV1CollectionsCollectionIdTextProcessingRunsGetResponse200) & {
+  headers: Headers;
+};
+export type listTextProcessingRunsV1CollectionsCollectionIdTextProcessingRunsGetResponseError = (listTextProcessingRunsV1CollectionsCollectionIdTextProcessingRunsGetResponse422) & {
+  headers: Headers;
+};
+
+export type listTextProcessingRunsV1CollectionsCollectionIdTextProcessingRunsGetResponse = (listTextProcessingRunsV1CollectionsCollectionIdTextProcessingRunsGetResponseSuccess | listTextProcessingRunsV1CollectionsCollectionIdTextProcessingRunsGetResponseError)
+
+export const getListTextProcessingRunsV1CollectionsCollectionIdTextProcessingRunsGetUrl = (collectionId: string,) => {
+
+
+
+
+  return `/api/core/v1/collections/${collectionId}/text-processing/runs`
+}
+
+/**
+ * @summary List Text Processing Runs
+ */
+export const listTextProcessingRunsV1CollectionsCollectionIdTextProcessingRunsGet = async (collectionId: string, options?: RequestInit): Promise<listTextProcessingRunsV1CollectionsCollectionIdTextProcessingRunsGetResponse> => {
+
+  const res = await fetch(getListTextProcessingRunsV1CollectionsCollectionIdTextProcessingRunsGetUrl(collectionId),
+  {
+    ...options,
+    method: 'GET'
+
+
+  }
+)
+
+
+  const body = [204, 205, 304].includes(res.status) ? null : await res.text();
+
+  const data: listTextProcessingRunsV1CollectionsCollectionIdTextProcessingRunsGetResponse['data'] = body ? JSON.parse(body) : {}
+  return { data, status: res.status, headers: res.headers } as listTextProcessingRunsV1CollectionsCollectionIdTextProcessingRunsGetResponse
 }
 
 
@@ -6631,6 +7423,134 @@ export const searchCollectionItemsV1CollectionsCollectionIdSearchGet = async (co
 
   const data: searchCollectionItemsV1CollectionsCollectionIdSearchGetResponse['data'] = body ? JSON.parse(body) : {}
   return { data, status: res.status, headers: res.headers } as searchCollectionItemsV1CollectionsCollectionIdSearchGetResponse
+}
+
+
+
+export type collectionSearchFacetV1CollectionsCollectionIdSearchFacetsFacetGetResponse200 = {
+  data: FacetValue[]
+  status: 200
+}
+
+export type collectionSearchFacetV1CollectionsCollectionIdSearchFacetsFacetGetResponse422 = {
+  data: HTTPValidationError
+  status: 422
+}
+
+export type collectionSearchFacetV1CollectionsCollectionIdSearchFacetsFacetGetResponseSuccess = (collectionSearchFacetV1CollectionsCollectionIdSearchFacetsFacetGetResponse200) & {
+  headers: Headers;
+};
+export type collectionSearchFacetV1CollectionsCollectionIdSearchFacetsFacetGetResponseError = (collectionSearchFacetV1CollectionsCollectionIdSearchFacetsFacetGetResponse422) & {
+  headers: Headers;
+};
+
+export type collectionSearchFacetV1CollectionsCollectionIdSearchFacetsFacetGetResponse = (collectionSearchFacetV1CollectionsCollectionIdSearchFacetsFacetGetResponseSuccess | collectionSearchFacetV1CollectionsCollectionIdSearchFacetsFacetGetResponseError)
+
+export const getCollectionSearchFacetV1CollectionsCollectionIdSearchFacetsFacetGetUrl = (collectionId: string,
+    facet: 'custodians' | 'file_extensions' | 'record_types' | 'processing_statuses',
+    params?: CollectionSearchFacetV1CollectionsCollectionIdSearchFacetsFacetGetParams,) => {
+  const normalizedParams = new URLSearchParams();
+
+  Object.entries(params || {}).forEach(([key, value]) => {
+    const explodeParameters = ["custodian_id","extension","record_type","processing_status"];
+
+    if (Array.isArray(value) && explodeParameters.includes(key)) {
+      value.forEach((v) => {
+        normalizedParams.append(key, v === null ? 'null' : String(v));
+      });
+      return;
+    }
+
+    if (value !== undefined) {
+      normalizedParams.append(key, value === null ? 'null' : String(value))
+    }
+  });
+
+  const stringifiedParams = normalizedParams.toString();
+
+  return stringifiedParams.length > 0 ? `/api/core/v1/collections/${collectionId}/search/facets/${facet}?${stringifiedParams}` : `/api/core/v1/collections/${collectionId}/search/facets/${facet}`
+}
+
+/**
+ * @summary Collection Search Facet
+ */
+export const collectionSearchFacetV1CollectionsCollectionIdSearchFacetsFacetGet = async (collectionId: string,
+    facet: 'custodians' | 'file_extensions' | 'record_types' | 'processing_statuses',
+    params?: CollectionSearchFacetV1CollectionsCollectionIdSearchFacetsFacetGetParams, options?: RequestInit): Promise<collectionSearchFacetV1CollectionsCollectionIdSearchFacetsFacetGetResponse> => {
+
+  const res = await fetch(getCollectionSearchFacetV1CollectionsCollectionIdSearchFacetsFacetGetUrl(collectionId,facet,params),
+  {
+    ...options,
+    method: 'GET'
+
+
+  }
+)
+
+
+  const body = [204, 205, 304].includes(res.status) ? null : await res.text();
+
+  const data: collectionSearchFacetV1CollectionsCollectionIdSearchFacetsFacetGetResponse['data'] = body ? JSON.parse(body) : {}
+  return { data, status: res.status, headers: res.headers } as collectionSearchFacetV1CollectionsCollectionIdSearchFacetsFacetGetResponse
+}
+
+
+
+export type collectionDateHistogramV1CollectionsCollectionIdDateHistogramGetResponse200 = {
+  data: CollectionDateHistogramResponse
+  status: 200
+}
+
+export type collectionDateHistogramV1CollectionsCollectionIdDateHistogramGetResponse422 = {
+  data: HTTPValidationError
+  status: 422
+}
+
+export type collectionDateHistogramV1CollectionsCollectionIdDateHistogramGetResponseSuccess = (collectionDateHistogramV1CollectionsCollectionIdDateHistogramGetResponse200) & {
+  headers: Headers;
+};
+export type collectionDateHistogramV1CollectionsCollectionIdDateHistogramGetResponseError = (collectionDateHistogramV1CollectionsCollectionIdDateHistogramGetResponse422) & {
+  headers: Headers;
+};
+
+export type collectionDateHistogramV1CollectionsCollectionIdDateHistogramGetResponse = (collectionDateHistogramV1CollectionsCollectionIdDateHistogramGetResponseSuccess | collectionDateHistogramV1CollectionsCollectionIdDateHistogramGetResponseError)
+
+export const getCollectionDateHistogramV1CollectionsCollectionIdDateHistogramGetUrl = (collectionId: string,
+    params?: CollectionDateHistogramV1CollectionsCollectionIdDateHistogramGetParams,) => {
+  const normalizedParams = new URLSearchParams();
+
+  Object.entries(params || {}).forEach(([key, value]) => {
+
+    if (value !== undefined) {
+      normalizedParams.append(key, value === null ? 'null' : String(value))
+    }
+  });
+
+  const stringifiedParams = normalizedParams.toString();
+
+  return stringifiedParams.length > 0 ? `/api/core/v1/collections/${collectionId}/date-histogram?${stringifiedParams}` : `/api/core/v1/collections/${collectionId}/date-histogram`
+}
+
+/**
+ * @summary Collection Date Histogram
+ */
+export const collectionDateHistogramV1CollectionsCollectionIdDateHistogramGet = async (collectionId: string,
+    params?: CollectionDateHistogramV1CollectionsCollectionIdDateHistogramGetParams, options?: RequestInit): Promise<collectionDateHistogramV1CollectionsCollectionIdDateHistogramGetResponse> => {
+
+  const res = await fetch(getCollectionDateHistogramV1CollectionsCollectionIdDateHistogramGetUrl(collectionId,params),
+  {
+    ...options,
+    method: 'GET'
+
+
+  }
+)
+
+
+  const body = [204, 205, 304].includes(res.status) ? null : await res.text();
+
+  const data: collectionDateHistogramV1CollectionsCollectionIdDateHistogramGetResponse['data'] = body ? JSON.parse(body) : {}
+  return { data, status: res.status, headers: res.headers } as collectionDateHistogramV1CollectionsCollectionIdDateHistogramGetResponse
 }
 
 

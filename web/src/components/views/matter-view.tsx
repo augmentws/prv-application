@@ -15,6 +15,7 @@ import { type CreateMetadataGroupValues } from "@/components/forms/create-metada
 import { CreateReviewBatchDialog } from "@/components/forms/create-review-batch-dialog";
 import { SaveMatterTemplateDialog, type SaveMatterTemplateValues } from "@/components/forms/save-matter-template-dialog";
 import { CreateTopicJobDialog } from "@/components/forms/create-topic-job-dialog";
+import { ReviewTopicProposalsDialog } from "@/components/forms/review-topic-proposals-dialog";
 import { HelpLink } from "@/components/help-link";
 import { MatterDefinitionPanel } from "@/components/matter-definition-panel";
 import { MetadataGroupsPanel } from "@/components/metadata-groups-panel";
@@ -26,7 +27,7 @@ import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
-import type { ClientRead, MatterDocumentImportRead, MatterEmbeddingJobRead, MatterOverviewCounts, MatterRead, MatterTemplateRead, MatterTopicJobCreate, MatterTopicJobRead, MetadataDefinitionCreate, MetadataDefinitionRead, MetadataGroupRead, ReviewBatchCreate, ReviewBatchRead, SearchIndexGenerationRead, SearchProjectionOperationRead, UserRead } from "@/generated/models";
+import type { ClientRead, MatterDocumentImportRead, MatterEmbeddingJobRead, MatterOverviewCounts, MatterRead, MatterTemplateRead, MatterTopicApplyRequest, MatterTopicJobCreate, MatterTopicJobRead, MetadataDefinitionCreate, MetadataDefinitionRead, MetadataGroupRead, ReviewBatchCreate, ReviewBatchRead, SearchIndexGenerationRead, SearchProjectionOperationRead, SearchProjectionRetryResponse, UserRead } from "@/generated/models";
 import { coreApi } from "@/lib/api-client";
 import { formatDate } from "@/lib/format";
 
@@ -87,7 +88,7 @@ export function MatterView({ clientId, matterId, requestedTab, selectedJobId }: 
   });
   const searchOperations = useQuery({
     queryKey: ["search-operations", matterId],
-    queryFn: () => coreApi<SearchProjectionOperationRead[]>(`/v1/matters/${matterId}/search-operations?limit=100`),
+    queryFn: () => coreApi<SearchProjectionOperationRead[]>(`/v1/matters/${matterId}/search-operations?limit=500`),
     enabled: tab === "search",
     refetchInterval: (query) => query.state.data?.some((operation) => operation.status === "QUEUED" || operation.status === "RUNNING") ? 2000 : false,
   });
@@ -153,6 +154,16 @@ export function MatterView({ clientId, matterId, requestedTab, selectedJobId }: 
     },
     onError: (error) => toast.error(error instanceof Error ? error.message : "The topic clustering job could not be canceled."),
   });
+  const applyTopicJobMutation = useMutation({
+    mutationFn: ({ jobId, payload }: { jobId: string; payload: MatterTopicApplyRequest }) => coreApi<MatterTopicJobRead>(`/v1/matters/${matterId}/topic-jobs/${jobId}/apply`, { method: "POST", body: JSON.stringify(payload) }),
+    onSuccess: (updated) => {
+      queryClient.setQueryData<MatterTopicJobRead[]>(["matter-topic-jobs", matterId], (current) => current?.map((job) => job.id === updated.id ? updated : job));
+      void queryClient.invalidateQueries({ queryKey: ["metadata-definitions", matterId] });
+      void queryClient.invalidateQueries({ queryKey: ["metadata-groups", matterId] });
+      toast.success("The approved topics are being applied to the matter.");
+    },
+    onError: (error) => toast.error(error instanceof Error ? error.message : "The approved topics could not be applied."),
+  });
   const rebuildSearchMutation = useMutation({
     mutationFn: () => coreApi<SearchProjectionOperationRead>(`/v1/matters/${matterId}/search-indexes/rebuild`, { method: "POST" }),
     onSuccess: (operation) => {
@@ -169,6 +180,17 @@ export function MatterView({ clientId, matterId, requestedTab, selectedJobId }: 
       toast.success("The full search reindex was confirmed and queued.");
     },
     onError: (error) => toast.error(error instanceof Error ? error.message : "The search reindex could not be confirmed."),
+  });
+  const retryFailedSearchMutation = useMutation({
+    mutationFn: () => coreApi<SearchProjectionRetryResponse>(`/v1/matters/${matterId}/search-operations/retry-failed`, { method: "POST" }),
+    onSuccess: (result) => {
+      void queryClient.invalidateQueries({ queryKey: ["search-operations", matterId] });
+      void queryClient.invalidateQueries({ queryKey: ["search-indexes", matterId] });
+      toast.success(result.requeued_operation_count
+        ? `${result.requeued_operation_count.toLocaleString()} failed search ${result.requeued_operation_count === 1 ? "job was" : "jobs were"} requeued for ${result.requeued_document_count.toLocaleString()} documents.`
+        : "There are no failed document-update jobs to requeue.");
+    },
+    onError: (error) => toast.error(error instanceof Error ? error.message : "The failed search jobs could not be requeued."),
   });
   const createReviewBatchMutation = useMutation({
     mutationFn: (values: ReviewBatchCreate) => coreApi<ReviewBatchRead>(`/v1/matters/${matterId}/review-batches`, { method: "POST", body: JSON.stringify(values) }),
@@ -191,6 +213,7 @@ export function MatterView({ clientId, matterId, requestedTab, selectedJobId }: 
   const saveTemplate = useCallback((values: SaveMatterTemplateValues) => templateMutation.mutateAsync(values).then(() => undefined), [templateMutation]);
   const cloneMatter = useCallback((values: CloneMatterValues) => cloneMutation.mutateAsync(values).then(() => undefined), [cloneMutation]);
   const createReviewBatch = useCallback((values: ReviewBatchCreate) => createReviewBatchMutation.mutateAsync(values).then(() => undefined), [createReviewBatchMutation]);
+  const applyTopics = useCallback((jobId: string, payload: MatterTopicApplyRequest) => applyTopicJobMutation.mutateAsync({ jobId, payload }).then(() => undefined), [applyTopicJobMutation]);
   const columns = useMemo<ColumnDef<MetadataDefinitionRead>[]>(() => [
     { accessorKey: "display_name", header: "Field", cell: ({ row }) => <div><p className="font-semibold">{row.original.display_name}</p><code className="text-xs text-muted-foreground">{row.original.key}</code></div> },
     { accessorKey: "type", header: "Type", cell: ({ row }) => <Badge>{row.original.type.toLowerCase().replace("_", " ")}</Badge> },
@@ -221,6 +244,7 @@ export function MatterView({ clientId, matterId, requestedTab, selectedJobId }: 
     { accessorKey: "embedded_count", header: "Generated", cell: ({ row }) => <span className="tabular-nums">{row.original.embedded_count.toLocaleString()}</span> },
     { accessorKey: "skipped_count", header: "Skipped", cell: ({ row }) => <span className="tabular-nums text-muted-foreground">{row.original.skipped_count.toLocaleString()}</span> },
     { accessorKey: "chunk_count", header: "Chunks", cell: ({ row }) => <span className="tabular-nums">{row.original.chunk_count.toLocaleString()}</span> },
+    { id: "provider_usage", header: "Token usage", cell: ({ row }) => <EmbeddingTokenUsage job={row.original} /> },
     { accessorKey: "created_at", header: "Created", cell: ({ row }) => <span className="whitespace-nowrap text-muted-foreground">{formatDate(row.original.created_at)}</span> },
     { id: "actions", header: "", cell: ({ row }) => ["QUEUED", "PLANNING", "RUNNING"].includes(row.original.status) ? <Button size="sm" variant="outline" onClick={() => cancelEmbeddingJobMutation.mutate(row.original.id)}><Ban />Cancel</Button> : null },
   ], [cancelEmbeddingJobMutation]);
@@ -231,8 +255,8 @@ export function MatterView({ clientId, matterId, requestedTab, selectedJobId }: 
     { accessorKey: "topic_count", header: "Topics", cell: ({ row }) => <div><span className="tabular-nums">{row.original.topic_count.toLocaleString()}</span>{row.original.clusters?.length ? <p className="max-w-64 truncate text-xs text-muted-foreground" title={row.original.clusters.map((cluster) => cluster.name).join(", ")}>{row.original.clusters.slice(0, 3).map((cluster) => cluster.name).join(", ")}</p> : null}</div> },
     { accessorKey: "assigned_document_count", header: "Assigned", cell: ({ row }) => <span className="tabular-nums">{row.original.assigned_document_count.toLocaleString()}</span> },
     { accessorKey: "created_at", header: "Created", cell: ({ row }) => <span className="whitespace-nowrap text-muted-foreground">{formatDate(row.original.created_at)}</span> },
-    { id: "actions", header: "", cell: ({ row }) => ["QUEUED", "SAMPLING", "CLUSTERING", "PUBLISHING"].includes(row.original.status) ? <Button size="sm" variant="outline" onClick={() => cancelTopicJobMutation.mutate(row.original.id)}><Ban />Cancel</Button> : null },
-  ], [cancelTopicJobMutation]);
+    { id: "actions", header: "", cell: ({ row }) => <div className="flex justify-end gap-2">{row.original.status === "AWAITING_REVIEW" ? <ReviewTopicProposalsDialog job={row.original} onApply={applyTopics} /> : null}{["QUEUED", "SAMPLING", "CLUSTERING", "AWAITING_REVIEW", "PUBLISHING"].includes(row.original.status) ? <Button size="sm" variant="outline" onClick={() => cancelTopicJobMutation.mutate(row.original.id)}><Ban />Cancel</Button> : null}</div> },
+  ], [applyTopics, cancelTopicJobMutation]);
   const reviewBatchColumns = useMemo<ColumnDef<ReviewBatchRead>[]>(() => [
     { accessorKey: "name", header: "Batch", cell: ({ row }) => <div><p className="font-semibold">{row.original.name}</p>{row.original.description ? <p className="max-w-md truncate text-xs text-muted-foreground" title={row.original.description}>{row.original.description}</p> : null}</div> },
     { accessorKey: "selection_type", header: "Created from", cell: ({ row }) => <span className="text-muted-foreground">{batchSelectionLabel(row.original.selection_type)}</span> },
@@ -271,7 +295,7 @@ export function MatterView({ clientId, matterId, requestedTab, selectedJobId }: 
             <DataTable columns={embeddingJobColumns} data={embeddingJobs.data} emptyMessage="No embedding jobs have been started for this matter." />
           </section>
           <section className="space-y-4">
-            <div className="flex flex-wrap items-start justify-between gap-3"><div><h2 className="text-lg font-semibold">Topic clustering</h2><p className="text-sm text-muted-foreground">Discover named topics from chunk embeddings and publish them as document metadata.</p>{!embeddingJobs.data.some((job) => ["COMPLETED", "COMPLETED_WITH_ERRORS"].includes(job.status) && job.chunk_count > 0) ? <p className="mt-1 text-xs text-muted-foreground">Complete an embedding job before clustering topics.</p> : null}</div><CreateTopicJobDialog onCreate={(values) => createTopicJobMutation.mutateAsync(values).then(() => undefined)} disabled={createTopicJobMutation.isPending || !embeddingJobs.data.some((job) => ["COMPLETED", "COMPLETED_WITH_ERRORS"].includes(job.status) && job.chunk_count > 0) || topicJobs.data.some((job) => ["QUEUED", "SAMPLING", "CLUSTERING", "PUBLISHING"].includes(job.status))} /></div>
+            <div className="flex flex-wrap items-start justify-between gap-3"><div><h2 className="text-lg font-semibold">Topic clustering</h2><p className="text-sm text-muted-foreground">Discover topic proposals, review them, and explicitly approve the set before document metadata is changed.</p>{!embeddingJobs.data.some((job) => ["COMPLETED", "COMPLETED_WITH_ERRORS"].includes(job.status) && job.chunk_count > 0) ? <p className="mt-1 text-xs text-muted-foreground">Complete an embedding job before clustering topics.</p> : null}</div><CreateTopicJobDialog onCreate={(values) => createTopicJobMutation.mutateAsync(values).then(() => undefined)} disabled={createTopicJobMutation.isPending || !embeddingJobs.data.some((job) => ["COMPLETED", "COMPLETED_WITH_ERRORS"].includes(job.status) && job.chunk_count > 0) || topicJobs.data.some((job) => ["QUEUED", "SAMPLING", "CLUSTERING", "AWAITING_REVIEW", "PUBLISHING"].includes(job.status))} /></div>
             <DataTable columns={topicJobColumns} data={topicJobs.data} emptyMessage="No topic clustering jobs have been started for this matter." />
           </section>
           <section className="space-y-4">
@@ -280,7 +304,7 @@ export function MatterView({ clientId, matterId, requestedTab, selectedJobId }: 
             <DataTable columns={jobColumns} data={jobs.data} emptyMessage="No document import jobs have been started for this matter." />
           </section>
         </div>
-        : searchIndexes.isPending || searchOperations.isPending || overviewCounts.isPending ? <TableLoading /> : searchIndexes.error || searchOperations.error || overviewCounts.error ? <QueryError message={searchIndexes.error?.message ?? searchOperations.error?.message ?? overviewCounts.error?.message} /> : <SearchIndexPanel coreDocumentCount={overviewCounts.data.document_count} indexes={searchIndexes.data} operations={searchOperations.data} onRebuild={() => rebuildSearchMutation.mutateAsync().then(() => undefined)} rebuilding={rebuildSearchMutation.isPending} onConfirmReindex={(operationId) => confirmReindexMutation.mutateAsync(operationId).then(() => undefined)} confirmingReindex={confirmReindexMutation.isPending} />}
+        : searchIndexes.isPending || searchOperations.isPending || overviewCounts.isPending ? <TableLoading /> : searchIndexes.error || searchOperations.error || overviewCounts.error ? <QueryError message={searchIndexes.error?.message ?? searchOperations.error?.message ?? overviewCounts.error?.message} /> : <SearchIndexPanel coreDocumentCount={overviewCounts.data.document_count} indexes={searchIndexes.data} operations={searchOperations.data} onRebuild={() => rebuildSearchMutation.mutateAsync().then(() => undefined)} rebuilding={rebuildSearchMutation.isPending} onConfirmReindex={(operationId) => confirmReindexMutation.mutateAsync(operationId).then(() => undefined)} confirmingReindex={confirmReindexMutation.isPending} onRetryFailed={() => retryFailedSearchMutation.mutateAsync().then(() => undefined)} retryingFailed={retryFailedSearchMutation.isPending} />}
     </>
   );
 }
@@ -307,10 +331,18 @@ function EmbeddingProgress({ job }: { job: MatterEmbeddingJobRead }) {
   return <div className="min-w-36"><div className="mb-1 h-1.5 overflow-hidden rounded-full bg-muted"><div className="h-full bg-primary" style={{ width: `${percent}%` }} /></div><span className="text-xs tabular-nums text-muted-foreground">{job.processed_count.toLocaleString()} / {job.total_count.toLocaleString()}</span>{job.failed_count ? <span className="ml-2 text-xs text-destructive">{job.failed_count.toLocaleString()} failed</span> : null}</div>;
 }
 
+function EmbeddingTokenUsage({ job }: { job: MatterEmbeddingJobRead }) {
+  if (!job.provider_request_count && !job.total_tokens) {
+    return <span className="text-sm text-muted-foreground">No external usage</span>;
+  }
+  return <div className="min-w-40"><p className="font-semibold tabular-nums">{job.total_tokens.toLocaleString()} tokens</p><p className="text-xs tabular-nums text-muted-foreground">{job.input_tokens.toLocaleString()} in · {job.output_tokens.toLocaleString()} out</p><p className="text-xs tabular-nums text-muted-foreground">{job.provider_request_count.toLocaleString()} {job.provider_request_count === 1 ? "request" : "requests"}</p></div>;
+}
+
 function TopicProgress({ job }: { job: MatterTopicJobRead }) {
   const percent = job.document_count ? Math.min(100, Math.round((job.processed_document_count / job.document_count) * 100)) : job.status === "COMPLETED" ? 100 : 0;
   const planning = ["QUEUED", "SAMPLING", "CLUSTERING"].includes(job.status);
-  return <div className="min-w-36"><div className="mb-1 h-1.5 overflow-hidden rounded-full bg-muted"><div className="h-full bg-primary" style={{ width: `${planning ? 8 : percent}%` }} /></div><span className="text-xs tabular-nums text-muted-foreground">{planning ? job.status.toLowerCase() : `${job.processed_document_count.toLocaleString()} / ${job.document_count.toLocaleString()}`}</span>{job.failed_count ? <span className="ml-2 text-xs text-destructive">{job.failed_count.toLocaleString()} failed</span> : null}</div>;
+  const awaitingReview = job.status === "AWAITING_REVIEW";
+  return <div className="min-w-36"><div className="mb-1 h-1.5 overflow-hidden rounded-full bg-muted"><div className="h-full bg-primary" style={{ width: `${planning ? 8 : awaitingReview ? 0 : percent}%` }} /></div><span className="text-xs tabular-nums text-muted-foreground">{planning ? job.status.toLowerCase() : awaitingReview ? "Review required" : `${job.processed_document_count.toLocaleString()} / ${job.document_count.toLocaleString()}`}</span>{job.failed_count ? <span className="ml-2 text-xs text-destructive">{job.failed_count.toLocaleString()} failed</span> : null}</div>;
 }
 
 function JobDetail({ job, onCancel }: { job?: MatterDocumentImportRead; onCancel: (jobId: string) => void }) {

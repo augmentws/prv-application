@@ -13,6 +13,8 @@ export interface MatterTopicClusterRead {
   name: string;
   description: string | null;
   keywords: string[];
+  representative_excerpts: string[];
+  included: boolean;
   sampled_chunk_count: number;
   assigned_chunk_count: number;
   assigned_document_count: number;
