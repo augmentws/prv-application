@@ -29,9 +29,12 @@ def main() -> None:
     )
     from app.workflows import (  # noqa: F401
         agent_turn,
+        collection_deletion,
+        collection_text_processing,
         matter_embeddings,
         matter_import,
         matter_topics,
+        review_batches,
         search_projection,
     )
 

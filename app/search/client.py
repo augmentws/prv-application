@@ -46,6 +46,25 @@ class OpenSearchClient:
     def create_index(self, name: str, body: dict[str, Any]) -> None:
         self._request("PUT", f"/{name}", json=body)
 
+    def update_mapping(self, name: str, body: dict[str, Any]) -> None:
+        self._request("PUT", f"/{name}/_mapping", json=body)
+
+    def delete_index(self, name: str) -> None:
+        try:
+            self._request("DELETE", f"/{name}")
+        except OpenSearchError as exc:
+            if exc.status_code != 404:
+                raise
+
+    def resolve_indices(self, pattern: str) -> list[str]:
+        try:
+            result = self._request("GET", f"/_resolve/index/{pattern}", params={"expand_wildcards": "all"})
+        except OpenSearchError as exc:
+            if exc.status_code == 404:
+                return []
+            raise
+        return sorted(item["name"] for item in result.get("indices", []) if item.get("name"))
+
     def index_exists(self, name: str) -> bool:
         try:
             self._request("HEAD", f"/{name}")
@@ -95,6 +114,10 @@ class OpenSearchClient:
 
     def refresh(self, index: str) -> None:
         self._request("POST", f"/{index}/_refresh")
+
+    def count(self, index: str) -> int:
+        result = self._request("GET", f"/{index}/_count")
+        return int(result.get("count", 0))
 
     def ensure_rrf_search_pipeline(self, pipeline_id: str) -> None:
         self._request(

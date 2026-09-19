@@ -4,7 +4,6 @@ import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import {
   ArrowLeft,
   ChevronDown,
-  ChevronLeft,
   ChevronRight,
   FileSearch,
   FileText,
@@ -23,10 +22,13 @@ import { type CSSProperties, type FormEvent, useCallback, useEffect, useId, useM
 import { toast } from "sonner";
 
 import { BrandMark } from "@/components/brand-mark";
+import { DateHistogram, type DateHistogramInterval } from "@/components/date-histogram";
 import { DocumentViewerSurface } from "@/components/document-viewer-dialog";
 import { HelpLink } from "@/components/help-link";
 import { QueryError } from "@/components/query-state";
+import { ResultPagination } from "@/components/result-pagination";
 import { SavedSearchesDialog, SaveSearchDialog } from "@/components/saved-search-dialogs";
+import { parseMinimumSimilarity, SemanticThresholdControl } from "@/components/semantic-threshold-control";
 import { ThemeToggle } from "@/components/theme-toggle";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
@@ -41,6 +43,7 @@ import type {
   CustodianRead,
   DocumentMetadataFieldRead,
   MatterRead,
+  MatterDateHistogramResponse,
   MatterSavedSearchCreate,
   MatterSavedSearchRead,
   MatterFacetValuesResponse,
@@ -70,6 +73,7 @@ const SEARCH_PLACEHOLDERS: Record<MatterSearchRequestSearchMode, string> = {
 };
 
 type SelectedFilters = Record<string, string[]>;
+interface DateRange { from: string; to: string }
 
 interface CodingAction {
   definitionId: string;
@@ -83,6 +87,7 @@ interface ReviewWorkspaceProps {
   initialDocumentId?: string;
   initialPage?: number;
   initialSearchMode?: MatterSearchRequestSearchMode;
+  initialMinimumSimilarity?: number | null;
 }
 
 function objectValue(value: unknown): Record<string, unknown> {
@@ -109,6 +114,33 @@ function typedFacetValue(token: string, definition: MetadataDefinitionRead): unk
   if (definition.type === "BOOLEAN") return token === "true";
   if (definition.type === "INTEGER" || definition.type === "DECIMAL") return Number(token);
   return token;
+}
+
+function isDateFilter(definition: MetadataDefinitionRead) {
+  return definition.type === "DATE" || definition.type === "DATETIME";
+}
+
+function selectedDateRange(tokens: string[]): DateRange {
+  const range = { from: "", to: "" };
+  for (const token of tokens) {
+    if (token.startsWith("from:")) range.from = token.slice(5);
+    if (token.startsWith("to:")) range.to = token.slice(3);
+  }
+  return range;
+}
+
+function dateRangeTokens(range: DateRange) {
+  return [range.from ? `from:${range.from}` : "", range.to ? `to:${range.to}` : ""].filter(Boolean);
+}
+
+function dateRangeBound(value: string, definition: MetadataDefinitionRead, end: boolean) {
+  if (definition.type === "DATETIME") return `${value}T${end ? "23:59:59.999" : "00:00:00.000"}Z`;
+  return value;
+}
+
+function dateInputValue(value: unknown) {
+  const match = String(value ?? "").match(/^\d{4}-\d{2}-\d{2}/);
+  return match?.[0] ?? "";
 }
 
 function wait(milliseconds: number) {
@@ -168,12 +200,15 @@ export function ReviewWorkspace({
   initialDocumentId,
   initialPage = 1,
   initialSearchMode = "KEYWORD",
+  initialMinimumSimilarity = null,
 }: ReviewWorkspaceProps) {
   const router = useRouter();
   const queryClient = useQueryClient();
   const [draftQuery, setDraftQuery] = useState(initialQuery);
   const [query, setQuery] = useState(initialQuery);
   const [searchMode, setSearchMode] = useState<MatterSearchRequestSearchMode>(initialSearchMode);
+  const [draftMinimumSimilarity, setDraftMinimumSimilarity] = useState(initialMinimumSimilarity?.toString() ?? "");
+  const [minimumSimilarity, setMinimumSimilarity] = useState<number | null>(initialMinimumSimilarity);
   const [filters, setFilters] = useState<SelectedFilters>(initialFilters);
   const [offset, setOffset] = useState(Math.max(0, initialPage - 1) * PAGE_SIZE);
   const [selectedDocumentId, setSelectedDocumentId] = useState(initialDocumentId ?? "");
@@ -244,9 +279,12 @@ export function ReviewWorkspace({
     queryFn: () => coreApi<MatterSavedSearchRead[]>(`/v1/matters/${matterId}/saved-searches`),
   });
 
-  const facetDefinitions = useMemo(() => {
+  const filterDefinitions = useMemo(() => {
     const available = (definitions.data ?? []).filter((definition) =>
-      definition.status === "ACTIVE" && definition.searchable && definition.facetable && ["TEXT", "ENUM", "BOOLEAN"].includes(definition.type),
+      definition.status === "ACTIVE" && definition.searchable && (
+        isDateFilter(definition)
+        || (definition.facetable && ["TEXT", "ENUM", "BOOLEAN"].includes(definition.type))
+      ),
     );
     return available.sort((left, right) => {
       const leftRank = PREFERRED_FACETS.indexOf(left.key);
@@ -256,21 +294,34 @@ export function ReviewWorkspace({
   }, [definitions.data]);
 
   const searchRequest = useMemo<MatterSearchRequest>(() => {
-    const definitionByKey = new Map(facetDefinitions.map((definition) => [definition.key, definition]));
-    const searchFilters: MatterSearchFilter[] = Object.entries(filters).flatMap(([key, values]) => {
+    const definitionByKey = new Map(filterDefinitions.map((definition) => [definition.key, definition]));
+    const searchFilters = Object.entries(filters).flatMap<MatterSearchFilter>(([key, values]) => {
       const definition = definitionByKey.get(key);
-      return definition && values.length ? [{ field: key, operator: "IN", values: values.map((value) => typedFacetValue(value, definition)) }] : [];
+      if (!definition || !values.length) return [];
+      if (isDateFilter(definition)) {
+        const range = selectedDateRange(values);
+        if (!range.from && !range.to) return [];
+        return [{
+          field: key,
+          operator: "RANGE",
+          from: range.from ? dateRangeBound(range.from, definition, false) : null,
+          to: range.to ? dateRangeBound(range.to, definition, true) : null,
+        }];
+      }
+      return [{ field: key, operator: "IN", values: values.map((value) => typedFacetValue(value, definition)) }];
     });
+    const effectiveMode = query.trim() ? searchMode : "KEYWORD";
     return {
       query: query.trim() || null,
-      search_mode: query.trim() ? searchMode : "KEYWORD",
+      search_mode: effectiveMode,
+      minimum_similarity: effectiveMode === "SEMANTIC" ? minimumSimilarity : null,
       filters: searchFilters,
       facets: [],
       sort: query.trim() ? [{ field: "_score", direction: "DESC" }] : [{ field: "created_at", direction: "DESC" }],
       offset,
       size: PAGE_SIZE,
     };
-  }, [facetDefinitions, filters, offset, query, searchMode]);
+  }, [filterDefinitions, filters, minimumSimilarity, offset, query, searchMode]);
 
   const searchResults = useQuery({
     queryKey: ["matter-search", matterId, searchRequest],
@@ -301,10 +352,14 @@ export function ReviewWorkspace({
     nextOffset: number,
     documentId?: string,
     nextSearchMode: MatterSearchRequestSearchMode = searchMode,
+    nextMinimumSimilarity: number | null = minimumSimilarity,
   ) => {
     const params = new URLSearchParams();
     if (nextQuery.trim()) params.set("q", nextQuery.trim());
     if (nextSearchMode !== "KEYWORD") params.set("mode", nextSearchMode.toLowerCase());
+    if (nextQuery.trim() && nextSearchMode === "SEMANTIC" && nextMinimumSimilarity !== null) {
+      params.set("similarity", String(nextMinimumSimilarity));
+    }
     for (const [key, values] of Object.entries(nextFilters)) {
       for (const value of values) params.append(`f_${key}`, value);
     }
@@ -312,7 +367,7 @@ export function ReviewWorkspace({
     if (documentId) params.set("document", documentId);
     const suffix = params.size ? `?${params.toString()}` : "";
     router.replace(`/review/matters/${matterId}${suffix}`, { scroll: false });
-  }, [matterId, router, searchMode]);
+  }, [matterId, minimumSimilarity, router, searchMode]);
 
   const metadataMutation = useMutation({
     mutationFn: async (actions: CodingAction[]) => {
@@ -356,19 +411,27 @@ export function ReviewWorkspace({
 
   const submitSearch = (event: FormEvent) => {
     event.preventDefault();
+    const nextMinimumSimilarity = searchMode === "SEMANTIC"
+      ? parseMinimumSimilarity(draftMinimumSimilarity)
+      : null;
     setQuery(draftQuery);
+    setMinimumSimilarity(nextMinimumSimilarity);
     setOffset(0);
     setSelectedDocumentId("");
     setMobileDocumentOpen(false);
-    syncUrl(draftQuery, filters, 0);
+    syncUrl(draftQuery, filters, 0, undefined, searchMode, nextMinimumSimilarity);
   };
 
   const changeSearchMode = (nextMode: MatterSearchRequestSearchMode) => {
+    const nextMinimumSimilarity = nextMode === "SEMANTIC"
+      ? parseMinimumSimilarity(draftMinimumSimilarity)
+      : null;
     setSearchMode(nextMode);
+    setMinimumSimilarity(nextMinimumSimilarity);
     setOffset(0);
     setSelectedDocumentId("");
     setMobileDocumentOpen(false);
-    syncUrl(query, filters, 0, undefined, nextMode);
+    syncUrl(query, filters, 0, undefined, nextMode, nextMinimumSimilarity);
   };
 
   const toggleFilter = (key: string, value: string) => {
@@ -376,6 +439,18 @@ export function ReviewWorkspace({
     const current = next[key] ?? [];
     next[key] = current.includes(value) ? current.filter((item) => item !== value) : [...current, value];
     if (!next[key].length) delete next[key];
+    setFilters(next);
+    setOffset(0);
+    setSelectedDocumentId("");
+    setMobileDocumentOpen(false);
+    syncUrl(query, next, 0);
+  };
+
+  const changeDateRange = (key: string, range: DateRange) => {
+    const next = { ...filters };
+    const tokens = dateRangeTokens(range);
+    if (tokens.length) next[key] = tokens;
+    else delete next[key];
     setFilters(next);
     setOffset(0);
     setSelectedDocumentId("");
@@ -407,8 +482,18 @@ export function ReviewWorkspace({
   const runSavedSearch = (saved: MatterSavedSearchRead) => {
     const nextQuery = saved.search.query?.trim() ?? "";
     const nextMode = nextQuery ? (saved.search.search_mode ?? "KEYWORD") : "KEYWORD";
+    const nextMinimumSimilarity = nextMode === "SEMANTIC" ? saved.search.minimum_similarity ?? null : null;
     const nextFilters: SelectedFilters = {};
     for (const filter of saved.search.filters ?? []) {
+      const definition = filterDefinitions.find((candidate) => candidate.key === filter.field);
+      if (filter.operator === "RANGE" && definition && isDateFilter(definition)) {
+        const tokens = dateRangeTokens({
+          from: dateInputValue(filter.from),
+          to: dateInputValue(filter.to),
+        });
+        if (tokens.length) nextFilters[filter.field] = tokens;
+        continue;
+      }
       const values = filter.operator === "IN" ? filter.values : filter.operator === "EQ" ? [filter.value] : [];
       const tokens = (values ?? []).filter((value) => value !== null && value !== undefined).map(facetToken);
       if (tokens.length) nextFilters[filter.field] = tokens;
@@ -416,17 +501,24 @@ export function ReviewWorkspace({
     setDraftQuery(nextQuery);
     setQuery(nextQuery);
     setSearchMode(nextMode);
+    setDraftMinimumSimilarity(nextMinimumSimilarity?.toString() ?? "");
+    setMinimumSimilarity(nextMinimumSimilarity);
     setFilters(nextFilters);
     setOffset(0);
     setSelectedDocumentId("");
     setMobileDocumentOpen(false);
-    syncUrl(nextQuery, nextFilters, 0, undefined, nextMode);
+    syncUrl(nextQuery, nextFilters, 0, undefined, nextMode, nextMinimumSimilarity);
     toast.success(`Running ${saved.name}.`);
   };
 
   const custodianNames = useMemo(() => new Map((custodians.data ?? []).map((custodian) => [custodian.id, custodian.display_name])), [custodians.data]);
-  const activeFilterCount = Object.values(filters).reduce((total, values) => total + values.length, 0);
+  const dateFilterKeys = useMemo(() => new Set(filterDefinitions.filter(isDateFilter).map((definition) => definition.key)), [filterDefinitions]);
+  const activeFilterCount = Object.entries(filters).reduce(
+    (total, [key, values]) => total + (dateFilterKeys.has(key) && values.length ? 1 : values.length),
+    0,
+  );
   const total = searchResults.data?.total ?? 0;
+  const semanticWithoutThreshold = Boolean(query.trim()) && searchMode === "SEMANTIC" && minimumSimilarity === null;
   const pageStart = total ? offset + 1 : 0;
   const pageEnd = Math.min(offset + PAGE_SIZE, total);
 
@@ -457,6 +549,7 @@ export function ReviewWorkspace({
               <Search className="pointer-events-none absolute left-3 top-1/2 size-4 -translate-y-1/2 text-muted-foreground" />
               <Input value={draftQuery} onChange={(event) => setDraftQuery(event.target.value)} className="pl-9" placeholder={SEARCH_PLACEHOLDERS[searchMode]} aria-label="Search matter documents" />
             </div>
+            {searchMode === "SEMANTIC" ? <SemanticThresholdControl value={draftMinimumSimilarity} onChange={setDraftMinimumSimilarity} /> : null}
             <Button type="submit">Search</Button>
           </form>
           <Button variant="outline" size="sm" className="xl:hidden" onClick={() => setFiltersOpen(true)}><Filter />Filters{activeFilterCount ? <Badge variant="accent">{activeFilterCount}</Badge> : null}</Button>
@@ -467,7 +560,7 @@ export function ReviewWorkspace({
           <ThemeToggle />
         </div>
         <div className="flex h-9 items-center justify-between gap-3 border-t px-3 text-xs text-muted-foreground">
-          <span>{searchResults.isFetching ? "Searching…" : `${total.toLocaleString()} ${total === 1 ? "document" : "documents"}`}{searchResults.data ? ` · ${searchResults.data.took_ms.toLocaleString()} ms · ${searchMode.toLowerCase()}` : ""}</span>
+          <span>{searchResults.isFetching ? "Searching…" : semanticWithoutThreshold ? `Top ${total.toLocaleString()} semantic candidates` : `${total.toLocaleString()} ${total === 1 ? "document" : "documents"}`}{searchResults.data ? ` · ${searchResults.data.took_ms.toLocaleString()} ms · ${searchMode.toLowerCase()}` : ""}</span>
           <div className="flex items-center gap-2 md:hidden">
             <Button variant={!mobileDocumentOpen ? "default" : "ghost"} size="sm" onClick={() => setMobileDocumentOpen(false)}>Results</Button>
             <Button variant={mobileDocumentOpen ? "default" : "ghost"} size="sm" disabled={!effectiveSelectedDocumentId} onClick={() => setMobileDocumentOpen(true)}>Document</Button>
@@ -482,7 +575,7 @@ export function ReviewWorkspace({
           style={{ "--review-facet-width": `${facetWidth}px` } as CSSProperties}
           aria-label="Search filters"
         >
-          <FacetPanel matterId={matterId} searchRequest={searchRequest} definitions={facetDefinitions} filters={filters} custodianNames={custodianNames} onToggle={toggleFilter} onClear={clearFilters} />
+          <FacetPanel matterId={matterId} searchRequest={searchRequest} definitions={filterDefinitions} filters={filters} custodianNames={custodianNames} onToggle={toggleFilter} onDateRangeChange={changeDateRange} onClear={clearFilters} />
         </aside>
         <ResizeHandle className="hidden xl:flex" label="Resize filter panel" value={facetWidth} min={184} max={420} onChange={setFacetWidth} />
 
@@ -495,11 +588,9 @@ export function ReviewWorkspace({
             <h1 className="text-sm font-semibold">Results</h1>
             {activeFilterCount ? <span className="text-xs text-muted-foreground">{activeFilterCount} active</span> : null}
           </div>
-          <ResultsList results={searchResults} selectedDocumentId={effectiveSelectedDocumentId} onSelect={selectDocument} matter={matter.data} />
-          <div className="flex h-12 shrink-0 items-center justify-between border-t px-3">
-            <Button variant="ghost" size="sm" disabled={!offset || searchResults.isFetching} onClick={() => changePage(Math.max(0, offset - PAGE_SIZE))}><ChevronLeft />Previous</Button>
-            <span className="text-xs tabular-nums text-muted-foreground">{pageStart.toLocaleString()}–{pageEnd.toLocaleString()} of {total.toLocaleString()}</span>
-            <Button variant="ghost" size="sm" disabled={pageEnd >= total || searchResults.isFetching} onClick={() => changePage(offset + PAGE_SIZE)}>Next<ChevronRight /></Button>
+          <ResultsList results={searchResults} offset={offset} selectedDocumentId={effectiveSelectedDocumentId} onSelect={selectDocument} matter={matter.data} />
+          <div className="flex min-h-12 shrink-0 items-center border-t px-2 py-2">
+            <ResultPagination total={total} offset={offset} pageSize={PAGE_SIZE} disabled={searchResults.isFetching} onPageChange={changePage} />
           </div>
         </section>
         <ResizeHandle className="hidden md:flex" label="Resize result panel" value={resultsWidth} min={288} max={640} onChange={setResultsWidth} />
@@ -524,7 +615,7 @@ export function ReviewWorkspace({
       <Dialog open={filtersOpen} onOpenChange={setFiltersOpen}>
         <DialogContent className="flex h-[min(86vh,48rem)] max-w-md flex-col overflow-hidden p-0 xl:hidden">
           <DialogHeader className="mb-0 border-b px-5 py-4"><DialogTitle>Filter documents</DialogTitle><DialogDescription>Narrow the current matter results.</DialogDescription></DialogHeader>
-          <FacetPanel matterId={matterId} searchRequest={searchRequest} definitions={facetDefinitions} filters={filters} custodianNames={custodianNames} onToggle={toggleFilter} onClear={clearFilters} />
+          <FacetPanel matterId={matterId} searchRequest={searchRequest} definitions={filterDefinitions} filters={filters} custodianNames={custodianNames} onToggle={toggleFilter} onDateRangeChange={changeDateRange} onClear={clearFilters} />
         </DialogContent>
       </Dialog>
 
@@ -538,13 +629,14 @@ export function ReviewWorkspace({
   );
 }
 
-function FacetPanel({ matterId, searchRequest, definitions, filters, custodianNames, onToggle, onClear }: {
+function FacetPanel({ matterId, searchRequest, definitions, filters, custodianNames, onToggle, onDateRangeChange, onClear }: {
   matterId: string;
   searchRequest: MatterSearchRequest;
   definitions: MetadataDefinitionRead[];
   filters: SelectedFilters;
   custodianNames: Map<string, string>;
   onToggle: (key: string, value: string) => void;
+  onDateRangeChange: (key: string, range: DateRange) => void;
   onClear: () => void;
 }) {
   const hasFilters = Object.values(filters).some((values) => values.length);
@@ -555,10 +647,96 @@ function FacetPanel({ matterId, searchRequest, definitions, filters, custodianNa
         {hasFilters ? <Button variant="ghost" size="sm" onClick={onClear}>Clear</Button> : null}
       </div>
       <div className="min-h-0 min-w-0 flex-1 divide-y overflow-x-hidden overflow-y-auto">
-        {definitions.map((definition) => <FacetSection key={definition.id} matterId={matterId} searchRequest={searchRequest} definition={definition} selected={filters[definition.key] ?? []} custodianNames={custodianNames} onToggle={onToggle} />)}
-        {!definitions.length ? <p className="p-4 text-sm text-muted-foreground">No facetable fields are configured for this matter.</p> : null}
+        {definitions.map((definition) => isDateFilter(definition) ? (
+          <DateHistogramFilter
+            key={definition.id}
+            matterId={matterId}
+            searchRequest={searchRequest}
+            definition={definition}
+            range={selectedDateRange(filters[definition.key] ?? [])}
+            onChange={(range) => onDateRangeChange(definition.key, range)}
+          />
+        ) : (
+          <FacetSection key={definition.id} matterId={matterId} searchRequest={searchRequest} definition={definition} selected={filters[definition.key] ?? []} custodianNames={custodianNames} onToggle={onToggle} />
+        ))}
+        {!definitions.length ? <p className="p-4 text-sm text-muted-foreground">No filterable fields are configured for this matter.</p> : null}
       </div>
     </div>
+  );
+}
+
+function DateHistogramFilter({ matterId, searchRequest, definition, range, onChange }: {
+  matterId: string;
+  searchRequest: MatterSearchRequest;
+  definition: MetadataDefinitionRead;
+  range: DateRange;
+  onChange: (range: DateRange) => void;
+}) {
+  const [open, setOpen] = useState(Boolean(range.from || range.to));
+  const [interval, setInterval] = useState<DateHistogramInterval>("month");
+  const histogramSearch = useMemo<MatterSearchRequest>(() => ({
+    ...searchRequest,
+    filters: (searchRequest.filters ?? []).filter((filter) => filter.field !== definition.key),
+    facets: [],
+    offset: 0,
+    size: 1,
+  }), [definition.key, searchRequest]);
+  const histogram = useQuery({
+    queryKey: ["matter-date-histogram", matterId, definition.key, interval, histogramSearch],
+    queryFn: () => coreApi<MatterDateHistogramResponse>(`/v1/matters/${matterId}/facets/${definition.key}/date-histogram`, {
+      method: "POST",
+      body: JSON.stringify({ search: histogramSearch, interval }),
+    }),
+    enabled: open,
+    placeholderData: (previous) => previous,
+  });
+
+  return (
+    <section className="min-w-0">
+      <button type="button" aria-expanded={open} onClick={() => setOpen((current) => !current)} className="flex min-h-11 w-full min-w-0 items-center gap-2 px-3 py-2 text-left text-sm font-semibold hover:bg-muted/60">
+        {open ? <ChevronDown className="size-4 shrink-0 text-muted-foreground" /> : <ChevronRight className="size-4 shrink-0 text-muted-foreground" />}
+        <span className="min-w-0 flex-1 truncate" title={definition.display_name}>{definition.display_name}</span>
+        {range.from || range.to ? <Badge variant="accent">1</Badge> : null}
+      </button>
+      {open ? (
+        <div className="space-y-3 px-3 pb-3">
+          <DateHistogram
+            buckets={histogram.data?.buckets ?? []}
+            interval={interval}
+            onIntervalChange={setInterval}
+            onSelect={onChange}
+            selectedFrom={range.from}
+            selectedTo={range.to}
+            loading={histogram.isPending}
+            error={Boolean(histogram.error)}
+            compact
+          />
+          <label className="flex items-center gap-2 text-xs font-medium text-muted-foreground">
+            <span className="w-8 shrink-0">From</span>
+            <Input
+              type="date"
+              aria-label={`${definition.display_name} from`}
+              className="h-9 min-w-0 px-2 text-xs"
+              value={range.from}
+              max={range.to || undefined}
+              onChange={(event) => onChange({ from: event.target.value, to: range.to })}
+            />
+          </label>
+          <label className="flex items-center gap-2 text-xs font-medium text-muted-foreground">
+            <span className="w-8 shrink-0">To</span>
+            <Input
+              type="date"
+              aria-label={`${definition.display_name} to`}
+              className="h-9 min-w-0 px-2 text-xs"
+              value={range.to}
+              min={range.from || undefined}
+              onChange={(event) => onChange({ from: range.from, to: event.target.value })}
+            />
+          </label>
+          {range.from || range.to ? <Button type="button" variant="ghost" size="sm" className="w-full" onClick={() => onChange({ from: "", to: "" })}>Clear dates</Button> : null}
+        </div>
+      ) : null}
+    </section>
   );
 }
 
@@ -632,8 +810,9 @@ function FacetSection({ matterId, searchRequest, definition, selected, custodian
   );
 }
 
-function ResultsList({ results, selectedDocumentId, onSelect, matter }: {
+function ResultsList({ results, offset, selectedDocumentId, onSelect, matter }: {
   results: ReturnType<typeof useQuery<MatterSearchResponse, Error>>;
+  offset: number;
   selectedDocumentId: string;
   onSelect: (documentId: string) => void;
   matter?: MatterRead;
@@ -653,7 +832,7 @@ function ResultsList({ results, selectedDocumentId, onSelect, matter }: {
         return <li key={hit.document_id} className="border-b">
           <button type="button" onClick={() => onSelect(hit.document_id)} aria-current={selected ? "true" : undefined} className={cn("w-full border-l-[3px] px-3 py-3 text-left outline-none transition hover:bg-muted/70 focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-ring", selected ? "border-l-accent bg-primary/8" : "border-l-transparent")}>
             <div className="flex items-start gap-2">
-              <span className="mt-0.5 font-mono text-xs tabular-nums text-muted-foreground">{index + 1}</span>
+              <span aria-label={`Result ${offset + index + 1}`} className="mt-0.5 font-mono text-xs tabular-nums text-muted-foreground">{offset + index + 1}</span>
               <div className="min-w-0 flex-1">
                 <p className="line-clamp-2 text-sm font-semibold leading-5">{resultTitle(hit)}</p>
                 {hit.best_passage ? <p className="mt-1 line-clamp-3 text-xs leading-5 text-foreground/80">{hit.best_passage.text}</p> : null}

@@ -27,6 +27,9 @@ describe("LoginForm", () => {
       </QueryClientProvider>,
     );
 
+    const form = screen.getByRole("button", { name: "Sign in" }).closest("form");
+    expect(form).toHaveAttribute("method", "post");
+    expect(form).toHaveAttribute("action", "/api/auth/login");
     expect(screen.queryByLabelText("Tenant")).not.toBeInTheDocument();
     await user.type(screen.getByLabelText("Email address"), "admin@example.com");
     await user.type(screen.getByLabelText("Password"), "long-enough-password");

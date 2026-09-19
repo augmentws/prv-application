@@ -24,5 +24,6 @@ export interface ArtifactRead {
   collection_id?: string | null;
   collection_item_id?: string | null;
   derivation_key?: string | null;
+  processing_run_id?: string | null;
   metadata?: ArtifactReadMetadata;
 }

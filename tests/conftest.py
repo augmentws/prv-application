@@ -5,6 +5,11 @@ os.environ.setdefault("ARTIFACT_DATABASE_URL", "sqlite+pysqlite:///:memory:")
 os.environ.setdefault("JWT_SECRET", "test-secret-that-is-long-enough-for-jwt-signing")
 os.environ.setdefault("DBOS_ENABLED", "false")
 os.environ.setdefault("PYDANTIC_AI_NO_BANNER", "1")
+os.environ["EMBEDDING_MODE"] = "embedded"
+os.environ["EMBEDDING_PROVIDER"] = "sentence_transformers"
+os.environ["EMBEDDING_MODEL"] = "voyageai/voyage-4-nano"
+os.environ["EMBEDDING_DIMENSIONS"] = "1024"
+os.environ["EMBEDDING_VOYAGE_BATCH_ENABLED"] = "false"
 
 import pytest
 from fastapi.testclient import TestClient

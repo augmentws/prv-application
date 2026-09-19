@@ -6,7 +6,6 @@
  * OpenAPI spec version: 0.1.0
  */
 import type { CollectionItemRead } from './collectionItemRead';
-import type { CollectionSearchFacets } from './collectionSearchFacets';
 
 export interface CollectionItemSearchResponse {
   items: CollectionItemRead[];
@@ -16,5 +15,4 @@ export interface CollectionItemSearchResponse {
   limit: number;
   /** @minimum 0 */
   offset: number;
-  facets: CollectionSearchFacets;
 }

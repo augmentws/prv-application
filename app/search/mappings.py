@@ -73,6 +73,7 @@ def compile_document_index(
                 "matter_id": {"type": "keyword"},
                 "source_collection_id": {"type": "keyword"},
                 "collection_item_id": {"type": "keyword"},
+                "batch_ids": {"type": "keyword"},
                 "created_at": {"type": "date", "format": "strict_date_optional_time"},
                 "record_type": {"type": "keyword"},
                 "processing_status": {"type": "keyword"},
@@ -100,7 +101,7 @@ def compile_document_index(
                             "dimension": embedding_dimensions,
                             "method": {
                                 "name": "hnsw",
-                                "engine": "lucene",
+                                "engine": "faiss",
                                 "space_type": "cosinesimil",
                                 "parameters": {"ef_construction": 128, "m": 16},
                             },

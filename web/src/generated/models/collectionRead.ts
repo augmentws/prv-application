@@ -17,4 +17,5 @@ export interface CollectionRead {
   created_by_user_id: string;
   created_at: string;
   updated_at: string;
+  active_text_processing_run_id: string | null;
 }

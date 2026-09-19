@@ -40,6 +40,41 @@ def test_uses_html_when_email_has_no_plain_body() -> None:
     assert body == "Project Maple"
 
 
+def test_unknown_email_charset_falls_back_without_failing_projection() -> None:
+    content = (
+        b"From: sender@example.com\r\n"
+        b"To: recipient@example.com\r\n"
+        b"Subject: Legacy encoding\r\n"
+        b"MIME-Version: 1.0\r\n"
+        b'Content-Type: text/plain; charset="windows-3839"\r\n'
+        b"Content-Transfer-Encoding: 8bit\r\n"
+        b"\r\n"
+        b"Project \x93Juniper\x94"
+    )
+
+    body = extract_search_text(
+        content,
+        role="NATIVE",
+        media_type="message/rfc822",
+        filename="message.eml",
+        record_type="EMAIL",
+    )
+
+    assert body == "Project \u201cJuniper\u201d"
+
+
+def test_unknown_artifact_charset_falls_back_without_failing_projection() -> None:
+    body = extract_search_text(
+        b"Project \x93Maple\x94",
+        role="EXTRACTED_TEXT",
+        media_type='text/plain; charset="windows-3839"',
+        filename="message.txt",
+        record_type="FILE",
+    )
+
+    assert body == "Project \u201cMaple\u201d"
+
+
 def test_native_binary_requires_a_derived_text_artifact() -> None:
     assert (
         extract_search_text(

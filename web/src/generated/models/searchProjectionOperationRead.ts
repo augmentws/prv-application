@@ -6,12 +6,14 @@
  * OpenAPI spec version: 0.1.0
  */
 import type { SearchProjectionOperationReadKind } from './searchProjectionOperationReadKind';
+import type { SearchProjectionOperationReadPayload } from './searchProjectionOperationReadPayload';
 import type { SearchProjectionOperationReadStatus } from './searchProjectionOperationReadStatus';
 
 export interface SearchProjectionOperationRead {
   id: string;
   matter_id: string;
   kind: SearchProjectionOperationReadKind;
+  payload: SearchProjectionOperationReadPayload;
   status: SearchProjectionOperationReadStatus;
   workflow_id: string;
   created_by_user_id: string | null;

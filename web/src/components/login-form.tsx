@@ -50,7 +50,13 @@ export function LoginForm() {
   }
 
   return (
-    <form className="space-y-5" onSubmit={handleSubmit(onSubmit)} noValidate>
+    <form
+      action="/api/auth/login"
+      method="post"
+      className="space-y-5"
+      onSubmit={handleSubmit(onSubmit)}
+      noValidate
+    >
       <div className="space-y-2">
         <Label htmlFor="email">Email address</Label>
         <Input id="email" type="email" autoComplete="username" placeholder="you@example.com" {...register("email")} />

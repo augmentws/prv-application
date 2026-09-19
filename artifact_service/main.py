@@ -37,4 +37,9 @@ def health() -> dict[str, str]:
     return {"status": "ok"}
 
 
-app.include_router(build_router(get_delegated_artifact_principal))
+app.include_router(
+    build_router(
+        get_delegated_artifact_principal,
+        expose_internal_deletion_control=True,
+    )
+)

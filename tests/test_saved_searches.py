@@ -162,3 +162,25 @@ def test_saved_search_reexecutes_current_query(
     assert captured["payload"].search_mode == "HYBRID"
     assert captured["payload"].offset == 100
     assert captured["payload"].size == 25
+
+
+def test_saved_search_preserves_semantic_similarity_threshold(
+    client: TestClient,
+    root_token: str,
+) -> None:
+    matter_id, owner_token, _ = create_context(client, root_token)
+    base = f"/v1/matters/{matter_id}/saved-searches"
+    payload = saved_search_payload("Thresholded semantic search", "PRIVATE")
+    payload["search"] = {
+        "query": "concealed pricing decisions",
+        "search_mode": "SEMANTIC",
+        "minimum_similarity": 0.75,
+        "sort": [{"field": "_score", "direction": "DESC"}],
+        "offset": 0,
+        "size": 50,
+    }
+
+    created = client.post(base, headers=auth(owner_token), json=payload)
+
+    assert created.status_code == 201, created.text
+    assert created.json()["search"]["minimum_similarity"] == 0.75

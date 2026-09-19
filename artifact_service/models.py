@@ -14,6 +14,7 @@ from sqlalchemy import (
     Text,
     UniqueConstraint,
     Uuid,
+    text,
 )
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
@@ -46,7 +47,10 @@ class ClientCollection(TimestampMixin, ArtifactBase):
     __tablename__ = "client_collection"
     __table_args__ = (
         UniqueConstraint("client_id", "name", name="uq_artifact_collection_client_name"),
-        CheckConstraint("status IN ('OPEN', 'SEALED', 'ARCHIVED')", name="ck_artifact_collection_status"),
+        CheckConstraint(
+            "status IN ('OPEN', 'SEALED', 'ARCHIVED', 'DELETING')",
+            name="ck_artifact_collection_status",
+        ),
         Index("ix_artifact_collection_tenant_client", "tenant_id", "client_id"),
     )
 
@@ -57,6 +61,117 @@ class ClientCollection(TimestampMixin, ArtifactBase):
     description: Mapped[str | None] = mapped_column(Text)
     status: Mapped[str] = mapped_column(String(20), default="OPEN")
     created_by_user_id: Mapped[uuid.UUID] = mapped_column(Uuid)
+    active_text_processing_run_id: Mapped[uuid.UUID | None] = mapped_column(Uuid, index=True)
+
+
+class CollectionDeletionJob(TimestampMixin, ArtifactBase):
+    __tablename__ = "collection_deletion_job"
+    __table_args__ = (
+        CheckConstraint(
+            "status IN ('QUEUED', 'VALIDATING', 'DELETING_DATABASE_ROWS', 'DELETING_BLOBS', "
+            "'COMPLETED', 'FAILED')",
+            name="ck_collection_deletion_job_status",
+        ),
+        CheckConstraint(
+            "item_count >= 0 AND artifact_count >= 0 AND blob_count >= 0 AND "
+            "deleted_item_count >= 0 AND deleted_artifact_count >= 0 AND deleted_blob_count >= 0",
+            name="ck_collection_deletion_job_counts",
+        ),
+        Index("ix_collection_deletion_job_collection_created", "collection_id", "created_at"),
+        Index(
+            "uq_collection_deletion_job_active",
+            "collection_id",
+            unique=True,
+            postgresql_where=text(
+                "status IN ('QUEUED', 'VALIDATING', 'DELETING_DATABASE_ROWS', 'DELETING_BLOBS')"
+            ),
+            sqlite_where=text(
+                "status IN ('QUEUED', 'VALIDATING', 'DELETING_DATABASE_ROWS', 'DELETING_BLOBS')"
+            ),
+        ),
+    )
+
+    id: Mapped[uuid.UUID] = mapped_column(Uuid, primary_key=True, default=uuid.uuid4)
+    # Deliberately not a foreign key: the durable audit/status row outlives the collection.
+    collection_id: Mapped[uuid.UUID] = mapped_column(Uuid, index=True)
+    tenant_id: Mapped[uuid.UUID] = mapped_column(Uuid, index=True)
+    client_id: Mapped[uuid.UUID] = mapped_column(Uuid, index=True)
+    collection_name: Mapped[str] = mapped_column(String(200))
+    previous_collection_status: Mapped[str] = mapped_column(String(20))
+    status: Mapped[str] = mapped_column(String(40), default="QUEUED", index=True)
+    workflow_id: Mapped[str] = mapped_column(String(255), unique=True)
+    attempt_count: Mapped[int] = mapped_column(Integer, default=1)
+    item_count: Mapped[int] = mapped_column(Integer, default=0)
+    artifact_count: Mapped[int] = mapped_column(Integer, default=0)
+    blob_count: Mapped[int] = mapped_column(Integer, default=0)
+    deleted_item_count: Mapped[int] = mapped_column(Integer, default=0)
+    deleted_artifact_count: Mapped[int] = mapped_column(Integer, default=0)
+    deleted_blob_count: Mapped[int] = mapped_column(Integer, default=0)
+    error_message: Mapped[str | None] = mapped_column(Text)
+    requested_by_user_id: Mapped[uuid.UUID] = mapped_column(Uuid)
+    started_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    completed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+
+
+class CollectionDeletionBlob(TimestampMixin, ArtifactBase):
+    __tablename__ = "collection_deletion_blob"
+    __table_args__ = (
+        UniqueConstraint("deletion_job_id", "bucket_name", "storage_key", name="uq_collection_deletion_blob_key"),
+        CheckConstraint("status IN ('PENDING', 'DELETED')", name="ck_collection_deletion_blob_status"),
+        Index("ix_collection_deletion_blob_job_status", "deletion_job_id", "status"),
+    )
+
+    id: Mapped[uuid.UUID] = mapped_column(Uuid, primary_key=True, default=uuid.uuid4)
+    deletion_job_id: Mapped[uuid.UUID] = mapped_column(
+        Uuid, ForeignKey("collection_deletion_job.id", ondelete="CASCADE"), index=True
+    )
+    content_blob_id: Mapped[uuid.UUID] = mapped_column(Uuid)
+    bucket_name: Mapped[str] = mapped_column(String(255))
+    storage_key: Mapped[str] = mapped_column(String(1000))
+    byte_length: Mapped[int] = mapped_column(BigInteger)
+    status: Mapped[str] = mapped_column(String(20), default="PENDING")
+
+
+class CollectionTextProcessingProfile(TimestampMixin, ArtifactBase):
+    __tablename__ = "collection_text_processing_profile"
+
+    collection_id: Mapped[uuid.UUID] = mapped_column(
+        Uuid, ForeignKey("client_collection.id", ondelete="CASCADE"), primary_key=True
+    )
+    revision: Mapped[int] = mapped_column(Integer, default=1)
+    custom_rules: Mapped[list[dict[str, Any]]] = mapped_column(JSON, default=list)
+    updated_by_user_id: Mapped[uuid.UUID] = mapped_column(Uuid)
+
+
+class CollectionTextProcessingRun(TimestampMixin, ArtifactBase):
+    __tablename__ = "collection_text_processing_run"
+    __table_args__ = (
+        CheckConstraint(
+            "status IN ('QUEUED', 'RUNNING', 'COMPLETED', 'COMPLETED_WITH_ERRORS', 'FAILED')",
+            name="ck_collection_text_processing_run_status",
+        ),
+        Index("ix_collection_text_processing_run_collection_created", "collection_id", "created_at"),
+    )
+
+    id: Mapped[uuid.UUID] = mapped_column(Uuid, primary_key=True, default=uuid.uuid4)
+    collection_id: Mapped[uuid.UUID] = mapped_column(
+        Uuid, ForeignKey("client_collection.id", ondelete="CASCADE"), index=True
+    )
+    status: Mapped[str] = mapped_column(String(30), default="QUEUED")
+    processor_version: Mapped[str] = mapped_column(String(100))
+    profile_revision: Mapped[int] = mapped_column(Integer)
+    rules_snapshot: Mapped[list[dict[str, Any]]] = mapped_column(JSON, default=list)
+    configuration_hash: Mapped[str] = mapped_column(String(64), index=True)
+    total_count: Mapped[int] = mapped_column(Integer, default=0)
+    processed_count: Mapped[int] = mapped_column(Integer, default=0)
+    created_count: Mapped[int] = mapped_column(Integer, default=0)
+    reused_count: Mapped[int] = mapped_column(Integer, default=0)
+    skipped_count: Mapped[int] = mapped_column(Integer, default=0)
+    failed_count: Mapped[int] = mapped_column(Integer, default=0)
+    error_message: Mapped[str | None] = mapped_column(Text)
+    requested_by_user_id: Mapped[uuid.UUID] = mapped_column(Uuid)
+    started_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    completed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
 
 
 class CollectionItem(TimestampMixin, ArtifactBase):
@@ -74,6 +189,7 @@ class CollectionItem(TimestampMixin, ArtifactBase):
         Index("ix_collection_item_collection_type", "collection_id", "record_type"),
         Index("ix_collection_item_source_created", "collection_id", "source_created_at"),
         Index("ix_collection_item_source_modified", "collection_id", "source_modified_at"),
+        Index("ix_collection_item_file_date", "collection_id", "file_date"),
     )
 
     id: Mapped[uuid.UUID] = mapped_column(Uuid, primary_key=True, default=uuid.uuid4)
@@ -89,6 +205,7 @@ class CollectionItem(TimestampMixin, ArtifactBase):
     original_source_path: Mapped[str | None] = mapped_column(Text)
     source_created_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     source_modified_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    file_date: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     family_id: Mapped[uuid.UUID | None] = mapped_column(Uuid, index=True)
     parent_collection_item_id: Mapped[uuid.UUID | None] = mapped_column(
         Uuid, ForeignKey("collection_item.id", ondelete="RESTRICT"), index=True
@@ -204,7 +321,8 @@ class Artifact(ArtifactBase):
         CheckConstraint("artifact_class IN ('EVIDENCE', 'DERIVED')", name="ck_artifact_class"),
         CheckConstraint(
             "artifact_type IN ('SOURCE_CONTAINER', 'NATIVE_FILE', 'EXTRACTED_TEXT', 'OCR_TEXT', "
-            "'DOCUMENT_IMAGE', 'CHUNK_SET', 'DOCUMENT_VECTOR', 'CHUNK_VECTOR_SET', 'SUMMARY', 'THUMBNAIL')",
+            "'DOCUMENT_IMAGE', 'NORMALIZED_TEXT', 'CHUNK_SET', 'DOCUMENT_VECTOR', 'CHUNK_VECTOR_SET', "
+            "'SUMMARY', 'THUMBNAIL')",
             name="ck_artifact_type",
         ),
         CheckConstraint("status IN ('UPLOADING', 'FINALIZED', 'QUARANTINED')", name="ck_artifact_status"),
@@ -250,7 +368,7 @@ class CollectionItemArtifact(ArtifactBase):
     __table_args__ = (
         CheckConstraint(
             "artifact_role IN ('NATIVE', 'EXTRACTED_TEXT', 'OCR_TEXT', 'DOCUMENT_IMAGE', 'CHUNK_SET', "
-            "'DOCUMENT_VECTOR', 'CHUNK_VECTOR_SET', 'SUMMARY', 'THUMBNAIL')",
+            "'NORMALIZED_TEXT', 'DOCUMENT_VECTOR', 'CHUNK_VECTOR_SET', 'SUMMARY', 'THUMBNAIL')",
             name="ck_collection_item_artifact_role",
         ),
         UniqueConstraint(
@@ -278,7 +396,7 @@ class ArtifactLineage(ArtifactBase):
     __table_args__ = (
         CheckConstraint(
             "relationship IN ('DERIVED_FROM', 'EXTRACTED_FROM', 'CHUNKED_FROM', 'EMBEDDED_FROM', "
-            "'EXTRACTED_FROM_CONTAINER')",
+            "'EXTRACTED_FROM_CONTAINER', 'NORMALIZED_FROM')",
             name="ck_artifact_lineage_relationship",
         ),
     )

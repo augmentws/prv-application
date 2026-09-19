@@ -28,7 +28,9 @@ AgentScope = Literal["SYSTEM", "TENANT"]
 AgentVersionStatus = Literal["DRAFT", "PUBLISHED", "RETIRED"]
 MatterDefinitionSourceKind = Literal["PASTE", "MARKDOWN", "TEXT", "DOCX", "AGENT_EDIT", "USER_EDIT"]
 MatterDefinitionUserSourceKind = Literal["PASTE", "MARKDOWN", "TEXT", "USER_EDIT"]
-Slug = Annotated[str, StringConstraints(strip_whitespace=True, to_lower=True, pattern=r"^[a-z][a-z0-9-]{1,78}[a-z0-9]$")]
+Slug = Annotated[
+    str, StringConstraints(strip_whitespace=True, to_lower=True, pattern=r"^[a-z][a-z0-9-]{1,78}[a-z0-9]$")
+]
 MetadataKey = Annotated[str, StringConstraints(strip_whitespace=True, to_lower=True, pattern=r"^[a-z][a-z0-9_]{0,99}$")]
 EnumValueKey = Annotated[
     str,
@@ -151,6 +153,27 @@ class MatterRead(ORMModel):
     created_at: datetime
 
 
+class ExternalProviderUsageRead(ORMModel):
+    id: uuid.UUID
+    tenant_id: uuid.UUID
+    client_id: uuid.UUID | None
+    matter_id: uuid.UUID | None
+    started_by_user_id: uuid.UUID
+    started_by_email: str
+    started_by_display_name: str
+    job_type: str
+    job_id: uuid.UUID
+    job_created_at: datetime
+    provider: str
+    model: str
+    request_count: int
+    input_tokens: int
+    output_tokens: int
+    total_tokens: int
+    details: dict[str, Any]
+    created_at: datetime
+
+
 MatterDocumentSelectionType = Literal["QUERY", "EXPLICIT"]
 MatterDocumentImportStatus = Literal["QUEUED", "SNAPSHOTTING", "RUNNING", "COMPLETED", "FAILED", "CANCELED"]
 MatterEmbeddingJobStatus = Literal[
@@ -166,6 +189,7 @@ MatterTopicJobStatus = Literal[
     "QUEUED",
     "SAMPLING",
     "CLUSTERING",
+    "AWAITING_REVIEW",
     "PUBLISHING",
     "COMPLETED",
     "COMPLETED_WITH_ERRORS",
@@ -185,6 +209,8 @@ class MatterDocumentSelection(BaseModel):
     file_extensions: list[str] = Field(default_factory=list, max_length=1000)
     record_types: list[CollectionRecordType] = Field(default_factory=list, max_length=20)
     processing_statuses: list[CollectionProcessingStatus] = Field(default_factory=list, max_length=20)
+    file_date_from: datetime | None = None
+    file_date_to: datetime | None = None
     item_ids: list[uuid.UUID] = Field(default_factory=list, max_length=5000)
 
     @model_validator(mode="after")
@@ -258,11 +284,35 @@ class MatterEmbeddingJobRead(ORMModel):
     skipped_count: int
     failed_count: int
     chunk_count: int
+    provider_request_count: int
+    input_tokens: int
+    output_tokens: int
+    total_tokens: int
     error_message: str | None
     created_by_user_id: uuid.UUID
     started_at: datetime | None
     completed_at: datetime | None
     canceled_at: datetime | None
+    created_at: datetime
+    updated_at: datetime
+
+
+class MatterEmbeddingBatchRead(ORMModel):
+    id: uuid.UUID
+    job_id: uuid.UUID
+    batch_number: int
+    status: Literal["QUEUED", "RUNNING", "COMPLETED", "FAILED", "CANCELED"]
+    item_count: int
+    processed_count: int
+    embedded_count: int
+    skipped_count: int
+    failed_count: int
+    chunk_count: int
+    error_message: str | None
+    provider_batch_id: str | None
+    provider_status: str | None
+    provider_request_count: int
+    provider_last_polled_at: datetime | None
     created_at: datetime
     updated_at: datetime
 
@@ -291,6 +341,8 @@ class MatterTopicClusterRead(ORMModel):
     name: str
     description: str | None
     keywords: list[str]
+    representative_excerpts: list[str]
+    included: bool
     sampled_chunk_count: int
     assigned_chunk_count: int
     assigned_document_count: int
@@ -317,7 +369,9 @@ class MatterTopicJobRead(ORMModel):
     failed_count: int
     error_message: str | None
     created_by_user_id: uuid.UUID
+    reviewed_by_user_id: uuid.UUID | None
     started_at: datetime | None
+    reviewed_at: datetime | None
     completed_at: datetime | None
     canceled_at: datetime | None
     created_at: datetime
@@ -325,12 +379,24 @@ class MatterTopicJobRead(ORMModel):
     clusters: list[MatterTopicClusterRead] = Field(default_factory=list)
 
 
+class MatterTopicProposalReview(BaseModel):
+    id: uuid.UUID
+    name: str = Field(min_length=1, max_length=200)
+    description: str | None = Field(default=None, max_length=2000)
+    included: bool = True
+
+
+class MatterTopicApplyRequest(BaseModel):
+    topics: list[MatterTopicProposalReview] = Field(min_length=1, max_length=200)
+
+
 SearchFilterOperator = Literal["EQ", "IN", "RANGE", "EXISTS"]
 SearchSortDirection = Literal["ASC", "DESC"]
 SearchMode = Literal["KEYWORD", "SEMANTIC", "HYBRID"]
 SearchOperationKind = Literal["SCHEMA_SYNC", "REBUILD", "DOCUMENT_UPSERT", "DOCUMENT_DELETE"]
-SearchOperationStatus = Literal["QUEUED", "RUNNING", "COMPLETED", "FAILED"]
+SearchOperationStatus = Literal["QUEUED", "RUNNING", "AWAITING_USER", "COMPLETED", "FAILED"]
 SearchIndexStatus = Literal["CREATING", "ACTIVE", "RETIRED", "FAILED"]
+DateHistogramInterval = Literal["week", "month", "year"]
 
 
 class MatterSearchFilter(BaseModel):
@@ -364,6 +430,7 @@ class MatterSearchSort(BaseModel):
 class MatterSearchRequest(BaseModel):
     query: str | None = Field(default=None, max_length=2000)
     search_mode: SearchMode = "KEYWORD"
+    minimum_similarity: float | None = Field(default=None, ge=0, le=1)
     query_fields: list[MetadataKey] = Field(default_factory=list, max_length=100)
     filters: list[MatterSearchFilter] = Field(default_factory=list, max_length=100)
     facets: list[MetadataKey] = Field(default_factory=list, max_length=50)
@@ -377,6 +444,8 @@ class MatterSearchRequest(BaseModel):
             raise ValueError(f"{self.search_mode} search requires a query")
         if self.search_mode != "KEYWORD" and any(item.field != "_score" for item in self.sort):
             raise ValueError(f"{self.search_mode} search only supports relevance sorting")
+        if self.minimum_similarity is not None and self.search_mode != "SEMANTIC":
+            raise ValueError("minimum_similarity is supported only for SEMANTIC search")
         return self
 
 
@@ -384,6 +453,22 @@ class MatterFacetValuesRequest(BaseModel):
     search: MatterSearchRequest
     query: str | None = Field(default=None, max_length=200)
     size: int = Field(default=20, ge=1, le=50)
+
+
+class MatterDateHistogramRequest(BaseModel):
+    search: MatterSearchRequest
+    interval: DateHistogramInterval = "month"
+
+
+class MatterDateHistogramBucket(BaseModel):
+    start: datetime
+    count: int = Field(ge=0)
+
+
+class MatterDateHistogramResponse(BaseModel):
+    field: MetadataKey
+    interval: DateHistogramInterval
+    buckets: list[MatterDateHistogramBucket]
 
 
 class MatterSearchPassage(BaseModel):
@@ -469,6 +554,223 @@ class MatterSavedSearchExecute(BaseModel):
     size: int | None = Field(default=None, ge=1, le=500)
 
 
+ReviewBatchSelectionType = Literal["ALL_MATTER", "SEARCH_QUERY", "RANDOM_MATTER", "RANDOM_BATCH"]
+ReviewBatchValueVisibility = Literal["OWN_VALUES", "ALL_REVIEWER_VALUES"]
+ReviewBatchStatus = Literal["QUEUED", "BUILDING", "READY", "FAILED", "ARCHIVED"]
+ReviewBatchSearchStatus = Literal["QUEUED", "SYNCING", "READY", "FAILED", "NOT_CONFIGURED"]
+ReviewBatchRunType = Literal["HUMAN", "AGENT"]
+ReviewBatchRunPurpose = Literal["REVIEW", "REFERENCE", "CANDIDATE"]
+ReviewBatchRunStatus = Literal["QUEUED", "RUNNING", "COMPLETED", "FAILED", "CANCELED"]
+
+
+class ReviewBatchCreate(BaseModel):
+    name: str = Field(min_length=1, max_length=200)
+    description: str | None = Field(default=None, max_length=4000)
+    selection_type: ReviewBatchSelectionType
+    search: MatterSearchRequest | None = None
+    source_batch_id: uuid.UUID | None = None
+    sample_size: int | None = Field(default=None, ge=1, le=10_000_000)
+    random_seed: str | None = Field(default=None, min_length=1, max_length=100)
+    assigned_user_id: uuid.UUID | None = None
+    reviewer_value_visibility: ReviewBatchValueVisibility = "OWN_VALUES"
+    coding_group_ids: list[uuid.UUID] = Field(default_factory=list, max_length=100)
+    note: str | None = Field(default=None, max_length=4000)
+
+    @model_validator(mode="after")
+    def validate_selection(self) -> "ReviewBatchCreate":
+        if self.selection_type == "SEARCH_QUERY":
+            if self.search is None:
+                raise ValueError("SEARCH_QUERY batches require a search")
+            if self.search.search_mode != "KEYWORD":
+                raise ValueError("Batch creation currently supports keyword searches only")
+        elif self.search is not None:
+            raise ValueError("search is only valid for SEARCH_QUERY batches")
+        if self.selection_type == "RANDOM_BATCH":
+            if self.source_batch_id is None:
+                raise ValueError("RANDOM_BATCH batches require source_batch_id")
+        elif self.source_batch_id is not None:
+            raise ValueError("source_batch_id is only valid for RANDOM_BATCH batches")
+        if self.selection_type in {"ALL_MATTER", "SEARCH_QUERY"} and self.sample_size is not None:
+            raise ValueError("sample_size is only valid for random batches")
+        return self
+
+
+class ReviewBatchAssignmentUpdate(BaseModel):
+    assigned_user_id: uuid.UUID | None
+
+
+class ReviewBatchCodingFieldRead(BaseModel):
+    id: uuid.UUID
+    metadata_definition_id: uuid.UUID
+    sort_order: int
+    definition_snapshot: dict[str, Any]
+
+
+class ReviewBatchCodingGroupRead(BaseModel):
+    id: uuid.UUID
+    source_metadata_group_id: uuid.UUID | None
+    display_name: str
+    description: str | None
+    sort_order: int
+    fields: list[ReviewBatchCodingFieldRead]
+
+
+class ReviewBatchRead(BaseModel):
+    id: uuid.UUID
+    matter_id: uuid.UUID
+    name: str
+    description: str | None
+    selection_type: ReviewBatchSelectionType
+    selection_definition: dict[str, Any]
+    source_batch_id: uuid.UUID | None
+    search_index_generation_id: uuid.UUID | None
+    sample_size: int | None
+    random_seed: str | None
+    assigned_user_id: uuid.UUID | None
+    assigned_user: MatterSavedSearchUserRead | None
+    reviewer_value_visibility: ReviewBatchValueVisibility
+    status: ReviewBatchStatus
+    search_status: ReviewBatchSearchStatus
+    search_error_message: str | None
+    workflow_id: str
+    document_count: int
+    error_message: str | None
+    created_by_user_id: uuid.UUID
+    coding_groups: list[ReviewBatchCodingGroupRead]
+    created_at: datetime
+    updated_at: datetime
+    completed_at: datetime | None
+
+
+class ReviewBatchDocumentRead(BaseModel):
+    matter_document_id: uuid.UUID
+    source_collection_id: uuid.UUID
+    collection_item_id: uuid.UUID
+    sequence_number: int
+    review_status: Literal["NOT_STARTED", "IN_PROGRESS", "COMPLETED", "SKIPPED"]
+
+
+class ReviewBatchNoteCreate(BaseModel):
+    body: str = Field(min_length=1, max_length=4000)
+
+
+class ReviewBatchNoteRead(ORMModel):
+    id: uuid.UUID
+    review_batch_id: uuid.UUID
+    body: str
+    author_type: Literal["USER", "AGENT"]
+    author_user_id: uuid.UUID | None
+    author_run_id: uuid.UUID | None
+    created_at: datetime
+
+
+class ReviewBatchRunCreate(BaseModel):
+    run_type: ReviewBatchRunType
+    purpose: ReviewBatchRunPurpose = "REVIEW"
+    actor_user_id: uuid.UUID | None = None
+    agent_definition_version_id: uuid.UUID | None = None
+    parent_run_id: uuid.UUID | None = None
+
+    @model_validator(mode="after")
+    def validate_actor(self) -> "ReviewBatchRunCreate":
+        if self.run_type == "HUMAN" and self.agent_definition_version_id is not None:
+            raise ValueError("Human runs cannot specify an agent version")
+        if self.run_type == "AGENT" and self.agent_definition_version_id is None:
+            raise ValueError("Agent runs require an agent definition version")
+        if self.run_type == "AGENT" and self.actor_user_id is not None:
+            raise ValueError("Agent runs cannot specify a human actor")
+        return self
+
+
+class ReviewBatchRunRead(ORMModel):
+    id: uuid.UUID
+    review_batch_id: uuid.UUID
+    run_type: ReviewBatchRunType
+    purpose: ReviewBatchRunPurpose
+    status: ReviewBatchRunStatus
+    result_policy: Literal["ISOLATED", "PUBLISH_TO_MATTER"]
+    parent_run_id: uuid.UUID | None
+    actor_user_id: uuid.UUID | None
+    agent_definition_version_id: uuid.UUID | None
+    configuration_snapshot: dict[str, Any]
+    initiated_by_user_id: uuid.UUID
+    processed_document_count: int
+    error_message: str | None
+    started_at: datetime | None
+    completed_at: datetime | None
+    created_at: datetime
+    updated_at: datetime
+
+
+class ReviewBatchRunFieldValue(BaseModel):
+    metadata_definition_id: uuid.UUID
+    values: list[Any] = Field(max_length=1000)
+    confidence: float | None = Field(default=None, ge=0, le=1)
+
+
+class ReviewBatchRunDocumentValues(BaseModel):
+    matter_document_id: uuid.UUID
+    fields: list[ReviewBatchRunFieldValue] = Field(max_length=100)
+
+    @model_validator(mode="after")
+    def validate_unique_fields(self) -> "ReviewBatchRunDocumentValues":
+        field_ids = [field.metadata_definition_id for field in self.fields]
+        if len(field_ids) != len(set(field_ids)):
+            raise ValueError("Each coding field may appear only once per document save")
+        return self
+
+
+class ReviewBatchRunValueRead(BaseModel):
+    review_batch_run_id: uuid.UUID
+    matter_document_id: uuid.UUID
+    metadata_definition_id: uuid.UUID
+    value_ordinal: int
+    value: Any
+    confidence: float | None
+
+
+class ReviewBatchReviewerValueRead(BaseModel):
+    review_batch_run_id: uuid.UUID
+    actor_user_id: uuid.UUID
+    actor_user: MatterSavedSearchUserRead
+    metadata_definition_id: uuid.UUID
+    values: list[Any]
+
+
+class ReviewBatchDocumentCodingRead(BaseModel):
+    matter_document_id: uuid.UUID
+    review_status: Literal["NOT_STARTED", "IN_PROGRESS", "COMPLETED", "SKIPPED"]
+    values: list[ReviewBatchRunValueRead]
+    reviewer_values: list[ReviewBatchReviewerValueRead]
+
+
+class ReviewBatchRunProgressRead(BaseModel):
+    review_batch_run_id: uuid.UUID
+    document_count: int
+    not_started_count: int
+    in_progress_count: int
+    completed_count: int
+    skipped_count: int
+
+
+class ReviewBatchComparisonFieldRead(BaseModel):
+    metadata_definition_id: uuid.UUID
+    display_name: str
+    compared_count: int
+    match_count: int
+    mismatch_count: int
+    missing_left_count: int
+    missing_right_count: int
+    agreement: float | None
+
+
+class ReviewBatchComparisonRead(BaseModel):
+    left_run_id: uuid.UUID
+    right_run_id: uuid.UUID
+    document_count: int
+    fields: list[ReviewBatchComparisonFieldRead]
+
+
 class SearchIndexGenerationRead(ORMModel):
     id: uuid.UUID
     matter_id: uuid.UUID
@@ -488,6 +790,7 @@ class SearchProjectionOperationRead(ORMModel):
     id: uuid.UUID
     matter_id: uuid.UUID
     kind: SearchOperationKind
+    payload: dict[str, Any]
     status: SearchOperationStatus
     workflow_id: str
     created_by_user_id: uuid.UUID | None
@@ -497,6 +800,11 @@ class SearchProjectionOperationRead(ORMModel):
     completed_at: datetime | None
     created_at: datetime
     updated_at: datetime
+
+
+class SearchProjectionRetryResponse(BaseModel):
+    requeued_operation_count: int = Field(ge=0)
+    requeued_document_count: int = Field(ge=0)
 
 
 class EnumValue(BaseModel):

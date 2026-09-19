@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import re
+import threading
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, BinaryIO
@@ -63,6 +64,7 @@ class OpenApiClient:
             transport=transport,
         )
         self._reauthentication_credentials: tuple[str, str] | None = None
+        self._reauthentication_lock = threading.Lock()
 
     def close(self) -> None:
         self.client.close()
@@ -121,13 +123,16 @@ class OpenApiClient:
             "files": files,
         }
         file_positions = self._file_positions(files)
+        authorization = self.client.headers.get("Authorization")
         response = self.client.request(operation.method, path, **request_kwargs)
         if (
             response.status_code == 401
             and operation_id != LOGIN_OPERATION_ID
             and self._reauthentication_credentials is not None
         ):
-            self.login(*self._reauthentication_credentials)
+            with self._reauthentication_lock:
+                if self.client.headers.get("Authorization") == authorization:
+                    self.login(*self._reauthentication_credentials)
             self._restore_file_positions(file_positions)
             response = self.client.request(operation.method, path, **request_kwargs)
         if response.is_error:

@@ -3,7 +3,7 @@ import uuid
 from datetime import datetime, timezone
 
 from fastapi import APIRouter, Depends, HTTPException, Query, status
-from sqlalchemy import select
+from sqlalchemy import func, select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
@@ -11,9 +11,14 @@ from app.audit import record_audit
 from app.config import Settings, get_settings
 from app.database import get_db
 from app.dependencies import Principal, can_admin_matter, get_principal
-from app.embeddings.configuration import canonical_hash, processing_configuration
-from app.models import Matter, MatterEmbeddingBatch, MatterEmbeddingJob
-from app.schemas import MatterEmbeddingJobRead
+from app.embeddings.configuration import (
+    canonical_hash,
+    embedding_execution_configuration,
+    processing_configuration,
+)
+from app.matter_embeddings import cancel_voyage_batches
+from app.models import ExternalProviderUsage, Matter, MatterEmbeddingBatch, MatterEmbeddingJob
+from app.schemas import MatterEmbeddingBatchRead, MatterEmbeddingJobRead
 from app.workflows.dispatcher import cancel_matter_embedding, enqueue_matter_embedding
 from embedding_service.config import EmbeddingSettings, get_embedding_settings
 
@@ -35,6 +40,45 @@ def _matter(db: Session, matter_id: uuid.UUID, principal: Principal) -> Matter:
     return matter
 
 
+def _jobs_with_provider_usage(
+    db: Session,
+    jobs: list[MatterEmbeddingJob],
+) -> list[MatterEmbeddingJobRead]:
+    if not jobs:
+        return []
+    rows = db.execute(
+        select(
+            ExternalProviderUsage.job_id,
+            func.coalesce(func.sum(ExternalProviderUsage.request_count), 0),
+            func.coalesce(func.sum(ExternalProviderUsage.input_tokens), 0),
+            func.coalesce(func.sum(ExternalProviderUsage.output_tokens), 0),
+        )
+        .where(
+            ExternalProviderUsage.job_type == "MATTER_EMBEDDING",
+            ExternalProviderUsage.job_id.in_([job.id for job in jobs]),
+        )
+        .group_by(ExternalProviderUsage.job_id)
+    )
+    usage_by_job = {
+        job_id: (int(request_count), int(input_tokens), int(output_tokens))
+        for job_id, request_count, input_tokens, output_tokens in rows
+    }
+    reports: list[MatterEmbeddingJobRead] = []
+    for job in jobs:
+        request_count, input_tokens, output_tokens = usage_by_job.get(job.id, (0, 0, 0))
+        reports.append(
+            MatterEmbeddingJobRead.model_validate(job).model_copy(
+                update={
+                    "provider_request_count": request_count,
+                    "input_tokens": input_tokens,
+                    "output_tokens": output_tokens,
+                    "total_tokens": input_tokens + output_tokens,
+                }
+            )
+        )
+    return reports
+
+
 @router.post("", response_model=MatterEmbeddingJobRead, status_code=status.HTTP_202_ACCEPTED)
 def create_embedding_job(
     matter_id: uuid.UUID,
@@ -42,7 +86,7 @@ def create_embedding_job(
     db: Session = Depends(get_db),
     settings: Settings = Depends(get_settings),
     embedding_settings: EmbeddingSettings = Depends(get_embedding_settings),
-) -> MatterEmbeddingJob:
+) -> MatterEmbeddingJobRead:
     matter = _matter(db, matter_id, principal)
     if matter.status != "ACTIVE":
         raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="Matter is not active")
@@ -57,14 +101,18 @@ def create_embedding_job(
             status_code=status.HTTP_409_CONFLICT,
             detail="An embedding job is already active for this matter",
         )
-    configuration = processing_configuration(settings, embedding_settings)
+    processing = processing_configuration(settings, embedding_settings)
+    configuration = {
+        **processing,
+        "execution": embedding_execution_configuration(embedding_settings),
+    }
     job_id = uuid.uuid4()
     job = MatterEmbeddingJob(
         id=job_id,
         matter_id=matter.id,
         status="QUEUED",
         workflow_id=f"matter-embedding:{job_id}",
-        configuration_hash=canonical_hash(configuration),
+        configuration_hash=canonical_hash(processing),
         configuration=configuration,
         embedding_model=embedding_settings.model,
         embedding_model_revision=embedding_settings.model_revision,
@@ -104,7 +152,7 @@ def create_embedding_job(
             detail="The embedding job could not be queued",
         ) from exc
     db.refresh(job)
-    return job
+    return _jobs_with_provider_usage(db, [job])[0]
 
 
 @router.get("", response_model=list[MatterEmbeddingJobRead])
@@ -113,9 +161,9 @@ def list_embedding_jobs(
     limit: int = Query(default=100, ge=1, le=500),
     principal: Principal = Depends(get_principal),
     db: Session = Depends(get_db),
-) -> list[MatterEmbeddingJob]:
+) -> list[MatterEmbeddingJobRead]:
     _matter(db, matter_id, principal)
-    return list(
+    jobs = list(
         db.scalars(
             select(MatterEmbeddingJob)
             .where(MatterEmbeddingJob.matter_id == matter_id)
@@ -123,6 +171,7 @@ def list_embedding_jobs(
             .limit(limit)
         )
     )
+    return _jobs_with_provider_usage(db, jobs)
 
 
 @router.get("/{job_id}", response_model=MatterEmbeddingJobRead)
@@ -131,7 +180,7 @@ def get_embedding_job(
     job_id: uuid.UUID,
     principal: Principal = Depends(get_principal),
     db: Session = Depends(get_db),
-) -> MatterEmbeddingJob:
+) -> MatterEmbeddingJobRead:
     _matter(db, matter_id, principal)
     job = db.scalar(
         select(MatterEmbeddingJob).where(
@@ -141,7 +190,32 @@ def get_embedding_job(
     )
     if job is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Embedding job not found")
-    return job
+    return _jobs_with_provider_usage(db, [job])[0]
+
+
+@router.get("/{job_id}/batches", response_model=list[MatterEmbeddingBatchRead])
+def list_embedding_batches(
+    matter_id: uuid.UUID,
+    job_id: uuid.UUID,
+    principal: Principal = Depends(get_principal),
+    db: Session = Depends(get_db),
+) -> list[MatterEmbeddingBatch]:
+    _matter(db, matter_id, principal)
+    job = db.scalar(
+        select(MatterEmbeddingJob).where(
+            MatterEmbeddingJob.id == job_id,
+            MatterEmbeddingJob.matter_id == matter_id,
+        )
+    )
+    if job is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Embedding job not found")
+    return list(
+        db.scalars(
+            select(MatterEmbeddingBatch)
+            .where(MatterEmbeddingBatch.job_id == job.id)
+            .order_by(MatterEmbeddingBatch.batch_number)
+        )
+    )
 
 
 @router.post("/{job_id}/cancel", response_model=MatterEmbeddingJobRead)
@@ -150,7 +224,7 @@ def cancel_embedding_job(
     job_id: uuid.UUID,
     principal: Principal = Depends(get_principal),
     db: Session = Depends(get_db),
-) -> MatterEmbeddingJob:
+) -> MatterEmbeddingJobRead:
     matter = _matter(db, matter_id, principal)
     job = db.scalar(
         select(MatterEmbeddingJob).where(
@@ -161,7 +235,7 @@ def cancel_embedding_job(
     if job is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Embedding job not found")
     if job.status not in ACTIVE_STATUSES:
-        return job
+        return _jobs_with_provider_usage(db, [job])[0]
     job.status = "CANCELED"
     job.canceled_at = utcnow()
     db.execute(
@@ -182,5 +256,6 @@ def cancel_embedding_job(
         cancel_matter_embedding(job.workflow_id)
     except Exception as exc:  # noqa: BLE001
         logger.warning("DBOS cancellation request failed for %s: %s", job.workflow_id, exc)
+    cancel_voyage_batches(job.id, db=db)
     db.refresh(job)
-    return job
+    return _jobs_with_provider_usage(db, [job])[0]

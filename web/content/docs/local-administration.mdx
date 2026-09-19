@@ -42,6 +42,23 @@ pnpm dev
 
 The web application is the browser-facing layer. It keeps authentication tokens in protected cookies and forwards API requests to FastAPI.
 
+For local development, set `APP_ORIGIN` in `web/.env.local` to the exact browser origin, normally `http://localhost:3000` or `http://127.0.0.1:3000`. When the web application is exposed through `cloudflared` or another reverse proxy, set it to the public HTTPS origin, for example `https://priv.augment.ws`. The BFF uses this value for same-origin request validation and server-side redirects; it must not include a path.
+
+Do not expose `next dev` as a deployment. Build and run the optimized server instead:
+
+```bash
+pnpm build
+pnpm start
+```
+
+Restart the web process after changing `APP_ORIGIN`. The login form also has a native POST fallback, so credentials remain in the request body if browser JavaScript is unavailable or has not hydrated.
+
 ## API references
 
 FastAPI exposes the OpenAPI contract at `/openapi.json` and interactive API documentation at the backend `/docs` route. The application help center you are reading is the frontend `/docs` route, so local deployments normally use different ports for the frontend and backend.
+
+## External provider usage
+
+Core keeps an immutable, retry-safe token ledger for external embedding and LLM calls. Voyage real-time requests, Voyage Batch API requests, and agent model runs record the job date and ID, job type, initiating user, provider, concrete provider model, request count, and separate input and output token counts. Local embedding execution is not recorded because it does not incur an external provider charge.
+
+Tenant administrators can read the ledger at `GET /v1/tenants/{tenant_id}/provider-usage`. The endpoint supports provider, job type, initiating user, and job-date filters plus pagination. Root administrators can inspect any tenant. The ledger intentionally stores measured usage rather than a calculated currency amount, allowing provider price tables to be applied according to their effective dates without rewriting historical token counts.

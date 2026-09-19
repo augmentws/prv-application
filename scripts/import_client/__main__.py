@@ -8,7 +8,11 @@ import sys
 from collections import Counter
 from pathlib import Path
 
-from scripts.import_client.adapters import Emc2Adapter, EnronCsvAdapter
+from scripts.import_client.adapters import (
+    Emc2Adapter,
+    EnronCsvAdapter,
+    JebBushInventoryAdapter,
+)
 from scripts.import_client.adapters.base import DatasetAdapter
 from scripts.import_client.api import OpenApiClient
 from scripts.import_client.importer import BaseImporter
@@ -21,7 +25,9 @@ def build_parser() -> argparse.ArgumentParser:
         prog="python -m scripts.import_client",
         description="Preprocess a supported local dataset and upload it through the OpenAPI-defined Core API.",
     )
-    parser.add_argument("adapter", choices=("enron-csv", "emc2"))
+    parser.add_argument(
+        "adapter", choices=("enron-csv", "emc2", "jeb-bush-inventory")
+    )
     parser.add_argument("--source", type=Path, required=True)
     parser.add_argument("--base-url", default=os.getenv("PVR_IMPORT_BASE_URL", "http://127.0.0.1:8000"))
     parser.add_argument("--openapi", type=Path, default=REPOSITORY_ROOT / "web" / "openapi.json")
@@ -34,16 +40,31 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--collection-name")
     parser.add_argument("--collection-description")
     parser.add_argument("--limit", type=int)
+    parser.add_argument(
+        "--workers",
+        type=int,
+        default=4,
+        help="Concurrent upload workers (default: 4)",
+    )
     parser.add_argument("--continue-on-error", action="store_true")
     parser.add_argument("--dry-run", action="store_true")
-    parser.add_argument("--no-attachments", action="store_true", help="Do not split named email attachments")
+    parser.add_argument(
+        "--no-attachments",
+        action="store_true",
+        help="Do not split email attachments or load inventory text sidecars",
+    )
     return parser
 
 
 def create_adapter(args: argparse.Namespace) -> DatasetAdapter:
     if args.adapter == "enron-csv":
         return EnronCsvAdapter(args.source)
-    return Emc2Adapter(args.source)
+    if args.adapter == "emc2":
+        return Emc2Adapter(args.source)
+    return JebBushInventoryAdapter(
+        args.source,
+        include_text_sidecars=not args.no_attachments,
+    )
 
 
 def dry_run(adapter: DatasetAdapter, limit: int | None, *, include_attachments: bool) -> dict[str, object]:
@@ -85,6 +106,8 @@ def main(argv: list[str] | None = None) -> int:
     args = parser.parse_args(argv)
     if args.limit is not None and args.limit < 1:
         parser.error("--limit must be at least 1")
+    if args.workers < 1:
+        parser.error("--workers must be at least 1")
     try:
         adapter = create_adapter(args)
         if args.dry_run:
@@ -114,6 +137,7 @@ def main(argv: list[str] | None = None) -> int:
                 collection_name=args.collection_name or adapter.default_collection_name,
                 collection_description=args.collection_description,
                 include_attachments=not args.no_attachments,
+                workers=args.workers,
                 progress=lambda message: print(message, file=sys.stderr),
             )
             report = importer.run(

@@ -3,7 +3,14 @@ import uuid
 
 from dbos import DBOS, Queue, SetWorkflowID
 
-from app.topic_clustering import complete_job, discover_and_plan, fail_job, process_batch, refresh_job
+from app.topic_clustering import (
+    application_batch_ids,
+    complete_job,
+    discover_and_plan,
+    fail_job,
+    process_batch,
+    refresh_job,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -12,8 +19,13 @@ BATCH_QUEUE = Queue("matter-topic-batches", global_concurrency=2)
 
 
 @DBOS.step(name="discover_matter_topics", retries_allowed=True, max_attempts=3)
-def discover(job_id: str) -> list[str]:
-    return [str(value) for value in discover_and_plan(uuid.UUID(job_id))]
+def discover(job_id: str) -> int:
+    return discover_and_plan(uuid.UUID(job_id))
+
+
+@DBOS.step(name="plan_matter_topic_application", retries_allowed=True, max_attempts=3)
+def plan_application(job_id: str) -> list[str]:
+    return [str(value) for value in application_batch_ids(uuid.UUID(job_id))]
 
 
 @DBOS.step(name="process_matter_topic_batch", retries_allowed=True, max_attempts=5)
@@ -43,10 +55,22 @@ def fail(job_id: str, message: str) -> None:
 
 @DBOS.workflow(name="matter_topic_job")
 def matter_topic_job(job_id: str) -> None:
-    logger.info("Starting matter topic job job_id=%s", job_id)
+    logger.info("Starting matter topic discovery job_id=%s", job_id)
     try:
-        batch_ids = discover(job_id)
-        logger.info("Discovered matter topics job_id=%s batch_count=%s", job_id, len(batch_ids))
+        topic_count = discover(job_id)
+        logger.info("Topic proposals ready for review job_id=%s topic_count=%s", job_id, topic_count)
+    except Exception as exc:
+        logger.exception("Matter topic discovery failed job_id=%s", job_id)
+        fail(job_id, str(exc))
+        raise
+
+
+@DBOS.workflow(name="matter_topic_application")
+def matter_topic_application(job_id: str) -> None:
+    logger.info("Starting approved matter topic application job_id=%s", job_id)
+    try:
+        batch_ids = plan_application(job_id)
+        logger.info("Applying approved matter topics job_id=%s batch_count=%s", job_id, len(batch_ids))
         handles = []
         for batch_number, batch_id in enumerate(batch_ids):
             with SetWorkflowID(f"matter-topics:{job_id}:batch:{batch_number}"):
@@ -55,8 +79,8 @@ def matter_topic_job(job_id: str) -> None:
             handle.get_result()
             refresh(job_id)
         complete(job_id)
-        logger.info("Completed matter topic job job_id=%s", job_id)
+        logger.info("Completed approved matter topic application job_id=%s", job_id)
     except Exception as exc:
-        logger.exception("Matter topic job failed job_id=%s", job_id)
+        logger.exception("Matter topic application failed job_id=%s", job_id)
         fail(job_id, str(exc))
         raise

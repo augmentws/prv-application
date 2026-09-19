@@ -1,11 +1,18 @@
 import re
-from datetime import date, datetime
+from datetime import date, datetime, timezone
 from typing import Any
 
 from fastapi import HTTPException, status
 
 from app.models import MetadataDefinition
-from app.schemas import MatterFacetValuesResponse, MatterSearchFilter, MatterSearchRequest, MatterSearchResponse
+from app.schemas import (
+    DateHistogramInterval,
+    MatterDateHistogramResponse,
+    MatterFacetValuesResponse,
+    MatterSearchFilter,
+    MatterSearchRequest,
+    MatterSearchResponse,
+)
 from app.search.client import OpenSearchClient
 from app.search.mappings import metadata_query_path
 
@@ -123,17 +130,22 @@ def _semantic_query(
     query_vector: list[float],
     *,
     candidate_count: int,
+    minimum_similarity: float | None = None,
 ) -> dict[str, Any]:
+    vector_query: dict[str, Any] = {
+        "vector": query_vector,
+        "filter": {"bool": {"filter": filters}},
+    }
+    if minimum_similarity is None:
+        vector_query["k"] = candidate_count
+    else:
+        vector_query["min_score"] = cosine_similarity_to_opensearch_score(minimum_similarity)
     return {
         "nested": {
             "path": "chunks",
             "query": {
                 "knn": {
-                    "chunks.embedding": {
-                        "vector": query_vector,
-                        "k": candidate_count,
-                        "filter": {"bool": {"filter": filters}},
-                    }
+                    "chunks.embedding": vector_query
                 }
             },
             "score_mode": "max",
@@ -153,6 +165,12 @@ def _semantic_query(
     }
 
 
+def cosine_similarity_to_opensearch_score(similarity: float) -> float:
+    """Convert cosine similarity to the OpenSearch 3 cosinesimil relevance score."""
+
+    return (1.0 + similarity) / 2.0
+
+
 def compile_search_request(
     request: MatterSearchRequest,
     definitions: list[MetadataDefinition],
@@ -160,11 +178,13 @@ def compile_search_request(
     tenant_id: str,
     matter_id: str,
     query_vector: list[float] | None = None,
+    required_filters: list[dict[str, Any]] | None = None,
 ) -> dict[str, Any]:
     catalog = _definition_map(definitions)
     filters: list[dict[str, Any]] = [
         {"term": {"tenant_id": tenant_id}},
         {"term": {"matter_id": matter_id}},
+        *(required_filters or []),
     ]
     for search_filter in request.filters:
         definition = catalog.get(search_filter.field)
@@ -201,6 +221,7 @@ def compile_search_request(
             filters,
             query_vector or [],
             candidate_count=min(10_000, max(SEMANTIC_CANDIDATE_FLOOR, request.offset + request.size)),
+            minimum_similarity=request.minimum_similarity,
         )
         if request.search_mode == "SEMANTIC":
             query = semantic_query
@@ -266,6 +287,7 @@ def compile_facet_values_request(
     size: int,
     include_values: list[str] | None = None,
     query_vector: list[float] | None = None,
+    required_filters: list[dict[str, Any]] | None = None,
 ) -> dict[str, Any]:
     catalog = _definition_map(definitions)
     definition = catalog.get(field)
@@ -285,6 +307,7 @@ def compile_facet_values_request(
         tenant_id=tenant_id,
         matter_id=matter_id,
         query_vector=query_vector,
+        required_filters=required_filters,
     )
     body["size"] = 0
     body.pop("highlight", None)
@@ -294,6 +317,51 @@ def compile_facet_values_request(
         terms["include"] = include_values
     elif value_query:
         terms["include"] = f".*{re.escape(value_query)}.*"
+    return body
+
+
+def compile_date_histogram_request(
+    request: MatterSearchRequest,
+    definitions: list[MetadataDefinition],
+    *,
+    field: str,
+    interval: DateHistogramInterval,
+    tenant_id: str,
+    matter_id: str,
+    query_vector: list[float] | None = None,
+    required_filters: list[dict[str, Any]] | None = None,
+) -> dict[str, Any]:
+    definition = _definition_map(definitions).get(field)
+    if definition is None or definition.type not in {"DATE", "DATETIME"}:
+        raise _bad_request(f"Unknown or non-date field: {field}")
+    scoped = request.model_copy(
+        update={
+            "filters": [item for item in request.filters if item.field != field],
+            "facets": [],
+            "offset": 0,
+            "size": 1,
+        }
+    )
+    body = compile_search_request(
+        scoped,
+        definitions,
+        tenant_id=tenant_id,
+        matter_id=matter_id,
+        query_vector=query_vector,
+        required_filters=required_filters,
+    )
+    body["size"] = 0
+    body.pop("highlight", None)
+    body["aggs"] = {
+        field: {
+            "date_histogram": {
+                "field": metadata_query_path(definition),
+                "calendar_interval": interval,
+                "time_zone": "UTC",
+                "min_doc_count": 0,
+            }
+        }
+    }
     return body
 
 
@@ -336,6 +404,7 @@ def execute_search(
     tenant_id: str,
     matter_id: str,
     query_vector: list[float] | None = None,
+    required_filters: list[dict[str, Any]] | None = None,
 ) -> MatterSearchResponse:
     body = compile_search_request(
         request,
@@ -343,6 +412,7 @@ def execute_search(
         tenant_id=tenant_id,
         matter_id=matter_id,
         query_vector=query_vector,
+        required_filters=required_filters,
     )
     if request.search_mode == "HYBRID":
         client.ensure_rrf_search_pipeline(RRF_SEARCH_PIPELINE)
@@ -392,6 +462,7 @@ def execute_facet_values(
     size: int,
     include_values: list[str] | None = None,
     query_vector: list[float] | None = None,
+    required_filters: list[dict[str, Any]] | None = None,
 ) -> MatterFacetValuesResponse:
     if include_values == []:
         return MatterFacetValuesResponse(field=field, values=[])
@@ -405,6 +476,7 @@ def execute_facet_values(
         size=size,
         include_values=include_values,
         query_vector=query_vector,
+        required_filters=required_filters,
     )
     if request.search_mode == "HYBRID":
         client.ensure_rrf_search_pipeline(RRF_SEARCH_PIPELINE)
@@ -417,6 +489,48 @@ def execute_facet_values(
         field=field,
         values=[
             {"value": _facet_bucket_value(definition, bucket), "count": bucket["doc_count"]}
+            for bucket in buckets
+        ],
+    )
+
+
+def execute_date_histogram(
+    client: OpenSearchClient,
+    alias_name: str,
+    request: MatterSearchRequest,
+    definitions: list[MetadataDefinition],
+    *,
+    field: str,
+    interval: DateHistogramInterval,
+    tenant_id: str,
+    matter_id: str,
+    query_vector: list[float] | None = None,
+    required_filters: list[dict[str, Any]] | None = None,
+) -> MatterDateHistogramResponse:
+    body = compile_date_histogram_request(
+        request,
+        definitions,
+        field=field,
+        interval=interval,
+        tenant_id=tenant_id,
+        matter_id=matter_id,
+        query_vector=query_vector,
+        required_filters=required_filters,
+    )
+    if request.search_mode == "HYBRID":
+        client.ensure_rrf_search_pipeline(RRF_SEARCH_PIPELINE)
+        raw = client.search(alias_name, body, search_pipeline=RRF_SEARCH_PIPELINE)
+    else:
+        raw = client.search(alias_name, body)
+    buckets = raw.get("aggregations", {}).get(field, {}).get("buckets", [])
+    return MatterDateHistogramResponse(
+        field=field,
+        interval=interval,
+        buckets=[
+            {
+                "start": datetime.fromtimestamp(float(bucket["key"]) / 1000, tz=timezone.utc),
+                "count": int(bucket["doc_count"]),
+            }
             for bucket in buckets
         ],
     )

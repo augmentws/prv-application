@@ -56,6 +56,7 @@ from app.models import (
     User,
     utcnow,
 )
+from app.provider_usage import external_model_identity, record_external_provider_usage
 from app.schemas import (
     AssertionPolicy,
     Cardinality,
@@ -138,6 +139,8 @@ class AgentRunOutcome:
     tool_call_count: int
     input_tokens: int
     output_tokens: int
+    provider: str | None
+    provider_model: str | None
 
 
 def _require_actor_access(db, deps: AgentRuntimeDeps) -> tuple[User, Matter, AgentRun]:
@@ -822,13 +825,15 @@ async def execute_prepared_agent_run(
             else:
                 approvals[tool_call_id] = ToolDenied(decision["reason"] or "The user rejected this action")
         deferred_results = DeferredToolResults(approvals=approvals)
+    selected_model = model if model is not None else resolve_agent_model(prepared.model_id, get_settings())
+    provider_identity = external_model_identity(selected_model)
     result = await agent.run(
         prepared.user_prompt,
         message_history=history,
         deferred_tool_results=deferred_results,
         conversation_id=prepared.conversation_id,
         run_id=prepared.run_id,
-        model=model or resolve_agent_model(prepared.model_id, get_settings()),
+        model=selected_model,
         instructions=prepared.instructions,
         deps=prepared.deps,
         model_settings=prepared.model_settings,
@@ -865,6 +870,8 @@ async def execute_prepared_agent_run(
         tool_call_count=usage.tool_calls,
         input_tokens=usage.input_tokens,
         output_tokens=usage.output_tokens,
+        provider=provider_identity[0] if provider_identity is not None else None,
+        provider_model=provider_identity[1] if provider_identity is not None else None,
     )
 
 
@@ -885,6 +892,28 @@ def persist_agent_run_outcome(run_id: uuid.UUID, outcome: AgentRunOutcome) -> No
         run.output_tokens = outcome.output_tokens
         run.status = outcome.status
         run.completed_at = utcnow()
+        if outcome.provider is not None and outcome.provider_model is not None:
+            record_external_provider_usage(
+                db,
+                idempotency_key=f"agent-run:{run.id}:provider-usage",
+                tenant_id=conversation.tenant_id,
+                client_id=conversation.client_id,
+                matter_id=conversation.matter_id,
+                started_by_user_id=run.actor_user_id,
+                job_type="AGENT_RUN",
+                job_id=run.id,
+                job_created_at=run.created_at,
+                provider=outcome.provider,
+                model=outcome.provider_model,
+                request_count=outcome.request_count,
+                input_tokens=outcome.input_tokens,
+                output_tokens=outcome.output_tokens,
+                details={
+                    "conversation_id": str(conversation.id),
+                    "turn_id": str(run.turn_id),
+                    "workflow_id": run.workflow_id,
+                },
+            )
         if outcome.status == "WAITING_APPROVAL":
             if not outcome.actions:
                 raise ValueError("Waiting agent run did not produce an approval request")

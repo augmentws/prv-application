@@ -7,6 +7,7 @@ import {
   isSameOrigin,
   REFRESH_COOKIE,
   requestCore,
+  setCsrfCookie,
   setSessionCookies,
   type TokenPair,
 } from "@/lib/server/core-api";
@@ -89,6 +90,9 @@ async function handler(request: NextRequest, context: RouteContext<"/api/core/[.
   });
   response.headers.set("cache-control", "no-store");
   if (pair) setSessionCookies(response, pair);
+  if (safeMethods.has(request.method) && coreResponse.ok && !request.cookies.get(CSRF_COOKIE)) {
+    setCsrfCookie(response);
+  }
   return response;
 }
 

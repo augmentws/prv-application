@@ -16,10 +16,12 @@ Creating an empty collection does not upload evidence. Data is currently loaded 
 
 ## Browse a collection
 
-The collection workspace has two tabs:
+The collection workspace has four tabs:
 
 - **Documents** shows the collection's imported items and provides search, faceted filters, and the content viewer.
 - **Custodians** shows only custodians represented by at least one item in the collection, along with their contact details, source reference, status, and document count.
+- **Date Histogram** charts canonical file dates by calendar week, month, or year. Select a non-empty bucket to return to Documents with that inclusive date range applied. Documents without a canonical file date are reported separately.
+- **Processing** lets you review the default text processor, add collection-specific cleanup rules, test them on documents, and run processing across the collection.
 
 Custodian counts cover the entire collection and are not limited to the current page of documents.
 
@@ -27,15 +29,19 @@ On the **Custodians** tab, select one or more custodians and choose **Add docume
 
 ## Browse collection documents
 
-Open a collection to see its imported items. The table shows the original filename, record type, subject or source path, custodian, source date, native size, and processing status.
+Open a collection to see its imported items. The table shows the original filename, record type, subject or source path, custodian, file date, native size, and processing status.
 
-Use **Open** on a row to inspect supported email or text content. In an email preview, the metadata header scrolls independently from the message body. Drag the divider below the metadata up or down to resize it, or focus the divider and use the up and down arrow keys.
+Drag the divider at the right edge of a column heading to resize that column. Narrow values are clipped with an ellipsis; hover values such as filenames, source paths, and custodians to see their full text. Double-click a divider to restore its default width, or focus it and use the left and right arrow keys.
 
-Use **Add all matching** to send every result from the current search and filters to a matter. Choose the destination matter, then select **Start job**. Priv-View redirects to that matter's **Jobs** tab immediately; you do not need to keep the collection page open.
+**File date** is the collection's canonical document date. An email uses its sent date, an attachment inherits the sent date of its parent email, and a standalone collected file uses its source filesystem last-modified date. The value remains empty when the applicable source date is unavailable; Priv-View does not substitute its import time.
+
+Select a filename to inspect supported email or text content. In an email preview, the metadata header scrolls independently from the message body. Drag the divider below the metadata up or down to resize it, or focus the divider and use the up and down arrow keys.
+
+Use **Add all matching** at the upper-right of the collection tabs to send every result from the current search and filters to a matter. Choose the destination matter, then select **Start job**. Priv-View redirects to that matter's **Jobs** tab immediately; you do not need to keep the collection page open. The current result count appears directly above the left filter panel.
 
 ## Search and filter documents
 
-Enter part of a filename or original source path and choose **Search**. Search is case-insensitive and covers those two fields; it does not search document content.
+Enter part of a filename or original source path and choose **Search**. Search is case-insensitive and covers those two text fields; it does not search document content. To restrict results by canonical date, expand **File date** in the left filter panel and choose an inclusive **From** or **To** date. The date range is applied immediately and becomes part of the frozen selection when you use **Add all matching**.
 
 Use the filter panel to narrow results by:
 
@@ -44,14 +50,56 @@ Use the filter panel to narrow results by:
 - **Record type**
 - **Processing status**
 
-You can select multiple values in a group. Values within one group are combined as alternatives—for example, PDF or DOCX—while selections in different groups must all match. Counts show how many documents would match each value together with filters from the other groups.
+Expand a filter group to load its values and counts. Facet counts are requested only when the group is opened, allowing the first page of documents and the exact result count to appear without waiting for every facet calculation. You can select multiple values in a group. Values within one group are combined as alternatives—for example, PDF or DOCX—while selections in different groups must all match. Counts show how many documents would match each value together with filters from the other groups.
 
 Selected filters appear above the table. Select a filter to remove it, or use **Clear all** to reset the search and every facet. Results are displayed in pages of up to 50 items; use **Previous** and **Next** to move between pages.
 
-The current implementation calculates results and facet counts from the collection database. Document-content search and Elasticsearch-backed indexing are planned for a later phase.
+The current implementation calculates results and on-demand facet counts from the collection database. Document-content search and Elasticsearch-backed indexing are planned for a later phase.
 
 Selections are evaluated when the background job begins, then frozen so later collection changes cannot alter the running job. See [Matter jobs](/docs/matter-jobs) for status and duplicate behavior.
 
 ## Evidence organization
 
 Each collection item is a logical evidence record and does not contain a storage path. One or more typed artifacts represent its native file or later derived content. The current importer creates the native artifact during initial load; chunk and vector-set artifacts are later processing outputs.
+
+The original source-created and source-modified timestamps remain available separately from the canonical file date so source metadata is not discarded.
+
+## Process text for chunking and search
+
+Open **Processing** when extracted email bodies or text contain repeated reply history, signatures, export banners, or collection-specific boilerplate that would reduce topic and embedding quality.
+
+The **Default rules** section shows every built-in behavior for the current processor version, including its stable rule ID, action, description, and what it matches. Default rules are read-only so a processor version remains reproducible.
+
+The built-in processor always normalizes line endings and excess blank lines, removes text following a standard “Original message” or “Forwarded message” marker, unwraps both single-line and split Lotus Notes-style forwarding envelopes while preserving the forwarded body, retains the forwarded subject as a title when the body does not already repeat it, removes the forwarding separator from headerless calendar invitations while preserving their calendar content, and removes unmistakable `winmail.dat` or S/MIME attachment placeholders. You can add ordered collection rules that:
+
+- remove an entire line when a regular expression matches;
+- remove a block between start and end expressions; or
+- replace matching text.
+
+Rules are regular expressions. Invalid expressions are rejected when you save or test. Each collection has its own versioned rule profile.
+
+### Review and test rules
+
+1. Add or edit rules and choose whether each expression is case-sensitive.
+2. Select up to 10 documents from the current set of 25. Choose **Load different documents** to move through additional sets; after the final set it returns to the beginning. Loading another set clears the current selection and preview.
+3. Choose **Test selected**.
+4. Compare source and processed text side by side. The preview lists applied rules, match counts, and warnings when more than half of the source is removed.
+5. Save the rules after the test looks correct.
+
+Testing is synchronous and does not create artifacts or change the active processor. A preview is limited to the first 100,000 characters of each selected document.
+
+### Run the collection
+
+Choose **Run full collection** after saving. The background job freezes the processor version and saved rules, then creates one idempotent normalized-text artifact per supported collection item. The run reports created, reused, skipped, and failed counts. Unsupported binary files without extracted or OCR text are skipped.
+
+When the run completes, its successful normalized artifacts become the preferred source for later indexing, semantic chunking, and embeddings. Items without a normalized artifact continue to use extracted text, OCR text, or supported native text. Existing matter indexes and embeddings are not automatically rebuilt; start their rebuild jobs when you want them to use the new active text.
+
+Original native evidence, OCR text, and faithful extracted text are preserved unchanged. Every normalized artifact records its processor configuration and lineage back to its source.
+
+## Delete a collection
+
+Choose **Delete collection** in the collection header, then type the exact collection name to confirm. Deletion is a durable background workflow: database records are removed in bounded batches, followed by their object-store blobs. A blob shared by another artifact is retained until its final reference is deleted.
+
+Priv-View refuses to start deletion while the collection has an active matter-import job or any documents linked into a matter. Remove those references first. Once accepted, the collection enters **Deleting** and no new imports, uploads, selections, or text-processing runs can start against it.
+
+If a transient database or object-store error exhausts the automatic retries, the deletion job remains available with its progress and error. Retrying continues from the remaining database rows or blob cleanup manifest rather than starting over.

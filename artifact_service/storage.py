@@ -18,6 +18,8 @@ class BlobStorage(Protocol):
 
     def open(self, bucket_name: str, storage_key: str) -> BinaryIO: ...
 
+    def delete(self, bucket_name: str, storage_key: str) -> None: ...
+
 
 class S3BlobStorage:
     def __init__(self) -> None:
@@ -49,6 +51,10 @@ class S3BlobStorage:
         response = self.client.get_object(Bucket=bucket_name, Key=storage_key)
         return response["Body"]
 
+    def delete(self, bucket_name: str, storage_key: str) -> None:
+        # S3 DeleteObject is idempotent, which makes retries safe after a worker crash.
+        self.client.delete_object(Bucket=bucket_name, Key=storage_key)
+
 
 class MemoryBlobStorage:
     def __init__(self) -> None:
@@ -69,6 +75,9 @@ class MemoryBlobStorage:
             return BytesIO(self.buckets[bucket_name][storage_key])
         except KeyError as exc:
             raise FileNotFoundError(storage_key) from exc
+
+    def delete(self, bucket_name: str, storage_key: str) -> None:
+        self.buckets.get(bucket_name, {}).pop(storage_key, None)
 
 
 @lru_cache

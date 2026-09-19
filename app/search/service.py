@@ -17,12 +17,17 @@ from app.models import (
     Matter,
     MatterDocument,
     MatterDocumentImportJob,
+    MatterEmbeddingBatch,
+    MatterEmbeddingJob,
     MetadataDefinition,
+    ReviewBatch,
+    ReviewBatchDocument,
     SearchIndexGeneration,
     SearchProjectionOperation,
 )
 from app.search.client import OpenSearchClient
 from app.search.mappings import compile_document_index, schema_hash
+from app.search.schema import SearchReindexRequired, plan_schema_change
 from embedding_service.config import get_embedding_settings
 
 logger = logging.getLogger(__name__)
@@ -65,6 +70,8 @@ def build_document_projection(
     db: Session,
     document: MatterDocument,
     definitions: list[MetadataDefinition],
+    *,
+    batch_ids: list[uuid.UUID] | None = None,
 ) -> dict[str, Any]:
     matter = db.get(Matter, document.matter_id)
     if matter is None:
@@ -143,6 +150,7 @@ def build_document_projection(
         "matter_id": str(matter.id),
         "source_collection_id": str(document.source_collection_id),
         "collection_item_id": str(document.collection_item_id),
+        "batch_ids": [str(value) for value in (batch_ids or [])],
         "created_at": document.created_at.isoformat(),
         "record_type": snapshot.record_type,
         "processing_status": snapshot.processing_status,
@@ -196,6 +204,52 @@ class SearchIndexManager:
         actions.append({"add": {"index": generation.index_name, "alias": generation.alias_name}})
         self.client.update_aliases(actions)
 
+    def _cleanup_obsolete_generations(self, active: SearchIndexGeneration) -> None:
+        """Remove non-active physical indexes first, then their tracking rows."""
+
+        try:
+            generations = list(
+                self.db.scalars(
+                    select(SearchIndexGeneration).where(
+                        SearchIndexGeneration.matter_id == active.matter_id,
+                        SearchIndexGeneration.id != active.id,
+                    )
+                )
+            )
+            physical_indices = set(self.client.resolve_indices(f"{active.alias_name}-v*"))
+            physical_indices.update(generation.index_name for generation in generations)
+            for index_name in sorted(physical_indices):
+                if index_name != active.index_name:
+                    self.client.delete_index(index_name)
+            generation_by_id = {generation.id: generation for generation in generations}
+            batches = list(
+                self.db.scalars(
+                    select(ReviewBatch).where(ReviewBatch.search_index_generation_id.in_(generation_by_id))
+                )
+            )
+            for batch in batches:
+                generation = generation_by_id[batch.search_index_generation_id]
+                if "search_index_generation" not in batch.selection_definition:
+                    batch.selection_definition = {
+                        **batch.selection_definition,
+                        "search_index_generation": {
+                            "generation": generation.generation,
+                            "index_name": generation.index_name,
+                            "schema_hash": generation.schema_hash,
+                            "activated_at": generation.activated_at.isoformat() if generation.activated_at else None,
+                        },
+                    }
+            for generation in generations:
+                self.db.delete(generation)
+            self.db.commit()
+        except Exception:
+            self.db.rollback()
+            logger.exception(
+                "Search generation cleanup failed matter_id=%s active_index=%s",
+                active.matter_id,
+                active.index_name,
+            )
+
     def ensure(self, matter_id: uuid.UUID, *, force: bool = False) -> SearchIndexGeneration:
         self._lock_matter_search(matter_id)
         matter = self.db.get(Matter, matter_id)
@@ -216,7 +270,27 @@ class SearchIndexManager:
         active = self.active(matter_id)
         if active is not None and active.schema_hash == fingerprint and not force:
             self._activate_alias(active)
+            self._cleanup_obsolete_generations(active)
             return active
+
+        if active is not None and not force:
+            plan = plan_schema_change(active.schema_snapshot, index_body)
+            if plan.action in {"NO_CHANGE", "IN_PLACE"}:
+                if plan.mapping_update:
+                    self.client.update_mapping(active.index_name, plan.mapping_update)
+                active.schema_hash = fingerprint
+                active.schema_snapshot = index_body
+                active.error_message = None
+                self.db.commit()
+                self._cleanup_obsolete_generations(active)
+                logger.info(
+                    "Applied search schema in place matter_id=%s index=%s reasons=%s",
+                    matter_id,
+                    active.index_name,
+                    list(plan.reasons),
+                )
+                return active
+            raise SearchReindexRequired(plan)
 
         latest = self.db.scalar(
             select(func.max(SearchIndexGeneration.generation)).where(SearchIndexGeneration.matter_id == matter_id)
@@ -253,6 +327,7 @@ class SearchIndexManager:
             generation.document_count = count
             generation.activated_at = utcnow()
             self.db.commit()
+            self._cleanup_obsolete_generations(generation)
             return generation
         except Exception as exc:
             if not self.db.is_active:
@@ -298,11 +373,64 @@ class SearchIndexManager:
         )
         self._bulk_upsert(generation.index_name, documents, definitions)
         self.client.refresh(generation.index_name)
-        generation.document_count = int(
-            self.db.scalar(select(func.count()).select_from(MatterDocument).where(MatterDocument.matter_id == matter_id)) or 0
-        )
+        generation.document_count = self.client.count(generation.index_name)
         self.db.commit()
         return len(documents)
+
+    def upsert_embedding_job(
+        self,
+        matter_id: uuid.UUID,
+        embedding_job_id: uuid.UUID,
+    ) -> int:
+        generation = self.ensure(matter_id)
+        job = self.db.get(MatterEmbeddingJob, embedding_job_id)
+        if job is None or job.matter_id != matter_id:
+            raise ValueError("Matter embedding job not found")
+        definitions = list(
+            self.db.scalars(
+                select(MetadataDefinition).where(
+                    MetadataDefinition.matter_id == matter_id,
+                    MetadataDefinition.status == "ACTIVE",
+                )
+            )
+        )
+        indexed_count = 0
+        document_ids: list[uuid.UUID] = []
+
+        def flush() -> None:
+            nonlocal indexed_count
+            if not document_ids:
+                return
+            documents = list(
+                self.db.scalars(
+                    select(MatterDocument).where(
+                        MatterDocument.matter_id == matter_id,
+                        MatterDocument.id.in_(document_ids),
+                    )
+                )
+            )
+            self._bulk_upsert(generation.index_name, documents, definitions)
+            indexed_count += len(documents)
+            document_ids.clear()
+
+        batch_document_ids = self.db.scalars(
+            select(MatterEmbeddingBatch.document_ids)
+            .where(
+                MatterEmbeddingBatch.job_id == job.id,
+                MatterEmbeddingBatch.status == "COMPLETED",
+            )
+            .order_by(MatterEmbeddingBatch.batch_number)
+        )
+        for batch_ids in batch_document_ids:
+            for value in batch_ids:
+                document_ids.append(uuid.UUID(value))
+                if len(document_ids) >= self.settings.search_bulk_batch_size:
+                    flush()
+        flush()
+        self.client.refresh(generation.index_name)
+        generation.document_count = self.client.count(generation.index_name)
+        self.db.commit()
+        return indexed_count
 
     def delete_documents(self, matter_id: uuid.UUID, document_ids: list[uuid.UUID]) -> int:
         self._lock_matter_search(matter_id)
@@ -311,9 +439,7 @@ class SearchIndexManager:
             return 0
         self.client.bulk(generation.index_name, (("delete", str(document_id), None) for document_id in document_ids))
         self.client.refresh(generation.index_name)
-        generation.document_count = int(
-            self.db.scalar(select(func.count()).select_from(MatterDocument).where(MatterDocument.matter_id == matter_id)) or 0
-        )
+        generation.document_count = self.client.count(generation.index_name)
         self.db.commit()
         return len(document_ids)
 
@@ -326,10 +452,107 @@ class SearchIndexManager:
         batch_size = self.settings.search_bulk_batch_size
         for offset in range(0, len(documents), batch_size):
             batch = documents[offset : offset + batch_size]
+            memberships: dict[uuid.UUID, list[uuid.UUID]] = {document.id: [] for document in batch}
+            rows = self.db.execute(
+                select(ReviewBatchDocument.matter_document_id, ReviewBatchDocument.review_batch_id)
+                .join(ReviewBatch, ReviewBatch.id == ReviewBatchDocument.review_batch_id)
+                .where(
+                    ReviewBatchDocument.matter_document_id.in_(memberships),
+                    ReviewBatch.status == "READY",
+                )
+                .order_by(ReviewBatchDocument.review_batch_id)
+            ).all()
+            for document_id, review_batch_id in rows:
+                memberships[document_id].append(review_batch_id)
             self.client.bulk(
                 index_name,
-                (("index", str(document.id), build_document_projection(self.db, document, definitions)) for document in batch),
+                (
+                    (
+                        "index",
+                        str(document.id),
+                        build_document_projection(
+                            self.db,
+                            document,
+                            definitions,
+                            batch_ids=memberships[document.id],
+                        ),
+                    )
+                    for document in batch
+                ),
             )
+
+
+def sync_review_batch_search(batch_id: uuid.UUID, settings: Settings | None = None) -> None:
+    settings = settings or get_settings()
+    with SessionLocal() as db:
+        batch = db.get(ReviewBatch, batch_id)
+        if batch is None:
+            raise ValueError("Review batch not found")
+        if batch.status != "READY":
+            raise ValueError("Review batch membership is not ready")
+        if not settings.search_enabled:
+            batch.search_status = "NOT_CONFIGURED"
+            batch.search_error_message = None
+            db.commit()
+            return
+        batch.search_status = "SYNCING"
+        batch.search_error_message = None
+        db.commit()
+        client = OpenSearchClient(settings)
+        try:
+            manager = SearchIndexManager(db, client, settings)
+            generation = manager.ensure(batch.matter_id)
+            manager._lock_matter_search(batch.matter_id)
+            document_ids = list(
+                db.scalars(
+                    select(ReviewBatchDocument.matter_document_id)
+                    .where(ReviewBatchDocument.review_batch_id == batch.id)
+                    .order_by(ReviewBatchDocument.sequence_number)
+                )
+            )
+            for offset in range(0, len(document_ids), settings.search_bulk_batch_size):
+                page = document_ids[offset : offset + settings.search_bulk_batch_size]
+                client.bulk(
+                    generation.index_name,
+                    (
+                        (
+                            "update",
+                            str(document_id),
+                            {
+                                "script": {
+                                    "source": (
+                                        "if (ctx._source.batch_ids == null) { ctx._source.batch_ids = []; } "
+                                        "if (!ctx._source.batch_ids.contains(params.batch_id)) { "
+                                        "ctx._source.batch_ids.add(params.batch_id); }"
+                                    ),
+                                    "params": {"batch_id": str(batch.id)},
+                                }
+                            },
+                        )
+                        for document_id in page
+                    ),
+                )
+            client.refresh(generation.index_name)
+            batch.search_status = "READY"
+            batch.search_error_message = None
+            db.commit()
+            logger.info(
+                "Completed review batch search projection batch_id=%s matter_id=%s documents=%s",
+                batch.id,
+                batch.matter_id,
+                len(document_ids),
+            )
+        except Exception as exc:
+            db.rollback()
+            failed = db.get(ReviewBatch, batch_id)
+            if failed is not None:
+                failed.search_status = "FAILED"
+                failed.search_error_message = str(exc)[:4000]
+                db.commit()
+            logger.exception("Review batch search projection failed batch_id=%s", batch_id)
+            raise
+        finally:
+            client.close()
 
 
 def process_search_operation(operation_id: uuid.UUID) -> None:
@@ -356,10 +579,17 @@ def process_search_operation(operation_id: uuid.UUID) -> None:
             if operation.kind in {"SCHEMA_SYNC", "REBUILD"}:
                 manager.ensure(operation.matter_id, force=operation.kind == "REBUILD")
             elif operation.kind == "DOCUMENT_UPSERT":
-                manager.upsert_documents(
-                    operation.matter_id,
-                    [uuid.UUID(value) for value in operation.payload.get("document_ids", [])],
-                )
+                embedding_job_id = operation.payload.get("embedding_job_id")
+                if embedding_job_id:
+                    manager.upsert_embedding_job(
+                        operation.matter_id,
+                        uuid.UUID(embedding_job_id),
+                    )
+                else:
+                    manager.upsert_documents(
+                        operation.matter_id,
+                        [uuid.UUID(value) for value in operation.payload.get("document_ids", [])],
+                    )
             elif operation.kind == "DOCUMENT_DELETE":
                 manager.delete_documents(
                     operation.matter_id,
@@ -376,6 +606,17 @@ def process_search_operation(operation_id: uuid.UUID) -> None:
                 operation.id,
                 operation.kind,
                 operation.matter_id,
+            )
+        except SearchReindexRequired as exc:
+            operation.status = "AWAITING_USER"
+            operation.payload = {**operation.payload, "schema_change": exc.plan.as_dict()}
+            operation.error_message = None
+            db.commit()
+            logger.info(
+                "Search projection requires confirmation operation_id=%s matter_id=%s reasons=%s",
+                operation.id,
+                operation.matter_id,
+                list(exc.plan.reasons),
             )
         except Exception as exc:
             operation.status = "FAILED"

@@ -1,16 +1,19 @@
 "use client";
 
-import { useQuery } from "@tanstack/react-query";
+import { useMutation, useQueries, useQuery, useQueryClient } from "@tanstack/react-query";
 import type { ColumnDef } from "@tanstack/react-table";
-import { ChevronLeft, ChevronRight, Eye, Search } from "lucide-react";
+import { ChevronLeft, ChevronRight, Search } from "lucide-react";
 import Link from "next/link";
 import { useRouter } from "next/navigation";
 import { useMemo, useState, type FormEvent } from "react";
 
 import { DataTable } from "@/components/data-table";
+import { DateHistogram, type DateHistogramInterval } from "@/components/date-histogram";
+import { CollectionProcessingPanel } from "@/components/collection-processing-panel";
 import { DocumentViewerDialog } from "@/components/document-viewer-dialog";
-import { ActiveFilterBar, FacetSidebar, type ActiveFilter, type FacetGroup } from "@/components/faceted-filter";
+import { ActiveFilterBar, DateRangeFacet, FacetSidebar, type ActiveFilter, type FacetGroup } from "@/components/faceted-filter";
 import { AddToMatterDialog } from "@/components/forms/add-to-matter-dialog";
+import { DeleteCollectionDialog } from "@/components/forms/delete-collection-dialog";
 import { HelpLink } from "@/components/help-link";
 import { PageHeader } from "@/components/page-header";
 import { QueryError, TableLoading } from "@/components/query-state";
@@ -19,14 +22,18 @@ import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Card } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
-import type { ClientRead, CollectionCustodianSummary, CollectionItemRead, CollectionItemSearchResponse, CollectionRead, CustodianRead, FacetValue, MatterDocumentImportCreate, MatterDocumentImportRead, MatterRead } from "@/generated/models";
+import type { ClientRead, CollectionCustodianSummary, CollectionDateHistogramResponse, CollectionDeletionJobRead, CollectionItemRead, CollectionItemSearchResponse, CollectionRead, CustodianRead, FacetValue, MatterDocumentImportCreate, MatterDocumentImportRead, MatterRead } from "@/generated/models";
 import { coreApi } from "@/lib/api-client";
+import { formatDateOnly, utcDayEnd, utcDayStart } from "@/lib/date-only";
 import { formatBytes, formatDate } from "@/lib/format";
+import { toast } from "sonner";
 
 const PAGE_SIZE = 50;
+const COLLECTION_FACET_KEYS = ["custodians", "file_extensions", "record_types", "processing_statuses"] as const;
 
-type CollectionFacetKey = "custodians" | "file_extensions" | "record_types" | "processing_statuses";
+type CollectionFacetKey = typeof COLLECTION_FACET_KEYS[number];
 type CollectionFacetFilters = Record<CollectionFacetKey, string[]>;
+interface FileDateRange { from: string; to: string }
 
 function emptyFacetFilters(): CollectionFacetFilters {
   return { custodians: [], file_extensions: [], record_types: [], processing_statuses: [] };
@@ -43,10 +50,14 @@ interface CollectionCustodianRow {
 
 export function CollectionView({ clientId, collectionId }: { clientId: string; collectionId: string }) {
   const router = useRouter();
-  const [tab, setTab] = useState<"documents" | "custodians">("documents");
+  const queryClient = useQueryClient();
+  const [tab, setTab] = useState<"documents" | "custodians" | "date-histogram" | "processing">("documents");
+  const [histogramInterval, setHistogramInterval] = useState<DateHistogramInterval>("month");
   const [searchInput, setSearchInput] = useState("");
   const [search, setSearch] = useState("");
+  const [fileDateRange, setFileDateRange] = useState<FileDateRange>({ from: "", to: "" });
   const [facetFilters, setFacetFilters] = useState<CollectionFacetFilters>(emptyFacetFilters);
+  const [requestedFacets, setRequestedFacets] = useState<CollectionFacetKey[]>([]);
   const [offset, setOffset] = useState(0);
   const [selectedItem, setSelectedItem] = useState<CollectionItemRead | null>(null);
   const [selectedCustodianIds, setSelectedCustodianIds] = useState<string[]>([]);
@@ -68,23 +79,45 @@ export function CollectionView({ clientId, collectionId }: { clientId: string; c
     queryFn: () => coreApi<CustodianRead[]>(`/v1/clients/${clientId}/custodians`),
   });
   const searchResults = useQuery({
-    queryKey: ["collection-search", collectionId, search, facetFilters, offset],
+    queryKey: ["collection-search", collectionId, search, facetFilters, fileDateRange, offset],
     queryFn: () => {
-      const params = new URLSearchParams({ limit: String(PAGE_SIZE), offset: String(offset) });
-      if (search) params.set("q", search);
-      facetFilters.custodians.forEach((value) => params.append("custodian_id", value));
-      facetFilters.file_extensions.forEach((value) => params.append("extension", value));
-      facetFilters.record_types.forEach((value) => params.append("record_type", value));
-      facetFilters.processing_statuses.forEach((value) => params.append("processing_status", value));
+      const params = collectionFilterParams(search, facetFilters, fileDateRange);
+      params.set("limit", String(PAGE_SIZE));
+      params.set("offset", String(offset));
       return coreApi<CollectionItemSearchResponse>(`/v1/collections/${collectionId}/search?${params}`);
     },
     enabled: tab === "documents",
     placeholderData: (previousData) => previousData,
   });
+  const collectionFacetQueries = useQueries({
+    queries: COLLECTION_FACET_KEYS.map((facet) => ({
+      queryKey: ["collection-search-facet", collectionId, facet, search, facetFilters, fileDateRange],
+      queryFn: () => {
+        const params = collectionFilterParams(search, facetFilters, fileDateRange);
+        return coreApi<FacetValue[]>(`/v1/collections/${collectionId}/search/facets/${facet}?${params}`);
+      },
+      enabled: tab === "documents" && requestedFacets.includes(facet),
+      placeholderData: (previous: FacetValue[] | undefined) => previous,
+    })),
+  });
   const collectionCustodianSummary = useQuery({
     queryKey: ["collection-custodians", collectionId],
     queryFn: () => coreApi<CollectionCustodianSummary[]>(`/v1/collections/${collectionId}/custodians`),
     enabled: tab === "custodians",
+  });
+  const collectionDateHistogram = useQuery({
+    queryKey: ["collection-date-histogram", collectionId, histogramInterval],
+    queryFn: () => coreApi<CollectionDateHistogramResponse>(`/v1/collections/${collectionId}/date-histogram?interval=${histogramInterval}`),
+    enabled: tab === "date-histogram",
+    placeholderData: (previous) => previous,
+  });
+  const deleteCollection = useMutation({
+    mutationFn: () => coreApi<CollectionDeletionJobRead>(`/v1/collections/${collectionId}`, { method: "DELETE" }),
+    onSuccess: (job) => {
+      void queryClient.invalidateQueries({ queryKey: ["collections"] });
+      toast.success(`Deletion of ${job.collection_name} was queued.`);
+      router.push(`/app/clients/${clientId}`);
+    },
   });
 
   const custodianNames = useMemo(
@@ -95,9 +128,18 @@ export function CollectionView({ clientId, collectionId }: { clientId: string; c
     {
       accessorKey: "original_filename",
       header: "File",
+      size: 260,
+      minSize: 120,
       cell: ({ row }) => (
-        <div className="min-w-52 max-w-md">
-          <p className="truncate font-semibold" title={row.original.original_filename}>{row.original.original_filename}</p>
+        <div className="min-w-0">
+          <button
+            type="button"
+            className="block max-w-full truncate text-left font-semibold text-primary underline-offset-4 hover:underline focus-visible:rounded-sm focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+            title={row.original.original_filename}
+            onClick={() => setSelectedItem(row.original)}
+          >
+            {row.original.original_filename}
+          </button>
           <p className="mt-0.5 truncate font-mono text-xs text-muted-foreground" title={row.original.source_item_id}>{row.original.source_item_id}</p>
         </div>
       ),
@@ -105,13 +147,20 @@ export function CollectionView({ clientId, collectionId }: { clientId: string; c
     {
       accessorKey: "record_type",
       header: "Type",
-      cell: ({ row }) => <Badge variant="outline">{row.original.record_type.toLowerCase()}</Badge>,
+      size: 100,
+      minSize: 80,
+      cell: ({ row }) => {
+        const label = row.original.record_type.toLowerCase();
+        return <Badge variant="outline" className="max-w-full"><span className="min-w-0 truncate" title={label}>{label}</span></Badge>;
+      },
     },
     {
       id: "details",
       header: "Subject / source",
+      size: 260,
+      minSize: 100,
       cell: ({ row }) => (
-        <span className="block max-w-sm truncate text-muted-foreground" title={row.original.email?.subject ?? row.original.original_source_path ?? undefined}>
+        <span className="block truncate text-muted-foreground" title={row.original.email?.subject ?? row.original.original_source_path ?? undefined}>
           {row.original.email?.subject || row.original.original_source_path || "—"}
         </span>
       ),
@@ -119,33 +168,40 @@ export function CollectionView({ clientId, collectionId }: { clientId: string; c
     {
       id: "custodians",
       header: "Custodian",
+      size: 180,
+      minSize: 100,
       cell: ({ row }) => {
         const names = row.original.custodian_ids.map((id) => custodianNames.get(id) ?? "Unknown custodian");
-        return <span className="block max-w-52 truncate text-muted-foreground" title={names.join(", ")}>{names.join(", ")}</span>;
+        return <span className="block truncate text-muted-foreground" title={names.join(", ")}>{names.join(", ")}</span>;
       },
     },
     {
-      id: "source_date",
-      header: "Source date",
+      id: "file_date",
+      header: "File date",
+      size: 140,
+      minSize: 105,
       cell: ({ row }) => {
-        const value = row.original.source_modified_at ?? row.original.source_created_at;
-        return <span className="whitespace-nowrap text-muted-foreground">{value ? formatDate(value) : "—"}</span>;
+        const value = row.original.file_date;
+        const label = value ? formatDate(value) : "—";
+        return <span className="block truncate text-muted-foreground" title={label}>{label}</span>;
       },
     },
     {
       id: "size",
       header: "Size",
-      cell: ({ row }) => <span className="whitespace-nowrap font-mono text-xs text-muted-foreground">{formatBytes(row.original.native_artifact.byte_length)}</span>,
+      size: 90,
+      minSize: 72,
+      cell: ({ row }) => {
+        const label = formatBytes(row.original.native_artifact.byte_length);
+        return <span className="block truncate font-mono text-xs text-muted-foreground" title={label}>{label}</span>;
+      },
     },
     {
       accessorKey: "processing_status",
       header: "Status",
+      size: 145,
+      minSize: 90,
       cell: ({ row }) => <StatusBadge status={row.original.processing_status} />,
-    },
-    {
-      id: "actions",
-      header: "",
-      cell: ({ row }) => <Button variant="ghost" size="sm" onClick={() => setSelectedItem(row.original)}><Eye />Open</Button>,
     },
   ], [custodianNames]);
   const collectionCustodians = useMemo<CollectionCustodianRow[]>(() => {
@@ -167,6 +223,10 @@ export function CollectionView({ clientId, collectionId }: { clientId: string; c
   const custodianColumns = useMemo<ColumnDef<CollectionCustodianRow>[]>(() => [
     {
       id: "select",
+      size: 52,
+      minSize: 52,
+      maxSize: 52,
+      enableResizing: false,
       header: () => (
         <input
           type="checkbox"
@@ -189,11 +249,13 @@ export function CollectionView({ clientId, collectionId }: { clientId: string; c
     {
       accessorKey: "displayName",
       header: "Custodian",
+      size: 210,
       cell: ({ row }) => <span className="font-semibold">{row.original.displayName}</span>,
     },
     {
       id: "emailAddresses",
       header: "Email",
+      size: 280,
       cell: ({ row }) => {
         const value = row.original.emailAddresses.join(", ");
         return <span className="block max-w-md truncate text-muted-foreground" title={value || undefined}>{value || "—"}</span>;
@@ -202,46 +264,56 @@ export function CollectionView({ clientId, collectionId }: { clientId: string; c
     {
       accessorKey: "externalReference",
       header: "Source reference",
+      size: 180,
       cell: ({ row }) => <span className="text-muted-foreground">{row.original.externalReference || "—"}</span>,
     },
     {
       accessorKey: "itemCount",
       header: "Documents",
+      size: 110,
       cell: ({ row }) => <span className="font-mono text-sm tabular-nums">{row.original.itemCount.toLocaleString()}</span>,
     },
     {
       accessorKey: "status",
       header: "Status",
+      size: 130,
       cell: ({ row }) => row.original.status ? <StatusBadge status={row.original.status} /> : <span className="text-muted-foreground">—</span>,
     },
   ], [collectionCustodians, selectedCustodianIds]);
-  const facetGroups = useMemo<FacetGroup[]>(() => {
-    const facets = searchResults.data?.facets;
-    return [
-      {
-        key: "custodians",
+  const facetGroups: FacetGroup[] = COLLECTION_FACET_KEYS.map((key, index) => {
+    const query = collectionFacetQueries[index];
+    const values = query.data ?? [];
+    const definition = {
+      custodians: {
         label: "Custodian",
-        options: mapFacetOptions(facets?.custodians, (value) => formatFacetValue("custodians", value, custodianNames)),
+        options: mapFacetOptions(values, (value) => formatFacetValue("custodians", value, custodianNames)),
       },
-      {
-        key: "file_extensions",
+      file_extensions: {
         label: "File extension",
-        options: mapFacetOptions(facets?.file_extensions, (value) => formatFacetValue("file_extensions", value, custodianNames)),
+        options: mapFacetOptions(values, (value) => formatFacetValue("file_extensions", value, custodianNames)),
       },
-      {
-        key: "record_types",
+      record_types: {
         label: "Record type",
-        options: mapFacetOptions(facets?.record_types, (value) => formatFacetValue("record_types", value, custodianNames)),
+        options: mapFacetOptions(values, (value) => formatFacetValue("record_types", value, custodianNames)),
       },
-      {
-        key: "processing_statuses",
+      processing_statuses: {
         label: "Processing status",
-        options: mapFacetOptions(facets?.processing_statuses, (value) => formatFacetValue("processing_statuses", value, custodianNames)),
+        options: mapFacetOptions(values, (value) => formatFacetValue("processing_statuses", value, custodianNames)),
       },
-    ];
-  }, [custodianNames, searchResults.data?.facets]);
+    }[key];
+    return {
+      key,
+      ...definition,
+      loaded: query.isSuccess,
+      loading: requestedFacets.includes(key) && query.isFetching,
+      error: query.isError,
+    };
+  });
   const activeFilters = useMemo<ActiveFilter[]>(() => {
     const filters: ActiveFilter[] = search ? [{ key: "search", label: `Search: ${search}` }] : [];
+    if (fileDateRange.from || fileDateRange.to) {
+      filters.push({ key: "file_date", label: formatFileDateRange(fileDateRange) });
+    }
     for (const group of facetGroups) {
       for (const value of facetFilters[group.key as CollectionFacetKey]) {
         const label = group.options.find((option) => option.value === value)?.label
@@ -250,7 +322,7 @@ export function CollectionView({ clientId, collectionId }: { clientId: string; c
       }
     }
     return filters;
-  }, [custodianNames, facetFilters, facetGroups, search]);
+  }, [custodianNames, facetFilters, facetGroups, fileDateRange, search]);
 
   function applySearch(event: FormEvent) {
     event.preventDefault();
@@ -269,9 +341,16 @@ export function CollectionView({ clientId, collectionId }: { clientId: string; c
     }));
   }
 
+  function requestFacet(groupKey: string) {
+    const key = groupKey as CollectionFacetKey;
+    if (!COLLECTION_FACET_KEYS.includes(key)) return;
+    setRequestedFacets((current) => current.includes(key) ? current : [...current, key]);
+  }
+
   function clearFilters() {
     setSearchInput("");
     setSearch("");
+    setFileDateRange({ from: "", to: "" });
     setOffset(0);
     setFacetFilters(emptyFacetFilters());
   }
@@ -280,6 +359,11 @@ export function CollectionView({ clientId, collectionId }: { clientId: string; c
     if (key === "search") {
       setSearchInput("");
       setSearch("");
+      setOffset(0);
+      return;
+    }
+    if (key === "file_date") {
+      setFileDateRange({ from: "", to: "" });
       setOffset(0);
       return;
     }
@@ -299,7 +383,7 @@ export function CollectionView({ clientId, collectionId }: { clientId: string; c
   if (client.error || collection.error) return <QueryError message={client.error?.message ?? collection.error?.message} />;
   if (collection.data.client_id !== clientId) return <QueryError message="This collection does not belong to the selected client." />;
 
-  const hasFilters = Boolean(search) || Object.values(facetFilters).some((values) => values.length > 0);
+  const hasFilters = Boolean(search || fileDateRange.from || fileDateRange.to) || Object.values(facetFilters).some((values) => values.length > 0);
   const pageStart = searchResults.data?.items.length ? offset + 1 : 0;
   const pageEnd = offset + (searchResults.data?.items.length ?? 0);
 
@@ -316,76 +400,94 @@ export function CollectionView({ clientId, collectionId }: { clientId: string; c
         eyebrow="Evidence collection"
         title={collection.data.name}
         description={collection.data.description || "Client-level source data and uploaded artifacts."}
-        actions={<div className="flex items-center gap-2"><HelpLink topic="collections" /><StatusBadge status={collection.data.status} /></div>}
+        actions={<div className="flex flex-wrap items-center gap-2"><HelpLink topic="collections" /><StatusBadge status={collection.data.status} />{collection.data.status !== "DELETING" ? <DeleteCollectionDialog collectionName={collection.data.name} onDelete={() => deleteCollection.mutateAsync().then(() => undefined)} /> : null}</div>}
       />
-      <div className="mb-6 flex gap-1 border-b" role="tablist" aria-label="Collection sections">
-        <button role="tab" aria-selected={tab === "documents"} onClick={() => setTab("documents")} className={tabClass(tab === "documents")}>Documents</button>
-        <button role="tab" aria-selected={tab === "custodians"} onClick={() => setTab("custodians")} className={tabClass(tab === "custodians")}>Custodians</button>
+      <div className="mb-6 flex flex-wrap items-end justify-between gap-3 border-b">
+        <div className="flex gap-1" role="tablist" aria-label="Collection sections">
+          <button role="tab" aria-selected={tab === "documents"} onClick={() => setTab("documents")} className={tabClass(tab === "documents")}>Documents</button>
+          <button role="tab" aria-selected={tab === "custodians"} onClick={() => setTab("custodians")} className={tabClass(tab === "custodians")}>Custodians</button>
+          <button role="tab" aria-selected={tab === "date-histogram"} onClick={() => setTab("date-histogram")} className={tabClass(tab === "date-histogram")}>Date Histogram</button>
+          <button role="tab" aria-selected={tab === "processing"} onClick={() => setTab("processing")} className={tabClass(tab === "processing")}>Processing</button>
+        </div>
+        {tab === "documents" ? (
+          <div className="pb-2">
+            <AddToMatterDialog
+              matters={matters.data ?? []}
+              triggerLabel="Add all matching"
+              disabled={!searchResults.data?.total || matters.isPending}
+              selectionDescription={`Add all ${(searchResults.data?.total ?? 0).toLocaleString()} documents matching the current search and filters.`}
+              onAdd={(matterId) => createImportJob(matterId, {
+                source_collection_id: collectionId,
+                selection: {
+                  mode: "QUERY",
+                  q: search || null,
+                  custodian_ids: facetFilters.custodians,
+                  file_extensions: facetFilters.file_extensions,
+                  record_types: facetFilters.record_types as MatterDocumentImportCreate["selection"]["record_types"],
+                  processing_statuses: facetFilters.processing_statuses as MatterDocumentImportCreate["selection"]["processing_statuses"],
+                  file_date_from: utcDayStart(fileDateRange.from),
+                  file_date_to: utcDayEnd(fileDateRange.to),
+                  item_ids: [],
+                },
+                selection_summary: hasFilters ? "Current collection search and filters" : "All collection documents",
+              })}
+            />
+          </div>
+        ) : null}
       </div>
 
       {tab === "documents" ? (
         <>
-          <Card className="mb-5 p-4">
-            <form onSubmit={applySearch} className="flex flex-col gap-3 sm:flex-row sm:items-end">
-              <div className="min-w-0 flex-1 space-y-2">
-                <label htmlFor="collection-search" className="text-sm font-semibold">Search documents</label>
-                <div className="relative">
-                  <Search className="pointer-events-none absolute left-3 top-1/2 size-4 -translate-y-1/2 text-muted-foreground" />
-                  <Input
-                    id="collection-search"
-                    className="pl-9"
-                    value={searchInput}
-                    onChange={(event) => setSearchInput(event.target.value)}
-                    placeholder="Search filename or source path"
-                  />
-                </div>
-              </div>
-              <Button type="submit"><Search />Search</Button>
-            </form>
-          </Card>
-
           {searchResults.isPending ? <TableLoading /> : searchResults.error ? <QueryError message={searchResults.error.message} /> : (
-            <div className="grid items-start gap-5 lg:grid-cols-[17rem_minmax(0,1fr)]">
-              <FacetSidebar
-                groups={facetGroups}
-                selected={facetFilters}
-                hasFilters={hasFilters}
-                onToggle={toggleFacet}
-                onClear={clearFilters}
-              />
-              <div className="min-w-0 space-y-4">
-                <ActiveFilterBar filters={activeFilters} onRemove={removeActiveFilter} />
-                <div className="flex flex-wrap items-center justify-between gap-3">
-                  <p className="text-sm font-medium">
-                    {searchResults.data.total.toLocaleString()} {searchResults.data.total === 1 ? "document" : "documents"}
-                  </p>
-                  <div className="flex items-center gap-3">
-                    {searchResults.isFetching ? <p className="text-sm text-muted-foreground">Updating…</p> : null}
-                    <AddToMatterDialog
-                      matters={matters.data ?? []}
-                      triggerLabel="Add all matching"
-                      disabled={searchResults.data.total === 0 || matters.isPending}
-                      selectionDescription={`Add all ${searchResults.data.total.toLocaleString()} documents matching the current search and filters.`}
-                      onAdd={(matterId) => createImportJob(matterId, {
-                        source_collection_id: collectionId,
-                        selection: {
-                          mode: "QUERY",
-                          q: search || null,
-                          custodian_ids: facetFilters.custodians,
-                          file_extensions: facetFilters.file_extensions,
-                          record_types: facetFilters.record_types as MatterDocumentImportCreate["selection"]["record_types"],
-                          processing_statuses: facetFilters.processing_statuses as MatterDocumentImportCreate["selection"]["processing_statuses"],
-                          item_ids: [],
-                        },
-                        selection_summary: hasFilters ? "Current collection search and filters" : "All collection documents",
-                      })}
+            <div className="grid items-start gap-x-5 gap-y-3 lg:grid-cols-[17rem_minmax(0,1fr)]">
+              <div className="order-2 flex min-h-9 items-center px-4 lg:order-none lg:col-start-1 lg:row-start-1">
+                <p className="text-sm font-semibold">
+                  {searchResults.data.total.toLocaleString()} {searchResults.data.total === 1 ? "document" : "documents"}
+                </p>
+              </div>
+              <div className="order-1 min-w-0 space-y-3 lg:order-none lg:col-start-2 lg:row-start-1">
+                <form onSubmit={applySearch} className="flex min-h-9 flex-col gap-2 sm:flex-row sm:items-center">
+                  <div className="relative min-w-0 flex-1">
+                    <Search className="pointer-events-none absolute left-3 top-1/2 size-4 -translate-y-1/2 text-muted-foreground" />
+                    <Input
+                      id="collection-search"
+                      aria-label="Search collection"
+                      className="h-9 pl-9"
+                      value={searchInput}
+                      onChange={(event) => setSearchInput(event.target.value)}
+                      placeholder="Search filename or source path"
                     />
                   </div>
-                </div>
+                  <Button type="submit" size="sm" className="h-9"><Search />Search</Button>
+                </form>
+                <ActiveFilterBar filters={activeFilters} onRemove={removeActiveFilter} />
+                {searchResults.isFetching ? <p className="text-sm text-muted-foreground">Updating…</p> : null}
+              </div>
+              <div className="order-3 min-w-0 lg:order-none lg:col-start-1 lg:row-start-2">
+                <FacetSidebar
+                  groups={facetGroups}
+                  selected={facetFilters}
+                  hasFilters={hasFilters}
+                  onToggle={toggleFacet}
+                  onOpen={requestFacet}
+                  onClear={clearFilters}
+                >
+                  <DateRangeFacet
+                    from={fileDateRange.from}
+                    to={fileDateRange.to}
+                    onChange={(range) => {
+                      setOffset(0);
+                      setFileDateRange(range);
+                    }}
+                  />
+                </FacetSidebar>
+              </div>
+              <div className="order-4 min-w-0 space-y-4 lg:order-none lg:col-start-2 lg:row-start-2">
                 <DataTable
                   columns={columns}
                   data={searchResults.data.items}
                   emptyMessage={hasFilters ? "No documents match the active search and filters." : "This collection does not contain any imported items yet."}
+                  fitToWidth
                 />
                 <div className="flex flex-col justify-between gap-3 text-sm text-muted-foreground sm:flex-row sm:items-center">
                   <p>{searchResults.data.items.length ? `Showing ${pageStart}–${pageEnd} of ${searchResults.data.total.toLocaleString()}` : "No items to show"}</p>
@@ -403,6 +505,28 @@ export function CollectionView({ clientId, collectionId }: { clientId: string; c
           )}
           <DocumentViewerDialog item={selectedItem} onClose={() => setSelectedItem(null)} />
         </>
+      ) : tab === "date-histogram" ? (
+        <Card className="p-5">
+          <DateHistogram
+            buckets={collectionDateHistogram.data?.buckets ?? []}
+            interval={histogramInterval}
+            onIntervalChange={setHistogramInterval}
+            loading={collectionDateHistogram.isPending}
+            error={Boolean(collectionDateHistogram.error)}
+            onSelect={(range) => {
+              setFileDateRange(range);
+              setOffset(0);
+              setTab("documents");
+            }}
+          />
+          {collectionDateHistogram.data?.missing_count ? (
+            <p className="mt-4 text-sm text-muted-foreground">
+              {collectionDateHistogram.data.missing_count.toLocaleString()} documents do not have a file date.
+            </p>
+          ) : null}
+        </Card>
+      ) : tab === "processing" ? (
+        <CollectionProcessingPanel collectionId={collectionId} />
       ) : custodians.isPending || collectionCustodianSummary.isPending ? (
         <TableLoading />
       ) : custodians.error || collectionCustodianSummary.error ? (
@@ -460,4 +584,28 @@ function formatFacetValue(key: CollectionFacetKey, value: string, custodianNames
   if (key === "custodians") return custodianNames.get(value) ?? "Unknown custodian";
   if (key === "file_extensions") return value === "__none__" ? "No extension" : `.${value}`;
   return formatFacetLabel(value);
+}
+
+function collectionFilterParams(
+  search: string,
+  facetFilters: CollectionFacetFilters,
+  fileDateRange: FileDateRange,
+) {
+  const params = new URLSearchParams();
+  if (search) params.set("q", search);
+  const fileDateFrom = utcDayStart(fileDateRange.from);
+  const fileDateTo = utcDayEnd(fileDateRange.to);
+  if (fileDateFrom) params.set("file_date_from", fileDateFrom);
+  if (fileDateTo) params.set("file_date_to", fileDateTo);
+  facetFilters.custodians.forEach((value) => params.append("custodian_id", value));
+  facetFilters.file_extensions.forEach((value) => params.append("extension", value));
+  facetFilters.record_types.forEach((value) => params.append("record_type", value));
+  facetFilters.processing_statuses.forEach((value) => params.append("processing_status", value));
+  return params;
+}
+
+function formatFileDateRange(range: FileDateRange) {
+  const from = range.from ? formatDateOnly(range.from) : "Any time";
+  const to = range.to ? formatDateOnly(range.to) : "Any time";
+  return `File date: ${from} – ${to}`;
 }

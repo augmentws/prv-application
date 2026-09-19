@@ -24,6 +24,7 @@ export interface CollectionItemRead {
   original_source_path: string | null;
   source_created_at: string | null;
   source_modified_at: string | null;
+  file_date: string | null;
   family_id: string | null;
   parent_collection_item_id: string | null;
   processing_status: CollectionItemReadProcessingStatus;

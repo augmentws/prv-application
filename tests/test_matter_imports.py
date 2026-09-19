@@ -59,6 +59,8 @@ def test_create_list_and_cancel_matter_document_import(client, root_admin) -> No
                 "file_extensions": ["pdf"],
                 "record_types": [],
                 "processing_statuses": [],
+                "file_date_from": "2020-01-01T00:00:00Z",
+                "file_date_to": "2020-12-31T23:59:59.999Z",
                 "item_ids": [],
             },
             "selection_summary": "PDF contracts",
@@ -68,6 +70,8 @@ def test_create_list_and_cancel_matter_document_import(client, root_admin) -> No
     assert created_job.status_code == 202, created_job.text
     assert created_job.json()["status"] == "QUEUED"
     assert created_job.json()["selection_summary"] == "PDF contracts"
+    assert created_job.json()["selection"]["file_date_from"] == "2020-01-01T00:00:00Z"
+    assert created_job.json()["selection"]["file_date_to"] == "2020-12-31T23:59:59.999000Z"
 
     jobs = client.get(f"/v1/matters/{matter_id}/document-imports", headers=headers)
     assert jobs.status_code == 200

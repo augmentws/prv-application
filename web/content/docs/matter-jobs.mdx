@@ -41,7 +41,7 @@ During import, source custodian relationships are copied into Core-owned matter-
 
 Open the matter's **Jobs** tab and select **Generate embeddings**. The job freezes the matter's current document list, then processes it in durable batches. Documents added after planning begins are handled by a later job.
 
-For each document, Priv-View chooses extracted text first, then OCR text, then a supported text-based native file. It creates a sentence-aware chunk-set Parquet artifact and a matching vector-set Parquet artifact. Both artifacts remain associated with the source collection item and record their source lineage. The search index receives the chunks as nested records under the owning matter document.
+For each document, Priv-View chooses extracted text first, then OCR text, then a supported text-based native file. It creates a sentence-aware chunk-set Parquet artifact and a matching vector-set Parquet artifact. Both artifacts remain associated with the source collection item and record their source lineage. Source reads, chunk preparation, and vector-artifact writes use bounded per-document concurrency, while chunks from multiple documents are embedded together up to the model service's input limit. Worker logs report preparation and completion progress every 25 documents, plus preparation, raw-inference, persistence, and total throughput after each batch. After every durable embedding batch finishes, the job updates the search index in one paged operation and performs one final refresh; the index stores chunks as nested records under the owning matter document.
 
 The embedding job reports:
 
@@ -52,6 +52,10 @@ The embedding job reports:
 
 Rerunning a job is safe. Priv-View reuses artifacts when the source content, chunking settings, model revision, dimensions, and normalization configuration match. Changing any of those inputs produces a distinct derivation without overwriting earlier artifacts.
 
+When `EMBEDDING_PROVIDER=voyage_api`, newly created jobs use the configured hosted execution mode. The default real-time mode groups chunks into requests, runs multiple durable matter batches concurrently, enforces the configured Voyage TPM and RPM limits, and retries transient failures. Optional asynchronous Batch API mode persists provider identifiers, polls durably, and resumes result ingestion after worker restarts. Batch API mode requires provider billing and is enabled with `EMBEDDING_VOYAGE_BATCH_ENABLED=true`.
+
+The embedding-job table reports external provider usage as the total token count, separate input and output token counts, and provider request count. These values are rolled up from the retry-safe provider usage ledger and update while the job runs.
+
 ## Cluster document topics
 
 Topic clustering requires at least one completed embedding job with usable chunks. Open the matter's **Jobs** tab and select **Cluster topics**.
@@ -61,13 +65,19 @@ Choose an operating mode:
 - **Automatic discovery** learns a natural topic count from the sample and can leave unrelated material unassigned.
 - **Fixed topic count** creates the exact requested number of sample clusters. Use this when a predictable taxonomy size matters more than learning the natural count.
 
-**Sample chunks** controls how many chunk vectors are used to discover the clusters. Assignment still visits every matter document in durable batches; increasing the sample improves corpus coverage but uses more clustering time and memory. Long documents are capped during sampling so they do not dominate discovery.
+Both modes reduce embedding noise with PCA before clustering and keep their full-corpus assignment centroids in the original embedding space. Fixed mode runs MiniBatch K-means with the requested count. Automatic discovery evaluates bounded MiniBatch K-means candidates of 10, 20, 30, 40, and 50 topics, subject to the available sample and configured maximum, then selects the best-separated result while penalizing a solution dominated by one cluster. Generated names use terms that distinguish one cluster from the others and ignore common email-routing vocabulary.
 
-**Replace existing topic values** is selected by default. Each processed document receives a metadata `CLEAR` event followed by its newly assigned topics. The current values are replaced, while the complete metadata event history remains available. Clear the option to append newly discovered topics instead.
+**Sample chunks** controls how many chunk vectors are used to discover the clusters. It does not control the number of topics. Increasing the sample improves corpus coverage but uses more clustering time and memory. Blank and very short chunks are excluded, and exact duplicate chunk text is sampled only once. Long documents are capped and represented by chunks spaced across their eligible content so they do not dominate discovery.
 
-The job automatically creates an active, facetable, multi-value `topics` enum field when the matter does not already have one. It also creates an **Analysis** metadata group and places the field there. If `topics` already exists, it must be an active, asserted, multi-value enum. Stable enum keys identify clusters even when their generated display names are similar.
+Discovery does not immediately change metadata. When discovery finishes, the job enters **Awaiting review**. Select **Review topics** to inspect the proposed names, keywords, sample sizes, and representative excerpts. You can rename a topic, revise its description, or exclude it. At least one topic must remain included.
 
-Topic names are generated from the strongest terms in representative sample chunks. During assignment, every available chunk is compared with the learned topic centroids, and a document receives its strongest qualifying topics. Documents without a qualifying topic are counted as unassigned. Published values are written through the same metadata ledger and search-projection path as other agent-authored metadata, so they are searchable and facetable after their batch finishes.
+Select **Apply topics** only after the proposal set is ready. The approved set is recorded with the reviewing user and time, then assignment visits every document in the frozen job scope using durable batches. Closing the browser while the job is awaiting review or applying is safe.
+
+**Replace existing topic values when approved** is selected by default. Each processed document receives a metadata `CLEAR` event followed by its newly assigned topics. The current values are replaced, while the complete metadata event history remains available. Clear the option to append newly discovered topics instead.
+
+Applying an approved set automatically creates an active, facetable, multi-value `topics` enum field when the matter does not already have one. Discovery alone does not create the field. Application also creates an **Analysis** metadata group and places the field there. If `topics` already exists, it must be an active, asserted, multi-value enum. Stable enum keys identify included proposals even when their display names are similar.
+
+Topic names are generated from the strongest terms in representative sample chunks. Renaming a proposal does not change its learned centroid. During assignment, every available chunk is compared with the approved topic centroids, and a document receives its strongest qualifying topics. Documents without a qualifying topic are counted as unassigned. Published values are written through the same metadata ledger and search-projection path as other agent-authored metadata, so they are searchable and facetable after their batch finishes.
 
 ## Reliability and cleanup
 
@@ -90,6 +100,8 @@ and rerun after correcting the cause; the rerun safely reuses any artifacts that
 successfully created. Embedding generation currently works only when a document has
 extracted text, OCR text, or a supported text-based native artifact. Dense vectors
 are indexed for semantic and hybrid search. Topic names currently use extractive
-keywords rather than generative model labeling, and a new run creates a new set of
+keywords rather than generative model labeling. Topic review supports renaming and
+excluding proposals; it does not currently support merging clusters or adding a new
+topic without rerunning discovery. A new run creates a new set of
 stable topic values rather than merging equivalent topics across runs. Image-only
 and unsupported binary documents require an extraction or OCR workflow first.

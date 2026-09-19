@@ -14,6 +14,8 @@ pnpm dev
 
 Open `http://127.0.0.1:3000`. The browser communicates only with the Next.js BFF. JWT access and refresh tokens remain in protected cookies and are never exposed to browser JavaScript.
 
+`APP_ORIGIN` must match the browser-facing origin. Keep the example value for local development; when using `cloudflared` or another reverse proxy, set it to the public HTTPS origin and restart Next.js. Exposed environments should run `pnpm build` followed by `pnpm start`, not `pnpm dev`.
+
 ## Refresh the generated API client
 
 From the repository root:

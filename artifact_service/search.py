@@ -33,6 +33,8 @@ def collection_item_ids(
     processing_statuses: list[str],
     source_created_from: datetime | None = None,
     source_created_to: datetime | None = None,
+    file_date_from: datetime | None = None,
+    file_date_to: datetime | None = None,
     explicit_item_ids: list[uuid.UUID] | None = None,
     exclude_facet: str | None = None,
 ):
@@ -72,4 +74,8 @@ def collection_item_ids(
         query = query.where(CollectionItem.source_created_at >= source_created_from)
     if source_created_to is not None:
         query = query.where(CollectionItem.source_created_at <= source_created_to)
+    if file_date_from is not None:
+        query = query.where(CollectionItem.file_date >= file_date_from)
+    if file_date_to is not None:
+        query = query.where(CollectionItem.file_date <= file_date_to)
     return query

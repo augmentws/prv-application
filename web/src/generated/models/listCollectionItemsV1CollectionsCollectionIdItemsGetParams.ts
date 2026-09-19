@@ -12,6 +12,8 @@ record_type?: string | null;
 filename?: string | null;
 source_created_from?: string | null;
 source_created_to?: string | null;
+file_date_from?: string | null;
+file_date_to?: string | null;
 sha256?: string | null;
 min_size?: number | null;
 max_size?: number | null;

@@ -63,7 +63,7 @@ export function CreateTopicJobDialog({ onCreate, disabled }: {
       <DialogContent className="max-w-lg">
         <DialogHeader>
           <DialogTitle>Cluster document topics</DialogTitle>
-          <DialogDescription>Discover named topics from the matter&apos;s existing chunk embeddings.</DialogDescription>
+          <DialogDescription>Discover proposed topics from the matter&apos;s existing chunk embeddings. You will review them before anything is applied to documents.</DialogDescription>
         </DialogHeader>
         <form className="space-y-5" onSubmit={handleSubmit(submit)}>
           <div className="space-y-2">
@@ -95,10 +95,10 @@ export function CreateTopicJobDialog({ onCreate, disabled }: {
           </div>
           <label className="flex items-start gap-3 rounded-lg border bg-muted/25 p-4 text-sm">
             <input type="checkbox" className="mt-0.5 size-4 rounded border-input accent-primary" {...register("replace_existing")} />
-            <span><span className="block font-semibold">Replace existing topic values</span><span className="mt-1 block text-muted-foreground">Clear current values before applying this run. Metadata history remains available.</span></span>
+            <span><span className="block font-semibold">Replace existing topic values when approved</span><span className="mt-1 block text-muted-foreground">After review, clear current values before applying this run. Metadata history remains available.</span></span>
           </label>
           {errors.root ? <p role="alert" className="text-sm text-destructive">{errors.root.message}</p> : null}
-          <DialogFooter><Button type="button" variant="outline" onClick={() => setOpen(false)}>Cancel</Button><Button type="submit" disabled={isSubmitting}>{isSubmitting ? <LoaderCircle className="animate-spin" /> : null}Start job</Button></DialogFooter>
+          <DialogFooter><Button type="button" variant="outline" onClick={() => setOpen(false)}>Cancel</Button><Button type="submit" disabled={isSubmitting}>{isSubmitting ? <LoaderCircle className="animate-spin" /> : null}Start discovery</Button></DialogFooter>
         </form>
       </DialogContent>
     </Dialog>

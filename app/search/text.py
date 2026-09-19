@@ -1,12 +1,15 @@
 from __future__ import annotations
 
+import logging
 from email import policy
 from email.message import Message
 from email.parser import BytesParser
 from html.parser import HTMLParser
 from pathlib import Path
 
-DERIVED_TEXT_ROLES = ("EXTRACTED_TEXT", "OCR_TEXT")
+logger = logging.getLogger(__name__)
+
+DERIVED_TEXT_ROLES = ("NORMALIZED_TEXT", "EXTRACTED_TEXT", "OCR_TEXT")
 SEARCH_TEXT_ROLES = (*DERIVED_TEXT_ROLES, "NATIVE")
 
 _TEXT_EXTENSIONS = {
@@ -117,7 +120,7 @@ def _part_text(part: Message) -> str | None:
         raw_payload = part.get_payload()
         text = raw_payload if isinstance(raw_payload, str) else ""
     else:
-        text = payload.decode(part.get_content_charset() or "utf-8", errors="replace")
+        text = _decode_bytes(payload, part.get_content_charset())
     if part.get_content_type() == "text/html":
         text = _html_text(text)
     return _normalize(text) or None
@@ -126,7 +129,26 @@ def _part_text(part: Message) -> str | None:
 def _decode_text(content: bytes, media_type: str) -> str:
     header = Message()
     header["content-type"] = media_type
-    return content.decode(header.get_content_charset() or "utf-8", errors="replace")
+    return _decode_bytes(content, header.get_content_charset())
+
+
+def _decode_bytes(content: bytes, declared_charset: str | None) -> str:
+    charset = (declared_charset or "utf-8").strip().strip("\"'") or "utf-8"
+    try:
+        return content.decode(charset, errors="replace")
+    except LookupError:
+        try:
+            text = content.decode("utf-8")
+            fallback = "utf-8"
+        except UnicodeDecodeError:
+            text = content.decode("windows-1252", errors="replace")
+            fallback = "windows-1252"
+        logger.warning(
+            "Unknown declared text charset %r; decoded search text as %s",
+            charset,
+            fallback,
+        )
+        return text
 
 
 def _html_text(value: str) -> str:

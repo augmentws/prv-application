@@ -16,6 +16,9 @@ class EmbeddingResponse(BaseModel):
     dimensions: int
     normalized: bool
     embeddings: list[list[float]]
+    input_tokens: int = Field(default=0, ge=0)
+    output_tokens: int = Field(default=0, ge=0)
+    request_count: int = Field(default=0, ge=0)
 
 
 class EmbeddingModelRead(BaseModel):

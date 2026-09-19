@@ -1,12 +1,15 @@
 from __future__ import annotations
 
 import hashlib
+import itertools
 import mailbox
 import mimetypes
+import threading
 import uuid
 import zipfile
 from collections import Counter
-from collections.abc import Callable
+from collections.abc import Callable, Iterable, Iterator
+from concurrent.futures import FIRST_COMPLETED, Future, ThreadPoolExecutor, wait
 from dataclasses import asdict, dataclass, field, replace
 from datetime import datetime, timezone
 from email import policy
@@ -36,6 +39,14 @@ class ImportReport:
 
     def to_dict(self) -> dict[str, Any]:
         return asdict(self)
+
+
+@dataclass(frozen=True)
+class _UploadResult:
+    source_item_id: str
+    submitted_bytes: int
+    created: bool | None = None
+    failure: ImportFailure | None = None
 
 
 def _datetime(value: datetime | None) -> str | None:
@@ -75,8 +86,11 @@ class BaseImporter:
         collection_name: str,
         collection_description: str | None = None,
         include_attachments: bool = True,
+        workers: int = 1,
         progress: Callable[[str], None] | None = None,
     ) -> None:
+        if workers < 1:
+            raise ValueError("Import workers must be at least 1")
         self.api = api
         self.tenant_id = tenant_id
         self.tenant_slug = tenant_slug
@@ -84,8 +98,11 @@ class BaseImporter:
         self.collection_name = collection_name
         self.collection_description = collection_description
         self.include_attachments = include_attachments
+        self.workers = workers
         self.progress = progress or (lambda _: None)
         self._custodians: dict[str, dict[str, Any]] = {}
+        self._custodian_lock = threading.Lock()
+        self._uploaded_items_lock = threading.Lock()
 
     def run(
         self,
@@ -102,6 +119,9 @@ class BaseImporter:
         uploaded_items: dict[str, str] = {}
         submitted = 0
 
+        if self.workers > 1:
+            self.progress(f"Uploading with {self.workers} concurrent workers")
+
         for container in adapter.source_containers():
             self.progress(f"Preserving source container {container.key}")
             with container.path.open("rb") as content:
@@ -115,36 +135,163 @@ class BaseImporter:
             source_artifacts[container.key] = response["artifact"]["id"]
             report.containers_uploaded += 1
 
-            for item in self.iter_preprocessed_items(
+            items: Iterable[ImportItem] = self.iter_preprocessed_items(
                 adapter,
                 container,
                 include_attachments=self.include_attachments,
-            ):
-                if limit is not None and submitted >= limit:
-                    break
-                submitted += 1
-                try:
-                    response = self._upload_item(
-                        collection["id"],
-                        item,
-                        source_artifacts,
-                        uploaded_items,
-                    )
-                    uploaded_items[item.source_item_id] = response["item"]["id"]
-                    report.bytes_submitted += len(item.content)
-                    if response["created"]:
-                        report.items_created += 1
-                    else:
-                        report.items_existing += 1
-                    self.progress(f"Uploaded {item.source_item_id}")
-                except Exception as exc:
-                    if not continue_on_error:
-                        raise
-                    report.failures.append(ImportFailure(item.source_item_id, str(exc)))
-                    self.progress(f"Failed {item.source_item_id}: {exc}")
+            )
+            if limit is not None:
+                items = itertools.islice(items, limit - submitted)
+            batches = self._item_batches(items)
+            submitted += self._upload_batches(
+                collection["id"],
+                batches,
+                source_artifacts,
+                uploaded_items,
+                report,
+                continue_on_error=continue_on_error,
+            )
             if limit is not None and submitted >= limit:
                 break
         return report
+
+    @staticmethod
+    def _item_batches(items: Iterable[ImportItem]) -> Iterator[list[ImportItem]]:
+        """Keep a parent and its contiguous family children on one worker."""
+        batch: list[ImportItem] = []
+        batch_key: str | None = None
+        batch_source_ids: set[str] = set()
+        for item in items:
+            item_key = item.family_id or item.source_item_id
+            belongs_to_batch = (
+                item_key == batch_key
+                or item.parent_source_item_id in batch_source_ids
+            )
+            if batch and not belongs_to_batch:
+                yield batch
+                batch = []
+                batch_source_ids = set()
+            batch_key = item_key
+            batch.append(item)
+            batch_source_ids.add(item.source_item_id)
+        if batch:
+            yield batch
+
+    def _upload_batches(
+        self,
+        collection_id: str,
+        batches: Iterable[list[ImportItem]],
+        source_artifacts: dict[str, str],
+        uploaded_items: dict[str, str],
+        report: ImportReport,
+        *,
+        continue_on_error: bool,
+    ) -> int:
+        submitted = 0
+        if self.workers == 1:
+            for batch in batches:
+                submitted += len(batch)
+                results = self._upload_batch(
+                    collection_id,
+                    batch,
+                    source_artifacts,
+                    uploaded_items,
+                    continue_on_error=continue_on_error,
+                )
+                self._apply_results(report, results)
+            return submitted
+
+        pending: set[Future[list[_UploadResult]]] = set()
+        queue_limit = self.workers * 2
+        with ThreadPoolExecutor(
+            max_workers=self.workers,
+            thread_name_prefix="import-upload",
+        ) as executor:
+            for batch in batches:
+                submitted += len(batch)
+                pending.add(
+                    executor.submit(
+                        self._upload_batch,
+                        collection_id,
+                        batch,
+                        source_artifacts,
+                        uploaded_items,
+                        continue_on_error=continue_on_error,
+                    )
+                )
+                if len(pending) >= queue_limit:
+                    done, pending = wait(pending, return_when=FIRST_COMPLETED)
+                    self._consume_futures(report, done)
+            while pending:
+                done, pending = wait(pending, return_when=FIRST_COMPLETED)
+                self._consume_futures(report, done)
+        return submitted
+
+    def _upload_batch(
+        self,
+        collection_id: str,
+        batch: list[ImportItem],
+        source_artifacts: dict[str, str],
+        uploaded_items: dict[str, str],
+        *,
+        continue_on_error: bool,
+    ) -> list[_UploadResult]:
+        results: list[_UploadResult] = []
+        for item in batch:
+            try:
+                response = self._upload_item(
+                    collection_id,
+                    item,
+                    source_artifacts,
+                    uploaded_items,
+                )
+                with self._uploaded_items_lock:
+                    uploaded_items[item.source_item_id] = response["item"]["id"]
+                results.append(
+                    _UploadResult(
+                        source_item_id=item.source_item_id,
+                        submitted_bytes=len(item.content),
+                        created=response["created"],
+                    )
+                )
+            except Exception as exc:
+                if not continue_on_error:
+                    raise
+                results.append(
+                    _UploadResult(
+                        source_item_id=item.source_item_id,
+                        submitted_bytes=0,
+                        failure=ImportFailure(item.source_item_id, str(exc)),
+                    )
+                )
+        return results
+
+    def _consume_futures(
+        self,
+        report: ImportReport,
+        futures: Iterable[Future[list[_UploadResult]]],
+    ) -> None:
+        for future in futures:
+            self._apply_results(report, future.result())
+
+    def _apply_results(
+        self,
+        report: ImportReport,
+        results: Iterable[_UploadResult],
+    ) -> None:
+        for result in results:
+            if result.failure is not None:
+                report.failures.append(result.failure)
+                self.progress(
+                    f"Failed {result.source_item_id}: {result.failure.message}"
+                )
+                continue
+            report.bytes_submitted += result.submitted_bytes
+            if result.created:
+                report.items_created += 1
+            else:
+                report.items_existing += 1
+            self.progress(f"Uploaded {result.source_item_id}")
 
     @classmethod
     def iter_preprocessed_items(
@@ -167,7 +314,9 @@ class BaseImporter:
             yield from cls._with_file_relationships(
                 adapter,
                 item,
-                include_attachments=include_attachments,
+                include_attachments=(
+                    include_attachments and adapter.expand_email_attachments
+                ),
             )
 
     @staticmethod
@@ -314,20 +463,23 @@ class BaseImporter:
         }
 
     def _resolve_custodian(self, specification: CustodianSpec) -> str:
-        existing = self._custodians.get(specification.cache_key)
-        if existing is not None:
-            if existing["status"] != "ACTIVE":
-                raise RuntimeError(f"Custodian {specification.display_name!r} exists but is not ACTIVE")
-            return existing["id"]
-        self.progress(f"Creating custodian {specification.display_name}")
-        created = self.api.create_custodian(
-            self.client_id,
-            specification.display_name,
-            specification.email_addresses,
-            specification.external_reference,
-        )
-        self._custodians[specification.cache_key] = created
-        return created["id"]
+        with self._custodian_lock:
+            existing = self._custodians.get(specification.cache_key)
+            if existing is not None:
+                if existing["status"] != "ACTIVE":
+                    raise RuntimeError(
+                        f"Custodian {specification.display_name!r} exists but is not ACTIVE"
+                    )
+                return existing["id"]
+            self.progress(f"Creating custodian {specification.display_name}")
+            created = self.api.create_custodian(
+                self.client_id,
+                specification.display_name,
+                specification.email_addresses,
+                specification.external_reference,
+            )
+            self._custodians[specification.cache_key] = created
+            return created["id"]
 
     def _upload_item(
         self,
@@ -351,12 +503,13 @@ class BaseImporter:
                 raise RuntimeError("Primary custodian is not present in item custodians")
         parent_id = None
         if item.parent_source_item_id is not None:
-            try:
-                parent_id = uploaded_items[item.parent_source_item_id]
-            except KeyError as exc:
-                raise RuntimeError(
-                    f"Parent item {item.parent_source_item_id!r} must be uploaded before its child"
-                ) from exc
+            with self._uploaded_items_lock:
+                try:
+                    parent_id = uploaded_items[item.parent_source_item_id]
+                except KeyError as exc:
+                    raise RuntimeError(
+                        f"Parent item {item.parent_source_item_id!r} must be uploaded before its child"
+                    ) from exc
         metadata = {
             "source_item_id": item.source_item_id,
             "record_type": item.record_type,

@@ -1,4 +1,5 @@
 import uuid
+from copy import deepcopy
 from types import SimpleNamespace
 from unittest.mock import Mock
 
@@ -12,15 +13,36 @@ from app.artifact_gateway import SearchItemSnapshot
 from app.config import Settings
 from app.embeddings.chunking import TextChunk
 from app.embeddings.parquet import write_chunk_set, write_vector_set
-from app.models import Client, Matter, MatterDocumentImportJob, MetadataDefinition, SearchIndexGeneration, Tenant
+from app.models import (
+    Client,
+    Matter,
+    MatterDocument,
+    MatterDocumentImportJob,
+    MatterEmbeddingBatch,
+    MatterEmbeddingJob,
+    MetadataDefinition,
+    SearchIndexGeneration,
+    SearchProjectionOperation,
+    Tenant,
+    User,
+)
 from app.schemas import MatterSearchRequest
 from app.search.mappings import (
     INDEX_ANALYZER,
     QUOTE_ANALYZER,
     SEARCH_ANALYZER,
     compile_document_index,
+    schema_hash,
 )
-from app.search.query import compile_facet_values_request, compile_search_request, execute_facet_values, execute_search
+from app.search.query import (
+    compile_date_histogram_request,
+    compile_facet_values_request,
+    compile_search_request,
+    execute_date_histogram,
+    execute_facet_values,
+    execute_search,
+)
+from app.search.schema import SearchReindexRequired
 from app.search.service import SearchIndexManager, build_document_projection
 
 
@@ -69,6 +91,14 @@ def test_mapping_uses_versioned_ediscovery_analyzers_and_numeric_types() -> None
     assert all(value["filter"] == ["lowercase"] for value in analyzers.values())
 
     properties = mapping["mappings"]["properties"]["metadata"]["properties"]
+    vector_method = mapping["mappings"]["properties"]["chunks"]["properties"]["embedding"]["method"]
+    assert mapping["mappings"]["properties"]["batch_ids"] == {"type": "keyword"}
+    assert vector_method == {
+        "name": "hnsw",
+        "engine": "faiss",
+        "space_type": "cosinesimil",
+        "parameters": {"ef_construction": 128, "m": 16},
+    }
     assert properties["notes"]["search_analyzer"] == SEARCH_ANALYZER
     assert properties["notes"]["search_quote_analyzer"] == QUOTE_ANALYZER
     assert properties["notes"]["index_options"] == "offsets"
@@ -91,10 +121,18 @@ def test_query_compiler_injects_scope_and_validates_matter_fields() -> None:
             "facets": ["issue"],
         }
     )
-    body = compile_search_request(request, definitions, tenant_id="tenant-1", matter_id="matter-1")
+    batch_filter = {"term": {"batch_ids": "batch-1"}}
+    body = compile_search_request(
+        request,
+        definitions,
+        tenant_id="tenant-1",
+        matter_id="matter-1",
+        required_filters=[batch_filter],
+    )
 
     assert {"term": {"tenant_id": "tenant-1"}} in body["query"]["bool"]["filter"]
     assert {"term": {"matter_id": "matter-1"}} in body["query"]["bool"]["filter"]
+    assert batch_filter in body["query"]["bool"]["filter"]
     assert {"terms": {"metadata.issue.exact": ["conduct"]}} in body["query"]["bool"]["filter"]
     assert body["aggs"]["issue"]["terms"]["field"] == "metadata.issue.exact"
     assert body["aggs"]["issue"]["terms"]["size"] == 8
@@ -141,14 +179,47 @@ def test_facet_value_query_is_limited_searchable_and_self_excluding() -> None:
         matter_id="matter-1",
         value_query="trade",
         size=20,
+        required_filters=[{"term": {"batch_ids": "batch-1"}}],
     )
 
     assert body["size"] == 0
     assert "highlight" not in body
     assert {"terms": {"metadata.issue.exact": ["pricing"]}} not in body["query"]["bool"]["filter"]
     assert {"terms": {"metadata.privilege": ["privileged"]}} in body["query"]["bool"]["filter"]
+    assert {"term": {"batch_ids": "batch-1"}} in body["query"]["bool"]["filter"]
     assert body["aggs"]["issue"]["terms"]["size"] == 20
     assert body["aggs"]["issue"]["terms"]["include"] == ".*trade.*"
+
+
+def test_date_histogram_is_calendar_bucketed_and_self_excluding() -> None:
+    definitions = [definition("sent_at", "DATETIME"), definition("issue", "TEXT", facetable=True)]
+    request = MatterSearchRequest.model_validate(
+        {
+            "filters": [
+                {"field": "sent_at", "operator": "RANGE", "from": "2025-01-01T00:00:00Z"},
+                {"field": "issue", "operator": "IN", "values": ["pricing"]},
+            ]
+        }
+    )
+    body = compile_date_histogram_request(
+        request,
+        definitions,
+        field="sent_at",
+        interval="month",
+        tenant_id="tenant-1",
+        matter_id="matter-1",
+    )
+
+    assert body["size"] == 0
+    assert "highlight" not in body
+    assert {"range": {"metadata.sent_at": {"gte": "2025-01-01T00:00:00+00:00"}}} not in body["query"]["bool"]["filter"]
+    assert {"terms": {"metadata.issue.exact": ["pricing"]}} in body["query"]["bool"]["filter"]
+    assert body["aggs"]["sent_at"]["date_histogram"] == {
+        "field": "metadata.sent_at",
+        "calendar_interval": "month",
+        "time_zone": "UTC",
+        "min_doc_count": 0,
+    }
 
 
 def test_query_compiler_builds_filtered_nested_semantic_and_hybrid_queries() -> None:
@@ -169,6 +240,7 @@ def test_query_compiler_builds_filtered_nested_semantic_and_hybrid_queries() -> 
         tenant_id="tenant-1",
         matter_id="matter-1",
         query_vector=query_vector,
+        required_filters=[{"term": {"batch_ids": "batch-1"}}],
     )
 
     nested = semantic_body["query"]["nested"]
@@ -176,9 +248,22 @@ def test_query_compiler_builds_filtered_nested_semantic_and_hybrid_queries() -> 
     assert knn["vector"] == query_vector
     assert knn["k"] == 100
     assert {"terms": {"metadata.issue.exact": ["conduct"]}} in knn["filter"]["bool"]["filter"]
+    assert {"term": {"batch_ids": "batch-1"}} in knn["filter"]["bool"]["filter"]
     assert nested["score_mode"] == "max"
     assert nested["inner_hits"]["size"] == 1
     assert "highlight" not in semantic_body
+
+    thresholded = semantic.model_copy(update={"minimum_similarity": 0.75})
+    thresholded_body = compile_search_request(
+        thresholded,
+        definitions,
+        tenant_id="tenant-1",
+        matter_id="matter-1",
+        query_vector=query_vector,
+    )
+    thresholded_knn = thresholded_body["query"]["nested"]["query"]["knn"]["chunks.embedding"]
+    assert thresholded_knn["min_score"] == pytest.approx(0.875)
+    assert "k" not in thresholded_knn
 
     hybrid = semantic.model_copy(update={"search_mode": "HYBRID"})
     hybrid_body = compile_search_request(
@@ -194,6 +279,14 @@ def test_query_compiler_builds_filtered_nested_semantic_and_hybrid_queries() -> 
 
     with pytest.raises(ValueError, match="SEMANTIC search requires a query"):
         MatterSearchRequest.model_validate({"search_mode": "SEMANTIC"})
+    with pytest.raises(ValueError, match="supported only for SEMANTIC"):
+        MatterSearchRequest.model_validate(
+            {"query": "pricing", "search_mode": "HYBRID", "minimum_similarity": 0.75}
+        )
+    with pytest.raises(ValueError, match="less than or equal to 1"):
+        MatterSearchRequest.model_validate(
+            {"query": "pricing", "search_mode": "SEMANTIC", "minimum_similarity": 1.1}
+        )
 
 
 class FakeSearchClient:
@@ -283,6 +376,41 @@ def test_boolean_facet_values_use_boolean_bucket_labels() -> None:
     assert [(item.value, item.count) for item in response.values] == [(True, 4), (False, 2)]
 
 
+class FakeDateHistogramClient:
+    def search(self, index: str, body: dict) -> dict:
+        assert index == "matter-documents"
+        assert body["aggs"]["sent_at"]["date_histogram"]["calendar_interval"] == "year"
+        return {
+            "aggregations": {
+                "sent_at": {
+                    "buckets": [
+                        {"key": 1_735_689_600_000, "doc_count": 4},
+                        {"key": 1_767_225_600_000, "doc_count": 2},
+                    ]
+                }
+            }
+        }
+
+
+def test_date_histogram_response_hides_opensearch_shape() -> None:
+    response = execute_date_histogram(
+        FakeDateHistogramClient(),  # type: ignore[arg-type]
+        "matter-documents",
+        MatterSearchRequest(),
+        [definition("sent_at", "DATETIME")],
+        field="sent_at",
+        interval="year",
+        tenant_id="tenant-1",
+        matter_id="matter-1",
+    )
+
+    assert response.field == "sent_at"
+    assert [(bucket.start.date().isoformat(), bucket.count) for bucket in response.buckets] == [
+        ("2025-01-01", 4),
+        ("2026-01-01", 2),
+    ]
+
+
 class FakeHybridSearchClient(FakeSearchClient):
     def __init__(self) -> None:
         self.pipeline_id: str | None = None
@@ -361,9 +489,11 @@ def test_document_projection_includes_artifact_body_text(monkeypatch: pytest.Mon
     monkeypatch.setattr("app.search.service.load_current_chunk_artifacts", lambda **_: None)
     monkeypatch.setattr("app.search.service.current_metadata_values", lambda *_: {})
 
-    projection = build_document_projection(db, document, [])
+    batch_ids = [uuid.uuid4(), uuid.uuid4()]
+    projection = build_document_projection(db, document, [], batch_ids=batch_ids)
 
     assert projection["body_text"] == "The confidential project is Juniper."
+    assert projection["batch_ids"] == [str(value) for value in batch_ids]
 
 
 def test_document_projection_attaches_nested_chunk_vectors(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -432,6 +562,9 @@ class FakeIndexClient:
         self.alias_actions: list[list[dict]] = []
         self.aliases: dict[str, set[str]] = {}
         self.refreshed: list[str] = []
+        self.mapping_updates: list[tuple[str, dict]] = []
+        self.deleted: list[str] = []
+        self.indexed_document_count = 0
 
     def create_index(self, name: str, body: dict) -> None:
         assert body["mappings"]["dynamic"] == "strict"
@@ -440,6 +573,17 @@ class FakeIndexClient:
 
     def index_exists(self, name: str) -> bool:
         return name in self.existing
+
+    def update_mapping(self, name: str, body: dict) -> None:
+        self.mapping_updates.append((name, body))
+
+    def delete_index(self, name: str) -> None:
+        self.deleted.append(name)
+        self.existing.discard(name)
+
+    def resolve_indices(self, pattern: str) -> list[str]:
+        prefix = pattern.removesuffix("*")
+        return sorted(name for name in self.existing if name.startswith(prefix))
 
     def update_aliases(self, actions: list[dict]) -> None:
         self.alias_actions.append(actions)
@@ -460,8 +604,101 @@ class FakeIndexClient:
     def refresh(self, index: str) -> None:
         self.refreshed.append(index)
 
+    def count(self, index: str) -> int:
+        return self.indexed_document_count
 
-def test_index_manager_versions_mapping_changes_and_retires_without_deleting(db: Session) -> None:
+
+def test_embedding_job_indexing_coalesces_pages_and_refreshes_once(
+    db: Session,
+    root_admin: User,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    client_record = Client(tenant_id=root_admin.tenant_id, name="Embedding Index Client")
+    db.add(client_record)
+    db.flush()
+    matter = Matter(client_id=client_record.id, name="Embedding Index Matter")
+    db.add(matter)
+    db.flush()
+    source_collection_id = uuid.uuid4()
+    import_job = MatterDocumentImportJob(
+        matter_id=matter.id,
+        source_collection_id=source_collection_id,
+        selection_type="EXPLICIT",
+        selection={},
+        selection_summary="Embedding index test",
+        status="COMPLETED",
+        workflow_id=f"import:{uuid.uuid4()}",
+        created_by_user_id=root_admin.id,
+    )
+    db.add(import_job)
+    db.flush()
+    documents = [
+        MatterDocument(
+            matter_id=matter.id,
+            source_collection_id=source_collection_id,
+            collection_item_id=uuid.uuid4(),
+            added_by_import_job_id=import_job.id,
+        )
+        for _ in range(3)
+    ]
+    db.add_all(documents)
+    embedding_job = MatterEmbeddingJob(
+        matter_id=matter.id,
+        status="RUNNING",
+        workflow_id=f"embedding:{uuid.uuid4()}",
+        configuration_hash="f" * 64,
+        configuration={},
+        embedding_model="test-model",
+        embedding_model_revision="revision-1",
+        embedding_dimensions=32,
+        embedding_normalized=True,
+        created_by_user_id=root_admin.id,
+    )
+    db.add(embedding_job)
+    db.flush()
+    db.add_all(
+        [
+            MatterEmbeddingBatch(
+                job_id=embedding_job.id,
+                batch_number=0,
+                document_ids=[str(document.id) for document in documents[:2]],
+                status="COMPLETED",
+                item_count=2,
+                processed_count=2,
+                embedded_count=2,
+            ),
+            MatterEmbeddingBatch(
+                job_id=embedding_job.id,
+                batch_number=1,
+                document_ids=[str(documents[2].id)],
+                status="COMPLETED",
+                item_count=1,
+                processed_count=1,
+                embedded_count=1,
+            ),
+        ]
+    )
+    db.commit()
+
+    fake = Mock()
+    fake.count.return_value = 3
+    generation = SimpleNamespace(index_name="matter-embedding-index", document_count=0)
+    manager = SearchIndexManager(db, fake, Settings(search_bulk_batch_size=2))
+    monkeypatch.setattr(manager, "ensure", Mock(return_value=generation))
+    bulk_upsert = Mock()
+    monkeypatch.setattr(manager, "_bulk_upsert", bulk_upsert)
+
+    indexed_count = manager.upsert_embedding_job(matter.id, embedding_job.id)
+
+    assert indexed_count == 3
+    assert bulk_upsert.call_count == 2
+    assert [len(call.args[1]) for call in bulk_upsert.call_args_list] == [2, 1]
+    fake.refresh.assert_called_once_with("matter-embedding-index")
+    fake.count.assert_called_once_with("matter-embedding-index")
+    assert generation.document_count == 3
+
+
+def test_index_manager_requires_confirmation_then_rebuilds_and_cleans(db: Session) -> None:
     tenant = Tenant(slug="search-tenant", name="Search Tenant", status="ACTIVE", is_root=True)
     db.add(tenant)
     db.flush()
@@ -487,19 +724,47 @@ def test_index_manager_versions_mapping_changes_and_retires_without_deleting(db:
     added.allowed_values = [{"key": "conduct", "label": "Conduct", "active": True}]
     db.add(added)
     db.commit()
-    second = manager.ensure(matter.id)
+    with pytest.raises(SearchReindexRequired) as required:
+        manager.ensure(matter.id)
+    assert "metadata" in " ".join(required.value.plan.reasons)
+    second = manager.ensure(matter.id, force=True)
 
     assert second.generation == 2
-    assert first.status == "RETIRED"
     assert len(fake.created) == 2
     assert fake.alias_actions[-1] == [
         {"remove": {"index": first.index_name, "alias": first.alias_name}},
         {"add": {"index": second.index_name, "alias": second.alias_name}},
     ]
-    generations = list(
-        db.scalars(select(SearchIndexGeneration).where(SearchIndexGeneration.matter_id == matter.id))
-    )
-    assert {generation.status for generation in generations} == {"ACTIVE", "RETIRED"}
+    generations = list(db.scalars(select(SearchIndexGeneration).where(SearchIndexGeneration.matter_id == matter.id)))
+    assert [generation.id for generation in generations] == [second.id]
+    assert fake.deleted == [first.index_name]
+
+
+def test_index_manager_applies_allowlisted_additive_mapping_in_place(db: Session) -> None:
+    tenant = Tenant(slug="in-place-tenant", name="In-place Tenant", status="ACTIVE", is_root=True)
+    db.add(tenant)
+    db.flush()
+    client_record = Client(tenant_id=tenant.id, name="In-place Client", status="ACTIVE")
+    db.add(client_record)
+    db.flush()
+    matter = Matter(client_id=client_record.id, name="In-place Matter", status="ACTIVE")
+    db.add(matter)
+    db.commit()
+
+    fake = FakeIndexClient()
+    manager = SearchIndexManager(db, fake, Settings(opensearch_index_prefix="test"))  # type: ignore[arg-type]
+    active = manager.ensure(matter.id)
+    legacy = deepcopy(active.schema_snapshot)
+    legacy["mappings"]["properties"].pop("batch_ids")
+    active.schema_snapshot = legacy
+    active.schema_hash = schema_hash(legacy)
+    db.commit()
+
+    same = manager.ensure(matter.id)
+
+    assert same.id == active.id
+    assert len(fake.created) == 1
+    assert fake.mapping_updates == [(active.index_name, {"properties": {"batch_ids": {"type": "keyword"}}})]
 
 
 def test_index_manager_repairs_an_alias_with_multiple_generations(db: Session) -> None:
@@ -559,6 +824,7 @@ def test_index_manager_skips_an_orphaned_physical_index(db: Session) -> None:
     assert active.generation == 2
     assert active.index_name.endswith("-v000002")
     assert fake.created == [active.index_name]
+    assert fake.deleted == [orphaned]
 
 
 def test_matter_creation_queues_index_and_search_waits_for_active_generation(
@@ -589,3 +855,122 @@ def test_matter_creation_queues_index_and_search_waits_for_active_generation(
     )
     assert search_response.status_code == 409
     assert search_response.json()["error"]["message"] == "Matter search index is not ready"
+
+
+def test_reindex_confirmation_requeues_the_schema_operation(
+    client: TestClient,
+    root_token: str,
+    db: Session,
+) -> None:
+    headers = auth(root_token)
+    tenant_id = client.get("/v1/auth/me", headers=headers).json()["tenant_id"]
+    created_client = client.post(
+        f"/v1/tenants/{tenant_id}/clients",
+        headers=headers,
+        json={"name": "Confirmation Client"},
+    ).json()
+    matter = client.post(
+        f"/v1/clients/{created_client['id']}/matters",
+        headers=headers,
+        json={"name": "Confirmation Matter"},
+    ).json()
+    db.expire_all()
+    operation = db.scalar(
+        select(SearchProjectionOperation).where(SearchProjectionOperation.matter_id == uuid.UUID(matter["id"]))
+    )
+    assert operation is not None
+    operation.status = "AWAITING_USER"
+    operation.payload = {
+        "schema_change": {
+            "action": "REINDEX_REQUIRED",
+            "desired_schema_hash": "a" * 64,
+            "reasons": ["Existing field mappings changed: metadata."],
+        }
+    }
+    db.commit()
+
+    response = client.post(
+        f"/v1/matters/{matter['id']}/search-operations/{operation.id}/confirm-reindex",
+        headers=headers,
+    )
+
+    assert response.status_code == 202, response.text
+    confirmed = response.json()
+    assert confirmed["kind"] == "REBUILD"
+    assert confirmed["status"] == "QUEUED"
+    assert confirmed["payload"]["confirmation"]["confirmed_by_user_id"]
+
+
+def test_failed_document_upserts_can_be_requeued_in_bulk(
+    client: TestClient,
+    root_token: str,
+    db: Session,
+) -> None:
+    headers = auth(root_token)
+    tenant_id = client.get("/v1/auth/me", headers=headers).json()["tenant_id"]
+    created_client = client.post(
+        f"/v1/tenants/{tenant_id}/clients",
+        headers=headers,
+        json={"name": "Retry Client"},
+    ).json()
+    matter = client.post(
+        f"/v1/clients/{created_client['id']}/matters",
+        headers=headers,
+        json={"name": "Retry Matter"},
+    ).json()
+    matter_id = uuid.UUID(matter["id"])
+    failed = SearchProjectionOperation(
+        matter_id=matter_id,
+        kind="DOCUMENT_UPSERT",
+        payload={"document_ids": [str(uuid.uuid4()), str(uuid.uuid4())]},
+        status="FAILED",
+        workflow_id=f"search-projection:{uuid.uuid4()}",
+        created_by_user_id=None,
+        attempt_count=5,
+        error_message="unknown encoding: windows-3839",
+    )
+    unrelated = SearchProjectionOperation(
+        matter_id=matter_id,
+        kind="REBUILD",
+        payload={},
+        status="FAILED",
+        workflow_id=f"search-projection:{uuid.uuid4()}",
+        created_by_user_id=None,
+        attempt_count=5,
+        error_message="rebuild failed",
+    )
+    db.add_all([failed, unrelated])
+    db.commit()
+    failed_id = failed.id
+    original_workflow_id = failed.workflow_id
+
+    response = client.post(
+        f"/v1/matters/{matter_id}/search-operations/retry-failed",
+        headers=headers,
+    )
+
+    assert response.status_code == 202, response.text
+    assert response.json() == {
+        "requeued_operation_count": 1,
+        "requeued_document_count": 2,
+    }
+    db.expire_all()
+    retried = db.get(SearchProjectionOperation, failed_id)
+    assert retried is not None
+    assert retried.status == "QUEUED"
+    assert retried.workflow_id != original_workflow_id
+    assert retried.error_message is None
+    assert retried.started_at is None
+    assert retried.payload["retry_history"][-1]["workflow_id"] == original_workflow_id
+    assert retried.payload["retry_history"][-1]["attempt_count"] == 5
+    assert db.get(SearchProjectionOperation, unrelated.id).status == "FAILED"
+
+    repeated = client.post(
+        f"/v1/matters/{matter_id}/search-operations/retry-failed",
+        headers=headers,
+    )
+    assert repeated.status_code == 202
+    assert repeated.json() == {
+        "requeued_operation_count": 0,
+        "requeued_document_count": 0,
+    }

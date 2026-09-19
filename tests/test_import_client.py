@@ -4,6 +4,8 @@ import hashlib
 import io
 import json
 import mailbox
+import threading
+import warnings
 import zipfile
 from email.message import EmailMessage
 from pathlib import Path
@@ -14,6 +16,10 @@ from scripts.import_client.adapters import emc2
 from scripts.import_client.adapters.base import DatasetAdapter
 from scripts.import_client.adapters.emc2 import Emc2Adapter
 from scripts.import_client.adapters.enron_csv import EnronCsvAdapter
+from scripts.import_client.adapters.jeb_bush_inventory import (
+    JebBushInventoryAdapter,
+    MissingInventorySourceWarning,
+)
 from scripts.import_client.api import OpenApiClient, _valid_json_unicode
 from scripts.import_client.importer import BaseImporter
 from scripts.import_client.models import CustodianSpec, ImportItem, SourceContainer
@@ -196,6 +202,234 @@ def test_enron_adapter_tolerates_malformed_recipient_headers(tmp_path: Path) -> 
     ]
 
 
+def test_jeb_bush_inventory_imports_eml_and_text_sidecars_only(
+    tmp_path: Path,
+) -> None:
+    email_directory = tmp_path / "01 January 2003"
+    attachment_directory = email_directory / "1315"
+    attachment_directory.mkdir(parents=True)
+
+    message = EmailMessage()
+    message["Message-ID"] = "<1315@example>"
+    message["From"] = "sender@example.com"
+    message["To"] = "jeb@jeb.org"
+    message["Subject"] = "Scotland"
+    message.set_content("See attachment")
+    message.add_attachment(
+        b"native document",
+        maintype="application",
+        subtype="msword",
+        filename="Scotland.doc",
+    )
+    eml_path = email_directory / "1315.eml"
+    eml_path.write_bytes(message.as_bytes())
+
+    doc_path = attachment_directory / "Scotland.doc"
+    doc_path.write_bytes(b"native document")
+    doc_sidecar = attachment_directory / "Scotland.doc.txt"
+    doc_sidecar.write_text("Extracted Scotland text", encoding="utf-8")
+    image_path = attachment_directory / "photo.jpg"
+    image_path.write_bytes(b"image")
+    (attachment_directory / "photo.jpg.txt").write_text(
+        "stale image OCR", encoding="utf-8"
+    )
+
+    inventory = tmp_path / "inventory.csv"
+    fieldnames = [
+        "record_type",
+        "eml_path",
+        "eml_size_bytes",
+        "eml_sha256",
+        "attachment_count",
+        "attachment_index",
+        "attachment_original_name",
+        "attachment_saved_path",
+        "attachment_content_type",
+        "attachment_size_bytes",
+        "attachment_sha256",
+    ]
+    with inventory.open("w", newline="", encoding="utf-8") as handle:
+        writer = csv.DictWriter(handle, fieldnames=fieldnames)
+        writer.writeheader()
+        writer.writerow(
+            {
+                "record_type": "eml",
+                "eml_path": "01 January 2003/1315.eml",
+                "eml_size_bytes": eml_path.stat().st_size,
+                "attachment_count": 2,
+            }
+        )
+        writer.writerow(
+            {
+                "record_type": "attachment",
+                "eml_path": "01 January 2003/1315.eml",
+                "attachment_index": 1,
+                "attachment_original_name": "Scotland.doc",
+                "attachment_saved_path": "01 January 2003/1315/Scotland.doc",
+                "attachment_content_type": "application/msword",
+                "attachment_size_bytes": doc_path.stat().st_size,
+                "attachment_sha256": "doc-hash",
+            }
+        )
+        writer.writerow(
+            {
+                "record_type": "attachment",
+                "eml_path": "01 January 2003/1315.eml",
+                "attachment_index": 2,
+                "attachment_original_name": "photo.jpg",
+                "attachment_saved_path": "01 January 2003/1315/photo.jpg",
+                "attachment_content_type": "image/jpeg",
+                "attachment_size_bytes": image_path.stat().st_size,
+                "attachment_sha256": "image-hash",
+            }
+        )
+
+    adapter = JebBushInventoryAdapter(inventory)
+    container = next(iter(adapter.source_containers()))
+    items = list(BaseImporter.iter_preprocessed_items(adapter, container))
+
+    assert [item.record_type for item in items] == ["EMAIL", "FILE"]
+    assert items[0].email is not None
+    assert items[0].email.subject == "Scotland"
+    assert items[1].original_filename == "Scotland.doc.txt"
+    assert items[1].content == b"Extracted Scotland text"
+    assert items[1].media_type == "text/plain; charset=utf-8"
+    assert items[1].parent_source_item_id == items[0].source_item_id
+    assert items[1].family_id == items[0].family_id
+    assert items[1].raw_metadata["source_attachment_filename"] == "Scotland.doc"
+    assert items[1].raw_metadata["source_attachment_sha256"] == "doc-hash"
+
+
+def test_jeb_bush_inventory_skips_missing_eml_and_its_attachment_rows(
+    tmp_path: Path,
+) -> None:
+    present_message = EmailMessage()
+    present_message["Subject"] = "Present"
+    present_message.set_content("Available email")
+    present_path = tmp_path / "present.eml"
+    present_path.write_bytes(present_message.as_bytes())
+
+    missing_sidecar = tmp_path / "missing" / "attachment.doc.txt"
+    missing_sidecar.parent.mkdir()
+    missing_sidecar.write_text("orphaned extracted text", encoding="utf-8")
+
+    inventory = tmp_path / "inventory.csv"
+    fieldnames = [
+        "record_type",
+        "eml_path",
+        "eml_size_bytes",
+        "eml_sha256",
+        "attachment_index",
+        "attachment_original_name",
+        "attachment_saved_path",
+        "attachment_content_type",
+        "attachment_size_bytes",
+        "attachment_sha256",
+    ]
+    with inventory.open("w", newline="", encoding="utf-8") as handle:
+        writer = csv.DictWriter(handle, fieldnames=fieldnames)
+        writer.writeheader()
+        writer.writerow({"record_type": "eml", "eml_path": "missing.eml"})
+        writer.writerow(
+            {
+                "record_type": "attachment",
+                "eml_path": "missing.eml",
+                "attachment_index": 1,
+                "attachment_original_name": "attachment.doc",
+                "attachment_saved_path": "missing/attachment.doc",
+                "attachment_content_type": "application/msword",
+            }
+        )
+        writer.writerow({"record_type": "eml", "eml_path": "present.eml"})
+
+    adapter = JebBushInventoryAdapter(inventory)
+    container = next(iter(adapter.source_containers()))
+    with warnings.catch_warnings(record=True) as caught:
+        warnings.simplefilter("always")
+        items = list(BaseImporter.iter_preprocessed_items(adapter, container))
+
+    assert [item.original_filename for item in items] == ["present.eml"]
+    assert len(caught) == 1
+    assert issubclass(caught[0].category, MissingInventorySourceWarning)
+    assert "missing.eml" in str(caught[0].message)
+    assert "attachment rows" in str(caught[0].message)
+
+
+def test_jeb_bush_inventory_honors_optional_skip_csv(
+    tmp_path: Path,
+    capsys,
+) -> None:
+    skipped_message = EmailMessage()
+    skipped_message["Subject"] = "Skipped"
+    skipped_message.set_content("Do not import")
+    (tmp_path / "skipped.eml").write_bytes(skipped_message.as_bytes())
+
+    present_message = EmailMessage()
+    present_message["Subject"] = "Present"
+    present_message.set_content("Import this email")
+    (tmp_path / "present.eml").write_bytes(present_message.as_bytes())
+
+    skipped_family_sidecar = tmp_path / "skipped" / "family.doc.txt"
+    skipped_family_sidecar.parent.mkdir()
+    skipped_family_sidecar.write_text("skipped family text", encoding="utf-8")
+    skipped_attachment_sidecar = tmp_path / "present" / "skip.doc.txt"
+    skipped_attachment_sidecar.parent.mkdir()
+    skipped_attachment_sidecar.write_text("skipped attachment text", encoding="utf-8")
+
+    (tmp_path / "skip.csv").write_text(
+        "./skipped.eml\npresent\\skip.doc\n",
+        encoding="utf-8",
+    )
+    inventory = tmp_path / "inventory.csv"
+    fieldnames = [
+        "record_type",
+        "eml_path",
+        "eml_size_bytes",
+        "eml_sha256",
+        "attachment_index",
+        "attachment_original_name",
+        "attachment_saved_path",
+        "attachment_content_type",
+        "attachment_size_bytes",
+        "attachment_sha256",
+    ]
+    with inventory.open("w", newline="", encoding="utf-8") as handle:
+        writer = csv.DictWriter(handle, fieldnames=fieldnames)
+        writer.writeheader()
+        writer.writerow({"record_type": "eml", "eml_path": "skipped.eml"})
+        writer.writerow(
+            {
+                "record_type": "attachment",
+                "eml_path": "skipped.eml",
+                "attachment_original_name": "family.doc",
+                "attachment_saved_path": "skipped/family.doc",
+                "attachment_content_type": "application/msword",
+            }
+        )
+        writer.writerow({"record_type": "eml", "eml_path": "present.eml"})
+        writer.writerow(
+            {
+                "record_type": "attachment",
+                "eml_path": "present.eml",
+                "attachment_original_name": "skip.doc",
+                "attachment_saved_path": "present/skip.doc",
+                "attachment_content_type": "application/msword",
+            }
+        )
+
+    adapter = JebBushInventoryAdapter(inventory)
+    container = next(iter(adapter.source_containers()))
+    items = list(BaseImporter.iter_preprocessed_items(adapter, container))
+    stderr = capsys.readouterr().err
+
+    assert adapter.skip_paths == {"skipped.eml", "present/skip.doc"}
+    assert [item.original_filename for item in items] == ["present.eml"]
+    assert stderr.splitlines() == [
+        "Skipped by skip.csv: skipped.eml",
+        "Skipped by skip.csv: present/skip.doc",
+    ]
+
+
 def test_emc2_adapter_extracts_mbox_messages_attachments_and_zip_files(tmp_path: Path) -> None:
     custodian_directory = tmp_path / "custodians" / "Benson, Hal"
     custodian_directory.mkdir(parents=True)
@@ -312,6 +546,22 @@ class SingleContainerAdapter(DatasetAdapter):
         )
 
 
+class ParallelContainerAdapter(DatasetAdapter):
+    dataset_name = "parallel-test"
+    default_collection_name = "Parallel test"
+
+    def __init__(self, source: Path) -> None:
+        self.source = source
+
+    def source_containers(self):
+        yield SourceContainer("source", self.source, "text/plain", "source.txt")
+
+    def custom_items(self, source_container):
+        custodian = CustodianSpec("Custodian")
+        yield ImportItem("source", "first", "FILE", "first.txt", b"first", (custodian,))
+        yield ImportItem("source", "second", "FILE", "second.txt", b"second", (custodian,))
+
+
 class FakeApi:
     def __init__(self) -> None:
         self.item_metadata = []
@@ -340,6 +590,29 @@ class FakeApi:
         return {"created": True, "item": {"id": f"item-{len(self.item_metadata)}"}}
 
 
+class ConcurrentFakeApi(FakeApi):
+    def __init__(self) -> None:
+        super().__init__()
+        self.barrier = threading.Barrier(2)
+        self.lock = threading.Lock()
+        self.active_uploads = 0
+        self.maximum_active_uploads = 0
+
+    def upload_item(self, collection_id, filename, content, media_type, metadata):
+        with self.lock:
+            self.active_uploads += 1
+            self.maximum_active_uploads = max(
+                self.maximum_active_uploads,
+                self.active_uploads,
+            )
+        self.barrier.wait(timeout=2)
+        with self.lock:
+            self.item_metadata.append(json.loads(json.dumps(metadata)))
+            item_id = f"item-{len(self.item_metadata)}"
+            self.active_uploads -= 1
+        return {"created": True, "item": {"id": item_id}}
+
+
 def test_base_importer_links_children_to_uploaded_parent(tmp_path: Path) -> None:
     source = tmp_path / "source.txt"
     source.write_bytes(b"container")
@@ -350,6 +623,7 @@ def test_base_importer_links_children_to_uploaded_parent(tmp_path: Path) -> None
         tenant_slug="root",
         client_id="client",
         collection_name="Collection",
+        workers=4,
     )
 
     report = importer.run(SingleContainerAdapter(source))
@@ -358,3 +632,23 @@ def test_base_importer_links_children_to_uploaded_parent(tmp_path: Path) -> None
     assert report.bytes_submitted == 11
     assert api.item_metadata[0]["source_container_artifact_id"] == "source-artifact"
     assert api.item_metadata[1]["parent_collection_item_id"] == "item-1"
+
+
+def test_base_importer_uploads_independent_items_concurrently(tmp_path: Path) -> None:
+    source = tmp_path / "source.txt"
+    source.write_bytes(b"container")
+    api = ConcurrentFakeApi()
+    importer = BaseImporter(
+        api,  # type: ignore[arg-type]
+        tenant_id="tenant",
+        tenant_slug="root",
+        client_id="client",
+        collection_name="Collection",
+        workers=2,
+    )
+
+    report = importer.run(ParallelContainerAdapter(source))
+
+    assert report.items_created == 2
+    assert report.bytes_submitted == 11
+    assert api.maximum_active_uploads == 2

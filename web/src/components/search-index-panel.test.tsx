@@ -24,6 +24,7 @@ const completedOperation: SearchProjectionOperationRead = {
   id: "operation-1",
   matter_id: "matter-1",
   kind: "REBUILD",
+  payload: {},
   status: "COMPLETED",
   workflow_id: "workflow-1",
   created_by_user_id: "user-1",
@@ -39,7 +40,7 @@ afterEach(cleanup);
 
 describe("SearchIndexPanel", () => {
   it("shows a ready active generation and matching document counts", () => {
-    render(<SearchIndexPanel coreDocumentCount={12} indexes={[activeIndex]} operations={[completedOperation]} onRebuild={vi.fn()} rebuilding={false} />);
+    render(<SearchIndexPanel coreDocumentCount={12} indexes={[activeIndex]} operations={[completedOperation]} onRebuild={vi.fn()} rebuilding={false} onConfirmReindex={vi.fn()} confirmingReindex={false} onRetryFailed={vi.fn()} retryingFailed={false} />);
 
     expect(screen.getByText("Ready")).toBeInTheDocument();
     expect(screen.getByRole("cell", { name: "#2" })).toBeInTheDocument();
@@ -50,7 +51,7 @@ describe("SearchIndexPanel", () => {
   it("confirms before requesting a full rebuild", async () => {
     const user = userEvent.setup();
     const onRebuild = vi.fn().mockResolvedValue(undefined);
-    render(<SearchIndexPanel coreDocumentCount={12} indexes={[activeIndex]} operations={[]} onRebuild={onRebuild} rebuilding={false} />);
+    render(<SearchIndexPanel coreDocumentCount={12} indexes={[activeIndex]} operations={[]} onRebuild={onRebuild} rebuilding={false} onConfirmReindex={vi.fn()} confirmingReindex={false} onRetryFailed={vi.fn()} retryingFailed={false} />);
 
     await user.click(screen.getByRole("button", { name: "Rebuild entire index" }));
     expect(screen.getByRole("heading", { name: "Rebuild the search index?" })).toBeInTheDocument();
@@ -58,5 +59,45 @@ describe("SearchIndexPanel", () => {
 
     await user.click(screen.getByRole("button", { name: "Start rebuild" }));
     await waitFor(() => expect(onRebuild).toHaveBeenCalledOnce());
+  });
+
+  it("asks for confirmation when a schema sync requires reindexing", async () => {
+    const user = userEvent.setup();
+    const onConfirm = vi.fn().mockResolvedValue(undefined);
+    const awaiting = {
+      ...completedOperation,
+      id: "operation-awaiting",
+      kind: "SCHEMA_SYNC",
+      status: "AWAITING_USER",
+      payload: { schema_change: { action: "REINDEX_REQUIRED", reasons: ["Existing field mappings changed: metadata."] } },
+      completed_at: null,
+    } satisfies SearchProjectionOperationRead;
+    render(<SearchIndexPanel coreDocumentCount={12} indexes={[activeIndex]} operations={[awaiting]} onRebuild={vi.fn()} rebuilding={false} onConfirmReindex={onConfirm} confirmingReindex={false} onRetryFailed={vi.fn()} retryingFailed={false} />);
+
+    expect(screen.getAllByText("Action required")).toHaveLength(2);
+    await user.click(screen.getByRole("button", { name: "Review and confirm" }));
+    await user.click(screen.getByRole("button", { name: "Confirm full reindex" }));
+    await waitFor(() => expect(onConfirm).toHaveBeenCalledWith("operation-awaiting"));
+  });
+
+  it("confirms before requeueing failed document-update jobs", async () => {
+    const user = userEvent.setup();
+    const onRetryFailed = vi.fn().mockResolvedValue(undefined);
+    const failed = {
+      ...completedOperation,
+      id: "operation-failed",
+      kind: "DOCUMENT_UPSERT",
+      status: "FAILED",
+      payload: { document_ids: ["document-1", "document-2"] },
+      error_message: "unknown encoding: windows-3839",
+      completed_at: null,
+    } satisfies SearchProjectionOperationRead;
+    render(<SearchIndexPanel coreDocumentCount={12} indexes={[activeIndex]} operations={[failed]} onRebuild={vi.fn()} rebuilding={false} onConfirmReindex={vi.fn()} confirmingReindex={false} onRetryFailed={onRetryFailed} retryingFailed={false} />);
+
+    await user.click(screen.getByRole("button", { name: "Requeue failed jobs" }));
+    expect(screen.getByText(/1 failed job covering 2 documents/i)).toBeInTheDocument();
+    await user.click(screen.getByRole("button", { name: "Confirm requeue" }));
+
+    await waitFor(() => expect(onRetryFailed).toHaveBeenCalledOnce());
   });
 });

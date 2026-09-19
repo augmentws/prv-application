@@ -17,6 +17,7 @@ Application with a FastAPI Core API, independent Artifact and Embedding services
 - system, matter-wide, and personal metadata groups with per-user table/document visibility;
 - tenant-wide and client-specific matter templates plus direct configuration cloning;
 - durable DBOS jobs for adding collection documents to matters without copying artifacts;
+- durable collection deletion with batched database cleanup and unshared object-store blob removal;
 - matter overview document and distinct-custodian counts backed by Core data;
 - immutable, typed matter-document metadata events with a transactionally maintained current-value projection;
 - `ACTIVE`, `SUSPENDED`, and `ARCHIVED` persistence states;
@@ -103,6 +104,26 @@ The standalone API requires `Authorization: Bearer <EMBEDDING_SERVICE_TOKEN>`. I
 
 For a containerized service, run `docker compose --profile embeddings up --build embedding-api`. The container uses CPU by default and retains downloaded model files in the `pvr_embedding_models` volume. On an Apple Silicon development machine, native embedded execution can use the Mac accelerator and will generally be faster than Docker CPU execution.
 
+Hosted Voyage inference uses the same durable matter-embedding job. Configure both the API and workflow-worker processes with:
+
+```bash
+EMBEDDING_MODE=remote
+EMBEDDING_PROVIDER=voyage_api
+EMBEDDING_MODEL=voyage-4-lite
+EMBEDDING_DIMENSIONS=1024
+EMBEDDING_QUERY_MODE=embedded
+EMBEDDING_QUERY_MODEL=voyageai/voyage-4-nano
+VOYAGE_API_KEY=pa-...
+EMBEDDING_VOYAGE_TOKENS_PER_MINUTE=3000000
+EMBEDDING_VOYAGE_REQUESTS_PER_MINUTE=2000
+```
+
+The default hosted mode groups chunks into real-time requests, runs up to `EMBEDDING_VOYAGE_REALTIME_CONCURRENCY` durable matter batches concurrently, applies a process-local TPM/RPM limiter, and retries rate-limit and transient server responses. This is the mode to use with standard or free credits.
+
+`EMBEDDING_QUERY_MODEL` optionally separates semantic-search query inference from document embedding. The configuration above embeds documents through hosted `voyage-4-lite` while running `voyage-4-nano` locally with `input_type=query`. Both use the same configured dimensions and normalization. Set `EMBEDDING_QUERY_MODE=remote` and `EMBEDDING_QUERY_BASE_URL` to use the private embedding service instead of loading the query model in Core. Voyage 4 models share an embedding space; do not configure a query model from an incompatible model family.
+
+After provider billing is enabled, `EMBEDDING_VOYAGE_BATCH_ENABLED=true` switches newly created jobs to Voyage's asynchronous Batch API. The workflow uploads JSONL, persists provider file and batch identifiers, sleeps durably while polling, joins unordered results through stable IDs, and stores the same idempotent `CHUNK_VECTOR_SET` artifacts. Provider progress is available at `GET /v1/matters/{matter_id}/embedding-jobs/{job_id}/batches`, and application cancellation requests cancellation of active provider batches. The standalone `scripts/voyage_embedding_harness.py` utility is retained for diagnostics; production jobs do not depend on it.
+
 Matter administrators start generation from the matter **Jobs** tab or with `POST /v1/matters/{matter_id}/embedding-jobs`. The durable workflow freezes the current matter-document IDs into batches, chooses extracted text, OCR text, or a supported native text artifact, and creates two collection-item artifacts:
 
 - `CHUNK_SET`: sentence-aware text chunks and source offsets in Parquet;
@@ -165,6 +186,7 @@ Open `http://127.0.0.1:3000`. The UI supports login, tenant selection and creati
 | `GET` | `/v1/matters/{matter_id}/overview-counts` | Authorized `ADMIN` | Count linked documents and their distinct custodians without a search index |
 | `POST` | `/v1/matters/{matter_id}/embedding-jobs` | Authorized `ADMIN` | Queue chunk and embedding generation for the matter |
 | `GET` | `/v1/matters/{matter_id}/embedding-jobs` | Authorized `ADMIN` | List embedding job progress and history |
+| `GET` | `/v1/matters/{matter_id}/embedding-jobs/{job_id}/batches` | Authorized `ADMIN` | Inspect local and hosted provider batch progress |
 | `POST` | `/v1/matters/{matter_id}/embedding-jobs/{job_id}/cancel` | Authorized `ADMIN` | Cancel future embedding batches |
 | `GET` | `/v1/matters/{matter_id}/documents/{document_id}/metadata-values` | Authorized `ADMIN` | Read current asserted metadata field states and values |
 | `GET` | `/v1/matters/{matter_id}/documents/{document_id}/metadata-values/{definition_id}/events` | Authorized `ADMIN` | Read immutable value history and derived event states |
@@ -184,9 +206,14 @@ Metadata events and their affected `document_metadata_current` rows are written 
 | `POST` | `/v1/tenants/{tenant_id}/clients/{client_id}/collections` | Create a client-level collection |
 | `GET` | `/v1/tenants/{tenant_id}/clients/{client_id}/collections` | List client-level collections |
 | `GET` | `/v1/collections/{collection_id}` | Read one client-level collection |
+| `DELETE` | `/v1/collections/{collection_id}` | Queue durable removal of an unreferenced collection, its rows, and unshared blobs |
+| `GET` | `/v1/collections/{collection_id}/deletion` | Read the latest deletion job for a collection |
+| `GET` | `/v1/collection-deletions/{job_id}` | Read durable deletion progress and errors |
+| `POST` | `/v1/collection-deletions/{job_id}/retry` | Resume a failed deletion from its remaining work |
 | `POST` | `/v1/collections/{collection_id}/source-containers:upload` | Preserve an original `SOURCE_CONTAINER` such as CSV, MBOX, DAT, or ZIP |
 | `POST` | `/v1/collections/{collection_id}/items:upload` | Upload one preprocessed collection item and its `NATIVE` artifact |
-| `GET` | `/v1/collections/{collection_id}/search` | Search filenames and source paths with collection facets and pagination |
+| `GET` | `/v1/collections/{collection_id}/search` | Search filenames and source paths with an exact total and pagination |
+| `GET` | `/v1/collections/{collection_id}/search/facets/{facet}` | Load one self-excluding collection facet on demand |
 | `GET` | `/v1/collections/{collection_id}/items` | Query items by custodian, type, filename, dates, hash, or size |
 | `GET` | `/v1/collections/{collection_id}/custodians` | List custodians represented in a collection with item counts |
 | `POST` | `/v1/collections/{collection_id}/selections` | Freeze query results or explicit item IDs for a durable workflow |
@@ -198,6 +225,8 @@ Metadata events and their affected `document_metadata_current` rows are written 
 | `GET` | `/v1/artifacts/{artifact_id}/content` | Stream the immutable artifact bytes |
 
 The upload endpoints use `multipart/form-data`. Item uploads contain a binary `file` part plus a JSON `metadata` part. `source_item_id` is the idempotency key within a collection: retrying with the same bytes returns the existing item; changing the bytes produces a conflict. Files extracted by a dataset-specific client can reference the preserved source container using `source_container_artifact_id`, recording `EXTRACTED_FROM_CONTAINER` lineage.
+
+Every collection item also exposes a canonical `file_date`. The Artifact Service derives it from the email sent date, the parent email date for attachments, or `source_modified_at` for a standalone collected file. The original source timestamps remain unchanged.
 
 ## Local dataset import client
 
