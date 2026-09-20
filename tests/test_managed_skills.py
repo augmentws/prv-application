@@ -212,6 +212,8 @@ def test_tenant_binding_overrides_system_binding(client: TestClient, root_token:
         assert set(resolved) == {"retrieval_planner", "document_analysis", "assessment_synthesis"}
         snapshot = binding_snapshot(resolved)
         assert snapshot["assessment_synthesis"]["binding_scope"] == "TENANT"
+        assert snapshot["assessment_synthesis"]["instructions"] == "Return only the requested structured result."
+        assert snapshot["assessment_synthesis"]["output_schema"] == {"type": "object"}
 
     listed = client.get(
         f"/v1/tenants/{tenant_id}/workflow-skill-bindings",

@@ -9967,6 +9967,14 @@
             "type": "integer",
             "title": "Input Tokens"
           },
+          "cached_input_tokens": {
+            "type": "integer",
+            "title": "Cached Input Tokens"
+          },
+          "cache_write_tokens": {
+            "type": "integer",
+            "title": "Cache Write Tokens"
+          },
           "output_tokens": {
             "type": "integer",
             "title": "Output Tokens"
@@ -10029,6 +10037,8 @@
           "request_count",
           "tool_call_count",
           "input_tokens",
+          "cached_input_tokens",
+          "cache_write_tokens",
           "output_tokens",
           "error_message",
           "started_at",
@@ -12210,9 +12220,29 @@
             "type": "integer",
             "title": "Input Tokens"
           },
+          "cached_input_tokens": {
+            "type": "integer",
+            "title": "Cached Input Tokens"
+          },
+          "cache_write_tokens": {
+            "type": "integer",
+            "title": "Cache Write Tokens"
+          },
           "output_tokens": {
             "type": "integer",
             "title": "Output Tokens"
+          },
+          "model_invocation_id": {
+            "anyOf": [
+              {
+                "type": "string",
+                "format": "uuid"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Model Invocation Id"
           },
           "total_tokens": {
             "type": "integer",
@@ -12245,7 +12275,10 @@
           "model",
           "request_count",
           "input_tokens",
+          "cached_input_tokens",
+          "cache_write_tokens",
           "output_tokens",
+          "model_invocation_id",
           "total_tokens",
           "details",
           "created_at"

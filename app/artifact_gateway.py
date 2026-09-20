@@ -100,6 +100,15 @@ class EmbeddingTextSource:
 
 
 @dataclass(frozen=True)
+class PreferredTextSource:
+    artifact_id: uuid.UUID
+    content_hash: str
+    artifact_role: str
+    media_type: str
+    text: str
+
+
+@dataclass(frozen=True)
 class DerivedArtifactReference:
     artifact_id: uuid.UUID
     content_hash: str
@@ -708,14 +717,23 @@ def get_search_item_snapshot(
         )
 
 
-def get_embedding_text_source(
+def _read_preferred_text_bytes(stream, max_bytes: int | None) -> bytes:
+    if max_bytes is not None:
+        return read_search_text_bytes(stream, max_bytes)
+    try:
+        return stream.read()
+    finally:
+        stream.close()
+
+
+def get_preferred_text_source(
     *,
     collection_item_id: uuid.UUID,
     actor_user_id: uuid.UUID,
     tenant_id: uuid.UUID,
     client_id: uuid.UUID,
-    max_bytes: int,
-) -> EmbeddingTextSource | None:
+    max_bytes: int | None = None,
+) -> PreferredTextSource | None:
     settings = get_settings()
     if settings.artifact_mode == "embedded":
         with ArtifactSessionLocal() as db:
@@ -758,7 +776,10 @@ def get_embedding_text_source(
             blob = db.get(ContentBlob, candidate.content_blob_id)
             if blob is None:
                 raise ValueError("Embedding source artifact content is unavailable")
-            content = read_search_text_bytes(get_storage().open(blob.bucket_name, blob.storage_key), max_bytes)
+            content = _read_preferred_text_bytes(
+                get_storage().open(blob.bucket_name, blob.storage_key),
+                max_bytes,
+            )
             text = extract_search_text(
                 content,
                 role=candidate.role,
@@ -766,7 +787,17 @@ def get_embedding_text_source(
                 filename=candidate.original_filename,
                 record_type=item.record_type,
             )
-            return EmbeddingTextSource(candidate.id, candidate.content_hash, text) if text and text.strip() else None
+            return (
+                PreferredTextSource(
+                    candidate.id,
+                    candidate.content_hash,
+                    candidate.role,
+                    candidate.media_type,
+                    text,
+                )
+                if text and text.strip()
+                else None
+            )
 
     with httpx.Client(base_url=settings.artifact_base_url, timeout=120) as client:
         headers = _headers(actor_user_id, tenant_id, client_id)
@@ -805,10 +836,13 @@ def get_embedding_text_source(
             response.raise_for_status()
             content = bytearray()
             for part in response.iter_bytes():
-                remaining = max_bytes - len(content)
-                if remaining <= 0:
-                    break
-                content.extend(part[:remaining])
+                if max_bytes is None:
+                    content.extend(part)
+                else:
+                    remaining = max_bytes - len(content)
+                    if remaining <= 0:
+                        break
+                    content.extend(part[:remaining])
         text = extract_search_text(
             bytes(content),
             role=candidate.role,
@@ -816,7 +850,37 @@ def get_embedding_text_source(
             filename=candidate.original_filename,
             record_type=item["record_type"],
         )
-        return EmbeddingTextSource(candidate.id, candidate.content_hash, text) if text and text.strip() else None
+        return (
+            PreferredTextSource(
+                candidate.id,
+                candidate.content_hash,
+                candidate.role,
+                candidate.media_type,
+                text,
+            )
+            if text and text.strip()
+            else None
+        )
+
+
+def get_embedding_text_source(
+    *,
+    collection_item_id: uuid.UUID,
+    actor_user_id: uuid.UUID,
+    tenant_id: uuid.UUID,
+    client_id: uuid.UUID,
+    max_bytes: int,
+) -> EmbeddingTextSource | None:
+    source = get_preferred_text_source(
+        collection_item_id=collection_item_id,
+        actor_user_id=actor_user_id,
+        tenant_id=tenant_id,
+        client_id=client_id,
+        max_bytes=max_bytes,
+    )
+    if source is None:
+        return None
+    return EmbeddingTextSource(source.artifact_id, source.content_hash, source.text)
 
 
 def find_derived_artifact_reference(

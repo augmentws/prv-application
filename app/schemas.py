@@ -171,7 +171,10 @@ class ExternalProviderUsageRead(ORMModel):
     model: str
     request_count: int
     input_tokens: int
+    cached_input_tokens: int
+    cache_write_tokens: int
     output_tokens: int
+    model_invocation_id: uuid.UUID | None
     total_tokens: int
     details: dict[str, Any]
     created_at: datetime
@@ -1376,6 +1379,8 @@ class AgentRunRead(ORMModel):
     request_count: int
     tool_call_count: int
     input_tokens: int
+    cached_input_tokens: int
+    cache_write_tokens: int
     output_tokens: int
     error_message: str | None
     started_at: datetime | None

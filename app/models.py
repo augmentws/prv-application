@@ -199,7 +199,8 @@ class ExternalProviderUsage(Base):
     __table_args__ = (
         UniqueConstraint("idempotency_key", name="uq_external_provider_usage_idempotency_key"),
         CheckConstraint(
-            "request_count >= 0 AND input_tokens >= 0 AND output_tokens >= 0",
+            "request_count >= 0 AND input_tokens >= 0 AND cached_input_tokens >= 0 "
+            "AND cache_write_tokens >= 0 AND output_tokens >= 0",
             name="ck_external_provider_usage_counts",
         ),
         Index("ix_external_provider_usage_tenant_job_date", "tenant_id", "job_created_at"),
@@ -225,7 +226,16 @@ class ExternalProviderUsage(Base):
     model: Mapped[str] = mapped_column(String(500))
     request_count: Mapped[int] = mapped_column(Integer, default=1)
     input_tokens: Mapped[int] = mapped_column(BigInteger, default=0)
+    cached_input_tokens: Mapped[int] = mapped_column(BigInteger, default=0)
+    cache_write_tokens: Mapped[int] = mapped_column(BigInteger, default=0)
     output_tokens: Mapped[int] = mapped_column(BigInteger, default=0)
+    model_invocation_id: Mapped[uuid.UUID | None] = mapped_column(
+        Uuid,
+        ForeignKey("model_invocation.id", ondelete="SET NULL"),
+        nullable=True,
+        unique=True,
+        index=True,
+    )
     idempotency_key: Mapped[str] = mapped_column(String(500))
     details: Mapped[dict[str, Any]] = mapped_column(JSON, default=dict)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
@@ -895,9 +905,105 @@ class WorkflowRun(TimestampMixin, Base):
     binding_snapshot: Mapped[dict[str, Any]] = mapped_column(JSON, default=dict)
     configuration_snapshot: Mapped[dict[str, Any]] = mapped_column(JSON, default=dict)
     progress: Mapped[dict[str, Any]] = mapped_column(JSON, default=dict)
+    request_count: Mapped[int] = mapped_column(Integer, default=0)
+    tool_call_count: Mapped[int] = mapped_column(Integer, default=0)
+    input_tokens: Mapped[int] = mapped_column(BigInteger, default=0)
+    cached_input_tokens: Mapped[int] = mapped_column(BigInteger, default=0)
+    cache_write_tokens: Mapped[int] = mapped_column(BigInteger, default=0)
+    output_tokens: Mapped[int] = mapped_column(BigInteger, default=0)
     initiated_by_user_id: Mapped[uuid.UUID] = mapped_column(
         Uuid, ForeignKey("app_user.id", ondelete="RESTRICT"), index=True
     )
+    error_message: Mapped[str | None] = mapped_column(Text)
+    started_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    completed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+
+
+class WorkflowStepRun(TimestampMixin, Base):
+    __tablename__ = "workflow_step_run"
+    __table_args__ = (
+        UniqueConstraint("workflow_run_id", "ordinal", name="uq_workflow_step_run_ordinal"),
+        CheckConstraint("ordinal > 0", name="ck_workflow_step_run_ordinal_positive"),
+        CheckConstraint(
+            "status IN ('QUEUED', 'RUNNING', 'COMPLETED', 'COMPLETED_WITH_ERRORS', 'FAILED', 'CANCELED')",
+            name="ck_workflow_step_run_status",
+        ),
+        CheckConstraint(
+            "request_count >= 0 AND tool_call_count >= 0 AND input_tokens >= 0 "
+            "AND cached_input_tokens >= 0 AND cache_write_tokens >= 0 AND output_tokens >= 0",
+            name="ck_workflow_step_run_usage",
+        ),
+        Index("ix_workflow_step_run_workflow_status", "workflow_run_id", "status"),
+    )
+
+    id: Mapped[uuid.UUID] = mapped_column(Uuid, primary_key=True, default=uuid.uuid4)
+    workflow_run_id: Mapped[uuid.UUID] = mapped_column(
+        Uuid, ForeignKey("workflow_run.id", ondelete="CASCADE"), index=True
+    )
+    role_key: Mapped[str] = mapped_column(String(100))
+    ordinal: Mapped[int] = mapped_column(Integer)
+    fan_out_group: Mapped[str | None] = mapped_column(String(100))
+    status: Mapped[str] = mapped_column(String(30), default="QUEUED", index=True)
+    total_count: Mapped[int] = mapped_column(Integer, default=0)
+    completed_count: Mapped[int] = mapped_column(Integer, default=0)
+    failed_count: Mapped[int] = mapped_column(Integer, default=0)
+    request_count: Mapped[int] = mapped_column(Integer, default=0)
+    tool_call_count: Mapped[int] = mapped_column(Integer, default=0)
+    input_tokens: Mapped[int] = mapped_column(BigInteger, default=0)
+    cached_input_tokens: Mapped[int] = mapped_column(BigInteger, default=0)
+    cache_write_tokens: Mapped[int] = mapped_column(BigInteger, default=0)
+    output_tokens: Mapped[int] = mapped_column(BigInteger, default=0)
+    error_message: Mapped[str | None] = mapped_column(Text)
+    started_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    completed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+
+
+class SkillRun(TimestampMixin, Base):
+    __tablename__ = "skill_run"
+    __table_args__ = (
+        CheckConstraint(
+            "status IN ('QUEUED', 'RUNNING', 'COMPLETED', 'SKIPPED', 'FAILED', 'CANCELED')",
+            name="ck_skill_run_status",
+        ),
+        CheckConstraint(
+            "request_count >= 0 AND tool_call_count >= 0 AND input_tokens >= 0 "
+            "AND cached_input_tokens >= 0 AND cache_write_tokens >= 0 AND output_tokens >= 0",
+            name="ck_skill_run_usage",
+        ),
+        Index("ix_skill_run_step_status", "workflow_step_run_id", "status"),
+        Index("ix_skill_run_scope", "scope_type", "scope_id"),
+    )
+
+    id: Mapped[uuid.UUID] = mapped_column(Uuid, primary_key=True, default=uuid.uuid4)
+    workflow_run_id: Mapped[uuid.UUID] = mapped_column(
+        Uuid, ForeignKey("workflow_run.id", ondelete="CASCADE"), index=True
+    )
+    workflow_step_run_id: Mapped[uuid.UUID] = mapped_column(
+        Uuid, ForeignKey("workflow_step_run.id", ondelete="CASCADE"), index=True
+    )
+    skill_definition_version_id: Mapped[uuid.UUID] = mapped_column(
+        Uuid, ForeignKey("skill_definition_version.id", ondelete="RESTRICT"), index=True
+    )
+    parent_skill_run_id: Mapped[uuid.UUID | None] = mapped_column(
+        Uuid, ForeignKey("skill_run.id", ondelete="RESTRICT"), nullable=True, index=True
+    )
+    root_skill_run_id: Mapped[uuid.UUID | None] = mapped_column(
+        Uuid, ForeignKey("skill_run.id", ondelete="RESTRICT"), nullable=True, index=True
+    )
+    scope_type: Mapped[str] = mapped_column(String(80))
+    scope_id: Mapped[uuid.UUID | None] = mapped_column(Uuid, nullable=True)
+    input_hash: Mapped[str] = mapped_column(String(64))
+    configuration_hash: Mapped[str] = mapped_column(String(64))
+    cache_fingerprint: Mapped[str | None] = mapped_column(String(64), index=True)
+    output_artifact_id: Mapped[uuid.UUID | None] = mapped_column(Uuid)
+    status: Mapped[str] = mapped_column(String(30), default="QUEUED", index=True)
+    request_count: Mapped[int] = mapped_column(Integer, default=0)
+    tool_call_count: Mapped[int] = mapped_column(Integer, default=0)
+    input_tokens: Mapped[int] = mapped_column(BigInteger, default=0)
+    cached_input_tokens: Mapped[int] = mapped_column(BigInteger, default=0)
+    cache_write_tokens: Mapped[int] = mapped_column(BigInteger, default=0)
+    output_tokens: Mapped[int] = mapped_column(BigInteger, default=0)
+    error_code: Mapped[str | None] = mapped_column(String(80))
     error_message: Mapped[str | None] = mapped_column(Text)
     started_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     completed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
@@ -1639,10 +1745,73 @@ class AgentRun(Base):
     output_text: Mapped[str | None] = mapped_column(Text)
     request_count: Mapped[int] = mapped_column(Integer, default=0)
     tool_call_count: Mapped[int] = mapped_column(Integer, default=0)
-    input_tokens: Mapped[int] = mapped_column(Integer, default=0)
-    output_tokens: Mapped[int] = mapped_column(Integer, default=0)
+    input_tokens: Mapped[int] = mapped_column(BigInteger, default=0)
+    cached_input_tokens: Mapped[int] = mapped_column(BigInteger, default=0)
+    cache_write_tokens: Mapped[int] = mapped_column(BigInteger, default=0)
+    output_tokens: Mapped[int] = mapped_column(BigInteger, default=0)
     error_message: Mapped[str | None] = mapped_column(Text)
     started_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    completed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+
+
+class ModelInvocation(Base):
+    __tablename__ = "model_invocation"
+    __table_args__ = (
+        UniqueConstraint(
+            "agent_run_id",
+            "attempt",
+            "request_sequence",
+            name="uq_model_invocation_agent_request",
+        ),
+        UniqueConstraint(
+            "skill_run_id",
+            "attempt",
+            "request_sequence",
+            name="uq_model_invocation_skill_request",
+        ),
+        CheckConstraint(
+            "(agent_run_id IS NOT NULL AND skill_run_id IS NULL) OR "
+            "(agent_run_id IS NULL AND skill_run_id IS NOT NULL)",
+            name="ck_model_invocation_owner",
+        ),
+        CheckConstraint("attempt > 0 AND request_sequence > 0", name="ck_model_invocation_sequence"),
+        CheckConstraint(
+            "status IN ('RUNNING', 'COMPLETED', 'FAILED', 'CANCELED')",
+            name="ck_model_invocation_status",
+        ),
+        CheckConstraint(
+            "request_count >= 0 AND input_tokens >= 0 AND cached_input_tokens >= 0 "
+            "AND cache_write_tokens >= 0 AND output_tokens >= 0 AND latency_ms >= 0",
+            name="ck_model_invocation_usage",
+        ),
+        Index("ix_model_invocation_agent_created", "agent_run_id", "created_at"),
+        Index("ix_model_invocation_skill_created", "skill_run_id", "created_at"),
+    )
+
+    id: Mapped[uuid.UUID] = mapped_column(Uuid, primary_key=True, default=uuid.uuid4)
+    agent_run_id: Mapped[uuid.UUID | None] = mapped_column(
+        Uuid, ForeignKey("agent_run.id", ondelete="CASCADE"), nullable=True, index=True
+    )
+    skill_run_id: Mapped[uuid.UUID | None] = mapped_column(
+        Uuid, ForeignKey("skill_run.id", ondelete="CASCADE"), nullable=True, index=True
+    )
+    provider_request_id: Mapped[str | None] = mapped_column(String(500))
+    provider: Mapped[str] = mapped_column(String(100), index=True)
+    model: Mapped[str] = mapped_column(String(500))
+    model_configuration_hash: Mapped[str] = mapped_column(String(64))
+    attempt: Mapped[int] = mapped_column(Integer, default=1)
+    request_sequence: Mapped[int] = mapped_column(Integer)
+    request_count: Mapped[int] = mapped_column(Integer, default=1)
+    input_tokens: Mapped[int] = mapped_column(BigInteger, default=0)
+    cached_input_tokens: Mapped[int] = mapped_column(BigInteger, default=0)
+    cache_write_tokens: Mapped[int] = mapped_column(BigInteger, default=0)
+    output_tokens: Mapped[int] = mapped_column(BigInteger, default=0)
+    latency_ms: Mapped[int] = mapped_column(Integer, default=0)
+    status: Mapped[str] = mapped_column(String(20), default="COMPLETED", index=True)
+    error_code: Mapped[str | None] = mapped_column(String(80))
+    error_message: Mapped[str | None] = mapped_column(Text)
+    started_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
     completed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
 

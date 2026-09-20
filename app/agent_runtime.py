@@ -13,7 +13,6 @@ from pydantic_ai import (
     Tool,
     ToolDefinition,
     ToolDenied,
-    UsageLimits,
 )
 from pydantic_ai.messages import ModelMessagesTypeAdapter
 from sqlalchemy import func, select
@@ -22,6 +21,11 @@ from app.agent_models import resolve_agent_model
 from app.agent_tools import AGENT_TOOL_REGISTRY, EXECUTABLE_AGENT_TOOL_KEYS
 from app.config import get_settings
 from app.database import SessionLocal
+from app.execution_accounting import (
+    ProviderUsageContext,
+    persist_model_invocations,
+    refresh_agent_run_usage,
+)
 from app.matter_definitions import append_matter_definition_revision
 from app.metadata_definitions import (
     add_metadata_enum_value as add_metadata_enum_value_command,
@@ -38,6 +42,7 @@ from app.metadata_definitions import (
 from app.metadata_definitions import (
     update_metadata_enum_value as update_metadata_enum_value_command,
 )
+from app.model_execution import InvocationTelemetry, content_hash, run_model
 from app.models import (
     AgentActionDecision,
     AgentActionRequest,
@@ -56,7 +61,6 @@ from app.models import (
     User,
     utcnow,
 )
-from app.provider_usage import external_model_identity, record_external_provider_usage
 from app.schemas import (
     AssertionPolicy,
     Cardinality,
@@ -138,9 +142,13 @@ class AgentRunOutcome:
     request_count: int
     tool_call_count: int
     input_tokens: int
+    cached_input_tokens: int
+    cache_write_tokens: int
     output_tokens: int
     provider: str | None
     provider_model: str | None
+    model_configuration_hash: str
+    invocations: tuple[InvocationTelemetry, ...]
 
 
 def _require_actor_access(db, deps: AgentRuntimeDeps) -> tuple[User, Matter, AgentRun]:
@@ -795,16 +803,6 @@ def prepare_agent_run(run_id: uuid.UUID) -> PreparedAgentRun:
         )
 
 
-def _usage_limits(limits: dict[str, Any]) -> UsageLimits:
-    return UsageLimits(
-        request_limit=limits.get("max_requests", 50),
-        tool_calls_limit=limits.get("max_tool_calls"),
-        input_tokens_limit=limits.get("max_input_tokens"),
-        output_tokens_limit=limits.get("max_output_tokens"),
-        total_tokens_limit=limits.get("max_total_tokens"),
-    )
-
-
 async def execute_prepared_agent_run(
     prepared: PreparedAgentRun,
     agent: Agent[AgentRuntimeDeps, str | DeferredToolRequests],
@@ -826,9 +824,16 @@ async def execute_prepared_agent_run(
                 approvals[tool_call_id] = ToolDenied(decision["reason"] or "The user rejected this action")
         deferred_results = DeferredToolResults(approvals=approvals)
     selected_model = model if model is not None else resolve_agent_model(prepared.model_id, get_settings())
-    provider_identity = external_model_identity(selected_model)
-    result = await agent.run(
-        prepared.user_prompt,
+    model_configuration_hash = content_hash(
+        {
+            "model_key": prepared.model_id,
+            "resolved_model": str(selected_model),
+            "model_settings": prepared.model_settings,
+        }
+    )
+    result = await run_model(
+        agent,
+        prompt=prepared.user_prompt,
         message_history=history,
         deferred_tool_results=deferred_results,
         conversation_id=prepared.conversation_id,
@@ -837,9 +842,9 @@ async def execute_prepared_agent_run(
         instructions=prepared.instructions,
         deps=prepared.deps,
         model_settings=prepared.model_settings,
-        usage_limits=_usage_limits(prepared.limits),
+        limits=prepared.limits,
+        model_configuration_hash=model_configuration_hash,
     )
-    usage = result.usage
     actions: list[dict[str, Any]] = []
     output_text = None
     status_value = "COMPLETED"
@@ -863,15 +868,19 @@ async def execute_prepared_agent_run(
         output_text = result.output
     return AgentRunOutcome(
         status=status_value,
-        message_history=json.loads(result.all_messages_json()),
+        message_history=result.message_history,
         output_text=output_text,
         actions=actions,
-        request_count=usage.requests,
-        tool_call_count=usage.tool_calls,
-        input_tokens=usage.input_tokens,
-        output_tokens=usage.output_tokens,
-        provider=provider_identity[0] if provider_identity is not None else None,
-        provider_model=provider_identity[1] if provider_identity is not None else None,
+        request_count=result.request_count,
+        tool_call_count=result.tool_call_count,
+        input_tokens=result.input_tokens,
+        cached_input_tokens=result.cached_input_tokens,
+        cache_write_tokens=result.cache_write_tokens,
+        output_tokens=result.output_tokens,
+        provider=result.provider,
+        provider_model=result.provider_model,
+        model_configuration_hash=result.model_configuration_hash,
+        invocations=result.invocations,
     )
 
 
@@ -886,16 +895,10 @@ def persist_agent_run_outcome(run_id: uuid.UUID, outcome: AgentRunOutcome) -> No
             raise ValueError("Agent run parent records are not available")
         run.message_history = outcome.message_history
         run.output_text = outcome.output_text
-        run.request_count = outcome.request_count
         run.tool_call_count = outcome.tool_call_count
-        run.input_tokens = outcome.input_tokens
-        run.output_tokens = outcome.output_tokens
-        run.status = outcome.status
-        run.completed_at = utcnow()
+        usage_context = None
         if outcome.provider is not None and outcome.provider_model is not None:
-            record_external_provider_usage(
-                db,
-                idempotency_key=f"agent-run:{run.id}:provider-usage",
+            usage_context = ProviderUsageContext(
                 tenant_id=conversation.tenant_id,
                 client_id=conversation.client_id,
                 matter_id=conversation.matter_id,
@@ -903,17 +906,21 @@ def persist_agent_run_outcome(run_id: uuid.UUID, outcome: AgentRunOutcome) -> No
                 job_type="AGENT_RUN",
                 job_id=run.id,
                 job_created_at=run.created_at,
-                provider=outcome.provider,
-                model=outcome.provider_model,
-                request_count=outcome.request_count,
-                input_tokens=outcome.input_tokens,
-                output_tokens=outcome.output_tokens,
                 details={
                     "conversation_id": str(conversation.id),
                     "turn_id": str(run.turn_id),
                     "workflow_id": run.workflow_id,
                 },
             )
+        persist_model_invocations(
+            db,
+            outcome.invocations,
+            agent_run_id=run.id,
+            usage_context=usage_context,
+        )
+        refresh_agent_run_usage(db, run)
+        run.status = outcome.status
+        run.completed_at = utcnow()
         if outcome.status == "WAITING_APPROVAL":
             if not outcome.actions:
                 raise ValueError("Waiting agent run did not produce an approval request")

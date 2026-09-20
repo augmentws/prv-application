@@ -606,6 +606,12 @@ workflow-role bindings. They will not permit arbitrary workflow graph creation.
 
 ## Delivery sequence
 
+Implementation status as of September 20, 2026: delivery items 1 and 2 are complete. The shared foundations in
+items 3 through 6 are also complete: the interactive agent now uses the generic model executor; workflow step,
+skill-run, and per-request model-invocation records exist; cache telemetry reconciles with provider usage; and
+preferred-text selection, paragraph mapping, citation validation, and deterministic analysis rendering are
+available. Assessment-specific orchestration begins with item 7.
+
 1. Add managed skill definitions, versions, publication, and administration.
 2. Add the code-owned workflow registry and database-managed workflow-skill bindings.
 3. Define generic structured-model request/result contracts, deterministic instruction assembly, model and

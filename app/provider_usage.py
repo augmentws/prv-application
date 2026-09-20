@@ -37,6 +37,9 @@ def record_external_provider_usage(
     request_count: int,
     input_tokens: int,
     output_tokens: int,
+    cached_input_tokens: int = 0,
+    cache_write_tokens: int = 0,
+    model_invocation_id: uuid.UUID | None = None,
     details: dict[str, Any] | None = None,
 ) -> ExternalProviderUsage:
     """Stage one immutable usage record, returning an existing retry record when present."""
@@ -49,7 +52,13 @@ def record_external_provider_usage(
     )
     if existing is not None:
         return existing
-    if request_count < 0 or input_tokens < 0 or output_tokens < 0:
+    if (
+        request_count < 0
+        or input_tokens < 0
+        or cached_input_tokens < 0
+        or cache_write_tokens < 0
+        or output_tokens < 0
+    ):
         raise ValueError("Provider usage counts cannot be negative")
     usage = ExternalProviderUsage(
         idempotency_key=idempotency_key,
@@ -64,7 +73,10 @@ def record_external_provider_usage(
         model=model,
         request_count=request_count,
         input_tokens=input_tokens,
+        cached_input_tokens=cached_input_tokens,
+        cache_write_tokens=cache_write_tokens,
         output_tokens=output_tokens,
+        model_invocation_id=model_invocation_id,
         details=details or {},
     )
     db.add(usage)

@@ -34,6 +34,8 @@ def test_provider_usage_is_idempotent_and_visible_to_tenant_admin(
         "model": "gemini-3.7-flash",
         "request_count": 2,
         "input_tokens": 1200,
+        "cached_input_tokens": 700,
+        "cache_write_tokens": 80,
         "output_tokens": 345,
         "details": {"workflow_id": "agent-run:test"},
     }
@@ -56,6 +58,9 @@ def test_provider_usage_is_idempotent_and_visible_to_tenant_admin(
     assert item["started_by_email"] == root_admin.email
     assert item["provider"] == "google"
     assert item["input_tokens"] == 1200
+    assert item["cached_input_tokens"] == 700
+    assert item["cache_write_tokens"] == 80
     assert item["output_tokens"] == 345
+    assert item["model_invocation_id"] is None
     assert item["total_tokens"] == 1545
     assert db.query(ExternalProviderUsage).count() == 1
