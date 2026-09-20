@@ -25,6 +25,7 @@ sentence-transformers = "==5.2.2"
 transformers = "==4.57.6"
 regex = "*"
 jsonschema = "*"
+tiktoken = "*"
 
 [dev-packages]
 pytest = "*"

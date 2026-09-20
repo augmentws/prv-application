@@ -560,7 +560,10 @@ class MatterSavedSearchExecute(BaseModel):
     size: int | None = Field(default=None, ge=1, le=500)
 
 
-ReviewBatchSelectionType = Literal["ALL_MATTER", "SEARCH_QUERY", "RANDOM_MATTER", "RANDOM_BATCH"]
+ReviewBatchSelectionType = Literal[
+    "ALL_MATTER", "SEARCH_QUERY", "RANDOM_MATTER", "RANDOM_BATCH", "DEFINITION_ASSESSMENT"
+]
+InteractiveReviewBatchSelectionType = Literal["ALL_MATTER", "SEARCH_QUERY", "RANDOM_MATTER", "RANDOM_BATCH"]
 ReviewBatchValueVisibility = Literal["OWN_VALUES", "ALL_REVIEWER_VALUES"]
 ReviewBatchStatus = Literal["QUEUED", "BUILDING", "READY", "FAILED", "ARCHIVED"]
 ReviewBatchSearchStatus = Literal["QUEUED", "SYNCING", "READY", "FAILED", "NOT_CONFIGURED"]
@@ -581,7 +584,7 @@ ReviewBatchRunStatus = Literal[
 class ReviewBatchCreate(BaseModel):
     name: str = Field(min_length=1, max_length=200)
     description: str | None = Field(default=None, max_length=4000)
-    selection_type: ReviewBatchSelectionType
+    selection_type: InteractiveReviewBatchSelectionType
     search: MatterSearchRequest | None = None
     source_batch_id: uuid.UUID | None = None
     sample_size: int | None = Field(default=None, ge=1, le=10_000_000)
@@ -716,6 +719,14 @@ class ReviewBatchRunRead(ORMModel):
     completed_at: datetime | None
     created_at: datetime
     updated_at: datetime
+
+
+class ReviewBatchDocumentAnalysisRead(BaseModel):
+    review_batch_run_id: uuid.UUID
+    matter_document_id: uuid.UUID
+    status: Literal["QUEUED", "IN_PROGRESS", "COMPLETED", "SKIPPED", "FAILED"]
+    output_artifact_id: uuid.UUID | None
+    analysis: dict[str, Any] | None
 
 
 class ReviewBatchRunFieldValue(BaseModel):
@@ -1438,6 +1449,104 @@ class AgentActionDecisionResult(BaseModel):
     action_request: AgentActionRequestRead
     decision: AgentActionDecisionRead
     resumed_run: AgentRunRead | None
+
+
+MatterDefinitionAssessmentStatus = Literal[
+    "QUEUED",
+    "PLANNING",
+    "RETRIEVING",
+    "BUILDING_BATCH",
+    "SUMMARIZING",
+    "SYNTHESIZING",
+    "COMPLETED",
+    "COMPLETED_WITH_ERRORS",
+    "FAILED",
+    "CANCELED",
+]
+
+
+class MatterDefinitionAssessmentCreate(BaseModel):
+    revision: int | None = Field(default=None, ge=1)
+    maximum_document_count: int = Field(default=500, ge=1, le=10_000_000)
+    control_sample_size: int = Field(default=0, ge=0, le=1_000_000)
+    acknowledge_large_run_warning: bool = False
+
+
+class MatterDefinitionAssessmentRead(ORMModel):
+    id: uuid.UUID
+    matter_id: uuid.UUID
+    matter_definition_revision_id: uuid.UUID
+    definition_content_hash: str
+    workflow_run_id: uuid.UUID
+    search_index_generation_id: uuid.UUID | None
+    review_batch_id: uuid.UUID | None
+    review_batch_run_id: uuid.UUID | None
+    configuration_snapshot: dict[str, Any]
+    requested_document_count: int
+    control_sample_size: int
+    large_run_warning_acknowledged: bool
+    warning_acknowledged_by_user_id: uuid.UUID | None
+    warning_acknowledged_at: datetime | None
+    estimated_input_tokens: int | None
+    estimated_output_tokens: int | None
+    token_estimator: str | None
+    token_estimator_version: str | None
+    estimation_model: str | None
+    candidate_count: int
+    selected_count: int
+    summarized_count: int
+    skipped_count: int
+    failed_count: int
+    status: MatterDefinitionAssessmentStatus
+    error_message: str | None
+    initiated_by_user_id: uuid.UUID
+    started_at: datetime | None
+    completed_at: datetime | None
+    canceled_at: datetime | None
+    created_at: datetime
+    updated_at: datetime
+
+
+class MatterDefinitionAssessmentQueryRead(ORMModel):
+    id: uuid.UUID
+    assessment_run_id: uuid.UUID
+    ordinal: int
+    criterion_key: str
+    criterion_label: str
+    rationale: str
+    search_request: dict[str, Any]
+    quota: int
+    result_count: int
+    created_at: datetime
+
+
+class MatterDefinitionAssessmentQuestionRead(ORMModel):
+    id: uuid.UUID
+    assessment_run_id: uuid.UUID
+    question: str
+    rationale: str
+    priority: Literal["HIGH", "MEDIUM", "LOW"]
+    blocking: bool
+    evidence: list[dict[str, Any]]
+    status: Literal["OPEN", "ANSWERED", "DISMISSED"]
+    answer: str | None
+    answered_by_user_id: uuid.UUID | None
+    answered_at: datetime | None
+    created_at: datetime
+    updated_at: datetime
+
+
+class MatterDefinitionAssessmentQuestionUpdate(BaseModel):
+    status: Literal["ANSWERED", "DISMISSED"]
+    answer: str | None = Field(default=None, max_length=20_000)
+
+    @model_validator(mode="after")
+    def validate_answer(self) -> "MatterDefinitionAssessmentQuestionUpdate":
+        if self.status == "ANSWERED" and not (self.answer or "").strip():
+            raise ValueError("ANSWERED questions require an answer")
+        if self.status == "DISMISSED" and self.answer is not None:
+            raise ValueError("DISMISSED questions do not accept an answer")
+        return self
 
 
 class ErrorDetail(BaseModel):

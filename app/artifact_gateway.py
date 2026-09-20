@@ -972,8 +972,10 @@ def store_derived_artifact(
     actor_user_id: uuid.UUID,
     tenant_id: uuid.UUID,
     client_id: uuid.UUID,
+    media_type: str = "application/vnd.apache.parquet",
+    filename: str | None = None,
 ) -> tuple[DerivedArtifactReference, bool]:
-    filename = f"{collection_item_id}-{artifact_type.lower().replace('_', '-')}.parquet"
+    filename = filename or f"{collection_item_id}-{artifact_type.lower().replace('_', '-')}.parquet"
     settings = get_settings()
     if settings.artifact_mode == "embedded":
         with ArtifactSessionLocal() as db:
@@ -987,7 +989,7 @@ def store_derived_artifact(
                 get_storage(),
                 item=item,
                 content=content,
-                media_type="application/vnd.apache.parquet",
+                media_type=media_type,
                 original_filename=filename,
                 artifact_type=artifact_type,
                 source_artifact_id=source_artifact_id,
@@ -1021,7 +1023,7 @@ def store_derived_artifact(
             f"/v1/collection-items/{collection_item_id}/derived-artifacts:upload",
             headers=_headers(actor_user_id, tenant_id, client_id),
             data={"metadata": json.dumps(payload)},
-            files={"file": (filename, content, "application/vnd.apache.parquet")},
+            files={"file": (filename, content, media_type)},
         )
     response.raise_for_status()
     data = response.json()

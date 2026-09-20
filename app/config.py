@@ -37,6 +37,9 @@ class Settings(BaseSettings):
     chunk_target_characters: int = Field(default=1800, ge=200, le=20000)
     chunk_max_characters: int = Field(default=2600, ge=300, le=30000)
     chunk_overlap_characters: int = Field(default=200, ge=0, le=5000)
+    definition_assessment_warning_document_count: int = Field(default=1000, ge=1)
+    definition_assessment_document_concurrency: int = Field(default=8, ge=1, le=32)
+    definition_assessment_map_max_characters: int = Field(default=60_000, ge=10_000, le=500_000)
 
     jwt_secret: str = Field(default="development-only-change-me-please", min_length=32)
     jwt_issuer: str = "priv-view-core"

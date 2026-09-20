@@ -17,6 +17,7 @@ from app.models import (
     Matter,
     MatterDocument,
     MatterDocumentImportJob,
+    MatterDefinitionAssessmentRun,
     MatterEmbeddingBatch,
     MatterEmbeddingJob,
     MetadataDefinition,
@@ -216,10 +217,24 @@ class SearchIndexManager:
                     )
                 )
             )
+            pinned_generation_ids = set(
+                self.db.scalars(
+                    select(MatterDefinitionAssessmentRun.search_index_generation_id).where(
+                        MatterDefinitionAssessmentRun.matter_id == active.matter_id,
+                        MatterDefinitionAssessmentRun.search_index_generation_id.is_not(None),
+                        MatterDefinitionAssessmentRun.status.not_in(
+                            ["COMPLETED", "COMPLETED_WITH_ERRORS", "FAILED", "CANCELED"]
+                        ),
+                    )
+                )
+            )
+            pinned_index_names = {
+                generation.index_name for generation in generations if generation.id in pinned_generation_ids
+            }
             physical_indices = set(self.client.resolve_indices(f"{active.alias_name}-v*"))
             physical_indices.update(generation.index_name for generation in generations)
             for index_name in sorted(physical_indices):
-                if index_name != active.index_name:
+                if index_name != active.index_name and index_name not in pinned_index_names:
                     self.client.delete_index(index_name)
             generation_by_id = {generation.id: generation for generation in generations}
             batches = list(
@@ -240,7 +255,8 @@ class SearchIndexManager:
                         },
                     }
             for generation in generations:
-                self.db.delete(generation)
+                if generation.id not in pinned_generation_ids:
+                    self.db.delete(generation)
             self.db.commit()
         except Exception:
             self.db.rollback()

@@ -70,6 +70,12 @@ AGENT_TOOL_SPECS = (
         description="Create a Matter Definition revision from an approved agent proposal.",
         requires_approval=True,
     ),
+    AgentToolSpec(
+        key="matter_definition.start_assessment",
+        name="Start Matter Definition assessment",
+        description="Start a diagnostic corpus assessment for a pinned Matter Definition revision after approval.",
+        requires_approval=True,
+    ),
 )
 
 AGENT_TOOL_REGISTRY = {tool.key: tool for tool in AGENT_TOOL_SPECS}
@@ -85,6 +91,7 @@ EXECUTABLE_AGENT_TOOL_KEYS = frozenset(
         "matter_metadata.enum.update",
         "matter_metadata.enum.deactivate",
         "matter_definition.apply_draft_edit",
+        "matter_definition.start_assessment",
     }
 )
 

@@ -742,7 +742,8 @@ class ReviewBatch(TimestampMixin, Base):
     __tablename__ = "review_batch"
     __table_args__ = (
         CheckConstraint(
-            "selection_type IN ('ALL_MATTER', 'SEARCH_QUERY', 'RANDOM_MATTER', 'RANDOM_BATCH')",
+            "selection_type IN ('ALL_MATTER', 'SEARCH_QUERY', 'RANDOM_MATTER', 'RANDOM_BATCH', "
+            "'DEFINITION_ASSESSMENT')",
             name="ck_review_batch_selection_type",
         ),
         CheckConstraint(
@@ -1927,6 +1928,148 @@ class MatterDefinitionRevision(Base):
     )
     agent_run_id: Mapped[uuid.UUID | None] = mapped_column(Uuid, index=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+
+
+class MatterDefinitionAssessmentRun(TimestampMixin, Base):
+    __tablename__ = "matter_definition_assessment_run"
+    __table_args__ = (
+        CheckConstraint(
+            "status IN ('QUEUED', 'PLANNING', 'RETRIEVING', 'BUILDING_BATCH', "
+            "'SUMMARIZING', 'SYNTHESIZING', 'COMPLETED', 'COMPLETED_WITH_ERRORS', "
+            "'FAILED', 'CANCELED')",
+            name="ck_matter_definition_assessment_status",
+        ),
+        CheckConstraint("requested_document_count > 0", name="ck_matter_definition_assessment_requested_count"),
+        CheckConstraint(
+            "candidate_count >= 0 AND selected_count >= 0 AND summarized_count >= 0 "
+            "AND skipped_count >= 0 AND failed_count >= 0",
+            name="ck_matter_definition_assessment_counts",
+        ),
+        Index("ix_definition_assessment_matter_created", "matter_id", "created_at"),
+        Index("ix_definition_assessment_matter", "matter_id"),
+        Index("ix_definition_assessment_revision", "matter_definition_revision_id"),
+        Index("ix_definition_assessment_generation", "search_index_generation_id"),
+        Index("ix_definition_assessment_status", "status"),
+        Index("ix_definition_assessment_initiator", "initiated_by_user_id"),
+    )
+
+    id: Mapped[uuid.UUID] = mapped_column(Uuid, primary_key=True, default=uuid.uuid4)
+    matter_id: Mapped[uuid.UUID] = mapped_column(Uuid, ForeignKey("matter.id", ondelete="CASCADE"))
+    matter_definition_revision_id: Mapped[uuid.UUID] = mapped_column(
+        Uuid, ForeignKey("matter_definition_revision.id", ondelete="RESTRICT")
+    )
+    definition_content_hash: Mapped[str] = mapped_column(String(64))
+    workflow_run_id: Mapped[uuid.UUID] = mapped_column(
+        Uuid, ForeignKey("workflow_run.id", ondelete="RESTRICT"), unique=True
+    )
+    search_index_generation_id: Mapped[uuid.UUID | None] = mapped_column(
+        Uuid, ForeignKey("search_index_generation.id", ondelete="SET NULL"), nullable=True
+    )
+    review_batch_id: Mapped[uuid.UUID | None] = mapped_column(
+        Uuid, ForeignKey("review_batch.id", ondelete="SET NULL"), nullable=True, unique=True
+    )
+    review_batch_run_id: Mapped[uuid.UUID | None] = mapped_column(
+        Uuid, ForeignKey("review_batch_run.id", ondelete="SET NULL"), nullable=True, unique=True
+    )
+    configuration_snapshot: Mapped[dict[str, Any]] = mapped_column(JSON, default=dict)
+    binding_snapshot: Mapped[dict[str, Any]] = mapped_column(JSON, default=dict)
+    requested_document_count: Mapped[int] = mapped_column(Integer, default=500)
+    control_sample_size: Mapped[int] = mapped_column(Integer, default=0)
+    large_run_warning_acknowledged: Mapped[bool] = mapped_column(Boolean, default=False)
+    warning_acknowledged_by_user_id: Mapped[uuid.UUID | None] = mapped_column(
+        Uuid, ForeignKey("app_user.id", ondelete="RESTRICT"), nullable=True
+    )
+    warning_acknowledged_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    estimated_input_tokens: Mapped[int | None] = mapped_column(BigInteger)
+    estimated_output_tokens: Mapped[int | None] = mapped_column(BigInteger)
+    token_estimator: Mapped[str | None] = mapped_column(String(100))
+    token_estimator_version: Mapped[str | None] = mapped_column(String(100))
+    estimation_model: Mapped[str | None] = mapped_column(String(500))
+    estimate_source_hashes: Mapped[list[str]] = mapped_column(JSON, default=list)
+    candidate_count: Mapped[int] = mapped_column(Integer, default=0)
+    selected_count: Mapped[int] = mapped_column(Integer, default=0)
+    summarized_count: Mapped[int] = mapped_column(Integer, default=0)
+    skipped_count: Mapped[int] = mapped_column(Integer, default=0)
+    failed_count: Mapped[int] = mapped_column(Integer, default=0)
+    status: Mapped[str] = mapped_column(String(30), default="QUEUED")
+    error_message: Mapped[str | None] = mapped_column(Text)
+    initiated_by_user_id: Mapped[uuid.UUID] = mapped_column(
+        Uuid, ForeignKey("app_user.id", ondelete="RESTRICT")
+    )
+    started_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    completed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    canceled_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+
+
+class MatterDefinitionAssessmentQuery(Base):
+    __tablename__ = "matter_definition_assessment_query"
+    __table_args__ = (
+        UniqueConstraint("assessment_run_id", "ordinal", name="uq_definition_assessment_query_ordinal"),
+        CheckConstraint("ordinal > 0 AND quota > 0 AND result_count >= 0", name="ck_definition_assessment_query_counts"),
+    )
+
+    id: Mapped[uuid.UUID] = mapped_column(Uuid, primary_key=True, default=uuid.uuid4)
+    assessment_run_id: Mapped[uuid.UUID] = mapped_column(
+        Uuid, ForeignKey("matter_definition_assessment_run.id", ondelete="CASCADE"), index=True
+    )
+    ordinal: Mapped[int] = mapped_column(Integer)
+    criterion_key: Mapped[str] = mapped_column(String(200))
+    criterion_label: Mapped[str] = mapped_column(String(500))
+    rationale: Mapped[str] = mapped_column(Text)
+    search_request: Mapped[dict[str, Any]] = mapped_column(JSON)
+    quota: Mapped[int] = mapped_column(Integer)
+    result_count: Mapped[int] = mapped_column(Integer, default=0)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+
+
+class MatterDefinitionAssessmentCandidate(Base):
+    __tablename__ = "matter_definition_assessment_candidate"
+    __table_args__ = (
+        UniqueConstraint(
+            "assessment_run_id", "matter_document_id", name="uq_definition_assessment_candidate_document"
+        ),
+        CheckConstraint("selection_order IS NULL OR selection_order > 0", name="ck_definition_assessment_selection_order"),
+        Index("ix_definition_assessment_candidate_selected", "assessment_run_id", "selected"),
+    )
+
+    id: Mapped[uuid.UUID] = mapped_column(Uuid, primary_key=True, default=uuid.uuid4)
+    assessment_run_id: Mapped[uuid.UUID] = mapped_column(
+        Uuid, ForeignKey("matter_definition_assessment_run.id", ondelete="CASCADE"), index=True
+    )
+    matter_document_id: Mapped[uuid.UUID] = mapped_column(
+        Uuid, ForeignKey("matter_document.id", ondelete="CASCADE"), index=True
+    )
+    retrieval_provenance: Mapped[list[dict[str, Any]]] = mapped_column(JSON, default=list)
+    fused_score: Mapped[float] = mapped_column(Float, default=0)
+    selected: Mapped[bool] = mapped_column(Boolean, default=False)
+    selection_order: Mapped[int | None] = mapped_column(Integer)
+    selection_reason: Mapped[str | None] = mapped_column(String(100))
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+
+
+class MatterDefinitionAssessmentQuestion(TimestampMixin, Base):
+    __tablename__ = "matter_definition_assessment_question"
+    __table_args__ = (
+        CheckConstraint("priority IN ('HIGH', 'MEDIUM', 'LOW')", name="ck_definition_assessment_question_priority"),
+        CheckConstraint("status IN ('OPEN', 'ANSWERED', 'DISMISSED')", name="ck_definition_assessment_question_status"),
+        Index("ix_definition_assessment_question_status", "assessment_run_id", "status"),
+    )
+
+    id: Mapped[uuid.UUID] = mapped_column(Uuid, primary_key=True, default=uuid.uuid4)
+    assessment_run_id: Mapped[uuid.UUID] = mapped_column(
+        Uuid, ForeignKey("matter_definition_assessment_run.id", ondelete="CASCADE"), index=True
+    )
+    question: Mapped[str] = mapped_column(Text)
+    rationale: Mapped[str] = mapped_column(Text)
+    priority: Mapped[str] = mapped_column(String(20), default="MEDIUM")
+    blocking: Mapped[bool] = mapped_column(Boolean, default=False)
+    evidence: Mapped[list[dict[str, Any]]] = mapped_column(JSON, default=list)
+    status: Mapped[str] = mapped_column(String(20), default="OPEN")
+    answer: Mapped[str | None] = mapped_column(Text)
+    answered_by_user_id: Mapped[uuid.UUID | None] = mapped_column(
+        Uuid, ForeignKey("app_user.id", ondelete="SET NULL"), nullable=True
+    )
+    answered_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
 
 
 class AuditRecord(Base):

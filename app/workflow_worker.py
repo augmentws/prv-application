@@ -32,6 +32,7 @@ def main() -> None:
         collection_deletion,
         collection_text_processing,
         matter_embeddings,
+        matter_definition_assessments,
         matter_import,
         matter_topics,
         review_batches,

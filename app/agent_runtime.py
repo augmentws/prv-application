@@ -27,6 +27,7 @@ from app.execution_accounting import (
     refresh_agent_run_usage,
 )
 from app.matter_definitions import append_matter_definition_revision
+from app.matter_definition_assessments import start_assessment
 from app.metadata_definitions import (
     add_metadata_enum_value as add_metadata_enum_value_command,
 )
@@ -96,6 +97,7 @@ TOOL_NAME_TO_KEY = {
     "matter_metadata_enum_update": "matter_metadata.enum.update",
     "matter_metadata_enum_deactivate": "matter_metadata.enum.deactivate",
     "matter_definition_apply_draft_edit": "matter_definition.apply_draft_edit",
+    "matter_definition_start_assessment": "matter_definition.start_assessment",
 }
 RUNTIME_TOOL_KEYS = EXECUTABLE_AGENT_TOOL_KEYS
 if frozenset(TOOL_NAME_TO_KEY.values()) != RUNTIME_TOOL_KEYS:
@@ -108,6 +110,8 @@ AgentMetadataDisplayName = Annotated[str, Field(min_length=1, max_length=200)]
 AgentMetadataDescription = Annotated[str, Field(min_length=1, max_length=4000)]
 AgentEnumLabel = Annotated[str, Field(min_length=1, max_length=200)]
 AgentEnumDescription = Annotated[str, Field(min_length=1, max_length=2000)]
+AssessmentMaximumDocumentCount = Annotated[int, Field(ge=1, le=10_000_000)]
+AssessmentControlSampleSize = Annotated[int, Field(ge=0, le=1_000_000)]
 
 
 @dataclass(frozen=True)
@@ -674,6 +678,46 @@ def apply_matter_definition_draft_edit(
     )
 
 
+def start_matter_definition_assessment(
+    ctx: RunContext[AgentRuntimeDeps],
+    maximum_document_count: AssessmentMaximumDocumentCount = 500,
+    control_sample_size: AssessmentControlSampleSize = 0,
+    revision: MatterDefinitionRevisionNumber | None = None,
+) -> dict[str, Any]:
+    if not ctx.tool_call_approved:
+        raise PermissionError("Matter Definition assessments require explicit user approval")
+    arguments = {
+        "maximum_document_count": maximum_document_count,
+        "control_sample_size": control_sample_size,
+        "revision": revision,
+    }
+
+    def operation(db, matter: Matter, user: User, _run: AgentRun) -> dict[str, Any]:
+        assessment = start_assessment(
+            db,
+            matter=matter,
+            initiated_by_user_id=user.id,
+            settings=get_settings(),
+            revision_number=revision,
+            maximum_document_count=maximum_document_count,
+            control_sample_size=control_sample_size,
+            acknowledge_large_run_warning=True,
+        )
+        return {
+            "assessment_id": str(assessment.id),
+            "status": assessment.status,
+            "maximum_document_count": assessment.requested_document_count,
+            "control_sample_size": assessment.control_sample_size,
+        }
+
+    return _record_tool(
+        ctx,
+        tool_key="matter_definition.start_assessment",
+        arguments=arguments,
+        operation=operation,
+    )
+
+
 def _prepare_for(tool_key: str):
     def prepare(ctx: RunContext[AgentRuntimeDeps], tool_def: ToolDefinition) -> ToolDefinition | None:
         return tool_def if tool_key in ctx.deps.allowed_tool_keys else None
@@ -698,6 +742,7 @@ def build_agent(
         "matter_metadata.enum.update": update_matter_metadata_enum_value,
         "matter_metadata.enum.deactivate": deactivate_matter_metadata_enum_value,
         "matter_definition.apply_draft_edit": apply_matter_definition_draft_edit,
+        "matter_definition.start_assessment": start_matter_definition_assessment,
     }
     tools = []
     for tool_name, tool_key in TOOL_NAME_TO_KEY.items():

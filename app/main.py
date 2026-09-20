@@ -13,6 +13,7 @@ from app.routers import (
     document_metadata,
     managed_skills,
     matter_definitions,
+    matter_definition_assessments,
     matter_embeddings,
     matter_imports,
     matter_templates,
@@ -80,6 +81,7 @@ app.include_router(saved_searches.router)
 app.include_router(review_batches.router)
 app.include_router(search.router)
 app.include_router(managed_skills.router)
+app.include_router(matter_definition_assessments.router)
 if get_settings().artifact_mode == "embedded":
     app.include_router(build_artifact_router(get_embedded_artifact_principal))
 elif get_settings().artifact_mode == "remote":

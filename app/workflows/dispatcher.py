@@ -88,6 +88,24 @@ def cancel_matter_topic_application(job_id: str) -> None:
         get_dbos_client().cancel_workflow(f"matter-topics:{job_id}:application", cancel_children=True)
 
 
+def enqueue_definition_assessment(db: Session, workflow_id: str, assessment_id: str) -> None:
+    settings = get_settings()
+    if not settings.dbos_enabled:
+        return
+    options: EnqueueOptions = {
+        "workflow_name": "matter_definition_assessment_v1",
+        "queue_name": "definition-assessments",
+        "workflow_id": workflow_id,
+        "application_name": settings.dbos_application_name,
+    }
+    get_dbos_client().enqueue_in_transaction(db, options, assessment_id)
+
+
+def cancel_definition_assessment(workflow_id: str) -> None:
+    if get_settings().dbos_enabled:
+        get_dbos_client().cancel_workflow(workflow_id, cancel_children=True)
+
+
 def enqueue_review_batch(db: Session, workflow_id: str, batch_id: str) -> None:
     settings = get_settings()
     if not settings.dbos_enabled:

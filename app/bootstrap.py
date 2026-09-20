@@ -36,6 +36,7 @@ STANDARD_MATTER_DEFINITION_AGENT_TOOLS = (
     "matter_metadata.enum.update",
     "matter_metadata.enum.deactivate",
     "matter_definition.apply_draft_edit",
+    "matter_definition.start_assessment",
 )
 
 

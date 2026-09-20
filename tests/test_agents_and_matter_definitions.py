@@ -89,7 +89,7 @@ def test_standard_matter_definition_agent_bootstrap_is_idempotent(db: Session, r
         select(func.count()).select_from(AgentVersionTool).where(
             AgentVersionTool.agent_definition_version_id == version.id
         )
-    ) == 10
+    ) == 11
 
 
 def test_root_and_tenant_agent_control_plane(client: TestClient, root_token: str) -> None:
