@@ -186,7 +186,8 @@ Record the following levels:
 
 ### `ModelInvocation`
 
-- skill run and provider request ID;
+- exactly one execution owner: an interactive `AgentRun` or a managed `SkillRun`;
+- provider request ID;
 - provider, model, and model-configuration hash;
 - attempt and request sequence;
 - request, input, output, cached-input, and cache-write token counts;
@@ -195,6 +196,13 @@ Record the following levels:
 
 Interactive agent conversations may reference workflow and skill runs, but batch skill runs must not require a
 synthetic `AgentConversation` or `AgentTurn`.
+
+`ModelInvocation` is the canonical per-call execution record. Existing `AgentRun` counters and the corresponding
+`SkillRun`, step, and workflow counters are denormalized aggregates derived from invocation rows. Every billable
+invocation must also be represented idempotently in `ExternalProviderUsage`, which remains the immutable billing
+ledger. Reconciliation tests must prove that invocation totals equal their execution aggregates and billable
+provider-usage totals. Cached-input and cache-write tokens must be available consistently in execution telemetry
+and billing reporting rather than creating a workflow-only accounting path.
 
 ## Assessment domain record
 
@@ -329,11 +337,18 @@ Materialize the selected document IDs into `ReviewBatchDocument` using their det
 The batch remains a permanent Core snapshot. PostgreSQL remains authoritative and the existing `batch_ids`
 search projection is reused.
 
+The Core model check constraint and API `ReviewBatchSelectionType` must both add `DEFINITION_ASSESSMENT`.
+
 ## Phase 3: document analysis
 
-Create one `AGENT`-style isolated review-batch run as the domain-visible analysis run, but execute its documents
-as managed `SkillRun` records rather than interactive agent runs. Plan bounded DBOS child groups and process
-documents concurrently subject to provider limits.
+Create one domain-visible `ReviewBatchRun` with `run_type = WORKFLOW`, `purpose = ASSESSMENT`, and
+`result_policy = ISOLATED`. The run references its `WorkflowRun`; it has no actor user or agent-definition
+version, while `initiated_by_user_id` continues to identify the user who launched or approved the assessment.
+The review-run actor check must enforce exactly one valid `HUMAN`, `AGENT`, or `WORKFLOW` ownership branch.
+
+Execute the documents as managed `SkillRun` records rather than interactive agent runs. Add `QUEUED` and
+`FAILED` document-run states and `COMPLETED_WITH_ERRORS` where a domain-visible run needs to expose partial
+failure. Plan bounded DBOS child groups and process documents concurrently subject to provider limits.
 
 ### Text source and paragraph map
 
@@ -435,6 +450,11 @@ Extend the derived-artifact upload contract to support:
 - `relationship = DERIVED_FROM`;
 - `media_type = application/json`.
 
+Replace the current binary derived-artifact relationship validator with an explicit artifact-type mapping:
+`CHUNK_SET -> CHUNKED_FROM`, `CHUNK_VECTOR_SET -> EMBEDDED_FROM`, and `SUMMARY -> DERIVED_FROM`. The Artifact
+database constraints already permit `SUMMARY` and `DERIVED_FROM`; this change is required in the API schema and
+its tests.
+
 Store each result under its original collection item with lineage to the exact text artifact analyzed. Use the
 review-batch run ID as the opaque Artifact Service `processing_run_id`.
 
@@ -457,8 +477,14 @@ the structured analysis payload.
 
 ## Phase 5: synthesis and clarification questions
 
-After all document children reach a terminal state, the synthesis skill reads validated structured results and
-selectively reopens source evidence when required. It returns:
+After all document children reach a terminal state, calculate the selected, successful, skipped, failed,
+partial-coverage, and invalid-result counts. Coverage is a required synthesis input and the first section of the
+rendered report. A code-owned, versioned policy supplies the minimum successful-document count and coverage
+ratio. Below that threshold the workflow produces an explicit insufficient-coverage result without substantive
+fit conclusions; above it, partial failures produce `COMPLETED_WITH_ERRORS` and a prominent limitation.
+
+The synthesis skill reads the coverage envelope and validated structured results and selectively reopens source
+evidence when required. It returns:
 
 - a batch-level narrative;
 - recurring document subjects;
@@ -488,6 +514,12 @@ Re-running synthesis creates a new version and preserves prior versions.
 
 Do not publish batch topics into a matter-wide metadata enum. The same document may belong to several batches
 and have a different topic assignment in each.
+
+This system coexists with the existing `MatterTopicJob` pipeline. Matter topics are approved, matter-wide
+metadata values visible everywhere in the matter; assessment batch topics are diagnostic labels visible only in
+the selected review-batch taxonomy. A document may have both, and the UI labels and filters them separately.
+The existing `MatterTopicBatch` is a processing shard rather than a review batch; use
+`MatterTopicProcessingBatch` in new code and documentation where compatibility permits.
 
 Project batch topics into OpenSearch as nested, batch-qualified records:
 
@@ -576,8 +608,11 @@ workflow-role bindings. They will not permit arbitrary workflow graph creation.
 
 1. Add managed skill definitions, versions, publication, and administration.
 2. Add the code-owned workflow registry and database-managed workflow-skill bindings.
-3. Extract a generic structured model executor from the interactive agent runtime.
-4. Add workflow, step, skill-run, and model-invocation records with provider and cache telemetry.
+3. Define generic structured-model request/result contracts, deterministic instruction assembly, model and
+   cache adapters, usage-limit enforcement, structured-output validation, telemetry hooks, and an error
+   taxonomy; then extract the executor from the interactive agent runtime without changing agent behavior.
+4. Add workflow, step, skill-run, and model-invocation records with provider and cache telemetry, connect both
+   interactive agent and managed-skill calls, and reconcile them with `ExternalProviderUsage`.
 5. Add deterministic prompt assembly, output-schema validation, and cache-boundary adapters.
 6. Add paragraph segmentation, citation validation, and deterministic Markdown rendering.
 7. Add assessment domain models, APIs, and the retrieval-planning skill.
@@ -597,6 +632,8 @@ workflow-role bindings. They will not permit arbitrary workflow graph creation.
 - A skill cannot use a tool not allowed by the workflow or initiating agent.
 - Invalid structured output and invalid citation IDs are rejected and retried within limits.
 - Provider cache-read and cache-write tokens are recorded idempotently.
+- Every invocation has exactly one agent-run or skill-run owner.
+- Invocation totals reconcile with execution aggregates and the immutable provider-usage ledger.
 
 ### Retrieval and batches
 
@@ -618,6 +655,8 @@ workflow-role bindings. They will not permit arbitrary workflow graph creation.
 - A child failure does not discard successful document artifacts.
 - Retrying a completed child reuses its artifact.
 - Hostile document content cannot alter instructions or invoke tools.
+- Synthesis always displays selected, successful, skipped, failed, and partial-coverage counts.
+- A run below the configured coverage threshold emits no substantive fit conclusions.
 
 ### Taxonomy and questions
 

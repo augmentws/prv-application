@@ -11,6 +11,8 @@ from app.models import (
     MetadataGroup,
     MetadataGroupField,
     ReviewBatch,
+    ReviewBatchRun,
+    WorkflowRun,
 )
 from app.schemas import MatterSearchResponse
 
@@ -199,6 +201,72 @@ def test_batch_selection_validation(client: TestClient, root_token: str, root_ad
         json={"name": "Bad search batch", "selection_type": "SEARCH_QUERY"},
     )
     assert response.status_code == 422
+
+
+def test_workflow_review_run_has_workflow_owner(
+    client: TestClient,
+    root_token: str,
+    root_admin,
+) -> None:
+    matter_id = create_matter(client, root_token, str(root_admin.tenant_id))
+    add_documents(matter_id, root_admin.id, count=1)
+    base = f"/v1/matters/{matter_id}/review-batches"
+    created = client.post(
+        base,
+        headers=auth(root_token),
+        json={"name": "Assessment batch", "selection_type": "ALL_MATTER"},
+    )
+    assert created.status_code == 202, created.text
+    batch_id = uuid.UUID(created.json()["id"])
+
+    with TestingSessionLocal() as db:
+        workflow_run = WorkflowRun(
+            tenant_id=root_admin.tenant_id,
+            matter_id=uuid.UUID(matter_id),
+            workflow_key="matter_definition_assessment_v1",
+            code_version="1",
+            dbos_workflow_id=f"test-assessment:{uuid.uuid4()}",
+            status="QUEUED",
+            input_snapshot={"matter_id": matter_id},
+            binding_snapshot={},
+            configuration_snapshot={},
+            progress={},
+            initiated_by_user_id=root_admin.id,
+        )
+        db.add(workflow_run)
+        db.flush()
+        run = ReviewBatchRun(
+            review_batch_id=batch_id,
+            run_type="WORKFLOW",
+            purpose="ASSESSMENT",
+            status="RUNNING",
+            result_policy="ISOLATED",
+            actor_user_id=None,
+            agent_definition_version_id=None,
+            workflow_run_record_id=workflow_run.id,
+            configuration_snapshot={},
+            initiated_by_user_id=root_admin.id,
+        )
+        db.add(run)
+        db.commit()
+        run_id = run.id
+        workflow_run_id = workflow_run.id
+
+    listed = client.get(f"{base}/{batch_id}/runs", headers=auth(root_token))
+    assert listed.status_code == 200, listed.text
+    payload = next(item for item in listed.json() if item["id"] == str(run_id))
+    assert payload["run_type"] == "WORKFLOW"
+    assert payload["purpose"] == "ASSESSMENT"
+    assert payload["workflow_run_record_id"] == str(workflow_run_id)
+    assert payload["actor_user_id"] is None
+    assert payload["agent_definition_version_id"] is None
+
+    interactive = client.post(
+        f"{base}/{batch_id}/runs",
+        headers=auth(root_token),
+        json={"run_type": "WORKFLOW", "purpose": "ASSESSMENT"},
+    )
+    assert interactive.status_code == 422
 
 
 def test_batch_search_injects_authoritative_membership_filter(

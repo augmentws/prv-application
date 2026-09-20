@@ -9,7 +9,12 @@ from pydantic import ValidationError
 
 from artifact_service.api import MAX_DATE_HISTOGRAM_BUCKETS, _fill_date_buckets
 from artifact_service.config import get_artifact_settings
-from artifact_service.schemas import EmailMetadataInput, EmailRecipientInput, TextProcessingRule
+from artifact_service.schemas import (
+    DerivedArtifactUploadMetadata,
+    EmailMetadataInput,
+    EmailRecipientInput,
+    TextProcessingRule,
+)
 from artifact_service.text_processing import process_text
 
 
@@ -22,6 +27,37 @@ def test_email_upload_metadata_rejects_nul_characters_before_database_write() ->
         EmailMetadataInput(subject="energy savings\x00")
     with pytest.raises(ValidationError, match="must not contain NUL characters"):
         EmailRecipientInput(recipient_type="TO", display_name="recipient\x00name")
+
+
+@pytest.mark.parametrize(
+    ("artifact_type", "relationship"),
+    [
+        ("CHUNK_SET", "CHUNKED_FROM"),
+        ("CHUNK_VECTOR_SET", "EMBEDDED_FROM"),
+        ("SUMMARY", "DERIVED_FROM"),
+    ],
+)
+def test_derived_artifact_relationships_are_explicit(artifact_type: str, relationship: str) -> None:
+    metadata = DerivedArtifactUploadMetadata(
+        artifact_type=artifact_type,
+        source_artifact_id=uuid.uuid4(),
+        relationship=relationship,
+        processing_run_id=uuid.uuid4(),
+        derivation_key="a" * 64,
+    )
+
+    assert metadata.relationship == relationship
+
+
+def test_summary_artifact_rejects_embedding_relationship() -> None:
+    with pytest.raises(ValidationError, match="SUMMARY requires the DERIVED_FROM relationship"):
+        DerivedArtifactUploadMetadata(
+            artifact_type="SUMMARY",
+            source_artifact_id=uuid.uuid4(),
+            relationship="EMBEDDED_FROM",
+            processing_run_id=uuid.uuid4(),
+            derivation_key="a" * 64,
+        )
 
 
 def test_date_histogram_does_not_fill_extreme_empty_ranges() -> None:

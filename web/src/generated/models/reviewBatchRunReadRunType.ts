@@ -12,4 +12,5 @@ export type ReviewBatchRunReadRunType = typeof ReviewBatchRunReadRunType[keyof t
 export const ReviewBatchRunReadRunType = {
   HUMAN: 'HUMAN',
   AGENT: 'AGENT',
+  WORKFLOW: 'WORKFLOW',
 } as const;

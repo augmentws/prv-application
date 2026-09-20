@@ -272,8 +272,13 @@ class ArtifactRead(BaseModel):
     metadata: dict[str, Any] = Field(default_factory=dict)
 
 
-DerivedArtifactType = Literal["CHUNK_SET", "CHUNK_VECTOR_SET"]
-DerivedArtifactRelationship = Literal["CHUNKED_FROM", "EMBEDDED_FROM"]
+DerivedArtifactType = Literal["CHUNK_SET", "CHUNK_VECTOR_SET", "SUMMARY"]
+DerivedArtifactRelationship = Literal["CHUNKED_FROM", "EMBEDDED_FROM", "DERIVED_FROM"]
+DERIVED_ARTIFACT_RELATIONSHIPS: dict[str, str] = {
+    "CHUNK_SET": "CHUNKED_FROM",
+    "CHUNK_VECTOR_SET": "EMBEDDED_FROM",
+    "SUMMARY": "DERIVED_FROM",
+}
 
 
 class DerivedArtifactUploadMetadata(BaseModel):
@@ -286,7 +291,7 @@ class DerivedArtifactUploadMetadata(BaseModel):
 
     @model_validator(mode="after")
     def validate_relationship(self) -> "DerivedArtifactUploadMetadata":
-        expected = "CHUNKED_FROM" if self.artifact_type == "CHUNK_SET" else "EMBEDDED_FROM"
+        expected = DERIVED_ARTIFACT_RELATIONSHIPS[self.artifact_type]
         if self.relationship != expected:
             raise ValueError(f"{self.artifact_type} requires the {expected} relationship")
         return self

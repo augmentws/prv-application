@@ -869,19 +869,60 @@ class ReviewBatchNote(Base):
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
 
 
+class WorkflowRun(TimestampMixin, Base):
+    __tablename__ = "workflow_run"
+    __table_args__ = (
+        CheckConstraint(
+            "status IN ('QUEUED', 'RUNNING', 'COMPLETED', 'COMPLETED_WITH_ERRORS', 'FAILED', 'CANCELED')",
+            name="ck_workflow_run_status",
+        ),
+        Index("ix_workflow_run_matter_created", "matter_id", "created_at"),
+    )
+
+    id: Mapped[uuid.UUID] = mapped_column(Uuid, primary_key=True, default=uuid.uuid4)
+    tenant_id: Mapped[uuid.UUID] = mapped_column(Uuid, ForeignKey("tenant.id", ondelete="RESTRICT"), index=True)
+    client_id: Mapped[uuid.UUID | None] = mapped_column(
+        Uuid, ForeignKey("client.id", ondelete="RESTRICT"), nullable=True, index=True
+    )
+    matter_id: Mapped[uuid.UUID | None] = mapped_column(
+        Uuid, ForeignKey("matter.id", ondelete="CASCADE"), nullable=True, index=True
+    )
+    workflow_key: Mapped[str] = mapped_column(String(100), index=True)
+    code_version: Mapped[str] = mapped_column(String(100))
+    dbos_workflow_id: Mapped[str] = mapped_column(String(255), unique=True)
+    status: Mapped[str] = mapped_column(String(30), default="QUEUED", index=True)
+    input_snapshot: Mapped[dict[str, Any]] = mapped_column(JSON, default=dict)
+    binding_snapshot: Mapped[dict[str, Any]] = mapped_column(JSON, default=dict)
+    configuration_snapshot: Mapped[dict[str, Any]] = mapped_column(JSON, default=dict)
+    progress: Mapped[dict[str, Any]] = mapped_column(JSON, default=dict)
+    initiated_by_user_id: Mapped[uuid.UUID] = mapped_column(
+        Uuid, ForeignKey("app_user.id", ondelete="RESTRICT"), index=True
+    )
+    error_message: Mapped[str | None] = mapped_column(Text)
+    started_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    completed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+
+
 class ReviewBatchRun(TimestampMixin, Base):
     __tablename__ = "review_batch_run"
     __table_args__ = (
-        CheckConstraint("run_type IN ('HUMAN', 'AGENT')", name="ck_review_batch_run_type"),
-        CheckConstraint("purpose IN ('REVIEW', 'REFERENCE', 'CANDIDATE')", name="ck_review_batch_run_purpose"),
+        CheckConstraint("run_type IN ('HUMAN', 'AGENT', 'WORKFLOW')", name="ck_review_batch_run_type"),
         CheckConstraint(
-            "status IN ('QUEUED', 'RUNNING', 'COMPLETED', 'FAILED', 'CANCELED')",
+            "purpose IN ('REVIEW', 'REFERENCE', 'CANDIDATE', 'ASSESSMENT')",
+            name="ck_review_batch_run_purpose",
+        ),
+        CheckConstraint(
+            "status IN ('QUEUED', 'RUNNING', 'COMPLETED', 'COMPLETED_WITH_ERRORS', 'FAILED', 'CANCELED')",
             name="ck_review_batch_run_status",
         ),
         CheckConstraint("result_policy IN ('ISOLATED', 'PUBLISH_TO_MATTER')", name="ck_review_batch_run_policy"),
         CheckConstraint(
-            "(run_type = 'HUMAN' AND actor_user_id IS NOT NULL AND agent_definition_version_id IS NULL) OR "
-            "(run_type = 'AGENT' AND actor_user_id IS NULL AND agent_definition_version_id IS NOT NULL)",
+            "(run_type = 'HUMAN' AND actor_user_id IS NOT NULL "
+            "AND agent_definition_version_id IS NULL AND workflow_run_record_id IS NULL) OR "
+            "(run_type = 'AGENT' AND actor_user_id IS NULL "
+            "AND agent_definition_version_id IS NOT NULL AND workflow_run_record_id IS NULL) OR "
+            "(run_type = 'WORKFLOW' AND actor_user_id IS NULL "
+            "AND agent_definition_version_id IS NULL AND workflow_run_record_id IS NOT NULL)",
             name="ck_review_batch_run_actor",
         ),
         CheckConstraint("processed_document_count >= 0", name="ck_review_batch_run_processed_count"),
@@ -894,7 +935,7 @@ class ReviewBatchRun(TimestampMixin, Base):
     )
     run_type: Mapped[str] = mapped_column(String(20))
     purpose: Mapped[str] = mapped_column(String(20))
-    status: Mapped[str] = mapped_column(String(20), default="RUNNING", index=True)
+    status: Mapped[str] = mapped_column(String(30), default="RUNNING", index=True)
     result_policy: Mapped[str] = mapped_column(String(30), default="ISOLATED")
     parent_run_id: Mapped[uuid.UUID | None] = mapped_column(
         Uuid, ForeignKey("review_batch_run.id", ondelete="RESTRICT"), nullable=True, index=True
@@ -905,11 +946,14 @@ class ReviewBatchRun(TimestampMixin, Base):
     agent_definition_version_id: Mapped[uuid.UUID | None] = mapped_column(
         Uuid, ForeignKey("agent_definition_version.id", ondelete="RESTRICT"), nullable=True, index=True
     )
+    workflow_run_record_id: Mapped[uuid.UUID | None] = mapped_column(
+        Uuid, ForeignKey("workflow_run.id", ondelete="RESTRICT"), nullable=True, index=True
+    )
     configuration_snapshot: Mapped[dict[str, Any]] = mapped_column(JSON, default=dict)
     initiated_by_user_id: Mapped[uuid.UUID] = mapped_column(
         Uuid, ForeignKey("app_user.id", ondelete="RESTRICT"), index=True
     )
-    workflow_id: Mapped[str | None] = mapped_column(String(255), unique=True)
+    dbos_workflow_id: Mapped[str | None] = mapped_column(String(255), unique=True)
     processed_document_count: Mapped[int] = mapped_column(Integer, default=0)
     error_message: Mapped[str | None] = mapped_column(Text)
     started_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), default=utcnow)
@@ -920,7 +964,7 @@ class ReviewBatchRunDocument(Base):
     __tablename__ = "review_batch_run_document"
     __table_args__ = (
         CheckConstraint(
-            "status IN ('IN_PROGRESS', 'COMPLETED', 'SKIPPED')",
+            "status IN ('QUEUED', 'IN_PROGRESS', 'COMPLETED', 'SKIPPED', 'FAILED')",
             name="ck_review_batch_run_document_status",
         ),
         Index("ix_review_batch_run_document_run_status", "review_batch_run_id", "status"),

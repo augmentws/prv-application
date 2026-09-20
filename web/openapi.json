@@ -15795,7 +15795,8 @@
             "type": "string",
             "enum": [
               "HUMAN",
-              "AGENT"
+              "AGENT",
+              "WORKFLOW"
             ],
             "title": "Run Type"
           },
@@ -15804,7 +15805,8 @@
             "enum": [
               "REVIEW",
               "REFERENCE",
-              "CANDIDATE"
+              "CANDIDATE",
+              "ASSESSMENT"
             ],
             "title": "Purpose"
           },
@@ -15814,6 +15816,7 @@
               "QUEUED",
               "RUNNING",
               "COMPLETED",
+              "COMPLETED_WITH_ERRORS",
               "FAILED",
               "CANCELED"
             ],
@@ -15862,6 +15865,18 @@
               }
             ],
             "title": "Agent Definition Version Id"
+          },
+          "workflow_run_record_id": {
+            "anyOf": [
+              {
+                "type": "string",
+                "format": "uuid"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Workflow Run Record Id"
           },
           "configuration_snapshot": {
             "additionalProperties": true,
@@ -15934,6 +15949,7 @@
           "parent_run_id",
           "actor_user_id",
           "agent_definition_version_id",
+          "workflow_run_record_id",
           "configuration_snapshot",
           "initiated_by_user_id",
           "processed_document_count",

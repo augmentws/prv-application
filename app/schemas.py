@@ -558,9 +558,18 @@ ReviewBatchSelectionType = Literal["ALL_MATTER", "SEARCH_QUERY", "RANDOM_MATTER"
 ReviewBatchValueVisibility = Literal["OWN_VALUES", "ALL_REVIEWER_VALUES"]
 ReviewBatchStatus = Literal["QUEUED", "BUILDING", "READY", "FAILED", "ARCHIVED"]
 ReviewBatchSearchStatus = Literal["QUEUED", "SYNCING", "READY", "FAILED", "NOT_CONFIGURED"]
-ReviewBatchRunType = Literal["HUMAN", "AGENT"]
-ReviewBatchRunPurpose = Literal["REVIEW", "REFERENCE", "CANDIDATE"]
-ReviewBatchRunStatus = Literal["QUEUED", "RUNNING", "COMPLETED", "FAILED", "CANCELED"]
+ReviewBatchRunType = Literal["HUMAN", "AGENT", "WORKFLOW"]
+InteractiveReviewBatchRunType = Literal["HUMAN", "AGENT"]
+ReviewBatchRunPurpose = Literal["REVIEW", "REFERENCE", "CANDIDATE", "ASSESSMENT"]
+InteractiveReviewBatchRunPurpose = Literal["REVIEW", "REFERENCE", "CANDIDATE"]
+ReviewBatchRunStatus = Literal[
+    "QUEUED",
+    "RUNNING",
+    "COMPLETED",
+    "COMPLETED_WITH_ERRORS",
+    "FAILED",
+    "CANCELED",
+]
 
 
 class ReviewBatchCreate(BaseModel):
@@ -665,8 +674,8 @@ class ReviewBatchNoteRead(ORMModel):
 
 
 class ReviewBatchRunCreate(BaseModel):
-    run_type: ReviewBatchRunType
-    purpose: ReviewBatchRunPurpose = "REVIEW"
+    run_type: InteractiveReviewBatchRunType
+    purpose: InteractiveReviewBatchRunPurpose = "REVIEW"
     actor_user_id: uuid.UUID | None = None
     agent_definition_version_id: uuid.UUID | None = None
     parent_run_id: uuid.UUID | None = None
@@ -692,6 +701,7 @@ class ReviewBatchRunRead(ORMModel):
     parent_run_id: uuid.UUID | None
     actor_user_id: uuid.UUID | None
     agent_definition_version_id: uuid.UUID | None
+    workflow_run_record_id: uuid.UUID | None
     configuration_snapshot: dict[str, Any]
     initiated_by_user_id: uuid.UUID
     processed_document_count: int
