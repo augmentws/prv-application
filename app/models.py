@@ -1428,6 +1428,102 @@ class AgentVersionTool(Base):
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
 
 
+class SkillDefinition(TimestampMixin, Base):
+    __tablename__ = "skill_definition"
+    __table_args__ = (
+        UniqueConstraint("owner_tenant_id", "key", name="uq_skill_definition_tenant_key"),
+        CheckConstraint("scope IN ('SYSTEM', 'TENANT')", name="ck_skill_definition_scope"),
+        CheckConstraint("status IN ('ACTIVE', 'SUSPENDED', 'ARCHIVED')", name="ck_skill_definition_status"),
+        CheckConstraint("current_version > 0", name="ck_skill_definition_current_version"),
+        CheckConstraint(
+            "published_version IS NULL OR (published_version > 0 AND published_version <= current_version)",
+            name="ck_skill_definition_published_version",
+        ),
+    )
+
+    id: Mapped[uuid.UUID] = mapped_column(Uuid, primary_key=True, default=uuid.uuid4)
+    owner_tenant_id: Mapped[uuid.UUID] = mapped_column(
+        Uuid, ForeignKey("tenant.id", ondelete="RESTRICT"), index=True
+    )
+    scope: Mapped[str] = mapped_column(String(20))
+    key: Mapped[str] = mapped_column(String(100))
+    name: Mapped[str] = mapped_column(String(200))
+    description: Mapped[str | None] = mapped_column(Text)
+    current_version: Mapped[int] = mapped_column(Integer, default=1)
+    published_version: Mapped[int | None] = mapped_column(Integer)
+    status: Mapped[str] = mapped_column(String(20), default="ACTIVE")
+    created_by_user_id: Mapped[uuid.UUID] = mapped_column(
+        Uuid, ForeignKey("app_user.id", ondelete="RESTRICT"), index=True
+    )
+
+
+class SkillDefinitionVersion(Base):
+    __tablename__ = "skill_definition_version"
+    __table_args__ = (
+        UniqueConstraint("skill_definition_id", "version", name="uq_skill_definition_version"),
+        CheckConstraint("version > 0", name="ck_skill_definition_version_positive"),
+        CheckConstraint("status IN ('DRAFT', 'PUBLISHED', 'RETIRED')", name="ck_skill_version_status"),
+    )
+
+    id: Mapped[uuid.UUID] = mapped_column(Uuid, primary_key=True, default=uuid.uuid4)
+    skill_definition_id: Mapped[uuid.UUID] = mapped_column(
+        Uuid, ForeignKey("skill_definition.id", ondelete="CASCADE"), index=True
+    )
+    version: Mapped[int] = mapped_column(Integer)
+    instructions: Mapped[str] = mapped_column(Text)
+    input_schema_key: Mapped[str] = mapped_column(String(150))
+    input_schema: Mapped[dict[str, Any]] = mapped_column(JSON)
+    output_schema_key: Mapped[str] = mapped_column(String(150))
+    output_schema: Mapped[dict[str, Any]] = mapped_column(JSON)
+    model_key: Mapped[str] = mapped_column(String(200))
+    model_policy: Mapped[dict[str, Any]] = mapped_column(JSON, default=dict)
+    limits: Mapped[dict[str, Any]] = mapped_column(JSON, default=dict)
+    required_capabilities: Mapped[list[str]] = mapped_column(JSON, default=list)
+    required_tools: Mapped[list[str]] = mapped_column(JSON, default=list)
+    cache_policy: Mapped[dict[str, Any]] = mapped_column(JSON, default=dict)
+    evaluation_fixtures: Mapped[list[dict[str, Any]]] = mapped_column(JSON, default=list)
+    status: Mapped[str] = mapped_column(String(20), default="DRAFT")
+    created_by_user_id: Mapped[uuid.UUID] = mapped_column(
+        Uuid, ForeignKey("app_user.id", ondelete="RESTRICT"), index=True
+    )
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+    published_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+
+
+class WorkflowSkillBinding(TimestampMixin, Base):
+    __tablename__ = "workflow_skill_binding"
+    __table_args__ = (
+        UniqueConstraint(
+            "workflow_key",
+            "role_key",
+            "scope",
+            "owner_tenant_id",
+            name="uq_workflow_skill_binding_role_scope",
+        ),
+        CheckConstraint("scope IN ('SYSTEM', 'TENANT')", name="ck_workflow_skill_binding_scope"),
+        CheckConstraint("status IN ('ACTIVE', 'INACTIVE')", name="ck_workflow_skill_binding_status"),
+    )
+
+    id: Mapped[uuid.UUID] = mapped_column(Uuid, primary_key=True, default=uuid.uuid4)
+    workflow_key: Mapped[str] = mapped_column(String(100), index=True)
+    role_key: Mapped[str] = mapped_column(String(100))
+    scope: Mapped[str] = mapped_column(String(20))
+    owner_tenant_id: Mapped[uuid.UUID] = mapped_column(
+        Uuid, ForeignKey("tenant.id", ondelete="CASCADE"), index=True
+    )
+    skill_definition_id: Mapped[uuid.UUID] = mapped_column(
+        Uuid, ForeignKey("skill_definition.id", ondelete="RESTRICT"), index=True
+    )
+    skill_definition_version_id: Mapped[uuid.UUID] = mapped_column(
+        Uuid, ForeignKey("skill_definition_version.id", ondelete="RESTRICT"), index=True
+    )
+    configuration: Mapped[dict[str, Any]] = mapped_column(JSON, default=dict)
+    status: Mapped[str] = mapped_column(String(20), default="ACTIVE")
+    created_by_user_id: Mapped[uuid.UUID] = mapped_column(
+        Uuid, ForeignKey("app_user.id", ondelete="RESTRICT"), index=True
+    )
+
+
 class AgentConversation(TimestampMixin, Base):
     __tablename__ = "agent_conversation"
     __table_args__ = (

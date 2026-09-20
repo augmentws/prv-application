@@ -26,6 +26,9 @@ MetadataEffectiveStatus = Literal["ACTIVE", "SUPERSEDED", "REJECTED", "INVALIDAT
 MetadataConfirmationState = Literal["UNREVIEWED", "CONFIRMED", "REJECTED"]
 AgentScope = Literal["SYSTEM", "TENANT"]
 AgentVersionStatus = Literal["DRAFT", "PUBLISHED", "RETIRED"]
+SkillScope = Literal["SYSTEM", "TENANT"]
+SkillVersionStatus = Literal["DRAFT", "PUBLISHED", "RETIRED"]
+WorkflowBindingStatus = Literal["ACTIVE", "INACTIVE"]
 MatterDefinitionSourceKind = Literal["PASTE", "MARKDOWN", "TEXT", "DOCX", "AGENT_EDIT", "USER_EDIT"]
 MatterDefinitionUserSourceKind = Literal["PASTE", "MARKDOWN", "TEXT", "USER_EDIT"]
 Slug = Annotated[
@@ -1151,6 +1154,135 @@ class AgentDefinitionVersionRead(ORMModel):
 class AgentDefinitionCreated(BaseModel):
     agent: AgentDefinitionRead
     version: AgentDefinitionVersionRead
+
+
+class SkillVersionCreate(BaseModel):
+    instructions: str = Field(min_length=1, max_length=200_000)
+    input_schema_key: MetadataKey
+    input_schema: dict[str, Any]
+    output_schema_key: MetadataKey
+    output_schema: dict[str, Any]
+    model_key: str = Field(min_length=1, max_length=200)
+    model_policy: dict[str, Any] = Field(default_factory=dict)
+    limits: dict[str, Any] = Field(default_factory=dict)
+    required_capabilities: list[str] = Field(default_factory=list, max_length=50)
+    required_tools: list[str] = Field(default_factory=list, max_length=100)
+    cache_policy: dict[str, Any] = Field(default_factory=dict)
+    evaluation_fixtures: list[dict[str, Any]] = Field(default_factory=list, max_length=100)
+
+    @model_validator(mode="after")
+    def validate_contract(self) -> "SkillVersionCreate":
+        if not self.input_schema:
+            raise ValueError("input_schema cannot be empty")
+        if not self.output_schema:
+            raise ValueError("output_schema cannot be empty")
+        if len(self.required_capabilities) != len(set(self.required_capabilities)):
+            raise ValueError("required_capabilities must be unique")
+        if len(self.required_tools) != len(set(self.required_tools)):
+            raise ValueError("required_tools must be unique")
+        return self
+
+
+class SkillDefinitionCreate(BaseModel):
+    key: MetadataKey
+    name: str = Field(min_length=1, max_length=200)
+    description: str | None = Field(default=None, max_length=4000)
+    initial_version: SkillVersionCreate
+
+
+class SkillDefinitionRead(ORMModel):
+    id: uuid.UUID
+    owner_tenant_id: uuid.UUID
+    scope: SkillScope
+    key: str
+    name: str
+    description: str | None
+    current_version: int
+    published_version: int | None
+    status: ResourceStatus
+    created_by_user_id: uuid.UUID
+    created_at: datetime
+    updated_at: datetime
+
+
+class SkillDefinitionUpdate(BaseModel):
+    name: str | None = Field(default=None, min_length=1, max_length=200)
+    description: str | None = Field(default=None, max_length=4000)
+    status: ResourceStatus | None = None
+
+    @model_validator(mode="after")
+    def validate_nonempty_update(self) -> "SkillDefinitionUpdate":
+        if not self.model_fields_set:
+            raise ValueError("At least one skill property must be supplied")
+        if self.name is not None:
+            self.name = self.name.strip()
+            if not self.name:
+                raise ValueError("Skill name cannot be blank")
+        return self
+
+
+class SkillDefinitionVersionRead(ORMModel):
+    id: uuid.UUID
+    skill_definition_id: uuid.UUID
+    version: int
+    instructions: str
+    input_schema_key: str
+    input_schema: dict[str, Any]
+    output_schema_key: str
+    output_schema: dict[str, Any]
+    model_key: str
+    model_policy: dict[str, Any]
+    limits: dict[str, Any]
+    required_capabilities: list[str]
+    required_tools: list[str]
+    cache_policy: dict[str, Any]
+    evaluation_fixtures: list[dict[str, Any]]
+    status: SkillVersionStatus
+    created_by_user_id: uuid.UUID
+    created_at: datetime
+    published_at: datetime | None
+
+
+class SkillDefinitionCreated(BaseModel):
+    skill: SkillDefinitionRead
+    version: SkillDefinitionVersionRead
+
+
+class WorkflowRoleSpecRead(BaseModel):
+    key: str
+    input_schema_key: str
+    output_schema_key: str
+    allowed_capabilities: list[str]
+    allowed_tool_keys: list[str]
+
+
+class WorkflowSpecRead(BaseModel):
+    key: str
+    code_version: str
+    name: str
+    description: str
+    roles: list[WorkflowRoleSpecRead]
+
+
+class WorkflowSkillBindingUpsert(BaseModel):
+    skill_definition_version_id: uuid.UUID
+    configuration: dict[str, Any] = Field(default_factory=dict)
+    status: WorkflowBindingStatus = "ACTIVE"
+
+
+class WorkflowSkillBindingRead(ORMModel):
+    id: uuid.UUID
+    workflow_key: str
+    role_key: str
+    scope: SkillScope
+    owner_tenant_id: uuid.UUID
+    skill_definition_id: uuid.UUID
+    skill_definition_version_id: uuid.UUID
+    configuration: dict[str, Any]
+    status: WorkflowBindingStatus
+    created_by_user_id: uuid.UUID
+    created_at: datetime
+    updated_at: datetime
 
 
 class MatterDefinitionRevisionCreate(BaseModel):

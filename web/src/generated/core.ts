@@ -124,6 +124,12 @@ import type {
   SearchIndexGenerationRead,
   SearchProjectionOperationRead,
   SearchProjectionRetryResponse,
+  SkillDefinitionCreate,
+  SkillDefinitionCreated,
+  SkillDefinitionRead,
+  SkillDefinitionUpdate,
+  SkillDefinitionVersionRead,
+  SkillVersionCreate,
   SourceContainerUploadResponse,
   TenantCreate,
   TenantCreated,
@@ -132,7 +138,10 @@ import type {
   TenantStorageRead,
   TokenPair,
   UserCreate,
-  UserRead
+  UserRead,
+  WorkflowSkillBindingRead,
+  WorkflowSkillBindingUpsert,
+  WorkflowSpecRead
 } from './models';
 
 export type healthHealthGetResponse200 = {
@@ -6558,6 +6567,782 @@ export const rebuildSearchIndexV1MattersMatterIdSearchIndexesRebuildPost = async
 
   const data: rebuildSearchIndexV1MattersMatterIdSearchIndexesRebuildPostResponse['data'] = body ? JSON.parse(body) : {}
   return { data, status: res.status, headers: res.headers } as rebuildSearchIndexV1MattersMatterIdSearchIndexesRebuildPostResponse
+}
+
+
+
+export type listWorkflowSpecsV1WorkflowSpecsGetResponse200 = {
+  data: WorkflowSpecRead[]
+  status: 200
+}
+
+export type listWorkflowSpecsV1WorkflowSpecsGetResponseSuccess = (listWorkflowSpecsV1WorkflowSpecsGetResponse200) & {
+  headers: Headers;
+};
+;
+
+export type listWorkflowSpecsV1WorkflowSpecsGetResponse = (listWorkflowSpecsV1WorkflowSpecsGetResponseSuccess)
+
+export const getListWorkflowSpecsV1WorkflowSpecsGetUrl = () => {
+
+
+
+
+  return `/api/core/v1/workflow-specs`
+}
+
+/**
+ * @summary List Workflow Specs
+ */
+export const listWorkflowSpecsV1WorkflowSpecsGet = async ( options?: RequestInit): Promise<listWorkflowSpecsV1WorkflowSpecsGetResponse> => {
+
+  const res = await fetch(getListWorkflowSpecsV1WorkflowSpecsGetUrl(),
+  {
+    ...options,
+    method: 'GET'
+
+
+  }
+)
+
+
+  const body = [204, 205, 304].includes(res.status) ? null : await res.text();
+
+  const data: listWorkflowSpecsV1WorkflowSpecsGetResponse['data'] = body ? JSON.parse(body) : {}
+  return { data, status: res.status, headers: res.headers } as listWorkflowSpecsV1WorkflowSpecsGetResponse
+}
+
+
+
+export type listSystemSkillsV1AdminSkillsGetResponse200 = {
+  data: SkillDefinitionRead[]
+  status: 200
+}
+
+export type listSystemSkillsV1AdminSkillsGetResponseSuccess = (listSystemSkillsV1AdminSkillsGetResponse200) & {
+  headers: Headers;
+};
+;
+
+export type listSystemSkillsV1AdminSkillsGetResponse = (listSystemSkillsV1AdminSkillsGetResponseSuccess)
+
+export const getListSystemSkillsV1AdminSkillsGetUrl = () => {
+
+
+
+
+  return `/api/core/v1/admin/skills`
+}
+
+/**
+ * @summary List System Skills
+ */
+export const listSystemSkillsV1AdminSkillsGet = async ( options?: RequestInit): Promise<listSystemSkillsV1AdminSkillsGetResponse> => {
+
+  const res = await fetch(getListSystemSkillsV1AdminSkillsGetUrl(),
+  {
+    ...options,
+    method: 'GET'
+
+
+  }
+)
+
+
+  const body = [204, 205, 304].includes(res.status) ? null : await res.text();
+
+  const data: listSystemSkillsV1AdminSkillsGetResponse['data'] = body ? JSON.parse(body) : {}
+  return { data, status: res.status, headers: res.headers } as listSystemSkillsV1AdminSkillsGetResponse
+}
+
+
+
+export type createSystemSkillV1AdminSkillsPostResponse201 = {
+  data: SkillDefinitionCreated
+  status: 201
+}
+
+export type createSystemSkillV1AdminSkillsPostResponse422 = {
+  data: HTTPValidationError
+  status: 422
+}
+
+export type createSystemSkillV1AdminSkillsPostResponseSuccess = (createSystemSkillV1AdminSkillsPostResponse201) & {
+  headers: Headers;
+};
+export type createSystemSkillV1AdminSkillsPostResponseError = (createSystemSkillV1AdminSkillsPostResponse422) & {
+  headers: Headers;
+};
+
+export type createSystemSkillV1AdminSkillsPostResponse = (createSystemSkillV1AdminSkillsPostResponseSuccess | createSystemSkillV1AdminSkillsPostResponseError)
+
+export const getCreateSystemSkillV1AdminSkillsPostUrl = () => {
+
+
+
+
+  return `/api/core/v1/admin/skills`
+}
+
+/**
+ * @summary Create System Skill
+ */
+export const createSystemSkillV1AdminSkillsPost = async (skillDefinitionCreate: SkillDefinitionCreate, options?: RequestInit): Promise<createSystemSkillV1AdminSkillsPostResponse> => {
+
+    const getHeaders = (h?: NonNullable<RequestInit['headers']>): Record<string, string | readonly string[]> => {
+    if (!h) return {};
+    if (h instanceof Headers) return Object.fromEntries(h.entries());
+    if (Symbol.iterator in h) {
+      return Object.fromEntries(
+        Array.from(h as Iterable<Iterable<string>>, (entry) => Array.from(entry) as [string, string]),
+      );
+    }
+    const headers: Record<string, string | readonly string[]> = {};
+    for (const [name, value] of Object.entries<string | readonly string[] | undefined>(h)) {
+      if (value !== undefined) headers[name] = value;
+    }
+    return headers;
+  };
+const res = await fetch(getCreateSystemSkillV1AdminSkillsPostUrl(),
+  {
+    ...options,
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json', ...getHeaders(options?.headers) },
+    body: JSON.stringify(skillDefinitionCreate)
+  }
+)
+
+
+  const body = [204, 205, 304].includes(res.status) ? null : await res.text();
+
+  const data: createSystemSkillV1AdminSkillsPostResponse['data'] = body ? JSON.parse(body) : {}
+  return { data, status: res.status, headers: res.headers } as createSystemSkillV1AdminSkillsPostResponse
+}
+
+
+
+export type listTenantSkillsV1TenantsTenantIdSkillsGetResponse200 = {
+  data: SkillDefinitionRead[]
+  status: 200
+}
+
+export type listTenantSkillsV1TenantsTenantIdSkillsGetResponse422 = {
+  data: HTTPValidationError
+  status: 422
+}
+
+export type listTenantSkillsV1TenantsTenantIdSkillsGetResponseSuccess = (listTenantSkillsV1TenantsTenantIdSkillsGetResponse200) & {
+  headers: Headers;
+};
+export type listTenantSkillsV1TenantsTenantIdSkillsGetResponseError = (listTenantSkillsV1TenantsTenantIdSkillsGetResponse422) & {
+  headers: Headers;
+};
+
+export type listTenantSkillsV1TenantsTenantIdSkillsGetResponse = (listTenantSkillsV1TenantsTenantIdSkillsGetResponseSuccess | listTenantSkillsV1TenantsTenantIdSkillsGetResponseError)
+
+export const getListTenantSkillsV1TenantsTenantIdSkillsGetUrl = (tenantId: string,) => {
+
+
+
+
+  return `/api/core/v1/tenants/${tenantId}/skills`
+}
+
+/**
+ * @summary List Tenant Skills
+ */
+export const listTenantSkillsV1TenantsTenantIdSkillsGet = async (tenantId: string, options?: RequestInit): Promise<listTenantSkillsV1TenantsTenantIdSkillsGetResponse> => {
+
+  const res = await fetch(getListTenantSkillsV1TenantsTenantIdSkillsGetUrl(tenantId),
+  {
+    ...options,
+    method: 'GET'
+
+
+  }
+)
+
+
+  const body = [204, 205, 304].includes(res.status) ? null : await res.text();
+
+  const data: listTenantSkillsV1TenantsTenantIdSkillsGetResponse['data'] = body ? JSON.parse(body) : {}
+  return { data, status: res.status, headers: res.headers } as listTenantSkillsV1TenantsTenantIdSkillsGetResponse
+}
+
+
+
+export type createTenantSkillV1TenantsTenantIdSkillsPostResponse201 = {
+  data: SkillDefinitionCreated
+  status: 201
+}
+
+export type createTenantSkillV1TenantsTenantIdSkillsPostResponse422 = {
+  data: HTTPValidationError
+  status: 422
+}
+
+export type createTenantSkillV1TenantsTenantIdSkillsPostResponseSuccess = (createTenantSkillV1TenantsTenantIdSkillsPostResponse201) & {
+  headers: Headers;
+};
+export type createTenantSkillV1TenantsTenantIdSkillsPostResponseError = (createTenantSkillV1TenantsTenantIdSkillsPostResponse422) & {
+  headers: Headers;
+};
+
+export type createTenantSkillV1TenantsTenantIdSkillsPostResponse = (createTenantSkillV1TenantsTenantIdSkillsPostResponseSuccess | createTenantSkillV1TenantsTenantIdSkillsPostResponseError)
+
+export const getCreateTenantSkillV1TenantsTenantIdSkillsPostUrl = (tenantId: string,) => {
+
+
+
+
+  return `/api/core/v1/tenants/${tenantId}/skills`
+}
+
+/**
+ * @summary Create Tenant Skill
+ */
+export const createTenantSkillV1TenantsTenantIdSkillsPost = async (tenantId: string,
+    skillDefinitionCreate: SkillDefinitionCreate, options?: RequestInit): Promise<createTenantSkillV1TenantsTenantIdSkillsPostResponse> => {
+
+    const getHeaders = (h?: NonNullable<RequestInit['headers']>): Record<string, string | readonly string[]> => {
+    if (!h) return {};
+    if (h instanceof Headers) return Object.fromEntries(h.entries());
+    if (Symbol.iterator in h) {
+      return Object.fromEntries(
+        Array.from(h as Iterable<Iterable<string>>, (entry) => Array.from(entry) as [string, string]),
+      );
+    }
+    const headers: Record<string, string | readonly string[]> = {};
+    for (const [name, value] of Object.entries<string | readonly string[] | undefined>(h)) {
+      if (value !== undefined) headers[name] = value;
+    }
+    return headers;
+  };
+const res = await fetch(getCreateTenantSkillV1TenantsTenantIdSkillsPostUrl(tenantId),
+  {
+    ...options,
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json', ...getHeaders(options?.headers) },
+    body: JSON.stringify(skillDefinitionCreate)
+  }
+)
+
+
+  const body = [204, 205, 304].includes(res.status) ? null : await res.text();
+
+  const data: createTenantSkillV1TenantsTenantIdSkillsPostResponse['data'] = body ? JSON.parse(body) : {}
+  return { data, status: res.status, headers: res.headers } as createTenantSkillV1TenantsTenantIdSkillsPostResponse
+}
+
+
+
+export type getSkillV1SkillsSkillIdGetResponse200 = {
+  data: SkillDefinitionCreated
+  status: 200
+}
+
+export type getSkillV1SkillsSkillIdGetResponse422 = {
+  data: HTTPValidationError
+  status: 422
+}
+
+export type getSkillV1SkillsSkillIdGetResponseSuccess = (getSkillV1SkillsSkillIdGetResponse200) & {
+  headers: Headers;
+};
+export type getSkillV1SkillsSkillIdGetResponseError = (getSkillV1SkillsSkillIdGetResponse422) & {
+  headers: Headers;
+};
+
+export type getSkillV1SkillsSkillIdGetResponse = (getSkillV1SkillsSkillIdGetResponseSuccess | getSkillV1SkillsSkillIdGetResponseError)
+
+export const getGetSkillV1SkillsSkillIdGetUrl = (skillId: string,) => {
+
+
+
+
+  return `/api/core/v1/skills/${skillId}`
+}
+
+/**
+ * @summary Get Skill
+ */
+export const getSkillV1SkillsSkillIdGet = async (skillId: string, options?: RequestInit): Promise<getSkillV1SkillsSkillIdGetResponse> => {
+
+  const res = await fetch(getGetSkillV1SkillsSkillIdGetUrl(skillId),
+  {
+    ...options,
+    method: 'GET'
+
+
+  }
+)
+
+
+  const body = [204, 205, 304].includes(res.status) ? null : await res.text();
+
+  const data: getSkillV1SkillsSkillIdGetResponse['data'] = body ? JSON.parse(body) : {}
+  return { data, status: res.status, headers: res.headers } as getSkillV1SkillsSkillIdGetResponse
+}
+
+
+
+export type updateSkillV1SkillsSkillIdPatchResponse200 = {
+  data: SkillDefinitionRead
+  status: 200
+}
+
+export type updateSkillV1SkillsSkillIdPatchResponse422 = {
+  data: HTTPValidationError
+  status: 422
+}
+
+export type updateSkillV1SkillsSkillIdPatchResponseSuccess = (updateSkillV1SkillsSkillIdPatchResponse200) & {
+  headers: Headers;
+};
+export type updateSkillV1SkillsSkillIdPatchResponseError = (updateSkillV1SkillsSkillIdPatchResponse422) & {
+  headers: Headers;
+};
+
+export type updateSkillV1SkillsSkillIdPatchResponse = (updateSkillV1SkillsSkillIdPatchResponseSuccess | updateSkillV1SkillsSkillIdPatchResponseError)
+
+export const getUpdateSkillV1SkillsSkillIdPatchUrl = (skillId: string,) => {
+
+
+
+
+  return `/api/core/v1/skills/${skillId}`
+}
+
+/**
+ * @summary Update Skill
+ */
+export const updateSkillV1SkillsSkillIdPatch = async (skillId: string,
+    skillDefinitionUpdate: SkillDefinitionUpdate, options?: RequestInit): Promise<updateSkillV1SkillsSkillIdPatchResponse> => {
+
+    const getHeaders = (h?: NonNullable<RequestInit['headers']>): Record<string, string | readonly string[]> => {
+    if (!h) return {};
+    if (h instanceof Headers) return Object.fromEntries(h.entries());
+    if (Symbol.iterator in h) {
+      return Object.fromEntries(
+        Array.from(h as Iterable<Iterable<string>>, (entry) => Array.from(entry) as [string, string]),
+      );
+    }
+    const headers: Record<string, string | readonly string[]> = {};
+    for (const [name, value] of Object.entries<string | readonly string[] | undefined>(h)) {
+      if (value !== undefined) headers[name] = value;
+    }
+    return headers;
+  };
+const res = await fetch(getUpdateSkillV1SkillsSkillIdPatchUrl(skillId),
+  {
+    ...options,
+    method: 'PATCH',
+    headers: { 'Content-Type': 'application/json', ...getHeaders(options?.headers) },
+    body: JSON.stringify(skillDefinitionUpdate)
+  }
+)
+
+
+  const body = [204, 205, 304].includes(res.status) ? null : await res.text();
+
+  const data: updateSkillV1SkillsSkillIdPatchResponse['data'] = body ? JSON.parse(body) : {}
+  return { data, status: res.status, headers: res.headers } as updateSkillV1SkillsSkillIdPatchResponse
+}
+
+
+
+export type listSkillVersionsV1SkillsSkillIdVersionsGetResponse200 = {
+  data: SkillDefinitionVersionRead[]
+  status: 200
+}
+
+export type listSkillVersionsV1SkillsSkillIdVersionsGetResponse422 = {
+  data: HTTPValidationError
+  status: 422
+}
+
+export type listSkillVersionsV1SkillsSkillIdVersionsGetResponseSuccess = (listSkillVersionsV1SkillsSkillIdVersionsGetResponse200) & {
+  headers: Headers;
+};
+export type listSkillVersionsV1SkillsSkillIdVersionsGetResponseError = (listSkillVersionsV1SkillsSkillIdVersionsGetResponse422) & {
+  headers: Headers;
+};
+
+export type listSkillVersionsV1SkillsSkillIdVersionsGetResponse = (listSkillVersionsV1SkillsSkillIdVersionsGetResponseSuccess | listSkillVersionsV1SkillsSkillIdVersionsGetResponseError)
+
+export const getListSkillVersionsV1SkillsSkillIdVersionsGetUrl = (skillId: string,) => {
+
+
+
+
+  return `/api/core/v1/skills/${skillId}/versions`
+}
+
+/**
+ * @summary List Skill Versions
+ */
+export const listSkillVersionsV1SkillsSkillIdVersionsGet = async (skillId: string, options?: RequestInit): Promise<listSkillVersionsV1SkillsSkillIdVersionsGetResponse> => {
+
+  const res = await fetch(getListSkillVersionsV1SkillsSkillIdVersionsGetUrl(skillId),
+  {
+    ...options,
+    method: 'GET'
+
+
+  }
+)
+
+
+  const body = [204, 205, 304].includes(res.status) ? null : await res.text();
+
+  const data: listSkillVersionsV1SkillsSkillIdVersionsGetResponse['data'] = body ? JSON.parse(body) : {}
+  return { data, status: res.status, headers: res.headers } as listSkillVersionsV1SkillsSkillIdVersionsGetResponse
+}
+
+
+
+export type createSkillVersionV1SkillsSkillIdVersionsPostResponse201 = {
+  data: SkillDefinitionVersionRead
+  status: 201
+}
+
+export type createSkillVersionV1SkillsSkillIdVersionsPostResponse422 = {
+  data: HTTPValidationError
+  status: 422
+}
+
+export type createSkillVersionV1SkillsSkillIdVersionsPostResponseSuccess = (createSkillVersionV1SkillsSkillIdVersionsPostResponse201) & {
+  headers: Headers;
+};
+export type createSkillVersionV1SkillsSkillIdVersionsPostResponseError = (createSkillVersionV1SkillsSkillIdVersionsPostResponse422) & {
+  headers: Headers;
+};
+
+export type createSkillVersionV1SkillsSkillIdVersionsPostResponse = (createSkillVersionV1SkillsSkillIdVersionsPostResponseSuccess | createSkillVersionV1SkillsSkillIdVersionsPostResponseError)
+
+export const getCreateSkillVersionV1SkillsSkillIdVersionsPostUrl = (skillId: string,) => {
+
+
+
+
+  return `/api/core/v1/skills/${skillId}/versions`
+}
+
+/**
+ * @summary Create Skill Version
+ */
+export const createSkillVersionV1SkillsSkillIdVersionsPost = async (skillId: string,
+    skillVersionCreate: SkillVersionCreate, options?: RequestInit): Promise<createSkillVersionV1SkillsSkillIdVersionsPostResponse> => {
+
+    const getHeaders = (h?: NonNullable<RequestInit['headers']>): Record<string, string | readonly string[]> => {
+    if (!h) return {};
+    if (h instanceof Headers) return Object.fromEntries(h.entries());
+    if (Symbol.iterator in h) {
+      return Object.fromEntries(
+        Array.from(h as Iterable<Iterable<string>>, (entry) => Array.from(entry) as [string, string]),
+      );
+    }
+    const headers: Record<string, string | readonly string[]> = {};
+    for (const [name, value] of Object.entries<string | readonly string[] | undefined>(h)) {
+      if (value !== undefined) headers[name] = value;
+    }
+    return headers;
+  };
+const res = await fetch(getCreateSkillVersionV1SkillsSkillIdVersionsPostUrl(skillId),
+  {
+    ...options,
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json', ...getHeaders(options?.headers) },
+    body: JSON.stringify(skillVersionCreate)
+  }
+)
+
+
+  const body = [204, 205, 304].includes(res.status) ? null : await res.text();
+
+  const data: createSkillVersionV1SkillsSkillIdVersionsPostResponse['data'] = body ? JSON.parse(body) : {}
+  return { data, status: res.status, headers: res.headers } as createSkillVersionV1SkillsSkillIdVersionsPostResponse
+}
+
+
+
+export type publishSkillVersionV1SkillsSkillIdVersionsVersionNumberPublishPostResponse200 = {
+  data: SkillDefinitionVersionRead
+  status: 200
+}
+
+export type publishSkillVersionV1SkillsSkillIdVersionsVersionNumberPublishPostResponse422 = {
+  data: HTTPValidationError
+  status: 422
+}
+
+export type publishSkillVersionV1SkillsSkillIdVersionsVersionNumberPublishPostResponseSuccess = (publishSkillVersionV1SkillsSkillIdVersionsVersionNumberPublishPostResponse200) & {
+  headers: Headers;
+};
+export type publishSkillVersionV1SkillsSkillIdVersionsVersionNumberPublishPostResponseError = (publishSkillVersionV1SkillsSkillIdVersionsVersionNumberPublishPostResponse422) & {
+  headers: Headers;
+};
+
+export type publishSkillVersionV1SkillsSkillIdVersionsVersionNumberPublishPostResponse = (publishSkillVersionV1SkillsSkillIdVersionsVersionNumberPublishPostResponseSuccess | publishSkillVersionV1SkillsSkillIdVersionsVersionNumberPublishPostResponseError)
+
+export const getPublishSkillVersionV1SkillsSkillIdVersionsVersionNumberPublishPostUrl = (skillId: string,
+    versionNumber: number,) => {
+
+
+
+
+  return `/api/core/v1/skills/${skillId}/versions/${versionNumber}/publish`
+}
+
+/**
+ * @summary Publish Skill Version
+ */
+export const publishSkillVersionV1SkillsSkillIdVersionsVersionNumberPublishPost = async (skillId: string,
+    versionNumber: number, options?: RequestInit): Promise<publishSkillVersionV1SkillsSkillIdVersionsVersionNumberPublishPostResponse> => {
+
+  const res = await fetch(getPublishSkillVersionV1SkillsSkillIdVersionsVersionNumberPublishPostUrl(skillId,versionNumber),
+  {
+    ...options,
+    method: 'POST'
+
+
+  }
+)
+
+
+  const body = [204, 205, 304].includes(res.status) ? null : await res.text();
+
+  const data: publishSkillVersionV1SkillsSkillIdVersionsVersionNumberPublishPostResponse['data'] = body ? JSON.parse(body) : {}
+  return { data, status: res.status, headers: res.headers } as publishSkillVersionV1SkillsSkillIdVersionsVersionNumberPublishPostResponse
+}
+
+
+
+export type listSystemWorkflowSkillBindingsV1AdminWorkflowSkillBindingsGetResponse200 = {
+  data: WorkflowSkillBindingRead[]
+  status: 200
+}
+
+export type listSystemWorkflowSkillBindingsV1AdminWorkflowSkillBindingsGetResponseSuccess = (listSystemWorkflowSkillBindingsV1AdminWorkflowSkillBindingsGetResponse200) & {
+  headers: Headers;
+};
+;
+
+export type listSystemWorkflowSkillBindingsV1AdminWorkflowSkillBindingsGetResponse = (listSystemWorkflowSkillBindingsV1AdminWorkflowSkillBindingsGetResponseSuccess)
+
+export const getListSystemWorkflowSkillBindingsV1AdminWorkflowSkillBindingsGetUrl = () => {
+
+
+
+
+  return `/api/core/v1/admin/workflow-skill-bindings`
+}
+
+/**
+ * @summary List System Workflow Skill Bindings
+ */
+export const listSystemWorkflowSkillBindingsV1AdminWorkflowSkillBindingsGet = async ( options?: RequestInit): Promise<listSystemWorkflowSkillBindingsV1AdminWorkflowSkillBindingsGetResponse> => {
+
+  const res = await fetch(getListSystemWorkflowSkillBindingsV1AdminWorkflowSkillBindingsGetUrl(),
+  {
+    ...options,
+    method: 'GET'
+
+
+  }
+)
+
+
+  const body = [204, 205, 304].includes(res.status) ? null : await res.text();
+
+  const data: listSystemWorkflowSkillBindingsV1AdminWorkflowSkillBindingsGetResponse['data'] = body ? JSON.parse(body) : {}
+  return { data, status: res.status, headers: res.headers } as listSystemWorkflowSkillBindingsV1AdminWorkflowSkillBindingsGetResponse
+}
+
+
+
+export type upsertSystemWorkflowSkillBindingV1AdminWorkflowSkillBindingsWorkflowKeyRoleKeyPutResponse200 = {
+  data: WorkflowSkillBindingRead
+  status: 200
+}
+
+export type upsertSystemWorkflowSkillBindingV1AdminWorkflowSkillBindingsWorkflowKeyRoleKeyPutResponse422 = {
+  data: HTTPValidationError
+  status: 422
+}
+
+export type upsertSystemWorkflowSkillBindingV1AdminWorkflowSkillBindingsWorkflowKeyRoleKeyPutResponseSuccess = (upsertSystemWorkflowSkillBindingV1AdminWorkflowSkillBindingsWorkflowKeyRoleKeyPutResponse200) & {
+  headers: Headers;
+};
+export type upsertSystemWorkflowSkillBindingV1AdminWorkflowSkillBindingsWorkflowKeyRoleKeyPutResponseError = (upsertSystemWorkflowSkillBindingV1AdminWorkflowSkillBindingsWorkflowKeyRoleKeyPutResponse422) & {
+  headers: Headers;
+};
+
+export type upsertSystemWorkflowSkillBindingV1AdminWorkflowSkillBindingsWorkflowKeyRoleKeyPutResponse = (upsertSystemWorkflowSkillBindingV1AdminWorkflowSkillBindingsWorkflowKeyRoleKeyPutResponseSuccess | upsertSystemWorkflowSkillBindingV1AdminWorkflowSkillBindingsWorkflowKeyRoleKeyPutResponseError)
+
+export const getUpsertSystemWorkflowSkillBindingV1AdminWorkflowSkillBindingsWorkflowKeyRoleKeyPutUrl = (workflowKey: string,
+    roleKey: string,) => {
+
+
+
+
+  return `/api/core/v1/admin/workflow-skill-bindings/${workflowKey}/${roleKey}`
+}
+
+/**
+ * @summary Upsert System Workflow Skill Binding
+ */
+export const upsertSystemWorkflowSkillBindingV1AdminWorkflowSkillBindingsWorkflowKeyRoleKeyPut = async (workflowKey: string,
+    roleKey: string,
+    workflowSkillBindingUpsert: WorkflowSkillBindingUpsert, options?: RequestInit): Promise<upsertSystemWorkflowSkillBindingV1AdminWorkflowSkillBindingsWorkflowKeyRoleKeyPutResponse> => {
+
+    const getHeaders = (h?: NonNullable<RequestInit['headers']>): Record<string, string | readonly string[]> => {
+    if (!h) return {};
+    if (h instanceof Headers) return Object.fromEntries(h.entries());
+    if (Symbol.iterator in h) {
+      return Object.fromEntries(
+        Array.from(h as Iterable<Iterable<string>>, (entry) => Array.from(entry) as [string, string]),
+      );
+    }
+    const headers: Record<string, string | readonly string[]> = {};
+    for (const [name, value] of Object.entries<string | readonly string[] | undefined>(h)) {
+      if (value !== undefined) headers[name] = value;
+    }
+    return headers;
+  };
+const res = await fetch(getUpsertSystemWorkflowSkillBindingV1AdminWorkflowSkillBindingsWorkflowKeyRoleKeyPutUrl(workflowKey,roleKey),
+  {
+    ...options,
+    method: 'PUT',
+    headers: { 'Content-Type': 'application/json', ...getHeaders(options?.headers) },
+    body: JSON.stringify(workflowSkillBindingUpsert)
+  }
+)
+
+
+  const body = [204, 205, 304].includes(res.status) ? null : await res.text();
+
+  const data: upsertSystemWorkflowSkillBindingV1AdminWorkflowSkillBindingsWorkflowKeyRoleKeyPutResponse['data'] = body ? JSON.parse(body) : {}
+  return { data, status: res.status, headers: res.headers } as upsertSystemWorkflowSkillBindingV1AdminWorkflowSkillBindingsWorkflowKeyRoleKeyPutResponse
+}
+
+
+
+export type listTenantWorkflowSkillBindingsV1TenantsTenantIdWorkflowSkillBindingsGetResponse200 = {
+  data: WorkflowSkillBindingRead[]
+  status: 200
+}
+
+export type listTenantWorkflowSkillBindingsV1TenantsTenantIdWorkflowSkillBindingsGetResponse422 = {
+  data: HTTPValidationError
+  status: 422
+}
+
+export type listTenantWorkflowSkillBindingsV1TenantsTenantIdWorkflowSkillBindingsGetResponseSuccess = (listTenantWorkflowSkillBindingsV1TenantsTenantIdWorkflowSkillBindingsGetResponse200) & {
+  headers: Headers;
+};
+export type listTenantWorkflowSkillBindingsV1TenantsTenantIdWorkflowSkillBindingsGetResponseError = (listTenantWorkflowSkillBindingsV1TenantsTenantIdWorkflowSkillBindingsGetResponse422) & {
+  headers: Headers;
+};
+
+export type listTenantWorkflowSkillBindingsV1TenantsTenantIdWorkflowSkillBindingsGetResponse = (listTenantWorkflowSkillBindingsV1TenantsTenantIdWorkflowSkillBindingsGetResponseSuccess | listTenantWorkflowSkillBindingsV1TenantsTenantIdWorkflowSkillBindingsGetResponseError)
+
+export const getListTenantWorkflowSkillBindingsV1TenantsTenantIdWorkflowSkillBindingsGetUrl = (tenantId: string,) => {
+
+
+
+
+  return `/api/core/v1/tenants/${tenantId}/workflow-skill-bindings`
+}
+
+/**
+ * @summary List Tenant Workflow Skill Bindings
+ */
+export const listTenantWorkflowSkillBindingsV1TenantsTenantIdWorkflowSkillBindingsGet = async (tenantId: string, options?: RequestInit): Promise<listTenantWorkflowSkillBindingsV1TenantsTenantIdWorkflowSkillBindingsGetResponse> => {
+
+  const res = await fetch(getListTenantWorkflowSkillBindingsV1TenantsTenantIdWorkflowSkillBindingsGetUrl(tenantId),
+  {
+    ...options,
+    method: 'GET'
+
+
+  }
+)
+
+
+  const body = [204, 205, 304].includes(res.status) ? null : await res.text();
+
+  const data: listTenantWorkflowSkillBindingsV1TenantsTenantIdWorkflowSkillBindingsGetResponse['data'] = body ? JSON.parse(body) : {}
+  return { data, status: res.status, headers: res.headers } as listTenantWorkflowSkillBindingsV1TenantsTenantIdWorkflowSkillBindingsGetResponse
+}
+
+
+
+export type upsertTenantWorkflowSkillBindingV1TenantsTenantIdWorkflowSkillBindingsWorkflowKeyRoleKeyPutResponse200 = {
+  data: WorkflowSkillBindingRead
+  status: 200
+}
+
+export type upsertTenantWorkflowSkillBindingV1TenantsTenantIdWorkflowSkillBindingsWorkflowKeyRoleKeyPutResponse422 = {
+  data: HTTPValidationError
+  status: 422
+}
+
+export type upsertTenantWorkflowSkillBindingV1TenantsTenantIdWorkflowSkillBindingsWorkflowKeyRoleKeyPutResponseSuccess = (upsertTenantWorkflowSkillBindingV1TenantsTenantIdWorkflowSkillBindingsWorkflowKeyRoleKeyPutResponse200) & {
+  headers: Headers;
+};
+export type upsertTenantWorkflowSkillBindingV1TenantsTenantIdWorkflowSkillBindingsWorkflowKeyRoleKeyPutResponseError = (upsertTenantWorkflowSkillBindingV1TenantsTenantIdWorkflowSkillBindingsWorkflowKeyRoleKeyPutResponse422) & {
+  headers: Headers;
+};
+
+export type upsertTenantWorkflowSkillBindingV1TenantsTenantIdWorkflowSkillBindingsWorkflowKeyRoleKeyPutResponse = (upsertTenantWorkflowSkillBindingV1TenantsTenantIdWorkflowSkillBindingsWorkflowKeyRoleKeyPutResponseSuccess | upsertTenantWorkflowSkillBindingV1TenantsTenantIdWorkflowSkillBindingsWorkflowKeyRoleKeyPutResponseError)
+
+export const getUpsertTenantWorkflowSkillBindingV1TenantsTenantIdWorkflowSkillBindingsWorkflowKeyRoleKeyPutUrl = (tenantId: string,
+    workflowKey: string,
+    roleKey: string,) => {
+
+
+
+
+  return `/api/core/v1/tenants/${tenantId}/workflow-skill-bindings/${workflowKey}/${roleKey}`
+}
+
+/**
+ * @summary Upsert Tenant Workflow Skill Binding
+ */
+export const upsertTenantWorkflowSkillBindingV1TenantsTenantIdWorkflowSkillBindingsWorkflowKeyRoleKeyPut = async (tenantId: string,
+    workflowKey: string,
+    roleKey: string,
+    workflowSkillBindingUpsert: WorkflowSkillBindingUpsert, options?: RequestInit): Promise<upsertTenantWorkflowSkillBindingV1TenantsTenantIdWorkflowSkillBindingsWorkflowKeyRoleKeyPutResponse> => {
+
+    const getHeaders = (h?: NonNullable<RequestInit['headers']>): Record<string, string | readonly string[]> => {
+    if (!h) return {};
+    if (h instanceof Headers) return Object.fromEntries(h.entries());
+    if (Symbol.iterator in h) {
+      return Object.fromEntries(
+        Array.from(h as Iterable<Iterable<string>>, (entry) => Array.from(entry) as [string, string]),
+      );
+    }
+    const headers: Record<string, string | readonly string[]> = {};
+    for (const [name, value] of Object.entries<string | readonly string[] | undefined>(h)) {
+      if (value !== undefined) headers[name] = value;
+    }
+    return headers;
+  };
+const res = await fetch(getUpsertTenantWorkflowSkillBindingV1TenantsTenantIdWorkflowSkillBindingsWorkflowKeyRoleKeyPutUrl(tenantId,workflowKey,roleKey),
+  {
+    ...options,
+    method: 'PUT',
+    headers: { 'Content-Type': 'application/json', ...getHeaders(options?.headers) },
+    body: JSON.stringify(workflowSkillBindingUpsert)
+  }
+)
+
+
+  const body = [204, 205, 304].includes(res.status) ? null : await res.text();
+
+  const data: upsertTenantWorkflowSkillBindingV1TenantsTenantIdWorkflowSkillBindingsWorkflowKeyRoleKeyPutResponse['data'] = body ? JSON.parse(body) : {}
+  return { data, status: res.status, headers: res.headers } as upsertTenantWorkflowSkillBindingV1TenantsTenantIdWorkflowSkillBindingsWorkflowKeyRoleKeyPutResponse
 }
 
 

@@ -14,6 +14,7 @@ from app.models import (
 )
 from app.schemas import normalize_email
 from app.security import hash_password
+from app.standard_skills import ensure_standard_assessment_skills
 
 STANDARD_MATTER_DEFINITION_AGENT_PROMPT = """You are the Matter Definition Setup agent. Help matter
 administrators turn source reviewer guidance into precise Markdown instructions for both human and agentic
@@ -98,7 +99,10 @@ def bootstrap_root() -> tuple[Tenant, User, bool]:
             if existing_user is None:
                 raise RuntimeError("Root tenant already exists with a different bootstrap administrator")
             if ensure_standard_agents(db, existing_root, existing_user):
-                db.commit()
+                db.flush()
+            if ensure_standard_assessment_skills(db, existing_root, existing_user):
+                db.flush()
+            db.commit()
             return existing_root, existing_user, False
 
         root = Tenant(
@@ -128,6 +132,7 @@ def bootstrap_root() -> tuple[Tenant, User, bool]:
             )
         )
         ensure_standard_agents(db, root, user)
+        ensure_standard_assessment_skills(db, root, user)
         db.commit()
         return root, user, True
 

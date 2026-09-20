@@ -6562,6 +6562,711 @@
         }
       }
     },
+    "/v1/workflow-specs": {
+      "get": {
+        "tags": [
+          "managed skills"
+        ],
+        "summary": "List Workflow Specs",
+        "operationId": "list_workflow_specs_v1_workflow_specs_get",
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "items": {
+                    "$ref": "#/components/schemas/WorkflowSpecRead"
+                  },
+                  "type": "array",
+                  "title": "Response List Workflow Specs V1 Workflow Specs Get"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ]
+      }
+    },
+    "/v1/admin/skills": {
+      "get": {
+        "tags": [
+          "managed skills"
+        ],
+        "summary": "List System Skills",
+        "operationId": "list_system_skills_v1_admin_skills_get",
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "items": {
+                    "$ref": "#/components/schemas/SkillDefinitionRead"
+                  },
+                  "type": "array",
+                  "title": "Response List System Skills V1 Admin Skills Get"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ]
+      },
+      "post": {
+        "tags": [
+          "managed skills"
+        ],
+        "summary": "Create System Skill",
+        "operationId": "create_system_skill_v1_admin_skills_post",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/SkillDefinitionCreate"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "201": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SkillDefinitionCreated"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ]
+      }
+    },
+    "/v1/tenants/{tenant_id}/skills": {
+      "get": {
+        "tags": [
+          "managed skills"
+        ],
+        "summary": "List Tenant Skills",
+        "operationId": "list_tenant_skills_v1_tenants__tenant_id__skills_get",
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "tenant_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid",
+              "title": "Tenant Id"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "array",
+                  "items": {
+                    "$ref": "#/components/schemas/SkillDefinitionRead"
+                  },
+                  "title": "Response List Tenant Skills V1 Tenants  Tenant Id  Skills Get"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      },
+      "post": {
+        "tags": [
+          "managed skills"
+        ],
+        "summary": "Create Tenant Skill",
+        "operationId": "create_tenant_skill_v1_tenants__tenant_id__skills_post",
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "tenant_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid",
+              "title": "Tenant Id"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/SkillDefinitionCreate"
+              }
+            }
+          }
+        },
+        "responses": {
+          "201": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SkillDefinitionCreated"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v1/skills/{skill_id}": {
+      "get": {
+        "tags": [
+          "managed skills"
+        ],
+        "summary": "Get Skill",
+        "operationId": "get_skill_v1_skills__skill_id__get",
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "skill_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid",
+              "title": "Skill Id"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SkillDefinitionCreated"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      },
+      "patch": {
+        "tags": [
+          "managed skills"
+        ],
+        "summary": "Update Skill",
+        "operationId": "update_skill_v1_skills__skill_id__patch",
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "skill_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid",
+              "title": "Skill Id"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/SkillDefinitionUpdate"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SkillDefinitionRead"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v1/skills/{skill_id}/versions": {
+      "get": {
+        "tags": [
+          "managed skills"
+        ],
+        "summary": "List Skill Versions",
+        "operationId": "list_skill_versions_v1_skills__skill_id__versions_get",
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "skill_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid",
+              "title": "Skill Id"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "array",
+                  "items": {
+                    "$ref": "#/components/schemas/SkillDefinitionVersionRead"
+                  },
+                  "title": "Response List Skill Versions V1 Skills  Skill Id  Versions Get"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      },
+      "post": {
+        "tags": [
+          "managed skills"
+        ],
+        "summary": "Create Skill Version",
+        "operationId": "create_skill_version_v1_skills__skill_id__versions_post",
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "skill_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid",
+              "title": "Skill Id"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/SkillVersionCreate"
+              }
+            }
+          }
+        },
+        "responses": {
+          "201": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SkillDefinitionVersionRead"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v1/skills/{skill_id}/versions/{version_number}/publish": {
+      "post": {
+        "tags": [
+          "managed skills"
+        ],
+        "summary": "Publish Skill Version",
+        "operationId": "publish_skill_version_v1_skills__skill_id__versions__version_number__publish_post",
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "skill_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid",
+              "title": "Skill Id"
+            }
+          },
+          {
+            "name": "version_number",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "integer",
+              "title": "Version Number"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SkillDefinitionVersionRead"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v1/admin/workflow-skill-bindings": {
+      "get": {
+        "tags": [
+          "managed skills"
+        ],
+        "summary": "List System Workflow Skill Bindings",
+        "operationId": "list_system_workflow_skill_bindings_v1_admin_workflow_skill_bindings_get",
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "items": {
+                    "$ref": "#/components/schemas/WorkflowSkillBindingRead"
+                  },
+                  "type": "array",
+                  "title": "Response List System Workflow Skill Bindings V1 Admin Workflow Skill Bindings Get"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ]
+      }
+    },
+    "/v1/admin/workflow-skill-bindings/{workflow_key}/{role_key}": {
+      "put": {
+        "tags": [
+          "managed skills"
+        ],
+        "summary": "Upsert System Workflow Skill Binding",
+        "operationId": "upsert_system_workflow_skill_binding_v1_admin_workflow_skill_bindings__workflow_key___role_key__put",
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "workflow_key",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Workflow Key"
+            }
+          },
+          {
+            "name": "role_key",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Role Key"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/WorkflowSkillBindingUpsert"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/WorkflowSkillBindingRead"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v1/tenants/{tenant_id}/workflow-skill-bindings": {
+      "get": {
+        "tags": [
+          "managed skills"
+        ],
+        "summary": "List Tenant Workflow Skill Bindings",
+        "operationId": "list_tenant_workflow_skill_bindings_v1_tenants__tenant_id__workflow_skill_bindings_get",
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "tenant_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid",
+              "title": "Tenant Id"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "array",
+                  "items": {
+                    "$ref": "#/components/schemas/WorkflowSkillBindingRead"
+                  },
+                  "title": "Response List Tenant Workflow Skill Bindings V1 Tenants  Tenant Id  Workflow Skill Bindings Get"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v1/tenants/{tenant_id}/workflow-skill-bindings/{workflow_key}/{role_key}": {
+      "put": {
+        "tags": [
+          "managed skills"
+        ],
+        "summary": "Upsert Tenant Workflow Skill Binding",
+        "operationId": "upsert_tenant_workflow_skill_binding_v1_tenants__tenant_id__workflow_skill_bindings__workflow_key___role_key__put",
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "tenant_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid",
+              "title": "Tenant Id"
+            }
+          },
+          {
+            "name": "workflow_key",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Workflow Key"
+            }
+          },
+          {
+            "name": "role_key",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Role Key"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/WorkflowSkillBindingUpsert"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/WorkflowSkillBindingRead"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/v1/tenants/{tenant_id}/artifact-storage/ensure": {
       "post": {
         "tags": [
@@ -16243,6 +16948,423 @@
         ],
         "title": "SearchProjectionRetryResponse"
       },
+      "SkillDefinitionCreate": {
+        "properties": {
+          "key": {
+            "type": "string",
+            "pattern": "^[a-z][a-z0-9_]{0,99}$",
+            "title": "Key"
+          },
+          "name": {
+            "type": "string",
+            "maxLength": 200,
+            "minLength": 1,
+            "title": "Name"
+          },
+          "description": {
+            "anyOf": [
+              {
+                "type": "string",
+                "maxLength": 4000
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Description"
+          },
+          "initial_version": {
+            "$ref": "#/components/schemas/SkillVersionCreate"
+          }
+        },
+        "type": "object",
+        "required": [
+          "key",
+          "name",
+          "initial_version"
+        ],
+        "title": "SkillDefinitionCreate"
+      },
+      "SkillDefinitionCreated": {
+        "properties": {
+          "skill": {
+            "$ref": "#/components/schemas/SkillDefinitionRead"
+          },
+          "version": {
+            "$ref": "#/components/schemas/SkillDefinitionVersionRead"
+          }
+        },
+        "type": "object",
+        "required": [
+          "skill",
+          "version"
+        ],
+        "title": "SkillDefinitionCreated"
+      },
+      "SkillDefinitionRead": {
+        "properties": {
+          "id": {
+            "type": "string",
+            "format": "uuid",
+            "title": "Id"
+          },
+          "owner_tenant_id": {
+            "type": "string",
+            "format": "uuid",
+            "title": "Owner Tenant Id"
+          },
+          "scope": {
+            "type": "string",
+            "enum": [
+              "SYSTEM",
+              "TENANT"
+            ],
+            "title": "Scope"
+          },
+          "key": {
+            "type": "string",
+            "title": "Key"
+          },
+          "name": {
+            "type": "string",
+            "title": "Name"
+          },
+          "description": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Description"
+          },
+          "current_version": {
+            "type": "integer",
+            "title": "Current Version"
+          },
+          "published_version": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Published Version"
+          },
+          "status": {
+            "type": "string",
+            "enum": [
+              "ACTIVE",
+              "SUSPENDED",
+              "ARCHIVED"
+            ],
+            "title": "Status"
+          },
+          "created_by_user_id": {
+            "type": "string",
+            "format": "uuid",
+            "title": "Created By User Id"
+          },
+          "created_at": {
+            "type": "string",
+            "format": "date-time",
+            "title": "Created At"
+          },
+          "updated_at": {
+            "type": "string",
+            "format": "date-time",
+            "title": "Updated At"
+          }
+        },
+        "type": "object",
+        "required": [
+          "id",
+          "owner_tenant_id",
+          "scope",
+          "key",
+          "name",
+          "description",
+          "current_version",
+          "published_version",
+          "status",
+          "created_by_user_id",
+          "created_at",
+          "updated_at"
+        ],
+        "title": "SkillDefinitionRead"
+      },
+      "SkillDefinitionUpdate": {
+        "properties": {
+          "name": {
+            "anyOf": [
+              {
+                "type": "string",
+                "maxLength": 200,
+                "minLength": 1
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Name"
+          },
+          "description": {
+            "anyOf": [
+              {
+                "type": "string",
+                "maxLength": 4000
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Description"
+          },
+          "status": {
+            "anyOf": [
+              {
+                "type": "string",
+                "enum": [
+                  "ACTIVE",
+                  "SUSPENDED",
+                  "ARCHIVED"
+                ]
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Status"
+          }
+        },
+        "type": "object",
+        "title": "SkillDefinitionUpdate"
+      },
+      "SkillDefinitionVersionRead": {
+        "properties": {
+          "id": {
+            "type": "string",
+            "format": "uuid",
+            "title": "Id"
+          },
+          "skill_definition_id": {
+            "type": "string",
+            "format": "uuid",
+            "title": "Skill Definition Id"
+          },
+          "version": {
+            "type": "integer",
+            "title": "Version"
+          },
+          "instructions": {
+            "type": "string",
+            "title": "Instructions"
+          },
+          "input_schema_key": {
+            "type": "string",
+            "title": "Input Schema Key"
+          },
+          "input_schema": {
+            "additionalProperties": true,
+            "type": "object",
+            "title": "Input Schema"
+          },
+          "output_schema_key": {
+            "type": "string",
+            "title": "Output Schema Key"
+          },
+          "output_schema": {
+            "additionalProperties": true,
+            "type": "object",
+            "title": "Output Schema"
+          },
+          "model_key": {
+            "type": "string",
+            "title": "Model Key"
+          },
+          "model_policy": {
+            "additionalProperties": true,
+            "type": "object",
+            "title": "Model Policy"
+          },
+          "limits": {
+            "additionalProperties": true,
+            "type": "object",
+            "title": "Limits"
+          },
+          "required_capabilities": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array",
+            "title": "Required Capabilities"
+          },
+          "required_tools": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array",
+            "title": "Required Tools"
+          },
+          "cache_policy": {
+            "additionalProperties": true,
+            "type": "object",
+            "title": "Cache Policy"
+          },
+          "evaluation_fixtures": {
+            "items": {
+              "additionalProperties": true,
+              "type": "object"
+            },
+            "type": "array",
+            "title": "Evaluation Fixtures"
+          },
+          "status": {
+            "type": "string",
+            "enum": [
+              "DRAFT",
+              "PUBLISHED",
+              "RETIRED"
+            ],
+            "title": "Status"
+          },
+          "created_by_user_id": {
+            "type": "string",
+            "format": "uuid",
+            "title": "Created By User Id"
+          },
+          "created_at": {
+            "type": "string",
+            "format": "date-time",
+            "title": "Created At"
+          },
+          "published_at": {
+            "anyOf": [
+              {
+                "type": "string",
+                "format": "date-time"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Published At"
+          }
+        },
+        "type": "object",
+        "required": [
+          "id",
+          "skill_definition_id",
+          "version",
+          "instructions",
+          "input_schema_key",
+          "input_schema",
+          "output_schema_key",
+          "output_schema",
+          "model_key",
+          "model_policy",
+          "limits",
+          "required_capabilities",
+          "required_tools",
+          "cache_policy",
+          "evaluation_fixtures",
+          "status",
+          "created_by_user_id",
+          "created_at",
+          "published_at"
+        ],
+        "title": "SkillDefinitionVersionRead"
+      },
+      "SkillVersionCreate": {
+        "properties": {
+          "instructions": {
+            "type": "string",
+            "maxLength": 200000,
+            "minLength": 1,
+            "title": "Instructions"
+          },
+          "input_schema_key": {
+            "type": "string",
+            "pattern": "^[a-z][a-z0-9_]{0,99}$",
+            "title": "Input Schema Key"
+          },
+          "input_schema": {
+            "additionalProperties": true,
+            "type": "object",
+            "title": "Input Schema"
+          },
+          "output_schema_key": {
+            "type": "string",
+            "pattern": "^[a-z][a-z0-9_]{0,99}$",
+            "title": "Output Schema Key"
+          },
+          "output_schema": {
+            "additionalProperties": true,
+            "type": "object",
+            "title": "Output Schema"
+          },
+          "model_key": {
+            "type": "string",
+            "maxLength": 200,
+            "minLength": 1,
+            "title": "Model Key"
+          },
+          "model_policy": {
+            "additionalProperties": true,
+            "type": "object",
+            "title": "Model Policy"
+          },
+          "limits": {
+            "additionalProperties": true,
+            "type": "object",
+            "title": "Limits"
+          },
+          "required_capabilities": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array",
+            "maxItems": 50,
+            "title": "Required Capabilities"
+          },
+          "required_tools": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array",
+            "maxItems": 100,
+            "title": "Required Tools"
+          },
+          "cache_policy": {
+            "additionalProperties": true,
+            "type": "object",
+            "title": "Cache Policy"
+          },
+          "evaluation_fixtures": {
+            "items": {
+              "additionalProperties": true,
+              "type": "object"
+            },
+            "type": "array",
+            "maxItems": 100,
+            "title": "Evaluation Fixtures"
+          }
+        },
+        "type": "object",
+        "required": [
+          "instructions",
+          "input_schema_key",
+          "input_schema",
+          "output_schema_key",
+          "output_schema",
+          "model_key"
+        ],
+        "title": "SkillVersionCreate"
+      },
       "SourceContainerUploadResponse": {
         "properties": {
           "artifact": {
@@ -16743,6 +17865,193 @@
           "type"
         ],
         "title": "ValidationError"
+      },
+      "WorkflowRoleSpecRead": {
+        "properties": {
+          "key": {
+            "type": "string",
+            "title": "Key"
+          },
+          "input_schema_key": {
+            "type": "string",
+            "title": "Input Schema Key"
+          },
+          "output_schema_key": {
+            "type": "string",
+            "title": "Output Schema Key"
+          },
+          "allowed_capabilities": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array",
+            "title": "Allowed Capabilities"
+          },
+          "allowed_tool_keys": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array",
+            "title": "Allowed Tool Keys"
+          }
+        },
+        "type": "object",
+        "required": [
+          "key",
+          "input_schema_key",
+          "output_schema_key",
+          "allowed_capabilities",
+          "allowed_tool_keys"
+        ],
+        "title": "WorkflowRoleSpecRead"
+      },
+      "WorkflowSkillBindingRead": {
+        "properties": {
+          "id": {
+            "type": "string",
+            "format": "uuid",
+            "title": "Id"
+          },
+          "workflow_key": {
+            "type": "string",
+            "title": "Workflow Key"
+          },
+          "role_key": {
+            "type": "string",
+            "title": "Role Key"
+          },
+          "scope": {
+            "type": "string",
+            "enum": [
+              "SYSTEM",
+              "TENANT"
+            ],
+            "title": "Scope"
+          },
+          "owner_tenant_id": {
+            "type": "string",
+            "format": "uuid",
+            "title": "Owner Tenant Id"
+          },
+          "skill_definition_id": {
+            "type": "string",
+            "format": "uuid",
+            "title": "Skill Definition Id"
+          },
+          "skill_definition_version_id": {
+            "type": "string",
+            "format": "uuid",
+            "title": "Skill Definition Version Id"
+          },
+          "configuration": {
+            "additionalProperties": true,
+            "type": "object",
+            "title": "Configuration"
+          },
+          "status": {
+            "type": "string",
+            "enum": [
+              "ACTIVE",
+              "INACTIVE"
+            ],
+            "title": "Status"
+          },
+          "created_by_user_id": {
+            "type": "string",
+            "format": "uuid",
+            "title": "Created By User Id"
+          },
+          "created_at": {
+            "type": "string",
+            "format": "date-time",
+            "title": "Created At"
+          },
+          "updated_at": {
+            "type": "string",
+            "format": "date-time",
+            "title": "Updated At"
+          }
+        },
+        "type": "object",
+        "required": [
+          "id",
+          "workflow_key",
+          "role_key",
+          "scope",
+          "owner_tenant_id",
+          "skill_definition_id",
+          "skill_definition_version_id",
+          "configuration",
+          "status",
+          "created_by_user_id",
+          "created_at",
+          "updated_at"
+        ],
+        "title": "WorkflowSkillBindingRead"
+      },
+      "WorkflowSkillBindingUpsert": {
+        "properties": {
+          "skill_definition_version_id": {
+            "type": "string",
+            "format": "uuid",
+            "title": "Skill Definition Version Id"
+          },
+          "configuration": {
+            "additionalProperties": true,
+            "type": "object",
+            "title": "Configuration"
+          },
+          "status": {
+            "type": "string",
+            "enum": [
+              "ACTIVE",
+              "INACTIVE"
+            ],
+            "title": "Status",
+            "default": "ACTIVE"
+          }
+        },
+        "type": "object",
+        "required": [
+          "skill_definition_version_id"
+        ],
+        "title": "WorkflowSkillBindingUpsert"
+      },
+      "WorkflowSpecRead": {
+        "properties": {
+          "key": {
+            "type": "string",
+            "title": "Key"
+          },
+          "code_version": {
+            "type": "string",
+            "title": "Code Version"
+          },
+          "name": {
+            "type": "string",
+            "title": "Name"
+          },
+          "description": {
+            "type": "string",
+            "title": "Description"
+          },
+          "roles": {
+            "items": {
+              "$ref": "#/components/schemas/WorkflowRoleSpecRead"
+            },
+            "type": "array",
+            "title": "Roles"
+          }
+        },
+        "type": "object",
+        "required": [
+          "key",
+          "code_version",
+          "name",
+          "description",
+          "roles"
+        ],
+        "title": "WorkflowSpecRead"
       }
     },
     "securitySchemes": {
