@@ -4,7 +4,17 @@ import pytest
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
-from app.models import Client, Matter, SearchIndexGeneration, Tenant
+from app.models import (
+    Client,
+    Matter,
+    MatterDefinition,
+    MatterDefinitionAssessmentRun,
+    MatterDefinitionRevision,
+    SearchIndexGeneration,
+    Tenant,
+    User,
+    WorkflowRun,
+)
 from app.search.cleanup import (
     SearchIndexCleanupSafetyError,
     execute_search_index_cleanup,
@@ -111,3 +121,75 @@ def test_execute_cleanup_deletes_physical_indexes_then_prunes_records(db: Sessio
         db.scalars(select(SearchIndexGeneration).where(SearchIndexGeneration.matter_id == matter.id))
     )
     assert [generation.id for generation in remaining] == [active.id]
+
+
+def test_cleanup_preserves_generation_pinned_by_active_assessment(db: Session) -> None:
+    matter, stale, active = _matter_with_generations(db)
+    tenant = db.get(Tenant, matter.client.tenant_id)
+    assert tenant is not None
+    email = f"cleanup-{uuid.uuid4().hex}@example.com"
+    user = User(
+        tenant_id=tenant.id,
+        email=email,
+        normalized_email=email,
+        display_name="Cleanup Admin",
+        status="ACTIVE",
+        tenant_role="ADMIN",
+        is_superuser=True,
+    )
+    db.add(user)
+    db.flush()
+    definition = MatterDefinition(
+        matter_id=matter.id,
+        current_revision=1,
+        created_by_user_id=user.id,
+    )
+    db.add(definition)
+    db.flush()
+    revision = MatterDefinitionRevision(
+        matter_definition_id=definition.id,
+        revision=1,
+        content_markdown="Issue 1",
+        source_kind="PASTE",
+        created_by_user_id=user.id,
+    )
+    workflow = WorkflowRun(
+        tenant_id=tenant.id,
+        client_id=matter.client_id,
+        matter_id=matter.id,
+        workflow_key="matter_definition_assessment_v1",
+        code_version="1",
+        dbos_workflow_id=f"cleanup-assessment:{uuid.uuid4()}",
+        status="QUEUED",
+        input_snapshot={},
+        binding_snapshot={},
+        configuration_snapshot={},
+        progress={},
+        initiated_by_user_id=user.id,
+    )
+    db.add_all([revision, workflow])
+    db.flush()
+    db.add(
+        MatterDefinitionAssessmentRun(
+            matter_id=matter.id,
+            matter_definition_revision_id=revision.id,
+            definition_content_hash="c" * 64,
+            workflow_run_id=workflow.id,
+            search_index_generation_id=stale.id,
+            requested_document_count=500,
+            status="QUEUED",
+            initiated_by_user_id=user.id,
+        )
+    )
+    db.commit()
+    orphan = f"{active.alias_name}-v000003"
+    client = CleanupIndexClient(
+        {stale.index_name, active.index_name, orphan},
+        {active.alias_name: {active.index_name}},
+    )
+
+    plan = execute_search_index_cleanup(db, client, matter.id)  # type: ignore[arg-type]
+
+    assert plan.preserved_assessment_indexes == (stale.index_name,)
+    assert client.deleted == [orphan]
+    assert db.get(SearchIndexGeneration, stale.id) is not None

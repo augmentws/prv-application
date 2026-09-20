@@ -22,7 +22,10 @@ export interface ExternalProviderUsageRead {
   model: string;
   request_count: number;
   input_tokens: number;
+  cached_input_tokens: number;
+  cache_write_tokens: number;
   output_tokens: number;
+  model_invocation_id: string | null;
   total_tokens: number;
   details: ExternalProviderUsageReadDetails;
   created_at: string;

@@ -15,7 +15,7 @@ from app.agent_runtime import (
     persist_agent_run_outcome,
     prepare_agent_run,
 )
-from app.models import AuditRecord
+from app.models import AgentRun, AuditRecord, ModelInvocation
 from tests.test_agents_and_matter_definitions import agent_payload, auth, create_tenant_context
 
 
@@ -92,6 +92,16 @@ def test_agent_runtime_completes_with_injected_pydantic_model(
     )
     assert runs.status_code == 200
     assert runs.json()[0]["status"] == "COMPLETED"
+    assert runs.json()[0]["request_count"] == 1
+    with TestingSessionLocal() as db:
+        invocation = db.scalar(
+            select(ModelInvocation).where(ModelInvocation.agent_run_id == uuid.UUID(run_id))
+        )
+        persisted_run = db.get(AgentRun, uuid.UUID(run_id))
+        assert invocation is not None
+        assert persisted_run is not None
+        assert persisted_run.input_tokens == invocation.input_tokens
+        assert persisted_run.cached_input_tokens == invocation.cached_input_tokens
     messages = client.get(
         f"/v1/agent-conversations/{conversation_id}/messages", headers=auth(tenant_token)
     )

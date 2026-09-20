@@ -320,6 +320,65 @@ def compile_facet_values_request(
     return body
 
 
+def batch_topic_filter(*, batch_id: str, taxonomy_id: str, topic_keys: list[str]) -> dict[str, Any]:
+    return {
+        "nested": {
+            "path": "batch_topics",
+            "query": {
+                "bool": {
+                    "filter": [
+                        {"term": {"batch_topics.batch_id": batch_id}},
+                        {"term": {"batch_topics.taxonomy_id": taxonomy_id}},
+                        {"terms": {"batch_topics.topic_key": topic_keys}},
+                    ]
+                }
+            },
+        }
+    }
+
+
+def compile_batch_topic_facet_request(
+    request: MatterSearchRequest,
+    definitions: list[MetadataDefinition],
+    *,
+    tenant_id: str,
+    matter_id: str,
+    batch_id: str,
+    taxonomy_id: str,
+    query_vector: list[float] | None = None,
+    required_filters: list[dict[str, Any]] | None = None,
+) -> dict[str, Any]:
+    body = compile_search_request(
+        request.model_copy(update={"facets": [], "offset": 0, "size": 1}),
+        definitions,
+        tenant_id=tenant_id,
+        matter_id=matter_id,
+        query_vector=query_vector,
+        required_filters=required_filters,
+    )
+    body["size"] = 0
+    body.pop("highlight", None)
+    body["aggs"] = {
+        "batch_topics": {
+            "nested": {"path": "batch_topics"},
+            "aggs": {
+                "scope": {
+                    "filter": {
+                        "bool": {
+                            "filter": [
+                                {"term": {"batch_topics.batch_id": batch_id}},
+                                {"term": {"batch_topics.taxonomy_id": taxonomy_id}},
+                            ]
+                        }
+                    },
+                    "aggs": {"values": {"terms": {"field": "batch_topics.topic_key", "size": 200}}},
+                }
+            },
+        }
+    }
+    return body
+
+
 def compile_date_histogram_request(
     request: MatterSearchRequest,
     definitions: list[MetadataDefinition],
@@ -491,6 +550,47 @@ def execute_facet_values(
             {"value": _facet_bucket_value(definition, bucket), "count": bucket["doc_count"]}
             for bucket in buckets
         ],
+    )
+
+
+def execute_batch_topic_facets(
+    client: OpenSearchClient,
+    alias_name: str,
+    request: MatterSearchRequest,
+    definitions: list[MetadataDefinition],
+    *,
+    tenant_id: str,
+    matter_id: str,
+    batch_id: str,
+    taxonomy_id: str,
+    query_vector: list[float] | None = None,
+    required_filters: list[dict[str, Any]] | None = None,
+) -> MatterFacetValuesResponse:
+    body = compile_batch_topic_facet_request(
+        request,
+        definitions,
+        tenant_id=tenant_id,
+        matter_id=matter_id,
+        batch_id=batch_id,
+        taxonomy_id=taxonomy_id,
+        query_vector=query_vector,
+        required_filters=required_filters,
+    )
+    if request.search_mode == "HYBRID":
+        client.ensure_rrf_search_pipeline(RRF_SEARCH_PIPELINE)
+        raw = client.search(alias_name, body, search_pipeline=RRF_SEARCH_PIPELINE)
+    else:
+        raw = client.search(alias_name, body)
+    buckets = (
+        raw.get("aggregations", {})
+        .get("batch_topics", {})
+        .get("scope", {})
+        .get("values", {})
+        .get("buckets", [])
+    )
+    return MatterFacetValuesResponse(
+        field="batch_topic",
+        values=[{"value": bucket["key"], "count": int(bucket["doc_count"])} for bucket in buckets],
     )
 
 

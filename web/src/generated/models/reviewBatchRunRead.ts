@@ -21,6 +21,7 @@ export interface ReviewBatchRunRead {
   parent_run_id: string | null;
   actor_user_id: string | null;
   agent_definition_version_id: string | null;
+  workflow_run_record_id: string | null;
   configuration_snapshot: ReviewBatchRunReadConfigurationSnapshot;
   initiated_by_user_id: string;
   processed_document_count: number;

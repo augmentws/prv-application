@@ -6,6 +6,8 @@ from pydantic_ai.durable_exec.dbos import DBOSDurability
 from pydantic_ai.models.test import TestModel
 
 from app.agent_runtime import (
+    AssessmentControlSampleSize,
+    AssessmentMaximumDocumentCount,
     AgentEnumDescription,
     AgentEnumLabel,
     AgentMetadataChangeReason,
@@ -29,6 +31,7 @@ from app.agent_runtime import (
     persist_agent_run_outcome,
     prepare_agent_run,
     read_matter_definition,
+    start_matter_definition_assessment,
     update_matter_metadata_definition,
     update_matter_metadata_enum_value,
     validate_matter_definition,
@@ -196,6 +199,21 @@ def durable_apply_matter_definition_draft_edit(
     return apply_matter_definition_draft_edit(ctx, content_markdown, based_on_revision, reason)
 
 
+@DBOS.step(name="agent_tool_matter_definition_start_assessment")
+def durable_start_matter_definition_assessment(
+    ctx: RunContext[AgentRuntimeDeps],
+    maximum_document_count: AssessmentMaximumDocumentCount = 500,
+    control_sample_size: AssessmentControlSampleSize = 0,
+    revision: MatterDefinitionRevisionNumber | None = None,
+) -> dict:
+    return start_matter_definition_assessment(
+        ctx,
+        maximum_document_count,
+        control_sample_size,
+        revision,
+    )
+
+
 _settings = get_settings()
 # DBOS requires a construction-time model so it can register durable model
 # operations. An unconfigured deployment receives a non-executing sentinel;
@@ -218,6 +236,7 @@ DURABLE_AGENT = build_agent(
         "matter_metadata.enum.update": durable_update_matter_metadata_enum_value,
         "matter_metadata.enum.deactivate": durable_deactivate_matter_metadata_enum_value,
         "matter_definition.apply_draft_edit": durable_apply_matter_definition_draft_edit,
+        "matter_definition.start_assessment": durable_start_matter_definition_assessment,
     },
 )
 

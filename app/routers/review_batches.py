@@ -9,6 +9,7 @@ from sqlalchemy import and_, delete, func, or_, select
 from sqlalchemy.orm import Session
 
 from app.audit import record_audit
+from app.artifact_gateway import read_artifact_bytes
 from app.config import Settings, get_settings
 from app.database import get_db
 from app.dependencies import Principal, can_admin_matter, get_principal
@@ -16,7 +17,11 @@ from app.document_metadata import event_value, value_columns
 from app.models import (
     AgentDefinition,
     AgentDefinitionVersion,
+    BatchTopic,
+    BatchTopicAssignment,
+    BatchTopicTaxonomy,
     Matter,
+    MatterDefinitionAssessmentRun,
     MatterDocument,
     MetadataDefinition,
     MetadataGroup,
@@ -29,11 +34,15 @@ from app.models import (
     ReviewBatchRun,
     ReviewBatchRunDocument,
     ReviewBatchRunValue,
+    SkillRun,
     User,
 )
 from app.review_batches import materialize_review_batch, refresh_run_document_count
 from app.routers.search import execute_matter_facet_values, execute_matter_search
+from app.routers.search import execute_matter_batch_topic_facets
 from app.schemas import (
+    BatchTopicRead,
+    BatchTopicTaxonomyRead,
     MatterFacetValuesRequest,
     MatterFacetValuesResponse,
     MatterSavedSearchUserRead,
@@ -47,6 +56,7 @@ from app.schemas import (
     ReviewBatchCreate,
     ReviewBatchDocumentCodingRead,
     ReviewBatchDocumentRead,
+    ReviewBatchDocumentAnalysisRead,
     ReviewBatchNoteCreate,
     ReviewBatchNoteRead,
     ReviewBatchRead,
@@ -57,6 +67,7 @@ from app.schemas import (
     ReviewBatchRunRead,
     ReviewBatchRunValueRead,
 )
+from app.search.query import batch_topic_filter
 from app.search.service import sync_review_batch_search
 from app.workflows.dispatcher import enqueue_review_batch
 
@@ -346,11 +357,65 @@ def _require_batch_search(batch: ReviewBatch) -> None:
         raise HTTPException(status_code=409, detail=detail)
 
 
+def _active_taxonomy(db: Session, batch_id: uuid.UUID) -> BatchTopicTaxonomy | None:
+    return db.scalar(
+        select(BatchTopicTaxonomy).where(
+            BatchTopicTaxonomy.review_batch_id == batch_id,
+            BatchTopicTaxonomy.status == "ACTIVE",
+        )
+    )
+
+
+def _taxonomy_read(db: Session, taxonomy: BatchTopicTaxonomy) -> BatchTopicTaxonomyRead:
+    rows = db.execute(
+        select(BatchTopic, func.count(BatchTopicAssignment.id))
+        .outerjoin(BatchTopicAssignment, BatchTopicAssignment.topic_id == BatchTopic.id)
+        .where(BatchTopic.taxonomy_id == taxonomy.id)
+        .group_by(BatchTopic.id)
+        .order_by(BatchTopic.ordinal)
+    ).all()
+    assessment = db.get(MatterDefinitionAssessmentRun, taxonomy.source_assessment_run_id)
+    return BatchTopicTaxonomyRead(
+        id=taxonomy.id,
+        review_batch_id=taxonomy.review_batch_id,
+        source_assessment_run_id=taxonomy.source_assessment_run_id,
+        review_batch_run_id=assessment.review_batch_run_id if assessment else None,
+        version=taxonomy.version,
+        status=taxonomy.status,
+        topics=[
+            BatchTopicRead(
+                id=topic.id,
+                topic_key=topic.topic_key,
+                label=topic.label,
+                description=topic.description,
+                ordinal=topic.ordinal,
+                assignment_count=count,
+            )
+            for topic, count in rows
+        ],
+        created_at=taxonomy.created_at,
+    )
+
+
+@router.get("/{batch_id}/topic-taxonomy", response_model=BatchTopicTaxonomyRead | None)
+def get_review_batch_topic_taxonomy(
+    matter_id: uuid.UUID,
+    batch_id: uuid.UUID,
+    principal: Principal = Depends(get_principal),
+    db: Session = Depends(get_db),
+) -> BatchTopicTaxonomyRead | None:
+    _matter(db, matter_id, principal)
+    batch = _batch(db, matter_id, batch_id)
+    taxonomy = _active_taxonomy(db, batch.id)
+    return _taxonomy_read(db, taxonomy) if taxonomy is not None else None
+
+
 @router.post("/{batch_id}/search", response_model=MatterSearchResponse)
 def search_review_batch(
     matter_id: uuid.UUID,
     batch_id: uuid.UUID,
     payload: MatterSearchRequest,
+    topic_key: list[str] = Query(default=[]),
     principal: Principal = Depends(get_principal),
     db: Session = Depends(get_db),
     settings: Settings = Depends(get_settings),
@@ -358,9 +423,53 @@ def search_review_batch(
     matter = _matter(db, matter_id, principal)
     batch = _batch(db, matter_id, batch_id)
     _require_batch_search(batch)
+    required_filters: list[dict[str, Any]] = [{"term": {"batch_ids": str(batch.id)}}]
+    if topic_key:
+        taxonomy = _active_taxonomy(db, batch.id)
+        if taxonomy is None:
+            raise HTTPException(status_code=422, detail="This batch has no active diagnostic topic taxonomy")
+        allowed = set(
+            db.scalars(select(BatchTopic.topic_key).where(BatchTopic.taxonomy_id == taxonomy.id))
+        )
+        unknown = set(topic_key) - allowed
+        if unknown:
+            raise HTTPException(status_code=422, detail="Unknown diagnostic batch topic")
+        required_filters.append(
+            batch_topic_filter(
+                batch_id=str(batch.id),
+                taxonomy_id=str(taxonomy.id),
+                topic_keys=topic_key,
+            )
+        )
     return execute_matter_search(
         matter,
         payload,
+        db=db,
+        settings=settings,
+        required_filters=required_filters,
+    )
+
+
+@router.post("/{batch_id}/topic-facets", response_model=MatterFacetValuesResponse)
+def search_review_batch_topic_facets(
+    matter_id: uuid.UUID,
+    batch_id: uuid.UUID,
+    payload: MatterSearchRequest,
+    principal: Principal = Depends(get_principal),
+    db: Session = Depends(get_db),
+    settings: Settings = Depends(get_settings),
+) -> MatterFacetValuesResponse:
+    matter = _matter(db, matter_id, principal)
+    batch = _batch(db, matter_id, batch_id)
+    _require_batch_search(batch)
+    taxonomy = _active_taxonomy(db, batch.id)
+    if taxonomy is None:
+        return MatterFacetValuesResponse(field="batch_topic", values=[])
+    return execute_matter_batch_topic_facets(
+        matter,
+        payload,
+        batch_id=batch.id,
+        taxonomy_id=taxonomy.id,
         db=db,
         settings=settings,
         required_filters=[{"term": {"batch_ids": str(batch.id)}}],
@@ -600,6 +709,60 @@ def list_review_batch_runs(
             .where(ReviewBatchRun.review_batch_id == batch.id)
             .order_by(ReviewBatchRun.created_at.desc())
         )
+    )
+
+
+@router.get(
+    "/{batch_id}/runs/{run_id}/documents/{document_id}/analysis",
+    response_model=ReviewBatchDocumentAnalysisRead,
+)
+def get_review_batch_document_analysis(
+    matter_id: uuid.UUID,
+    batch_id: uuid.UUID,
+    run_id: uuid.UUID,
+    document_id: uuid.UUID,
+    principal: Principal = Depends(get_principal),
+    db: Session = Depends(get_db),
+) -> ReviewBatchDocumentAnalysisRead:
+    matter = _matter(db, matter_id, principal)
+    batch = _batch(db, matter_id, batch_id)
+    run = _run(db, batch.id, run_id)
+    if run.run_type != "WORKFLOW" or run.purpose != "ASSESSMENT" or run.workflow_run_record_id is None:
+        raise HTTPException(status_code=409, detail="This run does not contain assessment analyses")
+    run_document = db.get(ReviewBatchRunDocument, (run.id, document_id))
+    if run_document is None:
+        raise HTTPException(status_code=404, detail="Assessment document not found")
+    skill_run = db.scalar(
+        select(SkillRun)
+        .where(
+            SkillRun.workflow_run_id == run.workflow_run_record_id,
+            SkillRun.scope_type == "MATTER_DOCUMENT",
+            SkillRun.scope_id == document_id,
+            SkillRun.status == "COMPLETED",
+        )
+        .order_by(SkillRun.created_at.desc())
+        .limit(1)
+    )
+    artifact_id = skill_run.output_artifact_id if skill_run is not None else None
+    analysis = None
+    if artifact_id is not None:
+        try:
+            analysis = json.loads(
+                read_artifact_bytes(
+                    artifact_id=artifact_id,
+                    actor_user_id=principal.user.id,
+                    tenant_id=matter.client.tenant_id,
+                    client_id=matter.client_id,
+                )
+            )
+        except (ValueError, PermissionError, json.JSONDecodeError) as exc:
+            raise HTTPException(status_code=409, detail="Assessment analysis artifact is unavailable") from exc
+    return ReviewBatchDocumentAnalysisRead(
+        review_batch_run_id=run.id,
+        matter_document_id=document_id,
+        status=run_document.status,
+        output_artifact_id=artifact_id,
+        analysis=analysis,
     )
 
 

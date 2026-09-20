@@ -13,7 +13,6 @@ from pydantic_ai import (
     Tool,
     ToolDefinition,
     ToolDenied,
-    UsageLimits,
 )
 from pydantic_ai.messages import ModelMessagesTypeAdapter
 from sqlalchemy import func, select
@@ -22,7 +21,13 @@ from app.agent_models import resolve_agent_model
 from app.agent_tools import AGENT_TOOL_REGISTRY, EXECUTABLE_AGENT_TOOL_KEYS
 from app.config import get_settings
 from app.database import SessionLocal
+from app.execution_accounting import (
+    ProviderUsageContext,
+    persist_model_invocations,
+    refresh_agent_run_usage,
+)
 from app.matter_definitions import append_matter_definition_revision
+from app.matter_definition_assessments import start_assessment
 from app.metadata_definitions import (
     add_metadata_enum_value as add_metadata_enum_value_command,
 )
@@ -38,6 +43,7 @@ from app.metadata_definitions import (
 from app.metadata_definitions import (
     update_metadata_enum_value as update_metadata_enum_value_command,
 )
+from app.model_execution import InvocationTelemetry, content_hash, run_model
 from app.models import (
     AgentActionDecision,
     AgentActionRequest,
@@ -56,7 +62,6 @@ from app.models import (
     User,
     utcnow,
 )
-from app.provider_usage import external_model_identity, record_external_provider_usage
 from app.schemas import (
     AssertionPolicy,
     Cardinality,
@@ -92,6 +97,7 @@ TOOL_NAME_TO_KEY = {
     "matter_metadata_enum_update": "matter_metadata.enum.update",
     "matter_metadata_enum_deactivate": "matter_metadata.enum.deactivate",
     "matter_definition_apply_draft_edit": "matter_definition.apply_draft_edit",
+    "matter_definition_start_assessment": "matter_definition.start_assessment",
 }
 RUNTIME_TOOL_KEYS = EXECUTABLE_AGENT_TOOL_KEYS
 if frozenset(TOOL_NAME_TO_KEY.values()) != RUNTIME_TOOL_KEYS:
@@ -104,6 +110,8 @@ AgentMetadataDisplayName = Annotated[str, Field(min_length=1, max_length=200)]
 AgentMetadataDescription = Annotated[str, Field(min_length=1, max_length=4000)]
 AgentEnumLabel = Annotated[str, Field(min_length=1, max_length=200)]
 AgentEnumDescription = Annotated[str, Field(min_length=1, max_length=2000)]
+AssessmentMaximumDocumentCount = Annotated[int, Field(ge=1, le=10_000_000)]
+AssessmentControlSampleSize = Annotated[int, Field(ge=0, le=1_000_000)]
 
 
 @dataclass(frozen=True)
@@ -138,9 +146,13 @@ class AgentRunOutcome:
     request_count: int
     tool_call_count: int
     input_tokens: int
+    cached_input_tokens: int
+    cache_write_tokens: int
     output_tokens: int
     provider: str | None
     provider_model: str | None
+    model_configuration_hash: str
+    invocations: tuple[InvocationTelemetry, ...]
 
 
 def _require_actor_access(db, deps: AgentRuntimeDeps) -> tuple[User, Matter, AgentRun]:
@@ -666,6 +678,46 @@ def apply_matter_definition_draft_edit(
     )
 
 
+def start_matter_definition_assessment(
+    ctx: RunContext[AgentRuntimeDeps],
+    maximum_document_count: AssessmentMaximumDocumentCount = 500,
+    control_sample_size: AssessmentControlSampleSize = 0,
+    revision: MatterDefinitionRevisionNumber | None = None,
+) -> dict[str, Any]:
+    if not ctx.tool_call_approved:
+        raise PermissionError("Matter Definition assessments require explicit user approval")
+    arguments = {
+        "maximum_document_count": maximum_document_count,
+        "control_sample_size": control_sample_size,
+        "revision": revision,
+    }
+
+    def operation(db, matter: Matter, user: User, _run: AgentRun) -> dict[str, Any]:
+        assessment = start_assessment(
+            db,
+            matter=matter,
+            initiated_by_user_id=user.id,
+            settings=get_settings(),
+            revision_number=revision,
+            maximum_document_count=maximum_document_count,
+            control_sample_size=control_sample_size,
+            acknowledge_large_run_warning=True,
+        )
+        return {
+            "assessment_id": str(assessment.id),
+            "status": assessment.status,
+            "maximum_document_count": assessment.requested_document_count,
+            "control_sample_size": assessment.control_sample_size,
+        }
+
+    return _record_tool(
+        ctx,
+        tool_key="matter_definition.start_assessment",
+        arguments=arguments,
+        operation=operation,
+    )
+
+
 def _prepare_for(tool_key: str):
     def prepare(ctx: RunContext[AgentRuntimeDeps], tool_def: ToolDefinition) -> ToolDefinition | None:
         return tool_def if tool_key in ctx.deps.allowed_tool_keys else None
@@ -690,6 +742,7 @@ def build_agent(
         "matter_metadata.enum.update": update_matter_metadata_enum_value,
         "matter_metadata.enum.deactivate": deactivate_matter_metadata_enum_value,
         "matter_definition.apply_draft_edit": apply_matter_definition_draft_edit,
+        "matter_definition.start_assessment": start_matter_definition_assessment,
     }
     tools = []
     for tool_name, tool_key in TOOL_NAME_TO_KEY.items():
@@ -795,16 +848,6 @@ def prepare_agent_run(run_id: uuid.UUID) -> PreparedAgentRun:
         )
 
 
-def _usage_limits(limits: dict[str, Any]) -> UsageLimits:
-    return UsageLimits(
-        request_limit=limits.get("max_requests", 50),
-        tool_calls_limit=limits.get("max_tool_calls"),
-        input_tokens_limit=limits.get("max_input_tokens"),
-        output_tokens_limit=limits.get("max_output_tokens"),
-        total_tokens_limit=limits.get("max_total_tokens"),
-    )
-
-
 async def execute_prepared_agent_run(
     prepared: PreparedAgentRun,
     agent: Agent[AgentRuntimeDeps, str | DeferredToolRequests],
@@ -826,9 +869,16 @@ async def execute_prepared_agent_run(
                 approvals[tool_call_id] = ToolDenied(decision["reason"] or "The user rejected this action")
         deferred_results = DeferredToolResults(approvals=approvals)
     selected_model = model if model is not None else resolve_agent_model(prepared.model_id, get_settings())
-    provider_identity = external_model_identity(selected_model)
-    result = await agent.run(
-        prepared.user_prompt,
+    model_configuration_hash = content_hash(
+        {
+            "model_key": prepared.model_id,
+            "resolved_model": str(selected_model),
+            "model_settings": prepared.model_settings,
+        }
+    )
+    result = await run_model(
+        agent,
+        prompt=prepared.user_prompt,
         message_history=history,
         deferred_tool_results=deferred_results,
         conversation_id=prepared.conversation_id,
@@ -837,9 +887,9 @@ async def execute_prepared_agent_run(
         instructions=prepared.instructions,
         deps=prepared.deps,
         model_settings=prepared.model_settings,
-        usage_limits=_usage_limits(prepared.limits),
+        limits=prepared.limits,
+        model_configuration_hash=model_configuration_hash,
     )
-    usage = result.usage
     actions: list[dict[str, Any]] = []
     output_text = None
     status_value = "COMPLETED"
@@ -863,15 +913,19 @@ async def execute_prepared_agent_run(
         output_text = result.output
     return AgentRunOutcome(
         status=status_value,
-        message_history=json.loads(result.all_messages_json()),
+        message_history=result.message_history,
         output_text=output_text,
         actions=actions,
-        request_count=usage.requests,
-        tool_call_count=usage.tool_calls,
-        input_tokens=usage.input_tokens,
-        output_tokens=usage.output_tokens,
-        provider=provider_identity[0] if provider_identity is not None else None,
-        provider_model=provider_identity[1] if provider_identity is not None else None,
+        request_count=result.request_count,
+        tool_call_count=result.tool_call_count,
+        input_tokens=result.input_tokens,
+        cached_input_tokens=result.cached_input_tokens,
+        cache_write_tokens=result.cache_write_tokens,
+        output_tokens=result.output_tokens,
+        provider=result.provider,
+        provider_model=result.provider_model,
+        model_configuration_hash=result.model_configuration_hash,
+        invocations=result.invocations,
     )
 
 
@@ -886,16 +940,10 @@ def persist_agent_run_outcome(run_id: uuid.UUID, outcome: AgentRunOutcome) -> No
             raise ValueError("Agent run parent records are not available")
         run.message_history = outcome.message_history
         run.output_text = outcome.output_text
-        run.request_count = outcome.request_count
         run.tool_call_count = outcome.tool_call_count
-        run.input_tokens = outcome.input_tokens
-        run.output_tokens = outcome.output_tokens
-        run.status = outcome.status
-        run.completed_at = utcnow()
+        usage_context = None
         if outcome.provider is not None and outcome.provider_model is not None:
-            record_external_provider_usage(
-                db,
-                idempotency_key=f"agent-run:{run.id}:provider-usage",
+            usage_context = ProviderUsageContext(
                 tenant_id=conversation.tenant_id,
                 client_id=conversation.client_id,
                 matter_id=conversation.matter_id,
@@ -903,17 +951,21 @@ def persist_agent_run_outcome(run_id: uuid.UUID, outcome: AgentRunOutcome) -> No
                 job_type="AGENT_RUN",
                 job_id=run.id,
                 job_created_at=run.created_at,
-                provider=outcome.provider,
-                model=outcome.provider_model,
-                request_count=outcome.request_count,
-                input_tokens=outcome.input_tokens,
-                output_tokens=outcome.output_tokens,
                 details={
                     "conversation_id": str(conversation.id),
                     "turn_id": str(run.turn_id),
                     "workflow_id": run.workflow_id,
                 },
             )
+        persist_model_invocations(
+            db,
+            outcome.invocations,
+            agent_run_id=run.id,
+            usage_context=usage_context,
+        )
+        refresh_agent_run_usage(db, run)
+        run.status = outcome.status
+        run.completed_at = utcnow()
         if outcome.status == "WAITING_APPROVAL":
             if not outcome.actions:
                 raise ValueError("Waiting agent run did not produce an approval request")

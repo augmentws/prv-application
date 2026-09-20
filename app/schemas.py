@@ -26,6 +26,9 @@ MetadataEffectiveStatus = Literal["ACTIVE", "SUPERSEDED", "REJECTED", "INVALIDAT
 MetadataConfirmationState = Literal["UNREVIEWED", "CONFIRMED", "REJECTED"]
 AgentScope = Literal["SYSTEM", "TENANT"]
 AgentVersionStatus = Literal["DRAFT", "PUBLISHED", "RETIRED"]
+SkillScope = Literal["SYSTEM", "TENANT"]
+SkillVersionStatus = Literal["DRAFT", "PUBLISHED", "RETIRED"]
+WorkflowBindingStatus = Literal["ACTIVE", "INACTIVE"]
 MatterDefinitionSourceKind = Literal["PASTE", "MARKDOWN", "TEXT", "DOCX", "AGENT_EDIT", "USER_EDIT"]
 MatterDefinitionUserSourceKind = Literal["PASTE", "MARKDOWN", "TEXT", "USER_EDIT"]
 Slug = Annotated[
@@ -168,7 +171,10 @@ class ExternalProviderUsageRead(ORMModel):
     model: str
     request_count: int
     input_tokens: int
+    cached_input_tokens: int
+    cache_write_tokens: int
     output_tokens: int
+    model_invocation_id: uuid.UUID | None
     total_tokens: int
     details: dict[str, Any]
     created_at: datetime
@@ -554,19 +560,31 @@ class MatterSavedSearchExecute(BaseModel):
     size: int | None = Field(default=None, ge=1, le=500)
 
 
-ReviewBatchSelectionType = Literal["ALL_MATTER", "SEARCH_QUERY", "RANDOM_MATTER", "RANDOM_BATCH"]
+ReviewBatchSelectionType = Literal[
+    "ALL_MATTER", "SEARCH_QUERY", "RANDOM_MATTER", "RANDOM_BATCH", "DEFINITION_ASSESSMENT"
+]
+InteractiveReviewBatchSelectionType = Literal["ALL_MATTER", "SEARCH_QUERY", "RANDOM_MATTER", "RANDOM_BATCH"]
 ReviewBatchValueVisibility = Literal["OWN_VALUES", "ALL_REVIEWER_VALUES"]
 ReviewBatchStatus = Literal["QUEUED", "BUILDING", "READY", "FAILED", "ARCHIVED"]
 ReviewBatchSearchStatus = Literal["QUEUED", "SYNCING", "READY", "FAILED", "NOT_CONFIGURED"]
-ReviewBatchRunType = Literal["HUMAN", "AGENT"]
-ReviewBatchRunPurpose = Literal["REVIEW", "REFERENCE", "CANDIDATE"]
-ReviewBatchRunStatus = Literal["QUEUED", "RUNNING", "COMPLETED", "FAILED", "CANCELED"]
+ReviewBatchRunType = Literal["HUMAN", "AGENT", "WORKFLOW"]
+InteractiveReviewBatchRunType = Literal["HUMAN", "AGENT"]
+ReviewBatchRunPurpose = Literal["REVIEW", "REFERENCE", "CANDIDATE", "ASSESSMENT"]
+InteractiveReviewBatchRunPurpose = Literal["REVIEW", "REFERENCE", "CANDIDATE"]
+ReviewBatchRunStatus = Literal[
+    "QUEUED",
+    "RUNNING",
+    "COMPLETED",
+    "COMPLETED_WITH_ERRORS",
+    "FAILED",
+    "CANCELED",
+]
 
 
 class ReviewBatchCreate(BaseModel):
     name: str = Field(min_length=1, max_length=200)
     description: str | None = Field(default=None, max_length=4000)
-    selection_type: ReviewBatchSelectionType
+    selection_type: InteractiveReviewBatchSelectionType
     search: MatterSearchRequest | None = None
     source_batch_id: uuid.UUID | None = None
     sample_size: int | None = Field(default=None, ge=1, le=10_000_000)
@@ -665,8 +683,8 @@ class ReviewBatchNoteRead(ORMModel):
 
 
 class ReviewBatchRunCreate(BaseModel):
-    run_type: ReviewBatchRunType
-    purpose: ReviewBatchRunPurpose = "REVIEW"
+    run_type: InteractiveReviewBatchRunType
+    purpose: InteractiveReviewBatchRunPurpose = "REVIEW"
     actor_user_id: uuid.UUID | None = None
     agent_definition_version_id: uuid.UUID | None = None
     parent_run_id: uuid.UUID | None = None
@@ -692,6 +710,7 @@ class ReviewBatchRunRead(ORMModel):
     parent_run_id: uuid.UUID | None
     actor_user_id: uuid.UUID | None
     agent_definition_version_id: uuid.UUID | None
+    workflow_run_record_id: uuid.UUID | None
     configuration_snapshot: dict[str, Any]
     initiated_by_user_id: uuid.UUID
     processed_document_count: int
@@ -700,6 +719,14 @@ class ReviewBatchRunRead(ORMModel):
     completed_at: datetime | None
     created_at: datetime
     updated_at: datetime
+
+
+class ReviewBatchDocumentAnalysisRead(BaseModel):
+    review_batch_run_id: uuid.UUID
+    matter_document_id: uuid.UUID
+    status: Literal["QUEUED", "IN_PROGRESS", "COMPLETED", "SKIPPED", "FAILED"]
+    output_artifact_id: uuid.UUID | None
+    analysis: dict[str, Any] | None
 
 
 class ReviewBatchRunFieldValue(BaseModel):
@@ -1143,6 +1170,135 @@ class AgentDefinitionCreated(BaseModel):
     version: AgentDefinitionVersionRead
 
 
+class SkillVersionCreate(BaseModel):
+    instructions: str = Field(min_length=1, max_length=200_000)
+    input_schema_key: MetadataKey
+    input_schema: dict[str, Any]
+    output_schema_key: MetadataKey
+    output_schema: dict[str, Any]
+    model_key: str = Field(min_length=1, max_length=200)
+    model_policy: dict[str, Any] = Field(default_factory=dict)
+    limits: dict[str, Any] = Field(default_factory=dict)
+    required_capabilities: list[str] = Field(default_factory=list, max_length=50)
+    required_tools: list[str] = Field(default_factory=list, max_length=100)
+    cache_policy: dict[str, Any] = Field(default_factory=dict)
+    evaluation_fixtures: list[dict[str, Any]] = Field(default_factory=list, max_length=100)
+
+    @model_validator(mode="after")
+    def validate_contract(self) -> "SkillVersionCreate":
+        if not self.input_schema:
+            raise ValueError("input_schema cannot be empty")
+        if not self.output_schema:
+            raise ValueError("output_schema cannot be empty")
+        if len(self.required_capabilities) != len(set(self.required_capabilities)):
+            raise ValueError("required_capabilities must be unique")
+        if len(self.required_tools) != len(set(self.required_tools)):
+            raise ValueError("required_tools must be unique")
+        return self
+
+
+class SkillDefinitionCreate(BaseModel):
+    key: MetadataKey
+    name: str = Field(min_length=1, max_length=200)
+    description: str | None = Field(default=None, max_length=4000)
+    initial_version: SkillVersionCreate
+
+
+class SkillDefinitionRead(ORMModel):
+    id: uuid.UUID
+    owner_tenant_id: uuid.UUID
+    scope: SkillScope
+    key: str
+    name: str
+    description: str | None
+    current_version: int
+    published_version: int | None
+    status: ResourceStatus
+    created_by_user_id: uuid.UUID
+    created_at: datetime
+    updated_at: datetime
+
+
+class SkillDefinitionUpdate(BaseModel):
+    name: str | None = Field(default=None, min_length=1, max_length=200)
+    description: str | None = Field(default=None, max_length=4000)
+    status: ResourceStatus | None = None
+
+    @model_validator(mode="after")
+    def validate_nonempty_update(self) -> "SkillDefinitionUpdate":
+        if not self.model_fields_set:
+            raise ValueError("At least one skill property must be supplied")
+        if self.name is not None:
+            self.name = self.name.strip()
+            if not self.name:
+                raise ValueError("Skill name cannot be blank")
+        return self
+
+
+class SkillDefinitionVersionRead(ORMModel):
+    id: uuid.UUID
+    skill_definition_id: uuid.UUID
+    version: int
+    instructions: str
+    input_schema_key: str
+    input_schema: dict[str, Any]
+    output_schema_key: str
+    output_schema: dict[str, Any]
+    model_key: str
+    model_policy: dict[str, Any]
+    limits: dict[str, Any]
+    required_capabilities: list[str]
+    required_tools: list[str]
+    cache_policy: dict[str, Any]
+    evaluation_fixtures: list[dict[str, Any]]
+    status: SkillVersionStatus
+    created_by_user_id: uuid.UUID
+    created_at: datetime
+    published_at: datetime | None
+
+
+class SkillDefinitionCreated(BaseModel):
+    skill: SkillDefinitionRead
+    version: SkillDefinitionVersionRead
+
+
+class WorkflowRoleSpecRead(BaseModel):
+    key: str
+    input_schema_key: str
+    output_schema_key: str
+    allowed_capabilities: list[str]
+    allowed_tool_keys: list[str]
+
+
+class WorkflowSpecRead(BaseModel):
+    key: str
+    code_version: str
+    name: str
+    description: str
+    roles: list[WorkflowRoleSpecRead]
+
+
+class WorkflowSkillBindingUpsert(BaseModel):
+    skill_definition_version_id: uuid.UUID
+    configuration: dict[str, Any] = Field(default_factory=dict)
+    status: WorkflowBindingStatus = "ACTIVE"
+
+
+class WorkflowSkillBindingRead(ORMModel):
+    id: uuid.UUID
+    workflow_key: str
+    role_key: str
+    scope: SkillScope
+    owner_tenant_id: uuid.UUID
+    skill_definition_id: uuid.UUID
+    skill_definition_version_id: uuid.UUID
+    configuration: dict[str, Any]
+    status: WorkflowBindingStatus
+    created_by_user_id: uuid.UUID
+    created_at: datetime
+    updated_at: datetime
+
+
 class MatterDefinitionRevisionCreate(BaseModel):
     content_markdown: str = Field(min_length=1, max_length=2_000_000)
     source_kind: MatterDefinitionUserSourceKind = "USER_EDIT"
@@ -1234,6 +1390,8 @@ class AgentRunRead(ORMModel):
     request_count: int
     tool_call_count: int
     input_tokens: int
+    cached_input_tokens: int
+    cache_write_tokens: int
     output_tokens: int
     error_message: str | None
     started_at: datetime | None
@@ -1291,6 +1449,183 @@ class AgentActionDecisionResult(BaseModel):
     action_request: AgentActionRequestRead
     decision: AgentActionDecisionRead
     resumed_run: AgentRunRead | None
+
+
+MatterDefinitionAssessmentStatus = Literal[
+    "QUEUED",
+    "PLANNING",
+    "RETRIEVING",
+    "BUILDING_BATCH",
+    "SUMMARIZING",
+    "SYNTHESIZING",
+    "COMPLETED",
+    "COMPLETED_WITH_ERRORS",
+    "FAILED",
+    "CANCELED",
+]
+
+
+class MatterDefinitionAssessmentCreate(BaseModel):
+    revision: int | None = Field(default=None, ge=1)
+    maximum_document_count: int = Field(default=500, ge=1, le=10_000_000)
+    control_sample_size: int = Field(default=0, ge=0, le=1_000_000)
+    acknowledge_large_run_warning: bool = False
+
+
+class MatterDefinitionAssessmentRead(ORMModel):
+    id: uuid.UUID
+    matter_id: uuid.UUID
+    matter_definition_revision_id: uuid.UUID
+    definition_content_hash: str
+    workflow_run_id: uuid.UUID
+    search_index_generation_id: uuid.UUID | None
+    review_batch_id: uuid.UUID | None
+    review_batch_run_id: uuid.UUID | None
+    configuration_snapshot: dict[str, Any]
+    requested_document_count: int
+    control_sample_size: int
+    large_run_warning_acknowledged: bool
+    warning_acknowledged_by_user_id: uuid.UUID | None
+    warning_acknowledged_at: datetime | None
+    estimated_input_tokens: int | None
+    estimated_output_tokens: int | None
+    token_estimator: str | None
+    token_estimator_version: str | None
+    estimation_model: str | None
+    candidate_count: int
+    selected_count: int
+    summarized_count: int
+    skipped_count: int
+    failed_count: int
+    partial_coverage_count: int
+    invalid_result_count: int
+    coverage_snapshot: dict[str, Any] | None
+    synthesis_result: dict[str, Any] | None
+    status: MatterDefinitionAssessmentStatus
+    error_message: str | None
+    initiated_by_user_id: uuid.UUID
+    started_at: datetime | None
+    completed_at: datetime | None
+    canceled_at: datetime | None
+    created_at: datetime
+    updated_at: datetime
+
+
+class MatterDefinitionAssessmentQueryRead(ORMModel):
+    id: uuid.UUID
+    assessment_run_id: uuid.UUID
+    ordinal: int
+    criterion_key: str
+    criterion_label: str
+    rationale: str
+    search_request: dict[str, Any]
+    quota: int
+    result_count: int
+    created_at: datetime
+
+
+class MatterDefinitionAssessmentQuestionRead(ORMModel):
+    id: uuid.UUID
+    assessment_run_id: uuid.UUID
+    question: str
+    rationale: str
+    priority: Literal["HIGH", "MEDIUM", "LOW"]
+    blocking: bool
+    evidence: list[dict[str, Any]]
+    status: Literal["OPEN", "ANSWERED", "DISMISSED"]
+    answer: str | None
+    answered_by_user_id: uuid.UUID | None
+    answered_at: datetime | None
+    created_at: datetime
+    updated_at: datetime
+
+
+class MatterDefinitionAssessmentQuestionUpdate(BaseModel):
+    status: Literal["ANSWERED", "DISMISSED"]
+    answer: str | None = Field(default=None, max_length=20_000)
+
+    @model_validator(mode="after")
+    def validate_answer(self) -> "MatterDefinitionAssessmentQuestionUpdate":
+        if self.status == "ANSWERED" and not (self.answer or "").strip():
+            raise ValueError("ANSWERED questions require an answer")
+        if self.status == "DISMISSED" and self.answer is not None:
+            raise ValueError("DISMISSED questions do not accept an answer")
+        return self
+
+
+class BatchTopicRead(BaseModel):
+    id: uuid.UUID
+    topic_key: str
+    label: str
+    description: str | None
+    ordinal: int
+    assignment_count: int
+
+
+class BatchTopicTaxonomyRead(BaseModel):
+    id: uuid.UUID
+    review_batch_id: uuid.UUID
+    source_assessment_run_id: uuid.UUID
+    review_batch_run_id: uuid.UUID | None
+    version: int
+    status: Literal["ACTIVE", "RETIRED"]
+    topics: list[BatchTopicRead]
+    created_at: datetime
+
+
+class WorkflowStepExecutionRead(ORMModel):
+    id: uuid.UUID
+    role_key: str
+    ordinal: int
+    fan_out_group: str | None
+    status: str
+    total_count: int
+    completed_count: int
+    failed_count: int
+    request_count: int
+    input_tokens: int
+    cached_input_tokens: int
+    cache_write_tokens: int
+    output_tokens: int
+    error_message: str | None
+    started_at: datetime | None
+    completed_at: datetime | None
+
+
+class SkillRunExecutionRead(ORMModel):
+    id: uuid.UUID
+    workflow_step_run_id: uuid.UUID
+    skill_definition_version_id: uuid.UUID
+    scope_type: str
+    scope_id: uuid.UUID | None
+    output_artifact_id: uuid.UUID | None
+    status: str
+    request_count: int
+    input_tokens: int
+    cached_input_tokens: int
+    cache_write_tokens: int
+    output_tokens: int
+    error_code: str | None
+    error_message: str | None
+    started_at: datetime | None
+    completed_at: datetime | None
+
+
+class WorkflowExecutionRead(BaseModel):
+    id: uuid.UUID
+    workflow_key: str
+    code_version: str
+    status: str
+    request_count: int
+    input_tokens: int
+    cached_input_tokens: int
+    cache_write_tokens: int
+    output_tokens: int
+    error_message: str | None
+    started_at: datetime | None
+    completed_at: datetime | None
+    steps: list[WorkflowStepExecutionRead]
+    skill_runs: list[SkillRunExecutionRead]
 
 
 class ErrorDetail(BaseModel):

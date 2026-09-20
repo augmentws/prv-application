@@ -1,0 +1,34 @@
+---
+title: Skills and workflow bindings
+description: Inspect managed skill versions and their bindings to code-owned workflow roles.
+---
+
+The **Skills** root-administration area separates reusable model instructions from interactive agents. A skill is a versioned structured-model contract: instructions, input and output schemas, model policy, limits, required capabilities, cache policy, and evaluation fixtures. A workflow is code-owned orchestration that may invoke one or more bound skills.
+
+Only a root administrator can view and manage system skills and system workflow bindings. Matter administrators can inspect execution details for assessments they are authorized to access, but cannot change system bindings.
+
+## Inspect a skill
+
+Select a skill to see its current input schema, output schema, model policy, cache policy, publication state, and immutable version history. Published versions are eligible for compatible workflows. A workflow role accepts a skill only when its schema keys, capabilities, and tool requirements match the role's code-owned contract.
+
+Skills do not become autonomous agents. They do not own conversations, choose workflow graphs, or gain tools from their instructions. The calling workflow supplies scope, authorization, allowed tools, durable execution, and output handling.
+
+## Workflow bindings
+
+The **Code-owned workflows** panel lists each fixed workflow and role, plus the currently bound skill. Bindings pin an exact published skill version. Updating a binding affects only future workflow runs; existing runs retain their binding snapshot and continue to identify the exact version used.
+
+The Matter Definition assessment currently binds three roles:
+
+- retrieval planning;
+- per-document analysis;
+- assessment synthesis.
+
+## Execution observability
+
+Open a Matter Definition assessment to inspect its execution tree. The view includes step progress, failures, output artifact references, model request counts, input and output tokens, provider cache reads, and cache-write tokens. Document analyses remain immutable `SUMMARY` artifacts related to their source text.
+
+## Current limitations
+
+- The administration screen is inspection-oriented; creating versions, publishing, and changing bindings use the existing administration API until full editing forms are added.
+- Provider token telemetry is available, but monetary cost estimates and per-run spend ceilings are planned.
+- Workflows are registered in code. Administrators cannot upload arbitrary workflow graphs or executable code.

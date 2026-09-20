@@ -23,6 +23,8 @@ export interface AgentRunRead {
   request_count: number;
   tool_call_count: number;
   input_tokens: number;
+  cached_input_tokens: number;
+  cache_write_tokens: number;
   output_tokens: number;
   error_message: string | null;
   started_at: string | null;

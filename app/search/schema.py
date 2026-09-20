@@ -8,7 +8,7 @@ SchemaChangeAction = Literal["NO_CHANGE", "IN_PLACE", "REINDEX_REQUIRED"]
 # These root fields are additive and have a separate, bounded backfill path. Do
 # not add metadata fields here: making existing metadata searchable requires a
 # projection rebuild so historical values are populated.
-IN_PLACE_ADDITIVE_ROOT_FIELDS = frozenset({"batch_ids"})
+IN_PLACE_ADDITIVE_ROOT_FIELDS = frozenset({"batch_ids", "batch_topics"})
 
 
 @dataclass(frozen=True)

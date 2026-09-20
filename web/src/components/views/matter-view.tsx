@@ -314,7 +314,7 @@ function tabClass(active: boolean) {
 }
 
 function batchSelectionLabel(value: ReviewBatchRead["selection_type"]) {
-  return { ALL_MATTER: "All matter documents", SEARCH_QUERY: "Keyword search", RANDOM_MATTER: "Random matter sample", RANDOM_BATCH: "Random batch sample" }[value];
+  return { ALL_MATTER: "All matter documents", SEARCH_QUERY: "Keyword search", RANDOM_MATTER: "Random matter sample", RANDOM_BATCH: "Random batch sample", DEFINITION_ASSESSMENT: "Matter Definition assessment" }[value];
 }
 
 function Summary({ icon: Icon, label, value }: { icon: typeof ListChecks; label: string; value: number | string }) {

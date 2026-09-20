@@ -19,6 +19,7 @@ import { useEffect, useRef, useState } from "react";
 import { toast } from "sonner";
 
 import { QueryError, TableLoading } from "@/components/query-state";
+import { MatterDefinitionAssessmentPanel } from "@/components/matter-definition-assessment-panel";
 import { StatusBadge } from "@/components/status-badge";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
@@ -292,6 +293,7 @@ export function MatterDefinitionPanel({ matterId }: { matterId: string }) {
         </Card>
 
         <RevisionHistory revisions={revisions.data ?? []} currentRevision={currentRevision} publishedRevision={definition.data?.published_revision ?? null} />
+        <MatterDefinitionAssessmentPanel matterId={matterId} revisions={revisions.data ?? []} publishedRevision={definition.data?.published_revision ?? null} />
       </section>
 
       <AgentWorkspace

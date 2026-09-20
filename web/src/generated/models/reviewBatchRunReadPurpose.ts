@@ -13,4 +13,5 @@ export const ReviewBatchRunReadPurpose = {
   REVIEW: 'REVIEW',
   REFERENCE: 'REFERENCE',
   CANDIDATE: 'CANDIDATE',
+  ASSESSMENT: 'ASSESSMENT',
 } as const;

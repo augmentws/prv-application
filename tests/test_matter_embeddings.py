@@ -199,6 +199,26 @@ def test_derived_artifact_upload_is_idempotent(client: TestClient, root_token: s
     assert first.json()["artifact"]["derivation_key"] == "b" * 64
     assert first.json()["artifact"]["metadata"]["chunk_count"] == 1
 
+    summary_metadata = {
+        "artifact_type": "SUMMARY",
+        "source_artifact_id": item["native_artifact"]["id"],
+        "relationship": "DERIVED_FROM",
+        "processing_run_id": str(run_id),
+        "derivation_key": "c" * 64,
+        "metadata": {"schema_version": "document_analysis_v1"},
+    }
+    summary = client.post(
+        f"/v1/collection-items/{item['id']}/derived-artifacts:upload",
+        headers=headers,
+        data={"metadata": json.dumps(summary_metadata)},
+        files={"file": ("summary.json", b'{"determination":"RESPONSIVE"}', "application/json")},
+    )
+
+    assert summary.status_code == 201, summary.text
+    assert summary.json()["created"] is True
+    assert summary.json()["artifact"]["artifact_type"] == "SUMMARY"
+    assert summary.json()["artifact"]["media_type"] == "application/json"
+
 
 def test_document_processing_creates_chunk_and_vector_sets(monkeypatch) -> None:
     tenant_id = uuid.uuid4()

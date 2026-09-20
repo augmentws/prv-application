@@ -13,10 +13,14 @@ from app.document_metadata import current_metadata_values
 from app.embeddings.configuration import canonical_hash, processing_configuration
 from app.embeddings.parquet import read_chunk_set, read_vector_set
 from app.models import (
+    BatchTopic,
+    BatchTopicAssignment,
+    BatchTopicTaxonomy,
     Custodian,
     Matter,
     MatterDocument,
     MatterDocumentImportJob,
+    MatterDefinitionAssessmentRun,
     MatterEmbeddingBatch,
     MatterEmbeddingJob,
     MetadataDefinition,
@@ -72,6 +76,7 @@ def build_document_projection(
     definitions: list[MetadataDefinition],
     *,
     batch_ids: list[uuid.UUID] | None = None,
+    batch_topics: list[dict[str, str]] | None = None,
 ) -> dict[str, Any]:
     matter = db.get(Matter, document.matter_id)
     if matter is None:
@@ -151,6 +156,7 @@ def build_document_projection(
         "source_collection_id": str(document.source_collection_id),
         "collection_item_id": str(document.collection_item_id),
         "batch_ids": [str(value) for value in (batch_ids or [])],
+        "batch_topics": batch_topics or [],
         "created_at": document.created_at.isoformat(),
         "record_type": snapshot.record_type,
         "processing_status": snapshot.processing_status,
@@ -216,10 +222,24 @@ class SearchIndexManager:
                     )
                 )
             )
+            pinned_generation_ids = set(
+                self.db.scalars(
+                    select(MatterDefinitionAssessmentRun.search_index_generation_id).where(
+                        MatterDefinitionAssessmentRun.matter_id == active.matter_id,
+                        MatterDefinitionAssessmentRun.search_index_generation_id.is_not(None),
+                        MatterDefinitionAssessmentRun.status.not_in(
+                            ["COMPLETED", "COMPLETED_WITH_ERRORS", "FAILED", "CANCELED"]
+                        ),
+                    )
+                )
+            )
+            pinned_index_names = {
+                generation.index_name for generation in generations if generation.id in pinned_generation_ids
+            }
             physical_indices = set(self.client.resolve_indices(f"{active.alias_name}-v*"))
             physical_indices.update(generation.index_name for generation in generations)
             for index_name in sorted(physical_indices):
-                if index_name != active.index_name:
+                if index_name != active.index_name and index_name not in pinned_index_names:
                     self.client.delete_index(index_name)
             generation_by_id = {generation.id: generation for generation in generations}
             batches = list(
@@ -240,7 +260,8 @@ class SearchIndexManager:
                         },
                     }
             for generation in generations:
-                self.db.delete(generation)
+                if generation.id not in pinned_generation_ids:
+                    self.db.delete(generation)
             self.db.commit()
         except Exception:
             self.db.rollback()
@@ -464,6 +485,30 @@ class SearchIndexManager:
             ).all()
             for document_id, review_batch_id in rows:
                 memberships[document_id].append(review_batch_id)
+            batch_topics: dict[uuid.UUID, list[dict[str, str]]] = {document.id: [] for document in batch}
+            topic_rows = self.db.execute(
+                select(
+                    BatchTopicAssignment.matter_document_id,
+                    BatchTopicAssignment.review_batch_id,
+                    BatchTopicAssignment.taxonomy_id,
+                    BatchTopic.topic_key,
+                )
+                .join(BatchTopicTaxonomy, BatchTopicTaxonomy.id == BatchTopicAssignment.taxonomy_id)
+                .join(BatchTopic, BatchTopic.id == BatchTopicAssignment.topic_id)
+                .where(
+                    BatchTopicAssignment.matter_document_id.in_(batch_topics),
+                    BatchTopicTaxonomy.status == "ACTIVE",
+                )
+                .order_by(BatchTopicAssignment.review_batch_id, BatchTopic.ordinal)
+            ).all()
+            for document_id, review_batch_id, taxonomy_id, topic_key in topic_rows:
+                batch_topics[document_id].append(
+                    {
+                        "batch_id": str(review_batch_id),
+                        "taxonomy_id": str(taxonomy_id),
+                        "topic_key": topic_key,
+                    }
+                )
             self.client.bulk(
                 index_name,
                 (
@@ -475,6 +520,7 @@ class SearchIndexManager:
                             document,
                             definitions,
                             batch_ids=memberships[document.id],
+                            batch_topics=batch_topics[document.id],
                         ),
                     )
                     for document in batch
@@ -510,6 +556,30 @@ def sync_review_batch_search(batch_id: uuid.UUID, settings: Settings | None = No
                     .order_by(ReviewBatchDocument.sequence_number)
                 )
             )
+            active_taxonomy = db.scalar(
+                select(BatchTopicTaxonomy).where(
+                    BatchTopicTaxonomy.review_batch_id == batch.id,
+                    BatchTopicTaxonomy.status == "ACTIVE",
+                )
+            )
+            topics_by_document: dict[uuid.UUID, list[dict[str, str]]] = {
+                document_id: [] for document_id in document_ids
+            }
+            if active_taxonomy is not None:
+                rows = db.execute(
+                    select(BatchTopicAssignment.matter_document_id, BatchTopic.topic_key)
+                    .join(BatchTopic, BatchTopic.id == BatchTopicAssignment.topic_id)
+                    .where(BatchTopicAssignment.taxonomy_id == active_taxonomy.id)
+                    .order_by(BatchTopic.ordinal)
+                ).all()
+                for document_id, topic_key in rows:
+                    topics_by_document[document_id].append(
+                        {
+                            "batch_id": str(batch.id),
+                            "taxonomy_id": str(active_taxonomy.id),
+                            "topic_key": topic_key,
+                        }
+                    )
             for offset in range(0, len(document_ids), settings.search_bulk_batch_size):
                 page = document_ids[offset : offset + settings.search_bulk_batch_size]
                 client.bulk(
@@ -523,9 +593,17 @@ def sync_review_batch_search(batch_id: uuid.UUID, settings: Settings | None = No
                                     "source": (
                                         "if (ctx._source.batch_ids == null) { ctx._source.batch_ids = []; } "
                                         "if (!ctx._source.batch_ids.contains(params.batch_id)) { "
-                                        "ctx._source.batch_ids.add(params.batch_id); }"
+                                        "ctx._source.batch_ids.add(params.batch_id); } "
+                                        "if (ctx._source.batch_topics == null) { ctx._source.batch_topics = []; } "
+                                        "for (int i = ctx._source.batch_topics.size() - 1; i >= 0; i--) { "
+                                        "if (ctx._source.batch_topics[i].batch_id == params.batch_id) { "
+                                        "ctx._source.batch_topics.remove(i); } } "
+                                        "ctx._source.batch_topics.addAll(params.topics);"
                                     ),
-                                    "params": {"batch_id": str(batch.id)},
+                                    "params": {
+                                        "batch_id": str(batch.id),
+                                        "topics": topics_by_document[document_id],
+                                    },
                                 }
                             },
                         )

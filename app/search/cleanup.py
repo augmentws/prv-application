@@ -9,7 +9,7 @@ from dataclasses import dataclass
 from sqlalchemy import select, text
 from sqlalchemy.orm import Session
 
-from app.models import Matter, ReviewBatch, SearchIndexGeneration
+from app.models import Matter, MatterDefinitionAssessmentRun, ReviewBatch, SearchIndexGeneration
 from app.search.client import OpenSearchClient
 
 
@@ -29,6 +29,7 @@ class SearchIndexCleanupPlan:
     stale_generation_ids: tuple[uuid.UUID, ...]
     stale_generation_indexes: tuple[str, ...]
     missing_physical_indexes: tuple[str, ...]
+    preserved_assessment_indexes: tuple[str, ...]
 
 
 def active_matter_ids(db: Session) -> list[uuid.UUID]:
@@ -98,10 +99,28 @@ def plan_search_index_cleanup(
             f"Matter {matter.name!r} has generation records outside the active naming contract: {invalid_records!r}"
         )
 
-    stale_generations = [generation for generation in generations if generation.id != active.id]
+    pinned_generation_ids = set(
+        db.scalars(
+            select(MatterDefinitionAssessmentRun.search_index_generation_id).where(
+                MatterDefinitionAssessmentRun.matter_id == matter.id,
+                MatterDefinitionAssessmentRun.search_index_generation_id.is_not(None),
+                MatterDefinitionAssessmentRun.status.not_in(
+                    ["COMPLETED", "COMPLETED_WITH_ERRORS", "FAILED", "CANCELED"]
+                ),
+            )
+        )
+    )
+    all_stale_generations = [generation for generation in generations if generation.id != active.id]
+    stale_generations = [
+        generation for generation in all_stale_generations if generation.id not in pinned_generation_ids
+    ]
     stale_names = {generation.index_name for generation in stale_generations}
+    all_stale_names = {generation.index_name for generation in all_stale_generations}
+    preserved_names = {
+        generation.index_name for generation in all_stale_generations if generation.id in pinned_generation_ids
+    }
     physical_names = set(physical_indexes)
-    delete_indexes = tuple(sorted(physical_names - {active.index_name}))
+    delete_indexes = tuple(sorted(physical_names - {active.index_name} - preserved_names))
 
     return SearchIndexCleanupPlan(
         matter_id=matter.id,
@@ -110,10 +129,11 @@ def plan_search_index_cleanup(
         active_index=active.index_name,
         physical_indexes=physical_indexes,
         delete_indexes=delete_indexes,
-        orphan_indexes=tuple(sorted(set(delete_indexes) - stale_names)),
+        orphan_indexes=tuple(sorted(set(delete_indexes) - all_stale_names)),
         stale_generation_ids=tuple(generation.id for generation in stale_generations),
         stale_generation_indexes=tuple(sorted(stale_names)),
         missing_physical_indexes=tuple(sorted(stale_names - physical_names)),
+        preserved_assessment_indexes=tuple(sorted(preserved_names)),
     )
 
 
