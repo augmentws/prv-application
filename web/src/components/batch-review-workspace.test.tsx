@@ -72,6 +72,7 @@ describe("BatchReviewWorkspace", () => {
       if (path === "/v1/clients/client-1/custodians") return [] as never;
       if (path === "/v1/matters/matter-1/metadata-definitions") return [] as never;
       if (path === "/v1/matters/matter-1/review-batches/batch-1" && !init?.method) return batch as never;
+      if (path === "/v1/matters/matter-1/review-batches/batch-1/topic-taxonomy") return null as never;
       if (path === "/v1/matters/matter-1/review-batches/batch-1/search" && init?.method === "POST") return {
         total: 1,
         took_ms: 2,

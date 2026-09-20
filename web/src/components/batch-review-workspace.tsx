@@ -1,7 +1,7 @@
 "use client";
 
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { ArrowLeft, Check, ChevronDown, ChevronLeft, ChevronRight, FileText, Save, Search, SkipForward, X } from "lucide-react";
+import { ArrowLeft, Check, ChevronDown, ChevronLeft, ChevronRight, FileText, Save, Search, SkipForward, Sparkles, X } from "lucide-react";
 import Link from "next/link";
 import { useRouter } from "next/navigation";
 import { type FormEvent, useEffect, useMemo, useState } from "react";
@@ -9,8 +9,10 @@ import { toast } from "sonner";
 
 import { BrandMark } from "@/components/brand-mark";
 import { DocumentViewerSurface } from "@/components/document-viewer-dialog";
+import { HelpLink } from "@/components/help-link";
 import { QueryError } from "@/components/query-state";
 import { ResultPagination } from "@/components/result-pagination";
+import { StatusBadge } from "@/components/status-badge";
 import { parseMinimumSimilarity, SemanticThresholdControl } from "@/components/semantic-threshold-control";
 import { ThemeToggle } from "@/components/theme-toggle";
 import { Badge } from "@/components/ui/badge";
@@ -21,6 +23,7 @@ import { Skeleton } from "@/components/ui/skeleton";
 import { Textarea } from "@/components/ui/textarea";
 import type {
   ClientRead,
+  BatchTopicTaxonomyRead,
   CollectionItemRead,
   CustodianRead,
   MatterRead,
@@ -33,6 +36,7 @@ import type {
   MetadataDefinitionRead,
   ReviewBatchCodingFieldRead,
   ReviewBatchDocumentCodingRead,
+  ReviewBatchDocumentAnalysisRead,
   ReviewBatchDocumentRead,
   ReviewBatchRead,
   ReviewBatchRunDocumentValues,
@@ -170,6 +174,8 @@ export function BatchReviewWorkspace({ matterId, batchId, initialDocumentId, ini
   const [filters, setFilters] = useState<SelectedFilters>({});
   const [offset, setOffset] = useState(Math.max(0, initialPage - 1) * PAGE_SIZE);
   const [selectedDocumentId, setSelectedDocumentId] = useState(initialDocumentId ?? "");
+  const [selectedTopicKeys, setSelectedTopicKeys] = useState<string[]>([]);
+  const [sidePanel, setSidePanel] = useState<"analysis" | "coding">("analysis");
 
   const matter = useQuery({ queryKey: ["matter", matterId], queryFn: () => coreApi<MatterRead>(`/v1/matters/${matterId}`) });
   const client = useQuery({
@@ -187,6 +193,11 @@ export function BatchReviewWorkspace({ matterId, batchId, initialDocumentId, ini
     queryFn: () => coreApi<MetadataDefinitionRead[]>(`/v1/matters/${matterId}/metadata-definitions`),
   });
   const batch = useQuery({ queryKey: ["review-batch", matterId, batchId], queryFn: () => coreApi<ReviewBatchRead>(`/v1/matters/${matterId}/review-batches/${batchId}`) });
+  const taxonomy = useQuery({
+    queryKey: ["review-batch-topic-taxonomy", matterId, batchId],
+    queryFn: () => coreApi<BatchTopicTaxonomyRead | null>(`/v1/matters/${matterId}/review-batches/${batchId}/topic-taxonomy`),
+    enabled: batch.data?.status === "READY",
+  });
   const run = useQuery({
     queryKey: ["review-batch-run", matterId, batchId],
     queryFn: () => coreApi<ReviewBatchRunRead>(`/v1/matters/${matterId}/review-batches/${batchId}/review-run`, { method: "POST" }),
@@ -225,10 +236,19 @@ export function BatchReviewWorkspace({ matterId, batchId, initialDocumentId, ini
     };
   }, [facetDefinitions, filters, minimumSimilarity, offset, query, searchMode]);
   const searchResults = useQuery({
-    queryKey: ["review-batch-search", matterId, batchId, searchRequest],
-    queryFn: () => coreApi<MatterSearchResponse>(`/v1/matters/${matterId}/review-batches/${batchId}/search`, { method: "POST", body: JSON.stringify(searchRequest) }),
+    queryKey: ["review-batch-search", matterId, batchId, searchRequest, selectedTopicKeys],
+    queryFn: () => {
+      const params = new URLSearchParams();
+      for (const topic of selectedTopicKeys) params.append("topic_key", topic);
+      return coreApi<MatterSearchResponse>(`/v1/matters/${matterId}/review-batches/${batchId}/search${params.size ? `?${params}` : ""}`, { method: "POST", body: JSON.stringify(searchRequest) });
+    },
     enabled: batch.data?.search_status === "READY" && Boolean(definitions.data),
     placeholderData: (previous) => previous,
+  });
+  const topicFacets = useQuery({
+    queryKey: ["review-batch-topic-facets", matterId, batchId, searchRequest],
+    queryFn: () => coreApi<MatterFacetValuesResponse>(`/v1/matters/${matterId}/review-batches/${batchId}/topic-facets`, { method: "POST", body: JSON.stringify(searchRequest) }),
+    enabled: batch.data?.search_status === "READY" && Boolean(taxonomy.data),
   });
   const pageDocumentIds = searchResults.data?.hits.map((hit) => hit.document_id) ?? [];
   const statusQuery = useQuery({
@@ -257,6 +277,12 @@ export function BatchReviewWorkspace({ matterId, batchId, initialDocumentId, ini
     queryKey: ["review-batch-document-coding", matterId, batchId, run.data?.id, effectiveDocumentId],
     queryFn: () => coreApi<ReviewBatchDocumentCodingRead>(`/v1/matters/${matterId}/review-batches/${batchId}/runs/${run.data!.id}/documents/${effectiveDocumentId}`),
     enabled: Boolean(run.data?.id && effectiveDocumentId),
+  });
+  const analysis = useQuery({
+    queryKey: ["review-batch-document-analysis", matterId, batchId, taxonomy.data?.review_batch_run_id, effectiveDocumentId],
+    queryFn: () => coreApi<ReviewBatchDocumentAnalysisRead>(`/v1/matters/${matterId}/review-batches/${batchId}/runs/${taxonomy.data!.review_batch_run_id}/documents/${effectiveDocumentId}/analysis`),
+    enabled: Boolean(taxonomy.data?.review_batch_run_id && effectiveDocumentId),
+    retry: false,
   });
 
   const syncUrl = (documentId?: string, nextOffset = offset) => {
@@ -311,6 +337,11 @@ export function BatchReviewWorkspace({ matterId, batchId, initialDocumentId, ini
     setOffset(0);
     setSelectedDocumentId("");
   };
+  const toggleTopic = (topicKey: string) => {
+    setSelectedTopicKeys((current) => current.includes(topicKey) ? current.filter((item) => item !== topicKey) : [...current, topicKey]);
+    setOffset(0);
+    setSelectedDocumentId("");
+  };
 
   const refreshReview = async () => {
     await Promise.all([
@@ -354,7 +385,7 @@ export function BatchReviewWorkspace({ matterId, batchId, initialDocumentId, ini
   const currentIndex = searchResults.data?.hits.findIndex((hit) => hit.document_id === effectiveDocumentId) ?? -1;
   const processed = (progress.data?.completed_count ?? 0) + (progress.data?.skipped_count ?? 0);
   const percent = progress.data?.document_count ? Math.round((processed / progress.data.document_count) * 100) : 0;
-  const fatalError = matter.error ?? client.error ?? custodians.error ?? definitions.error ?? batch.error ?? run.error ?? searchResults.error;
+  const fatalError = matter.error ?? client.error ?? custodians.error ?? definitions.error ?? batch.error ?? run.error ?? taxonomy.error ?? searchResults.error;
 
   if (fatalError) return <main className="grid h-dvh place-items-center p-6"><QueryError message={fatalError.message} /></main>;
 
@@ -370,6 +401,7 @@ export function BatchReviewWorkspace({ matterId, batchId, initialDocumentId, ini
           </div>
           {batch.data?.search_status && batch.data.search_status !== "READY" ? <Badge variant="outline">Search {batch.data.search_status.toLowerCase().replace("_", " ")}</Badge> : null}
           {run.data?.status === "COMPLETED" ? <Badge variant="accent"><Check />Review complete</Badge> : null}
+          <HelpLink topic="reviewBatches" />
           <ThemeToggle />
         </div>
         <form onSubmit={submitSearch} role="search" className="flex items-center gap-2 border-t px-3 py-2">
@@ -394,6 +426,7 @@ export function BatchReviewWorkspace({ matterId, batchId, initialDocumentId, ini
             <span className="text-xs text-muted-foreground">{searchResults.data ? query.trim() && searchMode === "SEMANTIC" && minimumSimilarity === null ? `Top ${searchResults.data.total.toLocaleString()} candidates` : `${searchResults.data.total.toLocaleString()} matches` : ""}</span>
           </div>
           <div className="max-h-[40%] shrink-0 divide-y overflow-y-auto border-b">
+            {taxonomy.data ? <BatchTopicFacet taxonomy={taxonomy.data} values={topicFacets.data} selected={selectedTopicKeys} onToggle={toggleTopic} /> : null}
             {facetDefinitions.map((definition) => <BatchFacetSection key={definition.id} matterId={matterId} batchId={batchId} searchRequest={searchRequest} definition={definition} selected={filters[definition.key] ?? []} custodianNames={new Map((custodians.data ?? []).map((custodian) => [custodian.id, custodian.display_name]))} onToggle={toggleFilter} />)}
             {!facetDefinitions.length ? <p className="p-3 text-xs text-muted-foreground">No batch filters are configured.</p> : null}
           </div>
@@ -417,9 +450,10 @@ export function BatchReviewWorkspace({ matterId, batchId, initialDocumentId, ini
                 : <div className="grid h-full w-full place-items-center p-8 text-center"><div><FileText className="mx-auto text-muted-foreground" /><p className="mt-3 font-semibold">Select a document</p></div></div>}
         </section>
 
-        <aside className="flex w-[23rem] shrink-0 flex-col border-l bg-card" aria-label="Batch coding">
-          <div className="flex h-11 shrink-0 items-center justify-between border-b px-3"><h2 className="text-sm font-semibold">Coding</h2>{coding.data ? <Badge variant="outline">{statusLabel(coding.data.review_status)}</Badge> : null}</div>
-          {coding.isPending && effectiveDocumentId ? <div className="space-y-3 p-4">{Array.from({ length: 6 }, (_, index) => <Skeleton key={index} className="h-16" />)}</div>
+        <aside className="flex w-[25rem] shrink-0 flex-col border-l bg-card" aria-label="Batch analysis and coding">
+          <div className="flex h-11 shrink-0 items-center gap-1 border-b px-2"><Button type="button" size="sm" variant={sidePanel === "analysis" ? "outline" : "ghost"} disabled={!taxonomy.data} onClick={() => setSidePanel("analysis")}><Sparkles />Analysis</Button><Button type="button" size="sm" variant={sidePanel === "coding" ? "outline" : "ghost"} onClick={() => setSidePanel("coding")}>Coding</Button><span className="ml-auto">{coding.data ? <Badge variant="outline">{statusLabel(coding.data.review_status)}</Badge> : null}</span></div>
+          {sidePanel === "analysis" && taxonomy.data ? <DocumentAnalysisPanel analysis={analysis.data} loading={analysis.isPending} error={analysis.error?.message} />
+            : coding.isPending && effectiveDocumentId ? <div className="space-y-3 p-4">{Array.from({ length: 6 }, (_, index) => <Skeleton key={index} className="h-16" />)}</div>
             : coding.error ? <div className="p-4"><QueryError message={coding.error.message} /></div>
               : coding.data && batch.data && run.data ? <BatchCodingForm
                 key={`${effectiveDocumentId}:${coding.dataUpdatedAt}`}
@@ -439,6 +473,30 @@ export function BatchReviewWorkspace({ matterId, batchId, initialDocumentId, ini
       </div>
     </main>
   );
+}
+
+function BatchTopicFacet({ taxonomy, values, selected, onToggle }: { taxonomy: BatchTopicTaxonomyRead; values?: MatterFacetValuesResponse; selected: string[]; onToggle: (topicKey: string) => void }) {
+  const counts = new Map((values?.values ?? []).map((item) => [String(item.value), item.count]));
+  return <section className="border-b bg-primary/5 p-3"><div className="mb-2 flex items-center justify-between gap-2"><h3 className="flex items-center gap-1.5 text-sm font-semibold"><Sparkles className="size-3.5 text-primary" />Batch topics</h3><Badge variant="outline">v{taxonomy.version}</Badge></div><div className="space-y-1">{taxonomy.topics.map((topic) => <label key={topic.id} className="flex cursor-pointer items-center gap-2 rounded-md px-1.5 py-1 text-sm hover:bg-muted"><input type="checkbox" className="size-4 accent-primary" checked={selected.includes(topic.topic_key)} onChange={() => onToggle(topic.topic_key)} /><span className="min-w-0 flex-1 truncate" title={topic.description ?? topic.label}>{topic.label}</span><span className="font-mono text-xs text-muted-foreground">{(counts.get(topic.topic_key) ?? topic.assignment_count).toLocaleString()}</span></label>)}</div></section>;
+}
+
+function DocumentAnalysisPanel({ analysis, loading, error }: { analysis?: ReviewBatchDocumentAnalysisRead; loading: boolean; error?: string }) {
+  const [citation, setCitation] = useState<string | null>(null);
+  if (loading) return <div className="space-y-3 p-4">{Array.from({ length: 6 }, (_, index) => <Skeleton key={index} className="h-16" />)}</div>;
+  if (error) return <div className="p-4"><QueryError message={error} /></div>;
+  if (!analysis) return <div className="grid flex-1 place-items-center p-5 text-center text-sm text-muted-foreground">Select a document to view its assessment analysis.</div>;
+  if (analysis.status !== "COMPLETED" || !analysis.analysis) return <div className="p-4"><StatusBadge status={analysis.status} /><p className="mt-2 text-sm text-muted-foreground">No completed structured analysis is available for this document.</p></div>;
+  const payload = objectValue(analysis.analysis);
+  const result = objectValue(payload.result);
+  const paragraphMap = objectValue(payload.paragraph_map);
+  const paragraphs = Array.isArray(paragraphMap.paragraphs) ? paragraphMap.paragraphs.map(objectValue) : [];
+  const selectedParagraph = paragraphs.find((item) => item.paragraph_id === citation);
+  return <div className="min-h-0 flex-1 overflow-y-auto p-4"><div className="mb-4 flex items-center justify-between gap-2"><StatusBadge status={String(result.determination ?? "UNCLEAR")} />{typeof result.confidence === "number" ? <Badge variant="outline">{Math.round(result.confidence * 100)}% confidence</Badge> : null}</div><AnalysisSection title="Document Summary" items={result.summary} onCitation={setCitation} /><AnalysisSection title="Responsiveness Summary" items={result.responsiveness_summary} onCitation={setCitation} /><AnalysisSection title="Clarification Requests" items={result.clarification_requests} onCitation={setCitation} />{selectedParagraph ? <div className="sticky bottom-0 mt-4 rounded-lg border border-primary/30 bg-background p-3 shadow-lg"><div className="flex items-center justify-between"><p className="text-xs font-bold text-primary">{String(selectedParagraph.paragraph_id)}</p><button type="button" className="text-xs text-muted-foreground" onClick={() => setCitation(null)}>Close</button></div><p className="mt-1 whitespace-pre-wrap text-xs leading-5">{String(selectedParagraph.text ?? "")}</p></div> : null}</div>;
+}
+
+function AnalysisSection({ title, items, onCitation }: { title: string; items: unknown; onCitation: (id: string) => void }) {
+  const values = Array.isArray(items) ? items.map(objectValue) : [];
+  return <section className="mb-5"><h3 className="mb-2 text-xs font-bold uppercase tracking-[0.08em] text-muted-foreground">{title}</h3>{values.length ? <div className="space-y-3">{values.map((item, index) => { const citations = Array.isArray(item.citation_ids) ? item.citation_ids.map(String) : []; return <div key={index} className="text-sm leading-6"><p>{String(item.text ?? item.question ?? item.reasoning ?? "")}</p>{item.rationale ? <p className="text-xs text-muted-foreground">{String(item.rationale)}</p> : null}<div className="mt-1 flex flex-wrap gap-1">{citations.map((id) => <button key={id} type="button" className="rounded bg-primary/10 px-1.5 py-0.5 text-xs font-medium text-primary hover:bg-primary/20" onClick={() => onCitation(id)}>{id}</button>)}</div></div>; })}</div> : <p className="text-sm text-muted-foreground">None.</p>}</section>;
 }
 
 function useDebouncedValue(value: string, delay: number) {

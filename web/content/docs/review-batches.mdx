@@ -40,6 +40,14 @@ The progress bar counts saved and skipped documents for your review run. Reopeni
 
 If the batch uses **Values from all reviewers**, earlier human-review values appear beneath the corresponding field with the reviewer's name. Your edits remain stored under your own run identity. Agent results are not mixed into this panel.
 
+## Assessment analyses and diagnostic topics
+
+A batch created by **Assess against corpus** has an **Analysis** panel beside the source document. It shows the structured Document Summary, Responsiveness Summary, and Clarification Requests. Citation chips such as `¶4` open the exact normalized source paragraph used as evidence. Missing text, failed analysis, partial coverage, and unavailable results are shown explicitly rather than being treated as non-responsive documents.
+
+After synthesis, **Batch topics** appears as a separate facet. These labels describe only the active taxonomy version for this frozen batch. Selecting a value restricts results using the batch ID, active taxonomy ID, and topic key together, so a document that appears in another batch cannot contribute that other batch's topic labels or counts.
+
+Diagnostic batch topics do not change the matter-wide **Topics** metadata created by the approved topic-clustering workflow. A document can have both: matter topics remain corpus-wide metadata, while batch topics remain assessment-only labels inside their batch.
+
 ## Agent evaluation
 
 Each human or agent pass receives a separate run identity. Re-running an updated agent against the same batch creates a new run and preserves the earlier output. The two runs—or an agent run and a human reference run—can then be compared field by field.
@@ -48,4 +56,4 @@ Run results do not change the matter’s ordinary metadata or search index. Publ
 
 ## Current limitations
 
-Keyword query batches are supported; semantic and hybrid result sets are not yet available for batch creation. Agent-run launch controls, adjudication, and publish-to-matter controls are planned next.
+Keyword query batches are supported; semantic and hybrid result sets are not yet available for ordinary batch creation. Assessment retrieval can use all controlled search modes. Adjudication and publish-to-matter controls remain planned.

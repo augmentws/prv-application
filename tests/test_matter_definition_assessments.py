@@ -7,7 +7,7 @@ from fastapi.testclient import TestClient
 from pydantic_ai.models.test import TestModel
 from sqlalchemy import select
 
-from app.assessment_execution import _execute_document_analysis
+from app.assessment_execution import _coverage_envelope, _execute_document_analysis
 from app.document_evidence import build_document_map_plan, segment_paragraphs
 from app.matter_definition_assessments import RetrievalHit, merge_retrieval_candidates
 from app.models import (
@@ -143,6 +143,17 @@ def test_candidate_merge_is_deterministic_deduplicated_and_preserves_provenance(
     assert {item["criterion_key"] for item in first_candidate.provenance} == {"issue_1", "issue_2"}
     assert selected[-1].document_id == control
     assert selected[-1].reason == "CONTROL_SAMPLE"
+
+
+def test_synthesis_coverage_policy_blocks_substantive_results_for_small_or_incomplete_samples() -> None:
+    assessment = SimpleNamespace(selected_count=10, skipped_count=2, failed_count=3)
+    insufficient = _coverage_envelope(assessment, successful=2, partial=1, invalid=1)
+    assert insufficient["status"] == "INSUFFICIENT"
+    assert insufficient["successful_document_ratio"] == 0.2
+    assert insufficient["policy"]["version"] == "assessment_synthesis_coverage_v1"
+
+    sufficient = _coverage_envelope(assessment, successful=5, partial=1, invalid=0)
+    assert sufficient["status"] == "SUFFICIENT"
 
 
 def test_long_document_map_reduce_uses_one_skill_run(

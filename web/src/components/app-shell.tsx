@@ -12,6 +12,7 @@ import {
   LogOut,
   Menu,
   PanelLeftClose,
+  Wrench,
   Users,
   X,
 } from "lucide-react";
@@ -62,6 +63,7 @@ function Shell({ children }: { children: ReactNode }) {
         ...primaryLinks,
         { href: "/admin/tenants", label: "Tenants", icon: Building2 },
         { href: "/admin/agents", label: "Agents", icon: Bot },
+        { href: "/admin/skills", label: "Skills", icon: Wrench },
       ]
     : primaryLinks;
 

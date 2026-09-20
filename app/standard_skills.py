@@ -226,15 +226,54 @@ STANDARD_ASSESSMENT_SKILLS = (
             },
             "additionalProperties": False,
         },
-        "output_schema_key": "matter_definition_assessment_synthesis_output_v1",
+        "output_schema_key": "matter_definition_assessment_synthesis_output_v2",
         "output_schema": {
             "type": "object",
-            "required": ["coverage", "findings", "topics", "clarification_questions"],
+            "required": ["narrative", "findings", "topics", "clarification_questions"],
             "properties": {
-                "coverage": OBJECT_SCHEMA,
+                "narrative": {"type": "string"},
                 "findings": {"type": "array", "items": OBJECT_SCHEMA},
-                "topics": {"type": "array", "items": OBJECT_SCHEMA},
-                "clarification_questions": {"type": "array", "items": OBJECT_SCHEMA},
+                "topics": {
+                    "type": "array",
+                    "items": {
+                        "type": "object",
+                        "required": ["topic_key", "label", "description", "assignments"],
+                        "properties": {
+                            "topic_key": {"type": "string", "minLength": 1},
+                            "label": {"type": "string", "minLength": 1},
+                            "description": {"type": "string"},
+                            "assignments": {
+                                "type": "array",
+                                "items": {
+                                    "type": "object",
+                                    "required": ["matter_document_id", "confidence", "evidence"],
+                                    "properties": {
+                                        "matter_document_id": {"type": "string", "format": "uuid"},
+                                        "confidence": {"type": "number", "minimum": 0, "maximum": 1},
+                                        "evidence": {"type": "array", "items": OBJECT_SCHEMA},
+                                    },
+                                    "additionalProperties": False,
+                                },
+                            },
+                        },
+                        "additionalProperties": False,
+                    },
+                },
+                "clarification_questions": {
+                    "type": "array",
+                    "items": {
+                        "type": "object",
+                        "required": ["question", "rationale", "priority", "blocking", "evidence"],
+                        "properties": {
+                            "question": {"type": "string", "minLength": 1},
+                            "rationale": {"type": "string", "minLength": 1},
+                            "priority": {"enum": ["HIGH", "MEDIUM", "LOW"]},
+                            "blocking": {"type": "boolean"},
+                            "evidence": {"type": "array", "items": OBJECT_SCHEMA},
+                        },
+                        "additionalProperties": False,
+                    },
+                },
             },
             "additionalProperties": False,
         },
@@ -298,6 +337,31 @@ def ensure_standard_assessment_skills(db: Session, root: Tenant, actor: User) ->
                     SkillDefinitionVersion.status == "PUBLISHED",
                 )
             )
+            if version is not None and version.output_schema_key != spec["output_schema_key"]:
+                skill.current_version += 1
+                skill.published_version = skill.current_version
+                version = SkillDefinitionVersion(
+                    skill_definition_id=skill.id,
+                    version=skill.current_version,
+                    instructions=spec["instructions"],
+                    input_schema_key=spec["input_schema_key"],
+                    input_schema=spec["input_schema"],
+                    output_schema_key=spec["output_schema_key"],
+                    output_schema=spec["output_schema"],
+                    model_key="configured-default",
+                    model_policy={"temperature": 0},
+                    limits=spec["limits"],
+                    required_capabilities=spec["required_capabilities"],
+                    required_tools=[],
+                    cache_policy=spec["cache_policy"],
+                    evaluation_fixtures=[],
+                    status="PUBLISHED",
+                    created_by_user_id=actor.id,
+                    published_at=utcnow(),
+                )
+                db.add(version)
+                db.flush()
+                changed = True
         if version is None:
             continue
         binding = db.scalar(
@@ -322,5 +386,8 @@ def ensure_standard_assessment_skills(db: Session, root: Tenant, actor: User) ->
                     created_by_user_id=actor.id,
                 )
             )
+            changed = True
+        elif binding.skill_definition_id == skill.id and binding.skill_definition_version_id != version.id:
+            binding.skill_definition_version_id = version.id
             changed = True
     return changed

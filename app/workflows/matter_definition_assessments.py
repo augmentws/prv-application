@@ -11,6 +11,7 @@ from app.assessment_execution import (
     plan_retrieval,
     refresh_progress,
     retrieve_and_materialize,
+    synthesize_assessment,
 )
 from app.config import get_settings
 from app.database import SessionLocal
@@ -93,6 +94,12 @@ def refresh(assessment_id: str) -> dict[str, int]:
         return refresh_progress(db, uuid.UUID(assessment_id))
 
 
+@DBOS.step(name="synthesize_definition_assessment", retries_allowed=True, max_attempts=3)
+def synthesize(assessment_id: str) -> dict:
+    with SessionLocal() as db:
+        return synthesize_assessment(db, uuid.UUID(assessment_id))
+
+
 @DBOS.step(name="complete_definition_assessment")
 def complete(assessment_id: str) -> None:
     with SessionLocal() as db:
@@ -119,6 +126,8 @@ def matter_definition_assessment(assessment_id: str) -> None:
         for handle in handles:
             handle.get_result()
             refresh(assessment_id)
+        synthesize(assessment_id)
+        sync_batch_search(assessment_id)
         complete(assessment_id)
         logger.info("Completed Matter Definition assessment assessment_id=%s", assessment_id)
     except Exception as exc:

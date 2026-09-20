@@ -606,12 +606,14 @@ workflow-role bindings. They will not permit arbitrary workflow graph creation.
 
 ## Delivery sequence
 
-Implementation status as of September 20, 2026: delivery items 1 through 9 are complete. The assessment launch
+Implementation status as of September 20, 2026: delivery items 1 through 12 are complete. The assessment launch
 pins the Matter Definition revision, physical search generation, and managed-skill bindings; controlled search
 results are merged deterministically into a permanent `DEFINITION_ASSESSMENT` batch; and bounded DBOS document
 children produce one accounted `SkillRun` and one cited JSON `SUMMARY` artifact per successful document. Long
-documents use the versioned map/reduce evidence plan without silently truncating source text. Synthesis,
-consolidated questions, and batch taxonomy versioning begin with item 10.
+documents use the versioned map/reduce evidence plan without silently truncating source text. Coverage-gated
+synthesis persists consolidated questions and a versioned batch-only taxonomy; nested batch-qualified topic
+records power scoped search and facets. The Matter Definition, batch analysis, skill/binding, and workflow
+observability interfaces expose the workflow without treating it as an editable user-authored graph.
 
 1. Add managed skill definitions, versions, publication, and administration.
 2. Add the code-owned workflow registry and database-managed workflow-skill bindings.

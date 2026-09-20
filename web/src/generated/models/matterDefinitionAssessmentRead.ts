@@ -6,7 +6,9 @@
  * OpenAPI spec version: 0.1.0
  */
 import type { MatterDefinitionAssessmentReadConfigurationSnapshot } from './matterDefinitionAssessmentReadConfigurationSnapshot';
+import type { MatterDefinitionAssessmentReadCoverageSnapshot } from './matterDefinitionAssessmentReadCoverageSnapshot';
 import type { MatterDefinitionAssessmentReadStatus } from './matterDefinitionAssessmentReadStatus';
+import type { MatterDefinitionAssessmentReadSynthesisResult } from './matterDefinitionAssessmentReadSynthesisResult';
 
 export interface MatterDefinitionAssessmentRead {
   id: string;
@@ -33,6 +35,10 @@ export interface MatterDefinitionAssessmentRead {
   summarized_count: number;
   skipped_count: number;
   failed_count: number;
+  partial_coverage_count: number;
+  invalid_result_count: number;
+  coverage_snapshot: MatterDefinitionAssessmentReadCoverageSnapshot;
+  synthesis_result: MatterDefinitionAssessmentReadSynthesisResult;
   status: MatterDefinitionAssessmentReadStatus;
   error_message: string | null;
   initiated_by_user_id: string;

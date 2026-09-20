@@ -35,6 +35,8 @@ from app.search.mappings import (
     schema_hash,
 )
 from app.search.query import (
+    batch_topic_filter,
+    compile_batch_topic_facet_request,
     compile_date_histogram_request,
     compile_facet_values_request,
     compile_search_request,
@@ -93,6 +95,14 @@ def test_mapping_uses_versioned_ediscovery_analyzers_and_numeric_types() -> None
     properties = mapping["mappings"]["properties"]["metadata"]["properties"]
     vector_method = mapping["mappings"]["properties"]["chunks"]["properties"]["embedding"]["method"]
     assert mapping["mappings"]["properties"]["batch_ids"] == {"type": "keyword"}
+    assert mapping["mappings"]["properties"]["batch_topics"] == {
+        "type": "nested",
+        "properties": {
+            "batch_id": {"type": "keyword"},
+            "taxonomy_id": {"type": "keyword"},
+            "topic_key": {"type": "keyword"},
+        },
+    }
     assert vector_method == {
         "name": "hnsw",
         "engine": "faiss",
@@ -189,6 +199,36 @@ def test_facet_value_query_is_limited_searchable_and_self_excluding() -> None:
     assert {"term": {"batch_ids": "batch-1"}} in body["query"]["bool"]["filter"]
     assert body["aggs"]["issue"]["terms"]["size"] == 20
     assert body["aggs"]["issue"]["terms"]["include"] == ".*trade.*"
+
+
+def test_batch_topic_filter_and_facet_keep_batch_taxonomy_and_topic_in_one_nested_scope() -> None:
+    topic_filter = batch_topic_filter(
+        batch_id="batch-1",
+        taxonomy_id="taxonomy-2",
+        topic_keys=["nonrenewal", "mortgages"],
+    )
+    nested_filters = topic_filter["nested"]["query"]["bool"]["filter"]
+    assert nested_filters == [
+        {"term": {"batch_topics.batch_id": "batch-1"}},
+        {"term": {"batch_topics.taxonomy_id": "taxonomy-2"}},
+        {"terms": {"batch_topics.topic_key": ["nonrenewal", "mortgages"]}},
+    ]
+
+    body = compile_batch_topic_facet_request(
+        MatterSearchRequest(),
+        [],
+        tenant_id="tenant-1",
+        matter_id="matter-1",
+        batch_id="batch-1",
+        taxonomy_id="taxonomy-2",
+        required_filters=[{"term": {"batch_ids": "batch-1"}}],
+    )
+    scoped = body["aggs"]["batch_topics"]["aggs"]["scope"]
+    assert scoped["filter"]["bool"]["filter"] == [
+        {"term": {"batch_topics.batch_id": "batch-1"}},
+        {"term": {"batch_topics.taxonomy_id": "taxonomy-2"}},
+    ]
+    assert scoped["aggs"]["values"]["terms"]["field"] == "batch_topics.topic_key"
 
 
 def test_date_histogram_is_calendar_bucketed_and_self_excluding() -> None:

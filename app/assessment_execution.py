@@ -7,7 +7,7 @@ from typing import Any
 from sqlalchemy import delete, func, select
 from sqlalchemy.orm import Session
 
-from app.artifact_gateway import get_preferred_text_source, store_derived_artifact
+from app.artifact_gateway import get_preferred_text_source, read_artifact_bytes, store_derived_artifact
 from app.config import Settings, get_settings
 from app.document_evidence import (
     PARAGRAPH_MAP_VERSION,
@@ -30,7 +30,11 @@ from app.matter_definition_assessments import (
 )
 from app.model_execution import content_hash
 from app.models import (
+    BatchTopic,
+    BatchTopicAssignment,
+    BatchTopicTaxonomy,
     Matter,
+    MatterDefinitionAssessmentQuestion,
     MatterDefinitionAssessmentQuery,
     MatterDefinitionAssessmentRun,
     MatterDefinitionRevision,
@@ -40,6 +44,7 @@ from app.models import (
     ReviewBatchRunDocument,
     SearchIndexGeneration,
     SkillDefinitionVersion,
+    SkillRun,
     WorkflowRun,
     WorkflowStepRun,
 )
@@ -54,6 +59,12 @@ from app.skill_execution import (
     fail_skill_run,
 )
 from app.token_estimation import estimate_analysis_tokens
+
+SYNTHESIS_COVERAGE_POLICY = {
+    "version": "assessment_synthesis_coverage_v1",
+    "minimum_successful_documents": 3,
+    "minimum_success_ratio": 0.5,
+}
 
 
 def utcnow() -> datetime:
@@ -617,6 +628,251 @@ def refresh_progress(db: Session, assessment_id: uuid.UUID) -> dict[str, int]:
     return {key.lower(): int(value) for key, value in counts.items()}
 
 
+def _load_document_analyses(
+    db: Session,
+    assessment: MatterDefinitionAssessmentRun,
+    matter: Matter,
+) -> tuple[list[dict[str, Any]], int, int]:
+    rows = db.execute(
+        select(SkillRun.scope_id, SkillRun.output_artifact_id)
+        .where(
+            SkillRun.workflow_run_id == assessment.workflow_run_id,
+            SkillRun.scope_type == "MATTER_DOCUMENT",
+            SkillRun.status == "COMPLETED",
+            SkillRun.output_artifact_id.is_not(None),
+        )
+        .order_by(SkillRun.created_at)
+    ).all()
+    analyses: list[dict[str, Any]] = []
+    invalid = 0
+    partial = 0
+    for document_id, artifact_id in rows:
+        try:
+            payload = json.loads(
+                read_artifact_bytes(
+                    artifact_id=artifact_id,
+                    actor_user_id=assessment.initiated_by_user_id,
+                    tenant_id=matter.client.tenant_id,
+                    client_id=matter.client_id,
+                )
+            )
+            result = payload["result"]
+            if not isinstance(result, dict):
+                raise ValueError("Analysis result is not an object")
+            coverage = result.get("coverage") or {}
+            if coverage.get("status") == "PARTIAL":
+                partial += 1
+            analyses.append(
+                {
+                    "matter_document_id": str(document_id),
+                    "output_artifact_id": str(artifact_id),
+                    "analysis": result,
+                }
+            )
+        except (KeyError, TypeError, ValueError, PermissionError, json.JSONDecodeError):
+            invalid += 1
+    return analyses, partial, invalid
+
+
+def _coverage_envelope(
+    assessment: MatterDefinitionAssessmentRun,
+    *,
+    successful: int,
+    partial: int,
+    invalid: int,
+) -> dict[str, Any]:
+    selected = assessment.selected_count
+    ratio = successful / selected if selected else 0.0
+    sufficient = (
+        successful >= SYNTHESIS_COVERAGE_POLICY["minimum_successful_documents"]
+        and ratio >= SYNTHESIS_COVERAGE_POLICY["minimum_success_ratio"]
+    )
+    return {
+        "policy": SYNTHESIS_COVERAGE_POLICY,
+        "selected_document_count": selected,
+        "successful_document_count": successful,
+        "skipped_document_count": assessment.skipped_count,
+        "failed_document_count": assessment.failed_count,
+        "partial_coverage_document_count": partial,
+        "invalid_result_count": invalid,
+        "successful_document_ratio": ratio,
+        "status": "SUFFICIENT" if sufficient else "INSUFFICIENT",
+    }
+
+
+def _topic_key(value: Any, ordinal: int) -> str:
+    candidate = "".join(character if character.isalnum() else "_" for character in str(value or "").lower())
+    candidate = "_".join(part for part in candidate.split("_") if part)[:100]
+    return candidate or f"topic_{ordinal}"
+
+
+def _persist_synthesis(
+    db: Session,
+    assessment: MatterDefinitionAssessmentRun,
+    result: dict[str, Any],
+) -> None:
+    db.execute(
+        delete(MatterDefinitionAssessmentQuestion).where(
+            MatterDefinitionAssessmentQuestion.assessment_run_id == assessment.id
+        )
+    )
+    seen_questions: set[str] = set()
+    for item in result.get("clarification_questions") or []:
+        if not isinstance(item, dict) or not str(item.get("question") or "").strip():
+            continue
+        normalized_question = " ".join(str(item["question"]).casefold().split())
+        if normalized_question in seen_questions:
+            continue
+        seen_questions.add(normalized_question)
+        priority = str(item.get("priority") or "MEDIUM").upper()
+        if priority not in {"HIGH", "MEDIUM", "LOW"}:
+            priority = "MEDIUM"
+        db.add(
+            MatterDefinitionAssessmentQuestion(
+                assessment_run_id=assessment.id,
+                question=str(item["question"]).strip(),
+                rationale=str(item.get("rationale") or "Clarification would improve the review guidance").strip(),
+                priority=priority,
+                blocking=bool(item.get("blocking", False)),
+                evidence=item.get("evidence") if isinstance(item.get("evidence"), list) else [],
+            )
+        )
+
+    if assessment.review_batch_id is None:
+        return
+    existing = list(
+        db.scalars(
+            select(BatchTopicTaxonomy)
+            .where(BatchTopicTaxonomy.review_batch_id == assessment.review_batch_id)
+            .order_by(BatchTopicTaxonomy.version.desc())
+        )
+    )
+    for taxonomy in existing:
+        if taxonomy.status == "ACTIVE":
+            taxonomy.status = "RETIRED"
+    db.flush()
+    taxonomy = BatchTopicTaxonomy(
+        review_batch_id=assessment.review_batch_id,
+        source_assessment_run_id=assessment.id,
+        version=(existing[0].version + 1) if existing else 1,
+        status="ACTIVE",
+    )
+    db.add(taxonomy)
+    db.flush()
+    allowed_documents = set(
+        db.scalars(
+            select(ReviewBatchRunDocument.matter_document_id).where(
+                ReviewBatchRunDocument.review_batch_run_id == assessment.review_batch_run_id
+            )
+        )
+    )
+    used_keys: set[str] = set()
+    for ordinal, item in enumerate(result.get("topics") or [], start=1):
+        if not isinstance(item, dict):
+            continue
+        key = _topic_key(item.get("topic_key") or item.get("key") or item.get("label"), ordinal)
+        if key in used_keys:
+            key = f"{key[:90]}_{ordinal}"
+        used_keys.add(key)
+        topic = BatchTopic(
+            taxonomy_id=taxonomy.id,
+            topic_key=key,
+            label=str(item.get("label") or item.get("name") or key.replace("_", " ").title())[:200],
+            description=str(item.get("description") or "").strip() or None,
+            ordinal=ordinal,
+        )
+        db.add(topic)
+        db.flush()
+        assigned_documents: set[uuid.UUID] = set()
+        for assignment in item.get("assignments") or []:
+            if not isinstance(assignment, dict):
+                continue
+            try:
+                document_id = uuid.UUID(str(assignment.get("matter_document_id") or assignment.get("document_id")))
+            except (TypeError, ValueError):
+                continue
+            if document_id not in allowed_documents or document_id in assigned_documents:
+                continue
+            assigned_documents.add(document_id)
+            confidence = min(1.0, max(0.0, float(assignment.get("confidence", 0.5))))
+            db.add(
+                BatchTopicAssignment(
+                    review_batch_id=assessment.review_batch_id,
+                    taxonomy_id=taxonomy.id,
+                    topic_id=topic.id,
+                    matter_document_id=document_id,
+                    confidence=confidence,
+                    evidence=assignment.get("evidence") if isinstance(assignment.get("evidence"), list) else [],
+                )
+            )
+
+
+def synthesize_assessment(
+    db: Session,
+    assessment_id: uuid.UUID,
+    *,
+    model: Any | None = None,
+) -> dict[str, Any]:
+    assessment, workflow, revision, matter = _records(db, assessment_id)
+    if assessment.synthesis_result is not None:
+        return assessment.synthesis_result
+    refresh_progress(db, assessment_id)
+    db.refresh(assessment)
+    analyses, partial, invalid = _load_document_analyses(db, assessment, matter)
+    assessment.partial_coverage_count = partial
+    assessment.invalid_result_count = invalid
+    coverage = _coverage_envelope(
+        assessment,
+        successful=len(analyses),
+        partial=partial,
+        invalid=invalid,
+    )
+    assessment.coverage_snapshot = coverage
+    assessment.status = "SYNTHESIZING"
+    step = _step(db, workflow, ordinal=4, role_key="assessment_synthesis")
+    step.status = "RUNNING"
+    step.started_at = step.started_at or utcnow()
+    if coverage["status"] == "INSUFFICIENT":
+        result = {
+            "coverage": coverage,
+            "status": "INSUFFICIENT_COVERAGE",
+            "narrative": "The assessment did not meet the minimum coverage required for substantive fit conclusions.",
+            "findings": [],
+            "topics": [],
+            "clarification_questions": [],
+        }
+    else:
+        version = _skill_version(db, assessment, "assessment_synthesis")
+        result, _ = asyncio.run(
+            execute_skill_run(
+                db,
+                workflow=workflow,
+                step=step,
+                skill_version=version,
+                scope_type="MATTER_DEFINITION_ASSESSMENT",
+                scope_id=assessment.id,
+                stable_context={"matter_definition": revision.content_markdown},
+                dynamic_input={"coverage": coverage, "document_analyses": analyses},
+                cache_identity={
+                    "tenant_id": str(workflow.tenant_id),
+                    "matter_id": str(matter.id),
+                    "revision_hash": assessment.definition_content_hash,
+                    "skill_version_id": str(version.id),
+                    "assessment_id": str(assessment.id),
+                },
+                model=model,
+            )
+        )
+        result = {**result, "coverage": coverage, "status": "COMPLETED"}
+    _persist_synthesis(db, assessment, result)
+    assessment.synthesis_result = result
+    step.status = "COMPLETED"
+    step.completed_count = 1
+    step.completed_at = utcnow()
+    db.commit()
+    return result
+
+
 def fail_document(db: Session, assessment_id: uuid.UUID, document_id: uuid.UUID, message: str) -> None:
     assessment = db.get(MatterDefinitionAssessmentRun, assessment_id)
     if assessment is None or assessment.review_batch_run_id is None:
@@ -633,7 +889,14 @@ def complete_assessment(db: Session, assessment_id: uuid.UUID) -> None:
     refresh_progress(db, assessment_id)
     db.refresh(assessment)
     now = utcnow()
-    final_status = "COMPLETED_WITH_ERRORS" if assessment.failed_count or assessment.skipped_count else "COMPLETED"
+    final_status = (
+        "COMPLETED_WITH_ERRORS"
+        if assessment.failed_count
+        or assessment.skipped_count
+        or assessment.partial_coverage_count
+        or assessment.invalid_result_count
+        else "COMPLETED"
+    )
     assessment.status = final_status
     assessment.completed_at = now
     workflow.status = final_status
@@ -641,6 +904,10 @@ def complete_assessment(db: Session, assessment_id: uuid.UUID) -> None:
     step = _step(db, workflow, ordinal=3, role_key="document_analysis", total_count=assessment.selected_count)
     step.status = final_status
     step.completed_at = now
+    synthesis_step = _step(db, workflow, ordinal=4, role_key="assessment_synthesis")
+    if synthesis_step.status not in {"COMPLETED", "FAILED"}:
+        synthesis_step.status = final_status
+        synthesis_step.completed_at = now
     review_run = db.get(ReviewBatchRun, assessment.review_batch_run_id)
     if review_run is not None:
         review_run.status = final_status

@@ -34,6 +34,16 @@ export const helpTopics = {
     summary: "Learn how to search a matter, filter results, read documents, and update review coding.",
     href: "/docs/matter-search#search-and-review-workspace",
   },
+  reviewBatches: {
+    title: "Review batch help",
+    summary: "Learn how frozen batches, assessment analyses, and batch-only diagnostic topics work.",
+    href: "/docs/review-batches",
+  },
+  skills: {
+    title: "Skills and workflow bindings help",
+    summary: "Learn how managed skills are versioned and bound to code-owned workflow roles.",
+    href: "/docs/skills-and-workflows",
+  },
 } as const;
 
 export type HelpTopic = keyof typeof helpTopics;

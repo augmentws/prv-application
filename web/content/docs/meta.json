@@ -11,7 +11,9 @@
     "matter-templates",
     "matter-jobs",
     "matter-search",
+    "matter-definition",
     "review-batches",
+    "skills-and-workflows",
     "importing-data",
     "local-administration",
     "glossary"

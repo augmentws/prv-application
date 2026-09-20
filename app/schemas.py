@@ -1497,6 +1497,10 @@ class MatterDefinitionAssessmentRead(ORMModel):
     summarized_count: int
     skipped_count: int
     failed_count: int
+    partial_coverage_count: int
+    invalid_result_count: int
+    coverage_snapshot: dict[str, Any] | None
+    synthesis_result: dict[str, Any] | None
     status: MatterDefinitionAssessmentStatus
     error_message: str | None
     initiated_by_user_id: uuid.UUID
@@ -1547,6 +1551,81 @@ class MatterDefinitionAssessmentQuestionUpdate(BaseModel):
         if self.status == "DISMISSED" and self.answer is not None:
             raise ValueError("DISMISSED questions do not accept an answer")
         return self
+
+
+class BatchTopicRead(BaseModel):
+    id: uuid.UUID
+    topic_key: str
+    label: str
+    description: str | None
+    ordinal: int
+    assignment_count: int
+
+
+class BatchTopicTaxonomyRead(BaseModel):
+    id: uuid.UUID
+    review_batch_id: uuid.UUID
+    source_assessment_run_id: uuid.UUID
+    review_batch_run_id: uuid.UUID | None
+    version: int
+    status: Literal["ACTIVE", "RETIRED"]
+    topics: list[BatchTopicRead]
+    created_at: datetime
+
+
+class WorkflowStepExecutionRead(ORMModel):
+    id: uuid.UUID
+    role_key: str
+    ordinal: int
+    fan_out_group: str | None
+    status: str
+    total_count: int
+    completed_count: int
+    failed_count: int
+    request_count: int
+    input_tokens: int
+    cached_input_tokens: int
+    cache_write_tokens: int
+    output_tokens: int
+    error_message: str | None
+    started_at: datetime | None
+    completed_at: datetime | None
+
+
+class SkillRunExecutionRead(ORMModel):
+    id: uuid.UUID
+    workflow_step_run_id: uuid.UUID
+    skill_definition_version_id: uuid.UUID
+    scope_type: str
+    scope_id: uuid.UUID | None
+    output_artifact_id: uuid.UUID | None
+    status: str
+    request_count: int
+    input_tokens: int
+    cached_input_tokens: int
+    cache_write_tokens: int
+    output_tokens: int
+    error_code: str | None
+    error_message: str | None
+    started_at: datetime | None
+    completed_at: datetime | None
+
+
+class WorkflowExecutionRead(BaseModel):
+    id: uuid.UUID
+    workflow_key: str
+    code_version: str
+    status: str
+    request_count: int
+    input_tokens: int
+    cached_input_tokens: int
+    cache_write_tokens: int
+    output_tokens: int
+    error_message: str | None
+    started_at: datetime | None
+    completed_at: datetime | None
+    steps: list[WorkflowStepExecutionRead]
+    skill_runs: list[SkillRunExecutionRead]
 
 
 class ErrorDetail(BaseModel):

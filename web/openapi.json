@@ -5063,6 +5063,72 @@
         }
       }
     },
+    "/v1/matters/{matter_id}/review-batches/{batch_id}/topic-taxonomy": {
+      "get": {
+        "tags": [
+          "review batches"
+        ],
+        "summary": "Get Review Batch Topic Taxonomy",
+        "operationId": "get_review_batch_topic_taxonomy_v1_matters__matter_id__review_batches__batch_id__topic_taxonomy_get",
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "matter_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid",
+              "title": "Matter Id"
+            }
+          },
+          {
+            "name": "batch_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid",
+              "title": "Batch Id"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "anyOf": [
+                    {
+                      "$ref": "#/components/schemas/BatchTopicTaxonomyRead"
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ],
+                  "title": "Response Get Review Batch Topic Taxonomy V1 Matters  Matter Id  Review Batches  Batch Id  Topic Taxonomy Get"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/v1/matters/{matter_id}/review-batches/{batch_id}/search": {
       "post": {
         "tags": [
@@ -5070,6 +5136,87 @@
         ],
         "summary": "Search Review Batch",
         "operationId": "search_review_batch_v1_matters__matter_id__review_batches__batch_id__search_post",
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "matter_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid",
+              "title": "Matter Id"
+            }
+          },
+          {
+            "name": "batch_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid",
+              "title": "Batch Id"
+            }
+          },
+          {
+            "name": "topic_key",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "array",
+              "items": {
+                "type": "string"
+              },
+              "default": [],
+              "title": "Topic Key"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/MatterSearchRequest"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/MatterSearchResponse"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v1/matters/{matter_id}/review-batches/{batch_id}/topic-facets": {
+      "post": {
+        "tags": [
+          "review batches"
+        ],
+        "summary": "Search Review Batch Topic Facets",
+        "operationId": "search_review_batch_topic_facets_v1_matters__matter_id__review_batches__batch_id__topic_facets_post",
         "security": [
           {
             "HTTPBearer": []
@@ -5113,7 +5260,7 @@
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/MatterSearchResponse"
+                  "$ref": "#/components/schemas/MatterFacetValuesResponse"
                 }
               }
             }
@@ -7494,6 +7641,64 @@
               "application/json": {
                 "schema": {
                   "$ref": "#/components/schemas/MatterDefinitionAssessmentRead"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v1/matters/{matter_id}/definition-assessments/{assessment_id}/execution": {
+      "get": {
+        "tags": [
+          "matter definition assessments"
+        ],
+        "summary": "Get Assessment Execution",
+        "operationId": "get_assessment_execution_v1_matters__matter_id__definition_assessments__assessment_id__execution_get",
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "matter_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid",
+              "title": "Matter Id"
+            }
+          },
+          {
+            "name": "assessment_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid",
+              "title": "Assessment Id"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/WorkflowExecutionRead"
                 }
               }
             }
@@ -10926,6 +11131,119 @@
         ],
         "title": "ArtifactRead"
       },
+      "BatchTopicRead": {
+        "properties": {
+          "id": {
+            "type": "string",
+            "format": "uuid",
+            "title": "Id"
+          },
+          "topic_key": {
+            "type": "string",
+            "title": "Topic Key"
+          },
+          "label": {
+            "type": "string",
+            "title": "Label"
+          },
+          "description": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Description"
+          },
+          "ordinal": {
+            "type": "integer",
+            "title": "Ordinal"
+          },
+          "assignment_count": {
+            "type": "integer",
+            "title": "Assignment Count"
+          }
+        },
+        "type": "object",
+        "required": [
+          "id",
+          "topic_key",
+          "label",
+          "description",
+          "ordinal",
+          "assignment_count"
+        ],
+        "title": "BatchTopicRead"
+      },
+      "BatchTopicTaxonomyRead": {
+        "properties": {
+          "id": {
+            "type": "string",
+            "format": "uuid",
+            "title": "Id"
+          },
+          "review_batch_id": {
+            "type": "string",
+            "format": "uuid",
+            "title": "Review Batch Id"
+          },
+          "source_assessment_run_id": {
+            "type": "string",
+            "format": "uuid",
+            "title": "Source Assessment Run Id"
+          },
+          "review_batch_run_id": {
+            "anyOf": [
+              {
+                "type": "string",
+                "format": "uuid"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Review Batch Run Id"
+          },
+          "version": {
+            "type": "integer",
+            "title": "Version"
+          },
+          "status": {
+            "type": "string",
+            "enum": [
+              "ACTIVE",
+              "RETIRED"
+            ],
+            "title": "Status"
+          },
+          "topics": {
+            "items": {
+              "$ref": "#/components/schemas/BatchTopicRead"
+            },
+            "type": "array",
+            "title": "Topics"
+          },
+          "created_at": {
+            "type": "string",
+            "format": "date-time",
+            "title": "Created At"
+          }
+        },
+        "type": "object",
+        "required": [
+          "id",
+          "review_batch_id",
+          "source_assessment_run_id",
+          "review_batch_run_id",
+          "version",
+          "status",
+          "topics",
+          "created_at"
+        ],
+        "title": "BatchTopicTaxonomyRead"
+      },
       "Body_upload_collection_item_v1_collections__collection_id__items_upload_post": {
         "properties": {
           "metadata": {
@@ -13376,6 +13694,38 @@
             "type": "integer",
             "title": "Failed Count"
           },
+          "partial_coverage_count": {
+            "type": "integer",
+            "title": "Partial Coverage Count"
+          },
+          "invalid_result_count": {
+            "type": "integer",
+            "title": "Invalid Result Count"
+          },
+          "coverage_snapshot": {
+            "anyOf": [
+              {
+                "additionalProperties": true,
+                "type": "object"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Coverage Snapshot"
+          },
+          "synthesis_result": {
+            "anyOf": [
+              {
+                "additionalProperties": true,
+                "type": "object"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Synthesis Result"
+          },
           "status": {
             "type": "string",
             "enum": [
@@ -13481,6 +13831,10 @@
           "summarized_count",
           "skipped_count",
           "failed_count",
+          "partial_coverage_count",
+          "invalid_result_count",
+          "coverage_snapshot",
+          "synthesis_result",
           "status",
           "error_message",
           "initiated_by_user_id",
@@ -18411,6 +18765,143 @@
         ],
         "title": "SkillDefinitionVersionRead"
       },
+      "SkillRunExecutionRead": {
+        "properties": {
+          "id": {
+            "type": "string",
+            "format": "uuid",
+            "title": "Id"
+          },
+          "workflow_step_run_id": {
+            "type": "string",
+            "format": "uuid",
+            "title": "Workflow Step Run Id"
+          },
+          "skill_definition_version_id": {
+            "type": "string",
+            "format": "uuid",
+            "title": "Skill Definition Version Id"
+          },
+          "scope_type": {
+            "type": "string",
+            "title": "Scope Type"
+          },
+          "scope_id": {
+            "anyOf": [
+              {
+                "type": "string",
+                "format": "uuid"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Scope Id"
+          },
+          "output_artifact_id": {
+            "anyOf": [
+              {
+                "type": "string",
+                "format": "uuid"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Output Artifact Id"
+          },
+          "status": {
+            "type": "string",
+            "title": "Status"
+          },
+          "request_count": {
+            "type": "integer",
+            "title": "Request Count"
+          },
+          "input_tokens": {
+            "type": "integer",
+            "title": "Input Tokens"
+          },
+          "cached_input_tokens": {
+            "type": "integer",
+            "title": "Cached Input Tokens"
+          },
+          "cache_write_tokens": {
+            "type": "integer",
+            "title": "Cache Write Tokens"
+          },
+          "output_tokens": {
+            "type": "integer",
+            "title": "Output Tokens"
+          },
+          "error_code": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Error Code"
+          },
+          "error_message": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Error Message"
+          },
+          "started_at": {
+            "anyOf": [
+              {
+                "type": "string",
+                "format": "date-time"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Started At"
+          },
+          "completed_at": {
+            "anyOf": [
+              {
+                "type": "string",
+                "format": "date-time"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Completed At"
+          }
+        },
+        "type": "object",
+        "required": [
+          "id",
+          "workflow_step_run_id",
+          "skill_definition_version_id",
+          "scope_type",
+          "scope_id",
+          "output_artifact_id",
+          "status",
+          "request_count",
+          "input_tokens",
+          "cached_input_tokens",
+          "cache_write_tokens",
+          "output_tokens",
+          "error_code",
+          "error_message",
+          "started_at",
+          "completed_at"
+        ],
+        "title": "SkillRunExecutionRead"
+      },
       "SkillVersionCreate": {
         "properties": {
           "instructions": {
@@ -18998,6 +19489,114 @@
         ],
         "title": "ValidationError"
       },
+      "WorkflowExecutionRead": {
+        "properties": {
+          "id": {
+            "type": "string",
+            "format": "uuid",
+            "title": "Id"
+          },
+          "workflow_key": {
+            "type": "string",
+            "title": "Workflow Key"
+          },
+          "code_version": {
+            "type": "string",
+            "title": "Code Version"
+          },
+          "status": {
+            "type": "string",
+            "title": "Status"
+          },
+          "request_count": {
+            "type": "integer",
+            "title": "Request Count"
+          },
+          "input_tokens": {
+            "type": "integer",
+            "title": "Input Tokens"
+          },
+          "cached_input_tokens": {
+            "type": "integer",
+            "title": "Cached Input Tokens"
+          },
+          "cache_write_tokens": {
+            "type": "integer",
+            "title": "Cache Write Tokens"
+          },
+          "output_tokens": {
+            "type": "integer",
+            "title": "Output Tokens"
+          },
+          "error_message": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Error Message"
+          },
+          "started_at": {
+            "anyOf": [
+              {
+                "type": "string",
+                "format": "date-time"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Started At"
+          },
+          "completed_at": {
+            "anyOf": [
+              {
+                "type": "string",
+                "format": "date-time"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Completed At"
+          },
+          "steps": {
+            "items": {
+              "$ref": "#/components/schemas/WorkflowStepExecutionRead"
+            },
+            "type": "array",
+            "title": "Steps"
+          },
+          "skill_runs": {
+            "items": {
+              "$ref": "#/components/schemas/SkillRunExecutionRead"
+            },
+            "type": "array",
+            "title": "Skill Runs"
+          }
+        },
+        "type": "object",
+        "required": [
+          "id",
+          "workflow_key",
+          "code_version",
+          "status",
+          "request_count",
+          "input_tokens",
+          "cached_input_tokens",
+          "cache_write_tokens",
+          "output_tokens",
+          "error_message",
+          "started_at",
+          "completed_at",
+          "steps",
+          "skill_runs"
+        ],
+        "title": "WorkflowExecutionRead"
+      },
       "WorkflowRoleSpecRead": {
         "properties": {
           "key": {
@@ -19184,6 +19783,125 @@
           "roles"
         ],
         "title": "WorkflowSpecRead"
+      },
+      "WorkflowStepExecutionRead": {
+        "properties": {
+          "id": {
+            "type": "string",
+            "format": "uuid",
+            "title": "Id"
+          },
+          "role_key": {
+            "type": "string",
+            "title": "Role Key"
+          },
+          "ordinal": {
+            "type": "integer",
+            "title": "Ordinal"
+          },
+          "fan_out_group": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Fan Out Group"
+          },
+          "status": {
+            "type": "string",
+            "title": "Status"
+          },
+          "total_count": {
+            "type": "integer",
+            "title": "Total Count"
+          },
+          "completed_count": {
+            "type": "integer",
+            "title": "Completed Count"
+          },
+          "failed_count": {
+            "type": "integer",
+            "title": "Failed Count"
+          },
+          "request_count": {
+            "type": "integer",
+            "title": "Request Count"
+          },
+          "input_tokens": {
+            "type": "integer",
+            "title": "Input Tokens"
+          },
+          "cached_input_tokens": {
+            "type": "integer",
+            "title": "Cached Input Tokens"
+          },
+          "cache_write_tokens": {
+            "type": "integer",
+            "title": "Cache Write Tokens"
+          },
+          "output_tokens": {
+            "type": "integer",
+            "title": "Output Tokens"
+          },
+          "error_message": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Error Message"
+          },
+          "started_at": {
+            "anyOf": [
+              {
+                "type": "string",
+                "format": "date-time"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Started At"
+          },
+          "completed_at": {
+            "anyOf": [
+              {
+                "type": "string",
+                "format": "date-time"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Completed At"
+          }
+        },
+        "type": "object",
+        "required": [
+          "id",
+          "role_key",
+          "ordinal",
+          "fan_out_group",
+          "status",
+          "total_count",
+          "completed_count",
+          "failed_count",
+          "request_count",
+          "input_tokens",
+          "cached_input_tokens",
+          "cache_write_tokens",
+          "output_tokens",
+          "error_message",
+          "started_at",
+          "completed_at"
+        ],
+        "title": "WorkflowStepExecutionRead"
       }
     },
     "securitySchemes": {

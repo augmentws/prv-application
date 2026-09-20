@@ -45,9 +45,29 @@ Approval records your decision but does not bypass authorization. The server che
 
 Review and save the current draft, then select **Publish current draft**. Publishing moves the matter's published-revision pointer after a confirmation. The full revision history remains available, and later drafts do not replace the published guidance until explicitly published.
 
+## Assess the guidance against the corpus
+
+Select **New assessment** under **Assess against corpus** to test one immutable definition revision against documents already in the matter. A matter search index and the assessment workflow worker must be available. Choose a maximum document count and, optionally, a random control sample. The default maximum is 500.
+
+Requests above 1,000 documents show a capacity warning. A matter administrator can continue only after selecting the explicit **Continue with N documents** acknowledgment. This is currently a warning rather than a hard cost limit; future controls may add budgets and provider-price estimates.
+
+The workflow:
+
+1. converts the selected revision into controlled keyword, semantic, or hybrid retrieval requests;
+2. freezes the merged results as a permanent assessment batch;
+3. creates a cited structured analysis for each document with available text;
+4. synthesizes recurring fit findings, diagnostic batch topics, and consolidated clarification questions.
+
+The screen shows planning, retrieval, batch construction, summarization, and synthesis progress. After batch construction it also shows the selected-document count, estimated analysis tokens and estimator, generated query plan, workflow token/cache telemetry, and a link to the frozen batch.
+
+Coverage appears before any substantive findings. The current versioned policy requires at least three successful document analyses and 50% successful coverage. Below that threshold the report says **insufficient coverage** and does not make fit conclusions. Skipped, failed, partial, and invalid results remain visible. A run that meets the threshold but has incomplete documents finishes with errors and keeps that limitation visible.
+
+Clarification questions are consolidated across documents rather than interrupting you document by document. You can answer or dismiss each question. Answers are retained with the assessment and do not automatically edit or publish the Matter Definition.
+
 ## Current limitations
 
 - Conversation updates use polling rather than streamed response tokens.
 - DOCX source ingestion and Artifact Service source preservation are planned but not yet available.
 - Field type, cardinality, and stable-key migrations are not performed by the setup agent. Create a replacement field or use a future explicit migration workflow when stored values already exist.
 - Root system-agent management is available. Tenant-agent APIs exist, but a tenant administration screen is not yet available.
+- Assessment token estimates are capacity estimates, not provider-price quotes. Per-run monetary budgets and spend ceilings are planned.

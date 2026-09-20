@@ -1942,7 +1942,8 @@ class MatterDefinitionAssessmentRun(TimestampMixin, Base):
         CheckConstraint("requested_document_count > 0", name="ck_matter_definition_assessment_requested_count"),
         CheckConstraint(
             "candidate_count >= 0 AND selected_count >= 0 AND summarized_count >= 0 "
-            "AND skipped_count >= 0 AND failed_count >= 0",
+            "AND skipped_count >= 0 AND failed_count >= 0 AND partial_coverage_count >= 0 "
+            "AND invalid_result_count >= 0",
             name="ck_matter_definition_assessment_counts",
         ),
         Index("ix_definition_assessment_matter_created", "matter_id", "created_at"),
@@ -1991,6 +1992,10 @@ class MatterDefinitionAssessmentRun(TimestampMixin, Base):
     summarized_count: Mapped[int] = mapped_column(Integer, default=0)
     skipped_count: Mapped[int] = mapped_column(Integer, default=0)
     failed_count: Mapped[int] = mapped_column(Integer, default=0)
+    partial_coverage_count: Mapped[int] = mapped_column(Integer, default=0)
+    invalid_result_count: Mapped[int] = mapped_column(Integer, default=0)
+    coverage_snapshot: Mapped[dict[str, Any] | None] = mapped_column(JSON)
+    synthesis_result: Mapped[dict[str, Any] | None] = mapped_column(JSON)
     status: Mapped[str] = mapped_column(String(30), default="QUEUED")
     error_message: Mapped[str | None] = mapped_column(Text)
     initiated_by_user_id: Mapped[uuid.UUID] = mapped_column(
@@ -2070,6 +2075,74 @@ class MatterDefinitionAssessmentQuestion(TimestampMixin, Base):
         Uuid, ForeignKey("app_user.id", ondelete="SET NULL"), nullable=True
     )
     answered_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+
+
+class BatchTopicTaxonomy(TimestampMixin, Base):
+    __tablename__ = "batch_topic_taxonomy"
+    __table_args__ = (
+        UniqueConstraint("review_batch_id", "version", name="uq_batch_topic_taxonomy_version"),
+        CheckConstraint("version > 0", name="ck_batch_topic_taxonomy_version_positive"),
+        CheckConstraint("status IN ('ACTIVE', 'RETIRED')", name="ck_batch_topic_taxonomy_status"),
+        Index(
+            "uq_batch_topic_taxonomy_active",
+            "review_batch_id",
+            unique=True,
+            postgresql_where=text("status = 'ACTIVE'"),
+            sqlite_where=text("status = 'ACTIVE'"),
+        ),
+    )
+
+    id: Mapped[uuid.UUID] = mapped_column(Uuid, primary_key=True, default=uuid.uuid4)
+    review_batch_id: Mapped[uuid.UUID] = mapped_column(
+        Uuid, ForeignKey("review_batch.id", ondelete="CASCADE"), index=True
+    )
+    source_assessment_run_id: Mapped[uuid.UUID] = mapped_column(
+        Uuid, ForeignKey("matter_definition_assessment_run.id", ondelete="CASCADE"), unique=True
+    )
+    version: Mapped[int] = mapped_column(Integer)
+    status: Mapped[str] = mapped_column(String(20), default="ACTIVE")
+
+
+class BatchTopic(TimestampMixin, Base):
+    __tablename__ = "batch_topic"
+    __table_args__ = (
+        UniqueConstraint("taxonomy_id", "topic_key", name="uq_batch_topic_key"),
+        UniqueConstraint("taxonomy_id", "ordinal", name="uq_batch_topic_ordinal"),
+        CheckConstraint("ordinal > 0", name="ck_batch_topic_ordinal_positive"),
+    )
+
+    id: Mapped[uuid.UUID] = mapped_column(Uuid, primary_key=True, default=uuid.uuid4)
+    taxonomy_id: Mapped[uuid.UUID] = mapped_column(
+        Uuid, ForeignKey("batch_topic_taxonomy.id", ondelete="CASCADE"), index=True
+    )
+    topic_key: Mapped[str] = mapped_column(String(100))
+    label: Mapped[str] = mapped_column(String(200))
+    description: Mapped[str | None] = mapped_column(Text)
+    ordinal: Mapped[int] = mapped_column(Integer)
+
+
+class BatchTopicAssignment(Base):
+    __tablename__ = "batch_topic_assignment"
+    __table_args__ = (
+        UniqueConstraint("taxonomy_id", "matter_document_id", "topic_id", name="uq_batch_topic_assignment"),
+        CheckConstraint("confidence >= 0 AND confidence <= 1", name="ck_batch_topic_assignment_confidence"),
+        Index("ix_batch_topic_assignment_document", "matter_document_id", "taxonomy_id"),
+    )
+
+    id: Mapped[uuid.UUID] = mapped_column(Uuid, primary_key=True, default=uuid.uuid4)
+    review_batch_id: Mapped[uuid.UUID] = mapped_column(
+        Uuid, ForeignKey("review_batch.id", ondelete="CASCADE"), index=True
+    )
+    taxonomy_id: Mapped[uuid.UUID] = mapped_column(
+        Uuid, ForeignKey("batch_topic_taxonomy.id", ondelete="CASCADE"), index=True
+    )
+    topic_id: Mapped[uuid.UUID] = mapped_column(Uuid, ForeignKey("batch_topic.id", ondelete="CASCADE"), index=True)
+    matter_document_id: Mapped[uuid.UUID] = mapped_column(
+        Uuid, ForeignKey("matter_document.id", ondelete="CASCADE"), index=True
+    )
+    confidence: Mapped[float] = mapped_column(Float)
+    evidence: Mapped[list[dict[str, Any]]] = mapped_column(JSON, default=list)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
 
 
 class AuditRecord(Base):

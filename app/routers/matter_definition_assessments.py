@@ -14,7 +14,9 @@ from app.models import (
     MatterDefinitionAssessmentQuery,
     MatterDefinitionAssessmentQuestion,
     MatterDefinitionAssessmentRun,
+    SkillRun,
     WorkflowRun,
+    WorkflowStepRun,
 )
 from app.schemas import (
     MatterDefinitionAssessmentCreate,
@@ -22,6 +24,9 @@ from app.schemas import (
     MatterDefinitionAssessmentQuestionRead,
     MatterDefinitionAssessmentQuestionUpdate,
     MatterDefinitionAssessmentRead,
+    SkillRunExecutionRead,
+    WorkflowExecutionRead,
+    WorkflowStepExecutionRead,
 )
 from app.workflows.dispatcher import cancel_definition_assessment
 
@@ -107,6 +112,50 @@ def get_assessment(
 ) -> MatterDefinitionAssessmentRun:
     _matter(db, matter_id, principal)
     return _assessment(db, matter_id, assessment_id)
+
+
+@router.get("/{assessment_id}/execution", response_model=WorkflowExecutionRead)
+def get_assessment_execution(
+    matter_id: uuid.UUID,
+    assessment_id: uuid.UUID,
+    principal: Principal = Depends(get_principal),
+    db: Session = Depends(get_db),
+) -> WorkflowExecutionRead:
+    _matter(db, matter_id, principal)
+    assessment = _assessment(db, matter_id, assessment_id)
+    workflow = db.get(WorkflowRun, assessment.workflow_run_id)
+    if workflow is None:
+        raise HTTPException(status_code=409, detail="Assessment workflow record is unavailable")
+    steps = list(
+        db.scalars(
+            select(WorkflowStepRun)
+            .where(WorkflowStepRun.workflow_run_id == workflow.id)
+            .order_by(WorkflowStepRun.ordinal)
+        )
+    )
+    skill_runs = list(
+        db.scalars(
+            select(SkillRun)
+            .where(SkillRun.workflow_run_id == workflow.id)
+            .order_by(SkillRun.created_at, SkillRun.id)
+        )
+    )
+    return WorkflowExecutionRead(
+        id=workflow.id,
+        workflow_key=workflow.workflow_key,
+        code_version=workflow.code_version,
+        status=workflow.status,
+        request_count=workflow.request_count,
+        input_tokens=workflow.input_tokens,
+        cached_input_tokens=workflow.cached_input_tokens,
+        cache_write_tokens=workflow.cache_write_tokens,
+        output_tokens=workflow.output_tokens,
+        error_message=workflow.error_message,
+        started_at=workflow.started_at,
+        completed_at=workflow.completed_at,
+        steps=[WorkflowStepExecutionRead.model_validate(step) for step in steps],
+        skill_runs=[SkillRunExecutionRead.model_validate(run) for run in skill_runs],
+    )
 
 
 @router.post("/{assessment_id}/cancel", response_model=MatterDefinitionAssessmentRead)
