@@ -494,6 +494,12 @@ evidence when required. It returns:
 - observed subjects not clearly addressed by the Matter Definition;
 - consolidated clarification questions with counts and representative documents.
 
+The synthesis contract must evaluate inclusion/exclusion boundaries, uncovered subjects, conflicting treatment,
+temporal scope, geographic scope, and actor/entity scope. It returns either evidence-backed refinement questions
+or a structured `NO_REFINEMENT_WARRANTED` explanation covering every dimension; an unexplained empty question list
+is invalid. Determination and near-miss counts are computed by application code and supplied to the model rather
+than inferred in narrative output.
+
 Do not interrupt the user for every document-level clarification candidate. Deduplicate and prioritize across
 the batch. Each final question links to representative documents and exact evidence paragraphs.
 

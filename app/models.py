@@ -1502,6 +1502,7 @@ class AgentDefinitionVersion(Base):
         UniqueConstraint("agent_definition_id", "version", name="uq_agent_definition_version"),
         CheckConstraint("version > 0", name="ck_agent_definition_version_positive"),
         CheckConstraint("status IN ('DRAFT', 'PUBLISHED', 'RETIRED')", name="ck_agent_version_status"),
+        CheckConstraint("invocation_mode IN ('CHAT', 'STRUCTURED')", name="ck_agent_version_invocation_mode"),
     )
 
     id: Mapped[uuid.UUID] = mapped_column(Uuid, primary_key=True, default=uuid.uuid4)
@@ -1512,6 +1513,10 @@ class AgentDefinitionVersion(Base):
     system_prompt: Mapped[str] = mapped_column(Text)
     model_key: Mapped[str] = mapped_column(String(200))
     model_policy: Mapped[dict[str, Any]] = mapped_column(JSON, default=dict)
+    invocation_mode: Mapped[str] = mapped_column(String(20), default="CHAT")
+    usage_instructions: Mapped[str | None] = mapped_column(Text)
+    scope_types: Mapped[list[str]] = mapped_column(JSON, default=list)
+    input_schema: Mapped[dict[str, Any]] = mapped_column(JSON, default=dict)
     output_schema: Mapped[dict[str, Any]] = mapped_column(JSON, default=dict)
     limits: Mapped[dict[str, Any]] = mapped_column(JSON, default=dict)
     status: Mapped[str] = mapped_column(String(20), default="DRAFT")
@@ -1634,9 +1639,17 @@ class WorkflowSkillBinding(TimestampMixin, Base):
 class AgentConversation(TimestampMixin, Base):
     __tablename__ = "agent_conversation"
     __table_args__ = (
-        CheckConstraint("workflow_type IN ('MATTER_DEFINITION_SETUP')", name="ck_agent_conversation_workflow_type"),
         CheckConstraint(
-            "status IN ('ACTIVE', 'WAITING_APPROVAL', 'COMPLETED', 'FAILED', 'ARCHIVED')",
+            "workflow_type IN ('MATTER_DEFINITION_SETUP', 'BATCH_CHAT')",
+            name="ck_agent_conversation_workflow_type",
+        ),
+        CheckConstraint(
+            "(workflow_type = 'MATTER_DEFINITION_SETUP' AND review_batch_id IS NULL) OR "
+            "(workflow_type = 'BATCH_CHAT' AND review_batch_id IS NOT NULL)",
+            name="ck_agent_conversation_workflow_scope",
+        ),
+        CheckConstraint(
+            "status IN ('ACTIVE', 'WAITING_APPROVAL', 'FAILED', 'ARCHIVED')",
             name="ck_agent_conversation_status",
         ),
         Index("ix_agent_conversation_matter_created", "matter_id", "created_at"),
@@ -1646,12 +1659,16 @@ class AgentConversation(TimestampMixin, Base):
     tenant_id: Mapped[uuid.UUID] = mapped_column(Uuid, ForeignKey("tenant.id", ondelete="RESTRICT"), index=True)
     client_id: Mapped[uuid.UUID] = mapped_column(Uuid, ForeignKey("client.id", ondelete="RESTRICT"), index=True)
     matter_id: Mapped[uuid.UUID] = mapped_column(Uuid, ForeignKey("matter.id", ondelete="CASCADE"), index=True)
+    review_batch_id: Mapped[uuid.UUID | None] = mapped_column(
+        Uuid, ForeignKey("review_batch.id", ondelete="RESTRICT"), nullable=True, index=True
+    )
     agent_definition_id: Mapped[uuid.UUID] = mapped_column(
         Uuid, ForeignKey("agent_definition.id", ondelete="RESTRICT"), index=True
     )
     agent_definition_version_id: Mapped[uuid.UUID] = mapped_column(
         Uuid, ForeignKey("agent_definition_version.id", ondelete="RESTRICT"), index=True
     )
+    title: Mapped[str | None] = mapped_column(String(200))
     workflow_type: Mapped[str] = mapped_column(String(50))
     status: Mapped[str] = mapped_column(String(30), default="ACTIVE", index=True)
     initiated_by_user_id: Mapped[uuid.UUID] = mapped_column(
@@ -1955,6 +1972,7 @@ class MatterDefinitionAssessmentRun(TimestampMixin, Base):
     )
 
     id: Mapped[uuid.UUID] = mapped_column(Uuid, primary_key=True, default=uuid.uuid4)
+    name: Mapped[str] = mapped_column(String(200))
     matter_id: Mapped[uuid.UUID] = mapped_column(Uuid, ForeignKey("matter.id", ondelete="CASCADE"))
     matter_definition_revision_id: Mapped[uuid.UUID] = mapped_column(
         Uuid, ForeignKey("matter_definition_revision.id", ondelete="RESTRICT")

@@ -160,13 +160,13 @@ function Shell({ children }: { children: ReactNode }) {
   );
 
   return (
-    <div className="flex min-h-screen bg-background">
-      <div className="sticky top-0 hidden h-screen shrink-0 lg:block">{sidebar}</div>
+    <div className="flex h-dvh min-h-0 overflow-hidden bg-background">
+      <div className="hidden h-full shrink-0 lg:block">{sidebar}</div>
       {mobileOpen ? <div className="fixed inset-0 z-40 bg-foreground/35 backdrop-blur-sm lg:hidden" onClick={() => setMobileOpen(false)} /> : null}
       <div className={cn("fixed inset-y-0 left-0 z-50 w-64 transition-transform lg:hidden", mobileOpen ? "translate-x-0" : "-translate-x-full")}>{sidebar}</div>
 
-      <div className="min-w-0 flex-1">
-        <header className="sticky top-0 z-30 flex h-16 items-center gap-3 border-b bg-background/92 px-4 backdrop-blur md:px-6">
+      <div className="flex min-h-0 min-w-0 flex-1 flex-col overflow-hidden">
+        <header className="z-30 flex h-16 shrink-0 items-center gap-3 border-b bg-background/92 px-4 backdrop-blur md:px-6">
           <Button variant="ghost" size="icon" aria-label="Open navigation" className="lg:hidden" onClick={() => setMobileOpen(true)}><Menu /></Button>
           <div className="min-w-0 flex-1">
             <p className="truncate text-sm font-semibold">{tenant.name}</p>
@@ -174,7 +174,15 @@ function Shell({ children }: { children: ReactNode }) {
           </div>
           <ThemeToggle />
         </header>
-        <main id="main-content" className="mx-auto w-full max-w-[96rem] p-4 md:p-6 lg:p-8">{children}</main>
+        <main
+          id="main-content"
+          className={cn(
+            "mx-auto min-h-0 w-full flex-1 overflow-x-hidden overflow-y-auto p-4 md:p-6 lg:p-8",
+            collapsed ? "max-w-none" : "max-w-[96rem]",
+          )}
+        >
+          {children}
+        </main>
       </div>
     </div>
   );

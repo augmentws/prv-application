@@ -20,6 +20,8 @@ Leaving the random sample size empty includes all source documents in a randomiz
 
 Select one or more shared metadata groups to define the coding fields. The system snapshots those fields when the batch is created. Later edits to the matter group do not silently change the batch.
 
+Use **Groups** in the Batches table or review workspace to change that batch snapshot. Check groups to add them, uncheck groups to remove them, then select **Save groups**. Removing a group hides its fields from subsequent batch coding without deleting values already stored in earlier review runs.
+
 ## Status
 
 A batch normally moves from **Queued** to **Building** to **Ready**. Its document count is final when it is ready. The system then prepares the batch for search; review opens with searchable documents when that projection is ready. A failed batch remains visible with its error so the selection can be diagnosed. Search-query batches require a ready matter search index.
@@ -47,6 +49,14 @@ A batch created by **Assess against corpus** has an **Analysis** panel beside th
 After synthesis, **Batch topics** appears as a separate facet. These labels describe only the active taxonomy version for this frozen batch. Selecting a value restricts results using the batch ID, active taxonomy ID, and topic key together, so a document that appears in another batch cannot contribute that other batch's topic labels or counts.
 
 Diagnostic batch topics do not change the matter-wide **Topics** metadata created by the approved topic-clustering workflow. A document can have both: matter topics remain corpus-wide metadata, while batch topics remain assessment-only labels inside their batch.
+
+## Chat with a batch
+
+Open any ready, searchable batch and select **Chat** in the right panel. Start a named conversation, then ask a natural-language question. The managed **Batch Chat Agent** converts the question into one or more semantic searches and Core always injects the current batch ID as a required filter. A conversation is permanently bound to that matter and batch; the model cannot broaden its retrieval scope.
+
+The initial evidence source is the newest compatible structured `SUMMARY` artifact for each matching matter document. A summary produced for the current batch is preferred, while a reusable summary from another assessment of the same matter document may be used with its provenance retained. Answers identify supporting document IDs and disclose when semantic candidates lack usable summaries. They do not represent that the agent reviewed the complete native document, and a missing semantic result is not proof that the subject is absent from the batch.
+
+Batch chat requires a ready search projection, document embeddings for semantic retrieval, and summary artifacts for answer evidence. A batch may be opened before all three are available, but the chat panel explains which prerequisite is missing rather than silently falling back to unscoped matter search or source document text. Switching the answer evidence from summaries to full document content is a future extension of the retrieval contract.
 
 ## Agent evaluation
 

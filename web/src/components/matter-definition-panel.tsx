@@ -2,28 +2,31 @@
 
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import {
-  Bot,
   Check,
+  ChevronDown,
+  ClipboardCheck,
   Clock3,
   FileText,
   History,
   LoaderCircle,
   MessageSquareText,
+  PencilLine,
   Save,
   Send,
   Sparkles,
   Upload,
   X,
 } from "lucide-react";
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useId, useRef, useState } from "react";
+import { createPortal } from "react-dom";
 import { toast } from "sonner";
 
 import { QueryError, TableLoading } from "@/components/query-state";
 import { MatterDefinitionAssessmentPanel } from "@/components/matter-definition-assessment-panel";
-import { StatusBadge } from "@/components/status-badge";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Card } from "@/components/ui/card";
+import { Input } from "@/components/ui/input";
 import {
   Dialog,
   DialogContent,
@@ -51,6 +54,7 @@ import { cn } from "@/lib/utils";
 
 type DraftSourceKind = "PASTE" | "MARKDOWN" | "TEXT" | "USER_EDIT";
 type Decision = "APPROVE" | "REJECT";
+type MatterDefinitionSidePanel = "agent" | "assessment";
 interface DraftEdit {
   content: string;
   source: DraftSourceKind;
@@ -63,6 +67,11 @@ export function MatterDefinitionPanel({ matterId }: { matterId: string }) {
   const [draftEdit, setDraftEdit] = useState<DraftEdit | null>(null);
   const [publishOpen, setPublishOpen] = useState(false);
   const [selectedConversationId, setSelectedConversationId] = useState<string>("");
+  const [sidePanel, setSidePanel] = useState<MatterDefinitionSidePanel>("agent");
+  const [historyOpen, setHistoryOpen] = useState(false);
+  const [selectedRevisionNumber, setSelectedRevisionNumber] = useState<number | null>(null);
+  const [toolHeaderElement, setToolHeaderElement] = useState<HTMLDivElement | null>(null);
+  const sidePanelId = useId();
 
   const definition = useQuery({
     queryKey: ["matter-definition", matterId],
@@ -80,7 +89,7 @@ export function MatterDefinitionPanel({ matterId }: { matterId: string }) {
   });
   const conversations = useQuery({
     queryKey: ["agent-conversations", matterId],
-    queryFn: () => coreApi<AgentConversationRead[]>(`/v1/matters/${matterId}/agent-conversations`),
+    queryFn: () => coreApi<AgentConversationRead[]>(`/v1/matters/${matterId}/agent-conversations?workflow_type=MATTER_DEFINITION_SETUP`),
     refetchInterval: 2000,
   });
 
@@ -106,7 +115,11 @@ export function MatterDefinitionPanel({ matterId }: { matterId: string }) {
   });
 
   const currentRevision = definition.data?.current_revision ?? null;
+  const selectedRevision = selectedRevisionNumber === null
+    ? null
+    : revisions.data?.find((revision) => revision.revision === selectedRevisionNumber) ?? null;
   const draft = draftEdit?.content ?? definition.data?.revision.content_markdown ?? "";
+  const displayedContent = selectedRevision?.content_markdown ?? draft;
   const draftSource = draftEdit?.source ?? (definition.data ? "USER_EDIT" : "PASTE");
   const sourceFilename = draftEdit?.sourceFilename ?? null;
   const loadedRevision = draftEdit?.basedOnRevision ?? currentRevision;
@@ -140,19 +153,32 @@ export function MatterDefinitionPanel({ matterId }: { matterId: string }) {
     onError: (error) => toast.error(error instanceof Error ? error.message : "The Matter Definition could not be published."),
   });
   const startConversation = useMutation({
-    mutationFn: (agentId: string) => coreApi<AgentConversationRead>(`/v1/matters/${matterId}/agent-conversations`, {
+    mutationFn: ({ agentId, title }: { agentId: string; title: string }) => coreApi<AgentConversationRead>(`/v1/matters/${matterId}/agent-conversations`, {
       method: "POST",
-      body: JSON.stringify({ agent_definition_id: agentId, workflow_type: "MATTER_DEFINITION_SETUP" }),
+      body: JSON.stringify({ agent_definition_id: agentId, title, workflow_type: "MATTER_DEFINITION_SETUP" }),
     }),
     onSuccess: (created) => {
       queryClient.setQueryData<AgentConversationRead[]>(["agent-conversations", matterId], (current) => [created, ...(current ?? [])]);
       setSelectedConversationId(created.id);
-      toast.success("Agent conversation started.");
+      toast.success("Chat started.");
     },
-    onError: (error) => toast.error(error instanceof Error ? error.message : "The agent conversation could not be started."),
+    onError: (error) => toast.error(error instanceof Error ? error.message : "The chat could not be started."),
+  });
+  const renameConversation = useMutation({
+    mutationFn: ({ conversationId, title }: { conversationId: string; title: string }) => coreApi<AgentConversationRead>(`/v1/agent-conversations/${conversationId}`, {
+      method: "PATCH",
+      body: JSON.stringify({ title }),
+    }),
+    onSuccess: (updated) => {
+      queryClient.setQueryData<AgentConversationRead[]>(["agent-conversations", matterId], (current) =>
+        current?.map((conversation) => conversation.id === updated.id ? updated : conversation),
+      );
+      toast.success("Chat renamed.");
+    },
+    onError: (error) => toast.error(error instanceof Error ? error.message : "The chat could not be renamed."),
   });
   const submitTurn = useMutation({
-    mutationFn: (message: string) => coreApi<AgentTurnCreated>(`/v1/agent-conversations/${selectedConversationId}/turns`, {
+    mutationFn: (message: string) => coreApi<AgentTurnCreated>(`/v1/agent-conversations/${effectiveConversationId}/turns`, {
       method: "POST",
       body: JSON.stringify({ message }),
     }),
@@ -204,34 +230,15 @@ export function MatterDefinitionPanel({ matterId }: { matterId: string }) {
   if (error) return <QueryError message={error.message} />;
 
   return (
-    <div className="grid min-w-0 gap-5 xl:grid-cols-[minmax(0,1.15fr)_minmax(23rem,0.85fr)]">
-      <section className="min-w-0 space-y-4" aria-labelledby="matter-definition-heading">
-        <Card className="overflow-hidden">
-          <div className="flex flex-wrap items-start justify-between gap-3 border-b p-5">
-            <div>
-              <div className="mb-1 flex items-center gap-2">
+    <div className="matter-definition-workspace grid min-w-0 gap-5" role="region" aria-label="Matter Definition workspace">
+      <section className="matter-definition-guidance-frame min-h-0 min-w-0" aria-labelledby="matter-definition-heading">
+        <Card className="matter-definition-guidance-card flex min-h-0 flex-col overflow-hidden">
+          <div className="flex min-h-14 shrink-0 flex-wrap items-center justify-between gap-3 border-b px-5 py-3">
+            <div className="flex min-w-0 flex-wrap items-center gap-3">
+              <div className="flex items-center gap-2">
                 <FileText className="size-4 text-primary" />
                 <h2 id="matter-definition-heading" className="font-semibold">Reviewer guidance</h2>
               </div>
-              <p className="text-sm text-muted-foreground">The saved Markdown is used by human reviewers and future document-coding agents.</p>
-            </div>
-            <div className="flex flex-wrap items-center gap-2">
-              {currentRevision ? <Badge variant="outline">Draft r{currentRevision}</Badge> : <Badge variant="outline">No saved draft</Badge>}
-              {definition.data?.published_revision ? <Badge variant="active">Published r{definition.data.published_revision}</Badge> : <Badge variant="accent">Not published</Badge>}
-            </div>
-          </div>
-
-          {newerRevisionAvailable ? (
-            <div role="alert" className="border-b border-conflict/30 bg-conflict/10 px-5 py-3 text-sm text-conflict">
-              A newer revision was created while you were editing. Your unsaved text is preserved; reload the latest draft before saving.
-            </div>
-          ) : null}
-
-          <div className="p-5">
-            <div className="mb-3 flex flex-wrap items-center justify-between gap-3">
-              <p className="text-xs font-semibold uppercase tracking-[0.08em] text-muted-foreground">
-                {sourceFilename ? `Imported from ${sourceFilename}` : dirty ? "Unsaved changes" : "Current draft"}
-              </p>
               <label className="inline-flex cursor-pointer items-center gap-2 rounded-md border bg-background px-3 py-2 text-xs font-semibold hover:bg-muted focus-within:ring-2 focus-within:ring-ring">
                 <Upload className="size-3.5" />
                 Import .md or .txt
@@ -247,74 +254,232 @@ export function MatterDefinitionPanel({ matterId }: { matterId: string }) {
                 />
               </label>
             </div>
-            <Textarea
-              aria-label="Matter Definition Markdown"
-              value={draft}
-              onChange={(event) => {
-                setDraftEdit((current) => ({
-                  content: event.target.value,
-                  source: current?.source ?? (definition.data ? "USER_EDIT" : "PASTE"),
-                  sourceFilename: current?.sourceFilename ?? null,
-                  basedOnRevision: current?.basedOnRevision ?? definition.data?.current_revision ?? null,
-                }));
-              }}
-              placeholder="# Review guidance\n\nDescribe the coding fields, definitions, examples, and decision rules."
-              className="min-h-[34rem] resize-y font-mono text-[13px] leading-6"
-            />
-            <div className="mt-4 flex flex-wrap items-center justify-between gap-3">
-              <p className="text-xs text-muted-foreground">Saving creates an immutable draft revision. Publishing is a separate action.</p>
-              <div className="flex flex-wrap gap-2">
-                {newerRevisionAvailable ? (
+            <div className="flex flex-wrap items-center gap-2">
+              {currentRevision ? (
+                <button
+                  type="button"
+                  className="rounded-full outline-none focus-visible:ring-2 focus-visible:ring-ring"
+                  aria-label={`Show revision history from current draft r${currentRevision}`}
+                  aria-expanded={historyOpen}
+                  onClick={() => {
+                    setSelectedRevisionNumber(null);
+                    setHistoryOpen(true);
+                  }}
+                >
+                  <Badge variant="outline">Draft r{currentRevision}</Badge>
+                </button>
+              ) : <Badge variant="outline">No saved draft</Badge>}
+              {definition.data?.published_revision ? (
+                <button
+                  type="button"
+                  className="rounded-full outline-none focus-visible:ring-2 focus-visible:ring-ring"
+                  aria-label={`Show published revision r${definition.data.published_revision} in revision history`}
+                  aria-expanded={historyOpen}
+                  onClick={() => {
+                    setSelectedRevisionNumber(
+                      definition.data?.published_revision === currentRevision
+                        ? null
+                        : definition.data?.published_revision ?? null,
+                    );
+                    setHistoryOpen(true);
+                  }}
+                >
+                  <Badge variant="active">Published r{definition.data.published_revision}</Badge>
+                </button>
+              ) : <Badge variant="accent">Not published</Badge>}
+              {dirty ? <Badge variant="accent">Unsaved changes</Badge> : null}
+            </div>
+          </div>
+
+          <div id="matter-definition-editor" className="flex min-h-0 flex-1 flex-col">
+            {newerRevisionAvailable ? (
+              <div role="alert" className="border-b border-conflict/30 bg-conflict/10 px-5 py-3 text-sm text-conflict">
+                A newer revision was created while you were editing. Your unsaved text is preserved; reload the latest draft before saving.
+              </div>
+            ) : null}
+
+            <div className="flex min-h-0 flex-1 flex-col p-5">
+              <div className="mb-3 flex shrink-0 flex-wrap items-center justify-between gap-3">
+                <div className="flex min-w-0 items-center gap-2">
+                  <button
+                    type="button"
+                    className="flex items-center gap-1 text-xs font-semibold uppercase tracking-[0.08em] text-muted-foreground outline-none hover:text-foreground focus-visible:ring-2 focus-visible:ring-ring"
+                    aria-expanded={historyOpen}
+                    aria-controls="matter-definition-revision-history"
+                    onClick={() => setHistoryOpen((open) => !open)}
+                  >
+                    {selectedRevision ? `Revision ${selectedRevision.revision}` : "Current draft"}
+                    <ChevronDown className={cn("size-3.5 transition-transform", historyOpen && "rotate-180")} />
+                  </button>
+                  {!selectedRevision && sourceFilename ? <span className="truncate text-xs text-muted-foreground">Imported from {sourceFilename}</span> : null}
+                  {selectedRevision?.revision === definition.data?.published_revision ? <Badge variant="active">Published</Badge> : null}
+                </div>
+                <div className="flex flex-wrap gap-2">
+                  {newerRevisionAvailable ? (
+                    <Button
+                      type="button"
+                      size="sm"
+                      variant="outline"
+                      onClick={() => {
+                        setDraftEdit(null);
+                      }}
+                    >
+                      Reload latest
+                    </Button>
+                  ) : null}
                   <Button
                     type="button"
+                    size="sm"
                     variant="outline"
-                    onClick={() => {
-                      setDraftEdit(null);
-                    }}
+                    disabled={Boolean(selectedRevision) || !definition.data || definition.data.published_revision === definition.data.current_revision || dirty}
+                    onClick={() => setPublishOpen(true)}
                   >
-                    Reload latest
+                    <Sparkles />Publish current draft
                   </Button>
-                ) : null}
-                <Button
-                  type="button"
-                  variant="outline"
-                  disabled={!definition.data || definition.data.published_revision === definition.data.current_revision || dirty}
-                  onClick={() => setPublishOpen(true)}
-                >
-                  <Sparkles />Publish current draft
-                </Button>
-                <Button type="button" disabled={!dirty || !draft.trim() || newerRevisionAvailable || saveDraft.isPending} onClick={() => saveDraft.mutate()}>
-                  {saveDraft.isPending ? <LoaderCircle className="animate-spin" /> : <Save />}
-                  Save draft
-                </Button>
+                  <Button
+                    type="button"
+                    size="sm"
+                    disabled={Boolean(selectedRevision) || !dirty || !draft.trim() || newerRevisionAvailable || saveDraft.isPending}
+                    onClick={() => saveDraft.mutate()}
+                  >
+                    {saveDraft.isPending ? <LoaderCircle className="animate-spin" /> : <Save />}
+                    Save draft
+                  </Button>
+                </div>
               </div>
+              {historyOpen ? (
+                <div id="matter-definition-revision-history" className="mb-3 shrink-0 rounded-lg border bg-muted/25 p-3" aria-label="Revision history">
+                  <div className="mb-2 flex items-center gap-2 text-xs font-semibold uppercase tracking-[0.08em] text-muted-foreground">
+                    <History className="size-3.5" />Revision history
+                  </div>
+                  <div className="flex max-h-28 flex-wrap gap-2 overflow-y-auto">
+                    {currentRevision ? (
+                      <Button
+                        type="button"
+                        size="sm"
+                        variant={selectedRevisionNumber === null ? "default" : "outline"}
+                        aria-pressed={selectedRevisionNumber === null}
+                        onClick={() => setSelectedRevisionNumber(null)}
+                      >
+                        Current draft · r{currentRevision}
+                      </Button>
+                    ) : null}
+                    {[...(revisions.data ?? [])]
+                      .sort((left, right) => right.revision - left.revision)
+                      .filter((revision) => revision.revision !== currentRevision)
+                      .map((revision) => (
+                        <Button
+                          key={revision.id}
+                          type="button"
+                          size="sm"
+                          variant={selectedRevisionNumber === revision.revision ? "default" : "outline"}
+                          aria-pressed={selectedRevisionNumber === revision.revision}
+                          onClick={() => setSelectedRevisionNumber(revision.revision)}
+                        >
+                          Revision {revision.revision} · {formatDate(revision.created_at)}
+                          {revision.revision === definition.data?.published_revision ? " · published" : ""}
+                        </Button>
+                      ))}
+                  </div>
+                </div>
+              ) : null}
+              <Textarea
+                aria-label="Matter Definition Markdown"
+                value={displayedContent}
+                readOnly={Boolean(selectedRevision)}
+                onChange={(event) => {
+                  if (selectedRevision) return;
+                  setDraftEdit((current) => ({
+                    content: event.target.value,
+                    source: current?.source ?? (definition.data ? "USER_EDIT" : "PASTE"),
+                    sourceFilename: current?.sourceFilename ?? null,
+                    basedOnRevision: current?.basedOnRevision ?? definition.data?.current_revision ?? null,
+                  }));
+                }}
+                placeholder="# Review guidance\n\nDescribe the coding fields, definitions, examples, and decision rules."
+                className={cn(
+                  "matter-definition-guidance-text min-h-[34rem] flex-1 resize-none overflow-y-auto font-mono text-[13px] leading-6",
+                  selectedRevision && "bg-muted/35",
+                )}
+              />
             </div>
           </div>
         </Card>
-
-        <RevisionHistory revisions={revisions.data ?? []} currentRevision={currentRevision} publishedRevision={definition.data?.published_revision ?? null} />
-        <MatterDefinitionAssessmentPanel matterId={matterId} revisions={revisions.data ?? []} publishedRevision={definition.data?.published_revision ?? null} />
       </section>
 
-      <AgentWorkspace
-        matterId={matterId}
-        agents={agents.data ?? []}
-        conversations={conversations.data ?? []}
-        selectedConversation={selectedConversation}
-        selectedConversationId={effectiveConversationId}
-        messages={messages.data ?? []}
-        runs={runs.data ?? []}
-        actions={actions.data ?? []}
-        loadingConversation={messages.isPending || runs.isPending || actions.isPending}
-        conversationError={messages.error?.message ?? runs.error?.message ?? actions.error?.message}
-        starting={startConversation.isPending}
-        submitting={submitTurn.isPending}
-        deciding={decideAction.isPending}
-        onSelectConversation={setSelectedConversationId}
-        onStartConversation={(agentId) => startConversation.mutate(agentId)}
-        onSubmitTurn={(message) => submitTurn.mutateAsync(message).then(() => undefined)}
-        onDecision={(actionId, decision, reason) => decideAction.mutateAsync({ actionId, decision, reason }).then(() => undefined)}
-      />
+      <aside className="matter-definition-tools-frame min-h-[46rem] min-w-0" aria-label="Matter Definition chat and assessment">
+        <Card className="matter-definition-tools-card flex min-h-[46rem] min-w-0 flex-col overflow-hidden">
+          <div className="flex min-h-12 shrink-0 items-center gap-2 border-b px-2">
+            <div className="flex shrink-0 self-stretch items-end" role="tablist" aria-label="Matter Definition tools">
+              <button
+                id={`${sidePanelId}-agent`}
+                type="button"
+                role="tab"
+                aria-selected={sidePanel === "agent"}
+                aria-controls={`${sidePanelId}-panel`}
+                onClick={() => setSidePanel("agent")}
+                className={sidePanelTabClass(sidePanel === "agent")}
+              >
+                <MessageSquareText className="size-4" />Chat
+              </button>
+              <button
+                id={`${sidePanelId}-assessment`}
+                type="button"
+                role="tab"
+                aria-selected={sidePanel === "assessment"}
+                aria-controls={`${sidePanelId}-panel`}
+                onClick={() => setSidePanel("assessment")}
+                className={sidePanelTabClass(sidePanel === "assessment")}
+              >
+                <ClipboardCheck className="size-4" />Assessment
+              </button>
+            </div>
+            <div ref={setToolHeaderElement} className="ml-auto flex min-w-0 flex-1 items-center justify-end gap-2 py-1.5" aria-label={`${sidePanel === "agent" ? "Chat" : "Assessment"} controls`} />
+          </div>
+          <div
+            id={`${sidePanelId}-panel`}
+            role="tabpanel"
+            aria-labelledby={`${sidePanelId}-${sidePanel}`}
+            className="flex min-h-0 min-w-0 flex-1 flex-col overflow-hidden"
+          >
+            {sidePanel === "agent" ? (
+              <AgentWorkspace
+                embedded
+                toolbarElement={toolHeaderElement}
+                matterId={matterId}
+                agents={agents.data ?? []}
+                conversations={conversations.data ?? []}
+                selectedConversation={selectedConversation}
+                selectedConversationId={effectiveConversationId}
+                messages={messages.data ?? []}
+                runs={runs.data ?? []}
+                actions={actions.data ?? []}
+                loadingConversation={messages.isPending || runs.isPending || actions.isPending}
+                conversationError={messages.error?.message ?? runs.error?.message ?? actions.error?.message}
+                starting={startConversation.isPending}
+                renaming={renameConversation.isPending}
+                submitting={submitTurn.isPending}
+                deciding={decideAction.isPending}
+                onSelectConversation={setSelectedConversationId}
+                onStartConversation={(agentId, title) => startConversation.mutate({ agentId, title })}
+                onRenameConversation={(conversationId, title) => renameConversation.mutate({ conversationId, title })}
+                onSubmitTurn={(message) => submitTurn.mutateAsync(message).then(() => undefined)}
+                onDecision={(actionId, decision, reason) => decideAction.mutateAsync({ actionId, decision, reason }).then(() => undefined)}
+              />
+            ) : (
+              <div className="min-h-0 flex-1 overflow-hidden">
+                <MatterDefinitionAssessmentPanel
+                  embedded
+                  toolbarElement={toolHeaderElement}
+                  matterId={matterId}
+                  revisions={revisions.data ?? []}
+                  publishedRevision={definition.data?.published_revision ?? null}
+                />
+              </div>
+            )}
+          </div>
+        </Card>
+      </aside>
 
       <Dialog open={publishOpen} onOpenChange={setPublishOpen}>
         <DialogContent>
@@ -335,7 +500,16 @@ export function MatterDefinitionPanel({ matterId }: { matterId: string }) {
   );
 }
 
+function sidePanelTabClass(active: boolean) {
+  return cn(
+    "relative flex h-10 items-center gap-2 px-3 text-sm font-semibold text-muted-foreground outline-none transition hover:text-foreground focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-ring",
+    active && "text-primary after:absolute after:inset-x-2 after:bottom-0 after:h-0.5 after:bg-accent",
+  );
+}
+
 function AgentWorkspace({
+  embedded,
+  toolbarElement,
   agents,
   conversations,
   selectedConversation,
@@ -346,13 +520,17 @@ function AgentWorkspace({
   loadingConversation,
   conversationError,
   starting,
+  renaming,
   submitting,
   deciding,
   onSelectConversation,
   onStartConversation,
+  onRenameConversation,
   onSubmitTurn,
   onDecision,
 }: {
+  embedded?: boolean;
+  toolbarElement?: HTMLElement | null;
   matterId: string;
   agents: AgentDefinitionRead[];
   conversations: AgentConversationRead[];
@@ -364,15 +542,21 @@ function AgentWorkspace({
   loadingConversation: boolean;
   conversationError?: string;
   starting: boolean;
+  renaming: boolean;
   submitting: boolean;
   deciding: boolean;
   onSelectConversation: (id: string) => void;
-  onStartConversation: (agentId: string) => void;
+  onStartConversation: (agentId: string, title: string) => void;
+  onRenameConversation: (conversationId: string, title: string) => void;
   onSubmitTurn: (message: string) => Promise<void>;
   onDecision: (actionId: string, decision: Decision, reason?: string) => Promise<void>;
 }) {
   const [selectedAgentId, setSelectedAgentId] = useState(agents[0]?.id ?? "");
   const [message, setMessage] = useState("");
+  const [newConversationOpen, setNewConversationOpen] = useState(false);
+  const [newConversationTitle, setNewConversationTitle] = useState("");
+  const [renameOpen, setRenameOpen] = useState(false);
+  const [renameTitle, setRenameTitle] = useState("");
   const scrollRef = useRef<HTMLDivElement>(null);
   const effectiveAgentId = selectedAgentId || agents[0]?.id || "";
   const pendingActions = actions.filter((action) => action.status === "PENDING");
@@ -391,72 +575,63 @@ function AgentWorkspace({
     setMessage("");
   }
 
-  return (
-    <Card className="flex min-h-[46rem] min-w-0 flex-col overflow-hidden xl:sticky xl:top-5 xl:max-h-[calc(100vh-2.5rem)]" aria-labelledby="agent-heading">
-      <div className="border-b bg-agent/5 p-5">
-        <div className="flex items-start justify-between gap-3">
-          <div>
-            <div className="mb-1 flex items-center gap-2 text-agent">
-              <Bot className="size-4" />
-              <h2 id="agent-heading" className="font-semibold">Matter Definition agent</h2>
-            </div>
-            <p className="text-sm text-muted-foreground">Compare coding fields, improve guidance, and approve every proposed change.</p>
-          </div>
-          {selectedConversation ? <StatusBadge status={selectedConversation.status} /> : null}
-        </div>
+  function openRename() {
+    setRenameTitle(selectedConversation?.title ?? "");
+    setRenameOpen(true);
+  }
 
-        {conversations.length ? (
-          <div className="mt-4 flex items-end gap-2">
-            <div className="min-w-0 flex-1">
-              <label className="mb-1 block text-xs font-medium text-muted-foreground" htmlFor="agent-conversation">Conversation</label>
-              <Select value={selectedConversationId} onValueChange={onSelectConversation}>
-                <SelectTrigger id="agent-conversation"><SelectValue placeholder="Select a conversation" /></SelectTrigger>
-                <SelectContent>
-                  {conversations.map((conversation) => (
-                    <SelectItem key={conversation.id} value={conversation.id}>
-                      {formatDate(conversation.created_at)} · {conversation.status.toLowerCase().replaceAll("_", " ")}
-                    </SelectItem>
-                  ))}
-                </SelectContent>
-              </Select>
-            </div>
-            {agents.length ? <Button type="button" size="sm" variant="outline" disabled={starting} onClick={() => onStartConversation(effectiveAgentId)}>New</Button> : null}
-          </div>
-        ) : null}
-      </div>
+  function startNamedConversation() {
+    const title = newConversationTitle.trim();
+    if (!effectiveAgentId || !title) return;
+    onStartConversation(effectiveAgentId, title);
+    setNewConversationTitle("");
+    setNewConversationOpen(false);
+  }
+
+  function renameConversation() {
+    const title = renameTitle.trim();
+    if (!selectedConversation || !title) return;
+    onRenameConversation(selectedConversation.id, title);
+    setRenameOpen(false);
+  }
+
+  const toolbar = (
+    <>
+      {conversations.length ? (
+        <Select value={selectedConversationId} onValueChange={onSelectConversation}>
+          <SelectTrigger id="agent-conversation" className="min-w-0 max-w-64 flex-1" aria-label="Chat"><SelectValue placeholder="Select a chat" /></SelectTrigger>
+          <SelectContent>
+            {conversations.map((conversation) => (
+              <SelectItem key={conversation.id} value={conversation.id}>
+                {conversation.title ?? formatDate(conversation.created_at)}
+              </SelectItem>
+            ))}
+          </SelectContent>
+        </Select>
+      ) : agents.length ? (
+        <Select value={effectiveAgentId} onValueChange={setSelectedAgentId}>
+          <SelectTrigger className="min-w-0 max-w-64 flex-1" aria-label="Chat agent"><SelectValue placeholder="Select a chat agent" /></SelectTrigger>
+          <SelectContent>{agents.map((agent) => <SelectItem key={agent.id} value={agent.id}>{agent.name}</SelectItem>)}</SelectContent>
+        </Select>
+      ) : <p className="min-w-0 flex-1 truncate text-right text-xs text-muted-foreground">No chat agent</p>}
+      {selectedConversation ? <Button type="button" size="icon" className="size-8 shrink-0" variant="outline" disabled={renaming} aria-label="Rename chat" onClick={openRename}><PencilLine /></Button> : null}
+      {agents.length ? <Button type="button" size="sm" className="shrink-0" variant="outline" disabled={starting} onClick={() => setNewConversationOpen(true)}>New</Button> : null}
+    </>
+  );
+
+  return (
+    <Card className={cn("flex min-h-[46rem] min-w-0 flex-col overflow-hidden", embedded && "h-full min-h-0 rounded-none border-0 shadow-none")} aria-label="Matter Definition chat">
+      {toolbarElement ? createPortal(toolbar, toolbarElement) : <div className="flex shrink-0 items-center gap-2 border-b p-2">{toolbar}</div>}
 
       {!selectedConversation ? (
-        <div className="grid flex-1 place-items-center p-6">
-          <div className="max-w-sm text-center">
-            <span className="mx-auto grid size-12 place-items-center rounded-full bg-agent/10 text-agent"><MessageSquareText className="size-5" /></span>
-            <h3 className="mt-4 font-semibold">Start guided setup</h3>
-            <p className="mt-2 text-sm leading-6 text-muted-foreground">The agent reads the saved draft and matter metadata. Any proposed edit appears as a separate approval card.</p>
-            {agents.length ? (
-              <div className="mt-5 space-y-3 text-left">
-                <Select value={effectiveAgentId} onValueChange={setSelectedAgentId}>
-                  <SelectTrigger aria-label="Agent"><SelectValue placeholder="Select an agent" /></SelectTrigger>
-                  <SelectContent>{agents.map((agent) => <SelectItem key={agent.id} value={agent.id}>{agent.name}</SelectItem>)}</SelectContent>
-                </Select>
-                <Button className="w-full" type="button" disabled={!effectiveAgentId || starting} onClick={() => onStartConversation(effectiveAgentId)}>
-                  {starting ? <LoaderCircle className="animate-spin" /> : <Sparkles />}
-                  Start agent conversation
-                </Button>
-              </div>
-            ) : (
-              <div role="status" className="mt-5 rounded-lg border border-warning/30 bg-warning/10 p-4 text-left text-sm text-warning">
-                No active, published agent is available for this matter. A root or tenant administrator must publish a Matter Definition agent first.
-              </div>
-            )}
+        <div className="grid flex-1 place-items-center p-4">
+          <div className="max-w-sm text-center text-sm text-muted-foreground">
+            {agents.length ? "Select New to start a Matter Definition chat." : "No active, published chat agent is available for this matter."}
           </div>
         </div>
       ) : loadingConversation ? <TableLoading /> : conversationError ? <QueryError message={conversationError} /> : (
         <>
           <div ref={scrollRef} className="flex-1 space-y-4 overflow-y-auto p-5" aria-live="polite">
-            {!messages.length ? (
-              <div className="rounded-xl border border-dashed p-5 text-sm leading-6 text-muted-foreground">
-                Ask the agent to review the current guidance, identify coding fields, compare enum values, or suggest clearer instructions.
-              </div>
-            ) : null}
             {messages.map((item) => <ChatMessage key={item.id} message={item} />)}
             {pendingActions.map((action) => (
               <ApprovalCard key={action.id} action={action} deciding={deciding} onDecision={onDecision} />
@@ -468,25 +643,24 @@ function AgentWorkspace({
             ) : null}
             {failedRun ? <div role="alert" className="rounded-lg bg-destructive/10 p-3 text-sm text-destructive">{failedRun.error_message ?? "The agent run failed."}</div> : null}
           </div>
-          <div className="border-t bg-muted/25 p-4">
-            {pendingActions.length ? <p className="mb-2 text-xs font-medium text-warning">Review the pending change before sending another message.</p> : null}
-            <Textarea
-              aria-label="Message the Matter Definition agent"
-              value={message}
-              disabled={activeRun || submitting || pendingActions.length > 0}
-              onChange={(event) => setMessage(event.target.value)}
-              onKeyDown={(event) => {
-                if (event.key === "Enter" && !event.shiftKey) {
-                  event.preventDefault();
-                  void sendMessage();
-                }
-              }}
-              placeholder="Ask the agent to review the current guidance…"
-              className="min-h-24 resize-none"
-            />
-            <div className="mt-2 flex items-center justify-between gap-3">
-              <p className="text-xs text-muted-foreground">Enter to send · Shift+Enter for a new line</p>
-              <Button type="button" size="sm" disabled={!message.trim() || activeRun || submitting || pendingActions.length > 0} onClick={() => void sendMessage()}>
+          <div className="border-t bg-muted/25 p-2">
+            {pendingActions.length ? <p className="mb-2 px-1 text-xs font-medium text-warning">Review the pending change before sending another message.</p> : null}
+            <div className="flex items-end gap-2 rounded-xl border bg-background p-1 focus-within:ring-2 focus-within:ring-ring">
+              <Textarea
+                aria-label="Message the Matter Definition chat"
+                value={message}
+                disabled={activeRun || submitting || pendingActions.length > 0}
+                onChange={(event) => setMessage(event.target.value)}
+                onKeyDown={(event) => {
+                  if (event.key === "Enter" && !event.shiftKey) {
+                    event.preventDefault();
+                    void sendMessage();
+                  }
+                }}
+                placeholder="Compare coding fields, improve guidance, or ask the chat to review the current Matter Definition…"
+                className="min-h-[4.5rem] flex-1 resize-none border-0 bg-transparent shadow-none focus-visible:ring-0"
+              />
+              <Button type="button" size="sm" className="mb-1 mr-1 shrink-0" disabled={!message.trim() || activeRun || submitting || pendingActions.length > 0} onClick={() => void sendMessage()}>
                 {submitting ? <LoaderCircle className="animate-spin" /> : <Send />}
                 Send
               </Button>
@@ -494,6 +668,38 @@ function AgentWorkspace({
           </div>
         </>
       )}
+      <Dialog open={newConversationOpen} onOpenChange={setNewConversationOpen}>
+        <DialogContent>
+          <DialogHeader>
+            <DialogTitle>Start a new chat</DialogTitle>
+            <DialogDescription>Give this Matter Definition chat a name so it is easy to find later.</DialogDescription>
+          </DialogHeader>
+          <div className="space-y-2">
+            <label className="text-sm font-medium" htmlFor="new-chat-title">Chat name</label>
+            <Input id="new-chat-title" autoFocus maxLength={200} value={newConversationTitle} onChange={(event) => setNewConversationTitle(event.target.value)} onKeyDown={(event) => { if (event.key === "Enter") { event.preventDefault(); startNamedConversation(); } }} placeholder="Responsiveness questions" />
+          </div>
+          <DialogFooter>
+            <Button type="button" variant="outline" onClick={() => setNewConversationOpen(false)}>Cancel</Button>
+            <Button type="button" disabled={!newConversationTitle.trim() || !effectiveAgentId || starting} onClick={startNamedConversation}>{starting ? <LoaderCircle className="animate-spin" /> : <Sparkles />}Start chat</Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+      <Dialog open={renameOpen} onOpenChange={setRenameOpen}>
+        <DialogContent>
+          <DialogHeader>
+            <DialogTitle>Rename chat</DialogTitle>
+            <DialogDescription>Change how this chat appears in the Matter Definition conversation list.</DialogDescription>
+          </DialogHeader>
+          <div className="space-y-2">
+            <label className="text-sm font-medium" htmlFor="rename-chat-title">Chat name</label>
+            <Input id="rename-chat-title" autoFocus maxLength={200} value={renameTitle} onChange={(event) => setRenameTitle(event.target.value)} onKeyDown={(event) => { if (event.key === "Enter") { event.preventDefault(); renameConversation(); } }} />
+          </div>
+          <DialogFooter>
+            <Button type="button" variant="outline" onClick={() => setRenameOpen(false)}>Cancel</Button>
+            <Button type="button" disabled={!renameTitle.trim() || renaming} onClick={renameConversation}>{renaming ? <LoaderCircle className="animate-spin" /> : <PencilLine />}Rename</Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
     </Card>
   );
 }
@@ -548,34 +754,5 @@ function ApprovalCard({ action, deciding, onDecision }: {
         <Button type="button" size="sm" disabled={deciding} onClick={() => void onDecision(action.id, "APPROVE", reason)}><Check />Approve change</Button>
       </div>
     </section>
-  );
-}
-
-function RevisionHistory({ revisions, currentRevision, publishedRevision }: {
-  revisions: MatterDefinitionRevisionRead[];
-  currentRevision: number | null;
-  publishedRevision: number | null;
-}) {
-  return (
-    <Card className="p-5">
-      <div className="mb-4 flex items-center gap-2"><History className="size-4 text-primary" /><h2 className="font-semibold">Revision history</h2></div>
-      {!revisions.length ? <p className="text-sm text-muted-foreground">No revisions have been saved yet.</p> : (
-        <ol className="divide-y">
-          {revisions.slice(0, 8).map((revision) => (
-            <li key={revision.id} className="flex flex-wrap items-center justify-between gap-3 py-3 text-sm first:pt-0 last:pb-0">
-              <div>
-                <span className="font-semibold">Revision {revision.revision}</span>
-                <span className="ml-2 text-muted-foreground">{revision.source_kind.toLowerCase().replaceAll("_", " ")} · {formatDate(revision.created_at)}</span>
-              </div>
-              <div className="flex gap-1.5">
-                {revision.revision === currentRevision ? <Badge variant="outline">current</Badge> : null}
-                {revision.revision === publishedRevision ? <Badge variant="active">published</Badge> : null}
-                {revision.agent_run_id ? <Badge variant="accent">agent</Badge> : null}
-              </div>
-            </li>
-          ))}
-        </ol>
-      )}
-    </Card>
   );
 }

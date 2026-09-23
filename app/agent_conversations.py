@@ -14,6 +14,7 @@ from app.models import (
     AgentRun,
     AgentTurn,
     Matter,
+    ReviewBatch,
 )
 from app.workflows.dispatcher import enqueue_agent_run
 
@@ -27,7 +28,9 @@ def create_conversation(
     *,
     matter: Matter,
     agent: AgentDefinition,
+    title: str | None,
     workflow_type: str,
+    review_batch_id: uuid.UUID | None,
     actor_user_id: uuid.UUID,
 ) -> AgentConversation:
     if agent.status != "ACTIVE" or agent.published_version is None:
@@ -36,6 +39,14 @@ def create_conversation(
         raise AgentConversationError("Agent is not compatible with this workflow")
     if agent.scope == "TENANT" and agent.owner_tenant_id != matter.client.tenant_id:
         raise AgentConversationError("Tenant agent is not available to this matter")
+    if workflow_type == "BATCH_CHAT":
+        batch = db.get(ReviewBatch, review_batch_id) if review_batch_id is not None else None
+        if batch is None or batch.matter_id != matter.id:
+            raise AgentConversationError("Review batch is not available to this matter")
+        if batch.status != "READY":
+            raise AgentConversationError("Review batch must be ready before starting a chat")
+    elif review_batch_id is not None:
+        raise AgentConversationError("Review batch scope is supported only for batch chat")
     version = db.scalar(
         select(AgentDefinitionVersion).where(
             AgentDefinitionVersion.agent_definition_id == agent.id,
@@ -49,8 +60,10 @@ def create_conversation(
         tenant_id=matter.client.tenant_id,
         client_id=matter.client_id,
         matter_id=matter.id,
+        review_batch_id=review_batch_id,
         agent_definition_id=agent.id,
         agent_definition_version_id=version.id,
+        title=title,
         workflow_type=workflow_type,
         status="ACTIVE",
         initiated_by_user_id=actor_user_id,
@@ -69,7 +82,8 @@ def create_turn(
 ) -> tuple[AgentTurn, AgentMessage, AgentRun]:
     if conversation.status == "WAITING_APPROVAL":
         raise AgentConversationError("Resolve pending agent actions before sending another message")
-    if conversation.status not in {"ACTIVE", "COMPLETED"}:
+    # COMPLETED is accepted only while rolling deployments migrate legacy rows to ACTIVE.
+    if conversation.status not in {"ACTIVE", "COMPLETED", "FAILED"}:
         raise AgentConversationError("Conversation is not available for a new turn")
 
     turn_sequence = (

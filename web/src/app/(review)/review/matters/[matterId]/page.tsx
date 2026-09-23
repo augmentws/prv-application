@@ -17,11 +17,12 @@ export default async function ReviewPage({
   const query = await searchParams;
   const batchId = Array.isArray(query.batch) ? query.batch[0] : query.batch;
   const initialDocumentId = Array.isArray(query.document) ? query.document[0] : query.document;
+  const initialParagraphReference = Array.isArray(query.paragraph) ? query.paragraph[0] : query.paragraph;
   const rawPage = Array.isArray(query.page) ? query.page[0] : query.page;
   const page = Number.parseInt(rawPage ?? "1", 10);
   const initialPage = Number.isFinite(page) && page > 0 ? page : 1;
   if (batchId) {
-    return <BatchReviewWorkspace matterId={matterId} batchId={batchId} initialDocumentId={initialDocumentId} initialPage={initialPage} />;
+    return <BatchReviewWorkspace matterId={matterId} batchId={batchId} initialDocumentId={initialDocumentId} initialParagraphReference={initialParagraphReference} initialPage={initialPage} />;
   }
   const initialFilters: Record<string, string[]> = {};
 

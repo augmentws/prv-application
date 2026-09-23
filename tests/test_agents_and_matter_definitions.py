@@ -1,7 +1,9 @@
+import pytest
 from fastapi.testclient import TestClient
 from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
+from app.agent_invocation import AGENT_HANDLERS
 from app.bootstrap import ensure_standard_agents
 from app.models import AgentDefinition, AgentDefinitionVersion, AgentVersionTool, User
 
@@ -90,6 +92,138 @@ def test_standard_matter_definition_agent_bootstrap_is_idempotent(db: Session, r
             AgentVersionTool.agent_definition_version_id == version.id
         )
     ) == 11
+    batch_agent = db.scalar(select(AgentDefinition).where(AgentDefinition.key == "batch_chat"))
+    assert batch_agent is not None
+    assert batch_agent.name == "Batch Chat Agent"
+    batch_version = db.scalar(
+        select(AgentDefinitionVersion).where(
+            AgentDefinitionVersion.agent_definition_id == batch_agent.id,
+            AgentDefinitionVersion.version == 1,
+        )
+    )
+    assert batch_version is not None
+    assert list(
+        db.scalars(
+            select(AgentVersionTool.tool_key).where(
+                AgentVersionTool.agent_definition_version_id == batch_version.id
+            )
+        )
+    ) == ["batch.search_summaries"]
+    cleaner_agent = db.scalar(select(AgentDefinition).where(AgentDefinition.key == "document_cleaner"))
+    assert cleaner_agent is not None
+    cleaner_version = db.scalar(
+        select(AgentDefinitionVersion).where(
+            AgentDefinitionVersion.agent_definition_id == cleaner_agent.id,
+            AgentDefinitionVersion.version == 1,
+        )
+    )
+    assert cleaner_version is not None
+    assert cleaner_version.invocation_mode == "STRUCTURED"
+    assert cleaner_version.scope_types == ["COLLECTION"]
+    assert cleaner_version.input_schema["properties"]["documents"]["maxItems"] == 25
+    assert cleaner_version.output_schema["properties"]["status"]["enum"] == ["CLARIFICATION", "PROPOSAL"]
+    cleaner_version.invocation_mode = "CHAT"
+    cleaner_version.scope_types = []
+    cleaner_version.input_schema = {}
+    db.commit()
+
+    assert ensure_standard_agents(db, root_admin.tenant, root_admin) is True
+    db.commit()
+    db.refresh(cleaner_agent)
+    upgraded_version = db.scalar(
+        select(AgentDefinitionVersion).where(
+            AgentDefinitionVersion.agent_definition_id == cleaner_agent.id,
+            AgentDefinitionVersion.version == cleaner_agent.published_version,
+        )
+    )
+    assert cleaner_agent.published_version == 2
+    assert upgraded_version is not None
+    assert upgraded_version.invocation_mode == "STRUCTURED"
+    assert upgraded_version.scope_types == ["COLLECTION"]
+
+
+def test_generic_agent_package_discovery_and_invocation(
+    client: TestClient,
+    root_token: str,
+    db: Session,
+    root_admin: User,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    assert ensure_standard_agents(db, root_admin.tenant, root_admin) is True
+    db.commit()
+    tenant_id = str(root_admin.tenant_id)
+    client_response = client.post(
+        f"/v1/tenants/{tenant_id}/clients",
+        headers=auth(root_token),
+        json={"name": "Cleaner Client"},
+    )
+    client_id = client_response.json()["id"]
+    storage_response = client.post(
+        f"/v1/tenants/{tenant_id}/artifact-storage/ensure",
+        headers=auth(root_token),
+        json={"tenant_slug": "root"},
+    )
+    assert storage_response.status_code == 201, storage_response.text
+    collection_response = client.post(
+        f"/v1/tenants/{tenant_id}/clients/{client_id}/collections",
+        headers=auth(root_token),
+        json={"name": "Cleaner Collection"},
+    )
+    assert collection_response.status_code == 201, collection_response.text
+    collection_id = collection_response.json()["id"]
+
+    packages_response = client.get(
+        "/v1/agent-packages",
+        headers=auth(root_token),
+        params={"scope_type": "COLLECTION", "scope_id": collection_id},
+    )
+    assert packages_response.status_code == 200, packages_response.text
+    package = next(item for item in packages_response.json() if item["key"] == "document_cleaner")
+    assert package["version"]["invocation_mode"] == "STRUCTURED"
+    assert package["version"]["scope_types"] == ["COLLECTION"]
+    assert "system_prompt" not in package["version"]
+
+    async def fake_cleaner_handler(**_) -> dict:
+        return {
+            "status": "PROPOSAL",
+            "clarifying_question": None,
+            "explanation": "Removes the exact repeated footer line.",
+            "rule": {
+                "id": "remove-repeated-footer",
+                "name": "Remove repeated footer",
+                "description": "Removes the selected repeated footer.",
+                "action": "REMOVE_LINE",
+                "pattern": "^CONFIDENTIAL FOOTER$",
+                "end_pattern": None,
+                "replacement": "",
+                "case_sensitive": False,
+                "enabled": True,
+            },
+            "replace_rule_id": None,
+        }
+
+    monkeypatch.setitem(AGENT_HANDLERS, "document_cleaner", fake_cleaner_handler)
+    invocation_response = client.post(
+        f"/v1/agents/{package['id']}:invoke",
+        headers=auth(root_token),
+        json={
+            "scope": {"type": "COLLECTION", "id": collection_id},
+            "input": {
+                "instruction": "Remove the recurring confidentiality footer.",
+                "documents": [{
+                    "item_id": "12d42477-a66c-47e5-a40f-f7c4fa087325",
+                    "filename": "message.txt",
+                    "original_text": "Useful text\nCONFIDENTIAL FOOTER",
+                    "normalized_text": "Useful text\nCONFIDENTIAL FOOTER",
+                    "changes": [],
+                }],
+                "current_rules": [],
+                "clarification_history": [],
+            },
+        },
+    )
+    assert invocation_response.status_code == 200, invocation_response.text
+    assert invocation_response.json()["output"]["rule"]["id"] == "remove-repeated-footer"
 
 
 def test_root_and_tenant_agent_control_plane(client: TestClient, root_token: str) -> None:
@@ -128,6 +262,14 @@ def test_root_and_tenant_agent_control_plane(client: TestClient, root_token: str
     )
     assert publish_response.status_code == 200, publish_response.text
     assert publish_response.json()["status"] == "PUBLISHED"
+
+    package_response = client.get(
+        f"/v1/agents/{system_agent['agent']['id']}/package",
+        headers=auth(tenant_token),
+    )
+    assert package_response.status_code == 200, package_response.text
+    assert package_response.json()["key"] == "matter_definition_setup"
+    assert package_response.json()["version"]["invocation_mode"] == "CHAT"
 
     versions_response = client.get(
         f"/v1/agents/{system_agent['agent']['id']}/versions",
@@ -278,3 +420,57 @@ def test_matter_definition_revisions_and_publish(client: TestClient, root_token:
     )
     assert revisions_response.status_code == 200
     assert [revision["revision"] for revision in revisions_response.json()] == [2, 1]
+
+
+def test_matter_definition_conversations_can_be_named_and_renamed(
+    client: TestClient,
+    root_token: str,
+) -> None:
+    _, tenant_token, matter_id = create_tenant_context(client, root_token)
+    agent_response = client.post(
+        "/v1/admin/agents",
+        headers=auth(root_token),
+        json=agent_payload(),
+    )
+    assert agent_response.status_code == 201, agent_response.text
+    agent_id = agent_response.json()["agent"]["id"]
+    publish_response = client.post(
+        f"/v1/agents/{agent_id}/versions/1/publish",
+        headers=auth(root_token),
+    )
+    assert publish_response.status_code == 200, publish_response.text
+
+    create_response = client.post(
+        f"/v1/matters/{matter_id}/agent-conversations",
+        headers=auth(tenant_token),
+        json={
+            "agent_definition_id": agent_id,
+            "workflow_type": "MATTER_DEFINITION_SETUP",
+            "title": "  Initial responsiveness review  ",
+        },
+    )
+    assert create_response.status_code == 201, create_response.text
+    conversation = create_response.json()
+    assert conversation["title"] == "Initial responsiveness review"
+
+    rename_response = client.patch(
+        f"/v1/agent-conversations/{conversation['id']}",
+        headers=auth(tenant_token),
+        json={"title": "Privilege questions"},
+    )
+    assert rename_response.status_code == 200, rename_response.text
+    assert rename_response.json()["title"] == "Privilege questions"
+
+    list_response = client.get(
+        f"/v1/matters/{matter_id}/agent-conversations",
+        headers=auth(tenant_token),
+    )
+    assert list_response.status_code == 200, list_response.text
+    assert list_response.json()[0]["title"] == "Privilege questions"
+
+    blank_response = client.patch(
+        f"/v1/agent-conversations/{conversation['id']}",
+        headers=auth(tenant_token),
+        json={"title": "   "},
+    )
+    assert blank_response.status_code == 422

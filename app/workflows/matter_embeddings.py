@@ -15,6 +15,7 @@ from app.matter_embeddings import (
     refresh_job,
     submit_voyage_batch,
 )
+from app.search.client import is_retryable_opensearch_error
 from embedding_service.config import get_embedding_settings
 
 logger = logging.getLogger(__name__)
@@ -91,7 +92,14 @@ def refresh(job_id: str) -> None:
     refresh_job(uuid.UUID(job_id))
 
 
-@DBOS.step(name="index_matter_embedding_job", retries_allowed=True, max_attempts=5)
+@DBOS.step(
+    name="index_matter_embedding_job",
+    retries_allowed=True,
+    interval_seconds=30,
+    max_attempts=16,
+    backoff_rate=2,
+    should_retry=is_retryable_opensearch_error,
+)
 def index(job_id: str) -> str:
     return index_job(uuid.UUID(job_id))
 

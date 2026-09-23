@@ -3,7 +3,9 @@ title: System agents
 description: Create, configure, version, and publish reusable agents at the root tenant.
 ---
 
-The **Agents** administration area manages system-level agents that can be reused across descendant tenants and matters. Only a root administrator can create or change a system agent. Publishing makes a version eligible for a compatible, code-implemented workflow; it does not automatically place an arbitrary agent into every agent selector.
+The **Agents** administration area manages system-level agents that can be reused across descendant tenants and supported resource scopes. Only a root administrator can create or change a system agent. Publishing makes a version eligible for a compatible, code-implemented workflow; it does not automatically place an arbitrary agent into every agent selector. New installations bootstrap the managed **Matter Definition Setup**, **Batch Chat Agent**, and structured **Document Cleaner Agent** definitions.
+
+Every published agent has a standard package describing its invocation mode, supported scope types, usage instructions, and input and output schemas. Application features discover packages for an authorized resource and invoke structured agents through the generic agent endpoint. Prompts, provider settings, authorization rules, and code-owned handlers remain server-side; the browser cannot invent a new handler by changing package data.
 
 ## Create an agent
 
@@ -38,11 +40,13 @@ Changing lifecycle status does not alter existing versions or conversation histo
 
 Agent definitions select a code-owned model policy key. Provider credentials and the concrete provider model are platform settings and are never stored in the agent prompt or exposed to the browser. The current implementation provides the `configured-default` policy backed by `AGENT_DEFAULT_MODEL` and the provider API key configured on the API and workflow-worker processes.
 
+Model calls use shared process-wide request and estimated-input-token limits for each provider/model pair. Provider 429 responses pause the affected bucket and are retried using provider retry guidance plus bounded exponential backoff. Operators should configure the limits for the quota assigned to their provider project and divide that allowance across processes when running more than one workflow worker.
+
 ## Current limitations
 
 - The administration UI currently manages root-owned system agents. Tenant-agent APIs exist, but a tenant administration screen is not yet available.
-- Agents can only be launched by workflows implemented in the application. The current interactive workflow is Matter Definition setup.
-- The Matter Definition workflow currently uses the standard `matter_definition_setup` agent key. General root-managed workflow bindings and rollback controls are not yet available.
+- Agents can only be launched by workflows implemented in the application. The current interactive workflows are Matter Definition setup, batch chat, and collection rule building with the Document Cleaner Agent.
+- Matter Definition setup uses the standard `matter_definition_setup` key, and summary-backed batch RAG uses `batch_chat`. General root-managed workflow bindings and rollback controls are not yet available.
 - Agent execution analytics and cross-matter run monitoring are not yet available in the administration UI.
 
 Existing installations keep previously published agent versions unchanged. To grant an existing Matter Definition agent the new metadata tools, create and publish a new version in **Agents** with the desired tools selected. New installations bootstrap the standard agent with the complete Matter Definition toolset.

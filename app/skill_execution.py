@@ -1,6 +1,7 @@
 import uuid
+from collections.abc import Callable
 from datetime import datetime, timezone
-from typing import Any, Callable
+from typing import Any
 
 from sqlalchemy.orm import Session
 
@@ -123,6 +124,7 @@ async def execute_skill_call(
         limits=skill_version.limits,
         cache_policy=skill_version.cache_policy,
         cache_identity=cache_identity,
+        request_type=step.role_key.replace("_", "-"),
         output_validators=output_validators,
         run_id=str(skill_run.id),
     )

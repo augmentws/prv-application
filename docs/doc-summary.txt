@@ -1,0 +1,62 @@
+{#
+
+= Document Summary Template
+
+Creates a brief, topic-neutral summary and title for a (possibly truncated)
+document.
+
+== Variables:
+
+- text : str
+    The text of the document (possibly truncated)
+
+- metadata: dict[str, Any]
+    Metadata for the document, such as date, type, etc.
+
+- smy_limit: int
+    The number of words the summary should be limited to.  This
+    is calculated by the caller, e.g. to allocate more words for
+    longer summaries.
+
+- truncated: bool
+    Whether the document has been truncated.  (Currently, documents
+    are truncated by excluding text from the middle, while leaving
+    opening and closing text.)
+
+-#}
+Below is a document.  Your task will be to summarize it.
+{%- if truncated %}
+The document has been truncated, with text omitted in the middle.
+{%- endif %}
+====
+<doc>
+<metadata>
+{% for k, v in metadata.items() %}
+{{ k }}: {{ v }}
+{% endfor %}
+</metadata>
+<text><![CDATA[
+{{ text }}
+]]></text>
+</doc>
+====
+Please output:
+
+<docsmy>
+  <title><![CDATA[ /* title for the document */ ]]></title>
+  <summary><![CDATA[ /* text of the summary */ ]]></summary>
+</docsmy>
+
+* Title: no more than 10 words, giving the subject of the document.
+  Do not mention metadata (date, type, etc.).
+{% if smy_limit < 20 %}
+* Summary: a sentence of no more than {smy_limit} words, concisely summarizing
+  the document.
+{% elif smy_limit < 45 %}
+* Summary: a brief paragraph of no more than {smy_limit} words, concisely
+  summarizing the document.
+{% else %}
+* Summary: a paragraph of no more than {smy_limit} words.  Describe what
+  the document is about, mentioning its type (email, report, etc.),
+  and date (if known)
+{% endif %}

@@ -30,6 +30,14 @@ class Settings(BaseSettings):
     agent_default_model: str | None = None
     agent_turn_queue_concurrency: int = Field(default=4, ge=1, le=100)
     agent_approval_timeout_seconds: int = Field(default=7 * 24 * 60 * 60, ge=60, le=30 * 24 * 60 * 60)
+    model_trace_enabled: bool = False
+    model_trace_directory: str = ".model-traces"
+    model_rate_limit_requests_per_minute: int = Field(default=12, ge=1, le=100_000)
+    model_rate_limit_input_tokens_per_minute: int = Field(default=200_000, ge=1, le=1_000_000_000)
+    model_rate_limit_max_retries: int = Field(default=5, ge=0, le=20)
+    model_rate_limit_retry_base_seconds: float = Field(default=1.0, gt=0, le=300)
+    model_rate_limit_retry_max_seconds: float = Field(default=120.0, gt=0, le=3600)
+    model_rate_limit_characters_per_token: float = Field(default=3.0, ge=1, le=10)
     matter_embedding_batch_size: int = Field(default=250, ge=1, le=500)
     matter_embedding_document_concurrency: int = Field(default=8, ge=1, le=32)
     matter_topic_batch_size: int = Field(default=100, ge=1, le=1000)
@@ -61,6 +69,8 @@ class Settings(BaseSettings):
             raise ValueError("CHUNK_TARGET_CHARACTERS must not exceed CHUNK_MAX_CHARACTERS")
         if self.chunk_overlap_characters >= self.chunk_target_characters:
             raise ValueError("CHUNK_OVERLAP_CHARACTERS must be smaller than CHUNK_TARGET_CHARACTERS")
+        if self.model_rate_limit_retry_base_seconds > self.model_rate_limit_retry_max_seconds:
+            raise ValueError("MODEL_RATE_LIMIT_RETRY_BASE_SECONDS must not exceed MODEL_RATE_LIMIT_RETRY_MAX_SECONDS")
         return self
 
 

@@ -76,6 +76,15 @@ AGENT_TOOL_SPECS = (
         description="Start a diagnostic corpus assessment for a pinned Matter Definition revision after approval.",
         requires_approval=True,
     ),
+    AgentToolSpec(
+        key="batch.search_summaries",
+        name="Search batch summaries",
+        description=(
+            "Run a semantic search limited to the conversation's review batch and return reusable "
+            "structured document summaries for the strongest matches."
+        ),
+        requires_approval=False,
+    ),
 )
 
 AGENT_TOOL_REGISTRY = {tool.key: tool for tool in AGENT_TOOL_SPECS}
@@ -92,6 +101,7 @@ EXECUTABLE_AGENT_TOOL_KEYS = frozenset(
         "matter_metadata.enum.deactivate",
         "matter_definition.apply_draft_edit",
         "matter_definition.start_assessment",
+        "batch.search_summaries",
     }
 )
 

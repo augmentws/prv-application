@@ -9,13 +9,13 @@ import { useMemo, useState, type FormEvent } from "react";
 
 import { DataTable } from "@/components/data-table";
 import { DateHistogram, type DateHistogramInterval } from "@/components/date-histogram";
+import { ResourcePageHeader } from "@/components/resource-page-header";
 import { CollectionProcessingPanel } from "@/components/collection-processing-panel";
 import { DocumentViewerDialog } from "@/components/document-viewer-dialog";
 import { ActiveFilterBar, DateRangeFacet, FacetSidebar, type ActiveFilter, type FacetGroup } from "@/components/faceted-filter";
 import { AddToMatterDialog } from "@/components/forms/add-to-matter-dialog";
 import { DeleteCollectionDialog } from "@/components/forms/delete-collection-dialog";
 import { HelpLink } from "@/components/help-link";
-import { PageHeader } from "@/components/page-header";
 import { QueryError, TableLoading } from "@/components/query-state";
 import { StatusBadge } from "@/components/status-badge";
 import { Badge } from "@/components/ui/badge";
@@ -389,28 +389,19 @@ export function CollectionView({ clientId, collectionId }: { clientId: string; c
 
   return (
     <>
-      <nav aria-label="Breadcrumb" className="mb-4 flex flex-wrap items-center gap-1 text-sm text-muted-foreground">
-        <Link href="/app/clients" className="hover:text-foreground">Clients</Link>
-        <ChevronRight className="size-4" />
-        <Link href={`/app/clients/${clientId}`} className="hover:text-foreground">{client.data.name}</Link>
-        <ChevronRight className="size-4" />
-        <span aria-current="page" className="text-foreground">{collection.data.name}</span>
-      </nav>
-      <PageHeader
-        eyebrow="Evidence collection"
+      <ResourcePageHeader
+        breadcrumbs={<><Link href="/app/clients" className="hover:text-foreground">Clients</Link><ChevronRight className="size-4" /><Link href={`/app/clients/${clientId}`} className="hover:text-foreground">{client.data.name}</Link><ChevronRight className="size-4" /><span aria-current="page" className="text-foreground">{collection.data.name}</span></>}
         title={collection.data.name}
-        description={collection.data.description || "Client-level source data and uploaded artifacts."}
-        actions={<div className="flex flex-wrap items-center gap-2"><HelpLink topic="collections" /><StatusBadge status={collection.data.status} />{collection.data.status !== "DELETING" ? <DeleteCollectionDialog collectionName={collection.data.name} onDelete={() => deleteCollection.mutateAsync().then(() => undefined)} /> : null}</div>}
       />
       <div className="mb-6 flex flex-wrap items-end justify-between gap-3 border-b">
-        <div className="flex gap-1" role="tablist" aria-label="Collection sections">
+        <div className="flex min-w-0 flex-1 gap-1 overflow-x-auto" role="tablist" aria-label="Collection sections">
           <button role="tab" aria-selected={tab === "documents"} onClick={() => setTab("documents")} className={tabClass(tab === "documents")}>Documents</button>
           <button role="tab" aria-selected={tab === "custodians"} onClick={() => setTab("custodians")} className={tabClass(tab === "custodians")}>Custodians</button>
           <button role="tab" aria-selected={tab === "date-histogram"} onClick={() => setTab("date-histogram")} className={tabClass(tab === "date-histogram")}>Date Histogram</button>
           <button role="tab" aria-selected={tab === "processing"} onClick={() => setTab("processing")} className={tabClass(tab === "processing")}>Processing</button>
         </div>
-        {tab === "documents" ? (
-          <div className="pb-2">
+        <div className="flex shrink-0 flex-wrap items-center gap-2 pb-2">
+          {tab === "documents" ? (
             <AddToMatterDialog
               matters={matters.data ?? []}
               triggerLabel="Add all matching"
@@ -432,8 +423,11 @@ export function CollectionView({ clientId, collectionId }: { clientId: string; c
                 selection_summary: hasFilters ? "Current collection search and filters" : "All collection documents",
               })}
             />
-          </div>
-        ) : null}
+          ) : null}
+          <HelpLink topic={tab === "processing" ? "documentCleaner" : "collections"} />
+          <StatusBadge status={collection.data.status} />
+          {collection.data.status !== "DELETING" ? <DeleteCollectionDialog collectionName={collection.data.name} onDelete={() => deleteCollection.mutateAsync().then(() => undefined)} /> : null}
+        </div>
       </div>
 
       {tab === "documents" ? (

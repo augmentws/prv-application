@@ -84,10 +84,12 @@ class CollectionDeletionFailure(BaseModel):
 
 
 TextProcessingRuleAction = Literal["REMOVE_LINE", "REMOVE_BLOCK", "REPLACE"]
+TextProcessingRuleId = Annotated[str, StringConstraints(strip_whitespace=True, pattern=r"^[a-z][a-z0-9_-]{0,63}$")]
+MAX_TEXT_PROCESSING_TEST_ITEMS = 25
 
 
 class TextProcessingRule(BaseModel):
-    id: Annotated[str, StringConstraints(strip_whitespace=True, pattern=r"^[a-z][a-z0-9_-]{0,63}$")]
+    id: TextProcessingRuleId
     name: str = Field(min_length=1, max_length=120)
     description: str | None = Field(default=None, max_length=500)
     action: TextProcessingRuleAction
@@ -125,6 +127,8 @@ class SystemTextProcessingRule(BaseModel):
     description: str
     action: str
     match_description: str
+    match_pattern: str
+    stop_pattern: str
 
 
 class CollectionTextProcessingProfileRead(BaseModel):
@@ -138,8 +142,18 @@ class CollectionTextProcessingProfileRead(BaseModel):
 
 
 class CollectionTextProcessingTestRequest(BaseModel):
-    item_ids: list[uuid.UUID] = Field(min_length=1, max_length=10)
+    item_ids: list[uuid.UUID] = Field(min_length=1, max_length=MAX_TEXT_PROCESSING_TEST_ITEMS)
     rules: list[TextProcessingRule] = Field(default_factory=list, max_length=50)
+    disabled_rule_ids: list[TextProcessingRuleId] = Field(default_factory=list, max_length=54)
+
+    @model_validator(mode="after")
+    def validate_unique_rule_ids(self) -> "CollectionTextProcessingTestRequest":
+        rule_ids = [rule.id for rule in self.rules]
+        if len(rule_ids) != len(set(rule_ids)):
+            raise ValueError("Rule IDs must be unique")
+        if len(self.disabled_rule_ids) != len(set(self.disabled_rule_ids)):
+            raise ValueError("Disabled rule IDs must be unique")
+        return self
 
 
 class TextProcessingChange(BaseModel):
@@ -165,12 +179,24 @@ class CollectionTextProcessingTestResponse(BaseModel):
     items: list[CollectionTextProcessingTestItem]
 
 
+class CollectionTextProcessingRunCreate(BaseModel):
+    enabled_rule_ids: list[TextProcessingRuleId] | None = Field(default=None, max_length=54)
+
+    @model_validator(mode="after")
+    def validate_unique_rule_ids(self) -> "CollectionTextProcessingRunCreate":
+        if self.enabled_rule_ids is not None and len(self.enabled_rule_ids) != len(set(self.enabled_rule_ids)):
+            raise ValueError("Enabled rule IDs must be unique")
+        return self
+
+
 class CollectionTextProcessingRunRead(ORMModel):
     id: uuid.UUID
     collection_id: uuid.UUID
     status: Literal["QUEUED", "RUNNING", "COMPLETED", "COMPLETED_WITH_ERRORS", "FAILED"]
     processor_version: str
     profile_revision: int
+    rules_snapshot: list[TextProcessingRule]
+    disabled_rule_ids: list[TextProcessingRuleId]
     configuration_hash: str
     total_count: int
     processed_count: int

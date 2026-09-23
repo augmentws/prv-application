@@ -195,3 +195,55 @@ textarea {
 ::selection {
   background: color-mix(in srgb, var(--accent) 55%, transparent);
 }
+
+/*
+ * The Matter Definition page is a fixed application workspace on desktop.
+ * Keep this layout in CSS instead of composing responsive utility classes:
+ * Tailwind's development content scanner can otherwise hot-reload the JSX
+ * before it has emitted newly introduced breakpoint variants.
+ */
+@media (min-width: 80rem) {
+  .matter-definition-page-frame {
+    display: flex;
+    height: 100%;
+    min-height: 0;
+    flex-direction: column;
+    overflow: hidden;
+  }
+
+  .matter-definition-page-header {
+    flex-shrink: 0;
+  }
+
+  .matter-definition-page-content {
+    min-height: 0;
+    flex: 1 1 0%;
+    overflow: hidden;
+  }
+
+  .matter-definition-workspace {
+    height: 100%;
+    min-height: 0;
+    grid-template-columns: minmax(0, 1.15fr) minmax(23rem, 0.85fr);
+    grid-template-rows: minmax(0, 1fr);
+    overflow: hidden;
+  }
+
+  .matter-definition-guidance-frame,
+  .matter-definition-guidance-card {
+    height: 100%;
+    min-height: 0;
+    overflow: hidden;
+  }
+
+  .matter-definition-guidance-text {
+    min-height: 0;
+  }
+
+  .matter-definition-tools-frame,
+  .matter-definition-tools-card {
+    height: 100%;
+    min-height: 0;
+    overflow: hidden;
+  }
+}

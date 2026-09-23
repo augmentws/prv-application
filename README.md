@@ -62,6 +62,8 @@ Set a unique `JWT_SECRET` and change the bootstrap password in `.env` before run
 
 To run the standard agent through Google AI Studio, set `AGENT_DEFAULT_MODEL` to a `google:<model-id>` value and provide `GOOGLE_API_KEY`. The Core API and workflow worker must be restarted after changing their environment.
 
+All model requests share process-wide rate-limit buckets keyed by provider and model. The defaults (`MODEL_RATE_LIMIT_REQUESTS_PER_MINUTE=12` and `MODEL_RATE_LIMIT_INPUT_TOKENS_PER_MINUTE=200000`) stay below the Gemini developer free-tier limits. Set them to conservative values for the quota assigned to the configured provider project. A provider HTTP 429 pauses the shared bucket, honors `Retry-After` or structured provider retry guidance, and retries with bounded exponential backoff. These buckets coordinate concurrent calls within one process; deployments with multiple workflow-worker processes must divide the configured quota across those processes or provide a distributed limiter.
+
 Interactive API documentation is available at `http://127.0.0.1:8000/docs`; the OpenAPI document is available at `/openapi.json`.
 
 By default, `ARTIFACT_MODE=embedded` mounts the Artifact Service routes in the Core API process while keeping Artifact tables in the separate `pvr-artifact` database. Every tenant receives a dedicated S3-compatible bucket. The local setup uses MinIO at `http://127.0.0.1:9000`, with its console at `http://127.0.0.1:9001`.

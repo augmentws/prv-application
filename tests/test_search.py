@@ -1,5 +1,6 @@
 import uuid
 from copy import deepcopy
+from datetime import datetime, timezone
 from types import SimpleNamespace
 from unittest.mock import Mock
 
@@ -21,12 +22,12 @@ from app.models import (
     MatterEmbeddingBatch,
     MatterEmbeddingJob,
     MetadataDefinition,
-    SearchIndexGeneration,
     SearchProjectionOperation,
     Tenant,
     User,
 )
 from app.schemas import MatterSearchRequest
+from app.search.client import OpenSearchBulkError, OpenSearchError, is_retryable_opensearch_error
 from app.search.mappings import (
     INDEX_ANALYZER,
     QUOTE_ANALYZER,
@@ -50,6 +51,25 @@ from app.search.service import SearchIndexManager, build_document_projection
 
 def auth(token: str) -> dict[str, str]:
     return {"Authorization": f"Bearer {token}"}
+
+
+@pytest.mark.parametrize(
+    "error",
+    [
+        OpenSearchError("OpenSearch returned 429: too many requests", status_code=429),
+        OpenSearchError("OpenSearch returned 507: insufficient storage", status_code=507),
+        OpenSearchError("cluster_block_exception: disk usage exceeded flood-stage watermark"),
+        OpenSearchError("circuit_breaking_exception: data too large"),
+        OpenSearchError("OpenSearch request failed: connection reset"),
+    ],
+)
+def test_opensearch_pressure_errors_are_retryable(error: OpenSearchError) -> None:
+    assert is_retryable_opensearch_error(error)
+
+
+def test_permanent_opensearch_errors_are_not_retried() -> None:
+    assert not is_retryable_opensearch_error(OpenSearchError("mapper_parsing_exception: bad field"))
+    assert not is_retryable_opensearch_error(ValueError("bad request"))
 
 
 def definition(
@@ -648,7 +668,7 @@ class FakeIndexClient:
         return self.indexed_document_count
 
 
-def test_embedding_job_indexing_coalesces_pages_and_refreshes_once(
+def test_embedding_job_indexing_checkpoints_and_retries_only_failed_documents(
     db: Session,
     root_admin: User,
     monkeypatch: pytest.MonkeyPatch,
@@ -718,6 +738,15 @@ def test_embedding_job_indexing_coalesces_pages_and_refreshes_once(
             ),
         ]
     )
+    operation = SearchProjectionOperation(
+        matter_id=matter.id,
+        kind="DOCUMENT_UPSERT",
+        payload={"embedding_job_id": str(embedding_job.id)},
+        status="RUNNING",
+        workflow_id=f"embedding-index-job:{embedding_job.id}",
+        created_by_user_id=root_admin.id,
+    )
+    db.add(operation)
     db.commit()
 
     fake = Mock()
@@ -725,20 +754,40 @@ def test_embedding_job_indexing_coalesces_pages_and_refreshes_once(
     generation = SimpleNamespace(index_name="matter-embedding-index", document_count=0)
     manager = SearchIndexManager(db, fake, Settings(search_bulk_batch_size=2))
     monkeypatch.setattr(manager, "ensure", Mock(return_value=generation))
-    bulk_upsert = Mock()
+    bulk_upsert = Mock(
+        side_effect=[
+            None,
+            OpenSearchBulkError(
+                "cluster_block_exception: disk usage exceeded flood-stage watermark",
+                failed_document_ids=[str(documents[2].id)],
+            ),
+        ]
+    )
     monkeypatch.setattr(manager, "_bulk_upsert", bulk_upsert)
 
-    indexed_count = manager.upsert_embedding_job(matter.id, embedding_job.id)
+    with pytest.raises(OpenSearchBulkError):
+        manager.upsert_embedding_job(matter.id, embedding_job.id, operation=operation)
 
-    assert indexed_count == 3
     assert bulk_upsert.call_count == 2
     assert [len(call.args[1]) for call in bulk_upsert.call_args_list] == [2, 1]
+    assert operation.payload["next_document_offset"] == 3
+    assert operation.payload["retry_document_ids"] == [str(documents[2].id)]
+    fake.refresh.assert_not_called()
+
+    bulk_upsert.reset_mock(side_effect=True)
+    indexed_count = manager.upsert_embedding_job(matter.id, embedding_job.id, operation=operation)
+
+    assert indexed_count == 3
+    bulk_upsert.assert_called_once()
+    assert {document.id for document in bulk_upsert.call_args.args[1]} == {documents[2].id}
+    assert operation.payload["next_document_offset"] == 3
+    assert operation.payload["retry_document_ids"] == []
     fake.refresh.assert_called_once_with("matter-embedding-index")
     fake.count.assert_called_once_with("matter-embedding-index")
     assert generation.document_count == 3
 
 
-def test_index_manager_requires_confirmation_then_rebuilds_and_cleans(db: Session) -> None:
+def test_index_manager_adds_metadata_mapping_and_backfills_in_place(db: Session) -> None:
     tenant = Tenant(slug="search-tenant", name="Search Tenant", status="ACTIVE", is_root=True)
     db.add(tenant)
     db.flush()
@@ -764,20 +813,52 @@ def test_index_manager_requires_confirmation_then_rebuilds_and_cleans(db: Sessio
     added.allowed_values = [{"key": "conduct", "label": "Conduct", "active": True}]
     db.add(added)
     db.commit()
+    backfill = Mock(wraps=manager._backfill_metadata_fields)
+    manager._backfill_metadata_fields = backfill
+
+    same = manager.ensure(matter.id)
+
+    assert same.id == first.id
+    assert len(fake.created) == 1
+    assert fake.mapping_updates == [
+        (
+            first.index_name,
+            {"properties": {"metadata": {"properties": {"issue": {"type": "keyword", "ignore_above": 1024}}}}},
+        )
+    ]
+    backfill.assert_called_once()
+    assert backfill.call_args.args[0] == first.index_name
+    assert backfill.call_args.args[1] == matter
+    assert {definition.key for definition in backfill.call_args.args[2]} == {"issue", "notes"}
+    assert backfill.call_args.args[3] == ("issue",)
+    assert fake.deleted == []
+
+
+def test_index_manager_requires_confirmation_for_existing_metadata_mapping_change(db: Session) -> None:
+    tenant = Tenant(slug="changed-metadata-tenant", name="Changed Metadata Tenant", status="ACTIVE", is_root=True)
+    db.add(tenant)
+    db.flush()
+    client_record = Client(tenant_id=tenant.id, name="Changed Metadata Client", status="ACTIVE")
+    db.add(client_record)
+    db.flush()
+    matter = Matter(client_id=client_record.id, name="Changed Metadata Matter", status="ACTIVE")
+    db.add(matter)
+    db.flush()
+    issue = definition("issue", "TEXT")
+    issue.matter_id = matter.id
+    db.add(issue)
+    db.commit()
+
+    fake = FakeIndexClient()
+    manager = SearchIndexManager(db, fake, Settings(opensearch_index_prefix="test"))  # type: ignore[arg-type]
+    manager.ensure(matter.id)
+    issue.facetable = True
+    db.commit()
+
     with pytest.raises(SearchReindexRequired) as required:
         manager.ensure(matter.id)
-    assert "metadata" in " ".join(required.value.plan.reasons)
-    second = manager.ensure(matter.id, force=True)
 
-    assert second.generation == 2
-    assert len(fake.created) == 2
-    assert fake.alias_actions[-1] == [
-        {"remove": {"index": first.index_name, "alias": first.alias_name}},
-        {"add": {"index": second.index_name, "alias": second.alias_name}},
-    ]
-    generations = list(db.scalars(select(SearchIndexGeneration).where(SearchIndexGeneration.matter_id == matter.id)))
-    assert [generation.id for generation in generations] == [second.id]
-    assert fake.deleted == [first.index_name]
+    assert "metadata.issue" in " ".join(required.value.plan.reasons)
 
 
 def test_index_manager_applies_allowlisted_additive_mapping_in_place(db: Session) -> None:
@@ -1014,3 +1095,83 @@ def test_failed_document_upserts_can_be_requeued_in_bulk(
         "requeued_operation_count": 0,
         "requeued_document_count": 0,
     }
+
+
+def test_durable_workflow_errors_can_be_requeued_when_operation_is_stranded_running(
+    client: TestClient,
+    root_token: str,
+    db: Session,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    headers = auth(root_token)
+    tenant_id = client.get("/v1/auth/me", headers=headers).json()["tenant_id"]
+    created_client = client.post(
+        f"/v1/tenants/{tenant_id}/clients",
+        headers=headers,
+        json={"name": "Durable Retry Client"},
+    ).json()
+    matter = client.post(
+        f"/v1/clients/{created_client['id']}/matters",
+        headers=headers,
+        json={"name": "Durable Retry Matter"},
+    ).json()
+    matter_id = uuid.UUID(matter["id"])
+    errored = SearchProjectionOperation(
+        matter_id=matter_id,
+        kind="DOCUMENT_UPSERT",
+        payload={"document_ids": [str(uuid.uuid4()), str(uuid.uuid4()), str(uuid.uuid4())]},
+        status="RUNNING",
+        workflow_id=f"search-projection:{uuid.uuid4()}",
+        created_by_user_id=None,
+        attempt_count=1,
+        started_at=datetime.now(timezone.utc),
+    )
+    active = SearchProjectionOperation(
+        matter_id=matter_id,
+        kind="DOCUMENT_UPSERT",
+        payload={"document_ids": [str(uuid.uuid4())]},
+        status="RUNNING",
+        workflow_id=f"search-projection:{uuid.uuid4()}",
+        created_by_user_id=None,
+        attempt_count=1,
+        started_at=datetime.now(timezone.utc),
+    )
+    db.add_all([errored, active])
+    db.commit()
+    errored_id = errored.id
+    active_id = active.id
+    original_workflow_id = errored.workflow_id
+
+    monkeypatch.setattr(
+        "app.routers.search._durable_error_workflow_statuses",
+        lambda _settings, workflow_ids: {
+            workflow_id: "ERROR" for workflow_id in workflow_ids if workflow_id == original_workflow_id
+        },
+    )
+
+    summary = client.get(
+        f"/v1/matters/{matter_id}/search-operations/retryable",
+        headers=headers,
+    )
+    assert summary.status_code == 200, summary.text
+    assert summary.json() == {
+        "requeued_operation_count": 1,
+        "requeued_document_count": 3,
+    }
+
+    response = client.post(
+        f"/v1/matters/{matter_id}/search-operations/retry-failed",
+        headers=headers,
+    )
+    assert response.status_code == 202, response.text
+    assert response.json() == {
+        "requeued_operation_count": 1,
+        "requeued_document_count": 3,
+    }
+    db.expire_all()
+    retried = db.get(SearchProjectionOperation, errored_id)
+    assert retried is not None
+    assert retried.status == "QUEUED"
+    assert retried.workflow_id != original_workflow_id
+    assert retried.payload["retry_history"][-1]["durable_workflow_status"] == "ERROR"
+    assert db.get(SearchProjectionOperation, active_id).status == "RUNNING"

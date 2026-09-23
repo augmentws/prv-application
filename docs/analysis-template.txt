@@ -1,0 +1,70 @@
+{#
+
+= Topic Report Template
+
+The template used to format the document chunk summaries and provide
+instructions to the LLM for generating the initial topic summary.
+
+This template is also used to generate the initial message (i.e.
+the original instructions) in an investigation chat containing
+followup questions.  NOTE that if the additional chunk summaries
+have been added to the Investigation subsequent to the initial
+report (i.e. by extensions), then all chunk summaries will be shown
+here, not just those used in the initial report.
+
+This template is not used for the extension question itself, but
+rather `summaries_for_extension.j2`.
+
+== Variables:
+
+- topic : str
+    The topic of the investigation.
+
+
+- inputs: List[DocChunkInvestigationSummary] or List[pyramid.model.Block]
+    List of summaries of the document chunks (or, in pyramid construction,
+    of intermediate "blocks" of collected summaries).  (Passed on to
+    `_chunk_smys.j2`.)
+
+== Sub-Templates:
+
+=== `_chunk_smys.j2`
+
+Responsible for rendering of the document chunk summaries.
+
+-#}
+{% include "_chunk_smys.j2" %}
+========
+
+The above are summaries for documents returned to the following topic:
+
+<b2-topic>
+    {{topic}}
+</b2-topic>
+
+Unless otherwise instructed in the topic, act as senior legal and investigative professional.
+Please produce a report on this topic, based on the above summaries.
+Write your report in the same language as the topic.
+Your answers should only be based on the information in the summaries, not on any general knowledge.
+If the summaries do not contain the information asked for, it is important that you say so.
+
+
+While answering this topic, please include inline citations to documents
+that support each part of your answer, in the form ``Document XXX''.
+
+Some of the summaries are for sections of documents, i.e. the document is
+tagged ``<doc docid='XXX' section='NN' of='MM'>'' and labelled
+``Document XXX§NN''. For these summaries, please cite the document and
+section as ``Document XXX§NN''.
+
+Your citations must include the associated paragraph references (¶) whenever they are provided 
+in the source material. These paragraph-level citations are essential for 
+precise source tracking and must be preserved in the format "Document XXX¶N" 
+or "Document XXX§NN¶N" as applicable.
+
+If you cite multiple documents, please put ``Document'' before each document
+ID. That is, please say ``Document XXX¶N, Document YYY§MM¶N, and Document ZZZ¶N'',
+not ``Documents XXX¶N, YYY§MM¶N, and ZZZ¶N''. If there are more than 10 citations 
+for any one point in your answer, provide the ten most relevant and tell 
+the user that there are additional citations available but not listed.
+Include citations with each statement; do not place all the citations at the end.

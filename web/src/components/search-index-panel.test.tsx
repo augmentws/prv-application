@@ -95,7 +95,7 @@ describe("SearchIndexPanel", () => {
     render(<SearchIndexPanel coreDocumentCount={12} indexes={[activeIndex]} operations={[failed]} onRebuild={vi.fn()} rebuilding={false} onConfirmReindex={vi.fn()} confirmingReindex={false} onRetryFailed={onRetryFailed} retryingFailed={false} />);
 
     await user.click(screen.getByRole("button", { name: "Requeue failed jobs" }));
-    expect(screen.getByText(/1 failed job covering 2 documents/i)).toBeInTheDocument();
+    expect(screen.getByText(/1 failed or interrupted job covering 2 documents/i)).toBeInTheDocument();
     await user.click(screen.getByRole("button", { name: "Confirm requeue" }));
 
     await waitFor(() => expect(onRetryFailed).toHaveBeenCalledOnce());

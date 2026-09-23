@@ -6,6 +6,7 @@
     "tenants-and-users",
     "clients-and-matters",
     "collections",
+    "document-cleaner",
     "viewing-documents",
     "metadata-definitions",
     "matter-templates",

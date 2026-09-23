@@ -2,14 +2,17 @@
 
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import type { ColumnDef } from "@tanstack/react-table";
-import { Ban, BriefcaseBusiness, ChevronRight, Database, FileSearch, FileText, ListChecks, Play, Search, Sparkles, UsersRound } from "lucide-react";
+import { Ban, BriefcaseBusiness, ChevronRight, Database, FileSearch, FileText, ListChecks, Play, RotateCcw, Search, Sparkles, UsersRound } from "lucide-react";
 import Link from "next/link";
 import { useRouter } from "next/navigation";
 import { useCallback, useMemo } from "react";
 import { toast } from "sonner";
 
 import { DataTable } from "@/components/data-table";
+import { ResourcePageHeader } from "@/components/resource-page-header";
+import { EnumMetadataEditor } from "@/components/enum-metadata-editor";
 import { CloneMatterDialog, type CloneMatterValues } from "@/components/forms/clone-matter-dialog";
+import { AssignBatchCodingGroupsDialog } from "@/components/forms/assign-batch-coding-groups-dialog";
 import { CreateMetadataDialog } from "@/components/forms/create-metadata-dialog";
 import { type CreateMetadataGroupValues } from "@/components/forms/create-metadata-group-dialog";
 import { CreateReviewBatchDialog } from "@/components/forms/create-review-batch-dialog";
@@ -19,7 +22,6 @@ import { ReviewTopicProposalsDialog } from "@/components/forms/review-topic-prop
 import { HelpLink } from "@/components/help-link";
 import { MatterDefinitionPanel } from "@/components/matter-definition-panel";
 import { MetadataGroupsPanel } from "@/components/metadata-groups-panel";
-import { PageHeader } from "@/components/page-header";
 import { QueryError, TableLoading } from "@/components/query-state";
 import { SearchIndexPanel } from "@/components/search-index-panel";
 import { StatusBadge } from "@/components/status-badge";
@@ -92,6 +94,12 @@ export function MatterView({ clientId, matterId, requestedTab, selectedJobId }: 
     enabled: tab === "search",
     refetchInterval: (query) => query.state.data?.some((operation) => operation.status === "QUEUED" || operation.status === "RUNNING") ? 2000 : false,
   });
+  const retryableSearchOperations = useQuery({
+    queryKey: ["retryable-search-operations", matterId],
+    queryFn: () => coreApi<SearchProjectionRetryResponse>(`/v1/matters/${matterId}/search-operations/retryable`),
+    enabled: tab === "search",
+    refetchInterval: 3000,
+  });
   const mutation = useMutation({
     mutationFn: (values: MetadataDefinitionCreate) => coreApi<MetadataDefinitionRead>(`/v1/matters/${matterId}/metadata-definitions`, { method: "POST", body: JSON.stringify(values) }),
     onSuccess: (definition) => { void queryClient.invalidateQueries({ queryKey: ["metadata-definitions", matterId] }); toast.success(`${definition.display_name} was created.`); },
@@ -137,6 +145,14 @@ export function MatterView({ clientId, matterId, requestedTab, selectedJobId }: 
       toast.success("The embedding job was canceled.");
     },
     onError: (error) => toast.error(error instanceof Error ? error.message : "The embedding job could not be canceled."),
+  });
+  const retryEmbeddingIndexMutation = useMutation({
+    mutationFn: (jobId: string) => coreApi<MatterEmbeddingJobRead>(`/v1/matters/${matterId}/embedding-jobs/${jobId}/retry-index`, { method: "POST" }),
+    onSuccess: (updated) => {
+      queryClient.setQueryData<MatterEmbeddingJobRead[]>(["matter-embedding-jobs", matterId], (current) => current?.map((job) => job.id === updated.id ? updated : job));
+      toast.success("Search indexing was queued again; completed embeddings will be reused.");
+    },
+    onError: (error) => toast.error(error instanceof Error ? error.message : "Search indexing could not be retried."),
   });
   const createTopicJobMutation = useMutation({
     mutationFn: (values: MatterTopicJobCreate) => coreApi<MatterTopicJobRead>(`/v1/matters/${matterId}/topic-jobs`, { method: "POST", body: JSON.stringify(values) }),
@@ -186,9 +202,10 @@ export function MatterView({ clientId, matterId, requestedTab, selectedJobId }: 
     onSuccess: (result) => {
       void queryClient.invalidateQueries({ queryKey: ["search-operations", matterId] });
       void queryClient.invalidateQueries({ queryKey: ["search-indexes", matterId] });
+      void queryClient.invalidateQueries({ queryKey: ["retryable-search-operations", matterId] });
       toast.success(result.requeued_operation_count
-        ? `${result.requeued_operation_count.toLocaleString()} failed search ${result.requeued_operation_count === 1 ? "job was" : "jobs were"} requeued for ${result.requeued_document_count.toLocaleString()} documents.`
-        : "There are no failed document-update jobs to requeue.");
+        ? `${result.requeued_operation_count.toLocaleString()} failed or interrupted search ${result.requeued_operation_count === 1 ? "job was" : "jobs were"} requeued for ${result.requeued_document_count.toLocaleString()} documents.`
+        : "There are no failed or interrupted document-update jobs to requeue.");
     },
     onError: (error) => toast.error(error instanceof Error ? error.message : "The failed search jobs could not be requeued."),
   });
@@ -208,20 +225,34 @@ export function MatterView({ clientId, matterId, requestedTab, selectedJobId }: 
     },
     onError: (error) => toast.error(error instanceof Error ? error.message : "The batch assignment could not be changed."),
   });
+  const assignBatchCodingGroupsMutation = useMutation({
+    mutationFn: ({ batchId, codingGroupIds }: { batchId: string; codingGroupIds: string[] }) => coreApi<ReviewBatchRead>(`/v1/matters/${matterId}/review-batches/${batchId}/coding-groups`, { method: "PUT", body: JSON.stringify({ coding_group_ids: codingGroupIds }) }),
+    onSuccess: (updated) => {
+      queryClient.setQueryData<ReviewBatchRead[]>(["review-batches", matterId], (current) => current?.map((batch) => batch.id === updated.id ? updated : batch));
+      toast.success(`Coding groups for ${updated.name} were updated.`);
+    },
+    onError: (error) => toast.error(error instanceof Error ? error.message : "The coding groups could not be updated."),
+  });
   const createGroup = useCallback((values: CreateMetadataGroupValues) => groupMutation.mutateAsync(values).then(() => undefined), [groupMutation]);
   const changeVisibility = useCallback((group: MetadataGroupRead, surface: "TABLE" | "DOCUMENT", visible: boolean) => visibilityMutation.mutateAsync({ group, surface, visible }).then(() => undefined), [visibilityMutation]);
   const saveTemplate = useCallback((values: SaveMatterTemplateValues) => templateMutation.mutateAsync(values).then(() => undefined), [templateMutation]);
   const cloneMatter = useCallback((values: CloneMatterValues) => cloneMutation.mutateAsync(values).then(() => undefined), [cloneMutation]);
   const createReviewBatch = useCallback((values: ReviewBatchCreate) => createReviewBatchMutation.mutateAsync(values).then(() => undefined), [createReviewBatchMutation]);
+  const assignBatchCodingGroups = useCallback((batchId: string, codingGroupIds: string[]) => assignBatchCodingGroupsMutation.mutateAsync({ batchId, codingGroupIds }).then(() => undefined), [assignBatchCodingGroupsMutation]);
   const applyTopics = useCallback((jobId: string, payload: MatterTopicApplyRequest) => applyTopicJobMutation.mutateAsync({ jobId, payload }).then(() => undefined), [applyTopicJobMutation]);
+  const updateDefinitionCache = useCallback((updated: MetadataDefinitionRead) => {
+    queryClient.setQueryData<MetadataDefinitionRead[]>(["metadata-definitions", matterId], (current) => current?.map((definition) => definition.id === updated.id ? updated : definition));
+  }, [matterId, queryClient]);
   const columns = useMemo<ColumnDef<MetadataDefinitionRead>[]>(() => [
     { accessorKey: "display_name", header: "Field", cell: ({ row }) => <div><p className="font-semibold">{row.original.display_name}</p><code className="text-xs text-muted-foreground">{row.original.key}</code></div> },
     { accessorKey: "type", header: "Type", cell: ({ row }) => <Badge>{row.original.type.toLowerCase().replace("_", " ")}</Badge> },
+    { id: "allowed_values", header: "Enum values", size: 220, cell: ({ row }) => row.original.type === "ENUM" ? <span className="text-muted-foreground">{(row.original.allowed_values ?? []).filter((value) => value.active !== false).length} active · {(row.original.allowed_values ?? []).filter((value) => value.active === false).length} inactive</span> : <span className="text-muted-foreground">—</span> },
     { accessorKey: "value_source", header: "Source", cell: ({ row }) => <Badge variant="outline">{row.original.value_source.toLowerCase()}</Badge> },
     { accessorKey: "cardinality", header: "Values", cell: ({ row }) => <span className="text-muted-foreground">{row.original.cardinality.toLowerCase()}</span> },
     { id: "behavior", header: "Behavior", cell: ({ row }) => <div className="flex flex-wrap gap-1">{row.original.searchable ? <Badge variant="outline">search</Badge> : null}{row.original.facetable ? <Badge variant="outline">filter</Badge> : null}{row.original.ai_assignable ? <Badge variant="accent">agent</Badge> : null}</div> },
     { accessorKey: "status", header: "Status", cell: ({ row }) => <StatusBadge status={row.original.status} /> },
-  ], []);
+    { id: "actions", header: "", size: 150, cell: ({ row }) => row.original.type === "ENUM" ? <EnumMetadataEditor matterId={matterId} definition={row.original} onChange={updateDefinitionCache} /> : null },
+  ], [matterId, updateDefinitionCache]);
 
   const openTab = useCallback((nextTab: MatterTab, jobId?: string) => {
     const params = new URLSearchParams({ tab: nextTab });
@@ -246,8 +277,12 @@ export function MatterView({ clientId, matterId, requestedTab, selectedJobId }: 
     { accessorKey: "chunk_count", header: "Chunks", cell: ({ row }) => <span className="tabular-nums">{row.original.chunk_count.toLocaleString()}</span> },
     { id: "provider_usage", header: "Token usage", cell: ({ row }) => <EmbeddingTokenUsage job={row.original} /> },
     { accessorKey: "created_at", header: "Created", cell: ({ row }) => <span className="whitespace-nowrap text-muted-foreground">{formatDate(row.original.created_at)}</span> },
-    { id: "actions", header: "", cell: ({ row }) => ["QUEUED", "PLANNING", "RUNNING"].includes(row.original.status) ? <Button size="sm" variant="outline" onClick={() => cancelEmbeddingJobMutation.mutate(row.original.id)}><Ban />Cancel</Button> : null },
-  ], [cancelEmbeddingJobMutation]);
+    { id: "actions", header: "", cell: ({ row }) => ["QUEUED", "PLANNING", "RUNNING"].includes(row.original.status)
+      ? <Button size="sm" variant="outline" onClick={() => cancelEmbeddingJobMutation.mutate(row.original.id)}><Ban />Cancel</Button>
+      : row.original.status === "FAILED"
+        ? <Button size="sm" variant="outline" disabled={retryEmbeddingIndexMutation.isPending} onClick={() => retryEmbeddingIndexMutation.mutate(row.original.id)}><RotateCcw />Retry indexing</Button>
+        : null },
+  ], [cancelEmbeddingJobMutation, retryEmbeddingIndexMutation]);
   const topicJobColumns = useMemo<ColumnDef<MatterTopicJobRead>[]>(() => [
     { accessorKey: "operating_mode", header: "Mode", cell: ({ row }) => <div><p className="font-semibold">{row.original.operating_mode === "AUTO" ? "Automatic" : `${row.original.requested_topic_count} topics`}</p><p className="text-xs text-muted-foreground">{row.original.sample_size.toLocaleString()} chunk sample · {row.original.assignment_mode.toLowerCase()}</p></div> },
     { accessorKey: "status", header: "Status", cell: ({ row }) => <StatusBadge status={row.original.status} /> },
@@ -261,30 +296,45 @@ export function MatterView({ clientId, matterId, requestedTab, selectedJobId }: 
     { accessorKey: "name", header: "Batch", cell: ({ row }) => <div><p className="font-semibold">{row.original.name}</p>{row.original.description ? <p className="max-w-md truncate text-xs text-muted-foreground" title={row.original.description}>{row.original.description}</p> : null}</div> },
     { accessorKey: "selection_type", header: "Created from", cell: ({ row }) => <span className="text-muted-foreground">{batchSelectionLabel(row.original.selection_type)}</span> },
     { accessorKey: "document_count", header: "Documents", cell: ({ row }) => ["QUEUED", "BUILDING"].includes(row.original.status) ? <span className="text-muted-foreground">Building…</span> : <span className="tabular-nums">{row.original.document_count.toLocaleString()}</span> },
-    { id: "coding", header: "Coding", cell: ({ row }) => <span className="text-muted-foreground">{row.original.coding_groups.length ? `${row.original.coding_groups.length} group${row.original.coding_groups.length === 1 ? "" : "s"}` : "No groups"}</span> },
+    { id: "coding", header: "Coding", cell: ({ row }) => <div className="flex items-center gap-2"><span className="text-muted-foreground">{row.original.coding_groups.length ? `${row.original.coding_groups.length} group${row.original.coding_groups.length === 1 ? "" : "s"}` : "No groups"}</span><AssignBatchCodingGroupsDialog batch={row.original} groups={groups.data ?? []} onSave={assignBatchCodingGroups} /></div> },
     { id: "assignee", header: "Assigned to", cell: ({ row }) => <Select value={row.original.assigned_user_id ?? "unassigned"} onValueChange={(value) => assignReviewBatchMutation.mutate({ batchId: row.original.id, userId: value === "unassigned" ? null : value })} disabled={assignReviewBatchMutation.isPending}><SelectTrigger className="w-48"><SelectValue /></SelectTrigger><SelectContent><SelectItem value="unassigned">Unassigned</SelectItem>{(tenantUsers.data ?? []).filter((user) => user.status === "ACTIVE").map((user) => <SelectItem key={user.id} value={user.id}>{user.display_name}</SelectItem>)}</SelectContent></Select> },
     { accessorKey: "status", header: "Status", cell: ({ row }) => <div><StatusBadge status={row.original.status} />{row.original.error_message ? <p className="mt-1 max-w-64 truncate text-xs text-destructive" title={row.original.error_message}>{row.original.error_message}</p> : null}</div> },
     { accessorKey: "created_at", header: "Created", cell: ({ row }) => <span className="whitespace-nowrap text-muted-foreground">{formatDate(row.original.created_at)}</span> },
     { id: "actions", header: "", cell: ({ row }) => row.original.status === "READY" ? <Button asChild size="sm"><Link href={`/review/matters/${matterId}?batch=${row.original.id}`}><FileSearch />Open review</Link></Button> : null },
-  ], [assignReviewBatchMutation, matterId, tenantUsers.data]);
+  ], [assignBatchCodingGroups, assignReviewBatchMutation, groups.data, matterId, tenantUsers.data]);
 
   if (client.isPending || matter.isPending) return <TableLoading />;
   if (client.error || matter.error) return <QueryError message={client.error?.message ?? matter.error?.message} />;
 
   return (
-    <>
-      <nav aria-label="Breadcrumb" className="mb-4 flex flex-wrap items-center gap-1 text-sm text-muted-foreground"><Link href="/app/clients" className="hover:text-foreground">Clients</Link><ChevronRight className="size-4" /><Link href={`/app/clients/${clientId}`} className="hover:text-foreground">{client.data.name}</Link><ChevronRight className="size-4" /><span aria-current="page" className="text-foreground">{matter.data.name}</span></nav>
-      <PageHeader eyebrow={client.data.name} title={matter.data.name} description="Configure the matter-level structure used by reviewers and processing agents." actions={<div className="flex flex-wrap items-center gap-2"><Button asChild><Link href={`/review/matters/${matterId}`}><FileSearch />Search & Review</Link></Button><HelpLink topic={tab === "jobs" ? "matterJobs" : tab === "search" ? "matterSearch" : tab === "definition" ? "matterDefinition" : "metadata"} /><CloneMatterDialog sourceName={matter.data.name} onClone={cloneMatter} /><SaveMatterTemplateDialog onCreate={saveTemplate} />{tab === "metadata" ? <CreateMetadataDialog onCreate={createDefinition} /> : null}</div>} />
-      <div className="mb-6 flex gap-1 border-b" role="tablist" aria-label="Matter sections">
-        <button role="tab" aria-selected={tab === "overview"} onClick={() => openTab("overview")} className={tabClass(tab === "overview")}>Overview</button>
-        <button role="tab" aria-selected={tab === "metadata"} onClick={() => openTab("metadata")} className={tabClass(tab === "metadata")}>Metadata definitions</button>
-        <button role="tab" aria-selected={tab === "groups"} onClick={() => openTab("groups")} className={tabClass(tab === "groups")}>Metadata groups</button>
-        <button role="tab" aria-selected={tab === "definition"} onClick={() => openTab("definition")} className={tabClass(tab === "definition")}>Matter definition</button>
-        <button role="tab" aria-selected={tab === "batches"} onClick={() => openTab("batches")} className={tabClass(tab === "batches")}>Batches</button>
-        <button role="tab" aria-selected={tab === "jobs"} onClick={() => openTab("jobs")} className={tabClass(tab === "jobs")}>Jobs</button>
-        <button role="tab" aria-selected={tab === "search"} onClick={() => openTab("search")} className={tabClass(tab === "search")}>Search index</button>
+    <div className={tab === "definition" ? "matter-definition-page-frame" : undefined}>
+      <div className={tab === "definition" ? "matter-definition-page-header" : undefined}>
+        <ResourcePageHeader
+          breadcrumbs={<><Link href="/app/clients" className="hover:text-foreground">Clients</Link><ChevronRight className="size-4" /><Link href={`/app/clients/${clientId}`} className="hover:text-foreground">{client.data.name}</Link><ChevronRight className="size-4" /><span aria-current="page" className="text-foreground">{matter.data.name}</span></>}
+          title={matter.data.name}
+        />
+
+        <div className="mb-6 flex min-w-0 flex-wrap items-end justify-between gap-x-4 border-b" aria-label="Matter navigation and actions">
+          <div className="flex min-w-0 flex-1 gap-1 overflow-x-auto" role="tablist" aria-label="Matter sections">
+            <button role="tab" aria-selected={tab === "overview"} onClick={() => openTab("overview")} className={tabClass(tab === "overview")}>Overview</button>
+            <button role="tab" aria-selected={tab === "metadata"} onClick={() => openTab("metadata")} className={tabClass(tab === "metadata")}>Metadata definitions</button>
+            <button role="tab" aria-selected={tab === "groups"} onClick={() => openTab("groups")} className={tabClass(tab === "groups")}>Metadata groups</button>
+            <button role="tab" aria-selected={tab === "definition"} onClick={() => openTab("definition")} className={tabClass(tab === "definition")}>Matter definition</button>
+            <button role="tab" aria-selected={tab === "batches"} onClick={() => openTab("batches")} className={tabClass(tab === "batches")}>Batches</button>
+            <button role="tab" aria-selected={tab === "jobs"} onClick={() => openTab("jobs")} className={tabClass(tab === "jobs")}>Jobs</button>
+            <button role="tab" aria-selected={tab === "search"} onClick={() => openTab("search")} className={tabClass(tab === "search")}>Search index</button>
+          </div>
+          <div className="flex shrink-0 flex-wrap items-center gap-2 pb-2">
+            <Button asChild><Link href={`/review/matters/${matterId}`}><FileSearch />Search & Review</Link></Button>
+            <HelpLink topic={tab === "jobs" ? "matterJobs" : tab === "search" ? "matterSearch" : tab === "definition" ? "matterDefinition" : "metadata"} />
+            <CloneMatterDialog sourceName={matter.data.name} onClone={cloneMatter} />
+            <SaveMatterTemplateDialog onCreate={saveTemplate} />
+            {tab === "metadata" ? <CreateMetadataDialog onCreate={createDefinition} /> : null}
+          </div>
+        </div>
       </div>
-      {tab === "overview" ? overviewCounts.error ? <QueryError message={overviewCounts.error.message} /> : <div className="grid gap-4 sm:grid-cols-2 xl:grid-cols-5"><Summary icon={FileText} label="Documents" value={overviewCounts.data?.document_count ?? "—"} /><Summary icon={UsersRound} label="Custodians" value={overviewCounts.data?.custodian_count ?? "—"} /><Summary icon={Database} label="Metadata fields" value={definitions.data?.length ?? 0} /><Summary icon={Search} label="Searchable fields" value={definitions.data?.filter((item) => item.searchable).length ?? 0} /><Summary icon={Sparkles} label="Agent assignable" value={definitions.data?.filter((item) => item.ai_assignable).length ?? 0} /></div>
+      <div className={tab === "definition" ? "matter-definition-page-content" : undefined}>
+        {tab === "overview" ? overviewCounts.error ? <QueryError message={overviewCounts.error.message} /> : <div className="grid gap-4 sm:grid-cols-2 xl:grid-cols-5"><Summary icon={FileText} label="Documents" value={overviewCounts.data?.document_count ?? "—"} /><Summary icon={UsersRound} label="Custodians" value={overviewCounts.data?.custodian_count ?? "—"} /><Summary icon={Database} label="Metadata fields" value={definitions.data?.length ?? 0} /><Summary icon={Search} label="Searchable fields" value={definitions.data?.filter((item) => item.searchable).length ?? 0} /><Summary icon={Sparkles} label="Agent assignable" value={definitions.data?.filter((item) => item.ai_assignable).length ?? 0} /></div>
         : tab === "metadata" ? definitions.isPending ? <TableLoading /> : definitions.error ? <QueryError message={definitions.error.message} /> : <DataTable columns={columns} data={definitions.data} emptyMessage="No metadata fields yet. Add the first field definition for this matter." />
         : tab === "groups" ? definitions.isPending || groups.isPending ? <TableLoading /> : definitions.error || groups.error ? <QueryError message={definitions.error?.message ?? groups.error?.message} /> : <MetadataGroupsPanel definitions={definitions.data} groups={groups.data} onCreate={createGroup} onVisibilityChange={changeVisibility} />
         : tab === "definition" ? <MatterDefinitionPanel matterId={matterId} />
@@ -304,8 +354,9 @@ export function MatterView({ clientId, matterId, requestedTab, selectedJobId }: 
             <DataTable columns={jobColumns} data={jobs.data} emptyMessage="No document import jobs have been started for this matter." />
           </section>
         </div>
-        : searchIndexes.isPending || searchOperations.isPending || overviewCounts.isPending ? <TableLoading /> : searchIndexes.error || searchOperations.error || overviewCounts.error ? <QueryError message={searchIndexes.error?.message ?? searchOperations.error?.message ?? overviewCounts.error?.message} /> : <SearchIndexPanel coreDocumentCount={overviewCounts.data.document_count} indexes={searchIndexes.data} operations={searchOperations.data} onRebuild={() => rebuildSearchMutation.mutateAsync().then(() => undefined)} rebuilding={rebuildSearchMutation.isPending} onConfirmReindex={(operationId) => confirmReindexMutation.mutateAsync(operationId).then(() => undefined)} confirmingReindex={confirmReindexMutation.isPending} onRetryFailed={() => retryFailedSearchMutation.mutateAsync().then(() => undefined)} retryingFailed={retryFailedSearchMutation.isPending} />}
-    </>
+          : searchIndexes.isPending || searchOperations.isPending || retryableSearchOperations.isPending || overviewCounts.isPending ? <TableLoading /> : searchIndexes.error || searchOperations.error || retryableSearchOperations.error || overviewCounts.error ? <QueryError message={searchIndexes.error?.message ?? searchOperations.error?.message ?? retryableSearchOperations.error?.message ?? overviewCounts.error?.message} /> : <SearchIndexPanel coreDocumentCount={overviewCounts.data.document_count} indexes={searchIndexes.data} operations={searchOperations.data} onRebuild={() => rebuildSearchMutation.mutateAsync().then(() => undefined)} rebuilding={rebuildSearchMutation.isPending} onConfirmReindex={(operationId) => confirmReindexMutation.mutateAsync(operationId).then(() => undefined)} confirmingReindex={confirmReindexMutation.isPending} onRetryFailed={() => retryFailedSearchMutation.mutateAsync().then(() => undefined)} retryingFailed={retryFailedSearchMutation.isPending} retryableOperationCount={retryableSearchOperations.data.requeued_operation_count} retryableDocumentCount={retryableSearchOperations.data.requeued_document_count} />}
+      </div>
+    </div>
   );
 }
 

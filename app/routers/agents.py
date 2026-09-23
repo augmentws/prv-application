@@ -1,33 +1,52 @@
 import uuid
 
-from fastapi import APIRouter, Depends, HTTPException, status
+from fastapi import APIRouter, Depends, HTTPException, Query, status
 from sqlalchemy import or_, select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
+from app.agent_invocation import invoke_registered_agent, package_for
 from app.agent_models import validate_agent_model_key
 from app.agent_tools import (
     AGENT_TOOL_SPECS,
     EXECUTABLE_AGENT_TOOL_KEYS,
     validate_executable_agent_tool_keys,
 )
-from app.agent_workflows import STANDARD_MATTER_DEFINITION_AGENT_KEY
+from app.agent_workflows import (
+    MATTER_DEFINITION_SETUP_WORKFLOW,
+    WORKFLOW_AGENT_KEYS,
+)
+from app.artifact_gateway import get_collection_snapshot
 from app.audit import record_audit
 from app.config import get_settings
 from app.database import get_db
-from app.dependencies import Principal, can_admin_matter, can_admin_tenant, get_principal, require_root_admin
-from app.models import AgentDefinition, AgentDefinitionVersion, AgentVersionTool, Matter, Tenant, utcnow
+from app.dependencies import (
+    Principal,
+    can_admin_client,
+    can_admin_matter,
+    can_admin_tenant,
+    get_principal,
+    require_root_admin,
+)
+from app.model_execution import ModelExecutionError, StructuredOutputValidationError
+from app.models import AgentDefinition, AgentDefinitionVersion, AgentVersionTool, Client, Matter, Tenant, utcnow
 from app.schemas import (
+    AgentConversationWorkflow,
     AgentDefinitionCreate,
     AgentDefinitionCreated,
     AgentDefinitionRead,
     AgentDefinitionUpdate,
     AgentDefinitionVersionRead,
+    AgentInvokeRequest,
+    AgentInvokeResponse,
     AgentModelRead,
+    AgentPackageRead,
     AgentToolAssignment,
     AgentToolRead,
     AgentVersionCreate,
 )
+from artifact_service.auth import ArtifactPrincipal, get_embedded_artifact_principal
+from artifact_service.database import get_artifact_db
 
 router = APIRouter(prefix="/v1", tags=["agents"])
 
@@ -47,6 +66,10 @@ def _version_read(db: Session, version: AgentDefinitionVersion) -> AgentDefiniti
         system_prompt=version.system_prompt,
         model_key=version.model_key,
         model_policy=version.model_policy,
+        invocation_mode=version.invocation_mode,
+        usage_instructions=version.usage_instructions,
+        scope_types=version.scope_types,
+        input_schema=version.input_schema,
         output_schema=version.output_schema,
         limits=version.limits,
         status=version.status,
@@ -102,6 +125,10 @@ def _create_agent(
         system_prompt=payload.initial_version.system_prompt,
         model_key=payload.initial_version.model_key,
         model_policy=payload.initial_version.model_policy,
+        invocation_mode=payload.initial_version.invocation_mode,
+        usage_instructions=payload.initial_version.usage_instructions,
+        scope_types=payload.initial_version.scope_types,
+        input_schema=payload.initial_version.input_schema,
         output_schema=payload.initial_version.output_schema,
         limits=payload.initial_version.limits,
         status="DRAFT",
@@ -161,6 +188,7 @@ def list_agent_models(_: Principal = Depends(get_principal)) -> list[AgentModelR
 @router.get("/matters/{matter_id}/agents", response_model=list[AgentDefinitionRead])
 def list_available_matter_agents(
     matter_id: uuid.UUID,
+    workflow_type: AgentConversationWorkflow = Query(default=MATTER_DEFINITION_SETUP_WORKFLOW),
     principal: Principal = Depends(get_principal),
     db: Session = Depends(get_db),
 ) -> list[AgentDefinition]:
@@ -176,7 +204,7 @@ def list_available_matter_agents(
             .where(
                 AgentDefinition.status == "ACTIVE",
                 AgentDefinition.published_version.is_not(None),
-                AgentDefinition.key == STANDARD_MATTER_DEFINITION_AGENT_KEY,
+                AgentDefinition.key.in_(WORKFLOW_AGENT_KEYS[workflow_type]),
                 or_(
                     AgentDefinition.owner_tenant_id == matter.client.tenant_id,
                     AgentDefinition.scope == "SYSTEM",
@@ -253,6 +281,46 @@ def create_tenant_agent(
     return _create_agent(db, principal, payload, owner_tenant_id=tenant.id, scope="TENANT")
 
 
+@router.get("/agent-packages", response_model=list[AgentPackageRead])
+def list_agent_packages(
+    scope_type: str = Query(min_length=1, max_length=50),
+    scope_id: uuid.UUID = Query(),
+    principal: Principal = Depends(get_principal),
+    artifact_principal: ArtifactPrincipal = Depends(get_embedded_artifact_principal),
+    db: Session = Depends(get_db),
+    artifact_db: Session = Depends(get_artifact_db),
+) -> list[dict]:
+    if scope_type != "COLLECTION":
+        raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_CONTENT, detail="Unsupported agent scope")
+    try:
+        collection = get_collection_snapshot(scope_id, artifact_principal, artifact_db)
+    except PermissionError as exc:
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail=str(exc)) from exc
+    if collection is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Collection not found")
+    client = db.get(Client, collection.client_id)
+    if client is None or client.tenant_id != collection.tenant_id:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Client not found")
+    if not can_admin_client(db, principal, client):
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Client ADMIN required")
+    rows = db.execute(
+        select(AgentDefinition, AgentDefinitionVersion)
+        .join(
+            AgentDefinitionVersion,
+            (AgentDefinitionVersion.agent_definition_id == AgentDefinition.id)
+            & (AgentDefinitionVersion.version == AgentDefinition.published_version),
+        )
+        .where(
+            AgentDefinition.status == "ACTIVE",
+            AgentDefinition.published_version.is_not(None),
+            AgentDefinitionVersion.status == "PUBLISHED",
+            or_(AgentDefinition.scope == "SYSTEM", AgentDefinition.owner_tenant_id == collection.tenant_id),
+        )
+        .order_by(AgentDefinition.scope, AgentDefinition.name)
+    ).all()
+    return [package_for(agent, version) for agent, version in rows if scope_type in version.scope_types]
+
+
 @router.get("/agents/{agent_id}", response_model=AgentDefinitionCreated)
 def get_agent(
     agent_id: uuid.UUID,
@@ -272,6 +340,81 @@ def get_agent(
     if version is None:
         raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="Agent has no current version")
     return AgentDefinitionCreated(agent=AgentDefinitionRead.model_validate(agent), version=_version_read(db, version))
+
+
+@router.get("/agents/{agent_id}/package", response_model=AgentPackageRead)
+def get_agent_package(
+    agent_id: uuid.UUID,
+    principal: Principal = Depends(get_principal),
+    db: Session = Depends(get_db),
+) -> dict:
+    agent = db.scalar(select(AgentDefinition).where(AgentDefinition.id == agent_id))
+    if agent is None or agent.status != "ACTIVE" or agent.published_version is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Published agent not found")
+    if agent.scope != "SYSTEM" and agent.owner_tenant_id != principal.user.tenant_id and not principal.is_root_admin:
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Agent access denied")
+    version = db.scalar(
+        select(AgentDefinitionVersion).where(
+            AgentDefinitionVersion.agent_definition_id == agent.id,
+            AgentDefinitionVersion.version == agent.published_version,
+            AgentDefinitionVersion.status == "PUBLISHED",
+        )
+    )
+    if version is None:
+        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="Agent has no published version")
+    return package_for(agent, version)
+
+
+@router.post("/agents/{agent_id}:invoke", response_model=AgentInvokeResponse)
+async def invoke_agent(
+    agent_id: uuid.UUID,
+    payload: AgentInvokeRequest,
+    principal: Principal = Depends(get_principal),
+    artifact_principal: ArtifactPrincipal = Depends(get_embedded_artifact_principal),
+    db: Session = Depends(get_db),
+    artifact_db: Session = Depends(get_artifact_db),
+) -> AgentInvokeResponse:
+    agent = db.scalar(select(AgentDefinition).where(AgentDefinition.id == agent_id))
+    if agent is None or agent.status != "ACTIVE" or agent.published_version is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Published agent not found")
+    if agent.scope != "SYSTEM" and agent.owner_tenant_id != principal.user.tenant_id and not principal.is_root_admin:
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Agent access denied")
+    version = db.scalar(
+        select(AgentDefinitionVersion).where(
+            AgentDefinitionVersion.agent_definition_id == agent.id,
+            AgentDefinitionVersion.version == agent.published_version,
+            AgentDefinitionVersion.status == "PUBLISHED",
+        )
+    )
+    if version is None:
+        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="Agent has no published version")
+    try:
+        output = await invoke_registered_agent(
+            agent=agent,
+            version=version,
+            scope=payload.scope,
+            payload=payload.input,
+            principal=principal,
+            artifact_principal=artifact_principal,
+            db=db,
+            artifact_db=artifact_db,
+        )
+    except LookupError as exc:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=str(exc)) from exc
+    except PermissionError as exc:
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail=str(exc)) from exc
+    except StructuredOutputValidationError as exc:
+        raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_CONTENT, detail=str(exc)) from exc
+    except ValueError as exc:
+        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=str(exc)) from exc
+    except ModelExecutionError as exc:
+        raise HTTPException(status_code=status.HTTP_502_BAD_GATEWAY, detail=str(exc)) from exc
+    return AgentInvokeResponse(
+        agent_id=agent.id,
+        agent_version_id=version.id,
+        version=version.version,
+        output=output,
+    )
 
 
 @router.patch("/agents/{agent_id}", response_model=AgentDefinitionRead)
@@ -354,6 +497,10 @@ def create_agent_version(
         system_prompt=payload.system_prompt,
         model_key=payload.model_key,
         model_policy=payload.model_policy,
+        invocation_mode=payload.invocation_mode,
+        usage_instructions=payload.usage_instructions,
+        scope_types=payload.scope_types,
+        input_schema=payload.input_schema,
         output_schema=payload.output_schema,
         limits=payload.limits,
         status="DRAFT",

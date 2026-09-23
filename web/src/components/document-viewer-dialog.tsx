@@ -2,7 +2,7 @@
 
 import { useQuery } from "@tanstack/react-query";
 import { Download, FileText, GripHorizontal, Mail } from "lucide-react";
-import { useMemo, useRef, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 
 import { QueryError } from "@/components/query-state";
 import { Badge } from "@/components/ui/badge";
@@ -66,8 +66,38 @@ function EmailHeader({ item }: { item: CollectionItemRead }) {
   );
 }
 
-export function DocumentViewerSurface({ item, className }: { item: CollectionItemRead; className?: string }) {
+interface TextParagraphRange {
+  number: number;
+  start: number;
+  end: number;
+}
+
+export function textParagraphRanges(source: string): TextParagraphRange[] {
+  const ranges: TextParagraphRange[] = [];
+  const separator = /\n[ \t]*\n(?:[ \t]*\n)*/g;
+  let cursor = 0;
+  let match: RegExpExecArray | null;
+  const addBlock = (blockEnd: number) => {
+    const block = source.slice(cursor, blockEnd);
+    const start = cursor + (block.length - block.trimStart().length);
+    const end = blockEnd - (block.length - block.trimEnd().length);
+    if (end > start) ranges.push({ number: ranges.length + 1, start, end });
+  };
+  while ((match = separator.exec(source)) !== null) {
+    addBlock(match.index);
+    cursor = match.index + match[0].length;
+  }
+  addBlock(source.length);
+  return ranges;
+}
+
+export function DocumentViewerSurface({ item, className, highlightedParagraphs = [] }: {
+  item: CollectionItemRead;
+  className?: string;
+  highlightedParagraphs?: number[];
+}) {
   const viewerRef = useRef<HTMLElement>(null);
+  const firstHighlightRef = useRef<HTMLElement>(null);
   const emailHeaderDrag = useRef<{ y: number; height: number } | null>(null);
   const [emailHeaderHeight, setEmailHeaderHeight] = useState(EMAIL_HEADER_DEFAULT_HEIGHT);
   const kind = previewKind(item);
@@ -83,6 +113,35 @@ export function DocumentViewerSurface({ item, className }: { item: CollectionIte
       ? emailBody(content.data.bytes).text
       : textDocument(content.data.bytes, content.data.mediaType);
   }, [content.data, kind]);
+  const highlightedBody = useMemo(() => {
+    if (!body || !highlightedParagraphs.length) return null;
+    const selected = new Set(highlightedParagraphs);
+    const ranges = textParagraphRanges(body).filter((range) => selected.has(range.number));
+    if (!ranges.length) return null;
+    const nodes = [];
+    let cursor = 0;
+    for (const [index, range] of ranges.entries()) {
+      if (range.start > cursor) nodes.push(body.slice(cursor, range.start));
+      nodes.push(
+        <mark
+          key={`${range.number}:${range.start}`}
+          ref={index === 0 ? firstHighlightRef : undefined}
+          data-paragraph={`¶${range.number}`}
+          title={`Cited paragraph ¶${range.number}`}
+          className="rounded-sm bg-primary/20 text-foreground ring-1 ring-primary/40"
+        >
+          {body.slice(range.start, range.end)}
+        </mark>,
+      );
+      cursor = range.end;
+    }
+    if (cursor < body.length) nodes.push(body.slice(cursor));
+    return nodes;
+  }, [body, highlightedParagraphs]);
+
+  useEffect(() => {
+    firstHighlightRef.current?.scrollIntoView?.({ block: "center", behavior: "smooth" });
+  }, [body, highlightedParagraphs, item.id]);
 
   const title = item.email?.subject?.trim() || item.original_filename || "Document";
   const downloadUrl = `/api/core/v1/artifacts/${item.native_artifact.id}/content`;
@@ -165,7 +224,7 @@ export function DocumentViewerSurface({ item, className }: { item: CollectionIte
           <div className="p-5"><QueryError message={content.error.message} /></div>
         ) : (
           <pre className={`min-h-full whitespace-pre-wrap break-words p-5 text-sm leading-7 text-foreground ${kind === "text" ? "font-mono" : "font-sans"}`}>
-            {body || "This document has no displayable text."}
+            {highlightedBody ?? body ?? "This document has no displayable text."}
           </pre>
         )}
       </div>

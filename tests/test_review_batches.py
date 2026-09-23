@@ -160,6 +160,29 @@ def test_batch_membership_group_snapshot_runs_and_comparison(
     )
     assert random_batch.status_code == 202, random_batch.text
     assert random_batch.json()["document_count"] == 3
+    coding_groups = client.post(
+        f"{base}/{random_batch.json()['id']}/coding-groups",
+        headers=auth(root_token),
+        json={"coding_group_ids": [str(group_id)]},
+    )
+    assert coding_groups.status_code == 200, coding_groups.text
+    assert [group["source_metadata_group_id"] for group in coding_groups.json()["coding_groups"]] == [
+        str(group_id)
+    ]
+    repeated_assignment = client.post(
+        f"{base}/{random_batch.json()['id']}/coding-groups",
+        headers=auth(root_token),
+        json={"coding_group_ids": [str(group_id)]},
+    )
+    assert repeated_assignment.status_code == 200, repeated_assignment.text
+    assert len(repeated_assignment.json()["coding_groups"]) == 1
+    removed_assignment = client.put(
+        f"{base}/{random_batch.json()['id']}/coding-groups",
+        headers=auth(root_token),
+        json={"coding_group_ids": []},
+    )
+    assert removed_assignment.status_code == 200, removed_assignment.text
+    assert removed_assignment.json()["coding_groups"] == []
 
     run_payload = {"run_type": "HUMAN", "purpose": "REFERENCE"}
     left = client.post(f"{base}/{batch['id']}/runs", headers=auth(root_token), json=run_payload)

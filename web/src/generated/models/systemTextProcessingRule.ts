@@ -12,4 +12,6 @@ export interface SystemTextProcessingRule {
   description: string;
   action: string;
   match_description: string;
+  match_pattern: string;
+  stop_pattern: string;
 }

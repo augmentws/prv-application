@@ -8,6 +8,7 @@ from pydantic import (
     EmailStr,
     Field,
     StringConstraints,
+    field_validator,
     model_validator,
 )
 
@@ -26,6 +27,7 @@ MetadataEffectiveStatus = Literal["ACTIVE", "SUPERSEDED", "REJECTED", "INVALIDAT
 MetadataConfirmationState = Literal["UNREVIEWED", "CONFIRMED", "REJECTED"]
 AgentScope = Literal["SYSTEM", "TENANT"]
 AgentVersionStatus = Literal["DRAFT", "PUBLISHED", "RETIRED"]
+AgentInvocationMode = Literal["CHAT", "STRUCTURED"]
 SkillScope = Literal["SYSTEM", "TENANT"]
 SkillVersionStatus = Literal["DRAFT", "PUBLISHED", "RETIRED"]
 WorkflowBindingStatus = Literal["ACTIVE", "INACTIVE"]
@@ -39,6 +41,7 @@ EnumValueKey = Annotated[
     str,
     StringConstraints(strip_whitespace=True, pattern=r"^[A-Za-z][A-Za-z0-9_-]{0,99}$"),
 ]
+AgentConversationTitle = Annotated[str, StringConstraints(strip_whitespace=True, min_length=1, max_length=200)]
 
 
 class ORMModel(BaseModel):
@@ -617,6 +620,14 @@ class ReviewBatchAssignmentUpdate(BaseModel):
     assigned_user_id: uuid.UUID | None
 
 
+class ReviewBatchCodingGroupsAdd(BaseModel):
+    coding_group_ids: list[uuid.UUID] = Field(min_length=1, max_length=100)
+
+
+class ReviewBatchCodingGroupsUpdate(BaseModel):
+    coding_group_ids: list[uuid.UUID] = Field(default_factory=list, max_length=100)
+
+
 class ReviewBatchCodingFieldRead(BaseModel):
     id: uuid.UUID
     metadata_definition_id: uuid.UUID
@@ -1099,6 +1110,10 @@ class AgentVersionCreate(BaseModel):
     system_prompt: str = Field(min_length=1, max_length=100_000)
     model_key: str = Field(min_length=1, max_length=200)
     model_policy: dict[str, Any] = Field(default_factory=dict)
+    invocation_mode: AgentInvocationMode = "CHAT"
+    usage_instructions: str | None = Field(default=None, max_length=10_000)
+    scope_types: list[str] = Field(default_factory=list, max_length=20)
+    input_schema: dict[str, Any] = Field(default_factory=dict)
     output_schema: dict[str, Any] = Field(default_factory=dict)
     limits: dict[str, Any] = Field(default_factory=dict)
     tools: list[AgentToolAssignment] = Field(default_factory=list, max_length=100)
@@ -1156,6 +1171,10 @@ class AgentDefinitionVersionRead(ORMModel):
     system_prompt: str
     model_key: str
     model_policy: dict[str, Any]
+    invocation_mode: AgentInvocationMode
+    usage_instructions: str | None
+    scope_types: list[str]
+    input_schema: dict[str, Any]
     output_schema: dict[str, Any]
     limits: dict[str, Any]
     status: AgentVersionStatus
@@ -1168,6 +1187,92 @@ class AgentDefinitionVersionRead(ORMModel):
 class AgentDefinitionCreated(BaseModel):
     agent: AgentDefinitionRead
     version: AgentDefinitionVersionRead
+
+
+class AgentPackageVersionRead(BaseModel):
+    id: uuid.UUID
+    version: int
+    invocation_mode: AgentInvocationMode
+    usage_instructions: str | None
+    scope_types: list[str]
+    input_schema: dict[str, Any]
+    output_schema: dict[str, Any]
+
+
+class AgentPackageRead(BaseModel):
+    id: uuid.UUID
+    key: str
+    name: str
+    description: str | None
+    scope: AgentScope
+    version: AgentPackageVersionRead
+
+
+class AgentInvocationScope(BaseModel):
+    type: str = Field(min_length=1, max_length=50)
+    id: uuid.UUID
+
+
+class AgentInvokeRequest(BaseModel):
+    scope: AgentInvocationScope
+    input: dict[str, Any]
+
+
+class AgentInvokeResponse(BaseModel):
+    agent_id: uuid.UUID
+    agent_version_id: uuid.UUID
+    version: int
+    output: dict[str, Any]
+
+
+class DocumentCleanerChange(BaseModel):
+    rule_id: str = Field(min_length=1, max_length=150)
+    rule_name: str = Field(min_length=1, max_length=200)
+    match_count: int = Field(ge=1)
+
+
+class DocumentCleanerDocument(BaseModel):
+    item_id: uuid.UUID
+    filename: str = Field(min_length=1, max_length=500)
+    original_text: str = Field(max_length=20_000)
+    normalized_text: str = Field(max_length=20_000)
+    changes: list[DocumentCleanerChange] = Field(default_factory=list, max_length=100)
+
+
+class DocumentCleanerClarification(BaseModel):
+    question: str = Field(min_length=1, max_length=2000)
+    answer: str = Field(min_length=1, max_length=4000)
+
+
+class DocumentCleanerCurrentRule(BaseModel):
+    id: str = Field(min_length=1, max_length=64)
+    name: str = Field(min_length=1, max_length=120)
+    description: str | None = Field(default=None, max_length=500)
+    action: Literal["REMOVE_LINE", "REMOVE_BLOCK", "REPLACE"]
+    pattern: str = Field(min_length=1, max_length=1000)
+    end_pattern: str | None = Field(default=None, max_length=1000)
+    replacement: str = Field(default="", max_length=2000)
+    case_sensitive: bool = False
+    enabled: bool = True
+
+
+class DocumentCleanerProposalRequest(BaseModel):
+    instruction: str = Field(min_length=1, max_length=4000)
+    documents: list[DocumentCleanerDocument] = Field(min_length=1, max_length=25)
+    current_rules: list[DocumentCleanerCurrentRule] = Field(default_factory=list, max_length=50)
+    clarification_history: list[DocumentCleanerClarification] = Field(default_factory=list, max_length=5)
+
+
+class DocumentCleanerProposedRule(DocumentCleanerCurrentRule):
+    enabled: bool = True
+
+
+class DocumentCleanerProposalResponse(BaseModel):
+    status: Literal["CLARIFICATION", "PROPOSAL"]
+    clarifying_question: str | None = None
+    explanation: str = Field(min_length=1, max_length=4000)
+    rule: DocumentCleanerProposedRule | None = None
+    replace_rule_id: str | None = None
 
 
 class SkillVersionCreate(BaseModel):
@@ -1331,8 +1436,8 @@ class MatterDefinitionRead(ORMModel):
     revision: MatterDefinitionRevisionRead
 
 
-AgentConversationWorkflow = Literal["MATTER_DEFINITION_SETUP"]
-AgentConversationStatus = Literal["ACTIVE", "WAITING_APPROVAL", "COMPLETED", "FAILED", "ARCHIVED"]
+AgentConversationWorkflow = Literal["MATTER_DEFINITION_SETUP", "BATCH_CHAT"]
+AgentConversationStatus = Literal["ACTIVE", "WAITING_APPROVAL", "FAILED", "ARCHIVED"]
 AgentExecutionStatus = Literal["QUEUED", "RUNNING", "WAITING_APPROVAL", "COMPLETED", "FAILED", "CANCELED"]
 AgentActionStatus = Literal["PENDING", "APPROVED", "REJECTED", "EXECUTED", "FAILED"]
 AgentActionDecisionValue = Literal["APPROVE", "REJECT"]
@@ -1340,7 +1445,21 @@ AgentActionDecisionValue = Literal["APPROVE", "REJECT"]
 
 class AgentConversationCreate(BaseModel):
     agent_definition_id: uuid.UUID
+    title: AgentConversationTitle | None = None
     workflow_type: AgentConversationWorkflow = "MATTER_DEFINITION_SETUP"
+    review_batch_id: uuid.UUID | None = None
+
+    @model_validator(mode="after")
+    def validate_workflow_scope(self) -> "AgentConversationCreate":
+        if self.workflow_type == "BATCH_CHAT" and self.review_batch_id is None:
+            raise ValueError("BATCH_CHAT conversations require review_batch_id")
+        if self.workflow_type != "BATCH_CHAT" and self.review_batch_id is not None:
+            raise ValueError("review_batch_id is supported only for BATCH_CHAT conversations")
+        return self
+
+
+class AgentConversationUpdate(BaseModel):
+    title: AgentConversationTitle
 
 
 class AgentConversationRead(ORMModel):
@@ -1348,13 +1467,21 @@ class AgentConversationRead(ORMModel):
     tenant_id: uuid.UUID
     client_id: uuid.UUID
     matter_id: uuid.UUID
+    review_batch_id: uuid.UUID | None
     agent_definition_id: uuid.UUID
     agent_definition_version_id: uuid.UUID
+    title: str | None
     workflow_type: AgentConversationWorkflow
     status: AgentConversationStatus
     initiated_by_user_id: uuid.UUID
     created_at: datetime
     updated_at: datetime
+
+    @field_validator("status", mode="before")
+    @classmethod
+    def normalize_legacy_completed_status(cls, value: str) -> str:
+        # Rolling deployments may read a row before migration 0031 has normalized it.
+        return "ACTIVE" if value == "COMPLETED" else value
 
 
 class AgentTurnCreate(BaseModel):
@@ -1466,6 +1593,7 @@ MatterDefinitionAssessmentStatus = Literal[
 
 
 class MatterDefinitionAssessmentCreate(BaseModel):
+    name: str | None = Field(default=None, max_length=200)
     revision: int | None = Field(default=None, ge=1)
     maximum_document_count: int = Field(default=500, ge=1, le=10_000_000)
     control_sample_size: int = Field(default=0, ge=0, le=1_000_000)
@@ -1474,6 +1602,7 @@ class MatterDefinitionAssessmentCreate(BaseModel):
 
 class MatterDefinitionAssessmentRead(ORMModel):
     id: uuid.UUID
+    name: str
     matter_id: uuid.UUID
     matter_definition_revision_id: uuid.UUID
     definition_content_hash: str

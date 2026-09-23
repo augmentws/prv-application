@@ -1038,6 +1038,10 @@ def plan_job(job_id: uuid.UUID) -> list[uuid.UUID]:
             )
         )
         if existing:
+            job.status = "RUNNING"
+            job.started_at = job.started_at or utcnow()
+            job.completed_at = None
+            db.commit()
             return existing
         _assert_worker_configuration(job)
         job.status = "PLANNING"
@@ -1351,6 +1355,13 @@ def fail_job(job_id: uuid.UUID, message: str) -> None:
     with SessionLocal() as db:
         job = db.get(MatterEmbeddingJob, job_id)
         if job is not None and job.status != "CANCELED":
+            projection = db.scalar(
+                select(SearchProjectionOperation).where(
+                    SearchProjectionOperation.workflow_id == f"embedding-index-job:{job.id}"
+                )
+            )
+            if projection is not None and projection.error_message:
+                message = f"Search indexing failed: {projection.error_message}"
             job.status = "FAILED"
             job.error_message = message[:4000]
             job.completed_at = utcnow()

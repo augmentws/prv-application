@@ -88,7 +88,13 @@ def cancel_matter_topic_application(job_id: str) -> None:
         get_dbos_client().cancel_workflow(f"matter-topics:{job_id}:application", cancel_children=True)
 
 
-def enqueue_definition_assessment(db: Session, workflow_id: str, assessment_id: str) -> None:
+def enqueue_definition_assessment(
+    db: Session,
+    workflow_id: str,
+    assessment_id: str,
+    *,
+    attempt_id: str | None = None,
+) -> None:
     settings = get_settings()
     if not settings.dbos_enabled:
         return
@@ -98,7 +104,41 @@ def enqueue_definition_assessment(db: Session, workflow_id: str, assessment_id: 
         "workflow_id": workflow_id,
         "application_name": settings.dbos_application_name,
     }
+    if attempt_id is None:
+        get_dbos_client().enqueue_in_transaction(db, options, assessment_id)
+    else:
+        get_dbos_client().enqueue_in_transaction(db, options, assessment_id, attempt_id)
+
+
+def enqueue_definition_assessment_synthesis(db: Session, workflow_id: str, assessment_id: str) -> None:
+    settings = get_settings()
+    if not settings.dbos_enabled:
+        return
+    options: EnqueueOptions = {
+        "workflow_name": "matter_definition_assessment_resynthesis_v1",
+        "queue_name": "definition-assessments",
+        "workflow_id": workflow_id,
+        "application_name": settings.dbos_application_name,
+    }
     get_dbos_client().enqueue_in_transaction(db, options, assessment_id)
+
+
+def enqueue_definition_assessment_reanalysis(
+    db: Session,
+    workflow_id: str,
+    assessment_id: str,
+    attempt_id: str,
+) -> None:
+    settings = get_settings()
+    if not settings.dbos_enabled:
+        return
+    options: EnqueueOptions = {
+        "workflow_name": "matter_definition_assessment_reanalysis_v1",
+        "queue_name": "definition-assessments",
+        "workflow_id": workflow_id,
+        "application_name": settings.dbos_application_name,
+    }
+    get_dbos_client().enqueue_in_transaction(db, options, assessment_id, attempt_id)
 
 
 def cancel_definition_assessment(workflow_id: str) -> None:

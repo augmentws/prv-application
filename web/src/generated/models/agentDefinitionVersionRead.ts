@@ -5,6 +5,8 @@
  * Phase-one Core API for authentication, hierarchical tenants, clients, matters, and matter metadata definitions.
  * OpenAPI spec version: 0.1.0
  */
+import type { AgentDefinitionVersionReadInputSchema } from './agentDefinitionVersionReadInputSchema';
+import type { AgentDefinitionVersionReadInvocationMode } from './agentDefinitionVersionReadInvocationMode';
 import type { AgentDefinitionVersionReadLimits } from './agentDefinitionVersionReadLimits';
 import type { AgentDefinitionVersionReadModelPolicy } from './agentDefinitionVersionReadModelPolicy';
 import type { AgentDefinitionVersionReadOutputSchema } from './agentDefinitionVersionReadOutputSchema';
@@ -18,6 +20,10 @@ export interface AgentDefinitionVersionRead {
   system_prompt: string;
   model_key: string;
   model_policy: AgentDefinitionVersionReadModelPolicy;
+  invocation_mode: AgentDefinitionVersionReadInvocationMode;
+  usage_instructions: string | null;
+  scope_types: string[];
+  input_schema: AgentDefinitionVersionReadInputSchema;
   output_schema: AgentDefinitionVersionReadOutputSchema;
   limits: AgentDefinitionVersionReadLimits;
   status: AgentDefinitionVersionReadStatus;

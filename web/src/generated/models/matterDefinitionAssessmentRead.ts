@@ -12,6 +12,7 @@ import type { MatterDefinitionAssessmentReadSynthesisResult } from './matterDefi
 
 export interface MatterDefinitionAssessmentRead {
   id: string;
+  name: string;
   matter_id: string;
   matter_definition_revision_id: string;
   definition_content_hash: string;

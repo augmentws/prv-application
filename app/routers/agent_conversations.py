@@ -1,6 +1,6 @@
 import uuid
 
-from fastapi import APIRouter, Depends, HTTPException, status
+from fastapi import APIRouter, Depends, HTTPException, Query, status
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
@@ -25,6 +25,8 @@ from app.schemas import (
     AgentActionRequestRead,
     AgentConversationCreate,
     AgentConversationRead,
+    AgentConversationUpdate,
+    AgentConversationWorkflow,
     AgentMessageRead,
     AgentRunRead,
     AgentTurnCreate,
@@ -81,7 +83,9 @@ def start_agent_conversation(
             db,
             matter=matter,
             agent=agent,
+            title=payload.title,
             workflow_type=payload.workflow_type,
+            review_batch_id=payload.review_batch_id,
             actor_user_id=principal.user.id,
         )
     except AgentConversationError as exc:
@@ -97,7 +101,9 @@ def start_agent_conversation(
             "matter_id": str(matter.id),
             "agent_definition_id": str(agent.id),
             "agent_definition_version_id": str(conversation.agent_definition_version_id),
+            "title": conversation.title,
             "workflow_type": payload.workflow_type,
+            "review_batch_id": str(payload.review_batch_id) if payload.review_batch_id else None,
         },
     )
     db.commit()
@@ -107,17 +113,18 @@ def start_agent_conversation(
 @router.get("/matters/{matter_id}/agent-conversations", response_model=list[AgentConversationRead])
 def list_agent_conversations(
     matter_id: uuid.UUID,
+    workflow_type: AgentConversationWorkflow | None = Query(default=None),
+    review_batch_id: uuid.UUID | None = Query(default=None),
     principal: Principal = Depends(get_principal),
     db: Session = Depends(get_db),
 ) -> list[AgentConversation]:
     _matter_admin(db, principal, matter_id)
-    return list(
-        db.scalars(
-            select(AgentConversation)
-            .where(AgentConversation.matter_id == matter_id)
-            .order_by(AgentConversation.created_at.desc())
-        )
-    )
+    query = select(AgentConversation).where(AgentConversation.matter_id == matter_id)
+    if workflow_type is not None:
+        query = query.where(AgentConversation.workflow_type == workflow_type)
+    if review_batch_id is not None:
+        query = query.where(AgentConversation.review_batch_id == review_batch_id)
+    return list(db.scalars(query.order_by(AgentConversation.created_at.desc())))
 
 
 @router.get("/agent-conversations/{conversation_id}", response_model=AgentConversationRead)
@@ -127,6 +134,29 @@ def get_agent_conversation(
     db: Session = Depends(get_db),
 ) -> AgentConversation:
     return _conversation_admin(db, principal, conversation_id)
+
+
+@router.patch("/agent-conversations/{conversation_id}", response_model=AgentConversationRead)
+def update_agent_conversation(
+    conversation_id: uuid.UUID,
+    payload: AgentConversationUpdate,
+    principal: Principal = Depends(get_principal),
+    db: Session = Depends(get_db),
+) -> AgentConversation:
+    conversation = _conversation_admin(db, principal, conversation_id, for_update=True)
+    previous_title = conversation.title
+    conversation.title = payload.title
+    record_audit(
+        db,
+        tenant_id=conversation.tenant_id,
+        actor_user_id=principal.user.id,
+        action="agent_conversation.renamed",
+        target_type="agent_conversation",
+        target_id=conversation.id,
+        details={"previous_title": previous_title, "title": conversation.title},
+    )
+    db.commit()
+    return conversation
 
 
 @router.post(

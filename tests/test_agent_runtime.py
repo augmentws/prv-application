@@ -3,6 +3,7 @@ import uuid
 
 from conftest import TestingSessionLocal
 from fastapi.testclient import TestClient
+from pydantic_ai.capabilities import Hooks
 from pydantic_ai.messages import ModelResponse, TextPart, ToolCallPart
 from pydantic_ai.models.function import FunctionModel
 from pydantic_ai.models.test import TestModel
@@ -12,11 +13,23 @@ from app import agent_runtime
 from app.agent_runtime import (
     build_agent,
     execute_prepared_agent_run,
+    fail_agent_run,
     persist_agent_run_outcome,
     prepare_agent_run,
 )
-from app.models import AgentRun, AuditRecord, ModelInvocation
+from app.models import AgentConversation, AgentRun, AuditRecord, ModelInvocation, ReviewBatch, User
+from app.schemas import MatterSearchResponse
 from tests.test_agents_and_matter_definitions import agent_payload, auth, create_tenant_context
+
+
+def test_durable_agent_registers_rate_limit_hooks_at_construction() -> None:
+    from app.workflows.agent_turn import DURABLE_AGENT
+
+    capabilities = getattr(DURABLE_AGENT.root_capability, "capabilities", [])
+    assert any(
+        isinstance(capability, Hooks) and capability.id == "provider_model_rate_limit"
+        for capability in capabilities
+    )
 
 
 def create_published_agent(
@@ -98,8 +111,11 @@ def test_agent_runtime_completes_with_injected_pydantic_model(
             select(ModelInvocation).where(ModelInvocation.agent_run_id == uuid.UUID(run_id))
         )
         persisted_run = db.get(AgentRun, uuid.UUID(run_id))
+        persisted_conversation = db.get(AgentConversation, uuid.UUID(conversation_id))
         assert invocation is not None
         assert persisted_run is not None
+        assert persisted_conversation is not None
+        assert persisted_conversation.status == "ACTIVE"
         assert persisted_run.input_tokens == invocation.input_tokens
         assert persisted_run.cached_input_tokens == invocation.cached_input_tokens
     messages = client.get(
@@ -107,6 +123,182 @@ def test_agent_runtime_completes_with_injected_pydantic_model(
     )
     assert [message["role"] for message in messages.json()] == ["USER", "ASSISTANT"]
     assert messages.json()[1]["content"] == "The guidance is ready for field reconciliation."
+
+
+def test_failed_conversation_accepts_a_new_turn(
+    client: TestClient,
+    root_token: str,
+    monkeypatch,
+) -> None:
+    _, tenant_token, matter_id = create_tenant_context(client, root_token)
+    agent_id = create_published_agent(client, root_token)
+    conversation_id, failed_run_id = start_conversation_and_turn(
+        client,
+        tenant_token,
+        matter_id,
+        agent_id,
+    )
+    monkeypatch.setattr(agent_runtime, "SessionLocal", TestingSessionLocal)
+    fail_agent_run(uuid.UUID(failed_run_id), "Temporary provider failure")
+
+    response = client.post(
+        f"/v1/agent-conversations/{conversation_id}/turns",
+        headers=auth(tenant_token),
+        json={"message": "Please try that question again."},
+    )
+
+    assert response.status_code == 202, response.text
+    assert response.json()["run"]["parent_run_id"] == failed_run_id
+    conversation = client.get(
+        f"/v1/agent-conversations/{conversation_id}",
+        headers=auth(tenant_token),
+    )
+    assert conversation.status_code == 200
+    assert conversation.json()["status"] == "ACTIVE"
+
+
+def test_turn_after_failure_uses_last_successful_message_history(
+    client: TestClient,
+    root_token: str,
+    monkeypatch,
+) -> None:
+    _, tenant_token, matter_id = create_tenant_context(client, root_token)
+    agent_id = create_published_agent(client, root_token)
+    conversation_id, first_run_id = start_conversation_and_turn(
+        client,
+        tenant_token,
+        matter_id,
+        agent_id,
+    )
+    monkeypatch.setattr(agent_runtime, "SessionLocal", TestingSessionLocal)
+
+    first_prepared = prepare_agent_run(uuid.UUID(first_run_id))
+    first_outcome = asyncio.run(
+        execute_prepared_agent_run(
+            first_prepared,
+            build_agent(),
+            model=TestModel(call_tools=[], custom_output_text="Successful context."),
+        )
+    )
+    persist_agent_run_outcome(uuid.UUID(first_run_id), first_outcome)
+    failed_turn = client.post(
+        f"/v1/agent-conversations/{conversation_id}/turns",
+        headers=auth(tenant_token),
+        json={"message": "This turn will fail."},
+    )
+    assert failed_turn.status_code == 202, failed_turn.text
+    failed_run_id = failed_turn.json()["run"]["id"]
+    fail_agent_run(uuid.UUID(failed_run_id), "Temporary provider failure")
+
+    resumed_turn = client.post(
+        f"/v1/agent-conversations/{conversation_id}/turns",
+        headers=auth(tenant_token),
+        json={"message": "Continue with the earlier context."},
+    )
+    assert resumed_turn.status_code == 202, resumed_turn.text
+    resumed = prepare_agent_run(uuid.UUID(resumed_turn.json()["run"]["id"]))
+
+    assert resumed.message_history == first_outcome.message_history
+
+
+def test_batch_chat_is_batch_scoped_and_calls_semantic_summary_search(
+    client: TestClient,
+    root_token: str,
+    monkeypatch,
+) -> None:
+    _, tenant_token, matter_id = create_tenant_context(client, root_token)
+    with TestingSessionLocal() as db:
+        actor = db.scalar(select(User).where(User.email == "agent-admin@example.com"))
+        assert actor is not None
+        batch = ReviewBatch(
+            matter_id=uuid.UUID(matter_id),
+            name="Interview documents",
+            description="Batch chat scope",
+            selection_type="ALL_MATTER",
+            selection_definition={},
+            reviewer_value_visibility="OWN_VALUES",
+            status="READY",
+            search_status="READY",
+            workflow_id=f"test-batch:{uuid.uuid4()}",
+            document_count=0,
+            created_by_user_id=actor.id,
+        )
+        db.add(batch)
+        db.commit()
+        batch_id = str(batch.id)
+
+    payload = agent_payload(key="batch_chat")
+    payload["name"] = "Batch Chat Agent"
+    payload["initial_version"]["tools"] = [
+        {"key": "batch.search_summaries", "configuration": {}}
+    ]
+    agent_response = client.post("/v1/admin/agents", headers=auth(root_token), json=payload)
+    assert agent_response.status_code == 201, agent_response.text
+    agent_id = agent_response.json()["agent"]["id"]
+    publish = client.post(f"/v1/agents/{agent_id}/versions/1/publish", headers=auth(root_token))
+    assert publish.status_code == 200, publish.text
+
+    missing_scope = client.post(
+        f"/v1/matters/{matter_id}/agent-conversations",
+        headers=auth(tenant_token),
+        json={"agent_definition_id": agent_id, "workflow_type": "BATCH_CHAT"},
+    )
+    assert missing_scope.status_code == 422
+    conversation_response = client.post(
+        f"/v1/matters/{matter_id}/agent-conversations",
+        headers=auth(tenant_token),
+        json={
+            "agent_definition_id": agent_id,
+            "workflow_type": "BATCH_CHAT",
+            "review_batch_id": batch_id,
+            "title": "Who discussed renewal?",
+        },
+    )
+    assert conversation_response.status_code == 201, conversation_response.text
+    conversation_id = conversation_response.json()["id"]
+    assert conversation_response.json()["review_batch_id"] == batch_id
+    turn = client.post(
+        f"/v1/agent-conversations/{conversation_id}/turns",
+        headers=auth(tenant_token),
+        json={"message": "Who discussed policy renewal?"},
+    )
+    assert turn.status_code == 202, turn.text
+    run_id = turn.json()["run"]["id"]
+
+    semantic_requests = []
+
+    def fake_search(_matter, request, **kwargs):
+        semantic_requests.append((request, kwargs["required_filters"]))
+        return MatterSearchResponse(total=0, took_ms=1, timed_out=False, hits=[], facets={})
+
+    monkeypatch.setattr(agent_runtime, "SessionLocal", TestingSessionLocal)
+    monkeypatch.setattr("app.routers.search.execute_matter_search", fake_search)
+    calls = 0
+
+    def model_function(_messages, _info):
+        nonlocal calls
+        calls += 1
+        if calls == 1:
+            return ModelResponse(
+                parts=[
+                    ToolCallPart(
+                        tool_name="batch_search_summaries",
+                        args={"query": "policy renewal discussions", "max_results": 5},
+                        tool_call_id="batch-search-1",
+                    )
+                ]
+            )
+        return ModelResponse(parts=[TextPart("No summary-backed matches were returned for that query.")])
+
+    prepared = prepare_agent_run(uuid.UUID(run_id))
+    assert prepared.deps.review_batch_id == uuid.UUID(batch_id)
+    outcome = asyncio.run(
+        execute_prepared_agent_run(prepared, build_agent(), model=FunctionModel(model_function))
+    )
+    assert outcome.status == "COMPLETED"
+    assert len(semantic_requests) == 1
+    assert semantic_requests[0][0].search_mode == "SEMANTIC"
+    assert semantic_requests[0][1] == [{"term": {"batch_ids": batch_id}}]
 
 
 def test_approval_request_rejection_resumes_as_a_new_run(

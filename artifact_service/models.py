@@ -161,6 +161,7 @@ class CollectionTextProcessingRun(TimestampMixin, ArtifactBase):
     processor_version: Mapped[str] = mapped_column(String(100))
     profile_revision: Mapped[int] = mapped_column(Integer)
     rules_snapshot: Mapped[list[dict[str, Any]]] = mapped_column(JSON, default=list)
+    disabled_rule_ids: Mapped[list[str]] = mapped_column(JSON, default=list)
     configuration_hash: Mapped[str] = mapped_column(String(64), index=True)
     total_count: Mapped[int] = mapped_column(Integer, default=0)
     processed_count: Mapped[int] = mapped_column(Integer, default=0)

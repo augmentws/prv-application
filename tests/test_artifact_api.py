@@ -10,6 +10,7 @@ from pydantic import ValidationError
 from artifact_service.api import MAX_DATE_HISTOGRAM_BUCKETS, _fill_date_buckets
 from artifact_service.config import get_artifact_settings
 from artifact_service.schemas import (
+    CollectionTextProcessingTestRequest,
     DerivedArtifactUploadMetadata,
     EmailMetadataInput,
     EmailRecipientInput,
@@ -20,6 +21,14 @@ from artifact_service.text_processing import process_text
 
 def auth(token: str) -> dict[str, str]:
     return {"Authorization": f"Bearer {token}"}
+
+
+def test_collection_text_processing_test_accepts_up_to_25_items() -> None:
+    request = CollectionTextProcessingTestRequest(item_ids=[uuid.uuid4() for _ in range(25)])
+    assert len(request.item_ids) == 25
+
+    with pytest.raises(ValidationError, match="at most 25 items"):
+        CollectionTextProcessingTestRequest(item_ids=[uuid.uuid4() for _ in range(26)])
 
 
 def test_email_upload_metadata_rejects_nul_characters_before_database_write() -> None:
@@ -443,6 +452,10 @@ def test_collection_text_processing_profile_test_and_run(client: TestClient, roo
         "system-attachment-placeholder",
         "system-whitespace",
     ]
+    assert all(rule["match_pattern"] for rule in profile.json()["default_rules"])
+    assert all(rule["stop_pattern"] for rule in profile.json()["default_rules"])
+    reply_rule = next(rule for rule in profile.json()["default_rules"] if rule["id"] == "system-reply-history")
+    assert reply_rule["stop_pattern"] == r"[Ss]ubject:"
 
     rule = {
         "id": "remove-footer",
@@ -474,12 +487,34 @@ def test_collection_text_processing_profile_test_and_run(client: TestClient, roo
         "match_count": 1,
     }
 
+    disabled_preview = client.post(
+        f"/v1/collections/{collection_id}/text-processing:test",
+        headers=auth(root_token),
+        json={
+            "item_ids": [item_id],
+            "rules": [rule],
+            "disabled_rule_ids": ["remove-footer"],
+        },
+    )
+    assert disabled_preview.status_code == 200, disabled_preview.text
+    disabled_result = disabled_preview.json()["items"][0]
+    assert disabled_result["normalized_text"] == "Useful line\nCONFIDENTIAL FOOTER"
+    assert [change["rule_id"] for change in disabled_result["changes"]] == ["system-whitespace"]
+
     run = client.post(
         f"/v1/collections/{collection_id}/text-processing/runs",
         headers=auth(root_token),
+        json={"enabled_rule_ids": ["remove-footer"]},
     )
     assert run.status_code == 202, run.text
     assert run.json()["status"] == "QUEUED"
+    assert [value["id"] for value in run.json()["rules_snapshot"]] == ["remove-footer"]
+    assert run.json()["disabled_rule_ids"] == [
+        "system-attachment-placeholder",
+        "system-lotus-forward-envelope",
+        "system-reply-history",
+        "system-whitespace",
+    ]
     history = client.get(
         f"/v1/collections/{collection_id}/text-processing/runs",
         headers=auth(root_token),
@@ -508,6 +543,17 @@ def test_text_processing_removes_blocks_and_replaces_matches() -> None:
     result = process_text("Hello\nBEGIN BANNER\nnoise\nEND BANNER\nTICKET-123", rules)
     assert result.text == "Hello\nTICKET"
     assert [change.rule_id for change in result.changes] == ["remove-banner", "redact-ticket"]
+
+
+def test_text_processing_test_can_disable_system_rules() -> None:
+    result = process_text(
+        "Useful line\n- winmail.dat",
+        [],
+        disabled_rule_ids={"system-attachment-placeholder"},
+    )
+
+    assert result.text == "Useful line\n- winmail.dat"
+    assert result.changes == []
 
 
 def test_default_text_processing_unwraps_lotus_forward_and_attachment_placeholder() -> None:
@@ -617,11 +663,13 @@ Jeff,
 Is the closing today?
 """
     result = process_text(source, [])
-    assert result.text == "Subject: closing\n\nJeff,\n\nIs the closing today?"
+    assert result.text == "closing\n\nJeff,\n\nIs the closing today?"
     assert [change.rule_id for change in result.changes] == ["system-lotus-forward-envelope"]
 
     prior_version = process_text(source, [], processor_version="collection-text-v4")
     assert prior_version.text == "Jeff,\n\nIs the closing today?"
+    version_seven = process_text(source, [], processor_version="collection-text-v7")
+    assert version_seven.text == "Subject: closing\n\nJeff,\n\nIs the closing today?"
 
 
 def test_default_text_processing_removes_headerless_calendar_forward_marker() -> None:
@@ -669,13 +717,78 @@ Login ID: pallen
 """
     result = process_text(source, [])
     assert result.text == (
-        "Subject: Re: 2- SURVEY - PHILLIP ALLEN\n\n"
+        "Re: 2- SURVEY - PHILLIP ALLEN\n\n"
         "-\nFull Name: Phillip Allen\n\nLogin ID: pallen"
     )
     assert [change.rule_id for change in result.changes] == ["system-lotus-forward-envelope"]
 
     prior_version = process_text(source, [], processor_version="collection-text-v6")
     assert prior_version.text == ""
+
+
+def test_default_text_processing_unwraps_standard_forward_without_removing_body() -> None:
+    source = """Introductory note
+
+---------- Forwarded message ---------
+From: Sender Person <sender@example.com>
+Date: Tue, Sep 23, 2026 at 8:00 AM
+Subject: Project status
+To: Recipient Person <recipient@example.com>
+Cc: Another Person <another@example.com>
+
+The project remains on schedule.
+
+Regards,
+Sender
+"""
+
+    result = process_text(source, [])
+
+    assert result.text == (
+        "Introductory note\n\n"
+        "Project status\n\n"
+        "The project remains on schedule.\n\n"
+        "Regards,\nSender"
+    )
+    assert [change.rule_id for change in result.changes] == ["system-lotus-forward-envelope"]
+
+    prior_version = process_text(source, [], processor_version="collection-text-v7")
+    assert prior_version.text == "Introductory note"
+
+
+def test_default_text_processing_unwraps_original_message_headers_through_subject() -> None:
+    source = """Current reply
+
+-----Original Message-----
+From: Prior Sender
+Subject: Older thread
+
+Quoted history
+"""
+
+    result = process_text(source, [])
+
+    assert result.text == "Current reply\n\nOlder thread\n\nQuoted history"
+    assert [change.rule_id for change in result.changes] == ["system-reply-history"]
+
+    prior_version = process_text(source, [], processor_version="collection-text-v8")
+    assert prior_version.text == "Current reply"
+
+
+def test_default_text_processing_preserves_original_message_marker_without_subject_stop() -> None:
+    source = """Current reply
+
+-----Original Message-----
+From: Prior Sender
+To: Current Recipient
+
+Body without a subject header
+"""
+
+    result = process_text(source, [])
+
+    assert "-----Original Message-----" in result.text
+    assert all(change.rule_id != "system-reply-history" for change in result.changes)
 
 
 def test_upload_rejects_unknown_custodian(client: TestClient, root_token: str) -> None:

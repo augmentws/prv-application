@@ -8,8 +8,8 @@ from fastapi import APIRouter, Depends, HTTPException, Query, status
 from sqlalchemy import and_, delete, func, or_, select
 from sqlalchemy.orm import Session
 
-from app.audit import record_audit
 from app.artifact_gateway import read_artifact_bytes
+from app.audit import record_audit
 from app.config import Settings, get_settings
 from app.database import get_db
 from app.dependencies import Principal, can_admin_matter, get_principal
@@ -38,8 +38,7 @@ from app.models import (
     User,
 )
 from app.review_batches import materialize_review_batch, refresh_run_document_count
-from app.routers.search import execute_matter_facet_values, execute_matter_search
-from app.routers.search import execute_matter_batch_topic_facets
+from app.routers.search import execute_matter_batch_topic_facets, execute_matter_facet_values, execute_matter_search
 from app.schemas import (
     BatchTopicRead,
     BatchTopicTaxonomyRead,
@@ -51,12 +50,14 @@ from app.schemas import (
     ReviewBatchAssignmentUpdate,
     ReviewBatchCodingFieldRead,
     ReviewBatchCodingGroupRead,
+    ReviewBatchCodingGroupsAdd,
+    ReviewBatchCodingGroupsUpdate,
     ReviewBatchComparisonFieldRead,
     ReviewBatchComparisonRead,
     ReviewBatchCreate,
+    ReviewBatchDocumentAnalysisRead,
     ReviewBatchDocumentCodingRead,
     ReviewBatchDocumentRead,
-    ReviewBatchDocumentAnalysisRead,
     ReviewBatchNoteCreate,
     ReviewBatchNoteRead,
     ReviewBatchRead,
@@ -185,7 +186,13 @@ def _validate_user(db: Session, matter: Matter, user_id: uuid.UUID | None) -> Us
     return user
 
 
-def _snapshot_groups(db: Session, batch: ReviewBatch, group_ids: list[uuid.UUID]) -> None:
+def _snapshot_groups(
+    db: Session,
+    batch: ReviewBatch,
+    group_ids: list[uuid.UUID],
+    *,
+    start_order: int = 0,
+) -> None:
     if not group_ids:
         return
     groups = list(
@@ -201,7 +208,7 @@ def _snapshot_groups(db: Session, batch: ReviewBatch, group_ids: list[uuid.UUID]
     if len(groups) != len(set(group_ids)):
         raise HTTPException(status_code=422, detail="Coding groups must be active shared groups in this matter")
     by_id = {group.id: group for group in groups}
-    for group_order, group_id in enumerate(group_ids):
+    for group_order, group_id in enumerate(group_ids, start=start_order):
         group = by_id[group_id]
         snapshot = ReviewBatchCodingGroup(
             review_batch_id=batch.id,
@@ -347,6 +354,141 @@ def update_review_batch_assignment(
     batch.assigned_user_id = payload.assigned_user_id
     batch.assigned_by_user_id = principal.user.id if payload.assigned_user_id else None
     batch.assigned_at = utcnow() if payload.assigned_user_id else None
+    db.commit()
+    return _read_batch(db, batch)
+
+
+@router.post("/{batch_id}/coding-groups", response_model=ReviewBatchRead)
+def add_review_batch_coding_groups(
+    matter_id: uuid.UUID,
+    batch_id: uuid.UUID,
+    payload: ReviewBatchCodingGroupsAdd,
+    principal: Principal = Depends(get_principal),
+    db: Session = Depends(get_db),
+) -> ReviewBatchRead:
+    matter = _matter(db, matter_id, principal)
+    batch = _batch(db, matter_id, batch_id)
+    existing = list(
+        db.scalars(
+            select(ReviewBatchCodingGroup)
+            .where(ReviewBatchCodingGroup.review_batch_id == batch.id)
+            .order_by(ReviewBatchCodingGroup.sort_order)
+        )
+    )
+    existing_source_ids = {
+        group.source_metadata_group_id for group in existing if group.source_metadata_group_id is not None
+    }
+    requested_ids = list(dict.fromkeys(payload.coding_group_ids))
+    new_ids = [group_id for group_id in requested_ids if group_id not in existing_source_ids]
+    if new_ids:
+        _snapshot_groups(db, batch, new_ids, start_order=len(existing))
+        record_audit(
+            db,
+            tenant_id=matter.client.tenant_id,
+            actor_user_id=principal.user.id,
+            action="review_batch.coding_groups.added",
+            target_type="review_batch",
+            target_id=batch.id,
+            details={
+                "matter_id": str(matter.id),
+                "coding_group_ids": [str(group_id) for group_id in new_ids],
+            },
+        )
+        db.commit()
+    return _read_batch(db, batch)
+
+
+@router.put("/{batch_id}/coding-groups", response_model=ReviewBatchRead)
+def replace_review_batch_coding_groups(
+    matter_id: uuid.UUID,
+    batch_id: uuid.UUID,
+    payload: ReviewBatchCodingGroupsUpdate,
+    principal: Principal = Depends(get_principal),
+    db: Session = Depends(get_db),
+) -> ReviewBatchRead:
+    matter = _matter(db, matter_id, principal)
+    batch = _batch(db, matter_id, batch_id)
+    existing = list(
+        db.scalars(
+            select(ReviewBatchCodingGroup)
+            .where(ReviewBatchCodingGroup.review_batch_id == batch.id)
+            .order_by(ReviewBatchCodingGroup.sort_order)
+        )
+    )
+    existing_by_source = {
+        group.source_metadata_group_id: group
+        for group in existing
+        if group.source_metadata_group_id is not None
+    }
+    requested_ids = list(dict.fromkeys(payload.coding_group_ids))
+    requested_set = set(requested_ids)
+    new_ids = [group_id for group_id in requested_ids if group_id not in existing_by_source]
+
+    # Validate additions before changing the existing snapshot. Retained snapshots
+    # remain valid even if their source group has since been suspended.
+    if new_ids:
+        valid_new_ids = set(
+            db.scalars(
+                select(MetadataGroup.id).where(
+                    MetadataGroup.id.in_(new_ids),
+                    MetadataGroup.matter_id == batch.matter_id,
+                    MetadataGroup.status == "ACTIVE",
+                    MetadataGroup.scope.in_(["SYSTEM", "MATTER"]),
+                )
+            )
+        )
+        if valid_new_ids != set(new_ids):
+            raise HTTPException(status_code=422, detail="Coding groups must be active shared groups in this matter")
+
+    removed = [
+        group
+        for group in existing
+        if group.source_metadata_group_id is not None and group.source_metadata_group_id not in requested_set
+    ]
+    if removed:
+        removed_ids = [group.id for group in removed]
+        db.execute(
+            delete(ReviewBatchCodingField).where(
+                ReviewBatchCodingField.review_batch_coding_group_id.in_(removed_ids)
+            )
+        )
+        db.execute(delete(ReviewBatchCodingGroup).where(ReviewBatchCodingGroup.id.in_(removed_ids)))
+        db.flush()
+
+    retained = [existing_by_source[group_id] for group_id in requested_ids if group_id in existing_by_source]
+    orphaned = [group for group in existing if group.source_metadata_group_id is None]
+    # Move retained rows out of the non-negative display range before assigning
+    # the requested order, avoiding transient uniqueness conflicts.
+    for index, group in enumerate([*retained, *orphaned], start=1):
+        group.sort_order = -index
+    db.flush()
+
+    for index, group_id in enumerate(requested_ids):
+        retained_group = existing_by_source.get(group_id)
+        if retained_group is not None:
+            retained_group.sort_order = index
+        else:
+            _snapshot_groups(db, batch, [group_id], start_order=index)
+    for index, group in enumerate(orphaned, start=len(requested_ids)):
+        group.sort_order = index
+
+    removed_source_ids = [
+        group.source_metadata_group_id for group in removed if group.source_metadata_group_id is not None
+    ]
+    if new_ids or removed_source_ids:
+        record_audit(
+            db,
+            tenant_id=matter.client.tenant_id,
+            actor_user_id=principal.user.id,
+            action="review_batch.coding_groups.updated",
+            target_type="review_batch",
+            target_id=batch.id,
+            details={
+                "matter_id": str(matter.id),
+                "added_coding_group_ids": [str(group_id) for group_id in new_ids],
+                "removed_coding_group_ids": [str(group_id) for group_id in removed_source_ids],
+            },
+        )
     db.commit()
     return _read_batch(db, batch)
 

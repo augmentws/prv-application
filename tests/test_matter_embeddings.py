@@ -11,7 +11,7 @@ from app.artifact_gateway import DerivedArtifactReference, EmbeddingTextSource
 from app.embeddings.chunking import semantic_chunks
 from app.embeddings.parquet import read_chunk_set, read_vector_set, write_chunk_set, write_vector_set
 from app.matter_embeddings import process_document, process_documents
-from app.models import User
+from app.models import MatterEmbeddingBatch, MatterEmbeddingJob, SearchProjectionOperation, User
 from app.provider_usage import record_external_provider_usage
 from embedding_service.schemas import EmbeddingResponse
 
@@ -128,6 +128,78 @@ def test_create_list_and_cancel_embedding_job(
     )
     assert canceled.status_code == 200
     assert canceled.json()["status"] == "CANCELED"
+
+
+def test_retry_embedding_index_reuses_completed_batches(
+    client: TestClient,
+    root_token: str,
+    db: Session,
+) -> None:
+    headers = auth(root_token)
+    tenant_id = client.get("/v1/auth/me", headers=headers).json()["tenant_id"]
+    client_record = client.post(
+        f"/v1/tenants/{tenant_id}/clients",
+        headers=headers,
+        json={"name": "Embedding Retry Client"},
+    ).json()
+    matter = client.post(
+        f"/v1/clients/{client_record['id']}/matters",
+        headers=headers,
+        json={"name": "Embedding Retry Matter"},
+    ).json()
+    created = client.post(f"/v1/matters/{matter['id']}/embedding-jobs", headers=headers).json()
+    job = db.get(MatterEmbeddingJob, uuid.UUID(created["id"]))
+    assert job is not None
+    original_workflow_id = job.workflow_id
+    pressure_error = (
+        "cluster_block_exception: index blocked because disk usage exceeded flood-stage watermark"
+    )
+    job.status = "FAILED"
+    job.batch_count = 1
+    job.processed_count = 10
+    job.embedded_count = 10
+    job.error_message = "DBOS Error 7: Step index_matter_embedding_job exceeded retries"
+    batch = MatterEmbeddingBatch(
+        job_id=job.id,
+        batch_number=0,
+        document_ids=[str(uuid.uuid4()) for _ in range(10)],
+        status="COMPLETED",
+        item_count=10,
+        processed_count=10,
+        embedded_count=10,
+    )
+    projection = SearchProjectionOperation(
+        matter_id=job.matter_id,
+        kind="DOCUMENT_UPSERT",
+        payload={"embedding_job_id": str(job.id)},
+        status="FAILED",
+        workflow_id=f"embedding-index-job:{job.id}",
+        created_by_user_id=job.created_by_user_id,
+        attempt_count=5,
+        error_message=pressure_error,
+    )
+    db.add_all([batch, projection])
+    db.commit()
+
+    response = client.post(
+        f"/v1/matters/{matter['id']}/embedding-jobs/{job.id}/retry-index",
+        headers=headers,
+    )
+
+    assert response.status_code == 202, response.text
+    assert response.json()["status"] == "QUEUED"
+    db.expire_all()
+    retried = db.get(MatterEmbeddingJob, job.id)
+    assert retried is not None
+    assert retried.workflow_id != original_workflow_id
+    assert retried.error_message is None
+    assert retried.processed_count == 10
+    assert retried.configuration["index_retry_history"][-1]["error_message"] == pressure_error
+    assert db.get(MatterEmbeddingBatch, batch.id).status == "COMPLETED"
+    retried_projection = db.get(SearchProjectionOperation, projection.id)
+    assert retried_projection is not None
+    assert retried_projection.status == "QUEUED"
+    assert retried_projection.error_message is None
 
 
 def test_derived_artifact_upload_is_idempotent(client: TestClient, root_token: str) -> None:

@@ -4,7 +4,7 @@ from conftest import TestingSessionLocal
 from fastapi.testclient import TestClient
 from sqlalchemy import select
 
-from app.models import SkillDefinition, Tenant, WorkflowSkillBinding
+from app.models import SkillDefinition, SkillDefinitionVersion, Tenant, WorkflowSkillBinding
 from app.standard_skills import ensure_standard_assessment_skills
 from app.workflow_specs import binding_snapshot, get_workflow_spec, resolve_workflow_skill_bindings
 
@@ -187,8 +187,7 @@ def test_tenant_binding_overrides_system_binding(client: TestClient, root_token:
         headers=auth(root_token),
     )
     tenant_binding = client.put(
-        f"/v1/tenants/{tenant_id}/workflow-skill-bindings/"
-        "matter_definition_assessment_v1/assessment_synthesis",
+        f"/v1/tenants/{tenant_id}/workflow-skill-bindings/matter_definition_assessment_v1/assessment_synthesis",
         headers=auth(root_token),
         json={"skill_definition_version_id": tenant["version"]["id"]},
     )
@@ -243,3 +242,63 @@ def test_standard_assessment_skills_are_idempotent(db, root_admin) -> None:
         "document_analysis",
         "assessment_synthesis",
     }
+    planner = next(
+        version
+        for version in db.scalars(select(SkillDefinitionVersion))
+        if version.output_schema_key.startswith("matter_definition_retrieval_plan_output")
+    )
+    assert planner.output_schema_key == "matter_definition_retrieval_plan_output_v3"
+    query_schema = planner.output_schema["properties"]["queries"]["items"]
+    assert set(query_schema["required"]) == {
+        "criterion_key",
+        "criterion_label",
+        "rationale",
+        "quota",
+        "search",
+    }
+    search_schema = query_schema["properties"]["search"]
+    assert search_schema["required"] == ["query", "search_mode"]
+    assert set(search_schema["properties"]) == {"query", "search_mode"}
+
+
+def test_standard_assessment_skills_publish_new_version_when_limits_change(db, root_admin) -> None:
+    root = db.get(Tenant, root_admin.tenant_id)
+    assert root is not None
+    assert ensure_standard_assessment_skills(db, root, root_admin) is True
+    db.commit()
+
+    skill = db.scalar(select(SkillDefinition).where(SkillDefinition.key == "matter_definition_retrieval_plan"))
+    assert skill is not None
+    version = db.scalar(
+        select(SkillDefinitionVersion).where(
+            SkillDefinitionVersion.skill_definition_id == skill.id,
+            SkillDefinitionVersion.version == skill.published_version,
+        )
+    )
+    assert version is not None
+    version.limits = {"max_requests": 2, "max_output_tokens": 12_000}
+    db.commit()
+
+    assert ensure_standard_assessment_skills(db, root, root_admin) is True
+    db.commit()
+    db.refresh(skill)
+    assert skill.current_version == 2
+    assert skill.published_version == 2
+
+    upgraded = db.scalar(
+        select(SkillDefinitionVersion).where(
+            SkillDefinitionVersion.skill_definition_id == skill.id,
+            SkillDefinitionVersion.version == 2,
+        )
+    )
+    assert upgraded is not None
+    assert upgraded.limits["max_requests"] == 3
+    binding = db.scalar(
+        select(WorkflowSkillBinding).where(
+            WorkflowSkillBinding.role_key == "retrieval_planner",
+            WorkflowSkillBinding.scope == "SYSTEM",
+        )
+    )
+    assert binding is not None
+    assert binding.skill_definition_version_id == upgraded.id
+    assert ensure_standard_assessment_skills(db, root, root_admin) is False

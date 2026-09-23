@@ -19,6 +19,7 @@ from sqlalchemy import func, select
 
 from app.agent_models import resolve_agent_model
 from app.agent_tools import AGENT_TOOL_REGISTRY, EXECUTABLE_AGENT_TOOL_KEYS
+from app.artifact_gateway import read_artifact_bytes
 from app.config import get_settings
 from app.database import SessionLocal
 from app.execution_accounting import (
@@ -26,8 +27,8 @@ from app.execution_accounting import (
     persist_model_invocations,
     refresh_agent_run_usage,
 )
-from app.matter_definitions import append_matter_definition_revision
 from app.matter_definition_assessments import start_assessment
+from app.matter_definitions import append_matter_definition_revision
 from app.metadata_definitions import (
     add_metadata_enum_value as add_metadata_enum_value_command,
 )
@@ -56,9 +57,14 @@ from app.models import (
     AgentVersionTool,
     Matter,
     MatterDefinition,
+    MatterDefinitionAssessmentRun,
     MatterDefinitionRevision,
     MatterMembership,
     MetadataDefinition,
+    ReviewBatch,
+    SkillDefinition,
+    SkillDefinitionVersion,
+    SkillRun,
     User,
     utcnow,
 )
@@ -66,6 +72,8 @@ from app.schemas import (
     AssertionPolicy,
     Cardinality,
     EnumValueKey,
+    MatterSearchRequest,
+    MatterSearchSort,
     MetadataDefinitionCreate,
     MetadataDefinitionUpdate,
     MetadataEnumValueCreate,
@@ -98,6 +106,7 @@ TOOL_NAME_TO_KEY = {
     "matter_metadata_enum_deactivate": "matter_metadata.enum.deactivate",
     "matter_definition_apply_draft_edit": "matter_definition.apply_draft_edit",
     "matter_definition_start_assessment": "matter_definition.start_assessment",
+    "batch_search_summaries": "batch.search_summaries",
 }
 RUNTIME_TOOL_KEYS = EXECUTABLE_AGENT_TOOL_KEYS
 if frozenset(TOOL_NAME_TO_KEY.values()) != RUNTIME_TOOL_KEYS:
@@ -112,6 +121,8 @@ AgentEnumLabel = Annotated[str, Field(min_length=1, max_length=200)]
 AgentEnumDescription = Annotated[str, Field(min_length=1, max_length=2000)]
 AssessmentMaximumDocumentCount = Annotated[int, Field(ge=1, le=10_000_000)]
 AssessmentControlSampleSize = Annotated[int, Field(ge=0, le=1_000_000)]
+BatchChatQuery = Annotated[str, Field(min_length=1, max_length=2000)]
+BatchChatResultLimit = Annotated[int, Field(ge=1, le=20)]
 
 
 @dataclass(frozen=True)
@@ -119,6 +130,7 @@ class AgentRuntimeDeps:
     run_id: uuid.UUID
     conversation_id: uuid.UUID
     matter_id: uuid.UUID
+    review_batch_id: uuid.UUID | None
     actor_user_id: uuid.UUID
     allowed_tool_keys: frozenset[str]
 
@@ -718,6 +730,174 @@ def start_matter_definition_assessment(
     )
 
 
+def _summary_evidence(payload: dict[str, Any]) -> dict[str, Any]:
+    result = payload.get("result")
+    if not isinstance(result, dict):
+        raise TypeError("Summary artifact has no structured result")
+    return {
+        "determination": result.get("determination"),
+        "confidence": result.get("confidence"),
+        "document_summary": result.get("summary") or [],
+        "responsiveness_summary": result.get("responsiveness_summary") or [],
+        "clarification_requests": result.get("clarification_requests") or [],
+        "coverage": result.get("coverage"),
+    }
+
+
+def search_batch_summaries(
+    ctx: RunContext[AgentRuntimeDeps],
+    query: BatchChatQuery,
+    max_results: BatchChatResultLimit = 8,
+) -> dict[str, Any]:
+    """Search the fixed batch and return summary-backed evidence for the strongest semantic matches."""
+    arguments = {"query": query, "max_results": max_results}
+
+    def operation(db, matter: Matter, user: User, _run: AgentRun) -> dict[str, Any]:
+        conversation = db.get(AgentConversation, ctx.deps.conversation_id)
+        batch_id = conversation.review_batch_id if conversation is not None else None
+        if batch_id is None or batch_id != ctx.deps.review_batch_id:
+            raise PermissionError("Batch chat execution is not bound to a review batch")
+        batch = db.get(ReviewBatch, batch_id)
+        if batch is None or batch.matter_id != matter.id:
+            raise PermissionError("Review batch is outside the conversation matter")
+        if batch.status != "READY" or batch.search_status != "READY":
+            raise ValueError("Review batch semantic search is not ready")
+
+        # Pull extra semantic candidates because some documents may not yet have a reusable summary.
+        candidate_limit = min(100, max(20, max_results * 5))
+        from app.routers.search import execute_matter_search
+
+        response = execute_matter_search(
+            matter,
+            MatterSearchRequest(
+                query=query,
+                search_mode="SEMANTIC",
+                sort=[MatterSearchSort(field="_score", direction="DESC")],
+                offset=0,
+                size=candidate_limit,
+            ),
+            db=db,
+            settings=get_settings(),
+            required_filters=[{"term": {"batch_ids": str(batch.id)}}],
+        )
+        hit_by_document = {hit.document_id: hit for hit in response.hits}
+        document_ids = list(hit_by_document)
+        if not document_ids:
+            return {
+                "evidence_source": "SUMMARY",
+                "batch_id": str(batch.id),
+                "query": query,
+                "semantic_match_count": response.total,
+                "searched_candidate_count": 0,
+                "summary_result_count": 0,
+                "missing_summary_count": 0,
+                "results": [],
+            }
+
+        # A summary created for this batch is preferred. Otherwise, reuse the newest document-analysis
+        # summary for the same matter document, retaining its provenance in the tool result.
+        rows = db.execute(
+            select(SkillRun, MatterDefinitionAssessmentRun)
+            .join(
+                SkillDefinitionVersion,
+                SkillDefinitionVersion.id == SkillRun.skill_definition_version_id,
+            )
+            .join(
+                SkillDefinition,
+                SkillDefinition.id == SkillDefinitionVersion.skill_definition_id,
+            )
+            .outerjoin(
+                MatterDefinitionAssessmentRun,
+                MatterDefinitionAssessmentRun.workflow_run_id == SkillRun.workflow_run_id,
+            )
+            .where(
+                SkillRun.scope_type == "MATTER_DOCUMENT",
+                SkillRun.scope_id.in_(document_ids),
+                SkillRun.status == "COMPLETED",
+                SkillRun.output_artifact_id.is_not(None),
+                SkillDefinition.key == "matter_definition_document_analysis",
+            )
+            .order_by(SkillRun.created_at.desc(), SkillRun.id.desc())
+        ).all()
+        candidates_by_document: dict[uuid.UUID, list[tuple[SkillRun, MatterDefinitionAssessmentRun | None]]] = {}
+        for skill_run, assessment in rows:
+            if skill_run.scope_id is not None:
+                candidates_by_document.setdefault(skill_run.scope_id, []).append((skill_run, assessment))
+
+        results: list[dict[str, Any]] = []
+        missing_summary_count = 0
+        unavailable_summary_count = 0
+        for hit in response.hits:
+            choices = candidates_by_document.get(hit.document_id, [])
+            choices.sort(
+                key=lambda item: (
+                    item[1] is not None and item[1].review_batch_id == batch.id,
+                    item[0].created_at,
+                ),
+                reverse=True,
+            )
+            if not choices:
+                missing_summary_count += 1
+                continue
+            skill_run, assessment = choices[0]
+            try:
+                payload = json.loads(
+                    read_artifact_bytes(
+                        artifact_id=skill_run.output_artifact_id,
+                        actor_user_id=user.id,
+                        tenant_id=matter.client.tenant_id,
+                        client_id=matter.client_id,
+                    )
+                )
+                evidence = _summary_evidence(payload)
+            except (ValueError, PermissionError, json.JSONDecodeError, TypeError):
+                unavailable_summary_count += 1
+                continue
+            fields = hit.fields or {}
+            results.append(
+                {
+                    "document_id": str(hit.document_id),
+                    "title": fields.get("email_subject") or fields.get("original_filename") or "Untitled document",
+                    "original_filename": fields.get("original_filename"),
+                    "source_path": fields.get("source_path"),
+                    "semantic_score": hit.score,
+                    "summary_artifact_id": str(skill_run.output_artifact_id),
+                    "summary_review_batch_id": (
+                        str(assessment.review_batch_id)
+                        if assessment is not None and assessment.review_batch_id is not None
+                        else None
+                    ),
+                    "reused_from_another_batch": assessment is None or assessment.review_batch_id != batch.id,
+                    **evidence,
+                }
+            )
+            if len(results) >= max_results:
+                break
+
+        return {
+            "evidence_source": "SUMMARY",
+            "batch_id": str(batch.id),
+            "query": query,
+            "semantic_match_count": response.total,
+            "searched_candidate_count": len(response.hits),
+            "summary_result_count": len(results),
+            "missing_summary_count": missing_summary_count,
+            "unavailable_summary_count": unavailable_summary_count,
+            "results": results,
+            "coverage_note": (
+                "Counts describe only the semantic candidate window, not every document in the batch. "
+                "A missing summary must not be treated as evidence that the document is irrelevant."
+            ),
+        }
+
+    return _record_tool(
+        ctx,
+        tool_key="batch.search_summaries",
+        arguments=arguments,
+        operation=operation,
+    )
+
+
 def _prepare_for(tool_key: str):
     def prepare(ctx: RunContext[AgentRuntimeDeps], tool_def: ToolDefinition) -> ToolDefinition | None:
         return tool_def if tool_key in ctx.deps.allowed_tool_keys else None
@@ -743,6 +923,7 @@ def build_agent(
         "matter_metadata.enum.deactivate": deactivate_matter_metadata_enum_value,
         "matter_definition.apply_draft_edit": apply_matter_definition_draft_edit,
         "matter_definition.start_assessment": start_matter_definition_assessment,
+        "batch.search_summaries": search_batch_summaries,
     }
     tools = []
     for tool_name, tool_key in TOOL_NAME_TO_KEY.items():
@@ -787,7 +968,17 @@ def prepare_agent_run(run_id: uuid.UUID) -> PreparedAgentRun:
         )
         allowed_tool_keys = frozenset(assignment.tool_key for assignment in assignments) & RUNTIME_TOOL_KEYS
         parent = db.get(AgentRun, run.parent_run_id) if run.parent_run_id else None
-        message_history = parent.message_history if parent else None
+        message_history = None
+        history_source = parent
+        while history_source is not None:
+            if history_source.message_history is not None:
+                message_history = history_source.message_history
+                break
+            history_source = (
+                db.get(AgentRun, history_source.parent_run_id)
+                if history_source.parent_run_id is not None
+                else None
+            )
         user_prompt = None
         if run.sequence == 1:
             user_message = db.scalar(
@@ -832,7 +1023,15 @@ def prepare_agent_run(run_id: uuid.UUID) -> PreparedAgentRun:
             run_id=str(run.id),
             conversation_id=str(conversation.id),
             user_prompt=user_prompt,
-            instructions=[SECURITY_INSTRUCTIONS, version.system_prompt, MATTER_DEFINITION_FLOW_INSTRUCTIONS],
+            instructions=[
+                SECURITY_INSTRUCTIONS,
+                version.system_prompt,
+                *(
+                    [MATTER_DEFINITION_FLOW_INSTRUCTIONS]
+                    if conversation.workflow_type == "MATTER_DEFINITION_SETUP"
+                    else []
+                ),
+            ],
             model_id=version.model_key,
             model_settings=version.model_policy,
             limits=version.limits,
@@ -842,6 +1041,7 @@ def prepare_agent_run(run_id: uuid.UUID) -> PreparedAgentRun:
                 run_id=run.id,
                 conversation_id=conversation.id,
                 matter_id=conversation.matter_id,
+                review_batch_id=conversation.review_batch_id,
                 actor_user_id=run.actor_user_id,
                 allowed_tool_keys=allowed_tool_keys,
             ),
@@ -853,6 +1053,7 @@ async def execute_prepared_agent_run(
     agent: Agent[AgentRuntimeDeps, str | DeferredToolRequests],
     *,
     model: Any | None = None,
+    rate_limit_capability_registered: bool = False,
 ) -> AgentRunOutcome:
     history = (
         ModelMessagesTypeAdapter.validate_python(prepared.message_history)
@@ -889,6 +1090,9 @@ async def execute_prepared_agent_run(
         model_settings=prepared.model_settings,
         limits=prepared.limits,
         model_configuration_hash=model_configuration_hash,
+        request_type="agent-turn",
+        trace_identifier=prepared.run_id,
+        rate_limit_capability_registered=rate_limit_capability_registered,
     )
     actions: list[dict[str, Any]] = []
     output_text = None
@@ -1005,7 +1209,8 @@ def persist_agent_run_outcome(run_id: uuid.UUID, outcome: AgentRunOutcome) -> No
             )
             turn.status = "COMPLETED"
             turn.completed_at = utcnow()
-            conversation.status = "COMPLETED"
+            # Completion belongs to this turn/run. The chat remains open for the next turn.
+            conversation.status = "ACTIVE"
         db.commit()
 
 

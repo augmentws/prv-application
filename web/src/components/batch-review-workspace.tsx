@@ -1,14 +1,16 @@
 "use client";
 
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { ArrowLeft, Check, ChevronDown, ChevronLeft, ChevronRight, FileText, Save, Search, SkipForward, Sparkles, X } from "lucide-react";
+import { ArrowLeft, Check, ChevronDown, ChevronLeft, ChevronRight, FileText, MessageSquareText, Save, Search, SkipForward, Sparkles, X } from "lucide-react";
 import Link from "next/link";
 import { useRouter } from "next/navigation";
 import { type FormEvent, useEffect, useMemo, useState } from "react";
 import { toast } from "sonner";
 
 import { BrandMark } from "@/components/brand-mark";
+import { BatchChatPanel } from "@/components/batch-chat-panel";
 import { DocumentViewerSurface } from "@/components/document-viewer-dialog";
+import { AssignBatchCodingGroupsDialog } from "@/components/forms/assign-batch-coding-groups-dialog";
 import { HelpLink } from "@/components/help-link";
 import { QueryError } from "@/components/query-state";
 import { ResultPagination } from "@/components/result-pagination";
@@ -34,6 +36,7 @@ import type {
   MatterSearchRequestSearchMode,
   MatterSearchResponse,
   MetadataDefinitionRead,
+  MetadataGroupRead,
   ReviewBatchCodingFieldRead,
   ReviewBatchDocumentCodingRead,
   ReviewBatchDocumentAnalysisRead,
@@ -44,6 +47,8 @@ import type {
   ReviewBatchRunRead,
 } from "@/generated/models";
 import { coreApi } from "@/lib/api-client";
+import type { BatchDocumentReference } from "@/lib/document-references";
+import { normalizeParagraphReference, parseParagraphNumbers } from "@/lib/document-references";
 import { cn } from "@/lib/utils";
 
 const PAGE_SIZE = 50;
@@ -158,10 +163,11 @@ function statusLabel(status: ReviewBatchDocumentRead["review_status"]) {
   return status.toLowerCase().replace("_", " ");
 }
 
-export function BatchReviewWorkspace({ matterId, batchId, initialDocumentId, initialPage = 1 }: {
+export function BatchReviewWorkspace({ matterId, batchId, initialDocumentId, initialParagraphReference, initialPage = 1 }: {
   matterId: string;
   batchId: string;
   initialDocumentId?: string;
+  initialParagraphReference?: string;
   initialPage?: number;
 }) {
   const router = useRouter();
@@ -174,8 +180,9 @@ export function BatchReviewWorkspace({ matterId, batchId, initialDocumentId, ini
   const [filters, setFilters] = useState<SelectedFilters>({});
   const [offset, setOffset] = useState(Math.max(0, initialPage - 1) * PAGE_SIZE);
   const [selectedDocumentId, setSelectedDocumentId] = useState(initialDocumentId ?? "");
+  const [paragraphReference, setParagraphReference] = useState(() => normalizeParagraphReference(initialParagraphReference));
   const [selectedTopicKeys, setSelectedTopicKeys] = useState<string[]>([]);
-  const [sidePanel, setSidePanel] = useState<"analysis" | "coding">("analysis");
+  const [sidePanel, setSidePanel] = useState<"analysis" | "coding" | "chat">("analysis");
 
   const matter = useQuery({ queryKey: ["matter", matterId], queryFn: () => coreApi<MatterRead>(`/v1/matters/${matterId}`) });
   const client = useQuery({
@@ -191,6 +198,10 @@ export function BatchReviewWorkspace({ matterId, batchId, initialDocumentId, ini
   const definitions = useQuery({
     queryKey: ["metadata-definitions", matterId],
     queryFn: () => coreApi<MetadataDefinitionRead[]>(`/v1/matters/${matterId}/metadata-definitions`),
+  });
+  const groups = useQuery({
+    queryKey: ["metadata-groups", matterId],
+    queryFn: () => coreApi<MetadataGroupRead[]>(`/v1/matters/${matterId}/metadata-groups`),
   });
   const batch = useQuery({ queryKey: ["review-batch", matterId, batchId], queryFn: () => coreApi<ReviewBatchRead>(`/v1/matters/${matterId}/review-batches/${batchId}`) });
   const taxonomy = useQuery({
@@ -261,13 +272,26 @@ export function BatchReviewWorkspace({ matterId, batchId, initialDocumentId, ini
     enabled: Boolean(run.data?.id && pageDocumentIds.length),
   });
   const statusByDocument = useMemo(() => new Map((statusQuery.data ?? []).map((document) => [document.matter_document_id, document])), [statusQuery.data]);
-  const effectiveDocumentId = searchResults.data?.hits.some((hit) => hit.document_id === selectedDocumentId)
-    ? selectedDocumentId
-    : searchResults.data?.hits.find((hit) => statusByDocument.get(hit.document_id)?.review_status === "NOT_STARTED")?.document_id
+  const selectedHit = searchResults.data?.hits.find((hit) => hit.document_id === selectedDocumentId);
+  const selectedDocument = useQuery({
+    queryKey: ["review-batch-document", matterId, batchId, run.data?.id, selectedDocumentId],
+    queryFn: async () => {
+      const params = new URLSearchParams({ run_id: run.data!.id, document_id: selectedDocumentId, offset: "0", limit: "1" });
+      const documents = await coreApi<ReviewBatchDocumentRead[]>(`/v1/matters/${matterId}/review-batches/${batchId}/documents?${params}`);
+      return documents[0] ?? null;
+    },
+    enabled: Boolean(run.data?.id && selectedDocumentId && !selectedHit),
+  });
+  const effectiveDocumentId = selectedDocumentId || (
+    searchResults.data?.hits.find((hit) => statusByDocument.get(hit.document_id)?.review_status === "NOT_STARTED")?.document_id
       ?? searchResults.data?.hits[0]?.document_id
-      ?? "";
-  const selectedHit = searchResults.data?.hits.find((hit) => hit.document_id === effectiveDocumentId);
-  const selectedCollectionItemId = typeof selectedHit?.fields.collection_item_id === "string" ? selectedHit.fields.collection_item_id : "";
+      ?? ""
+  );
+  const effectiveHit = searchResults.data?.hits.find((hit) => hit.document_id === effectiveDocumentId);
+  const selectedCollectionItemId = typeof effectiveHit?.fields.collection_item_id === "string"
+    ? effectiveHit.fields.collection_item_id
+    : selectedDocument.data?.collection_item_id ?? "";
+  const highlightedParagraphs = useMemo(() => parseParagraphNumbers(paragraphReference), [paragraphReference]);
   const collectionItem = useQuery({
     queryKey: ["collection-item", selectedCollectionItemId],
     queryFn: () => coreApi<CollectionItemRead>(`/v1/collection-items/${selectedCollectionItemId}`),
@@ -285,7 +309,7 @@ export function BatchReviewWorkspace({ matterId, batchId, initialDocumentId, ini
     retry: false,
   });
 
-  const syncUrl = (documentId?: string, nextOffset = offset) => {
+  const syncUrl = (documentId?: string, nextOffset = offset, nextParagraphReference?: string) => {
     const params = new URLSearchParams({ batch: batchId });
     if (query.trim()) params.set("q", query.trim());
     if (searchMode !== "KEYWORD") params.set("mode", searchMode.toLowerCase());
@@ -297,15 +321,22 @@ export function BatchReviewWorkspace({ matterId, batchId, initialDocumentId, ini
       for (const value of values) params.append(`f_${key}`, value);
     }
     if (documentId) params.set("document", documentId);
+    if (documentId && nextParagraphReference) params.set("paragraph", nextParagraphReference);
     router.replace(`/review/matters/${matterId}?${params}`, { scroll: false });
   };
-  const selectDocument = (documentId: string) => {
+  const selectDocument = (documentId: string, nextParagraphReference?: string) => {
+    const normalizedParagraphReference = normalizeParagraphReference(nextParagraphReference);
     setSelectedDocumentId(documentId);
-    syncUrl(documentId);
+    setParagraphReference(normalizedParagraphReference);
+    syncUrl(documentId, offset, normalizedParagraphReference);
+  };
+  const openDocumentReference = (reference: BatchDocumentReference) => {
+    selectDocument(reference.documentId, reference.paragraphReference);
   };
   const changePage = (nextOffset: number) => {
     setOffset(nextOffset);
     setSelectedDocumentId("");
+    setParagraphReference(undefined);
     syncUrl(undefined, nextOffset);
   };
 
@@ -317,6 +348,7 @@ export function BatchReviewWorkspace({ matterId, batchId, initialDocumentId, ini
     setQuery(draftQuery);
     setOffset(0);
     setSelectedDocumentId("");
+    setParagraphReference(undefined);
   };
 
   const changeSearchMode = (nextMode: MatterSearchRequestSearchMode) => {
@@ -324,6 +356,7 @@ export function BatchReviewWorkspace({ matterId, batchId, initialDocumentId, ini
     setMinimumSimilarity(nextMode === "SEMANTIC" ? parseMinimumSimilarity(draftMinimumSimilarity) : null);
     setOffset(0);
     setSelectedDocumentId("");
+    setParagraphReference(undefined);
   };
 
   const toggleFilter = (key: string, value: string) => {
@@ -336,11 +369,13 @@ export function BatchReviewWorkspace({ matterId, batchId, initialDocumentId, ini
     });
     setOffset(0);
     setSelectedDocumentId("");
+    setParagraphReference(undefined);
   };
   const toggleTopic = (topicKey: string) => {
     setSelectedTopicKeys((current) => current.includes(topicKey) ? current.filter((item) => item !== topicKey) : [...current, topicKey]);
     setOffset(0);
     setSelectedDocumentId("");
+    setParagraphReference(undefined);
   };
 
   const refreshReview = async () => {
@@ -381,16 +416,25 @@ export function BatchReviewWorkspace({ matterId, batchId, initialDocumentId, ini
     },
     onError: (error) => toast.error(error instanceof Error ? error.message : "The document could not be skipped."),
   });
+  const assignCodingGroups = useMutation({
+    mutationFn: ({ targetBatchId, codingGroupIds }: { targetBatchId: string; codingGroupIds: string[] }) => coreApi<ReviewBatchRead>(`/v1/matters/${matterId}/review-batches/${targetBatchId}/coding-groups`, { method: "PUT", body: JSON.stringify({ coding_group_ids: codingGroupIds }) }),
+    onSuccess: async (updated) => {
+      queryClient.setQueryData(["review-batch", matterId, batchId], updated);
+      await queryClient.invalidateQueries({ queryKey: ["review-batch-document-coding", matterId, batchId] });
+      toast.success("Coding groups for this batch were updated.");
+    },
+    onError: (error) => toast.error(error instanceof Error ? error.message : "The coding groups could not be updated."),
+  });
 
   const currentIndex = searchResults.data?.hits.findIndex((hit) => hit.document_id === effectiveDocumentId) ?? -1;
   const processed = (progress.data?.completed_count ?? 0) + (progress.data?.skipped_count ?? 0);
   const percent = progress.data?.document_count ? Math.round((processed / progress.data.document_count) * 100) : 0;
-  const fatalError = matter.error ?? client.error ?? custodians.error ?? definitions.error ?? batch.error ?? run.error ?? taxonomy.error ?? searchResults.error;
+  const fatalError = matter.error ?? client.error ?? custodians.error ?? definitions.error ?? groups.error ?? batch.error ?? run.error ?? taxonomy.error ?? searchResults.error;
 
   if (fatalError) return <main className="grid h-dvh place-items-center p-6"><QueryError message={fatalError.message} /></main>;
 
   return (
-    <main id="main-content" className="flex h-dvh min-h-[36rem] flex-col overflow-hidden bg-background">
+    <main id="main-content" className="flex h-dvh min-h-0 max-h-dvh flex-col overflow-hidden bg-background">
       <header className="shrink-0 border-b bg-card shadow-sm">
         <div className="flex min-h-14 flex-wrap items-center gap-3 px-3 py-2">
           <BrandMark className="size-8 shrink-0 rounded-lg" />
@@ -401,6 +445,7 @@ export function BatchReviewWorkspace({ matterId, batchId, initialDocumentId, ini
           </div>
           {batch.data?.search_status && batch.data.search_status !== "READY" ? <Badge variant="outline">Search {batch.data.search_status.toLowerCase().replace("_", " ")}</Badge> : null}
           {run.data?.status === "COMPLETED" ? <Badge variant="accent"><Check />Review complete</Badge> : null}
+          {batch.data ? <AssignBatchCodingGroupsDialog batch={batch.data} groups={groups.data ?? []} onSave={(targetBatchId, codingGroupIds) => assignCodingGroups.mutateAsync({ targetBatchId, codingGroupIds }).then(() => undefined)} /> : null}
           <HelpLink topic="reviewBatches" />
           <ThemeToggle />
         </div>
@@ -419,8 +464,15 @@ export function BatchReviewWorkspace({ matterId, batchId, initialDocumentId, ini
         </div>
       </header>
 
-      <div className="flex min-h-0 flex-1 overflow-hidden">
-        <aside className="flex w-96 shrink-0 flex-col border-r bg-card" aria-label="Batch documents">
+      <div
+        className="grid min-h-0 flex-1 overflow-hidden"
+        style={{
+          gridTemplateColumns: sidePanel === "chat" ? "24rem minmax(0, 1fr) 30rem" : "24rem minmax(0, 1fr) 25rem",
+          gridTemplateRows: "minmax(0, 1fr)",
+        }}
+        aria-label="Batch review layout"
+      >
+        <aside className="flex min-h-0 min-w-0 flex-col overflow-hidden border-r bg-card" aria-label="Batch documents">
           <div className="flex h-11 shrink-0 items-center justify-between border-b px-3">
             <h2 className="text-sm font-semibold">Batch results</h2>
             <span className="text-xs text-muted-foreground">{searchResults.data ? query.trim() && searchMode === "SEMANTIC" && minimumSimilarity === null ? `Top ${searchResults.data.total.toLocaleString()} candidates` : `${searchResults.data.total.toLocaleString()} matches` : ""}</span>
@@ -444,15 +496,19 @@ export function BatchReviewWorkspace({ matterId, batchId, initialDocumentId, ini
         </aside>
 
         <section className="flex min-h-0 min-w-0 flex-1 bg-background" aria-label="Selected document">
-          {collectionItem.isPending && selectedHit ? <div className="w-full space-y-3 p-5">{Array.from({ length: 10 }, (_, index) => <Skeleton key={index} className="h-5" />)}</div>
+          {(selectedDocument.isPending && selectedDocumentId && !effectiveHit) || (collectionItem.isPending && selectedCollectionItemId) ? <div className="w-full space-y-3 p-5">{Array.from({ length: 10 }, (_, index) => <Skeleton key={index} className="h-5" />)}</div>
+            : selectedDocument.error ? <div className="w-full p-5"><QueryError message={selectedDocument.error.message} /></div>
             : collectionItem.error ? <div className="w-full p-5"><QueryError message={collectionItem.error.message} /></div>
-              : collectionItem.data ? <DocumentViewerSurface item={collectionItem.data} className="h-full w-full" />
+              : collectionItem.data ? <DocumentViewerSurface item={collectionItem.data} highlightedParagraphs={highlightedParagraphs} className="h-full w-full" />
                 : <div className="grid h-full w-full place-items-center p-8 text-center"><div><FileText className="mx-auto text-muted-foreground" /><p className="mt-3 font-semibold">Select a document</p></div></div>}
         </section>
 
-        <aside className="flex w-[25rem] shrink-0 flex-col border-l bg-card" aria-label="Batch analysis and coding">
-          <div className="flex h-11 shrink-0 items-center gap-1 border-b px-2"><Button type="button" size="sm" variant={sidePanel === "analysis" ? "outline" : "ghost"} disabled={!taxonomy.data} onClick={() => setSidePanel("analysis")}><Sparkles />Analysis</Button><Button type="button" size="sm" variant={sidePanel === "coding" ? "outline" : "ghost"} onClick={() => setSidePanel("coding")}>Coding</Button><span className="ml-auto">{coding.data ? <Badge variant="outline">{statusLabel(coding.data.review_status)}</Badge> : null}</span></div>
-          {sidePanel === "analysis" && taxonomy.data ? <DocumentAnalysisPanel analysis={analysis.data} loading={analysis.isPending} error={analysis.error?.message} />
+        <aside className="flex min-h-0 min-w-0 flex-col overflow-hidden border-l bg-card" aria-label="Batch analysis, coding, and chat">
+          <div className="flex h-11 shrink-0 items-center gap-1 border-b px-2"><Button type="button" size="sm" variant={sidePanel === "analysis" ? "outline" : "ghost"} onClick={() => setSidePanel("analysis")}><Sparkles />Analysis</Button><Button type="button" size="sm" variant={sidePanel === "coding" ? "outline" : "ghost"} onClick={() => setSidePanel("coding")}>Coding</Button><Button type="button" size="sm" variant={sidePanel === "chat" ? "outline" : "ghost"} onClick={() => setSidePanel("chat")}><MessageSquareText />Chat</Button><span className="ml-auto">{sidePanel !== "chat" && coding.data ? <Badge variant="outline">{statusLabel(coding.data.review_status)}</Badge> : null}</span></div>
+          {sidePanel === "chat" ? <BatchChatPanel matterId={matterId} batchId={batchId} searchReady={batch.data?.search_status === "READY"} onOpenDocument={openDocumentReference} />
+            : sidePanel === "analysis" ? taxonomy.data
+            ? <DocumentAnalysisPanel analysis={analysis.data} loading={analysis.isPending} error={analysis.error?.message} />
+            : <div className="grid flex-1 place-items-center p-5 text-center"><div><Sparkles className="mx-auto text-muted-foreground" /><p className="mt-3 font-semibold">Analysis is not available yet</p><p className="mt-1 text-sm text-muted-foreground">The assessment has not produced document summaries or a topic taxonomy.</p>{matter.data ? <Button asChild className="mt-4" size="sm" variant="outline"><Link href={`/app/clients/${matter.data.client_id}/matters/${matterId}?tab=definition`}>Open assessment</Link></Button> : null}</div></div>
             : coding.isPending && effectiveDocumentId ? <div className="space-y-3 p-4">{Array.from({ length: 6 }, (_, index) => <Skeleton key={index} className="h-16" />)}</div>
             : coding.error ? <div className="p-4"><QueryError message={coding.error.message} /></div>
               : coding.data && batch.data && run.data ? <BatchCodingForm
@@ -491,12 +547,12 @@ function DocumentAnalysisPanel({ analysis, loading, error }: { analysis?: Review
   const paragraphMap = objectValue(payload.paragraph_map);
   const paragraphs = Array.isArray(paragraphMap.paragraphs) ? paragraphMap.paragraphs.map(objectValue) : [];
   const selectedParagraph = paragraphs.find((item) => item.paragraph_id === citation);
-  return <div className="min-h-0 flex-1 overflow-y-auto p-4"><div className="mb-4 flex items-center justify-between gap-2"><StatusBadge status={String(result.determination ?? "UNCLEAR")} />{typeof result.confidence === "number" ? <Badge variant="outline">{Math.round(result.confidence * 100)}% confidence</Badge> : null}</div><AnalysisSection title="Document Summary" items={result.summary} onCitation={setCitation} /><AnalysisSection title="Responsiveness Summary" items={result.responsiveness_summary} onCitation={setCitation} /><AnalysisSection title="Clarification Requests" items={result.clarification_requests} onCitation={setCitation} />{selectedParagraph ? <div className="sticky bottom-0 mt-4 rounded-lg border border-primary/30 bg-background p-3 shadow-lg"><div className="flex items-center justify-between"><p className="text-xs font-bold text-primary">{String(selectedParagraph.paragraph_id)}</p><button type="button" className="text-xs text-muted-foreground" onClick={() => setCitation(null)}>Close</button></div><p className="mt-1 whitespace-pre-wrap text-xs leading-5">{String(selectedParagraph.text ?? "")}</p></div> : null}</div>;
+  return <div className="min-h-0 min-w-0 flex-1 overflow-y-auto p-4"><div className="w-full min-w-0"><div className="mb-4 flex items-center justify-between gap-2"><StatusBadge status={String(result.determination ?? "UNCLEAR")} />{typeof result.confidence === "number" ? <Badge variant="outline">{Math.round(result.confidence * 100)}% confidence</Badge> : null}</div><AnalysisSection title="Document Summary" items={result.summary} onCitation={setCitation} /><AnalysisSection title="Responsiveness Summary" items={result.responsiveness_summary} onCitation={setCitation} /><AnalysisSection title="Clarification Requests" items={result.clarification_requests} onCitation={setCitation} />{selectedParagraph ? <div className="sticky bottom-0 mt-4 rounded-lg border border-primary/30 bg-background p-3 shadow-lg"><div className="flex items-center justify-between"><p className="text-xs font-bold text-primary">{String(selectedParagraph.paragraph_id)}</p><button type="button" className="text-xs text-muted-foreground" onClick={() => setCitation(null)}>Close</button></div><p className="mt-1 whitespace-pre-wrap break-words text-xs leading-5 [overflow-wrap:anywhere]">{String(selectedParagraph.text ?? "")}</p></div> : null}</div></div>;
 }
 
 function AnalysisSection({ title, items, onCitation }: { title: string; items: unknown; onCitation: (id: string) => void }) {
   const values = Array.isArray(items) ? items.map(objectValue) : [];
-  return <section className="mb-5"><h3 className="mb-2 text-xs font-bold uppercase tracking-[0.08em] text-muted-foreground">{title}</h3>{values.length ? <div className="space-y-3">{values.map((item, index) => { const citations = Array.isArray(item.citation_ids) ? item.citation_ids.map(String) : []; return <div key={index} className="text-sm leading-6"><p>{String(item.text ?? item.question ?? item.reasoning ?? "")}</p>{item.rationale ? <p className="text-xs text-muted-foreground">{String(item.rationale)}</p> : null}<div className="mt-1 flex flex-wrap gap-1">{citations.map((id) => <button key={id} type="button" className="rounded bg-primary/10 px-1.5 py-0.5 text-xs font-medium text-primary hover:bg-primary/20" onClick={() => onCitation(id)}>{id}</button>)}</div></div>; })}</div> : <p className="text-sm text-muted-foreground">None.</p>}</section>;
+  return <section className="mb-5 min-w-0"><h3 className="mb-2 text-xs font-bold uppercase tracking-[0.08em] text-muted-foreground">{title}</h3>{values.length ? <div className="space-y-3">{values.map((item, index) => { const citations = Array.isArray(item.citation_ids) ? item.citation_ids.map(String) : []; return <div key={index} className="min-w-0 text-sm leading-6"><p className="break-words [overflow-wrap:anywhere]">{String(item.text ?? item.question ?? item.reasoning ?? "")}</p>{item.rationale ? <p className="break-words text-xs text-muted-foreground [overflow-wrap:anywhere]">{String(item.rationale)}</p> : null}<div className="mt-1 flex flex-wrap gap-1">{citations.map((id) => <button key={id} type="button" className="rounded bg-primary/10 px-1.5 py-0.5 text-xs font-medium text-primary hover:bg-primary/20" onClick={() => onCitation(id)}>{id}</button>)}</div></div>; })}</div> : <p className="text-sm text-muted-foreground">None.</p>}</section>;
 }
 
 function useDebouncedValue(value: string, delay: number) {

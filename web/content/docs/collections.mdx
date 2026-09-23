@@ -70,27 +70,31 @@ Open **Processing** when extracted email bodies or text contain repeated reply h
 
 The **Default rules** section shows every built-in behavior for the current processor version, including its stable rule ID, action, description, and what it matches. Default rules are read-only so a processor version remains reproducible.
 
-The built-in processor always normalizes line endings and excess blank lines, removes text following a standard “Original message” or “Forwarded message” marker, unwraps both single-line and split Lotus Notes-style forwarding envelopes while preserving the forwarded body, retains the forwarded subject as a title when the body does not already repeat it, removes the forwarding separator from headerless calendar invitations while preserving their calendar content, and removes unmistakable `winmail.dat` or S/MIME attachment placeholders. You can add ordered collection rules that:
+The built-in processor always normalizes line endings and excess blank lines and unwraps standard “Original Message,” forwarded-message, and Lotus Notes-style envelopes. For an Original Message block, removal stops at `[Ss]ubject:`: the marker and routing headers are removed, while the subject value and message body remain. Forwarding unwrapping likewise removes the marker and From, To, Cc, Bcc, Sent, and Date routing headers while preserving the forwarded body. When the body does not already repeat the subject, its value is retained as a title without the `Subject:` label. Headerless calendar forwards lose only the forwarding separator. The processor also removes unmistakable `winmail.dat` or S/MIME attachment placeholders. The Processing screen displays the match and stop patterns for every built-in rule. You can add ordered collection rules that:
 
 - remove an entire line when a regular expression matches;
 - remove a block between start and end expressions; or
 - replace matching text.
 
-Rules are regular expressions. Invalid expressions are rejected when you save or test. Each collection has its own versioned rule profile.
+Rules are regular expressions. Invalid expressions are rejected when you save or test. Each collection has its own versioned rule profile. See [Document Cleaner rules](/docs/document-cleaner) for detailed behavior and examples of **Remove line**, **Remove block**, and **Replace**.
 
 ### Review and test rules
 
 1. Add or edit rules and choose whether each expression is case-sensitive.
-2. Select up to 10 documents from the current set of 25. Choose **Load different documents** to move through additional sets; after the final set it returns to the beginning. Loading another set clears the current selection and preview.
+2. Select up to 25 documents from the current set, or choose **Select all** to select the entire set. Choose **Load different documents** to move through additional sets; after the final set it returns to the beginning. Loading another set clears the current selection and preview.
 3. Choose **Test selected**.
 4. Compare source and processed text side by side. The preview lists applied rules, match counts, and warnings when more than half of the source is removed.
 5. Save the rules after the test looks correct.
 
 Testing is synchronous and does not create artifacts or change the active processor. A preview is limited to the first 100,000 characters of each selected document.
 
+Each displayed test result also has a checkbox for the **Document Cleaner Agent**. Select the examples that demonstrate the unwanted text, choose **Build/improve rule**, and describe the cleanup in plain language. The agent receives only those selected source and processed excerpts, the current complete collection rules, and an explanation of the processing order. It either asks one focused clarifying question or proposes one regular-expression rule with an explanation. Review the expression and choose **Save proposed rule** before it changes the collection profile; proposals are never applied automatically.
+
+The agent can use up to 25 selected test results. Very long examples are shortened for model context while retaining their beginning and end. Complete or remove any unfinished rule drafts before saving an agent proposal.
+
 ### Run the collection
 
-Choose **Run full collection** after saving. The background job freezes the processor version and saved rules, then creates one idempotent normalized-text artifact per supported collection item. The run reports created, reused, skipped, and failed counts. Unsupported binary files without extracted or OCR text are skipped.
+Choose the default and collection rules to include, then select **Run full collection** after saving. That selection applies only to the new run and does not modify the saved profile. The background job freezes the processor version, rule selection, and saved rules, then creates one idempotent normalized-text artifact per supported collection item. The run reports created, reused, skipped, and failed counts. Unsupported binary files without extracted or OCR text are skipped.
 
 When the run completes, its successful normalized artifacts become the preferred source for later indexing, semantic chunking, and embeddings. Items without a normalized artifact continue to use extracted text, OCR text, or supported native text. Existing matter indexes and embeddings are not automatically rebuilt; start their rebuild jobs when you want them to use the new active text.
 

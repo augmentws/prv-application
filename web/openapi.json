@@ -241,6 +241,20 @@
               "format": "uuid",
               "title": "Matter Id"
             }
+          },
+          {
+            "name": "workflow_type",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "enum": [
+                "MATTER_DEFINITION_SETUP",
+                "BATCH_CHAT"
+              ],
+              "type": "string",
+              "default": "MATTER_DEFINITION_SETUP",
+              "title": "Workflow Type"
+            }
           }
         ],
         "responses": {
@@ -453,6 +467,69 @@
         }
       }
     },
+    "/v1/agent-packages": {
+      "get": {
+        "tags": [
+          "agents"
+        ],
+        "summary": "List Agent Packages",
+        "operationId": "list_agent_packages_v1_agent_packages_get",
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "scope_type",
+            "in": "query",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 50,
+              "title": "Scope Type"
+            }
+          },
+          {
+            "name": "scope_id",
+            "in": "query",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid",
+              "title": "Scope Id"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "array",
+                  "items": {
+                    "$ref": "#/components/schemas/AgentPackageRead"
+                  },
+                  "title": "Response List Agent Packages V1 Agent Packages Get"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/v1/agents/{agent_id}": {
       "get": {
         "tags": [
@@ -540,6 +617,112 @@
               "application/json": {
                 "schema": {
                   "$ref": "#/components/schemas/AgentDefinitionRead"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v1/agents/{agent_id}/package": {
+      "get": {
+        "tags": [
+          "agents"
+        ],
+        "summary": "Get Agent Package",
+        "operationId": "get_agent_package_v1_agents__agent_id__package_get",
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "agent_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid",
+              "title": "Agent Id"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AgentPackageRead"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v1/agents/{agent_id}:invoke": {
+      "post": {
+        "tags": [
+          "agents"
+        ],
+        "summary": "Invoke Agent",
+        "operationId": "invoke_agent_v1_agents__agent_id__invoke_post",
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "agent_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid",
+              "title": "Agent Id"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/AgentInvokeRequest"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AgentInvokeResponse"
                 }
               }
             }
@@ -800,6 +983,43 @@
               "format": "uuid",
               "title": "Matter Id"
             }
+          },
+          {
+            "name": "workflow_type",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "enum": [
+                    "MATTER_DEFINITION_SETUP",
+                    "BATCH_CHAT"
+                  ],
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Workflow Type"
+            }
+          },
+          {
+            "name": "review_batch_id",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string",
+                  "format": "uuid"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Review Batch Id"
+            }
           }
         ],
         "responses": {
@@ -854,6 +1074,62 @@
             }
           }
         ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AgentConversationRead"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      },
+      "patch": {
+        "tags": [
+          "agent conversations"
+        ],
+        "summary": "Update Agent Conversation",
+        "operationId": "update_agent_conversation_v1_agent_conversations__conversation_id__patch",
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "conversation_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid",
+              "title": "Conversation Id"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/AgentConversationUpdate"
+              }
+            }
+          }
+        },
         "responses": {
           "200": {
             "description": "Successful Response",
@@ -2933,6 +3209,64 @@
                     "$ref": "#/components/schemas/MatterEmbeddingBatchRead"
                   },
                   "title": "Response List Embedding Batches V1 Matters  Matter Id  Embedding Jobs  Job Id  Batches Get"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v1/matters/{matter_id}/embedding-jobs/{job_id}/retry-index": {
+      "post": {
+        "tags": [
+          "matter jobs"
+        ],
+        "summary": "Retry Embedding Index",
+        "operationId": "retry_embedding_index_v1_matters__matter_id__embedding_jobs__job_id__retry_index_post",
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "matter_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid",
+              "title": "Matter Id"
+            }
+          },
+          {
+            "name": "job_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid",
+              "title": "Job Id"
+            }
+          }
+        ],
+        "responses": {
+          "202": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/MatterEmbeddingJobRead"
                 }
               }
             }
@@ -5063,6 +5397,140 @@
         }
       }
     },
+    "/v1/matters/{matter_id}/review-batches/{batch_id}/coding-groups": {
+      "post": {
+        "tags": [
+          "review batches"
+        ],
+        "summary": "Add Review Batch Coding Groups",
+        "operationId": "add_review_batch_coding_groups_v1_matters__matter_id__review_batches__batch_id__coding_groups_post",
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "matter_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid",
+              "title": "Matter Id"
+            }
+          },
+          {
+            "name": "batch_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid",
+              "title": "Batch Id"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ReviewBatchCodingGroupsAdd"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ReviewBatchRead"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      },
+      "put": {
+        "tags": [
+          "review batches"
+        ],
+        "summary": "Replace Review Batch Coding Groups",
+        "operationId": "replace_review_batch_coding_groups_v1_matters__matter_id__review_batches__batch_id__coding_groups_put",
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "matter_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid",
+              "title": "Matter Id"
+            }
+          },
+          {
+            "name": "batch_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid",
+              "title": "Batch Id"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ReviewBatchCodingGroupsUpdate"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ReviewBatchRead"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/v1/matters/{matter_id}/review-batches/{batch_id}/topic-taxonomy": {
       "get": {
         "tags": [
@@ -6633,6 +7101,54 @@
         }
       }
     },
+    "/v1/matters/{matter_id}/search-operations/retryable": {
+      "get": {
+        "tags": [
+          "matter search"
+        ],
+        "summary": "Summarize Retryable Search Operations",
+        "operationId": "summarize_retryable_search_operations_v1_matters__matter_id__search_operations_retryable_get",
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "matter_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid",
+              "title": "Matter Id"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SearchProjectionRetryResponse"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/v1/matters/{matter_id}/search-operations/retry-failed": {
       "post": {
         "tags": [
@@ -7600,6 +8116,180 @@
         }
       }
     },
+    "/v1/matters/{matter_id}/definition-assessments/{assessment_id}/retry": {
+      "post": {
+        "tags": [
+          "matter definition assessments"
+        ],
+        "summary": "Retry Failed Assessment",
+        "operationId": "retry_failed_assessment_v1_matters__matter_id__definition_assessments__assessment_id__retry_post",
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "matter_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid",
+              "title": "Matter Id"
+            }
+          },
+          {
+            "name": "assessment_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid",
+              "title": "Assessment Id"
+            }
+          }
+        ],
+        "responses": {
+          "202": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/MatterDefinitionAssessmentRead"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v1/matters/{matter_id}/definition-assessments/{assessment_id}/regenerate-synthesis": {
+      "post": {
+        "tags": [
+          "matter definition assessments"
+        ],
+        "summary": "Regenerate Synthesis",
+        "operationId": "regenerate_synthesis_v1_matters__matter_id__definition_assessments__assessment_id__regenerate_synthesis_post",
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "matter_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid",
+              "title": "Matter Id"
+            }
+          },
+          {
+            "name": "assessment_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid",
+              "title": "Assessment Id"
+            }
+          }
+        ],
+        "responses": {
+          "202": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/MatterDefinitionAssessmentRead"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v1/matters/{matter_id}/definition-assessments/{assessment_id}/regenerate-document-analyses": {
+      "post": {
+        "tags": [
+          "matter definition assessments"
+        ],
+        "summary": "Regenerate Document Analyses",
+        "operationId": "regenerate_document_analyses_v1_matters__matter_id__definition_assessments__assessment_id__regenerate_document_analyses_post",
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "matter_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid",
+              "title": "Matter Id"
+            }
+          },
+          {
+            "name": "assessment_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid",
+              "title": "Assessment Id"
+            }
+          }
+        ],
+        "responses": {
+          "202": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/MatterDefinitionAssessmentRead"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/v1/matters/{matter_id}/definition-assessments/{assessment_id}": {
       "get": {
         "tags": [
@@ -7689,6 +8379,16 @@
               "type": "string",
               "format": "uuid",
               "title": "Assessment Id"
+            }
+          },
+          {
+            "name": "include_skill_runs",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "boolean",
+              "default": true,
+              "title": "Include Skill Runs"
             }
           }
         ],
@@ -8348,6 +9048,23 @@
             }
           }
         ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "anyOf": [
+                  {
+                    "$ref": "#/components/schemas/CollectionTextProcessingRunCreate"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ],
+                "title": "Payload"
+              }
+            }
+          }
+        },
         "responses": {
           "202": {
             "description": "Successful Response",
@@ -10061,11 +10778,39 @@
             "format": "uuid",
             "title": "Agent Definition Id"
           },
+          "title": {
+            "anyOf": [
+              {
+                "type": "string",
+                "maxLength": 200,
+                "minLength": 1
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Title"
+          },
           "workflow_type": {
             "type": "string",
-            "const": "MATTER_DEFINITION_SETUP",
+            "enum": [
+              "MATTER_DEFINITION_SETUP",
+              "BATCH_CHAT"
+            ],
             "title": "Workflow Type",
             "default": "MATTER_DEFINITION_SETUP"
+          },
+          "review_batch_id": {
+            "anyOf": [
+              {
+                "type": "string",
+                "format": "uuid"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Review Batch Id"
           }
         },
         "type": "object",
@@ -10096,6 +10841,18 @@
             "format": "uuid",
             "title": "Matter Id"
           },
+          "review_batch_id": {
+            "anyOf": [
+              {
+                "type": "string",
+                "format": "uuid"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Review Batch Id"
+          },
           "agent_definition_id": {
             "type": "string",
             "format": "uuid",
@@ -10106,9 +10863,23 @@
             "format": "uuid",
             "title": "Agent Definition Version Id"
           },
+          "title": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Title"
+          },
           "workflow_type": {
             "type": "string",
-            "const": "MATTER_DEFINITION_SETUP",
+            "enum": [
+              "MATTER_DEFINITION_SETUP",
+              "BATCH_CHAT"
+            ],
             "title": "Workflow Type"
           },
           "status": {
@@ -10116,7 +10887,6 @@
             "enum": [
               "ACTIVE",
               "WAITING_APPROVAL",
-              "COMPLETED",
               "FAILED",
               "ARCHIVED"
             ],
@@ -10144,8 +10914,10 @@
           "tenant_id",
           "client_id",
           "matter_id",
+          "review_batch_id",
           "agent_definition_id",
           "agent_definition_version_id",
+          "title",
           "workflow_type",
           "status",
           "initiated_by_user_id",
@@ -10153,6 +10925,21 @@
           "updated_at"
         ],
         "title": "AgentConversationRead"
+      },
+      "AgentConversationUpdate": {
+        "properties": {
+          "title": {
+            "type": "string",
+            "maxLength": 200,
+            "minLength": 1,
+            "title": "Title"
+          }
+        },
+        "type": "object",
+        "required": [
+          "title"
+        ],
+        "title": "AgentConversationUpdate"
       },
       "AgentDefinitionCreate": {
         "properties": {
@@ -10379,6 +11166,37 @@
             "type": "object",
             "title": "Model Policy"
           },
+          "invocation_mode": {
+            "type": "string",
+            "enum": [
+              "CHAT",
+              "STRUCTURED"
+            ],
+            "title": "Invocation Mode"
+          },
+          "usage_instructions": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Usage Instructions"
+          },
+          "scope_types": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array",
+            "title": "Scope Types"
+          },
+          "input_schema": {
+            "additionalProperties": true,
+            "type": "object",
+            "title": "Input Schema"
+          },
           "output_schema": {
             "additionalProperties": true,
             "type": "object",
@@ -10436,6 +11254,10 @@
           "system_prompt",
           "model_key",
           "model_policy",
+          "invocation_mode",
+          "usage_instructions",
+          "scope_types",
+          "input_schema",
           "output_schema",
           "limits",
           "status",
@@ -10445,6 +11267,76 @@
           "tools"
         ],
         "title": "AgentDefinitionVersionRead"
+      },
+      "AgentInvocationScope": {
+        "properties": {
+          "type": {
+            "type": "string",
+            "maxLength": 50,
+            "minLength": 1,
+            "title": "Type"
+          },
+          "id": {
+            "type": "string",
+            "format": "uuid",
+            "title": "Id"
+          }
+        },
+        "type": "object",
+        "required": [
+          "type",
+          "id"
+        ],
+        "title": "AgentInvocationScope"
+      },
+      "AgentInvokeRequest": {
+        "properties": {
+          "scope": {
+            "$ref": "#/components/schemas/AgentInvocationScope"
+          },
+          "input": {
+            "additionalProperties": true,
+            "type": "object",
+            "title": "Input"
+          }
+        },
+        "type": "object",
+        "required": [
+          "scope",
+          "input"
+        ],
+        "title": "AgentInvokeRequest"
+      },
+      "AgentInvokeResponse": {
+        "properties": {
+          "agent_id": {
+            "type": "string",
+            "format": "uuid",
+            "title": "Agent Id"
+          },
+          "agent_version_id": {
+            "type": "string",
+            "format": "uuid",
+            "title": "Agent Version Id"
+          },
+          "version": {
+            "type": "integer",
+            "title": "Version"
+          },
+          "output": {
+            "additionalProperties": true,
+            "type": "object",
+            "title": "Output"
+          }
+        },
+        "type": "object",
+        "required": [
+          "agent_id",
+          "agent_version_id",
+          "version",
+          "output"
+        ],
+        "title": "AgentInvokeResponse"
       },
       "AgentMessageRead": {
         "properties": {
@@ -10577,6 +11469,115 @@
           "available"
         ],
         "title": "AgentModelRead"
+      },
+      "AgentPackageRead": {
+        "properties": {
+          "id": {
+            "type": "string",
+            "format": "uuid",
+            "title": "Id"
+          },
+          "key": {
+            "type": "string",
+            "title": "Key"
+          },
+          "name": {
+            "type": "string",
+            "title": "Name"
+          },
+          "description": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Description"
+          },
+          "scope": {
+            "type": "string",
+            "enum": [
+              "SYSTEM",
+              "TENANT"
+            ],
+            "title": "Scope"
+          },
+          "version": {
+            "$ref": "#/components/schemas/AgentPackageVersionRead"
+          }
+        },
+        "type": "object",
+        "required": [
+          "id",
+          "key",
+          "name",
+          "description",
+          "scope",
+          "version"
+        ],
+        "title": "AgentPackageRead"
+      },
+      "AgentPackageVersionRead": {
+        "properties": {
+          "id": {
+            "type": "string",
+            "format": "uuid",
+            "title": "Id"
+          },
+          "version": {
+            "type": "integer",
+            "title": "Version"
+          },
+          "invocation_mode": {
+            "type": "string",
+            "enum": [
+              "CHAT",
+              "STRUCTURED"
+            ],
+            "title": "Invocation Mode"
+          },
+          "usage_instructions": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Usage Instructions"
+          },
+          "scope_types": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array",
+            "title": "Scope Types"
+          },
+          "input_schema": {
+            "additionalProperties": true,
+            "type": "object",
+            "title": "Input Schema"
+          },
+          "output_schema": {
+            "additionalProperties": true,
+            "type": "object",
+            "title": "Output Schema"
+          }
+        },
+        "type": "object",
+        "required": [
+          "id",
+          "version",
+          "invocation_mode",
+          "usage_instructions",
+          "scope_types",
+          "input_schema",
+          "output_schema"
+        ],
+        "title": "AgentPackageVersionRead"
       },
       "AgentRunRead": {
         "properties": {
@@ -10943,6 +11944,40 @@
             "additionalProperties": true,
             "type": "object",
             "title": "Model Policy"
+          },
+          "invocation_mode": {
+            "type": "string",
+            "enum": [
+              "CHAT",
+              "STRUCTURED"
+            ],
+            "title": "Invocation Mode",
+            "default": "CHAT"
+          },
+          "usage_instructions": {
+            "anyOf": [
+              {
+                "type": "string",
+                "maxLength": 10000
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Usage Instructions"
+          },
+          "scope_types": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array",
+            "maxItems": 20,
+            "title": "Scope Types"
+          },
+          "input_schema": {
+            "additionalProperties": true,
+            "type": "object",
+            "title": "Input Schema"
           },
           "output_schema": {
             "additionalProperties": true,
@@ -12273,6 +13308,28 @@
         "type": "object",
         "title": "CollectionTextProcessingProfileUpdate"
       },
+      "CollectionTextProcessingRunCreate": {
+        "properties": {
+          "enabled_rule_ids": {
+            "anyOf": [
+              {
+                "items": {
+                  "type": "string",
+                  "pattern": "^[a-z][a-z0-9_-]{0,63}$"
+                },
+                "type": "array",
+                "maxItems": 54
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Enabled Rule Ids"
+          }
+        },
+        "type": "object",
+        "title": "CollectionTextProcessingRunCreate"
+      },
       "CollectionTextProcessingRunRead": {
         "properties": {
           "id": {
@@ -12303,6 +13360,21 @@
           "profile_revision": {
             "type": "integer",
             "title": "Profile Revision"
+          },
+          "rules_snapshot": {
+            "items": {
+              "$ref": "#/components/schemas/TextProcessingRule"
+            },
+            "type": "array",
+            "title": "Rules Snapshot"
+          },
+          "disabled_rule_ids": {
+            "items": {
+              "type": "string",
+              "pattern": "^[a-z][a-z0-9_-]{0,63}$"
+            },
+            "type": "array",
+            "title": "Disabled Rule Ids"
           },
           "configuration_hash": {
             "type": "string",
@@ -12390,6 +13462,8 @@
           "status",
           "processor_version",
           "profile_revision",
+          "rules_snapshot",
+          "disabled_rule_ids",
           "configuration_hash",
           "total_count",
           "processed_count",
@@ -12497,7 +13571,7 @@
               "format": "uuid"
             },
             "type": "array",
-            "maxItems": 10,
+            "maxItems": 25,
             "minItems": 1,
             "title": "Item Ids"
           },
@@ -12508,6 +13582,15 @@
             "type": "array",
             "maxItems": 50,
             "title": "Rules"
+          },
+          "disabled_rule_ids": {
+            "items": {
+              "type": "string",
+              "pattern": "^[a-z][a-z0-9_-]{0,63}$"
+            },
+            "type": "array",
+            "maxItems": 54,
+            "title": "Disabled Rule Ids"
           }
         },
         "type": "object",
@@ -13276,6 +14359,18 @@
       },
       "MatterDefinitionAssessmentCreate": {
         "properties": {
+          "name": {
+            "anyOf": [
+              {
+                "type": "string",
+                "maxLength": 200
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Name"
+          },
           "revision": {
             "anyOf": [
               {
@@ -13522,6 +14617,10 @@
             "type": "string",
             "format": "uuid",
             "title": "Id"
+          },
+          "name": {
+            "type": "string",
+            "title": "Name"
           },
           "matter_id": {
             "type": "string",
@@ -13808,6 +14907,7 @@
         "type": "object",
         "required": [
           "id",
+          "name",
           "matter_id",
           "matter_definition_revision_id",
           "definition_content_hash",
@@ -17101,6 +18201,40 @@
         ],
         "title": "ReviewBatchCodingGroupRead"
       },
+      "ReviewBatchCodingGroupsAdd": {
+        "properties": {
+          "coding_group_ids": {
+            "items": {
+              "type": "string",
+              "format": "uuid"
+            },
+            "type": "array",
+            "maxItems": 100,
+            "minItems": 1,
+            "title": "Coding Group Ids"
+          }
+        },
+        "type": "object",
+        "required": [
+          "coding_group_ids"
+        ],
+        "title": "ReviewBatchCodingGroupsAdd"
+      },
+      "ReviewBatchCodingGroupsUpdate": {
+        "properties": {
+          "coding_group_ids": {
+            "items": {
+              "type": "string",
+              "format": "uuid"
+            },
+            "type": "array",
+            "maxItems": 100,
+            "title": "Coding Group Ids"
+          }
+        },
+        "type": "object",
+        "title": "ReviewBatchCodingGroupsUpdate"
+      },
       "ReviewBatchComparisonFieldRead": {
         "properties": {
           "metadata_definition_id": {
@@ -19021,6 +20155,14 @@
           "match_description": {
             "type": "string",
             "title": "Match Description"
+          },
+          "match_pattern": {
+            "type": "string",
+            "title": "Match Pattern"
+          },
+          "stop_pattern": {
+            "type": "string",
+            "title": "Stop Pattern"
           }
         },
         "type": "object",
@@ -19029,7 +20171,9 @@
           "name",
           "description",
           "action",
-          "match_description"
+          "match_description",
+          "match_pattern",
+          "stop_pattern"
         ],
         "title": "SystemTextProcessingRule"
       },

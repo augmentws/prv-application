@@ -13,6 +13,39 @@ class OpenSearchError(RuntimeError):
         self.status_code = status_code
 
 
+class OpenSearchBulkError(OpenSearchError):
+    """A bulk request that reached OpenSearch but had rejected items."""
+
+    def __init__(self, message: str, *, failed_document_ids: list[str]) -> None:
+        super().__init__(message)
+        self.failed_document_ids = failed_document_ids
+
+
+_RETRYABLE_STATUS_CODES = {408, 429, 502, 503, 504, 507}
+_RETRYABLE_PRESSURE_MARKERS = (
+    "circuit_breaking_exception",
+    "cluster_block_exception",
+    "cluster_manager_not_discovered_exception",
+    "disk usage exceeded flood-stage watermark",
+    "es_rejected_execution_exception",
+    "rejected_execution_exception",
+    "too_many_requests",
+    "unavailable_shards_exception",
+)
+
+
+def is_retryable_opensearch_error(exc: BaseException) -> bool:
+    """Return whether an OpenSearch failure may clear without changing the request."""
+    if not isinstance(exc, OpenSearchError):
+        return False
+    if exc.status_code in _RETRYABLE_STATUS_CODES:
+        return True
+    message = str(exc).lower()
+    if "opensearch request failed" in message:
+        return True
+    return any(marker in message for marker in _RETRYABLE_PRESSURE_MARKERS)
+
+
 class OpenSearchClient:
     def __init__(self, settings: Settings) -> None:
         auth = None
@@ -102,14 +135,20 @@ class OpenSearchClient:
         )
         if result.get("errors"):
             failures = [item for item in result.get("items", []) if next(iter(item.values())).get("error")]
+            failed_document_ids = [
+                str(next(iter(item.values())).get("_id"))
+                for item in failures
+                if next(iter(item.values())).get("_id") is not None
+            ]
             details = []
             for item in failures[:3]:
                 action, outcome = next(iter(item.items()))
                 error = outcome.get("error") or {}
                 details.append(f"{action} {outcome.get('_id')}: {error.get('type')}: {error.get('reason')}")
             suffix = f": {'; '.join(details)}" if details else ""
-            raise OpenSearchError(
-                f"OpenSearch bulk request contained {len(failures)} failed item(s){suffix}"[:4000]
+            raise OpenSearchBulkError(
+                f"OpenSearch bulk request contained {len(failures)} failed item(s){suffix}"[:4000],
+                failed_document_ids=failed_document_ids,
             )
 
     def refresh(self, index: str) -> None:

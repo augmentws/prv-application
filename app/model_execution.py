@@ -7,11 +7,13 @@ from typing import Any, Generic, Literal, TypeVar
 
 from jsonschema import Draft202012Validator
 from jsonschema.exceptions import SchemaError
-from pydantic_ai import Agent, CachePoint, ModelRetry, UsageLimits
+from pydantic_ai import Agent, CachePoint, ModelRetry, StructuredDict, UsageLimits
 from pydantic_ai.messages import ModelRequest, ModelResponse
 
 from app.agent_models import resolve_agent_model
 from app.config import get_settings
+from app.model_rate_limits import model_rate_limit_hooks
+from app.model_tracing import ModelCallTrace, model_call_trace_context, start_model_call_trace
 from app.provider_usage import external_model_identity
 
 OutputT = TypeVar("OutputT")
@@ -63,6 +65,7 @@ class StructuredModelRequest:
     limits: dict[str, Any]
     cache_policy: dict[str, Any]
     cache_identity: dict[str, Any]
+    request_type: str = "structured-model"
     output_validators: tuple[Callable[[dict[str, Any]], None], ...] = ()
     run_id: str | None = None
     conversation_id: str | None = None
@@ -270,24 +273,57 @@ async def run_model(
     deferred_tool_results: Any = None,
     run_id: str | None = None,
     conversation_id: str | None = None,
+    request_type: str = "model-request",
+    trace_identifier: str | None = None,
+    trace: ModelCallTrace | None = None,
+    rate_limit_capability_registered: bool = False,
 ) -> ModelRunEnvelope[OutputT]:
+    settings = get_settings()
     provider_identity = external_model_identity(model)
+    active_trace = trace or start_model_call_trace(
+        settings,
+        request_type=request_type,
+        identifier=trace_identifier or run_id,
+        request={
+            "instructions": list(instructions),
+            "prompt": prompt,
+            "message_history": message_history,
+            "deferred_tool_results": deferred_tool_results,
+            "conversation_id": conversation_id,
+            "run_id": run_id,
+            "model": str(model),
+            "provider": provider_identity[0] if provider_identity is not None else None,
+            "model_settings": model_settings,
+            "limits": limits,
+            "model_configuration_hash": model_configuration_hash,
+        },
+    )
     try:
-        result = await agent.run(
-            prompt,
-            message_history=message_history,
-            deferred_tool_results=deferred_tool_results,
-            conversation_id=conversation_id,
-            run_id=run_id,
-            model=model,
-            instructions=list(instructions),
-            deps=deps,
-            model_settings=model_settings,
-            usage_limits=usage_limits(limits),
-        )
-    except ModelExecutionError:
+        with model_call_trace_context(active_trace):
+            result = await agent.run(
+                prompt,
+                message_history=message_history,
+                deferred_tool_results=deferred_tool_results,
+                conversation_id=conversation_id,
+                run_id=run_id,
+                model=model,
+                instructions=list(instructions),
+                deps=deps,
+                model_settings=model_settings,
+                usage_limits=usage_limits(limits),
+                capabilities=(
+                    None
+                    if rate_limit_capability_registered
+                    else [model_rate_limit_hooks(settings, trace=active_trace)]
+                ),
+            )
+    except ModelExecutionError as exc:
+        if active_trace is not None:
+            active_trace.fail(exc)
         raise
     except Exception as exc:
+        if active_trace is not None:
+            active_trace.fail(exc)
         name = type(exc).__name__
         if "UsageLimit" in name:
             raise ModelExecutionError("USAGE_LIMIT_EXCEEDED", str(exc), retryable=False) from exc
@@ -295,9 +331,25 @@ async def run_model(
             raise ModelExecutionError("INVALID_OUTPUT", str(exc), retryable=True) from exc
         raise ModelExecutionError("MODEL_FAILURE", str(exc), retryable=True) from exc
     usage = result.usage
+    messages = json.loads(result.all_messages_json())
+    if active_trace is not None:
+        active_trace.complete(
+            {
+                "output": result.output,
+                "messages": messages,
+                "usage": {
+                    "requests": usage.requests,
+                    "tool_calls": usage.tool_calls,
+                    "input_tokens": usage.input_tokens,
+                    "cached_input_tokens": usage.cache_read_tokens,
+                    "cache_write_tokens": usage.cache_write_tokens,
+                    "output_tokens": usage.output_tokens,
+                },
+            }
+        )
     return ModelRunEnvelope(
         output=result.output,
-        message_history=json.loads(result.all_messages_json()),
+        message_history=messages,
         request_count=usage.requests,
         tool_call_count=usage.tool_calls,
         input_tokens=usage.input_tokens,
@@ -322,13 +374,40 @@ async def execute_structured_model(
 ) -> tuple[ModelRunEnvelope[dict[str, Any]], PromptAssembly]:
     selected_model = model if model is not None else resolve_agent_model(request.model_key, get_settings())
     assembly = assemble_structured_prompt(request, resolved_model=selected_model)
+    trace = start_model_call_trace(
+        get_settings(),
+        request_type=request.request_type,
+        identifier=request.run_id,
+        request={
+            "instruction_layers": [
+                {"key": layer.key, "content": layer.content} for layer in request.instruction_layers
+            ],
+            "stable_context": request.stable_context,
+            "dynamic_input": request.dynamic_input,
+            "output_schema": request.output_schema,
+            "model_key": request.model_key,
+            "resolved_model": str(selected_model),
+            "model_settings": assembly.model_settings,
+            "limits": request.limits,
+            "cache_policy": request.cache_policy,
+            "cache_identity": request.cache_identity,
+            "cache_fingerprint": assembly.cache_fingerprint,
+            "run_id": request.run_id,
+            "conversation_id": request.conversation_id,
+        },
+    )
     agent: Agent[None, dict[str, Any]] = Agent(
         selected_model,
         name="priv_view_structured_model_executor",
-        output_type=dict[str, Any],
+        output_type=StructuredDict(
+            request.output_schema,
+            name=f"{request.request_type.replace('-', '_')}_result",
+            description="Return a result that exactly matches the supplied JSON schema.",
+        ),
         retries={"output": request.limits.get("max_output_retries", 2), "tools": 0},
         defer_model_check=True,
     )
+    validation_failures: list[str] = []
 
     @agent.output_validator
     def validate_output(output: dict[str, Any]) -> dict[str, Any]:
@@ -337,18 +416,35 @@ async def execute_structured_model(
             for validator in request.output_validators:
                 validator(output)
         except (StructuredOutputValidationError, ValueError) as exc:
-            raise ModelRetry(str(exc)) from exc
+            message = str(exc)
+            validation_failures.append(message)
+            if trace is not None:
+                trace.event("output_validation_failed", {"message": message, "output": output})
+            raise ModelRetry(message) from exc
         return output
 
-    envelope = await run_model(
-        agent,
-        prompt=assembly.prompt,
-        instructions=assembly.instructions,
-        model=selected_model,
-        model_settings=assembly.model_settings,
-        limits=request.limits,
-        model_configuration_hash=assembly.model_configuration_hash,
-        run_id=request.run_id,
-        conversation_id=request.conversation_id,
-    )
+    try:
+        envelope = await run_model(
+            agent,
+            prompt=assembly.prompt,
+            instructions=assembly.instructions,
+            model=selected_model,
+            model_settings=assembly.model_settings,
+            limits=request.limits,
+            model_configuration_hash=assembly.model_configuration_hash,
+            run_id=request.run_id,
+            conversation_id=request.conversation_id,
+            request_type=request.request_type,
+            trace_identifier=request.run_id,
+            trace=trace,
+        )
+    except ModelExecutionError as exc:
+        if exc.code == "INVALID_OUTPUT" and validation_failures:
+            details = "; ".join(dict.fromkeys(validation_failures))
+            raise ModelExecutionError(
+                "INVALID_OUTPUT",
+                f"{exc}. Output validation failures: {details}"[:4000],
+                retryable=exc.retryable,
+            ) from exc
+        raise
     return envelope, assembly

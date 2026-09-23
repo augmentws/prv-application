@@ -6,6 +6,8 @@
  * OpenAPI spec version: 0.1.0
  */
 import type { AgentToolAssignment } from './agentToolAssignment';
+import type { AgentVersionCreateInputSchema } from './agentVersionCreateInputSchema';
+import type { AgentVersionCreateInvocationMode } from './agentVersionCreateInvocationMode';
 import type { AgentVersionCreateLimits } from './agentVersionCreateLimits';
 import type { AgentVersionCreateModelPolicy } from './agentVersionCreateModelPolicy';
 import type { AgentVersionCreateOutputSchema } from './agentVersionCreateOutputSchema';
@@ -22,6 +24,11 @@ export interface AgentVersionCreate {
      */
   model_key: string;
   model_policy?: AgentVersionCreateModelPolicy;
+  invocation_mode?: AgentVersionCreateInvocationMode;
+  usage_instructions?: string | null;
+  /** @maxItems 20 */
+  scope_types?: string[];
+  input_schema?: AgentVersionCreateInputSchema;
   output_schema?: AgentVersionCreateOutputSchema;
   limits?: AgentVersionCreateLimits;
   /** @maxItems 100 */

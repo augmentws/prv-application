@@ -35,6 +35,7 @@ import type {
 import { agentVersionFormSchema, valuesFromVersion, versionPayload, type AgentVersionFormValues } from "@/lib/agent-forms";
 import { coreApi } from "@/lib/api-client";
 import { formatDate } from "@/lib/format";
+import { cn } from "@/lib/utils";
 
 const propertiesSchema = z.object({
   name: z.string().trim().min(2).max(200),
@@ -123,6 +124,7 @@ function PublishVersionDialog({ version, publishing, onPublish }: { version: num
 export function AgentDetailView({ agentId }: { agentId: string }) {
   const { user } = useWorkspace();
   const queryClient = useQueryClient();
+  const [selectedVersionId, setSelectedVersionId] = useState<string | null>(null);
   const detail = useQuery({ queryKey: ["agent", agentId], queryFn: () => coreApi<AgentDefinitionCreated>(`/v1/agents/${agentId}`), enabled: user.is_superuser });
   const versions = useQuery({ queryKey: ["agent-versions", agentId], queryFn: () => coreApi<AgentDefinitionVersionRead[]>(`/v1/agents/${agentId}/versions`), enabled: user.is_superuser });
   const tools = useQuery({ queryKey: ["agent-tools"], queryFn: () => coreApi<AgentToolRead[]>("/v1/agent-tools"), enabled: user.is_superuser });
@@ -140,7 +142,11 @@ export function AgentDetailView({ agentId }: { agentId: string }) {
   });
   const createVersion = useMutation({
     mutationFn: (payload: AgentVersionCreate) => coreApi<AgentDefinitionVersionRead>(`/v1/agents/${agentId}/versions`, { method: "POST", body: JSON.stringify(payload) }),
-    onSuccess: async (version) => { await refresh(); toast.success(`Version ${version.version} draft was created.`); },
+    onSuccess: async (version) => {
+      setSelectedVersionId(null);
+      await refresh();
+      toast.success(`Version ${version.version} draft was created.`);
+    },
   });
   const publish = useMutation({
     mutationFn: (version: number) => coreApi<AgentDefinitionVersionRead>(`/v1/agents/${agentId}/versions/${version}/publish`, { method: "POST" }),
@@ -153,6 +159,8 @@ export function AgentDetailView({ agentId }: { agentId: string }) {
   if (detail.isPending || versions.isPending || tools.isPending || models.isPending) return <TableLoading />;
   if (error || !detail.data) return <QueryError message={error?.message ?? "Agent could not be loaded."} />;
   const { agent, version: current } = detail.data;
+  const draftSource = (versions.data ?? []).find((version) => version.id === selectedVersionId) ?? current;
+  const usingCurrentVersion = draftSource.id === current.id;
 
   return (
     <>
@@ -164,15 +172,24 @@ export function AgentDetailView({ agentId }: { agentId: string }) {
           <Card><CardHeader><CardTitle>Agent settings</CardTitle><CardDescription>The key <code>{agent.key}</code> and system scope are permanent.</CardDescription></CardHeader><CardContent><AgentPropertiesForm key={agent.updated_at} agent={agent} onSave={(payload) => update.mutateAsync(payload).then(() => undefined)} /></CardContent></Card>
 
           <Card>
-            <CardHeader><CardTitle>Create version {agent.current_version + 1}</CardTitle><CardDescription>Each save creates a new immutable draft copied from the current version. Publishing is a separate action.</CardDescription></CardHeader>
-            <CardContent>{agent.status === "ACTIVE" ? <NewAgentVersionForm key={current.id} current={current} models={models.data ?? []} tools={tools.data ?? []} onCreate={(payload) => createVersion.mutateAsync(payload).then(() => undefined)} /> : <p className="rounded-lg border bg-muted/30 p-4 text-sm text-muted-foreground">Reactivate this agent before creating another version.</p>}</CardContent>
+            <CardHeader>
+              <div className="flex flex-wrap items-center justify-between gap-2">
+                <CardTitle>Create version {agent.current_version + 1}</CardTitle>
+                <Badge variant={usingCurrentVersion ? "active" : "outline"}>Draft source · v{draftSource.version}</Badge>
+              </div>
+              <CardDescription>The fields below are copied from {usingCurrentVersion ? "the current version" : `historical version ${draftSource.version}`}. Creating the draft remains a separate action from publishing.</CardDescription>
+            </CardHeader>
+            <CardContent>{agent.status === "ACTIVE" ? <NewAgentVersionForm key={draftSource.id} current={draftSource} models={models.data ?? []} tools={tools.data ?? []} onCreate={(payload) => createVersion.mutateAsync(payload).then(() => undefined)} /> : <p className="rounded-lg border bg-muted/30 p-4 text-sm text-muted-foreground">Reactivate this agent before creating another version.</p>}</CardContent>
           </Card>
         </div>
 
         <aside className="space-y-6">
-          <Card><CardHeader><CardTitle>Current state</CardTitle></CardHeader><CardContent className="space-y-3 text-sm"><div className="flex items-center justify-between"><span className="text-muted-foreground">Status</span><StatusBadge status={agent.status} /></div><div className="flex items-center justify-between"><span className="text-muted-foreground">Current</span><span className="font-semibold">v{agent.current_version}</span></div><div className="flex items-center justify-between"><span className="text-muted-foreground">Published</span><span className="font-semibold">{agent.published_version ? `v${agent.published_version}` : "None"}</span></div><div className="flex items-center justify-between"><span className="text-muted-foreground">Model</span><span className="font-mono text-xs">{current.model_key}</span></div></CardContent></Card>
+          <Card><CardHeader><CardTitle>Current state</CardTitle></CardHeader><CardContent className="space-y-3 text-sm"><div className="flex items-center justify-between"><span className="text-muted-foreground">Status</span><StatusBadge status={agent.status} /></div><div className="flex items-center justify-between"><span className="text-muted-foreground">Current</span><button type="button" aria-label={`Use current version ${agent.current_version} as draft source`} aria-pressed={usingCurrentVersion} className={cn("rounded-md px-2 py-1 font-semibold outline-none hover:bg-muted focus-visible:ring-2 focus-visible:ring-ring", usingCurrentVersion && "bg-primary/10 text-primary")} onClick={() => setSelectedVersionId(null)}>v{agent.current_version}</button></div><div className="flex items-center justify-between"><span className="text-muted-foreground">Published</span><span className="font-semibold">{agent.published_version ? `v${agent.published_version}` : "None"}</span></div><div className="flex items-center justify-between"><span className="text-muted-foreground">Model</span><span className="font-mono text-xs">{current.model_key}</span></div></CardContent></Card>
 
-          <Card><CardHeader><CardTitle>Version history</CardTitle><CardDescription>Conversations remain pinned to the version they started with.</CardDescription></CardHeader><CardContent className="space-y-3">{(versions.data ?? []).map((item) => <div key={item.id} className="rounded-lg border p-3"><div className="flex items-center justify-between gap-2"><span className="font-semibold">Version {item.version}</span><StatusBadge status={item.status} /></div><p className="mt-2 text-xs text-muted-foreground">{formatDate(item.created_at)}</p><div className="mt-2 flex flex-wrap gap-1.5">{item.tools.map((tool) => <Badge key={tool.key} variant="outline">{tool.key.split(".").at(-1)?.replaceAll("_", " ")}</Badge>)}</div></div>)}</CardContent></Card>
+          <Card><CardHeader><CardTitle>Version history</CardTitle><CardDescription>Select a version to use its immutable configuration as the source for the draft editor. Conversations remain pinned to the version they started with.</CardDescription></CardHeader><CardContent className="space-y-3">{(versions.data ?? []).map((item) => {
+            const selected = item.id === draftSource.id;
+            return <button key={item.id} type="button" aria-label={`Use version ${item.version} as draft source`} aria-pressed={selected} className={cn("w-full rounded-lg border p-3 text-left outline-none transition hover:bg-muted/50 focus-visible:ring-2 focus-visible:ring-ring", selected && "border-primary bg-primary/5")} onClick={() => setSelectedVersionId(item.id === current.id ? null : item.id)}><div className="flex items-center justify-between gap-2"><span className="font-semibold">Version {item.version}</span><StatusBadge status={item.status} /></div><p className="mt-2 text-xs text-muted-foreground">{formatDate(item.created_at)}</p><div className="mt-2 flex flex-wrap gap-1.5">{item.tools.map((tool) => <Badge key={tool.key} variant="outline">{tool.key.split(".").at(-1)?.replaceAll("_", " ")}</Badge>)}</div></button>;
+          })}</CardContent></Card>
         </aside>
       </div>
     </>

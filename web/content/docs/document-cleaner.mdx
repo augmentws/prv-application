@@ -1,0 +1,95 @@
+---
+title: Document Cleaner rules
+description: Build and test collection cleanup rules using Remove line, Remove block, and Replace.
+---
+
+Document Cleaner rules remove repetitive transport text, banners, disclaimers, and other collection-specific noise before documents are indexed, chunked, or embedded. Original native evidence, extracted text, and OCR text remain unchanged. Processing creates separate normalized-text artifacts.
+
+Open a collection and select **Processing**. Built-in default rules run first. Enabled collection-specific rules then run from top to bottom, so an earlier rule can change the text seen by later rules.
+
+Each built-in rule displays its match pattern and stop condition. **Quoted reply history** starts at an **Original Message** separator and stops at `[Ss]ubject:`. Priv-View removes that envelope and the `Subject:` label while preserving the subject value and message body. A **Forwarded Message** is handled separately with the same preservation behavior.
+
+## Remove line
+
+**Remove line** examines the document one line at a time. If the regular expression matches anywhere in a line, that entire line is removed. One match is reported for each removed line.
+
+For an exact standalone footer, use anchors so ordinary sentences containing the same words are retained:
+
+```text
+Pattern: ^\s*CONFIDENTIAL FOOTER\s*$
+```
+
+This removes lines such as `  CONFIDENTIAL FOOTER  ` but does not remove `Please see the CONFIDENTIAL FOOTER below.`
+
+Use **Remove line** for:
+
+- standalone attachment or export notices;
+- repeated headers or footers that occupy one line; and
+- labels that should be removed together with the rest of their line.
+
+Because each line is tested separately, `^` and `$` refer to the beginning and end of that individual line.
+
+## Remove block
+
+**Remove block** uses two expressions: **Start / match expression** and **End expression**. When a line matches the start expression, that line and every following line are removed through the first line that matches the end expression. Both boundary lines are removed. One match is reported for each block that begins.
+
+```text
+Start expression: ^\s*BEGIN LEGAL DISCLAIMER\s*$
+End expression:   ^\s*END LEGAL DISCLAIMER\s*$
+```
+
+Use **Remove block** for multi-line banners or disclaimers with dependable opening and closing markers.
+
+Be especially careful with the end expression. If a start line matches but no later line matches the end expression, everything from the start line to the end of the document is removed. Test several positive and negative examples before running the full collection.
+
+Like **Remove line**, both expressions are searched against individual lines. Anchoring both expressions usually makes a block rule safer.
+
+## Replace
+
+**Replace** searches the complete document text and substitutes every non-overlapping match with the replacement value. It changes only the matched characters; it does not automatically remove the rest of the line.
+
+For example, this standardizes telephone labels while preserving the number:
+
+```text
+Pattern:     \b(?:Telephone|Tel):\s*
+Replacement: Phone: 
+```
+
+To delete only the matched characters, leave **Replacement** empty. Replacement values may reuse capture groups, such as `\1` or `\g<name>`.
+
+Unlike the line and block actions, a Replace pattern runs against the complete document. `^` and `$` therefore refer to the beginning and end of the document unless the expression explicitly enables multiline behavior. A pattern can cross line breaks only when it explicitly matches them.
+
+Use **Replace** for:
+
+- standardizing labels or formatting;
+- removing a phrase while retaining the rest of its line; and
+- preserving part of a match through capture groups.
+
+## Case sensitivity and regular expressions
+
+Rules use Python-compatible regular-expression syntax. Matching is case-insensitive unless **Case sensitive** is selected. Expressions are subject to a short execution timeout so an excessively expensive expression fails instead of blocking collection processing.
+
+Prefer narrow expressions:
+
+- Anchor standalone markers with `^` and `$`.
+- Escape punctuation that should be literal, such as `\.` or `\[`.
+- Avoid broad patterns such as `.*` when a specific character class or marker is available.
+- Include examples that must remain unchanged when testing a rule.
+
+## Build a rule with the Document Cleaner Agent
+
+1. Select up to 25 documents and run a processing test.
+2. Select the displayed test results that demonstrate the unwanted text.
+3. Choose **Build/improve rule**.
+4. Describe the cleanup in plain language.
+5. Answer a clarifying question if the examples do not establish a safe pattern.
+6. Review the proposed action, expression, and explanation.
+7. Choose **Save proposed rule** only when the proposal behaves correctly.
+
+The agent can propose one of the three actions, but it cannot save or execute a rule on its own. Selected documents and their contents are treated as untrusted evidence, not instructions.
+
+## Test before a full run
+
+Testing is synchronous, supports up to 25 selected documents, and does not create normalized artifacts. The preview identifies each rule that matched and warns when more than half of a document was removed or the result became empty.
+
+After saving, choose exactly which default and collection rules to include in the full run. That choice applies only to the run and does not enable or disable rules in the saved profile.

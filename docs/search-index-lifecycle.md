@@ -12,7 +12,7 @@ The schema planner compares the active generation's complete `schema_snapshot` w
 - `IN_PLACE`: send a compatible mapping addition to the active physical index and update its stored schema snapshot and hash.
 - `REINDEX_REQUIRED`: stop the projection operation in `AWAITING_USER` and store the desired hash and human-readable reasons in `payload.schema_change`.
 
-In-place changes are allowlisted rather than inferred optimistically. The first allowlisted field is the root keyword array `batch_ids`, because batch membership has a separate bounded partial-update path. Adding or changing fields below `metadata` is deliberately not classified as in-place: older OpenSearch documents may not contain authoritative current values and therefore need reprojection.
+In-place changes are allowlisted rather than inferred optimistically. Additive root fields such as `batch_ids` use their bounded partial-update paths. A newly searchable field below `metadata` is also added to the active mapping in place; the worker refreshes only documents that already have a current asserted value for that field. A new field with no values therefore requires only a mapping update.
 
 ## Changes requiring confirmation
 
@@ -22,7 +22,7 @@ A full reindex is required when a change affects existing indexed content or can
 - changing embedding dimensions, vector engine/method settings, or nested chunk mappings;
 - changing an object or nested-field shape;
 - removing or renaming a mapped field;
-- adding searchable or facetable metadata that requires historical values to be loaded;
+- changing an existing metadata field's type, analyzer, or exact/facet representation;
 - changing index creation-time settings; and
 - any schema difference the planner does not explicitly recognize.
 
@@ -43,3 +43,11 @@ pipenv run python scripts/cleanup_search_indexes.py --matter-id <matter-uuid>
 ```
 
 Search-query review batches copy the generation number, physical name, schema hash, and activation time into their immutable selection definition. Their provenance therefore remains available after the generation tracking row is removed.
+
+## Pressure recovery
+
+Search projection and embedding-index steps distinguish transient OpenSearch pressure from permanent request failures. HTTP 429/502/503/504 responses, connection failures, flood-stage disk blocks, circuit breakers, rejected execution, unavailable shards, and temporary cluster-manager failures retry with durable exponential backoff. Retries begin after 30 seconds, double to a maximum one-hour interval, and make 16 attempts. Mapping and validation failures are not retried automatically.
+
+If pressure lasts beyond the automatic retry window, the operation retains the original OpenSearch error instead of only the DBOS retry wrapper. A failed embedding job whose embedding batches all completed can be resumed with `POST /v1/matters/{matter_id}/embedding-jobs/{job_id}/retry-index`, or **Retry indexing** on the matter Jobs tab. This queues only the search-index phase and reuses the completed chunks and vectors.
+
+Embedding projections checkpoint their document offset after each successful bulk request. If OpenSearch partially rejects a bulk request, the operation also records the rejected document IDs. Automatic and user-initiated retries process those rejected IDs first, then continue after the checkpoint; they do not replay documents that were already accepted. Operations that failed before checkpointing was introduced have no reliable cursor and must make one full idempotent projection pass when retried.

@@ -6,6 +6,7 @@
  * OpenAPI spec version: 0.1.0
  */
 import type { CollectionTextProcessingRunReadStatus } from './collectionTextProcessingRunReadStatus';
+import type { TextProcessingRule } from './textProcessingRule';
 
 export interface CollectionTextProcessingRunRead {
   id: string;
@@ -13,6 +14,9 @@ export interface CollectionTextProcessingRunRead {
   status: CollectionTextProcessingRunReadStatus;
   processor_version: string;
   profile_revision: number;
+  rules_snapshot: TextProcessingRule[];
+  /** @items.pattern ^[a-z][a-z0-9_-]{0,63}$ */
+  disabled_rule_ids: string[];
   configuration_hash: string;
   total_count: number;
   processed_count: number;

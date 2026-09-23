@@ -56,6 +56,7 @@ from artifact_service.schemas import (
     CollectionSelectionRead,
     CollectionTextProcessingProfileRead,
     CollectionTextProcessingProfileUpdate,
+    CollectionTextProcessingRunCreate,
     CollectionTextProcessingRunRead,
     CollectionTextProcessingTestItem,
     CollectionTextProcessingTestRequest,
@@ -471,6 +472,13 @@ def build_router(
             validate_rules(payload.rules)
         except ValueError as exc:
             raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_CONTENT, detail=str(exc)) from exc
+        known_rule_ids = {rule["id"] for rule in DEFAULT_RULES} | {rule.id for rule in payload.rules}
+        unknown_disabled_rule_ids = set(payload.disabled_rule_ids) - known_rule_ids
+        if unknown_disabled_rule_ids:
+            raise HTTPException(
+                status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
+                detail=f"Unknown disabled rule ID: {min(unknown_disabled_rule_ids)}",
+            )
         items = list(
             db.scalars(
                 select(CollectionItem).where(
@@ -502,7 +510,7 @@ def build_router(
                 )
                 continue
             original = source.text[:MAX_TEST_TEXT_CHARS]
-            result = process_text(original, payload.rules)
+            result = process_text(original, payload.rules, disabled_rule_ids=set(payload.disabled_rule_ids))
             warnings = list(result.warnings)
             if len(source.text) > MAX_TEST_TEXT_CHARS:
                 warnings.append("The test preview is limited to the first 100,000 characters.")
@@ -528,6 +536,7 @@ def build_router(
     )
     def start_text_processing_run(
         collection_id: uuid.UUID,
+        payload: CollectionTextProcessingRunCreate | None = None,
         principal: ArtifactPrincipal = Depends(principal_dependency),
         db: Session = Depends(get_artifact_db),
     ) -> CollectionTextProcessingRun:
@@ -545,13 +554,25 @@ def build_router(
         profile = db.get(CollectionTextProcessingProfile, collection.id)
         rules = profile.custom_rules if profile else []
         parsed_rules = [TextProcessingRule.model_validate(value) for value in rules]
+        selectable_custom_rules = [rule for rule in parsed_rules if rule.enabled]
+        selectable_rule_ids = {rule["id"] for rule in DEFAULT_RULES} | {rule.id for rule in selectable_custom_rules}
+        enabled_rule_ids = selectable_rule_ids if payload is None or payload.enabled_rule_ids is None else set(payload.enabled_rule_ids)
+        unknown_rule_ids = enabled_rule_ids - selectable_rule_ids
+        if unknown_rule_ids:
+            raise HTTPException(
+                status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
+                detail=f"Unknown or disabled enabled rule ID: {min(unknown_rule_ids)}",
+            )
+        selected_rules = [rule for rule in selectable_custom_rules if rule.id in enabled_rule_ids]
+        disabled_rule_ids = selectable_rule_ids - enabled_rule_ids
         run = CollectionTextProcessingRun(
             collection_id=collection.id,
             status="QUEUED",
             processor_version=PROCESSOR_VERSION,
             profile_revision=profile.revision if profile else 0,
-            rules_snapshot=rules,
-            configuration_hash=configuration_hash(parsed_rules),
+            rules_snapshot=[rule.model_dump(mode="json") for rule in selected_rules],
+            disabled_rule_ids=sorted(disabled_rule_ids),
+            configuration_hash=configuration_hash(selected_rules, disabled_rule_ids=disabled_rule_ids),
             requested_by_user_id=principal.actor_user_id,
         )
         db.add(run)

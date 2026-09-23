@@ -1,0 +1,85 @@
+{#
+
+= Extension to Question Template
+
+The template used when a question is being extended.  This
+template is responsible for displaying the new document chunk
+summaries to the LLM, and asking it to respond to the question
+the user wishes to extend (which may be the original topic, or
+may be an earlier followup question).
+
+This template is only used when the extension question is the
+active (last) question in the conversation.  When the extension
+request is in the conversation history, it is rendered as
+a regular followup question.
+
+== Variables:
+
+- question : str
+    The question that the user wishes to extend the response to
+    over the new summaries.  This may be a previous followup
+    question, or it may be the original topic of the investigation.
+
+- topic: str
+    The original topic of the investigation.
+
+- inputs: List[DocChunkInvestigationSummary]
+    The summaries of the new document chunks to be presented to
+    the LLM.  (Passed on to `_chunk_smys.j2`.)
+
+== Sub-Templates:
+
+=== `_chunk_smys.j2`
+
+Responsible for rendering of the document chunk summaries.
+
+-#}
+{% include "_chunk_smys.j2" %}
+
+Unless otherwise instructed in the topic below, act as senior legal and 
+investigative professional.
+
+========
+
+The conversation to date has been based on summaries of the top-ranking 
+documents returned to the following topic:
+
+<topic>
+    {{topic}}
+</topic>
+
+Previously, you answered the following request based upon the higher-ranking
+summaries:
+
+<request>
+     {{question}}
+</request>
+
+Above are summaries of additional, lower-ranking documents returned for
+the same topic.  Please answer the same request based solely on these new
+summaries.
+
+While answering this request , please include inline citations to documents
+that support each part of your answer, in the form ``Document XXX''.
+
+Some of the summaries may be for sections of documents.  For these summaries,
+please cite the document and section as ``Document XXX§NN'', where NN is
+the section number.
+
+Your citations must include the associated paragraph references (¶) whenever they are provided 
+in the source material. These paragraph-level citations are essential for 
+precise source tracking and must be preserved in the format "Document XXX¶N" 
+or "Document XXX§NN¶N" as applicable. 
+
+Present ALL information from these new summaries that relates to the request.
+Every statement must be cited using these new summaries only.
+Structure your response based on what these summaries contain:
+
+1. "From these new summaries, the following information reinforces previous findings:" 
+    [present with new citations] -- include if such information exists
+
+2. "These new summaries provide additional insights:"
+    [present with new citations] -- include if such information exists
+
+ALL statements require citations from these new summaries, regardless of whether 
+they reinforce previous findings. Do not reference previous documents.

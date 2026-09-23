@@ -17,10 +17,11 @@ from app.models import (
     BatchTopicAssignment,
     BatchTopicTaxonomy,
     Custodian,
+    DocumentMetadataCurrent,
     Matter,
+    MatterDefinitionAssessmentRun,
     MatterDocument,
     MatterDocumentImportJob,
-    MatterDefinitionAssessmentRun,
     MatterEmbeddingBatch,
     MatterEmbeddingJob,
     MetadataDefinition,
@@ -29,7 +30,7 @@ from app.models import (
     SearchIndexGeneration,
     SearchProjectionOperation,
 )
-from app.search.client import OpenSearchClient
+from app.search.client import OpenSearchBulkError, OpenSearchClient
 from app.search.mappings import compile_document_index, schema_hash
 from app.search.schema import SearchReindexRequired, plan_schema_change
 from embedding_service.config import get_embedding_settings
@@ -299,6 +300,13 @@ class SearchIndexManager:
             if plan.action in {"NO_CHANGE", "IN_PLACE"}:
                 if plan.mapping_update:
                     self.client.update_mapping(active.index_name, plan.mapping_update)
+                if plan.metadata_backfill_fields:
+                    self._backfill_metadata_fields(
+                        active.index_name,
+                        matter,
+                        definitions,
+                        plan.metadata_backfill_fields,
+                    )
                 active.schema_hash = fingerprint
                 active.schema_snapshot = index_body
                 active.error_message = None
@@ -374,6 +382,42 @@ class SearchIndexManager:
         self.client.refresh(index_name)
         return len(documents)
 
+    def _backfill_metadata_fields(
+        self,
+        index_name: str,
+        matter: Matter,
+        definitions: list[MetadataDefinition],
+        field_keys: tuple[str, ...],
+    ) -> int:
+        definition_ids = [definition.id for definition in definitions if definition.key in field_keys]
+        if not definition_ids:
+            return 0
+        document_ids = list(
+            self.db.scalars(
+                select(DocumentMetadataCurrent.matter_document_id)
+                .where(
+                    DocumentMetadataCurrent.matter_id == matter.id,
+                    DocumentMetadataCurrent.metadata_definition_id.in_(definition_ids),
+                )
+                .distinct()
+            )
+        )
+        if not document_ids:
+            return 0
+        documents = list(
+            self.db.scalars(
+                select(MatterDocument)
+                .where(
+                    MatterDocument.matter_id == matter.id,
+                    MatterDocument.id.in_(document_ids),
+                )
+                .order_by(MatterDocument.id)
+            )
+        )
+        self._bulk_upsert(index_name, documents, definitions)
+        self.client.refresh(index_name)
+        return len(documents)
+
     def upsert_documents(self, matter_id: uuid.UUID, document_ids: list[uuid.UUID]) -> int:
         generation = self.ensure(matter_id)
         definitions = list(
@@ -402,6 +446,8 @@ class SearchIndexManager:
         self,
         matter_id: uuid.UUID,
         embedding_job_id: uuid.UUID,
+        *,
+        operation: SearchProjectionOperation | None = None,
     ) -> int:
         generation = self.ensure(matter_id)
         job = self.db.get(MatterEmbeddingJob, embedding_job_id)
@@ -415,13 +461,34 @@ class SearchIndexManager:
                 )
             )
         )
-        indexed_count = 0
+        checkpoint = 0
+        retry_document_ids: list[uuid.UUID] = []
+        if operation is not None:
+            raw_checkpoint = operation.payload.get("next_document_offset", 0)
+            if isinstance(raw_checkpoint, int) and raw_checkpoint >= 0:
+                checkpoint = raw_checkpoint
+            raw_retry_ids = operation.payload.get("retry_document_ids", [])
+            if isinstance(raw_retry_ids, list):
+                retry_document_ids = [uuid.UUID(value) for value in raw_retry_ids]
+
+        indexed_count = checkpoint
         document_ids: list[uuid.UUID] = []
 
-        def flush() -> None:
+        def save_progress(*, next_offset: int, failed_ids: list[str] | None = None) -> None:
+            if operation is None:
+                return
+            operation.payload = {
+                **operation.payload,
+                "next_document_offset": next_offset,
+                "retry_document_ids": failed_ids or [],
+            }
+            self.db.commit()
+
+        def flush(*, advances_checkpoint: bool) -> None:
             nonlocal indexed_count
             if not document_ids:
                 return
+            attempted_ids = list(document_ids)
             documents = list(
                 self.db.scalars(
                     select(MatterDocument).where(
@@ -430,9 +497,24 @@ class SearchIndexManager:
                     )
                 )
             )
-            self._bulk_upsert(generation.index_name, documents, definitions)
-            indexed_count += len(documents)
+            next_offset = indexed_count + len(attempted_ids) if advances_checkpoint else indexed_count
+            try:
+                self._bulk_upsert(generation.index_name, documents, definitions)
+            except OpenSearchBulkError as exc:
+                # OpenSearch applies successful items in a partially failed bulk. Move
+                # the source cursor past the attempted page and retain only rejected
+                # IDs for the next durable retry.
+                failed_ids = exc.failed_document_ids or [str(value) for value in attempted_ids]
+                save_progress(next_offset=next_offset, failed_ids=failed_ids)
+                raise
+            if advances_checkpoint:
+                indexed_count = next_offset
+            save_progress(next_offset=indexed_count)
             document_ids.clear()
+
+        if retry_document_ids:
+            document_ids.extend(retry_document_ids)
+            flush(advances_checkpoint=False)
 
         batch_document_ids = self.db.scalars(
             select(MatterEmbeddingBatch.document_ids)
@@ -442,12 +524,17 @@ class SearchIndexManager:
             )
             .order_by(MatterEmbeddingBatch.batch_number)
         )
+        visited_count = 0
         for batch_ids in batch_document_ids:
             for value in batch_ids:
+                if visited_count < checkpoint:
+                    visited_count += 1
+                    continue
+                visited_count += 1
                 document_ids.append(uuid.UUID(value))
                 if len(document_ids) >= self.settings.search_bulk_batch_size:
-                    flush()
-        flush()
+                    flush(advances_checkpoint=True)
+        flush(advances_checkpoint=True)
         self.client.refresh(generation.index_name)
         generation.document_count = self.client.count(generation.index_name)
         self.db.commit()
@@ -662,6 +749,7 @@ def process_search_operation(operation_id: uuid.UUID) -> None:
                     manager.upsert_embedding_job(
                         operation.matter_id,
                         uuid.UUID(embedding_job_id),
+                        operation=operation,
                     )
                 else:
                     manager.upsert_documents(

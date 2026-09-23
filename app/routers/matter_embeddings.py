@@ -17,8 +17,15 @@ from app.embeddings.configuration import (
     processing_configuration,
 )
 from app.matter_embeddings import cancel_voyage_batches
-from app.models import ExternalProviderUsage, Matter, MatterEmbeddingBatch, MatterEmbeddingJob
+from app.models import (
+    ExternalProviderUsage,
+    Matter,
+    MatterEmbeddingBatch,
+    MatterEmbeddingJob,
+    SearchProjectionOperation,
+)
 from app.schemas import MatterEmbeddingBatchRead, MatterEmbeddingJobRead
+from app.search.client import OpenSearchError, is_retryable_opensearch_error
 from app.workflows.dispatcher import cancel_matter_embedding, enqueue_matter_embedding
 from embedding_service.config import EmbeddingSettings, get_embedding_settings
 
@@ -216,6 +223,93 @@ def list_embedding_batches(
             .order_by(MatterEmbeddingBatch.batch_number)
         )
     )
+
+
+@router.post("/{job_id}/retry-index", response_model=MatterEmbeddingJobRead, status_code=status.HTTP_202_ACCEPTED)
+def retry_embedding_index(
+    matter_id: uuid.UUID,
+    job_id: uuid.UUID,
+    principal: Principal = Depends(get_principal),
+    db: Session = Depends(get_db),
+) -> MatterEmbeddingJobRead:
+    matter = _matter(db, matter_id, principal)
+    job = db.scalar(
+        select(MatterEmbeddingJob)
+        .where(MatterEmbeddingJob.id == job_id, MatterEmbeddingJob.matter_id == matter.id)
+        .with_for_update()
+    )
+    if job is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Embedding job not found")
+    if job.status != "FAILED":
+        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="Embedding job has not failed")
+    active = db.scalar(
+        select(MatterEmbeddingJob.id).where(
+            MatterEmbeddingJob.matter_id == matter.id,
+            MatterEmbeddingJob.id != job.id,
+            MatterEmbeddingJob.status.in_(ACTIVE_STATUSES),
+        )
+    )
+    if active is not None:
+        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="Another embedding job is active")
+    incomplete_batch_count = db.scalar(
+        select(func.count())
+        .select_from(MatterEmbeddingBatch)
+        .where(MatterEmbeddingBatch.job_id == job.id, MatterEmbeddingBatch.status != "COMPLETED")
+    )
+    if not job.batch_count or incomplete_batch_count:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail="Embedding generation did not complete; start a new embedding job instead",
+        )
+    projection = db.scalar(
+        select(SearchProjectionOperation)
+        .where(SearchProjectionOperation.workflow_id == f"embedding-index-job:{job.id}")
+        .with_for_update()
+    )
+    projection_error = projection.error_message if projection is not None else None
+    if projection is None or not projection_error or not is_retryable_opensearch_error(OpenSearchError(projection_error)):
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail="Embedding job did not fail because of retryable search-index pressure",
+        )
+
+    retried_at = utcnow()
+    retry_history = job.configuration.get("index_retry_history")
+    if not isinstance(retry_history, list):
+        retry_history = []
+    job.configuration = {
+        **job.configuration,
+        "index_retry_history": [
+            *retry_history,
+            {
+                "workflow_id": job.workflow_id,
+                "error_message": projection_error,
+                "retried_at": retried_at.isoformat(),
+                "retried_by_user_id": str(principal.user.id),
+            },
+        ],
+    }
+    job.status = "QUEUED"
+    job.workflow_id = f"matter-embedding:{job.id}:index-retry:{uuid.uuid4()}"
+    job.error_message = None
+    job.completed_at = None
+    projection.status = "QUEUED"
+    projection.error_message = None
+    projection.started_at = None
+    projection.completed_at = None
+    enqueue_matter_embedding(db, job.workflow_id, str(job.id))
+    record_audit(
+        db,
+        tenant_id=matter.client.tenant_id,
+        actor_user_id=principal.user.id,
+        action="matter.embedding_job.index_retried",
+        target_type="matter_embedding_job",
+        target_id=job.id,
+        details={"prior_error": projection_error},
+    )
+    db.commit()
+    db.refresh(job)
+    return _jobs_with_provider_usage(db, [job])[0]
 
 
 @router.post("/{job_id}/cancel", response_model=MatterEmbeddingJobRead)

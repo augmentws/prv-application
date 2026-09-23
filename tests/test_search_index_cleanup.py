@@ -171,6 +171,7 @@ def test_cleanup_preserves_generation_pinned_by_active_assessment(db: Session) -
     db.flush()
     db.add(
         MatterDefinitionAssessmentRun(
+            name="Cleanup assessment",
             matter_id=matter.id,
             matter_definition_revision_id=revision.id,
             definition_content_hash="c" * 64,

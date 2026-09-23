@@ -28,7 +28,7 @@ from artifact_service.models import (
 from artifact_service.schemas import TextProcessingChange, TextProcessingRule
 from artifact_service.storage import BlobStorage, get_storage
 
-PROCESSOR_VERSION = "collection-text-v7"
+PROCESSOR_VERSION = "collection-text-v9"
 MAX_TEST_TEXT_CHARS = 100_000
 MAX_PROCESSING_BYTES = 20 * 1024 * 1024
 RULE_REGEX_TIMEOUT_SECONDS = 0.1
@@ -36,17 +36,21 @@ RULE_REGEX_TIMEOUT_SECONDS = 0.1
 DEFAULT_RULES = [
     {
         "id": "system-lotus-forward-envelope",
-        "name": "Lotus Notes forwarding envelope",
-        "description": "Removes generated forwarding separators and their From, To, cc, bcc, Sent, and Date routing blocks while preserving the forwarded message body and a non-duplicated Subject title. Single-line separators are supported, and headerless calendar forwards lose only the separator.",
+        "name": "Forwarded message header",
+        "description": "Removes generated forwarding separators and their From, To, cc, bcc, Sent, and Date routing blocks while preserving the forwarded message body and a non-duplicated subject value without the 'Subject:' label. Standard and Lotus Notes forwarding envelopes are supported.",
         "action": "UNWRAP_ENVELOPE",
-        "match_description": "Lotus Notes separators containing 'Forwarded by'; supports single-line, split, whitespace-separated, and headerless calendar variants and retains Subject when the body does not repeat it.",
+        "match_description": "Standard 'Forwarded Message', 'Begin forwarded message', and Lotus Notes 'Forwarded by' separators followed by recognized routing headers.",
+        "match_pattern": r"(?i)^\s*(?:-{2,}\s*forwarded message\s*-{2,}|begin forwarded message:|-{5,}\s*forwarded by\b.*?)\s*$",
+        "stop_pattern": "First blank line after recognized From, To, Cc, Bcc, Sent, Date, and Subject headers",
     },
     {
         "id": "system-reply-history",
         "name": "Quoted reply history",
-        "description": "Removes quoted history beginning at a standard Original Message or Forwarded Message separator.",
-        "action": "REMOVE_TRAILING_BLOCK",
-        "match_description": "Dashed 'Original Message' or 'Forwarded Message' markers.",
+        "description": "Removes an Original Message separator and its routing headers through the Subject label while preserving the subject value and message body.",
+        "action": "UNWRAP_ENVELOPE",
+        "match_description": "Dashed 'Original Message' markers followed by routing headers and a Subject line.",
+        "match_pattern": r"(?im)^\s*-{2,}\s*original message\s*-{2,}\s*$",
+        "stop_pattern": r"[Ss]ubject:",
     },
     {
         "id": "system-attachment-placeholder",
@@ -54,6 +58,8 @@ DEFAULT_RULES = [
         "description": "Removes standalone transport-generated attachment placeholder lines without removing ordinary attachment references in prose.",
         "action": "REMOVE_LINE",
         "match_description": "Standalone '- winmail.dat' and '- smime.p7s' lines.",
+        "match_pattern": r"(?im)^\s*-\s*(?:winmail\.dat|smime\.p7s)\s*$",
+        "stop_pattern": "End of the matching line",
     },
     {
         "id": "system-whitespace",
@@ -61,6 +67,8 @@ DEFAULT_RULES = [
         "description": "Normalizes line endings, removes NUL characters and trailing spaces, and collapses runs of blank lines.",
         "action": "NORMALIZE",
         "match_description": "Applied to every supported text source.",
+        "match_pattern": r"[ \t]+$ and \n{3,}",
+        "stop_pattern": "Not applicable; normalization runs once per processing stage",
     },
 ]
 
@@ -108,11 +116,13 @@ def utcnow() -> datetime:
     return datetime.now(timezone.utc)
 
 
-def configuration_hash(rules: list[TextProcessingRule]) -> str:
+def configuration_hash(rules: list[TextProcessingRule], *, disabled_rule_ids: set[str] | None = None) -> str:
     payload = {
         "processor_version": PROCESSOR_VERSION,
         "rules": [rule.model_dump(mode="json") for rule in rules],
     }
+    if disabled_rule_ids:
+        payload["disabled_rule_ids"] = sorted(disabled_rule_ids)
     return hashlib.sha256(json.dumps(payload, sort_keys=True, separators=(",", ":")).encode()).hexdigest()
 
 
@@ -166,6 +176,7 @@ def process_text(
     rules: list[TextProcessingRule],
     *,
     processor_version: str = PROCESSOR_VERSION,
+    disabled_rule_ids: set[str] | None = None,
 ) -> ProcessingResult:
     validate_rules(rules)
     if processor_version not in {
@@ -176,16 +187,25 @@ def process_text(
         "collection-text-v5",
         "collection-text-v6",
         "collection-text-v7",
+        "collection-text-v8",
+        "collection-text-v9",
     }:
         raise ValueError(f"Unsupported collection text processor version: {processor_version}")
+    disabled = disabled_rule_ids or set()
     original_length = len(value)
-    text = value.replace("\x00", "").replace("\r\n", "\n").replace("\r", "\n")
+    text = value
+    if "system-whitespace" not in disabled:
+        text = text.replace("\x00", "").replace("\r\n", "\n").replace("\r", "\n")
     changes: list[TextProcessingChange] = []
 
     # Conservative system defaults: unwrap common mail-system envelopes, normalize
     # whitespace, and remove unmistakable attachment placeholders.
     before = text
-    if processor_version == "collection-text-v7":
+    if "system-lotus-forward-envelope" in disabled:
+        forwarded_count = 0
+    elif processor_version in {"collection-text-v8", "collection-text-v9"}:
+        text, forwarded_count = _remove_forwarding_envelopes_v8(text)
+    elif processor_version == "collection-text-v7":
         text, forwarded_count = _remove_lotus_forwarding_envelopes_v7(text)
     elif processor_version == "collection-text-v6":
         text, forwarded_count = _remove_lotus_forwarding_envelopes_v6(text)
@@ -203,24 +223,39 @@ def process_text(
         changes.append(
             TextProcessingChange(
                 rule_id="system-lotus-forward-envelope",
-                rule_name="Lotus Notes forwarding envelope",
+                rule_name=(
+                    "Forwarded message header"
+                    if processor_version in {"collection-text-v8", "collection-text-v9"}
+                    else "Lotus Notes forwarding envelope"
+                ),
                 match_count=forwarded_count,
             )
         )
-    text, reply_count = re.subn(
-        r"(?ims)^\s*-{2,}\s*(?:original message|forwarded message)\s*-{2,}\s*$.*\Z",
-        "",
-        text,
-    )
+    if "system-reply-history" in disabled:
+        reply_count = 0
+    elif processor_version == "collection-text-v9":
+        text, reply_count = _remove_original_message_headers_v9(text)
+    else:
+        text, reply_count = re.subn(
+            (
+                r"(?ims)^\s*-{2,}\s*original message\s*-{2,}\s*$.*\Z"
+                if processor_version == "collection-text-v8"
+                else r"(?ims)^\s*-{2,}\s*(?:original message|forwarded message)\s*-{2,}\s*$.*\Z"
+            ),
+            "",
+            text,
+        )
     if reply_count:
         changes.append(TextProcessingChange(rule_id="system-reply-history", rule_name="Quoted reply history", match_count=reply_count))
-    if processor_version in {
+    if "system-attachment-placeholder" not in disabled and processor_version in {
         "collection-text-v2",
         "collection-text-v3",
         "collection-text-v4",
         "collection-text-v5",
         "collection-text-v6",
         "collection-text-v7",
+        "collection-text-v8",
+        "collection-text-v9",
     }:
         text, attachment_count = re.subn(
             r"(?im)^\s*-\s*(?:winmail\.dat|smime\.p7s)\s*$",
@@ -237,13 +272,14 @@ def process_text(
                 match_count=attachment_count,
             )
         )
-    text = re.sub(r"[ \t]+$", "", text, flags=re.MULTILINE)
-    text = re.sub(r"\n{3,}", "\n\n", text).strip()
-    if text != before and not (forwarded_count or reply_count or attachment_count):
-        changes.append(TextProcessingChange(rule_id="system-whitespace", rule_name="Whitespace normalization", match_count=1))
+    if "system-whitespace" not in disabled:
+        text = re.sub(r"[ \t]+$", "", text, flags=re.MULTILINE)
+        text = re.sub(r"\n{3,}", "\n\n", text).strip()
+        if text != before and not (forwarded_count or reply_count or attachment_count):
+            changes.append(TextProcessingChange(rule_id="system-whitespace", rule_name="Whitespace normalization", match_count=1))
 
     for rule in rules:
-        if not rule.enabled:
+        if not rule.enabled or rule.id in disabled:
             continue
         flags = 0 if rule.case_sensitive else re.IGNORECASE
         if rule.action == "REMOVE_LINE":
@@ -283,7 +319,8 @@ def process_text(
             )
         if count:
             changes.append(TextProcessingChange(rule_id=rule.id, rule_name=rule.name, match_count=count))
-        text = re.sub(r"\n{3,}", "\n\n", text).strip()
+        if "system-whitespace" not in disabled:
+            text = re.sub(r"\n{3,}", "\n\n", text).strip()
 
     warnings: list[str] = []
     if original_length and len(text) < original_length * 0.5:
@@ -451,6 +488,7 @@ def _remove_lotus_forwarding_envelopes_v5(
     *,
     remove_headerless_marker: bool = False,
     support_single_line_marker: bool = False,
+    subject_prefix: str = "Subject: ",
 ) -> tuple[str, int]:
     """Remove Lotus envelopes while retaining a subject absent from the body."""
     lines = value.splitlines()
@@ -531,7 +569,7 @@ def _remove_lotus_forwarding_envelopes_v5(
         subject = " ".join(subject_parts).strip()
         last_output_line = next((line.strip() for line in reversed(output) if line.strip()), "")
         if subject and normalized(subject) != normalized(last_output_line) and not body_repeats_subject(subject, body_index):
-            output.append(f"Subject: {subject}")
+            output.append(f"{subject_prefix}{subject}")
             output.append("")
         index = body_index
         count += 1
@@ -551,6 +589,140 @@ def _remove_lotus_forwarding_envelopes_v7(value: str) -> tuple[str, int]:
         remove_headerless_marker=True,
         support_single_line_marker=True,
     )
+
+
+def _remove_original_message_headers_v9(value: str) -> tuple[str, int]:
+    """Remove an Original Message envelope through Subject:, retaining its value and body."""
+    lines = value.splitlines()
+    output: list[str] = []
+    index = 0
+    count = 0
+    marker = re.compile(r"^-{2,}\s*original message\s*-{2,}$", re.IGNORECASE)
+    header = re.compile(r"^(from|to|cc|bcc|sent|date):\s*(.*)$", re.IGNORECASE)
+    subject = re.compile(r"^subject:\s*(.*)$", re.IGNORECASE)
+
+    while index < len(lines):
+        if not marker.match(lines[index].strip(), timeout=RULE_REGEX_TIMEOUT_SECONDS):
+            output.append(lines[index])
+            index += 1
+            continue
+
+        scan = index + 1
+        saw_routing_header = False
+        subject_value: str | None = None
+        subject_index: int | None = None
+        while scan < len(lines) and scan - index < 50:
+            raw_line = lines[scan]
+            stripped = raw_line.strip()
+            subject_match = subject.match(stripped)
+            if subject_match:
+                subject_value = subject_match.group(1).strip()
+                subject_index = scan
+                break
+            if not stripped:
+                scan += 1
+                continue
+            if header.match(stripped):
+                saw_routing_header = True
+                scan += 1
+                continue
+            if saw_routing_header and raw_line[:1].isspace():
+                scan += 1
+                continue
+            break
+
+        # Do not alter a marker unless it has a recognizable routing block ending
+        # at Subject:. This prevents malformed text from losing the rest of a file.
+        if subject_index is None or not saw_routing_header:
+            output.append(lines[index])
+            index += 1
+            continue
+
+        if subject_value:
+            output.append(subject_value)
+        index = subject_index + 1
+        count += 1
+
+    return "\n".join(output), count
+
+
+def _remove_standard_forwarding_envelopes_v8(value: str) -> tuple[str, int]:
+    """Remove standard forwarded-message routing headers while retaining subject value and body."""
+    lines = value.splitlines()
+    output: list[str] = []
+    index = 0
+    count = 0
+    marker = re.compile(
+        r"^(?:-{2,}\s*forwarded message\s*-{2,}|begin forwarded message:)\s*$",
+        re.IGNORECASE,
+    )
+    header = re.compile(r"^(from|to|cc|bcc|subject|sent|date):\s*(.*)$", re.IGNORECASE)
+
+    def normalized(candidate: str) -> str:
+        return " ".join(candidate.casefold().split())
+
+    while index < len(lines):
+        if not marker.match(lines[index].strip(), timeout=RULE_REGEX_TIMEOUT_SECONDS):
+            output.append(lines[index])
+            index += 1
+            continue
+
+        start = index
+        scan = index + 1
+        while scan < len(lines) and not lines[scan].strip():
+            scan += 1
+        saw_routing_header = False
+        subject_parts: list[str] = []
+        collecting_subject = False
+        body_index: int | None = None
+        while scan < len(lines) and scan - start < 50:
+            raw_line = lines[scan]
+            stripped = raw_line.strip()
+            header_match = header.match(stripped)
+            if header_match:
+                header_name = header_match.group(1).casefold()
+                saw_routing_header = saw_routing_header or header_name in {"from", "to", "cc", "bcc"}
+                collecting_subject = header_name == "subject"
+                if collecting_subject:
+                    subject_parts = [header_match.group(2).strip()] if header_match.group(2).strip() else []
+            elif stripped and collecting_subject and raw_line[:1].isspace():
+                subject_parts.append(stripped)
+            elif not stripped and saw_routing_header:
+                body_index = scan + 1
+                while body_index < len(lines) and not lines[body_index].strip():
+                    body_index += 1
+                break
+            elif stripped:
+                break
+            scan += 1
+
+        if body_index is None:
+            output.append(lines[index])
+            index += 1
+            continue
+
+        subject = " ".join(subject_parts).strip()
+        body_subjects = {normalized(line) for line in lines[body_index : body_index + 12] if line.strip()}
+        last_output_line = next((line.strip() for line in reversed(output) if line.strip()), "")
+        if subject and normalized(subject) != normalized(last_output_line) and normalized(subject) not in body_subjects:
+            output.append(subject)
+            output.append("")
+        index = body_index
+        count += 1
+
+    return "\n".join(output), count
+
+
+def _remove_forwarding_envelopes_v8(value: str) -> tuple[str, int]:
+    """Unwrap standard and Lotus Notes forwarding envelopes without discarding forwarded content."""
+    text, standard_count = _remove_standard_forwarding_envelopes_v8(value)
+    text, lotus_count = _remove_lotus_forwarding_envelopes_v5(
+        text,
+        remove_headerless_marker=True,
+        support_single_line_marker=True,
+        subject_prefix="",
+    )
+    return text, standard_count + lotus_count
 
 
 def process_run(run_id: uuid.UUID) -> None:
@@ -603,6 +775,7 @@ def process_run(run_id: uuid.UUID) -> None:
                         source.text,
                         rules,
                         processor_version=run.processor_version,
+                        disabled_rule_ids=set(run.disabled_rule_ids),
                     )
                     derivation_key = hashlib.sha256(
                         f"{source.content_hash}:{run.configuration_hash}".encode()

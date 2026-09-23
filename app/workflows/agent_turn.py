@@ -6,8 +6,6 @@ from pydantic_ai.durable_exec.dbos import DBOSDurability
 from pydantic_ai.models.test import TestModel
 
 from app.agent_runtime import (
-    AssessmentControlSampleSize,
-    AssessmentMaximumDocumentCount,
     AgentEnumDescription,
     AgentEnumLabel,
     AgentMetadataChangeReason,
@@ -15,6 +13,10 @@ from app.agent_runtime import (
     AgentMetadataDisplayName,
     AgentRunOutcome,
     AgentRuntimeDeps,
+    AssessmentControlSampleSize,
+    AssessmentMaximumDocumentCount,
+    BatchChatQuery,
+    BatchChatResultLimit,
     MatterDefinitionContent,
     MatterDefinitionEditReason,
     MatterDefinitionRevisionNumber,
@@ -31,12 +33,14 @@ from app.agent_runtime import (
     persist_agent_run_outcome,
     prepare_agent_run,
     read_matter_definition,
+    search_batch_summaries,
     start_matter_definition_assessment,
     update_matter_metadata_definition,
     update_matter_metadata_enum_value,
     validate_matter_definition,
 )
 from app.config import get_settings
+from app.model_rate_limits import model_rate_limit_hooks
 from app.schemas import (
     AssertionPolicy,
     Cardinality,
@@ -214,6 +218,15 @@ def durable_start_matter_definition_assessment(
     )
 
 
+@DBOS.step(name="agent_tool_batch_search_summaries")
+def durable_search_batch_summaries(
+    ctx: RunContext[AgentRuntimeDeps],
+    query: BatchChatQuery,
+    max_results: BatchChatResultLimit = 8,
+) -> dict:
+    return search_batch_summaries(ctx, query, max_results)
+
+
 _settings = get_settings()
 # DBOS requires a construction-time model so it can register durable model
 # operations. An unconfigured deployment receives a non-executing sentinel;
@@ -224,7 +237,10 @@ _registration_model = _settings.agent_default_model or TestModel(
 
 DURABLE_AGENT = build_agent(
     model=_registration_model,
-    capabilities=[DBOSDurability(parallel_execution_mode="sequential")],
+    capabilities=[
+        model_rate_limit_hooks(_settings),
+        DBOSDurability(parallel_execution_mode="sequential"),
+    ],
     tool_functions={
         "matter_definition.read": durable_read_matter_definition,
         "matter_metadata.list_editable": durable_list_editable_metadata,
@@ -237,6 +253,7 @@ DURABLE_AGENT = build_agent(
         "matter_metadata.enum.deactivate": durable_deactivate_matter_metadata_enum_value,
         "matter_definition.apply_draft_edit": durable_apply_matter_definition_draft_edit,
         "matter_definition.start_assessment": durable_start_matter_definition_assessment,
+        "batch.search_summaries": durable_search_batch_summaries,
     },
 )
 
@@ -260,7 +277,11 @@ def durable_fail_agent_run(run_id: str, message: str) -> None:
 async def agent_turn(run_id: str) -> None:
     try:
         prepared = durable_prepare_agent_run(run_id)
-        outcome = await execute_prepared_agent_run(prepared, DURABLE_AGENT)
+        outcome = await execute_prepared_agent_run(
+            prepared,
+            DURABLE_AGENT,
+            rate_limit_capability_registered=True,
+        )
         durable_persist_agent_run_outcome(run_id, outcome)
     except Exception as exc:
         durable_fail_agent_run(run_id, str(exc))

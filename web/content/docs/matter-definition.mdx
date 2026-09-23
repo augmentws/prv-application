@@ -3,13 +3,14 @@ title: Matter Definition
 description: Draft reviewer guidance, reconcile it with matter metadata through an agent, and publish an approved revision.
 ---
 
-The **Matter definition** tab is the workspace for a matter's reviewer guidance. The same Markdown is intended to guide human reviewers and, later, document-coding agents. Matter administrators can save immutable draft revisions, work with the Matter Definition setup agent, approve or reject proposed edits, and explicitly publish a revision.
+The **Matter definition** tab is the workspace for a matter's reviewer guidance. On desktop, it fills the remaining browser height instead of extending the entire page: the definition editor and revision history scroll independently on the left, while a tabbed **Chat** and **Assessment** panel scrolls on the right. Smaller screens retain normal page scrolling. The same Markdown is intended to guide human reviewers and, later, document-coding agents. Matter administrators can save immutable draft revisions, work with the Matter Definition setup agent, approve or reject proposed edits, and explicitly publish a revision.
 
 ## Before you start
 
 - You must have `ADMIN` access to the matter.
 - At least one active, published Matter Definition agent must be available from the root tenant or the matter's tenant. The application bootstrap provisions the standard system agent idempotently.
 - `AGENT_DEFAULT_MODEL` and the selected provider credentials must be configured for the workflow worker.
+- Provider/model request and estimated-input-token limits must be configured conservatively for the quota assigned to that provider project. The application defaults target the Gemini developer free tier.
 - The DBOS workflow worker must be running for agent turns to execute.
 
 After upgrading an existing installation, rerun `pipenv run python -m app.bootstrap` once to provision the standard agent if it does not already exist.
@@ -24,7 +25,7 @@ DOCX upload and server-side source normalization are not available in this slice
 
 ## Work with the setup agent
 
-Select **Start agent conversation**, then ask the agent to review the saved guidance. Useful requests include:
+Select **Chat** in the right panel, select **New**, and ask the agent to review the saved guidance. The compact header holds the chat selector and chat actions; guidance for what to ask appears in the message composer. Useful requests include:
 
 - identify coding fields referenced by the guidance;
 - compare those fields with the matter's editable metadata definitions;
@@ -33,7 +34,7 @@ Select **Start agent conversation**, then ask the agent to review the saved guid
 - find unclear or conflicting reviewer instructions;
 - propose a clearer complete draft.
 
-The screen polls the durable conversation records while the agent works. A queued or running turn disables the composer until it completes or requests approval.
+The screen polls the durable conversation records while the agent works. A queued or running turn disables the composer until it completes or requests approval. Completion applies to an individual turn and run, not to the chat: the same chat remains open for later questions.
 
 ## Approve proposed changes
 
@@ -47,7 +48,7 @@ Review and save the current draft, then select **Publish current draft**. Publis
 
 ## Assess the guidance against the corpus
 
-Select **New assessment** under **Assess against corpus** to test one immutable definition revision against documents already in the matter. A matter search index and the assessment workflow worker must be available. Choose a maximum document count and, optionally, a random control sample. The default maximum is 500.
+Select **Assessment** in the right panel, then select **New** to test one immutable definition revision against documents already in the matter. The compact header contains the assessment selector and actions. A matter search index and the assessment workflow worker must be available. Choose a maximum document count and, optionally, a random control sample. The default maximum is 500.
 
 Requests above 1,000 documents show a capacity warning. A matter administrator can continue only after selecting the explicit **Continue with N documents** acknowledgment. This is currently a warning rather than a hard cost limit; future controls may add budgets and provider-price estimates.
 
@@ -58,11 +59,33 @@ The workflow:
 3. creates a cited structured analysis for each document with available text;
 4. synthesizes recurring fit findings, diagnostic batch topics, and consolidated clarification questions.
 
-The screen shows planning, retrieval, batch construction, summarization, and synthesis progress. After batch construction it also shows the selected-document count, estimated analysis tokens and estimator, generated query plan, workflow token/cache telemetry, and a link to the frozen batch.
+The screen shows planning, retrieval, batch construction, summarization, and synthesis progress. During document analysis, summarized, skipped, and failed counts are read from the live document-run records so they do not wait for the parent workflow to receive child results in selection order. After batch construction the screen also shows the selected-document count, estimated analysis tokens and estimator, generated query plan, workflow token/cache telemetry, and a link to the frozen batch. Failed skill attempts in the execution details are retry history and are not the same as the number of failed documents. Per-document skill-run details remain available while a run is active or needs diagnosis; successful completed assessments omit that large list.
+
+Document analyses share the configured provider/model rate-limit bucket. When a provider returns HTTP 429, the workflow pauses that bucket, follows the provider's requested retry delay when available, and retries automatically. A large assessment can therefore remain in progress while it is intentionally paced below the provider quota.
+
+If an assessment finishes with failed documents, select **Retry failed documents**. The retry preserves successful summaries and skipped documents, reprocesses only failed documents, and then replaces the earlier synthesis and diagnostic batch-topic taxonomy with results from the recovered coverage. A fully failed assessment instead shows **Retry assessment** and resumes from the failed workflow stage.
 
 Coverage appears before any substantive findings. The current versioned policy requires at least three successful document analyses and 50% successful coverage. Below that threshold the report says **insufficient coverage** and does not make fit conclusions. Skipped, failed, partial, and invalid results remain visible. A run that meets the threshold but has incomplete documents finishes with errors and keeps that limitation visible.
 
-Clarification questions are consolidated across documents rather than interrupting you document by document. You can answer or dismiss each question. Answers are retained with the assessment and do not automatically edit or publish the Matter Definition.
+Matter Definition refinement questions are consolidated across documents rather than interrupting you document by document. Synthesis evaluates inclusion and exclusion boundaries, uncovered subjects, conflicting treatment, temporal scope, geographic scope, and actor/entity scope. Each proposed question must cite representative documents and paragraphs. When no question is warranted, the result instead includes a structured explanation covering every evaluated dimension; an empty question list alone is not accepted.
+
+Near misses are normalized by Matter Definition issue and grouped across distinct documents. A recurring pattern in
+two or more documents must produce an evidence-backed user question, even when the apparent answer is to preserve the
+existing exclusion. This distinguishes “the model could classify these documents” from “the current boundary reflects
+the review team's intended policy.” A no-refinement result is allowed only when no recurring near-miss pattern or
+document-level clarification candidate remains unresolved.
+
+Select **Regenerate assessment** on a completed assessment and choose one of two paths:
+
+- **Reuse analyses** runs the current synthesis skill against the existing document-analysis artifacts. It does not
+  retrieve documents or recreate their summaries.
+- **Reanalyze documents** processes the same frozen batch with the currently published document-analysis and
+  synthesis skills. It creates a new workflow review run and new immutable summary artifacts while retaining the
+  previous run and artifacts for provenance. This option can use substantial model capacity.
+
+Neither option changes the frozen document membership or the Matter Definition revision. You can answer or dismiss
+each resulting question. Answers are retained with the assessment and do not automatically edit or publish the
+Matter Definition.
 
 ## Current limitations
 

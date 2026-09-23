@@ -2,6 +2,7 @@ import logging
 import uuid
 
 from dbos import DBOS, Queue, SetWorkflowID
+from sqlalchemy import select
 
 from app.assessment_execution import (
     analyze_document,
@@ -15,7 +16,7 @@ from app.assessment_execution import (
 )
 from app.config import get_settings
 from app.database import SessionLocal
-from app.models import MatterDefinitionAssessmentRun
+from app.models import MatterDefinitionAssessmentRun, ReviewBatchRun, ReviewBatchRunDocument
 from app.search.service import sync_review_batch_search
 
 logger = logging.getLogger(__name__)
@@ -94,6 +95,30 @@ def refresh(assessment_id: str) -> dict[str, int]:
         return refresh_progress(db, uuid.UUID(assessment_id))
 
 
+@DBOS.step(name="prepare_definition_assessment_reanalysis")
+def prepare_reanalysis(assessment_id: str) -> list[str]:
+    with SessionLocal() as db:
+        assessment = db.get(MatterDefinitionAssessmentRun, uuid.UUID(assessment_id))
+        if assessment is None or assessment.review_batch_run_id is None:
+            raise ValueError("Assessment reanalysis batch run is unavailable")
+        review_run = db.get(ReviewBatchRun, assessment.review_batch_run_id)
+        if review_run is None:
+            raise ValueError("Assessment reanalysis run is unavailable")
+        document_ids = list(
+            db.scalars(
+                select(ReviewBatchRunDocument.matter_document_id)
+                .where(ReviewBatchRunDocument.review_batch_run_id == review_run.id)
+                .order_by(ReviewBatchRunDocument.matter_document_id)
+            )
+        )
+        if not document_ids:
+            raise ValueError("Assessment reanalysis run has no documents")
+        assessment.status = "SUMMARIZING"
+        review_run.status = "RUNNING"
+        db.commit()
+        return [str(document_id) for document_id in document_ids]
+
+
 @DBOS.step(name="synthesize_definition_assessment", retries_allowed=True, max_attempts=3)
 def synthesize(assessment_id: str) -> dict:
     with SessionLocal() as db:
@@ -113,7 +138,7 @@ def fail(assessment_id: str, message: str) -> None:
 
 
 @DBOS.workflow(name="matter_definition_assessment_v1")
-def matter_definition_assessment(assessment_id: str) -> None:
+def matter_definition_assessment(assessment_id: str, attempt_id: str | None = None) -> None:
     logger.info("Starting Matter Definition assessment assessment_id=%s", assessment_id)
     try:
         plan(assessment_id)
@@ -121,7 +146,8 @@ def matter_definition_assessment(assessment_id: str) -> None:
         sync_batch_search(assessment_id)
         handles = []
         for index, document_id in enumerate(document_ids):
-            with SetWorkflowID(f"definition-assessment:{assessment_id}:document:{index}"):
+            retry_segment = f":retry:{attempt_id}" if attempt_id else ""
+            with SetWorkflowID(f"definition-assessment:{assessment_id}{retry_segment}:document:{index}"):
                 handles.append(DOCUMENT_QUEUE.enqueue(document_workflow, assessment_id, document_id))
         for handle in handles:
             handle.get_result()
@@ -132,5 +158,43 @@ def matter_definition_assessment(assessment_id: str) -> None:
         logger.info("Completed Matter Definition assessment assessment_id=%s", assessment_id)
     except Exception as exc:
         logger.exception("Matter Definition assessment failed assessment_id=%s", assessment_id)
+        fail(assessment_id, str(exc))
+        raise
+
+
+@DBOS.workflow(name="matter_definition_assessment_resynthesis_v1")
+def matter_definition_assessment_resynthesis(assessment_id: str) -> None:
+    logger.info("Regenerating Matter Definition synthesis assessment_id=%s", assessment_id)
+    try:
+        synthesize(assessment_id)
+        sync_batch_search(assessment_id)
+        complete(assessment_id)
+        logger.info("Regenerated Matter Definition synthesis assessment_id=%s", assessment_id)
+    except Exception as exc:
+        logger.exception("Matter Definition resynthesis failed assessment_id=%s", assessment_id)
+        fail(assessment_id, str(exc))
+        raise
+
+
+@DBOS.workflow(name="matter_definition_assessment_reanalysis_v1")
+def matter_definition_assessment_reanalysis(assessment_id: str, attempt_id: str) -> None:
+    logger.info("Regenerating Matter Definition document analyses assessment_id=%s", assessment_id)
+    try:
+        document_ids = prepare_reanalysis(assessment_id)
+        handles = []
+        for index, document_id in enumerate(document_ids):
+            with SetWorkflowID(
+                f"definition-assessment:{assessment_id}:analysis:{attempt_id}:document:{index}"
+            ):
+                handles.append(DOCUMENT_QUEUE.enqueue(document_workflow, assessment_id, document_id))
+        for handle in handles:
+            handle.get_result()
+            refresh(assessment_id)
+        synthesize(assessment_id)
+        sync_batch_search(assessment_id)
+        complete(assessment_id)
+        logger.info("Regenerated Matter Definition document analyses assessment_id=%s", assessment_id)
+    except Exception as exc:
+        logger.exception("Matter Definition document reanalysis failed assessment_id=%s", assessment_id)
         fail(assessment_id, str(exc))
         raise

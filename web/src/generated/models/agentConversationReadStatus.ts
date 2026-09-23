@@ -12,7 +12,6 @@ export type AgentConversationReadStatus = typeof AgentConversationReadStatus[key
 export const AgentConversationReadStatus = {
   ACTIVE: 'ACTIVE',
   WAITING_APPROVAL: 'WAITING_APPROVAL',
-  COMPLETED: 'COMPLETED',
   FAILED: 'FAILED',
   ARCHIVED: 'ARCHIVED',
 } as const;

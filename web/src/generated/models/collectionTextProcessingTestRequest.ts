@@ -10,9 +10,14 @@ import type { TextProcessingRule } from './textProcessingRule';
 export interface CollectionTextProcessingTestRequest {
   /**
      * @minItems 1
-     * @maxItems 10
+     * @maxItems 25
      */
   item_ids: string[];
   /** @maxItems 50 */
   rules?: TextProcessingRule[];
+  /**
+     * @maxItems 54
+     * @items.pattern ^[a-z][a-z0-9_-]{0,63}$
+     */
+  disabled_rule_ids?: string[];
 }

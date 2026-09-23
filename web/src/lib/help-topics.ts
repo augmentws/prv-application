@@ -9,6 +9,11 @@ export const helpTopics = {
     summary: "Learn how to browse, filter, and open imported evidence.",
     href: "/docs/collections",
   },
+  documentCleaner: {
+    title: "Document Cleaner help",
+    summary: "Learn how Remove line, Remove block, and Replace rules work, with regex examples and safety guidance.",
+    href: "/docs/document-cleaner",
+  },
   metadata: {
     title: "Metadata definitions help",
     summary: "Learn how matter fields, groups, visibility, and reusable configuration work.",

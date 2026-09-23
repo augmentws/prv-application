@@ -5,8 +5,11 @@
  * Phase-one Core API for authentication, hierarchical tenants, clients, matters, and matter metadata definitions.
  * OpenAPI spec version: 0.1.0
  */
+import type { AgentConversationCreateWorkflowType } from './agentConversationCreateWorkflowType';
 
 export interface AgentConversationCreate {
   agent_definition_id: string;
-  workflow_type?: 'MATTER_DEFINITION_SETUP';
+  title?: string | null;
+  workflow_type?: AgentConversationCreateWorkflowType;
+  review_batch_id?: string | null;
 }

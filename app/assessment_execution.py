@@ -1,6 +1,8 @@
 import asyncio
 import json
+import re
 import uuid
+from collections import Counter, defaultdict
 from datetime import datetime, timezone
 from typing import Any
 
@@ -34,8 +36,8 @@ from app.models import (
     BatchTopicAssignment,
     BatchTopicTaxonomy,
     Matter,
-    MatterDefinitionAssessmentQuestion,
     MatterDefinitionAssessmentQuery,
+    MatterDefinitionAssessmentQuestion,
     MatterDefinitionAssessmentRun,
     MatterDefinitionRevision,
     MatterDocument,
@@ -64,6 +66,14 @@ SYNTHESIS_COVERAGE_POLICY = {
     "version": "assessment_synthesis_coverage_v1",
     "minimum_successful_documents": 3,
     "minimum_success_ratio": 0.5,
+}
+REFINEMENT_DIMENSIONS = {
+    "INCLUSION_EXCLUSION_BOUNDARIES",
+    "UNCOVERED_SUBJECTS",
+    "CONFLICTING_TREATMENT",
+    "TEMPORAL_SCOPE",
+    "GEOGRAPHIC_SCOPE",
+    "ACTOR_ENTITY_SCOPE",
 }
 
 
@@ -141,6 +151,16 @@ def _normalized_query(item: dict[str, Any], *, ordinal: int) -> tuple[dict[str, 
     return normalized, request
 
 
+def _validate_retrieval_plan(output: dict[str, Any]) -> None:
+    raw_queries = output.get("queries")
+    if not isinstance(raw_queries, list) or not raw_queries:
+        raise AssessmentError("Retrieval planner must return at least one query")
+    for index, item in enumerate(raw_queries, start=1):
+        if not isinstance(item, dict):
+            raise AssessmentError(f"Retrieval query {index} must be an object")
+        _normalized_query(item, ordinal=index)
+
+
 def plan_retrieval(db: Session, assessment_id: uuid.UUID, *, model: Any | None = None) -> dict[str, Any]:
     assessment, workflow, revision, matter = _records(db, assessment_id)
     existing = assessment.configuration_snapshot.get("retrieval_plan")
@@ -163,13 +183,17 @@ def plan_retrieval(db: Session, assessment_id: uuid.UUID, *, model: Any | None =
             scope_type="MATTER_DEFINITION_REVISION",
             scope_id=revision.id,
             stable_context={"matter_definition": revision.content_markdown},
-            dynamic_input={"matter_id": str(matter.id), "requested_document_count": assessment.requested_document_count},
+            dynamic_input={
+                "matter_id": str(matter.id),
+                "requested_document_count": assessment.requested_document_count,
+            },
             cache_identity={
                 "tenant_id": str(workflow.tenant_id),
                 "matter_id": str(matter.id),
                 "revision_hash": assessment.definition_content_hash,
                 "skill_version_id": str(version.id),
             },
+            output_validators=(_validate_retrieval_plan,),
             model=model,
         )
     )
@@ -330,7 +354,9 @@ def retrieve_and_materialize(db: Session, assessment_id: uuid.UUID, settings: Se
     version = _skill_version(db, assessment, "document_analysis")
     estimate = estimate_analysis_tokens(
         analysis_inputs,
-        stable_prefix=revision.content_markdown + version.instructions + json.dumps(version.output_schema, sort_keys=True),
+        stable_prefix=revision.content_markdown
+        + version.instructions
+        + json.dumps(version.output_schema, sort_keys=True),
         model=version.model_key,
         request_count=request_count,
         reduce_input_overhead_characters=reduce_input_overhead_characters,
@@ -633,20 +659,35 @@ def _load_document_analyses(
     assessment: MatterDefinitionAssessmentRun,
     matter: Matter,
 ) -> tuple[list[dict[str, Any]], int, int]:
-    rows = db.execute(
-        select(SkillRun.scope_id, SkillRun.output_artifact_id)
-        .where(
-            SkillRun.workflow_run_id == assessment.workflow_run_id,
-            SkillRun.scope_type == "MATTER_DOCUMENT",
-            SkillRun.status == "COMPLETED",
-            SkillRun.output_artifact_id.is_not(None),
+    completed_document_ids: set[uuid.UUID] | None = None
+    if assessment.review_batch_run_id is not None:
+        completed_document_ids = set(
+            db.scalars(
+                select(ReviewBatchRunDocument.matter_document_id).where(
+                    ReviewBatchRunDocument.review_batch_run_id == assessment.review_batch_run_id,
+                    ReviewBatchRunDocument.status == "COMPLETED",
+                )
+            )
         )
-        .order_by(SkillRun.created_at)
-    ).all()
+        if not completed_document_ids:
+            return [], 0, 0
+    statement = select(SkillRun.scope_id, SkillRun.output_artifact_id).where(
+        SkillRun.workflow_run_id == assessment.workflow_run_id,
+        SkillRun.scope_type == "MATTER_DOCUMENT",
+        SkillRun.status == "COMPLETED",
+        SkillRun.output_artifact_id.is_not(None),
+    )
+    if completed_document_ids is not None:
+        statement = statement.where(SkillRun.scope_id.in_(completed_document_ids))
+    rows = db.execute(statement.order_by(SkillRun.created_at.desc(), SkillRun.id.desc())).all()
     analyses: list[dict[str, Any]] = []
+    loaded_document_ids: set[uuid.UUID] = set()
     invalid = 0
     partial = 0
     for document_id, artifact_id in rows:
+        if document_id is None or document_id in loaded_document_ids:
+            continue
+        loaded_document_ids.add(document_id)
         try:
             payload = json.loads(
                 read_artifact_bytes(
@@ -658,7 +699,7 @@ def _load_document_analyses(
             )
             result = payload["result"]
             if not isinstance(result, dict):
-                raise ValueError("Analysis result is not an object")
+                raise TypeError("Analysis result is not an object")
             coverage = result.get("coverage") or {}
             if coverage.get("status") == "PARTIAL":
                 partial += 1
@@ -698,6 +739,219 @@ def _coverage_envelope(
         "successful_document_ratio": ratio,
         "status": "SUFFICIENT" if sufficient else "INSUFFICIENT",
     }
+
+
+def _synthesis_context(
+    analyses: list[dict[str, Any]],
+    coverage: dict[str, Any],
+) -> tuple[dict[str, Any], dict[str, Any]]:
+    determination_counts: Counter[str] = Counter()
+    match_type_counts: Counter[str] = Counter()
+    criterion_counts: dict[str, Counter[str]] = defaultdict(Counter)
+    near_misses: list[dict[str, Any]] = []
+    document_candidates: list[dict[str, Any]] = []
+    limitation_examples: list[dict[str, Any]] = []
+    limitation_count = 0
+
+    for row in analyses:
+        document_id = str(row["matter_document_id"])
+        analysis = row["analysis"]
+        determination_counts[str(analysis.get("determination") or "UNKNOWN")] += 1
+        for match in analysis.get("criterion_matches") or []:
+            if not isinstance(match, dict):
+                continue
+            match_type = str(match.get("match_type") or "UNKNOWN")
+            criterion_key = str(match.get("criterion_key") or "UNSPECIFIED")
+            match_type_counts[match_type] += 1
+            criterion_counts[criterion_key][match_type] += 1
+            if match_type == "NEAR_MISS":
+                issue_match = re.search(r"\bissue[\s_-]*(\d+)(?!\d)", criterion_key, flags=re.IGNORECASE)
+                normalized_key = (
+                    f"ISSUE_{int(issue_match.group(1))}"
+                    if issue_match
+                    else re.sub(r"[^A-Z0-9]+", "_", criterion_key.upper()).strip("_") or "UNSPECIFIED"
+                )
+                near_misses.append(
+                    {
+                        "matter_document_id": document_id,
+                        "criterion_key": criterion_key,
+                        "normalized_criterion_key": normalized_key,
+                        "label": str(match.get("label") or criterion_key),
+                        "reasoning": str(match.get("reasoning") or ""),
+                        "paragraph_ids": list(match.get("citation_ids") or []),
+                    }
+                )
+        for candidate in analysis.get("clarification_requests") or []:
+            if isinstance(candidate, dict):
+                document_candidates.append({"matter_document_id": document_id, **candidate})
+        limitations = [str(value) for value in analysis.get("limitations") or [] if str(value).strip()]
+        limitation_count += len(limitations)
+        if limitations and len(limitation_examples) < 50:
+            limitation_examples.append({"matter_document_id": document_id, "limitations": limitations})
+
+    statistics = {
+        "selected_document_count": int(coverage.get("selected_document_count", 0)),
+        "analyzed_document_count": len(analyses),
+        "skipped_document_count": int(coverage.get("skipped_document_count", 0)),
+        "failed_document_count": int(coverage.get("failed_document_count", 0)),
+        "partial_coverage_document_count": int(coverage.get("partial_coverage_document_count", 0)),
+        "invalid_result_count": int(coverage.get("invalid_result_count", 0)),
+        "determination_counts": dict(sorted(determination_counts.items())),
+        "criterion_match_type_counts": dict(sorted(match_type_counts.items())),
+        "criterion_match_counts": {
+            key: dict(sorted(counts.items())) for key, counts in sorted(criterion_counts.items())
+        },
+    }
+    grouped_near_misses: dict[str, list[dict[str, Any]]] = defaultdict(list)
+    for near_miss in near_misses:
+        grouped_near_misses[near_miss["normalized_criterion_key"]].append(near_miss)
+    recurring_patterns = []
+    for normalized_key, occurrences in sorted(grouped_near_misses.items()):
+        document_ids = {item["matter_document_id"] for item in occurrences}
+        if len(document_ids) < 2:
+            continue
+        recurring_patterns.append(
+            {
+                "signal_id": f"NEAR_MISS_{normalized_key}",
+                "criterion_key": normalized_key,
+                "labels": sorted({item["label"] for item in occurrences}),
+                "occurrence_count": len(occurrences),
+                "document_count": len(document_ids),
+                "representative_evidence": occurrences[:8],
+            }
+        )
+    signals = {
+        "near_miss_count": len(near_misses),
+        "near_misses": near_misses,
+        "recurring_near_miss_pattern_count": len(recurring_patterns),
+        "recurring_near_miss_patterns": recurring_patterns,
+        "document_clarification_candidate_count": len(document_candidates),
+        "document_clarification_candidates": document_candidates,
+        "document_limitation_count": limitation_count,
+        "document_limitation_examples": limitation_examples,
+        "document_limitation_examples_truncated": limitation_count > len(limitation_examples),
+    }
+    return statistics, signals
+
+
+def _analysis_citation_ids(value: Any) -> set[str]:
+    if isinstance(value, dict):
+        result: set[str] = set()
+        for key, child in value.items():
+            if key in {"citation_ids", "paragraph_ids", "analyzed_paragraph_ids"} and isinstance(child, list):
+                result.update(str(item) for item in child)
+            else:
+                result.update(_analysis_citation_ids(child))
+        return result
+    if isinstance(value, list):
+        result: set[str] = set()
+        for child in value:
+            result.update(_analysis_citation_ids(child))
+        return result
+    return set()
+
+
+def _validate_synthesis_refinement(
+    result: dict[str, Any],
+    analyses: list[dict[str, Any]],
+    coverage: dict[str, Any],
+    refinement_signals: dict[str, Any] | None = None,
+) -> None:
+    refinement = result.get("refinement_assessment")
+    if not isinstance(refinement, dict):
+        raise AssessmentError("refinement_assessment is required")
+    outcome = refinement.get("outcome")
+    questions = result.get("clarification_questions")
+    if not isinstance(questions, list):
+        raise AssessmentError("clarification_questions must be an array")
+    dimensions = refinement.get("evaluated_dimensions")
+    if not isinstance(dimensions, list):
+        raise AssessmentError("refinement_assessment.evaluated_dimensions must be an array")
+    dimension_names = [item.get("dimension") for item in dimensions if isinstance(item, dict)]
+    if set(dimension_names) != REFINEMENT_DIMENSIONS or len(dimension_names) != len(REFINEMENT_DIMENSIONS):
+        raise ValueError("refinement assessment must evaluate each required dimension exactly once")
+    question_needed = any(
+        isinstance(item, dict) and item.get("conclusion") == "QUESTION_NEEDED" for item in dimensions
+    )
+    sufficient = coverage.get("status") == "SUFFICIENT"
+    if not sufficient and outcome != "INSUFFICIENT_EVIDENCE":
+        raise ValueError("insufficient coverage requires INSUFFICIENT_EVIDENCE")
+    if sufficient and outcome == "INSUFFICIENT_EVIDENCE":
+        raise ValueError("sufficient coverage cannot return INSUFFICIENT_EVIDENCE")
+    if outcome == "QUESTIONS_PROPOSED" and not questions:
+        raise ValueError("QUESTIONS_PROPOSED requires at least one clarification question")
+    if outcome == "NO_REFINEMENT_WARRANTED" and (questions or question_needed):
+        raise ValueError("NO_REFINEMENT_WARRANTED requires no questions and no QUESTION_NEEDED dimensions")
+    if questions and outcome != "QUESTIONS_PROPOSED":
+        raise ValueError("clarification questions require QUESTIONS_PROPOSED")
+
+    signals = refinement_signals or {}
+    recurring_patterns = signals.get("recurring_near_miss_patterns") or []
+    document_candidates = signals.get("document_clarification_candidates") or []
+    if (recurring_patterns or document_candidates) and outcome != "QUESTIONS_PROPOSED":
+        raise ValueError(
+            "recurring near-miss patterns and document clarification candidates require clarification questions"
+        )
+    if len(questions) < len(recurring_patterns):
+        raise ValueError(
+            "clarification questions must include at least one question for each recurring near-miss pattern"
+        )
+
+    allowed = {
+        str(row["matter_document_id"]): _analysis_citation_ids(row["analysis"])
+        for row in analyses
+    }
+    evidence_groups = [item.get("evidence") for item in questions if isinstance(item, dict)]
+    evidence_groups.extend(
+        item.get("evidence")
+        for item in dimensions
+        if isinstance(item, dict) and item.get("conclusion") == "QUESTION_NEEDED"
+    )
+    for evidence in evidence_groups:
+        if not isinstance(evidence, list) or not evidence:
+            raise ValueError("questions and QUESTION_NEEDED dimensions require evidence")
+        for reference in evidence:
+            if not isinstance(reference, dict):
+                raise AssessmentError("refinement evidence must be an object")
+            document_id = str(reference.get("matter_document_id") or "")
+            paragraph_ids = reference.get("paragraph_ids")
+            if document_id not in allowed:
+                raise ValueError(f"refinement evidence references unknown document {document_id}")
+            if not isinstance(paragraph_ids, list) or not paragraph_ids:
+                raise ValueError("refinement evidence requires paragraph_ids")
+            unknown = sorted({str(item) for item in paragraph_ids} - allowed[document_id])
+            if unknown:
+                raise ValueError(
+                    f"refinement evidence for document {document_id} contains unknown paragraph IDs: "
+                    + ", ".join(unknown)
+                )
+
+    for pattern in recurring_patterns:
+        if not isinstance(pattern, dict):
+            continue
+        signal_id = str(pattern.get("signal_id") or "recurring near-miss pattern")
+        pattern_evidence = pattern.get("representative_evidence") or []
+        allowed_pattern_citations = {
+            (str(item.get("matter_document_id") or ""), str(paragraph_id))
+            for item in pattern_evidence
+            if isinstance(item, dict)
+            for paragraph_id in item.get("paragraph_ids") or []
+        }
+        covered = any(
+            isinstance(question, dict)
+            and any(
+                isinstance(reference, dict)
+                and any(
+                    (str(reference.get("matter_document_id") or ""), str(paragraph_id))
+                    in allowed_pattern_citations
+                    for paragraph_id in reference.get("paragraph_ids") or []
+                )
+                for reference in question.get("evidence") or []
+            )
+            for question in questions
+        )
+        if not covered:
+            raise ValueError(f"clarification questions must address recurring signal {signal_id}")
 
 
 def _topic_key(value: Any, ordinal: int) -> str:
@@ -740,6 +994,12 @@ def _persist_synthesis(
 
     if assessment.review_batch_id is None:
         return
+    prior_for_assessment = db.scalar(
+        select(BatchTopicTaxonomy).where(BatchTopicTaxonomy.source_assessment_run_id == assessment.id)
+    )
+    if prior_for_assessment is not None:
+        db.delete(prior_for_assessment)
+        db.flush()
     existing = list(
         db.scalars(
             select(BatchTopicTaxonomy)
@@ -827,6 +1087,7 @@ def synthesize_assessment(
         partial=partial,
         invalid=invalid,
     )
+    corpus_statistics, refinement_signals = _synthesis_context(analyses, coverage)
     assessment.coverage_snapshot = coverage
     assessment.status = "SYNTHESIZING"
     step = _step(db, workflow, ordinal=4, role_key="assessment_synthesis")
@@ -835,10 +1096,24 @@ def synthesize_assessment(
     if coverage["status"] == "INSUFFICIENT":
         result = {
             "coverage": coverage,
+            "corpus_statistics": corpus_statistics,
             "status": "INSUFFICIENT_COVERAGE",
             "narrative": "The assessment did not meet the minimum coverage required for substantive fit conclusions.",
             "findings": [],
             "topics": [],
+            "refinement_assessment": {
+                "outcome": "INSUFFICIENT_EVIDENCE",
+                "rationale": "Coverage did not meet the minimum required to evaluate Matter Definition refinements.",
+                "evaluated_dimensions": [
+                    {
+                        "dimension": dimension,
+                        "conclusion": "NOT_EVALUATED",
+                        "rationale": "This dimension was not evaluated because corpus coverage was insufficient.",
+                        "evidence": [],
+                    }
+                    for dimension in sorted(REFINEMENT_DIMENSIONS)
+                ],
+            },
             "clarification_questions": [],
         }
     else:
@@ -852,7 +1127,12 @@ def synthesize_assessment(
                 scope_type="MATTER_DEFINITION_ASSESSMENT",
                 scope_id=assessment.id,
                 stable_context={"matter_definition": revision.content_markdown},
-                dynamic_input={"coverage": coverage, "document_analyses": analyses},
+                dynamic_input={
+                    "coverage": coverage,
+                    "corpus_statistics": corpus_statistics,
+                    "refinement_signals": refinement_signals,
+                    "document_analyses": analyses,
+                },
                 cache_identity={
                     "tenant_id": str(workflow.tenant_id),
                     "matter_id": str(matter.id),
@@ -860,10 +1140,23 @@ def synthesize_assessment(
                     "skill_version_id": str(version.id),
                     "assessment_id": str(assessment.id),
                 },
+                output_validators=(
+                    lambda output: _validate_synthesis_refinement(
+                        output,
+                        analyses,
+                        coverage,
+                        refinement_signals,
+                    ),
+                ),
                 model=model,
             )
         )
-        result = {**result, "coverage": coverage, "status": "COMPLETED"}
+        result = {
+            **result,
+            "coverage": coverage,
+            "corpus_statistics": corpus_statistics,
+            "status": "COMPLETED",
+        }
     _persist_synthesis(db, assessment, result)
     assessment.synthesis_result = result
     step.status = "COMPLETED"
@@ -927,4 +1220,26 @@ def fail_assessment(db: Session, assessment_id: uuid.UUID, message: str) -> None
         workflow.status = "FAILED"
         workflow.error_message = message[:4000]
         workflow.completed_at = assessment.completed_at
+        steps = db.scalars(
+            select(WorkflowStepRun).where(
+                WorkflowStepRun.workflow_run_id == workflow.id,
+                WorkflowStepRun.status.in_(("QUEUED", "RUNNING")),
+            )
+        )
+        for step in steps:
+            latest_failure = db.scalar(
+                select(SkillRun)
+                .where(
+                    SkillRun.workflow_step_run_id == step.id,
+                    SkillRun.status == "FAILED",
+                )
+                .order_by(SkillRun.created_at.desc())
+                .limit(1)
+            )
+            step.status = "FAILED"
+            step.failed_count = max(1, step.failed_count)
+            step.error_message = (
+                latest_failure.error_message if latest_failure and latest_failure.error_message else message
+            )[:4000]
+            step.completed_at = assessment.completed_at
     db.commit()

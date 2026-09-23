@@ -26,10 +26,11 @@ from app.schemas import (
 from app.search.client import OpenSearchClient, OpenSearchError
 from app.search.operations import create_search_operation
 from app.search.query import execute_batch_topic_facets, execute_date_histogram, execute_facet_values, execute_search
-from app.workflows.dispatcher import enqueue_search_projection
+from app.workflows.dispatcher import enqueue_search_projection, get_dbos_client
 
 router = APIRouter(prefix="/v1/matters/{matter_id}", tags=["matter search"])
 logger = logging.getLogger(__name__)
+_DBOS_ERROR_STATUSES = {"ERROR", "MAX_RECOVERY_ATTEMPTS_EXCEEDED"}
 
 
 def _matter(db: Session, matter_id: uuid.UUID, principal: Principal) -> Matter:
@@ -39,6 +40,56 @@ def _matter(db: Session, matter_id: uuid.UUID, principal: Principal) -> Matter:
     if not can_admin_matter(db, principal, matter):
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Matter ADMIN required")
     return matter
+
+
+def _durable_error_workflow_statuses(settings: Settings, workflow_ids: list[str]) -> dict[str, str]:
+    if not settings.dbos_enabled or not workflow_ids:
+        return {}
+    workflows = get_dbos_client().list_workflows(
+        workflow_ids=workflow_ids,
+        status=list(_DBOS_ERROR_STATUSES),
+        load_input=False,
+        load_output=False,
+    )
+    return {workflow.workflow_id: workflow.status for workflow in workflows}
+
+
+def _retryable_document_upserts(
+    db: Session,
+    matter_id: uuid.UUID,
+    settings: Settings,
+    *,
+    for_update: bool = False,
+) -> list[tuple[SearchProjectionOperation, str | None]]:
+    statement = (
+        select(SearchProjectionOperation)
+        .where(
+            SearchProjectionOperation.matter_id == matter_id,
+            SearchProjectionOperation.kind == "DOCUMENT_UPSERT",
+            SearchProjectionOperation.status.in_(["FAILED", "RUNNING"]),
+        )
+        .order_by(SearchProjectionOperation.created_at, SearchProjectionOperation.id)
+    )
+    if for_update:
+        statement = statement.with_for_update()
+    candidates = list(db.scalars(statement))
+    running = [operation for operation in candidates if operation.status == "RUNNING"]
+    try:
+        durable_errors = _durable_error_workflow_statuses(
+            settings,
+            [operation.workflow_id for operation in running],
+        )
+    except Exception as exc:
+        logger.exception("Could not read durable workflow statuses for matter_id=%s", matter_id)
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="Durable workflow status is temporarily unavailable",
+        ) from exc
+    return [
+        (operation, durable_errors.get(operation.workflow_id))
+        for operation in candidates
+        if operation.status == "FAILED" or operation.workflow_id in durable_errors
+    ]
 
 
 @router.post("/search", response_model=MatterSearchResponse)
@@ -106,7 +157,9 @@ def execute_matter_search(
             required_filters=required_filters,
         )
     except OpenSearchError as exc:
-        raise HTTPException(status_code=status.HTTP_503_SERVICE_UNAVAILABLE, detail="Search is temporarily unavailable") from exc
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE, detail="Search is temporarily unavailable"
+        ) from exc
     finally:
         client.close()
 
@@ -204,7 +257,9 @@ def execute_matter_facet_values(
             required_filters=required_filters,
         )
     except OpenSearchError as exc:
-        raise HTTPException(status_code=status.HTTP_503_SERVICE_UNAVAILABLE, detail="Search is temporarily unavailable") from exc
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE, detail="Search is temporarily unavailable"
+        ) from exc
     finally:
         client.close()
 
@@ -311,11 +366,7 @@ def search_date_histogram(
         )
     )
     definition = next(
-        (
-            item
-            for item in definitions
-            if item.key == field and item.searchable and item.type in {"DATE", "DATETIME"}
-        ),
+        (item for item in definitions if item.key == field and item.searchable and item.type in {"DATE", "DATETIME"}),
         None,
     )
     if definition is None:
@@ -349,7 +400,9 @@ def search_date_histogram(
             query_vector=query_vector,
         )
     except OpenSearchError as exc:
-        raise HTTPException(status_code=status.HTTP_503_SERVICE_UNAVAILABLE, detail="Search is temporarily unavailable") from exc
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE, detail="Search is temporarily unavailable"
+        ) from exc
     finally:
         client.close()
 
@@ -388,6 +441,28 @@ def list_search_operations(
     )
 
 
+@router.get("/search-operations/retryable", response_model=SearchProjectionRetryResponse)
+def summarize_retryable_search_operations(
+    matter_id: uuid.UUID,
+    principal: Principal = Depends(get_principal),
+    db: Session = Depends(get_db),
+    settings: Settings = Depends(get_settings),
+) -> SearchProjectionRetryResponse:
+    matter = _matter(db, matter_id, principal)
+    if not settings.search_enabled:
+        raise HTTPException(status_code=status.HTTP_503_SERVICE_UNAVAILABLE, detail="Search is disabled")
+    operations = _retryable_document_upserts(db, matter.id, settings)
+    document_count = sum(
+        len(document_ids)
+        for operation, _durable_workflow_status in operations
+        if isinstance((document_ids := operation.payload.get("document_ids")), list)
+    )
+    return SearchProjectionRetryResponse(
+        requeued_operation_count=len(operations),
+        requeued_document_count=document_count,
+    )
+
+
 @router.post(
     "/search-operations/retry-failed",
     response_model=SearchProjectionRetryResponse,
@@ -403,21 +478,10 @@ def retry_failed_search_operations(
     if not settings.search_enabled:
         raise HTTPException(status_code=status.HTTP_503_SERVICE_UNAVAILABLE, detail="Search is disabled")
 
-    operations = list(
-        db.scalars(
-            select(SearchProjectionOperation)
-            .where(
-                SearchProjectionOperation.matter_id == matter.id,
-                SearchProjectionOperation.kind == "DOCUMENT_UPSERT",
-                SearchProjectionOperation.status == "FAILED",
-            )
-            .order_by(SearchProjectionOperation.created_at, SearchProjectionOperation.id)
-            .with_for_update()
-        )
-    )
+    operations = _retryable_document_upserts(db, matter.id, settings, for_update=True)
     retried_at = datetime.now(timezone.utc)
     document_count = 0
-    for operation in operations:
+    for operation, durable_workflow_status in operations:
         document_ids = operation.payload.get("document_ids")
         if isinstance(document_ids, list):
             document_count += len(document_ids)
@@ -432,6 +496,7 @@ def retry_failed_search_operations(
                     "workflow_id": operation.workflow_id,
                     "attempt_count": operation.attempt_count,
                     "error_message": operation.error_message,
+                    "durable_workflow_status": durable_workflow_status,
                     "retried_at": retried_at.isoformat(),
                     "retried_by_user_id": str(principal.user.id),
                 },
@@ -474,7 +539,9 @@ def confirm_search_reindex(
     if operation is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Search operation not found")
     if operation.status != "AWAITING_USER":
-        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="Search operation is not awaiting confirmation")
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT, detail="Search operation is not awaiting confirmation"
+        )
     schema_change = operation.payload.get("schema_change")
     if not isinstance(schema_change, dict) or schema_change.get("action") != "REINDEX_REQUIRED":
         raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="Search operation has no reindex plan")
@@ -499,7 +566,9 @@ def confirm_search_reindex(
     return operation
 
 
-@router.post("/search-indexes/rebuild", response_model=SearchProjectionOperationRead, status_code=status.HTTP_202_ACCEPTED)
+@router.post(
+    "/search-indexes/rebuild", response_model=SearchProjectionOperationRead, status_code=status.HTTP_202_ACCEPTED
+)
 def rebuild_search_index(
     matter_id: uuid.UUID,
     principal: Principal = Depends(get_principal),

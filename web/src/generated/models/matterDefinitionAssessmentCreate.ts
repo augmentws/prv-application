@@ -7,6 +7,7 @@
  */
 
 export interface MatterDefinitionAssessmentCreate {
+  name?: string | null;
   revision?: number | null;
   /**
      * @minimum 1

@@ -1,15 +1,18 @@
 import asyncio
+from typing import Any
 
 import pytest
-from pydantic_ai import CachePoint
+from pydantic_ai import Agent, CachePoint
 from pydantic_ai.models.test import TestModel
 
 from app.model_execution import (
     InstructionLayer,
+    ModelExecutionError,
     StructuredModelRequest,
     StructuredOutputValidationError,
     assemble_structured_prompt,
     execute_structured_model,
+    run_model,
     validate_structured_output,
 )
 
@@ -72,3 +75,48 @@ def test_structured_executor_returns_invocation_telemetry() -> None:
     assert len(envelope.invocations) == 1
     assert envelope.invocations[0].model_configuration_hash == assembly.model_configuration_hash
     assert envelope.invocations[0].input_tokens == envelope.input_tokens
+
+
+def test_structured_executor_reports_output_validation_failures() -> None:
+    request = request_for("doc-1")
+    request = StructuredModelRequest(
+        **{
+            **request.__dict__,
+            "limits": {"max_requests": 2, "max_output_retries": 1},
+        }
+    )
+
+    with pytest.raises(ModelExecutionError, match="Output validation failures:.*required property"):
+        asyncio.run(execute_structured_model(request, model=TestModel(custom_output_args={})))
+
+
+def test_run_model_omits_runtime_hooks_when_rate_limit_capability_is_registered() -> None:
+    class CapturingAgent:
+        def __init__(self) -> None:
+            self.delegate = Agent(
+                TestModel(custom_output_text="ok"),
+                output_type=str,
+                defer_model_check=True,
+            )
+            self.runtime_capabilities: Any = "not-called"
+
+        async def run(self, *args: Any, **kwargs: Any):
+            self.runtime_capabilities = kwargs.get("capabilities", "missing")
+            return await self.delegate.run(*args, **kwargs)
+
+    agent = CapturingAgent()
+    envelope = asyncio.run(
+        run_model(
+            agent,  # type: ignore[arg-type]
+            prompt="hello",
+            instructions=["Respond briefly."],
+            model=TestModel(custom_output_text="ok"),
+            model_settings={},
+            limits={"max_requests": 2},
+            model_configuration_hash="test-hash",
+            rate_limit_capability_registered=True,
+        )
+    )
+
+    assert envelope.output == "ok"
+    assert agent.runtime_capabilities is None

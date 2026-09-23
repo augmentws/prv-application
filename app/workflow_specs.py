@@ -35,14 +35,14 @@ class WorkflowSpec:
 
 MATTER_DEFINITION_ASSESSMENT_SPEC = WorkflowSpec(
     key="matter_definition_assessment_v1",
-    code_version="2",
+    code_version="7",
     name="Matter Definition assessment",
     description="Builds a diagnostic batch, analyzes its documents, and synthesizes clarification questions.",
     roles=(
         WorkflowRoleSpec(
             key="retrieval_planner",
             input_schema_key="matter_definition_retrieval_plan_input_v1",
-            output_schema_key="matter_definition_retrieval_plan_output_v1",
+            output_schema_key="matter_definition_retrieval_plan_output_v3",
             allowed_capabilities=frozenset({"structured_output", "long_context"}),
             allowed_tool_keys=frozenset(),
         ),
@@ -55,8 +55,8 @@ MATTER_DEFINITION_ASSESSMENT_SPEC = WorkflowSpec(
         ),
         WorkflowRoleSpec(
             key="assessment_synthesis",
-            input_schema_key="matter_definition_assessment_synthesis_input_v1",
-            output_schema_key="matter_definition_assessment_synthesis_output_v2",
+            input_schema_key="matter_definition_assessment_synthesis_input_v2",
+            output_schema_key="matter_definition_assessment_synthesis_output_v3",
             allowed_capabilities=frozenset({"structured_output", "long_context"}),
             allowed_tool_keys=frozenset(),
         ),
@@ -100,9 +100,7 @@ def validate_skill_version_for_role(
         raise ValueError(f"Unknown skill capabilities: {', '.join(sorted(unknown_capabilities))}")
     excess_capabilities = set(version.required_capabilities) - role.allowed_capabilities
     if excess_capabilities:
-        raise ValueError(
-            f"Role {role.key} does not allow capabilities: {', '.join(sorted(excess_capabilities))}"
-        )
+        raise ValueError(f"Role {role.key} does not allow capabilities: {', '.join(sorted(excess_capabilities))}")
     excess_tools = set(version.required_tools) - role.allowed_tool_keys
     if excess_tools:
         raise ValueError(f"Role {role.key} does not allow tools: {', '.join(sorted(excess_tools))}")

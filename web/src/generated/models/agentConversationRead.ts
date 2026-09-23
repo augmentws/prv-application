@@ -6,15 +6,18 @@
  * OpenAPI spec version: 0.1.0
  */
 import type { AgentConversationReadStatus } from './agentConversationReadStatus';
+import type { AgentConversationReadWorkflowType } from './agentConversationReadWorkflowType';
 
 export interface AgentConversationRead {
   id: string;
   tenant_id: string;
   client_id: string;
   matter_id: string;
+  review_batch_id: string | null;
   agent_definition_id: string;
   agent_definition_version_id: string;
-  workflow_type: 'MATTER_DEFINITION_SETUP';
+  title: string | null;
+  workflow_type: AgentConversationReadWorkflowType;
   status: AgentConversationReadStatus;
   initiated_by_user_id: string;
   created_at: string;
