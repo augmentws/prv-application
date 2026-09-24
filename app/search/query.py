@@ -229,7 +229,8 @@ def compile_search_request(
         semantic_query = _semantic_query(
             filters,
             query_vector or [],
-            candidate_count=min(10_000, max(SEMANTIC_CANDIDATE_FLOOR, request.offset + request.size)),
+            candidate_count=request.candidate_limit
+            or min(10_000, max(SEMANTIC_CANDIDATE_FLOOR, request.offset + request.size)),
             minimum_similarity=request.minimum_similarity,
         )
         if request.search_mode == "SEMANTIC":

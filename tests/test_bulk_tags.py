@@ -1,5 +1,6 @@
 import uuid
 from datetime import datetime, timezone
+from types import SimpleNamespace
 
 from conftest import TestingSessionLocal
 from fastapi.testclient import TestClient
@@ -213,6 +214,185 @@ def test_bulk_tag_rejects_non_reviewable_and_semantic_scopes(
     )
     assert response.status_code == 422
     assert "active, reviewable asserted field" in response.json()["error"]["message"]
+
+
+def test_semantic_bulk_tag_requires_and_freezes_candidate_limit(
+    client: TestClient,
+    root_token: str,
+    root_admin: User,
+    db: Session,
+) -> None:
+    account = Client(tenant_id=root_admin.tenant_id, name="Semantic Tag Client", status="ACTIVE")
+    db.add(account)
+    db.flush()
+    matter = Matter(client_id=account.id, name="Semantic Tag Matter", status="ACTIVE")
+    db.add(matter)
+    db.flush()
+    definition = MetadataDefinition(
+        matter_id=matter.id,
+        key="responsiveness",
+        display_name="Responsiveness",
+        type="ENUM",
+        cardinality="SINGLE",
+        allowed_values=[{"key": "responsive", "label": "Responsive", "active": True}],
+        value_source="ASSERTED",
+        assertion_policy="IMMEDIATE",
+        resolution_policy="LATEST_VALID",
+        searchable=True,
+        facetable=True,
+        reviewable=True,
+        ai_assignable=True,
+        status="ACTIVE",
+    )
+    db.add(definition)
+    generation = SearchIndexGeneration(
+        matter_id=matter.id,
+        generation=1,
+        index_name=f"matter-{matter.id}-000001",
+        alias_name=f"matter-{matter.id}",
+        schema_hash="d" * 64,
+        status="ACTIVE",
+        schema_snapshot={},
+    )
+    db.add(generation)
+    db.commit()
+
+    missing_limit = client.post(
+        f"/v1/matters/{matter.id}/bulk-tag-jobs",
+        headers=auth(root_token),
+        json={
+            "search": {"query": "concept", "search_mode": "SEMANTIC"},
+            "metadata_definition_id": str(definition.id),
+            "value": "responsive",
+        },
+    )
+    assert missing_limit.status_code == 422
+
+    created = client.post(
+        f"/v1/matters/{matter.id}/bulk-tag-jobs",
+        headers=auth(root_token),
+        json={
+            "search": {"query": "concept", "search_mode": "SEMANTIC"},
+            "candidate_limit": 1600,
+            "metadata_definition_id": str(definition.id),
+            "value": "responsive",
+        },
+    )
+    assert created.status_code == 202, created.text
+    assert created.json()["search_index_snapshot"]["candidate_limit"] == 1600
+
+
+def test_semantic_bulk_tag_snapshot_materializes_ranked_candidates(
+    root_admin: User,
+    db: Session,
+    monkeypatch,
+) -> None:
+    account = Client(tenant_id=root_admin.tenant_id, name="Snapshot Tag Client", status="ACTIVE")
+    db.add(account)
+    db.flush()
+    matter = Matter(client_id=account.id, name="Snapshot Tag Matter", status="ACTIVE")
+    db.add(matter)
+    db.flush()
+    definition = MetadataDefinition(
+        matter_id=matter.id,
+        key="responsiveness",
+        display_name="Responsiveness",
+        type="ENUM",
+        cardinality="SINGLE",
+        allowed_values=[{"key": "responsive", "label": "Responsive", "active": True}],
+        value_source="ASSERTED",
+        assertion_policy="IMMEDIATE",
+        resolution_policy="LATEST_VALID",
+        searchable=True,
+        facetable=True,
+        reviewable=True,
+        ai_assignable=True,
+        status="ACTIVE",
+    )
+    db.add(definition)
+    generation = SearchIndexGeneration(
+        matter_id=matter.id,
+        generation=1,
+        index_name=f"matter-{matter.id}-000001",
+        alias_name=f"matter-{matter.id}",
+        schema_hash="e" * 64,
+        status="ACTIVE",
+        schema_snapshot={},
+    )
+    db.add(generation)
+    db.flush()
+    document_ids = [uuid.uuid4(), uuid.uuid4()]
+    job = MatterBulkTagJob(
+        matter_id=matter.id,
+        metadata_definition_id=definition.id,
+        search_index_generation=generation,
+        search_index_snapshot={"generation": 1, "index_name": generation.index_name, "candidate_limit": 1600},
+        search_definition={
+            "query": "concept",
+            "search_mode": "SEMANTIC",
+            "filters": [{"field": "responsiveness", "operator": "NOT_EXISTS"}],
+        },
+        value="responsive",
+        assignments=[{"metadata_definition_id": str(definition.id), "value": "responsive"}],
+        status="QUEUED",
+        workflow_id=f"semantic-bulk-tag:{uuid.uuid4()}",
+        created_by_user_id=root_admin.id,
+    )
+    db.add(job)
+    db.commit()
+
+    captured: list[dict[str, object]] = []
+
+    class FakeOpenSearchClient:
+        def __init__(self, _settings) -> None:
+            pass
+
+        def search(self, index: str, body: dict, *, search_pipeline: str | None = None) -> dict:
+            captured.append({"index": index, "body": body, "search_pipeline": search_pipeline})
+            returned_ids = document_ids if len(captured) == 1 else document_ids[:1]
+            return {
+                "hits": {
+                    "hits": [
+                        {"_id": str(document_id), "_source": {"document_id": str(document_id)}}
+                        for document_id in returned_ids
+                    ]
+                }
+            }
+
+        def close(self) -> None:
+            pass
+
+    monkeypatch.setattr(bulk_tags, "SessionLocal", TestingSessionLocal)
+    monkeypatch.setattr(bulk_tags, "OpenSearchClient", FakeOpenSearchClient)
+    monkeypatch.setattr(
+        bulk_tags,
+        "get_query_embedding_gateway",
+        lambda: SimpleNamespace(embed=lambda *_: SimpleNamespace(embeddings=[[0.1, 0.2]])),
+    )
+
+    batch_ids = bulk_tags.snapshot_bulk_tag_scope(job.id)
+    assert len(batch_ids) == 1
+    assert len(captured) == 2
+    body = captured[0]["body"]
+    assert isinstance(body, dict)
+    assert body["size"] == 1600
+    assert "sort" not in body
+    nested = body["query"]["nested"]
+    assert "inner_hits" not in nested
+    assert nested["query"]["knn"]["chunks.embedding"]["k"] == 1600
+    assert len(nested["query"]["knn"]["chunks.embedding"]["filter"]["bool"]["filter"]) == 2
+
+    filter_body = captured[1]["body"]
+    assert isinstance(filter_body, dict)
+    filter_clauses = filter_body["query"]["bool"]["filter"]
+    assert {"ids": {"values": [str(value) for value in document_ids]}} in filter_clauses
+    assert any("must_not" in clause.get("bool", {}) for clause in filter_clauses)
+
+    with TestingSessionLocal() as verification:
+        stored = verification.get(MatterBulkTagJob, job.id)
+        assert stored is not None
+        assert stored.matched_count == 1
+        assert stored.status == "RUNNING"
 
 
 def test_bulk_tag_batch_uses_metadata_ledger_and_is_idempotent(

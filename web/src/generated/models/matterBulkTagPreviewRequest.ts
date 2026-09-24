@@ -5,13 +5,13 @@
  * Phase-one Core API for authentication, hierarchical tenants, clients, matters, and matter metadata definitions.
  * OpenAPI spec version: 0.1.0
  */
-import type { MatterBulkTagAssignment } from './matterBulkTagAssignment';
 import type { MatterSearchRequest } from './matterSearchRequest';
 
-export interface MatterBulkTagCreate {
+export interface MatterBulkTagPreviewRequest {
   search: MatterSearchRequest;
-  candidate_limit?: number | null;
-  assignments?: MatterBulkTagAssignment[] | null;
-  metadata_definition_id?: string | null;
-  value?: unknown;
+  /**
+     * @minimum 1
+     * @maximum 10000
+     */
+  candidate_limit: number;
 }

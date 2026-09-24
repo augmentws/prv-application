@@ -157,6 +157,8 @@ export * from './matterBulkTagJobRead';
 export * from './matterBulkTagJobReadSearchDefinition';
 export * from './matterBulkTagJobReadSearchIndexSnapshot';
 export * from './matterBulkTagJobReadStatus';
+export * from './matterBulkTagPreviewRequest';
+export * from './matterBulkTagPreviewResponse';
 export * from './matterCreate';
 export * from './matterDateHistogramBucket';
 export * from './matterDateHistogramRequest';

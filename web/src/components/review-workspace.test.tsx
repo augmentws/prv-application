@@ -138,6 +138,7 @@ describe("ReviewWorkspace", () => {
       if (path.endsWith("/metadata-groups")) return groups as never;
       if (path === "/v1/clients/client-1/custodians") return [{ id: "custodian-1", client_id: "client-1", display_name: "Alice Adams", email_addresses: [], external_reference: null, status: "ACTIVE", created_at: "2026-09-14T12:00:00Z" }] as never;
       if (path.endsWith("/search") && init?.method === "POST") return searchResponse as never;
+      if (path.endsWith("/bulk-tag-jobs/preview") && init?.method === "POST") return { candidate_count: 126, matched_count: 42 } as never;
       if (path.endsWith("/facets/custodian/values") && init?.method === "POST") return { field: "custodian", values: [{ value: "custodian-1", count: 1 }], missing_count: 7 } as never;
       if (path.includes("/date-histogram") && init?.method === "POST") {
         const field = path.includes("document_date") ? "document_date" : "email_sent";
@@ -164,7 +165,7 @@ describe("ReviewWorkspace", () => {
       } as never;
       throw new Error(`Unexpected request: ${path}`);
     });
-    vi.mocked(coreApiContent).mockResolvedValue({ bytes: new TextEncoder().encode("From: alice@example.com\nSubject: Budget update\n\nHello from the document."), mediaType: "message/rfc822" });
+    vi.mocked(coreApiContent).mockResolvedValue({ bytes: new TextEncoder().encode("From: alice@example.com\nSubject: Budget update\n\nHello about the budget discussion from the document."), mediaType: "message/rfc822" });
 
     const user = userEvent.setup();
     renderWorkspace({ initialPage: 2 });
@@ -174,7 +175,9 @@ describe("ReviewWorkspace", () => {
     expect(screen.getByPlaceholderText("Search document body, filenames, paths, email headers, and metadata")).toBeInTheDocument();
     expect(screen.getByText(/moved to a private communications channel/)).toBeInTheDocument();
     expect(document.querySelector("mark")).toHaveTextContent("budget");
-    expect(await screen.findByText("Hello from the document.")).toBeInTheDocument();
+    const selectedDocument = screen.getByRole("region", { name: "Selected document" });
+    await waitFor(() => expect(selectedDocument.querySelector("pre")).toHaveTextContent("Hello about the budget discussion"));
+    expect(selectedDocument.querySelector("[data-search-highlight]")).toHaveTextContent("budget");
     expect(screen.getAllByText("Responsiveness").length).toBeGreaterThan(0);
 
     const emailMetadataResize = screen.getByRole("separator", { name: "Resize email metadata panel" });
@@ -276,8 +279,22 @@ describe("ReviewWorkspace", () => {
 
     expect(within(details).getByRole("button", { name: "Bulk tag results" })).toBeInTheDocument();
     await user.click(within(details).getByRole("button", { name: "Bulk tag results" }));
-    expect(screen.getByRole("alert")).toHaveTextContent("requires a keyword search");
-    await user.click(screen.getByRole("button", { name: "Cancel" }));
+    expect(screen.getByText(/Active filters narrow this ranked candidate set/i)).toBeInTheDocument();
+    const bulkFilterSummary = screen.getByText(/Current filters:/).parentElement;
+    expect(bulkFilterSummary).toHaveTextContent("Custodian: 1 selected");
+    expect(bulkFilterSummary).toHaveTextContent("Email sent: Range");
+    const semanticBulkTagDialog = screen.getByRole("dialog", { name: "Bulk tag search results" });
+    await user.click(within(semanticBulkTagDialog).getByRole("combobox", { name: "Value" }));
+    await user.click(screen.getByRole("option", { name: "Responsive" }));
+    await user.click(within(semanticBulkTagDialog).getByRole("button", { name: "Start bulk tag job" }));
+    await waitFor(() => {
+      const createCalls = vi.mocked(coreApi).mock.calls.filter(([path, init]) => path === "/v1/matters/matter-1/bulk-tag-jobs" && init?.method === "POST");
+      expect(JSON.parse(String(createCalls.at(-1)?.[1]?.body))).toMatchObject({
+        candidate_limit: 1600,
+        search: { query: "concealed pricing discussion", search_mode: "SEMANTIC", minimum_similarity: 0.035 },
+      });
+    });
+    await user.click(within(screen.getByRole("dialog", { name: "Bulk tag search results" })).getAllByRole("button", { name: /Run in background|Close/ })[0]);
 
     await user.click(screen.getByRole("combobox", { name: "Search mode" }));
     await user.click(screen.getByRole("option", { name: "Keyword" }));
@@ -297,7 +314,8 @@ describe("ReviewWorkspace", () => {
     await user.click(screen.getByRole("button", { name: "Start bulk tag job" }));
 
     await waitFor(() => {
-      const createCall = vi.mocked(coreApi).mock.calls.find(([path, init]) => path === "/v1/matters/matter-1/bulk-tag-jobs" && init?.method === "POST");
+      const createCalls = vi.mocked(coreApi).mock.calls.filter(([path, init]) => path === "/v1/matters/matter-1/bulk-tag-jobs" && init?.method === "POST");
+      const createCall = createCalls.at(-1);
       expect(createCall).toBeDefined();
       expect(JSON.parse(String(createCall?.[1]?.body))).toMatchObject({ assignments: [
         { metadata_definition_id: "definition-topics", value: ["topic_1", "topic_2"] },

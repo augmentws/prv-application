@@ -82,6 +82,8 @@ import type {
   LoginRequest,
   MatterBulkTagCreate,
   MatterBulkTagJobRead,
+  MatterBulkTagPreviewRequest,
+  MatterBulkTagPreviewResponse,
   MatterCreate,
   MatterDateHistogramRequest,
   MatterDateHistogramResponse,
@@ -420,6 +422,71 @@ export const meV1AuthMeGet = async ( options?: RequestInit): Promise<meV1AuthMeG
 
   const data: meV1AuthMeGetResponse['data'] = body ? JSON.parse(body) : {}
   return { data, status: res.status, headers: res.headers } as meV1AuthMeGetResponse
+}
+
+
+
+export type previewBulkTagJobV1MattersMatterIdBulkTagJobsPreviewPostResponse200 = {
+  data: MatterBulkTagPreviewResponse
+  status: 200
+}
+
+export type previewBulkTagJobV1MattersMatterIdBulkTagJobsPreviewPostResponse422 = {
+  data: HTTPValidationError
+  status: 422
+}
+
+export type previewBulkTagJobV1MattersMatterIdBulkTagJobsPreviewPostResponseSuccess = (previewBulkTagJobV1MattersMatterIdBulkTagJobsPreviewPostResponse200) & {
+  headers: Headers;
+};
+export type previewBulkTagJobV1MattersMatterIdBulkTagJobsPreviewPostResponseError = (previewBulkTagJobV1MattersMatterIdBulkTagJobsPreviewPostResponse422) & {
+  headers: Headers;
+};
+
+export type previewBulkTagJobV1MattersMatterIdBulkTagJobsPreviewPostResponse = (previewBulkTagJobV1MattersMatterIdBulkTagJobsPreviewPostResponseSuccess | previewBulkTagJobV1MattersMatterIdBulkTagJobsPreviewPostResponseError)
+
+export const getPreviewBulkTagJobV1MattersMatterIdBulkTagJobsPreviewPostUrl = (matterId: string,) => {
+
+
+
+
+  return `/api/core/v1/matters/${matterId}/bulk-tag-jobs/preview`
+}
+
+/**
+ * @summary Preview Bulk Tag Job
+ */
+export const previewBulkTagJobV1MattersMatterIdBulkTagJobsPreviewPost = async (matterId: string,
+    matterBulkTagPreviewRequest: MatterBulkTagPreviewRequest, options?: RequestInit): Promise<previewBulkTagJobV1MattersMatterIdBulkTagJobsPreviewPostResponse> => {
+
+    const getHeaders = (h?: NonNullable<RequestInit['headers']>): Record<string, string | readonly string[]> => {
+    if (!h) return {};
+    if (h instanceof Headers) return Object.fromEntries(h.entries());
+    if (Symbol.iterator in h) {
+      return Object.fromEntries(
+        Array.from(h as Iterable<Iterable<string>>, (entry) => Array.from(entry) as [string, string]),
+      );
+    }
+    const headers: Record<string, string | readonly string[]> = {};
+    for (const [name, value] of Object.entries<string | readonly string[] | undefined>(h)) {
+      if (value !== undefined) headers[name] = value;
+    }
+    return headers;
+  };
+const res = await fetch(getPreviewBulkTagJobV1MattersMatterIdBulkTagJobsPreviewPostUrl(matterId),
+  {
+    ...options,
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json', ...getHeaders(options?.headers) },
+    body: JSON.stringify(matterBulkTagPreviewRequest)
+  }
+)
+
+
+  const body = [204, 205, 304].includes(res.status) ? null : await res.text();
+
+  const data: previewBulkTagJobV1MattersMatterIdBulkTagJobsPreviewPostResponse['data'] = body ? JSON.parse(body) : {}
+  return { data, status: res.status, headers: res.headers } as previewBulkTagJobV1MattersMatterIdBulkTagJobsPreviewPostResponse
 }
 
 

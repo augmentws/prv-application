@@ -445,6 +445,7 @@ class MatterSearchRequest(BaseModel):
     query: str | None = Field(default=None, max_length=2000)
     search_mode: SearchMode = "KEYWORD"
     minimum_similarity: float | None = Field(default=None, ge=0, le=1)
+    candidate_limit: int | None = Field(default=None, ge=1, le=10_000)
     query_fields: list[MetadataKey] = Field(default_factory=list, max_length=100)
     filters: list[MatterSearchFilter] = Field(default_factory=list, max_length=100)
     facets: list[MetadataKey] = Field(default_factory=list, max_length=50)
@@ -460,6 +461,8 @@ class MatterSearchRequest(BaseModel):
             raise ValueError(f"{self.search_mode} search only supports relevance sorting")
         if self.minimum_similarity is not None and self.search_mode != "SEMANTIC":
             raise ValueError("minimum_similarity is supported only for SEMANTIC search")
+        if self.candidate_limit is not None and self.search_mode == "KEYWORD":
+            raise ValueError("candidate_limit is supported only for SEMANTIC and HYBRID search")
         return self
 
 
@@ -536,8 +539,19 @@ class MatterBulkTagAssignment(BaseModel):
     value: Any
 
 
+class MatterBulkTagPreviewRequest(BaseModel):
+    search: MatterSearchRequest
+    candidate_limit: int = Field(ge=1, le=10_000)
+
+
+class MatterBulkTagPreviewResponse(BaseModel):
+    candidate_count: int = Field(ge=0)
+    matched_count: int = Field(ge=0)
+
+
 class MatterBulkTagCreate(BaseModel):
     search: MatterSearchRequest
+    candidate_limit: int | None = Field(default=None, ge=1, le=10_000)
     assignments: list[MatterBulkTagAssignment] | None = Field(default=None, min_length=1, max_length=50)
     metadata_definition_id: uuid.UUID | None = None
     value: Any = None
@@ -546,8 +560,10 @@ class MatterBulkTagCreate(BaseModel):
     def validate_search_scope(self) -> "MatterBulkTagCreate":
         if not (self.search.query or "").strip() and not self.search.filters:
             raise ValueError("Bulk tagging requires an active search query or filter")
-        if self.search.search_mode != "KEYWORD":
-            raise ValueError("Bulk tagging currently supports keyword searches only")
+        if self.search.search_mode == "KEYWORD" and self.candidate_limit is not None:
+            raise ValueError("candidate_limit is supported only for semantic and hybrid bulk tagging")
+        if self.search.search_mode != "KEYWORD" and self.candidate_limit is None:
+            raise ValueError("Semantic and hybrid bulk tagging requires a candidate_limit")
         if self.assignments is None and self.metadata_definition_id is None:
             raise ValueError("Bulk tagging requires at least one field assignment")
         if self.assignments is not None and self.metadata_definition_id is not None:

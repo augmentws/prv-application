@@ -5,11 +5,17 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from app.audit import record_audit
+from app.bulk_tags import preview_ranked_bulk_tag_scope
 from app.database import get_db
 from app.dependencies import Principal, can_admin_matter, get_principal
 from app.document_metadata import value_columns
 from app.models import Matter, MatterBulkTagJob, MetadataDefinition, SearchIndexGeneration
-from app.schemas import MatterBulkTagCreate, MatterBulkTagJobRead
+from app.schemas import (
+    MatterBulkTagCreate,
+    MatterBulkTagJobRead,
+    MatterBulkTagPreviewRequest,
+    MatterBulkTagPreviewResponse,
+)
 from app.workflows.dispatcher import enqueue_bulk_tag
 
 router = APIRouter(prefix="/v1/matters/{matter_id}/bulk-tag-jobs", tags=["matter bulk tags"])
@@ -24,6 +30,29 @@ def _matter(db: Session, matter_id: uuid.UUID, principal: Principal) -> Matter:
     if matter.status != "ACTIVE" or matter.client.status != "ACTIVE" or matter.client.tenant.status != "ACTIVE":
         raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="Matter, client, or tenant is not active")
     return matter
+
+
+@router.post("/preview", response_model=MatterBulkTagPreviewResponse)
+def preview_bulk_tag_job(
+    matter_id: uuid.UUID,
+    payload: MatterBulkTagPreviewRequest,
+    principal: Principal = Depends(get_principal),
+    db: Session = Depends(get_db),
+) -> MatterBulkTagPreviewResponse:
+    matter = _matter(db, matter_id, principal)
+    if payload.search.search_mode == "KEYWORD":
+        raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_CONTENT, detail="Preview is for ranked searches")
+    generation = db.scalar(select(SearchIndexGeneration).where(
+        SearchIndexGeneration.matter_id == matter.id, SearchIndexGeneration.status == "ACTIVE"
+    ))
+    if generation is None:
+        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="Matter search index is not ready")
+    definitions = list(db.scalars(select(MetadataDefinition).where(MetadataDefinition.matter_id == matter.id)))
+    candidate_count, matched_count = preview_ranked_bulk_tag_scope(
+        request=payload.search, candidate_limit=payload.candidate_limit, definitions=definitions,
+        tenant_id=str(matter.client.tenant_id), matter_id=str(matter.id), index_name=generation.index_name,
+    )
+    return MatterBulkTagPreviewResponse(candidate_count=candidate_count, matched_count=matched_count)
 
 
 @router.post("", response_model=MatterBulkTagJobRead, status_code=status.HTTP_202_ACCEPTED)
@@ -103,6 +132,7 @@ def create_bulk_tag_job(
             "index_name": generation.index_name,
             "schema_hash": generation.schema_hash,
             "activated_at": generation.activated_at.isoformat() if generation.activated_at else None,
+            "candidate_limit": payload.candidate_limit,
         },
         search_definition=frozen_search.model_dump(mode="json", by_alias=True),
         value=first_assignment["value"],

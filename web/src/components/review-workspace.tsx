@@ -68,6 +68,7 @@ import { NO_VALUE_FILTER_TOKEN } from "@/lib/search-filters";
 import { cn } from "@/lib/utils";
 
 const PAGE_SIZE = 50;
+const SEMANTIC_CANDIDATE_LIMIT = 1600;
 const PREFERRED_FACETS = ["custodian", "file_extension", "responsiveness", "privilege", "key_document"];
 const SEARCH_PROJECTION_POLL_MS = 500;
 const SEARCH_PROJECTION_POLL_ATTEMPTS = 60;
@@ -191,6 +192,18 @@ function resultHighlightFragments(hit: MatterSearchHit) {
     }
   }
   return fragments;
+}
+
+function resultHighlightTerms(hit: MatterSearchHit) {
+  const terms = new Set<string>();
+  for (const fragments of Object.values(hit.highlights ?? {})) {
+    for (const fragment of fragments) {
+      for (const match of fragment.matchAll(/<(?:mark|em)>([\s\S]*?)<\/(?:mark|em)>/gi)) {
+        if (match[1]?.trim()) terms.add(match[1].trim());
+      }
+    }
+  }
+  return [...terms];
 }
 
 function HighlightedText({ fragment }: { fragment: string }) {
@@ -375,6 +388,7 @@ export function ReviewWorkspace({
       query: query.trim() || null,
       search_mode: effectiveMode,
       minimum_similarity: effectiveMode === "SEMANTIC" ? minimumSimilarity : null,
+      candidate_limit: effectiveMode !== "KEYWORD" ? SEMANTIC_CANDIDATE_LIMIT : null,
       filters: searchFilters,
       facets: [],
       sort: query.trim() ? [{ field: "_score", direction: "DESC" }] : [{ field: "created_at", direction: "DESC" }],
@@ -388,6 +402,14 @@ export function ReviewWorkspace({
     queryFn: () => coreApi<MatterSearchResponse>(`/v1/matters/${matterId}/search`, { method: "POST", body: JSON.stringify(searchRequest) }),
     enabled: Boolean(matter.data && definitions.data),
     placeholderData: (previous) => previous,
+  });
+  const bulkTagPreview = useQuery({
+    queryKey: ["matter-bulk-tag-preview", matterId, searchRequest],
+    queryFn: () => coreApi<{ candidate_count: number; matched_count: number }>(`/v1/matters/${matterId}/bulk-tag-jobs/preview`, {
+      method: "POST",
+      body: JSON.stringify({ search: searchRequest, candidate_limit: searchRequest.candidate_limit ?? SEMANTIC_CANDIDATE_LIMIT }),
+    }),
+    enabled: bulkTagOpen && searchRequest.search_mode !== "KEYWORD" && Boolean(searchRequest.filters?.length),
   });
   const bulkTagJob = useQuery({
     queryKey: ["matter-bulk-tag-job", matterId, bulkTagJobId],
@@ -403,6 +425,7 @@ export function ReviewWorkspace({
     ? selectedDocumentId
     : searchResults.data?.hits[0]?.document_id ?? "";
   const selectedHit = searchResults.data?.hits.find((hit) => hit.document_id === effectiveSelectedDocumentId);
+  const selectedHighlightTerms = useMemo(() => selectedHit ? resultHighlightTerms(selectedHit) : [], [selectedHit]);
   const selectedCollectionItemId = typeof selectedHit?.fields.collection_item_id === "string" ? selectedHit.fields.collection_item_id : "";
   const collectionItem = useQuery({
     queryKey: ["collection-item", selectedCollectionItemId],
@@ -689,7 +712,7 @@ export function ReviewWorkspace({
         <section className={cn("min-h-0 min-w-0 flex-1 overflow-hidden bg-background", mobileDocumentOpen ? "flex" : "hidden md:flex")} aria-label="Selected document">
           {collectionItem.isPending && selectedCollectionItemId ? <DocumentLoading />
             : collectionItem.error ? <div className="w-full p-5"><QueryError message={collectionItem.error.message} /></div>
-            : collectionItem.data ? <DocumentViewerSurface item={collectionItem.data} className="h-full w-full" />
+            : collectionItem.data ? <DocumentViewerSurface item={collectionItem.data} highlightTerms={selectedHighlightTerms} className="h-full w-full" />
             : <DocumentEmpty />}
         </section>
         <ResizeHandle className="hidden 2xl:flex" label="Resize document details panel" value={detailsWidth} min={304} max={520} direction={-1} onChange={setDetailsWidth} />
@@ -722,7 +745,9 @@ export function ReviewWorkspace({
         onOpenChange={setBulkTagOpen}
         definitions={definitions.data ?? []}
         search={searchRequest}
-        resultCount={total}
+        resultCount={bulkTagPreview.data?.matched_count ?? total}
+        candidateCount={bulkTagPreview.data?.candidate_count ?? total}
+        previewing={bulkTagPreview.isFetching}
         job={bulkTagJob.data}
         submitting={createBulkTagMutation.isPending}
         onSubmit={(payload) => createBulkTagMutation.mutateAsync(payload).then(() => undefined)}
@@ -1124,12 +1149,14 @@ function CodingForm({ id, definitions, visibleGroups, definitionById, valueByDef
   );
 }
 
-function BulkTagDialog({ open, onOpenChange, definitions, search, resultCount, job, submitting, onSubmit }: {
+function BulkTagDialog({ open, onOpenChange, definitions, search, resultCount, candidateCount, previewing, job, submitting, onSubmit }: {
   open: boolean;
   onOpenChange: (open: boolean) => void;
   definitions: MetadataDefinitionRead[];
   search: MatterSearchRequest;
   resultCount: number;
+  candidateCount: number;
+  previewing: boolean;
   job?: MatterBulkTagJobRead;
   submitting: boolean;
   onSubmit: (payload: MatterBulkTagCreate) => Promise<void>;
@@ -1141,6 +1168,18 @@ function BulkTagDialog({ open, onOpenChange, definitions, search, resultCount, j
   const [assignments, setAssignments] = useState<Array<{ definitionId: string; values: string[] }>>([]);
   const effectiveAssignments = assignments.length ? assignments : eligible[0] ? [{ definitionId: eligible[0].id, values: [] }] : [];
   const terminal = Boolean(job && ["COMPLETED", "COMPLETED_WITH_ERRORS", "FAILED"].includes(job.status));
+  const bulkSearchMode = search.search_mode ?? "KEYWORD";
+  const activeFilterLabels = useMemo(() => (search.filters ?? []).map((filter) => {
+    const field = definitions.find((definition) => definition.key === filter.field)?.display_name ?? filter.field;
+    if (filter.operator === "NOT_EXISTS") return `${field}: No value`;
+    if (filter.operator === "EXISTS") return `${field}: Has value`;
+    if (filter.operator === "RANGE") return `${field}: Range`;
+    if (filter.operator === "IN") {
+      const selectedCount = (filter.values?.length ?? 0) + (filter.include_missing ? 1 : 0);
+      return `${field}: ${selectedCount} selected`;
+    }
+    return `${field}: ${String(filter.value ?? "")}`;
+  }), [definitions, search.filters]);
   const changeOpen = (next: boolean) => {
     if (!next) {
       setAssignments([]);
@@ -1164,6 +1203,7 @@ function BulkTagDialog({ open, onOpenChange, definitions, search, resultCount, j
     try {
       await onSubmit({
         search,
+        ...(bulkSearchMode !== "KEYWORD" ? { candidate_limit: search.candidate_limit ?? Math.min(candidateCount, 10_000) } : {}),
         assignments: effectiveAssignments.map((assignment) => {
           const definition = eligible.find((item) => item.id === assignment.definitionId)!;
           return {
@@ -1184,8 +1224,13 @@ function BulkTagDialog({ open, onOpenChange, definitions, search, resultCount, j
       <DialogContent className="max-w-lg">
         <DialogHeader>
           <DialogTitle>Bulk tag search results</DialogTitle>
-          <DialogDescription>Apply coding values to the {resultCount.toLocaleString()} documents matched by this search. The submitted search is frozen for the job.</DialogDescription>
+          <DialogDescription>{bulkSearchMode === "KEYWORD"
+            ? `Apply coding values to the ${resultCount.toLocaleString()} documents matched by this search${activeFilterLabels.length ? ` and ${activeFilterLabels.length} active ${activeFilterLabels.length === 1 ? "filter" : "filters"}` : ""}. The submitted search is frozen for the job.`
+            : activeFilterLabels.length
+              ? `${previewing ? "Calculating" : resultCount.toLocaleString()} documents match ${activeFilterLabels.length} active ${activeFilterLabels.length === 1 ? "filter" : "filters"} within the top ${Math.min(candidateCount, 10_000).toLocaleString()} ${bulkSearchMode.toLowerCase()} candidates. The matching document IDs are frozen before tagging begins.`
+              : `Apply coding values to the current top ${Math.min(candidateCount, 10_000).toLocaleString()} ${bulkSearchMode.toLowerCase()} candidates. Their document IDs are frozen before tagging begins.`}</DialogDescription>
         </DialogHeader>
+        {activeFilterLabels.length ? <div className="rounded-lg border bg-muted/30 p-3 text-sm"><span className="font-medium">Current filters:</span> {activeFilterLabels.join("; ")}</div> : null}
         {job ? (
           <div className="space-y-3">
             <div className="rounded-lg border bg-muted/30 p-3 text-sm">
@@ -1198,7 +1243,7 @@ function BulkTagDialog({ open, onOpenChange, definitions, search, resultCount, j
           </div>
         ) : (
           <form className="space-y-4" onSubmit={submit}>
-            {search.search_mode !== "KEYWORD" ? <p role="alert" className="rounded-lg border border-warning/40 bg-warning/10 p-3 text-sm">Bulk tagging currently requires a keyword search. Switch the matter search to Keyword and run it again.</p> : null}
+            {bulkSearchMode !== "KEYWORD" ? <p className="rounded-lg border border-info/40 bg-info/10 p-3 text-sm">Active filters narrow this ranked candidate set before tagging. The final matched count may therefore be smaller than the candidate count shown above. This does not select every potentially related document in the matter.</p> : null}
             <div className="space-y-3">
               {effectiveAssignments.map((assignment, index) => {
                 const definition = eligible.find((item) => item.id === assignment.definitionId);
@@ -1217,7 +1262,7 @@ function BulkTagDialog({ open, onOpenChange, definitions, search, resultCount, j
             </div>
             {!eligible.length ? <p className="text-sm text-muted-foreground">No active reviewable coding fields are available.</p> : null}
             <p className="text-xs text-muted-foreground">Single-value fields are set to the selected value. Multi-value fields add every selected value without removing existing coding.</p>
-            <div className="flex justify-end gap-2"><Button type="button" variant="ghost" onClick={() => changeOpen(false)}>Cancel</Button><Button type="submit" disabled={submitting || !effectiveAssignments.length || effectiveAssignments.some((assignment) => !assignment.values.length) || !resultCount || search.search_mode !== "KEYWORD"}><Tags />{submitting ? "Starting…" : "Start bulk tag job"}</Button></div>
+            <div className="flex justify-end gap-2"><Button type="button" variant="ghost" onClick={() => changeOpen(false)}>Cancel</Button><Button type="submit" disabled={previewing || submitting || !effectiveAssignments.length || effectiveAssignments.some((assignment) => !assignment.values.length) || !resultCount}><Tags />{submitting ? "Starting…" : previewing ? "Calculating scope…" : "Start bulk tag job"}</Button></div>
           </form>
         )}
       </DialogContent>

@@ -397,6 +397,16 @@ def test_query_compiler_builds_filtered_nested_semantic_and_hybrid_queries() -> 
     assert nested["inner_hits"]["size"] == 1
     assert "highlight" not in semantic_body
 
+    fixed_candidates = semantic.model_copy(update={"candidate_limit": 1600, "offset": 350})
+    fixed_candidate_body = compile_search_request(
+        fixed_candidates,
+        definitions,
+        tenant_id="tenant-1",
+        matter_id="matter-1",
+        query_vector=query_vector,
+    )
+    assert fixed_candidate_body["query"]["nested"]["query"]["knn"]["chunks.embedding"]["k"] == 1600
+
     thresholded = semantic.model_copy(update={"minimum_similarity": 0.75})
     thresholded_body = compile_search_request(
         thresholded,

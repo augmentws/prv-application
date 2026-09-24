@@ -158,6 +158,64 @@
         ]
       }
     },
+    "/v1/matters/{matter_id}/bulk-tag-jobs/preview": {
+      "post": {
+        "tags": [
+          "matter bulk tags"
+        ],
+        "summary": "Preview Bulk Tag Job",
+        "operationId": "preview_bulk_tag_job_v1_matters__matter_id__bulk_tag_jobs_preview_post",
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "matter_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid",
+              "title": "Matter Id"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/MatterBulkTagPreviewRequest"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/MatterBulkTagPreviewResponse"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/v1/matters/{matter_id}/bulk-tag-jobs": {
       "post": {
         "tags": [
@@ -14445,6 +14503,19 @@
           "search": {
             "$ref": "#/components/schemas/MatterSearchRequest"
           },
+          "candidate_limit": {
+            "anyOf": [
+              {
+                "type": "integer",
+                "maximum": 10000.0,
+                "minimum": 1.0
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Candidate Limit"
+          },
           "assignments": {
             "anyOf": [
               {
@@ -14644,6 +14715,45 @@
           "updated_at"
         ],
         "title": "MatterBulkTagJobRead"
+      },
+      "MatterBulkTagPreviewRequest": {
+        "properties": {
+          "search": {
+            "$ref": "#/components/schemas/MatterSearchRequest"
+          },
+          "candidate_limit": {
+            "type": "integer",
+            "maximum": 10000.0,
+            "minimum": 1.0,
+            "title": "Candidate Limit"
+          }
+        },
+        "type": "object",
+        "required": [
+          "search",
+          "candidate_limit"
+        ],
+        "title": "MatterBulkTagPreviewRequest"
+      },
+      "MatterBulkTagPreviewResponse": {
+        "properties": {
+          "candidate_count": {
+            "type": "integer",
+            "minimum": 0.0,
+            "title": "Candidate Count"
+          },
+          "matched_count": {
+            "type": "integer",
+            "minimum": 0.0,
+            "title": "Matched Count"
+          }
+        },
+        "type": "object",
+        "required": [
+          "candidate_count",
+          "matched_count"
+        ],
+        "title": "MatterBulkTagPreviewResponse"
       },
       "MatterCreate": {
         "properties": {
@@ -16898,6 +17008,19 @@
               }
             ],
             "title": "Minimum Similarity"
+          },
+          "candidate_limit": {
+            "anyOf": [
+              {
+                "type": "integer",
+                "maximum": 10000.0,
+                "minimum": 1.0
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Candidate Limit"
           },
           "query_fields": {
             "items": {

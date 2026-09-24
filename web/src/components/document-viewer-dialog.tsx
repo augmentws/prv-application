@@ -20,6 +20,10 @@ const EMAIL_HEADER_MIN_HEIGHT = 64;
 const EMAIL_HEADER_MAX_HEIGHT = 480;
 const EMAIL_HEADER_KEYBOARD_STEP = 16;
 
+function escapeRegExp(value: string) {
+  return value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+}
+
 function recipientLabel(recipient: EmailRecipientInput) {
   if (recipient.display_name && recipient.email_address) return `${recipient.display_name} <${recipient.email_address}>`;
   return recipient.display_name || recipient.email_address || "Unknown recipient";
@@ -91,10 +95,11 @@ export function textParagraphRanges(source: string): TextParagraphRange[] {
   return ranges;
 }
 
-export function DocumentViewerSurface({ item, className, highlightedParagraphs = [] }: {
+export function DocumentViewerSurface({ item, className, highlightedParagraphs = [], highlightTerms = [] }: {
   item: CollectionItemRead;
   className?: string;
   highlightedParagraphs?: number[];
+  highlightTerms?: string[];
 }) {
   const viewerRef = useRef<HTMLElement>(null);
   const firstHighlightRef = useRef<HTMLElement>(null);
@@ -113,7 +118,7 @@ export function DocumentViewerSurface({ item, className, highlightedParagraphs =
       ? emailBody(content.data.bytes).text
       : textDocument(content.data.bytes, content.data.mediaType);
   }, [content.data, kind]);
-  const highlightedBody = useMemo(() => {
+  const paragraphHighlightedBody = useMemo(() => {
     if (!body || !highlightedParagraphs.length) return null;
     const selected = new Set(highlightedParagraphs);
     const ranges = textParagraphRanges(body).filter((range) => selected.has(range.number));
@@ -139,9 +144,28 @@ export function DocumentViewerSurface({ item, className, highlightedParagraphs =
     return nodes;
   }, [body, highlightedParagraphs]);
 
+  const searchHighlightedBody = useMemo(() => {
+    if (!body || highlightedParagraphs.length || !highlightTerms.length) return null;
+    const terms = [...new Set(highlightTerms.map((term) => term.trim()).filter(Boolean))]
+      .sort((left, right) => right.length - left.length)
+      .slice(0, 100);
+    if (!terms.length) return null;
+    const expression = terms.map(escapeRegExp).join("|");
+    const splitter = new RegExp(`(${expression})`, "giu");
+    const exactMatch = new RegExp(`^(?:${expression})$`, "iu");
+    const parts = body.split(splitter);
+    const firstHighlightedIndex = parts.findIndex((part) => exactMatch.test(part));
+    return parts.map((part, index) => {
+      if (!exactMatch.test(part)) return part;
+      return <mark key={`${index}:${part}`} ref={index === firstHighlightedIndex ? firstHighlightRef : undefined} data-search-highlight className="rounded-sm bg-warning/35 px-0.5 text-inherit">{part}</mark>;
+    });
+  }, [body, highlightTerms, highlightedParagraphs.length]);
+
+  const highlightedBody = paragraphHighlightedBody ?? searchHighlightedBody;
+
   useEffect(() => {
     firstHighlightRef.current?.scrollIntoView?.({ block: "center", behavior: "smooth" });
-  }, [body, highlightedParagraphs, item.id]);
+  }, [body, highlightTerms, highlightedParagraphs, item.id]);
 
   const title = item.email?.subject?.trim() || item.original_filename || "Document";
   const downloadUrl = `/api/core/v1/artifacts/${item.native_artifact.id}/content`;

@@ -37,8 +37,8 @@ services:
       OPENSEARCH_JAVA_OPTS: -Xms30g -Xmx30g
     ulimits:
       memlock:
-        soft: { soft: -1, hard: -1 }
-        hard: { soft: 65536, hard: 65536 }
+        soft: 65536
+        hard: 65536
     restart: unless-stopped
     ports:
       - "9200:9200"
