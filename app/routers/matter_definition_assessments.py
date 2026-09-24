@@ -5,6 +5,8 @@ from fastapi import APIRouter, Depends, HTTPException, status
 from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
+from app.assessment_guidance_refinement import queue_guidance_refinement
+from app.assessment_provider_batches import cancel_provider_batches
 from app.audit import record_audit
 from app.config import Settings, get_settings
 from app.database import get_db
@@ -119,6 +121,7 @@ def create_assessment(
             revision_number=payload.revision,
             maximum_document_count=payload.maximum_document_count,
             control_sample_size=payload.control_sample_size,
+            use_batching=payload.use_batching,
             acknowledge_large_run_warning=payload.acknowledge_large_run_warning,
         )
         db.commit()
@@ -335,6 +338,7 @@ def cancel_assessment(
         details={"matter_id": str(matter.id)},
     )
     db.commit()
+    cancel_provider_batches(db, assessment.id)
     if workflow is not None:
         cancel_definition_assessment(workflow.dbos_workflow_id)
     db.refresh(assessment)
@@ -411,6 +415,17 @@ def update_assessment_question(
         target_id=question.id,
         details={"assessment_id": str(assessment_id), "status": question.status},
     )
+    try:
+        queue_guidance_refinement(
+            db,
+            assessment_id,
+            initiated_by_user_id=principal.user.id,
+        )
+    except ValueError as exc:
+        assessment = db.get(MatterDefinitionAssessmentRun, assessment_id)
+        if assessment is not None:
+            assessment.guidance_refinement_status = "FAILED"
+            assessment.guidance_refinement_error_message = str(exc)[:4000]
     db.commit()
     db.refresh(question)
     return question

@@ -1,3 +1,5 @@
+import threading
+import time
 import uuid
 from copy import deepcopy
 from datetime import datetime, timezone
@@ -22,6 +24,7 @@ from app.models import (
     MatterEmbeddingBatch,
     MatterEmbeddingJob,
     MetadataDefinition,
+    SearchIndexGeneration,
     SearchProjectionOperation,
     Tenant,
     User,
@@ -78,6 +81,7 @@ def definition(
     *,
     searchable: bool = True,
     facetable: bool = False,
+    normalize_to_lowercase: bool = False,
 ) -> MetadataDefinition:
     return MetadataDefinition(
         id=uuid.uuid4(),
@@ -91,6 +95,7 @@ def definition(
         resolution_policy="EXPLICIT_ONLY",
         searchable=searchable,
         facetable=facetable,
+        normalize_to_lowercase=normalize_to_lowercase,
         reviewable=True,
         ai_assignable=False,
         status="ACTIVE",
@@ -105,6 +110,7 @@ def test_mapping_uses_versioned_ediscovery_analyzers_and_numeric_types() -> None
             definition("page_count", "INTEGER"),
             definition("confidence", "DECIMAL"),
             definition("private_value", "TEXT", searchable=False),
+            definition("email_from", "TEXT", facetable=True, normalize_to_lowercase=True),
         ]
     )
     analyzers = mapping["settings"]["analysis"]["analyzer"]
@@ -133,6 +139,7 @@ def test_mapping_uses_versioned_ediscovery_analyzers_and_numeric_types() -> None
     assert properties["notes"]["search_quote_analyzer"] == QUOTE_ANALYZER
     assert properties["notes"]["index_options"] == "offsets"
     assert properties["issue"]["fields"]["exact"]["type"] == "keyword"
+    assert properties["email_from"]["meta"] == {"pvr_normalize_to_lowercase": "true"}
     assert properties["page_count"] == {"type": "long"}
     assert properties["confidence"] == {"type": "double"}
     assert "private_value" not in properties
@@ -167,6 +174,13 @@ def test_query_compiler_injects_scope_and_validates_matter_fields() -> None:
     assert body["aggs"]["issue"]["terms"]["field"] == "metadata.issue.exact"
     assert body["aggs"]["issue"]["terms"]["size"] == 8
     assert body["query"]["bool"]["must"][0]["simple_query_string"]["fields"] == ["metadata.issue"]
+    assert body["highlight"] == {
+        "pre_tags": ["<mark>"],
+        "post_tags": ["</mark>"],
+        "fragment_size": 180,
+        "number_of_fragments": 2,
+        "fields": {"metadata.issue": {}},
+    }
 
     with pytest.raises(HTTPException, match="Unknown or non-searchable field"):
         compile_search_request(
@@ -187,6 +201,58 @@ def test_query_compiler_injects_scope_and_validates_matter_fields() -> None:
             tenant_id="tenant-1",
             matter_id="matter-1",
         )
+
+
+def test_query_compiler_normalizes_lowercase_filter_values() -> None:
+    definitions = [definition("email_from", "TEXT", facetable=True, normalize_to_lowercase=True)]
+    request = MatterSearchRequest.model_validate(
+        {"filters": [{"field": "email_from", "operator": "IN", "values": ["Mixed.Case@Example.COM"]}]}
+    )
+
+    body = compile_search_request(request, definitions, tenant_id="tenant-1", matter_id="matter-1")
+
+    assert {"terms": {"metadata.email_from.exact": ["mixed.case@example.com"]}} in body["query"]["bool"]["filter"]
+
+
+def test_query_compiler_supports_missing_and_value_or_missing_filters() -> None:
+    definitions = [definition("issue", "TEXT", facetable=True)]
+
+    missing = compile_search_request(
+        MatterSearchRequest.model_validate({"filters": [{"field": "issue", "operator": "NOT_EXISTS"}]}),
+        definitions,
+        tenant_id="tenant-1",
+        matter_id="matter-1",
+    )
+    assert {
+        "bool": {"must_not": [{"exists": {"field": "metadata.issue"}}]}
+    } in missing["query"]["bool"]["filter"]
+
+    value_or_missing = compile_search_request(
+        MatterSearchRequest.model_validate(
+            {
+                "filters": [
+                    {
+                        "field": "issue",
+                        "operator": "IN",
+                        "values": ["pricing"],
+                        "include_missing": True,
+                    }
+                ]
+            }
+        ),
+        definitions,
+        tenant_id="tenant-1",
+        matter_id="matter-1",
+    )
+    assert {
+        "bool": {
+            "should": [
+                {"terms": {"metadata.issue.exact": ["pricing"]}},
+                {"bool": {"must_not": [{"exists": {"field": "metadata.issue"}}]}},
+            ],
+            "minimum_should_match": 1,
+        }
+    } in value_or_missing["query"]["bool"]["filter"]
 
 
 def test_facet_value_query_is_limited_searchable_and_self_excluding() -> None:
@@ -219,6 +285,24 @@ def test_facet_value_query_is_limited_searchable_and_self_excluding() -> None:
     assert {"term": {"batch_ids": "batch-1"}} in body["query"]["bool"]["filter"]
     assert body["aggs"]["issue"]["terms"]["size"] == 20
     assert body["aggs"]["issue"]["terms"]["include"] == ".*trade.*"
+    assert body["aggs"]["issue__missing"] == {"missing": {"field": "metadata.issue.exact"}}
+
+
+def test_facet_value_query_normalizes_lowercase_search_text() -> None:
+    email = definition("email_from", "TEXT", facetable=True, normalize_to_lowercase=True)
+
+    body = compile_facet_values_request(
+        MatterSearchRequest(),
+        [email],
+        field="email_from",
+        tenant_id="tenant-1",
+        matter_id="matter-1",
+        value_query="Example.COM",
+        size=20,
+        include_values=None,
+    )
+
+    assert body["aggs"]["email_from"]["terms"]["include"] == ".*example\\.com.*"
 
 
 def test_batch_topic_filter_and_facet_keep_batch_taxonomy_and_topic_in_one_nested_scope() -> None:
@@ -400,6 +484,7 @@ def test_search_response_hides_opensearch_shape() -> None:
     )
     assert response.total == 1
     assert response.hits[0].fields["original_filename"] == "memo.txt"
+    assert response.hits[0].highlights == {"email_subject": ["<em>price</em>"]}
     assert response.hits[0].best_passage is not None
     assert response.hits[0].best_passage.text == "The pricing discussion was moved off channel."
     assert response.facets["issue"][0].value == "conduct"
@@ -415,7 +500,8 @@ class FakeBooleanFacetClient:
                         {"key": 1, "key_as_string": "true", "doc_count": 4},
                         {"key": 0, "key_as_string": "false", "doc_count": 2},
                     ]
-                }
+                },
+                "key_document__missing": {"doc_count": 3},
             },
         }
 
@@ -434,6 +520,7 @@ def test_boolean_facet_values_use_boolean_bucket_labels() -> None:
     )
 
     assert [(item.value, item.count) for item in response.values] == [(True, 4), (False, 2)]
+    assert response.missing_count == 3
 
 
 class FakeDateHistogramClient:
@@ -528,11 +615,11 @@ def test_document_projection_includes_artifact_body_text(monkeypatch: pytest.Mon
         family_id=None,
         processing_status="READY",
         custodian_ids=[],
-        email_sender="sender@example.com",
+        email_sender="Sender@Example.COM",
         email_subject="Project update",
         email_sent_at=None,
         email_received_at=None,
-        email_recipients={"TO": [], "CC": [], "BCC": []},
+        email_recipients={"TO": ["Recipient@Example.COM"], "CC": [], "BCC": []},
         native_sha256="a" * 64,
         native_byte_length=100,
         page_count=None,
@@ -550,10 +637,19 @@ def test_document_projection_includes_artifact_body_text(monkeypatch: pytest.Mon
     monkeypatch.setattr("app.search.service.current_metadata_values", lambda *_: {})
 
     batch_ids = [uuid.uuid4(), uuid.uuid4()]
-    projection = build_document_projection(db, document, [], batch_ids=batch_ids)
+    definitions = [
+        definition("email_from", "TEXT", facetable=True, normalize_to_lowercase=True),
+        definition("email_to", "TEXT", facetable=True, normalize_to_lowercase=True),
+    ]
+    definitions[1].cardinality = "MULTIPLE"
+    projection = build_document_projection(db, document, definitions, batch_ids=batch_ids)
 
     assert projection["body_text"] == "The confidential project is Juniper."
     assert projection["batch_ids"] == [str(value) for value in batch_ids]
+    assert projection["email_from"] == "sender@example.com"
+    assert projection["email_to"] == ["recipient@example.com"]
+    assert projection["metadata"]["email_from"] == "sender@example.com"
+    assert projection["metadata"]["email_to"] == ["recipient@example.com"]
 
 
 def test_document_projection_attaches_nested_chunk_vectors(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -625,6 +721,9 @@ class FakeIndexClient:
         self.mapping_updates: list[tuple[str, dict]] = []
         self.deleted: list[str] = []
         self.indexed_document_count = 0
+
+    def close(self) -> None:
+        pass
 
     def create_index(self, name: str, body: dict) -> None:
         assert body["mappings"]["dynamic"] == "strict"
@@ -787,6 +886,161 @@ def test_embedding_job_indexing_checkpoints_and_retries_only_failed_documents(
     assert generation.document_count == 3
 
 
+def test_full_rebuild_records_progress_after_each_document_batch(
+    db: Session,
+    root_admin: User,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    client_record = Client(tenant_id=root_admin.tenant_id, name="Rebuild Progress Client")
+    db.add(client_record)
+    db.flush()
+    matter = Matter(client_id=client_record.id, name="Rebuild Progress Matter")
+    db.add(matter)
+    db.flush()
+    source_collection_id = uuid.uuid4()
+    import_job = MatterDocumentImportJob(
+        matter_id=matter.id,
+        source_collection_id=source_collection_id,
+        selection_type="EXPLICIT",
+        selection={},
+        selection_summary="Rebuild progress test",
+        status="COMPLETED",
+        workflow_id=f"import:{uuid.uuid4()}",
+        created_by_user_id=root_admin.id,
+    )
+    db.add(import_job)
+    db.flush()
+    db.add_all(
+        [
+            MatterDocument(
+                matter_id=matter.id,
+                source_collection_id=source_collection_id,
+                collection_item_id=uuid.uuid4(),
+                added_by_import_job_id=import_job.id,
+            )
+            for _ in range(3)
+        ]
+    )
+    db.commit()
+
+    fake = Mock()
+    manager = SearchIndexManager(db, fake, Settings(search_bulk_batch_size=2))
+    bulk_upsert = Mock()
+    monkeypatch.setattr(manager, "_bulk_upsert", bulk_upsert)
+    progress: list[dict] = []
+    monkeypatch.setattr(
+        "app.search.service._save_rebuild_progress",
+        lambda _operation_id, **values: progress.append(values),
+    )
+
+    count = manager._index_all_documents(
+        "matter-rebuild-index",
+        matter,
+        [],
+        operation_id=uuid.uuid4(),
+        total_documents=3,
+    )
+
+    assert count == 3
+    assert [len(call.args[1]) for call in bulk_upsert.call_args_list] == [2, 1]
+    assert [(item["phase"], item["processed_documents"]) for item in progress] == [
+        ("INDEXING_DOCUMENTS", 2),
+        ("INDEXING_DOCUMENTS", 3),
+        ("REFRESHING_INDEX", 3),
+    ]
+    fake.refresh.assert_called_once_with("matter-rebuild-index")
+
+
+def test_bulk_projection_hydrates_documents_concurrently_in_input_order(
+    db: Session,
+    root_admin: User,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    client_record = Client(tenant_id=root_admin.tenant_id, name="Concurrent Projection Client")
+    db.add(client_record)
+    db.flush()
+    matter = Matter(client_id=client_record.id, name="Concurrent Projection Matter")
+    db.add(matter)
+    db.flush()
+    source_collection_id = uuid.uuid4()
+    import_job = MatterDocumentImportJob(
+        matter_id=matter.id,
+        source_collection_id=source_collection_id,
+        selection_type="EXPLICIT",
+        selection={},
+        selection_summary="Concurrent projection test",
+        status="COMPLETED",
+        workflow_id=f"import:{uuid.uuid4()}",
+        created_by_user_id=root_admin.id,
+    )
+    db.add(import_job)
+    db.flush()
+    documents = [
+        MatterDocument(
+            matter_id=matter.id,
+            source_collection_id=source_collection_id,
+            collection_item_id=uuid.uuid4(),
+            added_by_import_job_id=import_job.id,
+        )
+        for _ in range(6)
+    ]
+    db.add_all(documents)
+    db.commit()
+
+    lock = threading.Lock()
+    active_workers = 0
+    maximum_workers = 0
+
+    def projection(_db, document, _definitions, **_kwargs):
+        nonlocal active_workers, maximum_workers
+        with lock:
+            active_workers += 1
+            maximum_workers = max(maximum_workers, active_workers)
+        time.sleep(0.02)
+        with lock:
+            active_workers -= 1
+        return {"document_id": str(document.id)}
+
+    monkeypatch.setattr("app.search.service.build_document_projection", projection)
+    documents_by_id = {document.id: document for document in documents}
+
+    class WorkerSession:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *_args):
+            return None
+
+        def get(self, _model, document_id):
+            return documents_by_id.get(document_id)
+
+    monkeypatch.setattr(
+        "app.search.service.sessionmaker",
+        lambda **_kwargs: WorkerSession,
+    )
+    real_get_bind = db.get_bind
+
+    def projection_bind(*args, **kwargs):
+        if args or kwargs:
+            return real_get_bind(*args, **kwargs)
+        return SimpleNamespace(dialect=SimpleNamespace(name="postgresql"))
+
+    monkeypatch.setattr(db, "get_bind", projection_bind)
+    fake = Mock()
+    captured_operations: list[tuple[str, str, dict]] = []
+    fake.bulk.side_effect = lambda _index, operations: captured_operations.extend(operations)
+    manager = SearchIndexManager(
+        db,
+        fake,
+        Settings(search_bulk_batch_size=10, search_projection_document_concurrency=3),
+    )
+
+    manager._bulk_upsert("concurrent-index", documents, [])
+
+    assert maximum_workers >= 2
+    assert [operation[1] for operation in captured_operations] == [str(document.id) for document in documents]
+
+
 def test_index_manager_adds_metadata_mapping_and_backfills_in_place(db: Session) -> None:
     tenant = Tenant(slug="search-tenant", name="Search Tenant", status="ACTIVE", is_root=True)
     db.add(tenant)
@@ -852,7 +1106,7 @@ def test_index_manager_requires_confirmation_for_existing_metadata_mapping_chang
     fake = FakeIndexClient()
     manager = SearchIndexManager(db, fake, Settings(opensearch_index_prefix="test"))  # type: ignore[arg-type]
     manager.ensure(matter.id)
-    issue.facetable = True
+    issue.normalize_to_lowercase = True
     db.commit()
 
     with pytest.raises(SearchReindexRequired) as required:
@@ -976,6 +1230,51 @@ def test_matter_creation_queues_index_and_search_waits_for_active_generation(
     )
     assert search_response.status_code == 409
     assert search_response.json()["error"]["message"] == "Matter search index is not ready"
+
+
+def test_search_index_status_reports_missing_index_on_configured_server(
+    client: TestClient,
+    root_token: str,
+    db: Session,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    headers = auth(root_token)
+    tenant_id = client.get("/v1/auth/me", headers=headers).json()["tenant_id"]
+    created_client = client.post(
+        f"/v1/tenants/{tenant_id}/clients",
+        headers=headers,
+        json={"name": "Missing Index Client"},
+    ).json()
+    matter = client.post(
+        f"/v1/clients/{created_client['id']}/matters",
+        headers=headers,
+        json={"name": "Missing Index Matter"},
+    ).json()
+    generation = SearchIndexGeneration(
+        matter_id=uuid.UUID(matter["id"]),
+        generation=1,
+        index_name="pvr-missing-v000001",
+        alias_name="pvr-missing",
+        schema_hash="a" * 64,
+        schema_snapshot={},
+        status="ACTIVE",
+        document_count=178_093,
+        activated_at=datetime.now(timezone.utc),
+    )
+    db.add(generation)
+    db.commit()
+    fake = FakeIndexClient()
+    monkeypatch.setattr("app.routers.search.OpenSearchClient", lambda _settings: fake)
+
+    response = client.get(f"/v1/matters/{matter['id']}/search-indexes", headers=headers)
+
+    assert response.status_code == 200, response.text
+    [reported] = response.json()
+    assert reported["document_count"] == 178_093
+    assert reported["physical_index_exists"] is False
+    assert reported["alias_points_to_index"] is False
+    assert reported["live_document_count"] == 0
+    assert reported["verification_error"] is None
 
 
 def test_reindex_confirmation_requeues_the_schema_operation(

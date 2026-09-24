@@ -16,4 +16,5 @@ export const MatterDefinitionRevisionReadSourceKind = {
   DOCX: 'DOCX',
   AGENT_EDIT: 'AGENT_EDIT',
   USER_EDIT: 'USER_EDIT',
+  ASSESSMENT_REFINEMENT: 'ASSESSMENT_REFINEMENT',
 } as const;

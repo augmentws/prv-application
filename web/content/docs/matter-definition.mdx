@@ -52,6 +52,10 @@ Select **Assessment** in the right panel, then select **New** to test one immuta
 
 Requests above 1,000 documents show a capacity warning. A matter administrator can continue only after selecting the explicit **Continue with N documents** acknowledgment. This is currently a warning rather than a hard cost limit; future controls may add budgets and provider-price estimates.
 
+**Use Batch API** is selected by default when a new assessment is created. The assessment pins the resolved model for each workflow role so a later environment or managed-skill model change cannot mix providers or models inside the run. When the pinned document-analysis model has a registered provider Batch API adapter, eligible single-window document summaries are submitted asynchronously in durable provider batches. Provider job identifiers, status, request manifests, results, and token usage survive worker restarts. Long documents that require dependent map/reduce calls continue through the real-time path, as do all documents when batching is cleared.
+
+Gemini is the first registered Batch API adapter. Changing the configured model to a provider without a registered adapter does not prevent assessments from running: document analysis automatically uses the existing real-time structured-model path. This capability-based fallback keeps model selection independent from workflow behavior while allowing more provider adapters to be added without changing the assessment API. Provider batches can take substantially longer than real-time calls; Gemini documents a target turnaround of up to 24 hours. Canceling the assessment also makes a best-effort request to cancel its active provider batches.
+
 The workflow:
 
 1. converts the selected revision into controlled keyword, semantic, or hybrid retrieval requests;
@@ -59,9 +63,20 @@ The workflow:
 3. creates a cited structured analysis for each document with available text;
 4. synthesizes recurring fit findings, diagnostic batch topics, and consolidated clarification questions.
 
+Each refinement question includes one to three model-suggested policy answers. Select a suggestion to copy it into
+the answer field, or enter a custom answer. Suggestions are conveniences rather than additional model decisions;
+the saved reviewer answer is authoritative. A question can also be dismissed when it should not change the guidance.
+
+After every question is answered or dismissed, the workflow automatically creates a complete new reviewer-guidance
+draft when at least one question was answered. The refinement model starts with the exact revision that was assessed,
+applies the answered policy decisions, preserves unrelated guidance, and records the originating skill run. The new
+revision is never published automatically: review it in the guidance editor and use **Publish current draft** when it
+is ready. If the current guidance changed after the assessment began, draft creation fails rather than overwriting the
+newer revision. Dismissing every question creates no draft.
+
 The screen shows planning, retrieval, batch construction, summarization, and synthesis progress. During document analysis, summarized, skipped, and failed counts are read from the live document-run records so they do not wait for the parent workflow to receive child results in selection order. After batch construction the screen also shows the selected-document count, estimated analysis tokens and estimator, generated query plan, workflow token/cache telemetry, and a link to the frozen batch. Failed skill attempts in the execution details are retry history and are not the same as the number of failed documents. Per-document skill-run details remain available while a run is active or needs diagnosis; successful completed assessments omit that large list.
 
-Document analyses share the configured provider/model rate-limit bucket. When a provider returns HTTP 429, the workflow pauses that bucket, follows the provider's requested retry delay when available, and retries automatically. A large assessment can therefore remain in progress while it is intentionally paced below the provider quota.
+Real-time document analyses share the configured provider/model rate-limit bucket. When a provider returns HTTP 429, the workflow pauses that bucket, follows the provider's requested retry delay when available, and retries automatically. Batch API work is paced and scheduled by the provider instead.
 
 If an assessment finishes with failed documents, select **Retry failed documents**. The retry preserves successful summaries and skipped documents, reprocesses only failed documents, and then replaces the earlier synthesis and diagnostic batch-topic taxonomy with results from the recovered coverage. A fully failed assessment instead shows **Retry assessment** and resumes from the failed workflow stage.
 

@@ -49,6 +49,7 @@ import type {
 import { coreApi } from "@/lib/api-client";
 import type { BatchDocumentReference } from "@/lib/document-references";
 import { normalizeParagraphReference, parseParagraphNumbers } from "@/lib/document-references";
+import { NO_VALUE_FILTER_TOKEN } from "@/lib/search-filters";
 import { cn } from "@/lib/utils";
 
 const PAGE_SIZE = 50;
@@ -230,9 +231,13 @@ export function BatchReviewWorkspace({ matterId, batchId, initialDocumentId, ini
     }), [definitions.data]);
   const searchRequest = useMemo<MatterSearchRequest>(() => {
     const definitionByKey = new Map(facetDefinitions.map((definition) => [definition.key, definition]));
-    const searchFilters: MatterSearchFilter[] = Object.entries(filters).flatMap(([key, values]) => {
+    const searchFilters = Object.entries(filters).flatMap<MatterSearchFilter>(([key, values]) => {
       const definition = definitionByKey.get(key);
-      return definition && values.length ? [{ field: key, operator: "IN", values: values.map((value) => typedFacetValue(value, definition)) }] : [];
+      if (!definition || !values.length) return [];
+      const includeMissing = values.includes(NO_VALUE_FILTER_TOKEN);
+      const selectedValues = values.filter((value) => value !== NO_VALUE_FILTER_TOKEN);
+      if (!selectedValues.length && includeMissing) return [{ field: key, operator: "NOT_EXISTS" }];
+      return [{ field: key, operator: "IN", values: selectedValues.map((value) => typedFacetValue(value, definition)), ...(includeMissing ? { include_missing: true } : {}) }];
     });
     const effectiveMode = query.trim() ? searchMode : "KEYWORD";
     return {
@@ -318,7 +323,10 @@ export function BatchReviewWorkspace({ matterId, batchId, initialDocumentId, ini
     }
     if (nextOffset) params.set("page", String(Math.floor(nextOffset / PAGE_SIZE) + 1));
     for (const [key, values] of Object.entries(filters)) {
-      for (const value of values) params.append(`f_${key}`, value);
+      for (const value of values) {
+        if (value === NO_VALUE_FILTER_TOKEN) params.set(`m_${key}`, "1");
+        else params.append(`f_${key}`, value);
+      }
     }
     if (documentId) params.set("document", documentId);
     if (documentId && nextParagraphReference) params.set("paragraph", nextParagraphReference);
@@ -588,12 +596,16 @@ function BatchFacetSection({ matterId, batchId, searchRequest, definition, selec
   });
   const options = useMemo(() => {
     const available = new Map((values.data?.values ?? []).map((option) => [facetToken(option.value), option]));
+    if ((values.data?.missing_count ?? 0) > 0 || selected.includes(NO_VALUE_FILTER_TOKEN)) {
+      available.set(NO_VALUE_FILTER_TOKEN, { value: NO_VALUE_FILTER_TOKEN, count: values.data?.missing_count ?? 0 });
+    }
     for (const token of selected) {
       if (!available.has(token)) available.set(token, { value: token, count: 0 });
     }
     return [...available.values()];
-  }, [selected, values.data?.values]);
-  const labelFor = (token: string) => definition.key === "custodian" ? custodianNames.get(token) ?? token
+  }, [selected, values.data?.missing_count, values.data?.values]);
+  const labelFor = (token: string) => token === NO_VALUE_FILTER_TOKEN ? "No value"
+    : definition.key === "custodian" ? custodianNames.get(token) ?? token
     : definition.type === "ENUM" ? enumLabels.get(token) ?? token
       : definition.type === "BOOLEAN" ? token === "true" ? "Yes" : "No"
         : definition.key === "file_extension" ? `.${token.replace(/^\./, "")}` : token;

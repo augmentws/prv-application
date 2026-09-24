@@ -398,6 +398,7 @@ def create_matter_metadata_definition(
     resolution_policy: ResolutionPolicy = "EXPLICIT_ONLY",
     searchable: bool = True,
     facetable: bool = False,
+    normalize_to_lowercase: bool = False,
     reviewable: bool = True,
     ai_assignable: bool = False,
 ) -> dict[str, Any]:
@@ -416,6 +417,7 @@ def create_matter_metadata_definition(
         "resolution_policy": resolution_policy,
         "searchable": searchable,
         "facetable": facetable,
+        "normalize_to_lowercase": normalize_to_lowercase,
         "reviewable": reviewable,
         "ai_assignable": ai_assignable,
     }
@@ -430,6 +432,7 @@ def create_matter_metadata_definition(
         resolution_policy=resolution_policy,
         searchable=searchable,
         facetable=facetable,
+        normalize_to_lowercase=normalize_to_lowercase,
         reviewable=reviewable,
         ai_assignable=ai_assignable,
     )
@@ -467,6 +470,7 @@ def update_matter_metadata_definition(
     resolution_policy: ResolutionPolicy | None = None,
     searchable: bool | None = None,
     facetable: bool | None = None,
+    normalize_to_lowercase: bool | None = None,
     reviewable: bool | None = None,
     ai_assignable: bool | None = None,
     status: ResourceStatus | None = None,
@@ -483,6 +487,7 @@ def update_matter_metadata_definition(
             "resolution_policy": resolution_policy,
             "searchable": searchable,
             "facetable": facetable,
+            "normalize_to_lowercase": normalize_to_lowercase,
             "reviewable": reviewable,
             "ai_assignable": ai_assignable,
             "status": status,

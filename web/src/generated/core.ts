@@ -70,6 +70,7 @@ import type {
   ListAgentConversationsV1MattersMatterIdAgentConversationsGetParams,
   ListAgentPackagesV1AgentPackagesGetParams,
   ListAvailableMatterAgentsV1MattersMatterIdAgentsGetParams,
+  ListBulkTagJobsV1MattersMatterIdBulkTagJobsGetParams,
   ListCollectionItemsV1CollectionsCollectionIdItemsGetParams,
   ListDocumentImportsV1MattersMatterIdDocumentImportsGetParams,
   ListEmbeddingJobsV1MattersMatterIdEmbeddingJobsGetParams,
@@ -79,6 +80,8 @@ import type {
   ListSearchOperationsV1MattersMatterIdSearchOperationsGetParams,
   ListTopicJobsV1MattersMatterIdTopicJobsGetParams,
   LoginRequest,
+  MatterBulkTagCreate,
+  MatterBulkTagJobRead,
   MatterCreate,
   MatterDateHistogramRequest,
   MatterDateHistogramResponse,
@@ -417,6 +420,182 @@ export const meV1AuthMeGet = async ( options?: RequestInit): Promise<meV1AuthMeG
 
   const data: meV1AuthMeGetResponse['data'] = body ? JSON.parse(body) : {}
   return { data, status: res.status, headers: res.headers } as meV1AuthMeGetResponse
+}
+
+
+
+export type createBulkTagJobV1MattersMatterIdBulkTagJobsPostResponse202 = {
+  data: MatterBulkTagJobRead
+  status: 202
+}
+
+export type createBulkTagJobV1MattersMatterIdBulkTagJobsPostResponse422 = {
+  data: HTTPValidationError
+  status: 422
+}
+
+export type createBulkTagJobV1MattersMatterIdBulkTagJobsPostResponseSuccess = (createBulkTagJobV1MattersMatterIdBulkTagJobsPostResponse202) & {
+  headers: Headers;
+};
+export type createBulkTagJobV1MattersMatterIdBulkTagJobsPostResponseError = (createBulkTagJobV1MattersMatterIdBulkTagJobsPostResponse422) & {
+  headers: Headers;
+};
+
+export type createBulkTagJobV1MattersMatterIdBulkTagJobsPostResponse = (createBulkTagJobV1MattersMatterIdBulkTagJobsPostResponseSuccess | createBulkTagJobV1MattersMatterIdBulkTagJobsPostResponseError)
+
+export const getCreateBulkTagJobV1MattersMatterIdBulkTagJobsPostUrl = (matterId: string,) => {
+
+
+
+
+  return `/api/core/v1/matters/${matterId}/bulk-tag-jobs`
+}
+
+/**
+ * @summary Create Bulk Tag Job
+ */
+export const createBulkTagJobV1MattersMatterIdBulkTagJobsPost = async (matterId: string,
+    matterBulkTagCreate: MatterBulkTagCreate, options?: RequestInit): Promise<createBulkTagJobV1MattersMatterIdBulkTagJobsPostResponse> => {
+
+    const getHeaders = (h?: NonNullable<RequestInit['headers']>): Record<string, string | readonly string[]> => {
+    if (!h) return {};
+    if (h instanceof Headers) return Object.fromEntries(h.entries());
+    if (Symbol.iterator in h) {
+      return Object.fromEntries(
+        Array.from(h as Iterable<Iterable<string>>, (entry) => Array.from(entry) as [string, string]),
+      );
+    }
+    const headers: Record<string, string | readonly string[]> = {};
+    for (const [name, value] of Object.entries<string | readonly string[] | undefined>(h)) {
+      if (value !== undefined) headers[name] = value;
+    }
+    return headers;
+  };
+const res = await fetch(getCreateBulkTagJobV1MattersMatterIdBulkTagJobsPostUrl(matterId),
+  {
+    ...options,
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json', ...getHeaders(options?.headers) },
+    body: JSON.stringify(matterBulkTagCreate)
+  }
+)
+
+
+  const body = [204, 205, 304].includes(res.status) ? null : await res.text();
+
+  const data: createBulkTagJobV1MattersMatterIdBulkTagJobsPostResponse['data'] = body ? JSON.parse(body) : {}
+  return { data, status: res.status, headers: res.headers } as createBulkTagJobV1MattersMatterIdBulkTagJobsPostResponse
+}
+
+
+
+export type listBulkTagJobsV1MattersMatterIdBulkTagJobsGetResponse200 = {
+  data: MatterBulkTagJobRead[]
+  status: 200
+}
+
+export type listBulkTagJobsV1MattersMatterIdBulkTagJobsGetResponse422 = {
+  data: HTTPValidationError
+  status: 422
+}
+
+export type listBulkTagJobsV1MattersMatterIdBulkTagJobsGetResponseSuccess = (listBulkTagJobsV1MattersMatterIdBulkTagJobsGetResponse200) & {
+  headers: Headers;
+};
+export type listBulkTagJobsV1MattersMatterIdBulkTagJobsGetResponseError = (listBulkTagJobsV1MattersMatterIdBulkTagJobsGetResponse422) & {
+  headers: Headers;
+};
+
+export type listBulkTagJobsV1MattersMatterIdBulkTagJobsGetResponse = (listBulkTagJobsV1MattersMatterIdBulkTagJobsGetResponseSuccess | listBulkTagJobsV1MattersMatterIdBulkTagJobsGetResponseError)
+
+export const getListBulkTagJobsV1MattersMatterIdBulkTagJobsGetUrl = (matterId: string,
+    params?: ListBulkTagJobsV1MattersMatterIdBulkTagJobsGetParams,) => {
+  const normalizedParams = new URLSearchParams();
+
+  Object.entries(params || {}).forEach(([key, value]) => {
+
+    if (value !== undefined) {
+      normalizedParams.append(key, value === null ? 'null' : String(value))
+    }
+  });
+
+  const stringifiedParams = normalizedParams.toString();
+
+  return stringifiedParams.length > 0 ? `/api/core/v1/matters/${matterId}/bulk-tag-jobs?${stringifiedParams}` : `/api/core/v1/matters/${matterId}/bulk-tag-jobs`
+}
+
+/**
+ * @summary List Bulk Tag Jobs
+ */
+export const listBulkTagJobsV1MattersMatterIdBulkTagJobsGet = async (matterId: string,
+    params?: ListBulkTagJobsV1MattersMatterIdBulkTagJobsGetParams, options?: RequestInit): Promise<listBulkTagJobsV1MattersMatterIdBulkTagJobsGetResponse> => {
+
+  const res = await fetch(getListBulkTagJobsV1MattersMatterIdBulkTagJobsGetUrl(matterId,params),
+  {
+    ...options,
+    method: 'GET'
+
+
+  }
+)
+
+
+  const body = [204, 205, 304].includes(res.status) ? null : await res.text();
+
+  const data: listBulkTagJobsV1MattersMatterIdBulkTagJobsGetResponse['data'] = body ? JSON.parse(body) : {}
+  return { data, status: res.status, headers: res.headers } as listBulkTagJobsV1MattersMatterIdBulkTagJobsGetResponse
+}
+
+
+
+export type getBulkTagJobV1MattersMatterIdBulkTagJobsJobIdGetResponse200 = {
+  data: MatterBulkTagJobRead
+  status: 200
+}
+
+export type getBulkTagJobV1MattersMatterIdBulkTagJobsJobIdGetResponse422 = {
+  data: HTTPValidationError
+  status: 422
+}
+
+export type getBulkTagJobV1MattersMatterIdBulkTagJobsJobIdGetResponseSuccess = (getBulkTagJobV1MattersMatterIdBulkTagJobsJobIdGetResponse200) & {
+  headers: Headers;
+};
+export type getBulkTagJobV1MattersMatterIdBulkTagJobsJobIdGetResponseError = (getBulkTagJobV1MattersMatterIdBulkTagJobsJobIdGetResponse422) & {
+  headers: Headers;
+};
+
+export type getBulkTagJobV1MattersMatterIdBulkTagJobsJobIdGetResponse = (getBulkTagJobV1MattersMatterIdBulkTagJobsJobIdGetResponseSuccess | getBulkTagJobV1MattersMatterIdBulkTagJobsJobIdGetResponseError)
+
+export const getGetBulkTagJobV1MattersMatterIdBulkTagJobsJobIdGetUrl = (matterId: string,
+    jobId: string,) => {
+
+
+
+
+  return `/api/core/v1/matters/${matterId}/bulk-tag-jobs/${jobId}`
+}
+
+/**
+ * @summary Get Bulk Tag Job
+ */
+export const getBulkTagJobV1MattersMatterIdBulkTagJobsJobIdGet = async (matterId: string,
+    jobId: string, options?: RequestInit): Promise<getBulkTagJobV1MattersMatterIdBulkTagJobsJobIdGetResponse> => {
+
+  const res = await fetch(getGetBulkTagJobV1MattersMatterIdBulkTagJobsJobIdGetUrl(matterId,jobId),
+  {
+    ...options,
+    method: 'GET'
+
+
+  }
+)
+
+
+  const body = [204, 205, 304].includes(res.status) ? null : await res.text();
+
+  const data: getBulkTagJobV1MattersMatterIdBulkTagJobsJobIdGetResponse['data'] = body ? JSON.parse(body) : {}
+  return { data, status: res.status, headers: res.headers } as getBulkTagJobV1MattersMatterIdBulkTagJobsJobIdGetResponse
 }
 
 

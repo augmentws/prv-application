@@ -39,6 +39,36 @@ describe("assessmentCanRetry", () => {
 });
 
 describe("MatterDefinitionAssessmentPanel regeneration", () => {
+  it("defaults new assessments to provider batching and sends the selected mode", async () => {
+    let launchPayload: Record<string, unknown> | undefined;
+    vi.mocked(coreApi).mockImplementation(async (path, init) => {
+      if (path === "/v1/matters/matter-1/definition-assessments" && init?.method === "POST") {
+        launchPayload = JSON.parse(String(init.body));
+        return { id: "assessment-new" } as never;
+      }
+      if (path === "/v1/matters/matter-1/definition-assessments") return [] as never;
+      throw new Error(`Unexpected API request: ${path}`);
+    });
+    const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false }, mutations: { retry: false } } });
+    const user = userEvent.setup();
+    render(
+      <QueryClientProvider client={queryClient}>
+        <MatterDefinitionAssessmentPanel
+          matterId="matter-1"
+          revisions={[{ id: "revision-1", revision: 1 } as never]}
+          publishedRevision={1}
+        />
+      </QueryClientProvider>,
+    );
+
+    await user.click(await screen.findByRole("button", { name: "New" }));
+    const batching = screen.getByRole("checkbox", { name: /Use Batch API/ });
+    expect(batching).toBeChecked();
+    await user.type(screen.getByLabelText("Assessment name"), "Batch assessment");
+    await user.click(screen.getByRole("button", { name: "Start assessment" }));
+    await waitFor(() => expect(launchPayload?.use_batching).toBe(true));
+  });
+
   it("offers summary reuse or frozen-batch reanalysis", async () => {
     const assessment = {
       id: "assessment-1",
@@ -96,5 +126,76 @@ describe("MatterDefinitionAssessmentPanel regeneration", () => {
       "/v1/matters/matter-1/definition-assessments/assessment-1/regenerate-document-analyses",
       { method: "POST" },
     ));
+  });
+
+  it("lets a reviewer select a suggested refinement answer", async () => {
+    const assessment = {
+      id: "assessment-1",
+      name: "Coverage assessment",
+      status: "COMPLETED",
+      guidance_refinement_status: "NOT_READY",
+      review_batch_id: null,
+      selected_count: 2,
+      summarized_count: 2,
+      skipped_count: 0,
+      failed_count: 0,
+      partial_coverage_count: 0,
+      invalid_result_count: 0,
+      estimated_input_tokens: 2000,
+      coverage_snapshot: { status: "SUFFICIENT" },
+      synthesis_result: {},
+    };
+    const question = {
+      id: "question-1",
+      question: "Should indirect storm claims be included?",
+      rationale: "The existing boundary is ambiguous.",
+      priority: "HIGH",
+      status: "OPEN",
+      evidence: [],
+      suggested_answers: ["Include indirect claims.", "Exclude indirect claims."],
+      answer: null,
+    };
+    let updatePayload: Record<string, unknown> | undefined;
+    vi.mocked(coreApi).mockImplementation(async (path, init) => {
+      if (path === "/v1/matters/matter-1/definition-assessments") return [assessment] as never;
+      if (path.endsWith("/queries")) return [] as never;
+      if (path.endsWith("/questions") && !init?.method) return [question] as never;
+      if (path.endsWith("/questions/question-1") && init?.method === "PUT") {
+        const payload = JSON.parse(String(init.body)) as Record<string, unknown>;
+        updatePayload = payload;
+        return { ...question, status: "ANSWERED", answer: payload.answer } as never;
+      }
+      if (path.includes("/execution?include_skill_runs=false")) return {
+        request_count: 0,
+        input_tokens: 0,
+        cached_input_tokens: 0,
+        cache_write_tokens: 0,
+        output_tokens: 0,
+        steps: [],
+        skill_runs: [],
+      } as never;
+      throw new Error(`Unexpected API request: ${path}`);
+    });
+    const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false }, mutations: { retry: false } } });
+    const user = userEvent.setup();
+    render(
+      <QueryClientProvider client={queryClient}>
+        <MatterDefinitionAssessmentPanel
+          matterId="matter-1"
+          revisions={[{ revision: 1 } as never]}
+          publishedRevision={1}
+        />
+      </QueryClientProvider>,
+    );
+
+    await user.click(await screen.findByRole("button", { name: "Include indirect claims." }));
+    expect(screen.getByPlaceholderText("Select a suggestion or enter a custom answer…")).toHaveValue(
+      "Include indirect claims.",
+    );
+    await user.click(screen.getByRole("button", { name: "Answer" }));
+    await waitFor(() => expect(updatePayload).toEqual({
+      status: "ANSWERED",
+      answer: "Include indirect claims.",
+    }));
   });
 });

@@ -35,7 +35,7 @@ class WorkflowSpec:
 
 MATTER_DEFINITION_ASSESSMENT_SPEC = WorkflowSpec(
     key="matter_definition_assessment_v1",
-    code_version="7",
+    code_version="8",
     name="Matter Definition assessment",
     description="Builds a diagnostic batch, analyzes its documents, and synthesizes clarification questions.",
     roles=(
@@ -56,7 +56,14 @@ MATTER_DEFINITION_ASSESSMENT_SPEC = WorkflowSpec(
         WorkflowRoleSpec(
             key="assessment_synthesis",
             input_schema_key="matter_definition_assessment_synthesis_input_v2",
-            output_schema_key="matter_definition_assessment_synthesis_output_v3",
+            output_schema_key="matter_definition_assessment_synthesis_output_v4",
+            allowed_capabilities=frozenset({"structured_output", "long_context"}),
+            allowed_tool_keys=frozenset(),
+        ),
+        WorkflowRoleSpec(
+            key="guidance_refinement",
+            input_schema_key="matter_definition_guidance_refinement_input_v1",
+            output_schema_key="matter_definition_guidance_refinement_output_v1",
             allowed_capabilities=frozenset({"structured_output", "long_context"}),
             allowed_tool_keys=frozenset(),
         ),

@@ -17,6 +17,7 @@ export interface MatterDefinitionAssessmentQuestionRead {
   priority: MatterDefinitionAssessmentQuestionReadPriority;
   blocking: boolean;
   evidence: MatterDefinitionAssessmentQuestionReadEvidenceItem[];
+  suggested_answers: string[];
   status: MatterDefinitionAssessmentQuestionReadStatus;
   answer: string | null;
   answered_by_user_id: string | null;

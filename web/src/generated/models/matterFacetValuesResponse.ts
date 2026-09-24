@@ -11,4 +11,6 @@ export interface MatterFacetValuesResponse {
   /** @pattern ^[a-z][a-z0-9_]{0,99}$ */
   field: string;
   values: MatterSearchFacetValue[];
+  /** @minimum 0 */
+  missing_count?: number;
 }

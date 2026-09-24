@@ -2,7 +2,7 @@
 
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import type { ColumnDef } from "@tanstack/react-table";
-import { Ban, BriefcaseBusiness, ChevronRight, Database, FileSearch, FileText, ListChecks, Play, RotateCcw, Search, Sparkles, UsersRound } from "lucide-react";
+import { Ban, BriefcaseBusiness, CheckCircle2, ChevronRight, Database, FileSearch, FileText, ListChecks, Play, RotateCcw, Search, Sparkles, Tags, UsersRound } from "lucide-react";
 import Link from "next/link";
 import { useRouter } from "next/navigation";
 import { useCallback, useMemo } from "react";
@@ -18,7 +18,6 @@ import { type CreateMetadataGroupValues } from "@/components/forms/create-metada
 import { CreateReviewBatchDialog } from "@/components/forms/create-review-batch-dialog";
 import { SaveMatterTemplateDialog, type SaveMatterTemplateValues } from "@/components/forms/save-matter-template-dialog";
 import { CreateTopicJobDialog } from "@/components/forms/create-topic-job-dialog";
-import { ReviewTopicProposalsDialog } from "@/components/forms/review-topic-proposals-dialog";
 import { HelpLink } from "@/components/help-link";
 import { MatterDefinitionPanel } from "@/components/matter-definition-panel";
 import { MetadataGroupsPanel } from "@/components/metadata-groups-panel";
@@ -29,8 +28,9 @@ import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
-import type { ClientRead, MatterDocumentImportRead, MatterEmbeddingJobRead, MatterOverviewCounts, MatterRead, MatterTemplateRead, MatterTopicApplyRequest, MatterTopicJobCreate, MatterTopicJobRead, MetadataDefinitionCreate, MetadataDefinitionRead, MetadataGroupRead, ReviewBatchCreate, ReviewBatchRead, SearchIndexGenerationRead, SearchProjectionOperationRead, SearchProjectionRetryResponse, UserRead } from "@/generated/models";
+import type { ClientRead, MatterBulkTagJobRead, MatterDocumentImportRead, MatterEmbeddingJobRead, MatterOverviewCounts, MatterRead, MatterTemplateRead, MatterTopicJobCreate, MatterTopicJobRead, MetadataDefinitionCreate, MetadataDefinitionRead, MetadataGroupRead, ReviewBatchCreate, ReviewBatchRead, SearchIndexGenerationRead, SearchProjectionOperationRead, SearchProjectionRetryResponse, UserRead } from "@/generated/models";
 import { coreApi } from "@/lib/api-client";
+import { bulkTagDisplayStatus, bulkTagIsWaiting } from "@/lib/bulk-tag-jobs";
 import { formatDate } from "@/lib/format";
 
 type MatterTab = "overview" | "metadata" | "groups" | "definition" | "batches" | "jobs" | "search";
@@ -70,6 +70,12 @@ export function MatterView({ clientId, matterId, requestedTab, selectedJobId }: 
     queryFn: () => coreApi<MatterTopicJobRead[]>(`/v1/matters/${matterId}/topic-jobs`),
     enabled: tab === "jobs",
     refetchInterval: (query) => query.state.data?.some((job) => ["QUEUED", "SAMPLING", "CLUSTERING", "PUBLISHING"].includes(job.status)) ? 2000 : false,
+  });
+  const bulkTagJobs = useQuery({
+    queryKey: ["matter-bulk-tag-jobs", matterId],
+    queryFn: () => coreApi<MatterBulkTagJobRead[]>(`/v1/matters/${matterId}/bulk-tag-jobs?limit=100`),
+    enabled: tab === "jobs",
+    refetchInterval: (query) => query.state.data?.some((job) => ["QUEUED", "SNAPSHOTTING", "RUNNING"].includes(job.status)) ? 2000 : false,
   });
   const reviewBatches = useQuery({
     queryKey: ["review-batches", matterId],
@@ -170,16 +176,6 @@ export function MatterView({ clientId, matterId, requestedTab, selectedJobId }: 
     },
     onError: (error) => toast.error(error instanceof Error ? error.message : "The topic clustering job could not be canceled."),
   });
-  const applyTopicJobMutation = useMutation({
-    mutationFn: ({ jobId, payload }: { jobId: string; payload: MatterTopicApplyRequest }) => coreApi<MatterTopicJobRead>(`/v1/matters/${matterId}/topic-jobs/${jobId}/apply`, { method: "POST", body: JSON.stringify(payload) }),
-    onSuccess: (updated) => {
-      queryClient.setQueryData<MatterTopicJobRead[]>(["matter-topic-jobs", matterId], (current) => current?.map((job) => job.id === updated.id ? updated : job));
-      void queryClient.invalidateQueries({ queryKey: ["metadata-definitions", matterId] });
-      void queryClient.invalidateQueries({ queryKey: ["metadata-groups", matterId] });
-      toast.success("The approved topics are being applied to the matter.");
-    },
-    onError: (error) => toast.error(error instanceof Error ? error.message : "The approved topics could not be applied."),
-  });
   const rebuildSearchMutation = useMutation({
     mutationFn: () => coreApi<SearchProjectionOperationRead>(`/v1/matters/${matterId}/search-indexes/rebuild`, { method: "POST" }),
     onSuccess: (operation) => {
@@ -239,7 +235,6 @@ export function MatterView({ clientId, matterId, requestedTab, selectedJobId }: 
   const cloneMatter = useCallback((values: CloneMatterValues) => cloneMutation.mutateAsync(values).then(() => undefined), [cloneMutation]);
   const createReviewBatch = useCallback((values: ReviewBatchCreate) => createReviewBatchMutation.mutateAsync(values).then(() => undefined), [createReviewBatchMutation]);
   const assignBatchCodingGroups = useCallback((batchId: string, codingGroupIds: string[]) => assignBatchCodingGroupsMutation.mutateAsync({ batchId, codingGroupIds }).then(() => undefined), [assignBatchCodingGroupsMutation]);
-  const applyTopics = useCallback((jobId: string, payload: MatterTopicApplyRequest) => applyTopicJobMutation.mutateAsync({ jobId, payload }).then(() => undefined), [applyTopicJobMutation]);
   const updateDefinitionCache = useCallback((updated: MetadataDefinitionRead) => {
     queryClient.setQueryData<MetadataDefinitionRead[]>(["metadata-definitions", matterId], (current) => current?.map((definition) => definition.id === updated.id ? updated : definition));
   }, [matterId, queryClient]);
@@ -249,7 +244,7 @@ export function MatterView({ clientId, matterId, requestedTab, selectedJobId }: 
     { id: "allowed_values", header: "Enum values", size: 220, cell: ({ row }) => row.original.type === "ENUM" ? <span className="text-muted-foreground">{(row.original.allowed_values ?? []).filter((value) => value.active !== false).length} active · {(row.original.allowed_values ?? []).filter((value) => value.active === false).length} inactive</span> : <span className="text-muted-foreground">—</span> },
     { accessorKey: "value_source", header: "Source", cell: ({ row }) => <Badge variant="outline">{row.original.value_source.toLowerCase()}</Badge> },
     { accessorKey: "cardinality", header: "Values", cell: ({ row }) => <span className="text-muted-foreground">{row.original.cardinality.toLowerCase()}</span> },
-    { id: "behavior", header: "Behavior", cell: ({ row }) => <div className="flex flex-wrap gap-1">{row.original.searchable ? <Badge variant="outline">search</Badge> : null}{row.original.facetable ? <Badge variant="outline">filter</Badge> : null}{row.original.ai_assignable ? <Badge variant="accent">agent</Badge> : null}</div> },
+    { id: "behavior", header: "Behavior", cell: ({ row }) => <div className="flex flex-wrap gap-1">{row.original.searchable ? <Badge variant="outline">search</Badge> : null}{row.original.facetable ? <Badge variant="outline">filter</Badge> : null}{row.original.normalize_to_lowercase ? <Badge variant="outline">lowercase</Badge> : null}{row.original.ai_assignable ? <Badge variant="accent">agent</Badge> : null}</div> },
     { accessorKey: "status", header: "Status", cell: ({ row }) => <StatusBadge status={row.original.status} /> },
     { id: "actions", header: "", size: 150, cell: ({ row }) => row.original.type === "ENUM" ? <EnumMetadataEditor matterId={matterId} definition={row.original} onChange={updateDefinitionCache} /> : null },
   ], [matterId, updateDefinitionCache]);
@@ -290,8 +285,27 @@ export function MatterView({ clientId, matterId, requestedTab, selectedJobId }: 
     { accessorKey: "topic_count", header: "Topics", cell: ({ row }) => <div><span className="tabular-nums">{row.original.topic_count.toLocaleString()}</span>{row.original.clusters?.length ? <p className="max-w-64 truncate text-xs text-muted-foreground" title={row.original.clusters.map((cluster) => cluster.name).join(", ")}>{row.original.clusters.slice(0, 3).map((cluster) => cluster.name).join(", ")}</p> : null}</div> },
     { accessorKey: "assigned_document_count", header: "Assigned", cell: ({ row }) => <span className="tabular-nums">{row.original.assigned_document_count.toLocaleString()}</span> },
     { accessorKey: "created_at", header: "Created", cell: ({ row }) => <span className="whitespace-nowrap text-muted-foreground">{formatDate(row.original.created_at)}</span> },
-    { id: "actions", header: "", cell: ({ row }) => <div className="flex justify-end gap-2">{row.original.status === "AWAITING_REVIEW" ? <ReviewTopicProposalsDialog job={row.original} onApply={applyTopics} /> : null}{["QUEUED", "SAMPLING", "CLUSTERING", "AWAITING_REVIEW", "PUBLISHING"].includes(row.original.status) ? <Button size="sm" variant="outline" onClick={() => cancelTopicJobMutation.mutate(row.original.id)}><Ban />Cancel</Button> : null}</div> },
-  ], [applyTopics, cancelTopicJobMutation]);
+    { id: "actions", header: "", cell: ({ row }) => <div className="flex justify-end gap-2">{row.original.status === "AWAITING_REVIEW" ? <Button asChild size="sm"><Link href={`/app/clients/${clientId}/matters/${matterId}/topic-jobs/${row.original.id}`}><CheckCircle2 />Review topics</Link></Button> : null}{["QUEUED", "SAMPLING", "CLUSTERING", "AWAITING_REVIEW", "PUBLISHING"].includes(row.original.status) ? <Button size="sm" variant="outline" onClick={() => cancelTopicJobMutation.mutate(row.original.id)}><Ban />Cancel</Button> : null}</div> },
+  ], [cancelTopicJobMutation, clientId, matterId]);
+  const bulkTagJobColumns = useMemo<ColumnDef<MatterBulkTagJobRead>[]>(() => {
+    const definitionById = new Map((definitions.data ?? []).map((definition) => [definition.id, definition]));
+    return [
+      { id: "field", header: "Tag", cell: ({ row }) => {
+        const assignments = row.original.assignments.length ? row.original.assignments : [{ metadata_definition_id: row.original.metadata_definition_id, value: row.original.value }];
+        const label = assignments.map((assignment) => {
+          const definition = definitionById.get(assignment.metadata_definition_id);
+          return `${definition?.display_name ?? "Unknown field"}: ${formatBulkTagValue(assignment.value, definition)}`;
+        }).join("; ");
+        return <p className="max-w-80 truncate text-sm" title={label}>{label}</p>;
+      } },
+      { id: "selection", header: "Search", cell: ({ row }) => <span className="block max-w-72 truncate text-muted-foreground" title={bulkTagSearchLabel(row.original.search_definition)}>{bulkTagSearchLabel(row.original.search_definition)}</span> },
+      { accessorKey: "status", header: "Status", cell: ({ row }) => <div><StatusBadge status={bulkTagDisplayStatus(row.original)} />{row.original.error_message ? <p className="mt-1 max-w-64 truncate text-xs text-destructive" title={row.original.error_message}>{row.original.error_message}</p> : null}</div> },
+      { id: "progress", header: "Progress", cell: ({ row }) => <BulkTagProgress job={row.original} /> },
+      { accessorKey: "tagged_count", header: "Tagged", cell: ({ row }) => <span className="tabular-nums">{row.original.tagged_count.toLocaleString()}</span> },
+      { accessorKey: "failed_count", header: "Failed", cell: ({ row }) => <span className={row.original.failed_count ? "tabular-nums text-destructive" : "tabular-nums text-muted-foreground"}>{row.original.failed_count.toLocaleString()}</span> },
+      { accessorKey: "created_at", header: "Created", cell: ({ row }) => <span className="whitespace-nowrap text-muted-foreground">{formatDate(row.original.created_at)}</span> },
+    ];
+  }, [definitions.data]);
   const reviewBatchColumns = useMemo<ColumnDef<ReviewBatchRead>[]>(() => [
     { accessorKey: "name", header: "Batch", cell: ({ row }) => <div><p className="font-semibold">{row.original.name}</p>{row.original.description ? <p className="max-w-md truncate text-xs text-muted-foreground" title={row.original.description}>{row.original.description}</p> : null}</div> },
     { accessorKey: "selection_type", header: "Created from", cell: ({ row }) => <span className="text-muted-foreground">{batchSelectionLabel(row.original.selection_type)}</span> },
@@ -339,7 +353,11 @@ export function MatterView({ clientId, matterId, requestedTab, selectedJobId }: 
         : tab === "groups" ? definitions.isPending || groups.isPending ? <TableLoading /> : definitions.error || groups.error ? <QueryError message={definitions.error?.message ?? groups.error?.message} /> : <MetadataGroupsPanel definitions={definitions.data} groups={groups.data} onCreate={createGroup} onVisibilityChange={changeVisibility} />
         : tab === "definition" ? <MatterDefinitionPanel matterId={matterId} />
         : tab === "batches" ? reviewBatches.isPending || groups.isPending || tenantUsers.isPending ? <TableLoading /> : reviewBatches.error || groups.error || tenantUsers.error ? <QueryError message={reviewBatches.error?.message ?? groups.error?.message ?? tenantUsers.error?.message} /> : <div className="space-y-4"><div className="flex flex-wrap items-start justify-between gap-3"><div><h2 className="text-lg font-semibold">Review batches</h2><p className="text-sm text-muted-foreground">Freeze document sets for assignment, repeatable agent runs, and coding comparisons.</p></div><CreateReviewBatchDialog groups={groups.data} batches={reviewBatches.data} onCreate={createReviewBatch} /></div><DataTable columns={reviewBatchColumns} data={reviewBatches.data} emptyMessage="No review batches have been created for this matter." /></div>
-        : tab === "jobs" ? jobs.isPending || embeddingJobs.isPending || topicJobs.isPending ? <TableLoading /> : jobs.error || embeddingJobs.error || topicJobs.error ? <QueryError message={jobs.error?.message ?? embeddingJobs.error?.message ?? topicJobs.error?.message} /> : <div className="space-y-8">
+        : tab === "jobs" ? jobs.isPending || embeddingJobs.isPending || topicJobs.isPending || bulkTagJobs.isPending ? <TableLoading /> : jobs.error || embeddingJobs.error || topicJobs.error || bulkTagJobs.error ? <QueryError message={jobs.error?.message ?? embeddingJobs.error?.message ?? topicJobs.error?.message ?? bulkTagJobs.error?.message} /> : <div className="space-y-8">
+          <section className="space-y-4">
+            <div><h2 className="flex items-center gap-2 text-lg font-semibold"><Tags className="size-5 text-primary" />Bulk tagging</h2><p className="text-sm text-muted-foreground">Coding changes applied to the frozen results of a matter search.</p></div>
+            <DataTable columns={bulkTagJobColumns} data={bulkTagJobs.data} emptyMessage="No bulk tag jobs have been started for this matter." />
+          </section>
           <section className="space-y-4">
             <div className="flex flex-wrap items-start justify-between gap-3"><div><h2 className="text-lg font-semibold">Document embeddings</h2><p className="text-sm text-muted-foreground">Create sentence-aware chunks and vectors for every document in this matter.</p></div><Button onClick={() => createEmbeddingJobMutation.mutate()} disabled={createEmbeddingJobMutation.isPending || embeddingJobs.data.some((job) => ["QUEUED", "PLANNING", "RUNNING"].includes(job.status))}><Play />Generate embeddings</Button></div>
             <DataTable columns={embeddingJobColumns} data={embeddingJobs.data} emptyMessage="No embedding jobs have been started for this matter." />
@@ -394,6 +412,28 @@ function TopicProgress({ job }: { job: MatterTopicJobRead }) {
   const planning = ["QUEUED", "SAMPLING", "CLUSTERING"].includes(job.status);
   const awaitingReview = job.status === "AWAITING_REVIEW";
   return <div className="min-w-36"><div className="mb-1 h-1.5 overflow-hidden rounded-full bg-muted"><div className="h-full bg-primary" style={{ width: `${planning ? 8 : awaitingReview ? 0 : percent}%` }} /></div><span className="text-xs tabular-nums text-muted-foreground">{planning ? job.status.toLowerCase() : awaitingReview ? "Review required" : `${job.processed_document_count.toLocaleString()} / ${job.document_count.toLocaleString()}`}</span>{job.failed_count ? <span className="ml-2 text-xs text-destructive">{job.failed_count.toLocaleString()} failed</span> : null}</div>;
+}
+
+function BulkTagProgress({ job }: { job: MatterBulkTagJobRead }) {
+  const terminal = ["COMPLETED", "COMPLETED_WITH_ERRORS", "FAILED"].includes(job.status);
+  const percent = job.matched_count ? Math.min(100, Math.round((job.processed_count / job.matched_count) * 100)) : terminal ? 100 : 0;
+  return <div className="min-w-36"><div className="mb-1 h-1.5 overflow-hidden rounded-full bg-muted"><div className="h-full bg-primary" style={{ width: `${percent}%` }} /></div><span className="text-xs tabular-nums text-muted-foreground">{bulkTagIsWaiting(job) ? "Waiting for capacity" : `${job.processed_count.toLocaleString()} / ${job.matched_count.toLocaleString()} · ${percent}%`}</span></div>;
+}
+
+function bulkTagSearchLabel(searchDefinition: Record<string, unknown>) {
+  const query = typeof searchDefinition.query === "string" ? searchDefinition.query.trim() : "";
+  const filters = Array.isArray(searchDefinition.filters) ? searchDefinition.filters.length : 0;
+  if (query && filters) return `“${query}” + ${filters} ${filters === 1 ? "filter" : "filters"}`;
+  if (query) return `“${query}”`;
+  if (filters) return `${filters} ${filters === 1 ? "filter" : "filters"}`;
+  return "Frozen search";
+}
+
+function formatBulkTagValue(value: unknown, definition?: MetadataDefinitionRead): string {
+  if (Array.isArray(value)) return value.map((item) => formatBulkTagValue(item, definition)).join(", ");
+  const serialized = typeof value === "string" ? value : value == null ? "—" : JSON.stringify(value);
+  if (!definition || typeof value !== "string") return serialized;
+  return definition.allowed_values?.find((option) => option.key === value)?.label ?? serialized;
 }
 
 function JobDetail({ job, onCancel }: { job?: MatterDocumentImportRead; onCancel: (jobId: string) => void }) {

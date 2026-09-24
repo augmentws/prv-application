@@ -127,6 +127,14 @@ def _skill_version(db: Session, assessment: MatterDefinitionAssessmentRun, role_
     return version
 
 
+def _pinned_model(assessment: MatterDefinitionAssessmentRun, role_key: str) -> str | None:
+    models = assessment.configuration_snapshot.get("resolved_models")
+    if not isinstance(models, dict):
+        return None
+    value = models.get(role_key)
+    return value if isinstance(value, str) and value else None
+
+
 def _normalized_query(item: dict[str, Any], *, ordinal: int) -> tuple[dict[str, Any], MatterSearchRequest]:
     search_data = item.get("search") or item.get("search_request") or item.get("request")
     if not isinstance(search_data, dict):
@@ -174,6 +182,7 @@ def plan_retrieval(db: Session, assessment_id: uuid.UUID, *, model: Any | None =
     step.status = "RUNNING"
     step.started_at = step.started_at or utcnow()
     version = _skill_version(db, assessment, "retrieval_planner")
+    model = model if model is not None else _pinned_model(assessment, "retrieval_planner")
     output, _ = asyncio.run(
         execute_skill_run(
             db,
@@ -423,6 +432,7 @@ def analyze_document(
         paragraph_map,
         max_characters=settings.definition_assessment_map_max_characters,
     )
+    model = model if model is not None else _pinned_model(assessment, "document_analysis")
     output, skill_run = asyncio.run(
         _execute_document_analysis(
             db,
@@ -438,6 +448,37 @@ def analyze_document(
             model=model,
         )
     )
+    artifact_id = persist_document_analysis(
+        db,
+        assessment=assessment,
+        matter=matter,
+        revision=revision,
+        document=document,
+        run_document=run_document,
+        version=version,
+        source=source,
+        paragraph_map=paragraph_map,
+        output=output,
+        skill_run=skill_run,
+    )
+    db.commit()
+    return {"status": "COMPLETED", "artifact_id": str(artifact_id)}
+
+
+def persist_document_analysis(
+    db: Session,
+    *,
+    assessment: MatterDefinitionAssessmentRun,
+    matter: Matter,
+    revision: MatterDefinitionRevision,
+    document: MatterDocument,
+    run_document: ReviewBatchRunDocument,
+    version: SkillDefinitionVersion,
+    source,
+    paragraph_map: ParagraphMap,
+    output: dict[str, Any],
+    skill_run: SkillRun,
+) -> uuid.UUID:
     markdown = render_document_analysis_markdown(output)
     payload = {
         "schema_version": version.output_schema_key,
@@ -493,8 +534,7 @@ def analyze_document(
     skill_run.output_artifact_id = artifact.artifact_id
     run_document.status = "COMPLETED"
     run_document.completed_at = utcnow()
-    db.commit()
-    return {"status": "COMPLETED", "artifact_id": str(artifact.artifact_id)}
+    return artifact.artifact_id
 
 
 async def _execute_document_analysis(
@@ -884,6 +924,14 @@ def _validate_synthesis_refinement(
         raise ValueError("NO_REFINEMENT_WARRANTED requires no questions and no QUESTION_NEEDED dimensions")
     if questions and outcome != "QUESTIONS_PROPOSED":
         raise ValueError("clarification questions require QUESTIONS_PROPOSED")
+    for question in questions:
+        suggestions = question.get("suggested_answers") if isinstance(question, dict) else None
+        if not isinstance(suggestions, list) or not 1 <= len(suggestions) <= 3:
+            raise ValueError("clarification questions require one to three suggested answers")
+        if any(not isinstance(value, str) or not value.strip() for value in suggestions):
+            raise ValueError("clarification question suggested answers must be non-empty strings")
+        if len({value.strip().casefold() for value in suggestions}) != len(suggestions):
+            raise ValueError("clarification question suggested answers must be distinct")
 
     signals = refinement_signals or {}
     recurring_patterns = signals.get("recurring_near_miss_patterns") or []
@@ -965,6 +1013,10 @@ def _persist_synthesis(
     assessment: MatterDefinitionAssessmentRun,
     result: dict[str, Any],
 ) -> None:
+    assessment.guidance_refinement_status = "NOT_READY"
+    assessment.guidance_refinement_workflow_run_id = None
+    assessment.refined_matter_definition_revision_id = None
+    assessment.guidance_refinement_error_message = None
     db.execute(
         delete(MatterDefinitionAssessmentQuestion).where(
             MatterDefinitionAssessmentQuestion.assessment_run_id == assessment.id
@@ -989,6 +1041,11 @@ def _persist_synthesis(
                 priority=priority,
                 blocking=bool(item.get("blocking", False)),
                 evidence=item.get("evidence") if isinstance(item.get("evidence"), list) else [],
+                suggested_answers=[
+                    str(value).strip()
+                    for value in item.get("suggested_answers") or []
+                    if str(value).strip()
+                ][:3],
             )
         )
 
@@ -1118,6 +1175,7 @@ def synthesize_assessment(
         }
     else:
         version = _skill_version(db, assessment, "assessment_synthesis")
+        model = model if model is not None else _pinned_model(assessment, "assessment_synthesis")
         result, _ = asyncio.run(
             execute_skill_run(
                 db,

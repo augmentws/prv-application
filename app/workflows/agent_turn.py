@@ -93,6 +93,7 @@ def durable_create_matter_metadata_definition(
     resolution_policy: ResolutionPolicy = "EXPLICIT_ONLY",
     searchable: bool = True,
     facetable: bool = False,
+    normalize_to_lowercase: bool = False,
     reviewable: bool = True,
     ai_assignable: bool = False,
 ) -> dict:
@@ -109,6 +110,7 @@ def durable_create_matter_metadata_definition(
         resolution_policy,
         searchable,
         facetable,
+        normalize_to_lowercase,
         reviewable,
         ai_assignable,
     )
@@ -125,6 +127,7 @@ def durable_update_matter_metadata_definition(
     resolution_policy: ResolutionPolicy | None = None,
     searchable: bool | None = None,
     facetable: bool | None = None,
+    normalize_to_lowercase: bool | None = None,
     reviewable: bool | None = None,
     ai_assignable: bool | None = None,
     status: ResourceStatus | None = None,
@@ -139,6 +142,7 @@ def durable_update_matter_metadata_definition(
         resolution_policy,
         searchable,
         facetable,
+        normalize_to_lowercase,
         reviewable,
         ai_assignable,
         status,

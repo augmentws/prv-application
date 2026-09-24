@@ -1,7 +1,7 @@
 "use client";
 
 import { Activity, AlertTriangle, Clock3, Database, LoaderCircle, RefreshCw, RotateCcw } from "lucide-react";
-import { useState } from "react";
+import { useEffect, useRef, useState } from "react";
 
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
@@ -25,7 +25,16 @@ interface SearchIndexPanelProps {
   retryableDocumentCount?: number;
 }
 
-type IndexHealth = "NOT_CREATED" | "BUILDING" | "ACTION_REQUIRED" | "READY" | "BEHIND" | "FAILED";
+type IndexHealth = "NOT_CREATED" | "BUILDING" | "ACTION_REQUIRED" | "READY" | "BEHIND" | "FAILED" | "MISSING" | "UNAVAILABLE";
+interface RebuildProgress {
+  phase: string;
+  processedDocuments: number;
+  totalDocuments: number;
+  indexName?: string;
+  documentsPerSecond?: number;
+  estimatedCompletionAt?: string;
+  updatedAt?: string;
+}
 
 export function SearchIndexPanel({ coreDocumentCount, indexes, operations, onRebuild, rebuilding, onConfirmReindex, confirmingReindex, onRetryFailed, retryingFailed, retryableOperationCount, retryableDocumentCount }: SearchIndexPanelProps) {
   const activeIndex = indexes.find((index) => index.status === "ACTIVE");
@@ -41,7 +50,56 @@ export function SearchIndexPanel({ coreDocumentCount, indexes, operations, onReb
   }, 0);
   const requeueOperationCount = retryableOperationCount ?? failedDocumentUpserts.length;
   const requeueDocumentCount = retryableDocumentCount ?? failedDocumentCount;
-  const indexedDocumentCount = activeIndex?.document_count ?? 0;
+  const rebuildProgress = activeOperation?.kind === "REBUILD" ? parseRebuildProgress(activeOperation.payload.progress) : undefined;
+  const [observedDocumentsPerSecond, setObservedDocumentsPerSecond] = useState<number>();
+  const priorProgressSample = useRef<{ operationId: string; processedDocuments: number; updatedAt: number } | undefined>(undefined);
+  useEffect(() => {
+    let updateTimer: ReturnType<typeof setTimeout> | undefined;
+    if (!activeOperation || !rebuildProgress) {
+      priorProgressSample.current = undefined;
+      updateTimer = setTimeout(() => setObservedDocumentsPerSecond(undefined), 0);
+      return () => clearTimeout(updateTimer);
+    }
+    const updatedAt = rebuildProgress.updatedAt ? Date.parse(rebuildProgress.updatedAt) : Number.NaN;
+    const prior = priorProgressSample.current;
+    if (
+      prior
+      && prior.operationId === activeOperation.id
+      && Number.isFinite(updatedAt)
+      && updatedAt > prior.updatedAt
+      && rebuildProgress.processedDocuments > prior.processedDocuments
+    ) {
+      const instantaneousRate = (
+        (rebuildProgress.processedDocuments - prior.processedDocuments)
+        / ((updatedAt - prior.updatedAt) / 1000)
+      );
+      updateTimer = setTimeout(() => setObservedDocumentsPerSecond((current) => current
+        ? (current * 0.7) + (instantaneousRate * 0.3)
+        : instantaneousRate), 0);
+    } else if (!prior && rebuildProgress.documentsPerSecond) {
+      updateTimer = setTimeout(() => setObservedDocumentsPerSecond(rebuildProgress.documentsPerSecond), 0);
+    } else if (!prior && activeOperation.started_at && Number.isFinite(updatedAt) && rebuildProgress.processedDocuments > 0) {
+      const elapsedSeconds = (updatedAt - Date.parse(activeOperation.started_at)) / 1000;
+      if (elapsedSeconds > 0) {
+        updateTimer = setTimeout(
+          () => setObservedDocumentsPerSecond(rebuildProgress.processedDocuments / elapsedSeconds),
+          0,
+        );
+      }
+    }
+    if (Number.isFinite(updatedAt)) {
+      priorProgressSample.current = {
+        operationId: activeOperation.id,
+        processedDocuments: rebuildProgress.processedDocuments,
+        updatedAt,
+      };
+    }
+    return () => {
+      if (updateTimer) clearTimeout(updateTimer);
+    };
+  }, [activeOperation, rebuildProgress]);
+  const indexedDocumentCount = activeIndex?.live_document_count
+    ?? (activeIndex?.physical_index_exists === false ? 0 : activeIndex?.document_count ?? 0);
   const countDelta = coreDocumentCount - indexedDocumentCount;
   const health = deriveHealth({ activeIndex, activeOperation, awaitingOperation, latestStructuralOperation, countDelta });
 
@@ -60,12 +118,14 @@ export function SearchIndexPanel({ coreDocumentCount, indexes, operations, onReb
 
       <div className="grid gap-4 sm:grid-cols-2 xl:grid-cols-4">
         <MetricCard icon={Activity} label="Status"><HealthBadge health={health} /><p className="mt-3 text-sm text-muted-foreground">{healthDescription(health, countDelta)}</p></MetricCard>
-        <MetricCard icon={Database} label="Indexed documents"><p className="text-3xl font-semibold tabular-nums">{indexedDocumentCount.toLocaleString()} <span className="text-lg font-medium text-muted-foreground">/ {coreDocumentCount.toLocaleString()}</span></p><p className="mt-2 text-sm text-muted-foreground">{countDescription(countDelta)}</p></MetricCard>
+        <MetricCard icon={Database} label="Indexed documents"><p className="text-3xl font-semibold tabular-nums">{indexedDocumentCount.toLocaleString()} <span className="text-lg font-medium text-muted-foreground">/ {coreDocumentCount.toLocaleString()}</span></p><p className="mt-2 text-sm text-muted-foreground">{indexCountDescription(activeIndex, countDelta)}</p></MetricCard>
         <MetricCard icon={RefreshCw} label="Active generation"><p className="text-3xl font-semibold tabular-nums">{activeIndex ? `#${activeIndex.generation}` : "—"}</p><p className="mt-2 text-sm text-muted-foreground">{latestIndex && !activeIndex ? `Generation #${latestIndex.generation} is ${friendlyStatus(latestIndex.status)}.` : "Only the active generation is searched."}</p></MetricCard>
         <MetricCard icon={Clock3} label="Last synchronized"><p className="text-2xl font-semibold">{activeIndex ? formatDate(activeIndex.activated_at ?? activeIndex.updated_at) : "—"}</p><p className="mt-2 text-sm text-muted-foreground">{activeOperation ? `${operationLabel(activeOperation.kind)} is ${friendlyStatus(activeOperation.status)}.` : failedOperations.length ? `${failedOperations.length} failed ${failedOperations.length === 1 ? "operation" : "operations"} in recent history.` : "No indexing work is currently running."}</p></MetricCard>
       </div>
 
-      {activeOperation ? <Card className="border-accent/50 bg-accent/5 p-4"><div className="flex items-start gap-3"><LoaderCircle className="mt-0.5 size-4 animate-spin text-accent-foreground" /><div><p className="font-semibold">{operationLabel(activeOperation.kind)} {friendlyStatus(activeOperation.status)}</p><p className="mt-1 text-sm text-muted-foreground">Started {formatDate(activeOperation.started_at ?? activeOperation.created_at)} · attempt {activeOperation.attempt_count.toLocaleString()}</p></div></div></Card> : null}
+      {activeOperation ? <Card className="border-accent/50 bg-accent/5 p-4"><div className="flex items-start gap-3"><LoaderCircle className="mt-0.5 size-4 shrink-0 animate-spin text-accent-foreground" /><div className="min-w-0 flex-1"><p className="font-semibold">{operationLabel(activeOperation.kind)} {friendlyStatus(activeOperation.status)}</p>{rebuildProgress ? <RebuildProgressView progress={rebuildProgress} observedDocumentsPerSecond={observedDocumentsPerSecond} /> : <p className="mt-1 text-sm text-muted-foreground">Started {formatDate(activeOperation.started_at ?? activeOperation.created_at)} · attempt {activeOperation.attempt_count.toLocaleString()}</p>}</div></div></Card> : null}
+      {health === "MISSING" ? <Card className="border-destructive/30 bg-destructive/5 p-4"><div className="flex items-start gap-3"><AlertTriangle className="mt-0.5 size-5 text-destructive" /><div><p className="font-semibold">The active index is missing from OpenSearch</p><p className="mt-1 text-sm text-muted-foreground">Core still has generation history, but the configured OpenSearch server does not have the physical index and active alias. Start a full rebuild to recreate it.</p></div></div></Card> : null}
+      {health === "UNAVAILABLE" ? <Card className="border-accent/50 bg-accent/5 p-4"><div className="flex items-start gap-3"><AlertTriangle className="mt-0.5 size-5 text-accent-foreground" /><div><p className="font-semibold">OpenSearch status could not be verified</p><p className="mt-1 text-sm text-muted-foreground">{activeIndex?.verification_error ?? "The configured OpenSearch server is unavailable."}</p></div></div></Card> : null}
       {awaitingOperation ? <ReindexConfirmationCard operation={awaitingOperation} onConfirm={onConfirmReindex} confirming={confirmingReindex} /> : null}
 
       <section aria-labelledby="generation-history-heading">
@@ -74,7 +134,7 @@ export function SearchIndexPanel({ coreDocumentCount, indexes, operations, onReb
           <Table>
             <TableHeader><TableRow><TableHead>Generation</TableHead><TableHead>Status</TableHead><TableHead>Documents</TableHead><TableHead>Schema</TableHead><TableHead>Updated</TableHead></TableRow></TableHeader>
             <TableBody>
-              {indexes.length ? indexes.map((index) => <TableRow key={index.id}><TableCell className="font-semibold">#{index.generation}</TableCell><TableCell><IndexStatusBadge status={index.status} /></TableCell><TableCell className="tabular-nums">{index.document_count.toLocaleString()}</TableCell><TableCell><code className="text-xs text-muted-foreground">{shortHash(index.schema_hash)}</code></TableCell><TableCell className="whitespace-nowrap text-muted-foreground">{formatDate(index.updated_at)}</TableCell></TableRow>) : <TableRow><TableCell colSpan={5} className="h-24 text-center text-muted-foreground">No search index has been created for this matter.</TableCell></TableRow>}
+              {indexes.length ? indexes.map((index) => <TableRow key={index.id}><TableCell className="font-semibold">#{index.generation}</TableCell><TableCell><IndexStatusBadge index={index} /></TableCell><TableCell className="tabular-nums">{(index.live_document_count ?? (index.physical_index_exists === false ? 0 : index.document_count)).toLocaleString()}</TableCell><TableCell><code className="text-xs text-muted-foreground">{shortHash(index.schema_hash)}</code></TableCell><TableCell className="whitespace-nowrap text-muted-foreground">{formatDate(index.updated_at)}</TableCell></TableRow>) : <TableRow><TableCell colSpan={5} className="h-24 text-center text-muted-foreground">No search index has been created for this matter.</TableCell></TableRow>}
             </TableBody>
           </Table>
         </Card>
@@ -123,6 +183,50 @@ function RetryFailedDialog({ operationCount, documentCount, onRetry, retrying }:
         <DialogFooter><Button type="button" variant="outline" onClick={() => setOpen(false)} disabled={retrying}>Cancel</Button><Button type="button" onClick={() => void retry()} disabled={retrying}>{retrying ? <LoaderCircle className="animate-spin" /> : <RotateCcw />}{retrying ? "Requeueing…" : "Confirm requeue"}</Button></DialogFooter>
       </DialogContent>
     </Dialog>
+  );
+}
+
+function RebuildProgressView({ progress, observedDocumentsPerSecond }: { progress: RebuildProgress; observedDocumentsPerSecond?: number }) {
+  const percent = progress.totalDocuments > 0
+    ? Math.min(100, Math.round((progress.processedDocuments / progress.totalDocuments) * 100))
+    : 0;
+  const documentsPerSecond = progress.documentsPerSecond ?? observedDocumentsPerSecond;
+  const estimatedCompletionAt = progress.estimatedCompletionAt
+    ?? (documentsPerSecond && progress.updatedAt && progress.totalDocuments > progress.processedDocuments
+      ? new Date(Date.parse(progress.updatedAt) + ((progress.totalDocuments - progress.processedDocuments) / documentsPerSecond) * 1000).toISOString()
+      : undefined);
+  const remainingSeconds = documentsPerSecond && progress.totalDocuments > progress.processedDocuments
+    ? (progress.totalDocuments - progress.processedDocuments) / documentsPerSecond
+    : estimatedCompletionAt && progress.updatedAt
+      ? Math.max(0, (Date.parse(estimatedCompletionAt) - Date.parse(progress.updatedAt)) / 1000)
+      : undefined;
+  return (
+    <div className="mt-2 space-y-2">
+      <div className="flex flex-wrap items-center justify-between gap-2 text-sm text-muted-foreground">
+        <span>{rebuildPhaseLabel(progress.phase)}</span>
+        <span className="tabular-nums">
+          {progress.totalDocuments > 0
+            ? `${progress.processedDocuments.toLocaleString()} / ${progress.totalDocuments.toLocaleString()} documents · ${percent}%`
+            : "Preparing document count…"}
+        </span>
+      </div>
+      <div
+        role="progressbar"
+        aria-label="Search index rebuild progress"
+        aria-valuemin={0}
+        aria-valuemax={progress.totalDocuments || 1}
+        aria-valuenow={progress.processedDocuments}
+        className="h-2 overflow-hidden rounded-full bg-muted"
+      >
+        <div className="h-full rounded-full bg-primary transition-[width]" style={{ width: `${percent}%` }} />
+      </div>
+      <p className="text-sm text-muted-foreground">
+        {documentsPerSecond
+          ? `${documentsPerSecond.toFixed(1)} docs/sec${remainingSeconds !== undefined ? ` · Estimated completion in ${formatRemainingDuration(remainingSeconds)}` : ""}`
+          : "Calculating throughput and estimated completion…"}
+      </p>
+      {progress.indexName ? <p className="truncate font-mono text-xs text-muted-foreground">{progress.indexName}</p> : null}
+    </div>
   );
 }
 
@@ -181,14 +285,18 @@ function HealthBadge({ health }: { health: IndexHealth }) {
     READY: "border-success/20 bg-success/12 text-success",
     BEHIND: "border-accent/40 bg-accent/20 text-accent-foreground",
     FAILED: "border-destructive/20 bg-destructive/10 text-destructive",
+    MISSING: "border-destructive/20 bg-destructive/10 text-destructive",
+    UNAVAILABLE: "border-accent/50 bg-accent/20 text-accent-foreground",
   };
   return <Badge variant="outline" className={styles[health]}>{health === "NOT_CREATED" ? "Not created" : health === "ACTION_REQUIRED" ? "Action required" : friendlyStatus(health)}</Badge>;
 }
 
-function IndexStatusBadge({ status }: { status: SearchIndexGenerationRead["status"] }) {
-  if (status === "ACTIVE") return <Badge variant="active">Active</Badge>;
-  if (status === "CREATING") return <Badge variant="accent">Creating</Badge>;
-  if (status === "FAILED") return <Badge className="bg-destructive/10 text-destructive">Failed</Badge>;
+function IndexStatusBadge({ index }: { index: SearchIndexGenerationRead }) {
+  if (index.verification_error) return <Badge variant="accent">Unverified</Badge>;
+  if (index.physical_index_exists === false || index.alias_points_to_index === false) return <Badge className="bg-destructive/10 text-destructive">Missing</Badge>;
+  if (index.status === "ACTIVE") return <Badge variant="active">Active</Badge>;
+  if (index.status === "CREATING") return <Badge variant="accent">Creating</Badge>;
+  if (index.status === "FAILED") return <Badge className="bg-destructive/10 text-destructive">Failed</Badge>;
   return <Badge variant="outline">Retired</Badge>;
 }
 
@@ -210,6 +318,8 @@ function deriveHealth({ activeIndex, activeOperation, awaitingOperation, latestS
   if (awaitingOperation) return "ACTION_REQUIRED";
   if (latestStructuralOperation?.status === "FAILED" && (!activeIndex || latestStructuralOperation.created_at > activeIndex.updated_at)) return "FAILED";
   if (!activeIndex) return "NOT_CREATED";
+  if (activeIndex.verification_error) return "UNAVAILABLE";
+  if (activeIndex.physical_index_exists === false || activeIndex.alias_points_to_index === false) return "MISSING";
   if (countDelta !== 0) return "BEHIND";
   return "READY";
 }
@@ -219,6 +329,8 @@ function healthDescription(health: IndexHealth, countDelta: number) {
   if (health === "BUILDING") return "A projection workflow is currently in progress.";
   if (health === "ACTION_REQUIRED") return "A schema change needs confirmation before the matter is reindexed.";
   if (health === "FAILED") return "The latest index build failed. Review the operation details and retry.";
+  if (health === "MISSING") return "The recorded active generation is not present on the configured OpenSearch server.";
+  if (health === "UNAVAILABLE") return "The configured OpenSearch server could not be checked.";
   if (health === "BEHIND") return countDelta > 0 ? `${countDelta.toLocaleString()} ${countDelta === 1 ? "document is" : "documents are"} awaiting projection.` : "The index count does not match Core.";
   return "The active projection matches the Core document count.";
 }
@@ -229,6 +341,12 @@ function countDescription(delta: number) {
   return `${Math.abs(delta).toLocaleString()} more ${Math.abs(delta) === 1 ? "document" : "documents"} than Core; rebuild recommended.`;
 }
 
+function indexCountDescription(index: SearchIndexGenerationRead | undefined, delta: number) {
+  if (index?.verification_error) return "Live OpenSearch count unavailable.";
+  if (index?.physical_index_exists === false) return `No live index found; Core previously recorded ${index.document_count.toLocaleString()} indexed documents.`;
+  return countDescription(delta);
+}
+
 function operationLabel(kind: SearchProjectionOperationRead["kind"]) {
   const labels: Record<SearchProjectionOperationRead["kind"], string> = {
     SCHEMA_SYNC: "Schema sync",
@@ -237,6 +355,42 @@ function operationLabel(kind: SearchProjectionOperationRead["kind"]) {
     DOCUMENT_DELETE: "Document removal",
   };
   return labels[kind];
+}
+
+function parseRebuildProgress(value: unknown): RebuildProgress | undefined {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return undefined;
+  const progress = value as Record<string, unknown>;
+  if (typeof progress.phase !== "string") return undefined;
+  return {
+    phase: progress.phase,
+    processedDocuments: typeof progress.processed_documents === "number" ? progress.processed_documents : 0,
+    totalDocuments: typeof progress.total_documents === "number" ? progress.total_documents : 0,
+    indexName: typeof progress.index_name === "string" ? progress.index_name : undefined,
+    documentsPerSecond: typeof progress.documents_per_second === "number" && progress.documents_per_second > 0 ? progress.documents_per_second : undefined,
+    estimatedCompletionAt: typeof progress.estimated_completion_at === "string" ? progress.estimated_completion_at : undefined,
+    updatedAt: typeof progress.updated_at === "string" ? progress.updated_at : undefined,
+  };
+}
+
+function rebuildPhaseLabel(phase: string) {
+  const labels: Record<string, string> = {
+    QUEUED: "Waiting for a workflow worker",
+    CREATING_INDEX: "Creating the physical index",
+    INDEXING_DOCUMENTS: "Indexing matter documents",
+    REFRESHING_INDEX: "Refreshing the completed index",
+    ACTIVATING_ALIAS: "Activating the new index",
+    CLEANING_UP: "Removing obsolete index generations",
+    COMPLETED: "Rebuild completed",
+  };
+  return labels[phase] ?? friendlyStatus(phase);
+}
+
+function formatRemainingDuration(seconds: number) {
+  if (seconds < 3600) {
+    const minutes = Math.max(1, Math.ceil(seconds / 60));
+    return `${minutes} ${minutes === 1 ? "minute" : "minutes"}`;
+  }
+  return `${(seconds / 3600).toFixed(1)} hours`;
 }
 
 function friendlyStatus(status: string) {

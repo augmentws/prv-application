@@ -16,6 +16,7 @@ export interface MetadataDefinitionUpdate {
   resolution_policy?: MetadataDefinitionUpdateResolutionPolicy;
   searchable?: boolean | null;
   facetable?: boolean | null;
+  normalize_to_lowercase?: boolean | null;
   reviewable?: boolean | null;
   ai_assignable?: boolean | null;
   status?: MetadataDefinitionUpdateStatus;

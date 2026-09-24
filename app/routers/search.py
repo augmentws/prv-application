@@ -157,6 +157,10 @@ def execute_matter_search(
             required_filters=required_filters,
         )
     except OpenSearchError as exc:
+        logger.exception(
+            "Matter search failed matter_id=%s",
+            matter.id,
+        )
         raise HTTPException(
             status_code=status.HTTP_503_SERVICE_UNAVAILABLE, detail="Search is temporarily unavailable"
         ) from exc
@@ -257,6 +261,11 @@ def execute_matter_facet_values(
             required_filters=required_filters,
         )
     except OpenSearchError as exc:
+        logger.exception(
+            "Facet value search failed matter_id=%s field=%s",
+            matter.id,
+            field,
+        )
         raise HTTPException(
             status_code=status.HTTP_503_SERVICE_UNAVAILABLE, detail="Search is temporarily unavailable"
         ) from exc
@@ -412,15 +421,55 @@ def list_search_indexes(
     matter_id: uuid.UUID,
     principal: Principal = Depends(get_principal),
     db: Session = Depends(get_db),
-) -> list[SearchIndexGeneration]:
+    settings: Settings = Depends(get_settings),
+) -> list[SearchIndexGenerationRead]:
     _matter(db, matter_id, principal)
-    return list(
+    generations = list(
         db.scalars(
             select(SearchIndexGeneration)
             .where(SearchIndexGeneration.matter_id == matter_id)
             .order_by(SearchIndexGeneration.generation.desc())
         )
     )
+    if not generations:
+        return []
+    if not settings.search_enabled:
+        return [
+            SearchIndexGenerationRead.model_validate(generation).model_copy(
+                update={"verification_error": "Search is disabled"}
+            )
+            for generation in generations
+        ]
+
+    client = OpenSearchClient(settings)
+    try:
+        aliases: dict[str, list[str]] = {}
+        reads: list[SearchIndexGenerationRead] = []
+        for generation in generations:
+            try:
+                if generation.alias_name not in aliases:
+                    aliases[generation.alias_name] = client.alias_indices(generation.alias_name)
+                physical_exists = client.index_exists(generation.index_name)
+                alias_points_to_index = generation.index_name in aliases[generation.alias_name]
+                live_count = client.count(generation.index_name) if physical_exists else 0
+                reads.append(
+                    SearchIndexGenerationRead.model_validate(generation).model_copy(
+                        update={
+                            "physical_index_exists": physical_exists,
+                            "alias_points_to_index": alias_points_to_index,
+                            "live_document_count": live_count,
+                        }
+                    )
+                )
+            except OpenSearchError as exc:
+                reads.append(
+                    SearchIndexGenerationRead.model_validate(generation).model_copy(
+                        update={"verification_error": str(exc)[:500]}
+                    )
+                )
+        return reads
+    finally:
+        client.close()
 
 
 @router.get("/search-operations", response_model=list[SearchProjectionOperationRead])
@@ -552,6 +601,13 @@ def confirm_search_reindex(
     operation.workflow_id = f"search-projection:{operation.id}:confirmed:{uuid.uuid4()}"
     operation.payload = {
         **operation.payload,
+        "progress": {
+            "phase": "QUEUED",
+            "processed_documents": 0,
+            "total_documents": 0,
+            "index_name": None,
+            "updated_at": confirmed_at.isoformat(),
+        },
         "confirmation": {
             "confirmed_at": confirmed_at.isoformat(),
             "confirmed_by_user_id": str(principal.user.id),
@@ -582,6 +638,15 @@ def rebuild_search_index(
         db,
         matter_id=matter.id,
         kind="REBUILD",
+        payload={
+            "progress": {
+                "phase": "QUEUED",
+                "processed_documents": 0,
+                "total_documents": 0,
+                "index_name": None,
+                "updated_at": datetime.now(timezone.utc).isoformat(),
+            }
+        },
         created_by_user_id=principal.user.id,
         priority=1000,
     )

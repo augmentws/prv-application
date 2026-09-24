@@ -129,6 +129,7 @@ def create_metadata_definition(
         resolution_policy=payload.resolution_policy,
         searchable=payload.searchable,
         facetable=payload.facetable,
+        normalize_to_lowercase=payload.normalize_to_lowercase,
         reviewable=payload.reviewable,
         ai_assignable=payload.ai_assignable,
         status="ACTIVE",
@@ -169,6 +170,11 @@ def update_metadata_definition(
     if resulting_facetable and definition.type in {"LONG_TEXT", "JSON"}:
         raise MetadataDefinitionConflictError(
             "LONG_TEXT and JSON fields cannot be facetable in phase one"
+        )
+    resulting_normalization = changes.get("normalize_to_lowercase", definition.normalize_to_lowercase)
+    if resulting_normalization and definition.type not in {"TEXT", "LONG_TEXT"}:
+        raise MetadataDefinitionConflictError(
+            "Lowercase normalization is only valid for text fields"
         )
     for field, value in changes.items():
         setattr(definition, field, value)

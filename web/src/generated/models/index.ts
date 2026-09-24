@@ -141,6 +141,7 @@ export * from './listAgentConversationsV1MattersMatterIdAgentConversationsGetWor
 export * from './listAgentPackagesV1AgentPackagesGetParams';
 export * from './listAvailableMatterAgentsV1MattersMatterIdAgentsGetParams';
 export * from './listAvailableMatterAgentsV1MattersMatterIdAgentsGetWorkflowType';
+export * from './listBulkTagJobsV1MattersMatterIdBulkTagJobsGetParams';
 export * from './listCollectionItemsV1CollectionsCollectionIdItemsGetParams';
 export * from './listDocumentImportsV1MattersMatterIdDocumentImportsGetParams';
 export * from './listEmbeddingJobsV1MattersMatterIdEmbeddingJobsGetParams';
@@ -150,6 +151,12 @@ export * from './listReviewBatchDocumentsV1MattersMatterIdReviewBatchesBatchIdDo
 export * from './listSearchOperationsV1MattersMatterIdSearchOperationsGetParams';
 export * from './listTopicJobsV1MattersMatterIdTopicJobsGetParams';
 export * from './loginRequest';
+export * from './matterBulkTagAssignment';
+export * from './matterBulkTagCreate';
+export * from './matterBulkTagJobRead';
+export * from './matterBulkTagJobReadSearchDefinition';
+export * from './matterBulkTagJobReadSearchIndexSnapshot';
+export * from './matterBulkTagJobReadStatus';
 export * from './matterCreate';
 export * from './matterDateHistogramBucket';
 export * from './matterDateHistogramRequest';
@@ -168,6 +175,7 @@ export * from './matterDefinitionAssessmentQuestionUpdateStatus';
 export * from './matterDefinitionAssessmentRead';
 export * from './matterDefinitionAssessmentReadConfigurationSnapshot';
 export * from './matterDefinitionAssessmentReadCoverageSnapshot';
+export * from './matterDefinitionAssessmentReadGuidanceRefinementStatus';
 export * from './matterDefinitionAssessmentReadStatus';
 export * from './matterDefinitionAssessmentReadSynthesisResult';
 export * from './matterDefinitionRead';

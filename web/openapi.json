@@ -158,6 +158,184 @@
         ]
       }
     },
+    "/v1/matters/{matter_id}/bulk-tag-jobs": {
+      "post": {
+        "tags": [
+          "matter bulk tags"
+        ],
+        "summary": "Create Bulk Tag Job",
+        "operationId": "create_bulk_tag_job_v1_matters__matter_id__bulk_tag_jobs_post",
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "matter_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid",
+              "title": "Matter Id"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/MatterBulkTagCreate"
+              }
+            }
+          }
+        },
+        "responses": {
+          "202": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/MatterBulkTagJobRead"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      },
+      "get": {
+        "tags": [
+          "matter bulk tags"
+        ],
+        "summary": "List Bulk Tag Jobs",
+        "operationId": "list_bulk_tag_jobs_v1_matters__matter_id__bulk_tag_jobs_get",
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "matter_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid",
+              "title": "Matter Id"
+            }
+          },
+          {
+            "name": "limit",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "integer",
+              "maximum": 100,
+              "minimum": 1,
+              "default": 20,
+              "title": "Limit"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "array",
+                  "items": {
+                    "$ref": "#/components/schemas/MatterBulkTagJobRead"
+                  },
+                  "title": "Response List Bulk Tag Jobs V1 Matters  Matter Id  Bulk Tag Jobs Get"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v1/matters/{matter_id}/bulk-tag-jobs/{job_id}": {
+      "get": {
+        "tags": [
+          "matter bulk tags"
+        ],
+        "summary": "Get Bulk Tag Job",
+        "operationId": "get_bulk_tag_job_v1_matters__matter_id__bulk_tag_jobs__job_id__get",
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "matter_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid",
+              "title": "Matter Id"
+            }
+          },
+          {
+            "name": "job_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid",
+              "title": "Job Id"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/MatterBulkTagJobRead"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/v1/agent-tools": {
       "get": {
         "tags": [
@@ -14244,6 +14422,229 @@
         ],
         "title": "LoginRequest"
       },
+      "MatterBulkTagAssignment": {
+        "properties": {
+          "metadata_definition_id": {
+            "type": "string",
+            "format": "uuid",
+            "title": "Metadata Definition Id"
+          },
+          "value": {
+            "title": "Value"
+          }
+        },
+        "type": "object",
+        "required": [
+          "metadata_definition_id",
+          "value"
+        ],
+        "title": "MatterBulkTagAssignment"
+      },
+      "MatterBulkTagCreate": {
+        "properties": {
+          "search": {
+            "$ref": "#/components/schemas/MatterSearchRequest"
+          },
+          "assignments": {
+            "anyOf": [
+              {
+                "items": {
+                  "$ref": "#/components/schemas/MatterBulkTagAssignment"
+                },
+                "type": "array",
+                "maxItems": 50,
+                "minItems": 1
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Assignments"
+          },
+          "metadata_definition_id": {
+            "anyOf": [
+              {
+                "type": "string",
+                "format": "uuid"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Metadata Definition Id"
+          },
+          "value": {
+            "title": "Value"
+          }
+        },
+        "type": "object",
+        "required": [
+          "search"
+        ],
+        "title": "MatterBulkTagCreate"
+      },
+      "MatterBulkTagJobRead": {
+        "properties": {
+          "id": {
+            "type": "string",
+            "format": "uuid",
+            "title": "Id"
+          },
+          "matter_id": {
+            "type": "string",
+            "format": "uuid",
+            "title": "Matter Id"
+          },
+          "metadata_definition_id": {
+            "type": "string",
+            "format": "uuid",
+            "title": "Metadata Definition Id"
+          },
+          "search_index_generation_id": {
+            "anyOf": [
+              {
+                "type": "string",
+                "format": "uuid"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Search Index Generation Id"
+          },
+          "search_index_snapshot": {
+            "additionalProperties": true,
+            "type": "object",
+            "title": "Search Index Snapshot"
+          },
+          "search_definition": {
+            "additionalProperties": true,
+            "type": "object",
+            "title": "Search Definition"
+          },
+          "value": {
+            "title": "Value"
+          },
+          "assignments": {
+            "items": {
+              "$ref": "#/components/schemas/MatterBulkTagAssignment"
+            },
+            "type": "array",
+            "title": "Assignments"
+          },
+          "status": {
+            "type": "string",
+            "enum": [
+              "QUEUED",
+              "SNAPSHOTTING",
+              "RUNNING",
+              "COMPLETED",
+              "COMPLETED_WITH_ERRORS",
+              "FAILED"
+            ],
+            "title": "Status"
+          },
+          "matched_count": {
+            "type": "integer",
+            "minimum": 0.0,
+            "title": "Matched Count"
+          },
+          "batch_count": {
+            "type": "integer",
+            "minimum": 0.0,
+            "title": "Batch Count"
+          },
+          "processed_count": {
+            "type": "integer",
+            "minimum": 0.0,
+            "title": "Processed Count"
+          },
+          "tagged_count": {
+            "type": "integer",
+            "minimum": 0.0,
+            "title": "Tagged Count"
+          },
+          "failed_count": {
+            "type": "integer",
+            "minimum": 0.0,
+            "title": "Failed Count"
+          },
+          "error_message": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Error Message"
+          },
+          "created_by_user_id": {
+            "type": "string",
+            "format": "uuid",
+            "title": "Created By User Id"
+          },
+          "started_at": {
+            "anyOf": [
+              {
+                "type": "string",
+                "format": "date-time"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Started At"
+          },
+          "completed_at": {
+            "anyOf": [
+              {
+                "type": "string",
+                "format": "date-time"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Completed At"
+          },
+          "created_at": {
+            "type": "string",
+            "format": "date-time",
+            "title": "Created At"
+          },
+          "updated_at": {
+            "type": "string",
+            "format": "date-time",
+            "title": "Updated At"
+          }
+        },
+        "type": "object",
+        "required": [
+          "id",
+          "matter_id",
+          "metadata_definition_id",
+          "search_index_generation_id",
+          "search_index_snapshot",
+          "search_definition",
+          "value",
+          "assignments",
+          "status",
+          "matched_count",
+          "batch_count",
+          "processed_count",
+          "tagged_count",
+          "failed_count",
+          "error_message",
+          "created_by_user_id",
+          "started_at",
+          "completed_at",
+          "created_at",
+          "updated_at"
+        ],
+        "title": "MatterBulkTagJobRead"
+      },
       "MatterCreate": {
         "properties": {
           "name": {
@@ -14397,6 +14798,11 @@
             "title": "Control Sample Size",
             "default": 0
           },
+          "use_batching": {
+            "type": "boolean",
+            "title": "Use Batching",
+            "default": true
+          },
           "acknowledge_large_run_warning": {
             "type": "boolean",
             "title": "Acknowledge Large Run Warning",
@@ -14509,6 +14915,13 @@
             "type": "array",
             "title": "Evidence"
           },
+          "suggested_answers": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array",
+            "title": "Suggested Answers"
+          },
           "status": {
             "type": "string",
             "enum": [
@@ -14573,6 +14986,7 @@
           "priority",
           "blocking",
           "evidence",
+          "suggested_answers",
           "status",
           "answer",
           "answered_by_user_id",
@@ -14689,6 +15103,10 @@
           "control_sample_size": {
             "type": "integer",
             "title": "Control Sample Size"
+          },
+          "use_batching": {
+            "type": "boolean",
+            "title": "Use Batching"
           },
           "large_run_warning_acknowledged": {
             "type": "boolean",
@@ -14825,6 +15243,53 @@
             ],
             "title": "Synthesis Result"
           },
+          "guidance_refinement_status": {
+            "type": "string",
+            "enum": [
+              "NOT_READY",
+              "QUEUED",
+              "RUNNING",
+              "COMPLETED",
+              "NOT_REQUIRED",
+              "FAILED"
+            ],
+            "title": "Guidance Refinement Status"
+          },
+          "guidance_refinement_workflow_run_id": {
+            "anyOf": [
+              {
+                "type": "string",
+                "format": "uuid"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Guidance Refinement Workflow Run Id"
+          },
+          "refined_matter_definition_revision_id": {
+            "anyOf": [
+              {
+                "type": "string",
+                "format": "uuid"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Refined Matter Definition Revision Id"
+          },
+          "guidance_refinement_error_message": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Guidance Refinement Error Message"
+          },
           "status": {
             "type": "string",
             "enum": [
@@ -14918,6 +15383,7 @@
           "configuration_snapshot",
           "requested_document_count",
           "control_sample_size",
+          "use_batching",
           "large_run_warning_acknowledged",
           "warning_acknowledged_by_user_id",
           "warning_acknowledged_at",
@@ -14935,6 +15401,10 @@
           "invalid_result_count",
           "coverage_snapshot",
           "synthesis_result",
+          "guidance_refinement_status",
+          "guidance_refinement_workflow_run_id",
+          "refined_matter_definition_revision_id",
+          "guidance_refinement_error_message",
           "status",
           "error_message",
           "initiated_by_user_id",
@@ -15083,7 +15553,8 @@
               "TEXT",
               "DOCX",
               "AGENT_EDIT",
-              "USER_EDIT"
+              "USER_EDIT",
+              "ASSESSMENT_REFINEMENT"
             ],
             "title": "Source Kind"
           },
@@ -15138,6 +15609,18 @@
             ],
             "title": "Agent Run Id"
           },
+          "source_skill_run_id": {
+            "anyOf": [
+              {
+                "type": "string",
+                "format": "uuid"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Source Skill Run Id"
+          },
           "created_at": {
             "type": "string",
             "format": "date-time",
@@ -15156,6 +15639,7 @@
           "based_on_revision",
           "created_by_user_id",
           "agent_run_id",
+          "source_skill_run_id",
           "created_at"
         ],
         "title": "MatterDefinitionRevisionRead"
@@ -15883,6 +16367,12 @@
             },
             "type": "array",
             "title": "Values"
+          },
+          "missing_count": {
+            "type": "integer",
+            "minimum": 0.0,
+            "title": "Missing Count",
+            "default": 0
           }
         },
         "type": "object",
@@ -16215,7 +16705,8 @@
               "EQ",
               "IN",
               "RANGE",
-              "EXISTS"
+              "EXISTS",
+              "NOT_EXISTS"
             ],
             "title": "Operator"
           },
@@ -16258,6 +16749,11 @@
               }
             ],
             "title": "To"
+          },
+          "include_missing": {
+            "type": "boolean",
+            "title": "Include Missing",
+            "default": false
           }
         },
         "type": "object",
@@ -17184,6 +17680,11 @@
             "title": "Facetable",
             "default": false
           },
+          "normalize_to_lowercase": {
+            "type": "boolean",
+            "title": "Normalize To Lowercase",
+            "default": false
+          },
           "reviewable": {
             "type": "boolean",
             "title": "Reviewable",
@@ -17339,6 +17840,11 @@
             "type": "boolean",
             "title": "Facetable"
           },
+          "normalize_to_lowercase": {
+            "type": "boolean",
+            "title": "Normalize To Lowercase",
+            "default": false
+          },
           "reviewable": {
             "type": "boolean",
             "title": "Reviewable"
@@ -17466,6 +17972,17 @@
               }
             ],
             "title": "Facetable"
+          },
+          "normalize_to_lowercase": {
+            "anyOf": [
+              {
+                "type": "boolean"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Normalize To Lowercase"
           },
           "reviewable": {
             "anyOf": [
@@ -19374,6 +19891,50 @@
           "document_count": {
             "type": "integer",
             "title": "Document Count"
+          },
+          "physical_index_exists": {
+            "anyOf": [
+              {
+                "type": "boolean"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Physical Index Exists"
+          },
+          "alias_points_to_index": {
+            "anyOf": [
+              {
+                "type": "boolean"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Alias Points To Index"
+          },
+          "live_document_count": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Live Document Count"
+          },
+          "verification_error": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Verification Error"
           },
           "error_message": {
             "anyOf": [

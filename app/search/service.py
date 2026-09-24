@@ -1,10 +1,11 @@
 import logging
 import uuid
-from datetime import date, datetime, timezone
+from concurrent.futures import ThreadPoolExecutor
+from datetime import date, datetime, timedelta, timezone
 from typing import Any
 
-from sqlalchemy import func, select, text
-from sqlalchemy.orm import Session
+from sqlalchemy import and_, func, or_, select, text
+from sqlalchemy.orm import Session, sessionmaker
 
 from app.artifact_gateway import SearchItemSnapshot, get_search_item_snapshot, load_current_chunk_artifacts
 from app.config import Settings, get_settings
@@ -42,6 +43,74 @@ def utcnow() -> datetime:
     return datetime.now(timezone.utc)
 
 
+def _save_rebuild_progress(
+    operation_id: uuid.UUID | None,
+    *,
+    phase: str,
+    processed_documents: int,
+    total_documents: int,
+    index_name: str | None = None,
+) -> None:
+    if operation_id is None:
+        return
+    try:
+        with SessionLocal() as progress_db:
+            operation = progress_db.get(SearchProjectionOperation, operation_id)
+            if operation is None:
+                return
+            now = utcnow()
+            prior = operation.payload.get("progress")
+            prior = prior if isinstance(prior, dict) else {}
+            documents_per_second = prior.get("documents_per_second")
+            if not isinstance(documents_per_second, (int, float)) or documents_per_second <= 0:
+                documents_per_second = None
+            prior_processed = prior.get("processed_documents")
+            prior_updated_at = prior.get("updated_at")
+            if (
+                isinstance(prior_processed, int)
+                and processed_documents > prior_processed
+                and isinstance(prior_updated_at, str)
+            ):
+                try:
+                    prior_time = datetime.fromisoformat(prior_updated_at.replace("Z", "+00:00"))
+                    elapsed = (now - prior_time).total_seconds()
+                    if elapsed > 0:
+                        instantaneous_rate = (processed_documents - prior_processed) / elapsed
+                        documents_per_second = (
+                            instantaneous_rate
+                            if documents_per_second is None
+                            else (documents_per_second * 0.7) + (instantaneous_rate * 0.3)
+                        )
+                except ValueError:
+                    pass
+            estimated_completion_at = None
+            if documents_per_second and total_documents > processed_documents:
+                remaining_seconds = (total_documents - processed_documents) / documents_per_second
+                estimated_completion_at = (now + timedelta(seconds=remaining_seconds)).isoformat()
+            elif total_documents and processed_documents >= total_documents:
+                estimated_completion_at = now.isoformat()
+            operation.payload = {
+                **operation.payload,
+                "progress": {
+                    "phase": phase,
+                    "processed_documents": processed_documents,
+                    "total_documents": total_documents,
+                    "index_name": index_name,
+                    "documents_per_second": documents_per_second,
+                    "estimated_completion_at": estimated_completion_at,
+                    "updated_at": now.isoformat(),
+                },
+            }
+            progress_db.commit()
+    except Exception:
+        logger.warning(
+            "Could not persist search rebuild progress operation_id=%s phase=%s",
+            operation_id,
+            phase,
+            exc_info=True,
+        )
+
+
 def document_alias(settings: Settings, matter_id: uuid.UUID) -> str:
     return f"{settings.opensearch_index_prefix}-matter-{matter_id.hex}-documents"
 
@@ -69,6 +138,17 @@ def _json_value(value: Any) -> Any:
     if isinstance(value, dict):
         return {str(key): _json_value(item) for key, item in value.items()}
     return value
+
+
+def _index_metadata_value(value: Any, definition: MetadataDefinition) -> Any:
+    serialized = _json_value(value)
+    if not definition.normalize_to_lowercase:
+        return serialized
+    if isinstance(serialized, str):
+        return serialized.lower()
+    if isinstance(serialized, list):
+        return [item.lower() if isinstance(item, str) else item for item in serialized]
+    return serialized
 
 
 def build_document_projection(
@@ -118,8 +198,16 @@ def build_document_projection(
         "source_modified_at": snapshot.source_modified_at,
     }
     values.update(current_metadata_values(db, document.id, definitions))
+    indexed_values = {
+        definition.key: _index_metadata_value(
+            values.get(definition.key, _metadata_lookup(snapshot, definition.key)),
+            definition,
+        )
+        for definition in definitions
+        if definition.status == "ACTIVE"
+    }
     searchable_metadata = {
-        definition.key: _json_value(values.get(definition.key, _metadata_lookup(snapshot, definition.key)))
+        definition.key: indexed_values[definition.key]
         for definition in definitions
         if definition.status == "ACTIVE" and definition.searchable
     }
@@ -166,10 +254,10 @@ def build_document_projection(
         "family_id": str(snapshot.family_id) if snapshot.family_id else None,
         "custodian_ids": [str(value) for value in snapshot.custodian_ids],
         "custodian_names": custodian_names,
-        "email_from": snapshot.email_sender,
-        "email_to": recipients["TO"],
-        "email_cc": recipients["CC"],
-        "email_bcc": recipients["BCC"],
+        "email_from": indexed_values.get("email_from", snapshot.email_sender),
+        "email_to": indexed_values.get("email_to", recipients["TO"]),
+        "email_cc": indexed_values.get("email_cc", recipients["CC"]),
+        "email_bcc": indexed_values.get("email_bcc", recipients["BCC"]),
         "email_subject": snapshot.email_subject,
         "body_text": snapshot.body_text,
         "chunks": chunks,
@@ -272,7 +360,13 @@ class SearchIndexManager:
                 active.index_name,
             )
 
-    def ensure(self, matter_id: uuid.UUID, *, force: bool = False) -> SearchIndexGeneration:
+    def ensure(
+        self,
+        matter_id: uuid.UUID,
+        *,
+        force: bool = False,
+        operation: SearchProjectionOperation | None = None,
+    ) -> SearchIndexGeneration:
         self._lock_matter_search(matter_id)
         matter = self.db.get(Matter, matter_id)
         if matter is None:
@@ -345,9 +439,36 @@ class SearchIndexManager:
         )
         self.db.add(generation)
         self.db.flush()
+        total_documents = int(
+            self.db.scalar(
+                select(func.count()).select_from(MatterDocument).where(MatterDocument.matter_id == matter.id)
+            )
+            or 0
+        )
+        operation_id = operation.id if operation is not None else None
         try:
+            _save_rebuild_progress(
+                operation_id,
+                phase="CREATING_INDEX",
+                processed_documents=0,
+                total_documents=total_documents,
+                index_name=generation.index_name,
+            )
             self.client.create_index(generation.index_name, index_body)
-            count = self._index_all_documents(generation.index_name, matter, definitions)
+            count = self._index_all_documents(
+                generation.index_name,
+                matter,
+                definitions,
+                operation_id=operation_id,
+                total_documents=total_documents,
+            )
+            _save_rebuild_progress(
+                operation_id,
+                phase="ACTIVATING_ALIAS",
+                processed_documents=count,
+                total_documents=total_documents,
+                index_name=generation.index_name,
+            )
             self._activate_alias(generation)
             if active is not None:
                 active.status = "RETIRED"
@@ -356,7 +477,21 @@ class SearchIndexManager:
             generation.document_count = count
             generation.activated_at = utcnow()
             self.db.commit()
+            _save_rebuild_progress(
+                operation_id,
+                phase="CLEANING_UP",
+                processed_documents=count,
+                total_documents=total_documents,
+                index_name=generation.index_name,
+            )
             self._cleanup_obsolete_generations(generation)
+            _save_rebuild_progress(
+                operation_id,
+                phase="COMPLETED",
+                processed_documents=count,
+                total_documents=total_documents,
+                index_name=generation.index_name,
+            )
             return generation
         except Exception as exc:
             if not self.db.is_active:
@@ -372,15 +507,60 @@ class SearchIndexManager:
         index_name: str,
         matter: Matter,
         definitions: list[MetadataDefinition],
+        *,
+        operation_id: uuid.UUID | None = None,
+        total_documents: int | None = None,
     ) -> int:
-        documents = list(
-            self.db.scalars(
-                select(MatterDocument).where(MatterDocument.matter_id == matter.id).order_by(MatterDocument.id)
+        total = total_documents if total_documents is not None else int(
+            self.db.scalar(
+                select(func.count()).select_from(MatterDocument).where(MatterDocument.matter_id == matter.id)
             )
+            or 0
         )
-        self._bulk_upsert(index_name, documents, definitions)
+        processed = 0
+        last_created_at: datetime | None = None
+        last_document_id: uuid.UUID | None = None
+        while True:
+            statement = select(MatterDocument).where(MatterDocument.matter_id == matter.id)
+            if last_created_at is not None and last_document_id is not None:
+                statement = statement.where(
+                    or_(
+                        MatterDocument.created_at > last_created_at,
+                        and_(
+                            MatterDocument.created_at == last_created_at,
+                            MatterDocument.id > last_document_id,
+                        ),
+                    )
+                )
+            batch = list(
+                self.db.scalars(
+                    statement.order_by(MatterDocument.created_at, MatterDocument.id).limit(
+                        self.settings.search_bulk_batch_size
+                    )
+                )
+            )
+            if not batch:
+                break
+            self._bulk_upsert(index_name, batch, definitions)
+            processed += len(batch)
+            _save_rebuild_progress(
+                operation_id,
+                phase="INDEXING_DOCUMENTS",
+                processed_documents=processed,
+                total_documents=total,
+                index_name=index_name,
+            )
+            last_created_at = batch[-1].created_at
+            last_document_id = batch[-1].id
+        _save_rebuild_progress(
+            operation_id,
+            phase="REFRESHING_INDEX",
+            processed_documents=processed,
+            total_documents=total,
+            index_name=index_name,
+        )
         self.client.refresh(index_name)
-        return len(documents)
+        return processed
 
     def _backfill_metadata_fields(
         self,
@@ -596,9 +776,14 @@ class SearchIndexManager:
                         "topic_key": topic_key,
                     }
                 )
-            self.client.bulk(
-                index_name,
-                (
+            bind = self.db.get_bind()
+            worker_count = min(self.settings.search_projection_document_concurrency, len(batch))
+            if bind.dialect.name == "sqlite":
+                # The local/test SQLite configuration uses one shared connection,
+                # which cannot safely serve multiple sessions at the same time.
+                worker_count = 1
+            if worker_count <= 1:
+                operations = [
                     (
                         "index",
                         str(document.id),
@@ -611,8 +796,43 @@ class SearchIndexManager:
                         ),
                     )
                     for document in batch
-                ),
-            )
+                ]
+            else:
+                projection_session = sessionmaker(
+                    bind=bind,
+                    autoflush=False,
+                    expire_on_commit=False,
+                )
+
+                work_items = [
+                    (document.id, memberships[document.id], batch_topics[document.id])
+                    for document in batch
+                ]
+
+                def build_operation(
+                    item: tuple[uuid.UUID, list[uuid.UUID], list[dict[str, str]]],
+                    session_factory=projection_session,
+                ) -> tuple[str, str, dict[str, Any]]:
+                    document_id, document_batch_ids, document_batch_topics = item
+                    with session_factory() as worker_db:
+                        document = worker_db.get(MatterDocument, document_id)
+                        if document is None:
+                            raise ValueError("Matter document disappeared during search projection")
+                        projection = build_document_projection(
+                            worker_db,
+                            document,
+                            definitions,
+                            batch_ids=document_batch_ids,
+                            batch_topics=document_batch_topics,
+                        )
+                        return "index", str(document_id), projection
+
+                with ThreadPoolExecutor(
+                    max_workers=worker_count,
+                    thread_name_prefix="search-projection",
+                ) as executor:
+                    operations = list(executor.map(build_operation, work_items))
+            self.client.bulk(index_name, operations)
 
 
 def sync_review_batch_search(batch_id: uuid.UUID, settings: Settings | None = None) -> None:
@@ -742,7 +962,11 @@ def process_search_operation(operation_id: uuid.UUID) -> None:
         try:
             manager = SearchIndexManager(db, client, settings)
             if operation.kind in {"SCHEMA_SYNC", "REBUILD"}:
-                manager.ensure(operation.matter_id, force=operation.kind == "REBUILD")
+                manager.ensure(
+                    operation.matter_id,
+                    force=operation.kind == "REBUILD",
+                    operation=operation if operation.kind == "REBUILD" else None,
+                )
             elif operation.kind == "DOCUMENT_UPSERT":
                 embedding_job_id = operation.payload.get("embedding_job_id")
                 if embedding_job_id:

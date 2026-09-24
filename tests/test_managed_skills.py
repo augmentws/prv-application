@@ -68,6 +68,7 @@ def test_managed_skill_lifecycle_and_workflow_binding(
         "retrieval_planner",
         "document_analysis",
         "assessment_synthesis",
+        "guidance_refinement",
     ]
 
     created = client.post(
@@ -208,7 +209,12 @@ def test_tenant_binding_overrides_system_binding(client: TestClient, root_token:
             tenant_id=uuid.UUID(tenant_id),
         )
         assert resolved["assessment_synthesis"][1].key == "tenant_synthesis"
-        assert set(resolved) == {"retrieval_planner", "document_analysis", "assessment_synthesis"}
+        assert set(resolved) == {
+            "retrieval_planner",
+            "document_analysis",
+            "assessment_synthesis",
+            "guidance_refinement",
+        }
         snapshot = binding_snapshot(resolved)
         assert snapshot["assessment_synthesis"]["binding_scope"] == "TENANT"
         assert snapshot["assessment_synthesis"]["instructions"] == "Return only the requested structured result."
@@ -236,11 +242,13 @@ def test_standard_assessment_skills_are_idempotent(db, root_admin) -> None:
         "matter_definition_retrieval_plan",
         "matter_definition_document_analysis",
         "matter_definition_assessment_synthesis",
+        "matter_definition_guidance_refinement",
     }
     assert {binding.role_key for binding in bindings} == {
         "retrieval_planner",
         "document_analysis",
         "assessment_synthesis",
+        "guidance_refinement",
     }
     planner = next(
         version

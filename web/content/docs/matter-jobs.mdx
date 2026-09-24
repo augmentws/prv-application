@@ -5,6 +5,8 @@ description: Add large collection selections to a matter and follow durable back
 
 Matter jobs add collection documents and run durable document processing. The matter stores a link to each source collection item; the Artifact Service continues to own native files and derived artifacts.
 
+The **Jobs** tab also shows bulk tag jobs started from matter search. Each row identifies the target field and value, the frozen query or filter scope, current status and progress, tagged and failed counts, and any available error. A snapshotted job with no completed document batches displays **Waiting** and **Waiting for capacity** until its first batch reports progress. Active bulk tag jobs refresh automatically, so you can close the original progress dialog and follow them here.
+
 Matter **ADMIN** users can start and cancel these jobs. The source collection and destination matter must belong to the same client, and the matter must be active.
 
 ## Start from collection documents
@@ -69,7 +71,7 @@ Both modes reduce embedding noise with PCA before clustering and keep their full
 
 **Sample chunks** controls how many chunk vectors are used to discover the clusters. It does not control the number of topics. Increasing the sample improves corpus coverage but uses more clustering time and memory. Blank and very short chunks are excluded, and exact duplicate chunk text is sampled only once. Long documents are capped and represented by chunks spaced across their eligible content so they do not dominate discovery.
 
-Discovery does not immediately change metadata. When discovery finishes, the job enters **Awaiting review**. Select **Review topics** to inspect the proposed names, keywords, sample sizes, and representative excerpts. You can rename a topic, revise its description, or exclude it. At least one topic must remain included.
+Discovery does not immediately change metadata. When discovery finishes, the job enters **Awaiting review**. Select **Review topics** to open the job's dedicated review page and inspect the proposed names, keywords, sample sizes, and representative excerpts without placing the proposal set in a modal. You can rename a topic, revise its description, exclude it, or include or exclude the entire set. At least one topic must remain included before applying.
 
 Select **Apply topics** only after the proposal set is ready. The approved set is recorded with the reviewing user and time, then assignment visits every document in the frozen job scope using durable batches. Closing the browser while the job is awaiting review or applying is safe.
 

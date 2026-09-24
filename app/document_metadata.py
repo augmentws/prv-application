@@ -462,7 +462,7 @@ def apply_metadata_values(
     if definition is None:
         raise ValueError("Metadata definition not found")
     if definition.cardinality != "MULTIPLE":
-        raise ValueError("Batch topic assignment requires a multi-valued field")
+        raise ValueError("Multi-value assignment requires a multi-valued field")
     if not replace and not values:
         return [], None
 
@@ -489,7 +489,14 @@ def apply_metadata_values(
                 created_at=base_time,
             )
         )
-    for index, value in enumerate(dict.fromkeys(values), start=1):
+    unique_values: list[Any] = []
+    seen_values: set[str] = set()
+    for value in values:
+        key = _canonical(value)
+        if key not in seen_values:
+            unique_values.append(value)
+            seen_values.add(key)
+    for index, value in enumerate(unique_values, start=1):
         validate_event_relationships(
             db,
             document=document,

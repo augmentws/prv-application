@@ -22,6 +22,7 @@ def append_matter_definition_revision(
     source_artifact_id: uuid.UUID | None = None,
     source_filename: str | None = None,
     agent_run_id: uuid.UUID | None = None,
+    source_skill_run_id: uuid.UUID | None = None,
 ) -> tuple[MatterDefinition, MatterDefinitionRevision]:
     definition = db.scalar(
         select(MatterDefinition).where(MatterDefinition.matter_id == matter.id).with_for_update()
@@ -55,6 +56,7 @@ def append_matter_definition_revision(
         based_on_revision=based_on_revision,
         created_by_user_id=actor_user_id,
         agent_run_id=agent_run_id,
+        source_skill_run_id=source_skill_run_id,
     )
     db.add(revision)
     record_audit(

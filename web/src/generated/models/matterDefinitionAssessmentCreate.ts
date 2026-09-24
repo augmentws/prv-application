@@ -19,5 +19,6 @@ export interface MatterDefinitionAssessmentCreate {
      * @maximum 1000000
      */
   control_sample_size?: number;
+  use_batching?: boolean;
   acknowledge_large_run_warning?: boolean;
 }

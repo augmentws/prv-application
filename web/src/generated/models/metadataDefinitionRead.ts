@@ -30,6 +30,7 @@ export interface MetadataDefinitionRead {
   resolution_policy: MetadataDefinitionReadResolutionPolicy;
   searchable: boolean;
   facetable: boolean;
+  normalize_to_lowercase?: boolean;
   reviewable: boolean;
   ai_assignable: boolean;
   status: MetadataDefinitionReadStatus;

@@ -14,4 +14,5 @@ export const MatterSearchFilterOperator = {
   IN: 'IN',
   RANGE: 'RANGE',
   EXISTS: 'EXISTS',
+  NOT_EXISTS: 'NOT_EXISTS',
 } as const;

@@ -40,12 +40,40 @@ afterEach(cleanup);
 
 describe("SearchIndexPanel", () => {
   it("shows a ready active generation and matching document counts", () => {
-    render(<SearchIndexPanel coreDocumentCount={12} indexes={[activeIndex]} operations={[completedOperation]} onRebuild={vi.fn()} rebuilding={false} onConfirmReindex={vi.fn()} confirmingReindex={false} onRetryFailed={vi.fn()} retryingFailed={false} />);
+    render(<SearchIndexPanel coreDocumentCount={12} indexes={[{ ...activeIndex, physical_index_exists: true, alias_points_to_index: true, live_document_count: 12 }]} operations={[completedOperation]} onRebuild={vi.fn()} rebuilding={false} onConfirmReindex={vi.fn()} confirmingReindex={false} onRetryFailed={vi.fn()} retryingFailed={false} />);
 
     expect(screen.getByText("Ready")).toBeInTheDocument();
     expect(screen.getByRole("cell", { name: "#2" })).toBeInTheDocument();
     expect(screen.getByText("Index and Core counts match.")).toBeInTheDocument();
     expect(screen.getByRole("cell", { name: "Full rebuild" })).toBeInTheDocument();
+  });
+
+  it("shows a recorded generation as missing when the configured server has no index", () => {
+    const missing = {
+      ...activeIndex,
+      physical_index_exists: false,
+      alias_points_to_index: false,
+      live_document_count: 0,
+    } satisfies SearchIndexGenerationRead;
+
+    render(<SearchIndexPanel coreDocumentCount={12} indexes={[missing]} operations={[completedOperation]} onRebuild={vi.fn()} rebuilding={false} onConfirmReindex={vi.fn()} confirmingReindex={false} onRetryFailed={vi.fn()} retryingFailed={false} />);
+
+    expect(screen.getAllByText("Missing")).toHaveLength(2);
+    expect(screen.getByText("The active index is missing from OpenSearch")).toBeInTheDocument();
+    expect(screen.getByText(/Core previously recorded 12 indexed documents/)).toBeInTheDocument();
+  });
+
+  it("does not report ready when OpenSearch cannot be reached", () => {
+    const unavailable = {
+      ...activeIndex,
+      verification_error: "OpenSearch request failed: connection refused",
+    } satisfies SearchIndexGenerationRead;
+
+    render(<SearchIndexPanel coreDocumentCount={12} indexes={[unavailable]} operations={[completedOperation]} onRebuild={vi.fn()} rebuilding={false} onConfirmReindex={vi.fn()} confirmingReindex={false} onRetryFailed={vi.fn()} retryingFailed={false} />);
+
+    expect(screen.getByText("Unavailable")).toBeInTheDocument();
+    expect(screen.getByText("Unverified")).toBeInTheDocument();
+    expect(screen.queryByText("Ready")).not.toBeInTheDocument();
   });
 
   it("confirms before requesting a full rebuild", async () => {
@@ -78,6 +106,33 @@ describe("SearchIndexPanel", () => {
     await user.click(screen.getByRole("button", { name: "Review and confirm" }));
     await user.click(screen.getByRole("button", { name: "Confirm full reindex" }));
     await waitFor(() => expect(onConfirm).toHaveBeenCalledWith("operation-awaiting"));
+  });
+
+  it("shows live document progress for a running rebuild", () => {
+    const running = {
+      ...completedOperation,
+      id: "operation-running",
+      status: "RUNNING",
+      completed_at: null,
+      payload: {
+        progress: {
+          phase: "INDEXING_DOCUMENTS",
+          processed_documents: 450,
+          total_documents: 1000,
+          index_name: "pvr-matter-1-documents-v000003",
+          documents_per_second: 25,
+          estimated_completion_at: "2026-09-14T12:01:00Z",
+          updated_at: "2026-09-14T12:00:30Z",
+        },
+      },
+    } satisfies SearchProjectionOperationRead;
+
+    render(<SearchIndexPanel coreDocumentCount={1000} indexes={[activeIndex]} operations={[running]} onRebuild={vi.fn()} rebuilding={false} onConfirmReindex={vi.fn()} confirmingReindex={false} onRetryFailed={vi.fn()} retryingFailed={false} />);
+
+    expect(screen.getByText("Indexing matter documents")).toBeInTheDocument();
+    expect(screen.getByText("450 / 1,000 documents · 45%")).toBeInTheDocument();
+    expect(screen.getByText("25.0 docs/sec · Estimated completion in 1 minute")).toBeInTheDocument();
+    expect(screen.getByRole("progressbar", { name: "Search index rebuild progress" })).toHaveAttribute("aria-valuenow", "450");
   });
 
   it("confirms before requeueing failed document-update jobs", async () => {

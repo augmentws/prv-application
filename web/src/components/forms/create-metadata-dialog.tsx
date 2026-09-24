@@ -24,6 +24,7 @@ const schema = z.object({
   enum_options: z.string().optional(),
   searchable: z.boolean(),
   facetable: z.boolean(),
+  normalize_to_lowercase: z.boolean(),
   reviewable: z.boolean(),
   ai_assignable: z.boolean(),
 }).superRefine((values, context) => {
@@ -51,7 +52,7 @@ export function CreateMetadataDialog({ onCreate }: { onCreate: (values: Metadata
   const [open, setOpen] = useState(false);
   const { register, control, handleSubmit, reset, setError, watch, formState: { errors, isSubmitting } } = useForm<FormValues>({
     resolver: zodResolver(schema),
-    defaultValues: { type: "TEXT", cardinality: "SINGLE", searchable: true, facetable: false, reviewable: true, ai_assignable: false },
+    defaultValues: { type: "TEXT", cardinality: "SINGLE", searchable: true, facetable: false, normalize_to_lowercase: false, reviewable: true, ai_assignable: false },
   });
   // React Hook Form owns field subscriptions; React Compiler safely skips this form component.
   // eslint-disable-next-line react-hooks/incompatible-library
@@ -70,6 +71,7 @@ export function CreateMetadataDialog({ onCreate }: { onCreate: (values: Metadata
         resolution_policy: "EXPLICIT_ONLY",
         searchable: values.searchable,
         facetable: values.facetable,
+        normalize_to_lowercase: ["TEXT", "LONG_TEXT"].includes(values.type) && values.normalize_to_lowercase,
         reviewable: values.reviewable,
         ai_assignable: values.ai_assignable,
       });
@@ -97,7 +99,13 @@ export function CreateMetadataDialog({ onCreate }: { onCreate: (values: Metadata
           </div>
           {selectedType === "ENUM" ? <div className="space-y-2"><Label htmlFor="enum-options">Enum options</Label><Textarea id="enum-options" placeholder={"responsive | Responsive\nnot_responsive | Not responsive"} {...register("enum_options")} /><p className="text-xs leading-5 text-muted-foreground">One option per line: stable_key | Display label</p>{errors.enum_options ? <p className="text-sm text-destructive">{errors.enum_options.message}</p> : null}</div> : null}
           <fieldset className="grid gap-3 rounded-lg border bg-muted/25 p-4 sm:grid-cols-2"><legend className="px-1 text-sm font-semibold">Behavior</legend>
-            {[{ name: "searchable", label: "Searchable" }, { name: "facetable", label: "Available as a filter" }, { name: "reviewable", label: "Visible to reviewers" }, { name: "ai_assignable", label: "Agents may assign values" }].map((option) => <label key={option.name} className="flex items-center gap-2 text-sm"><input type="checkbox" className="size-4 rounded border-input accent-primary" {...register(option.name as "searchable" | "facetable" | "reviewable" | "ai_assignable")} />{option.label}</label>)}
+            {[
+              { name: "searchable", label: "Searchable" },
+              { name: "facetable", label: "Available as a filter" },
+              { name: "normalize_to_lowercase", label: "Normalize values to lowercase", disabled: !["TEXT", "LONG_TEXT"].includes(selectedType) },
+              { name: "reviewable", label: "Visible to reviewers" },
+              { name: "ai_assignable", label: "Agents may assign values" },
+            ].map((option) => <label key={option.name} className="flex items-center gap-2 text-sm"><input type="checkbox" disabled={option.disabled} className="size-4 rounded border-input accent-primary disabled:opacity-50" {...register(option.name as "searchable" | "facetable" | "normalize_to_lowercase" | "reviewable" | "ai_assignable")} />{option.label}</label>)}
             {errors.facetable ? <p className="col-span-full text-sm text-destructive">{errors.facetable.message}</p> : null}
           </fieldset>
           {errors.root ? <p role="alert" className="text-sm text-destructive">{errors.root.message}</p> : null}

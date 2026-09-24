@@ -27,6 +27,7 @@ export interface MetadataDefinitionCreate {
   resolution_policy?: MetadataDefinitionCreateResolutionPolicy;
   searchable?: boolean;
   facetable?: boolean;
+  normalize_to_lowercase?: boolean;
   reviewable?: boolean;
   ai_assignable?: boolean;
 }

@@ -3,6 +3,7 @@ import type { Metadata } from "next";
 import { BatchReviewWorkspace } from "@/components/batch-review-workspace";
 import { ReviewWorkspace } from "@/components/review-workspace";
 import type { MatterSearchRequestSearchMode } from "@/generated/models";
+import { NO_VALUE_FILTER_TOKEN } from "@/lib/search-filters";
 
 export const metadata: Metadata = { title: "Search & Review" };
 
@@ -27,8 +28,13 @@ export default async function ReviewPage({
   const initialFilters: Record<string, string[]> = {};
 
   for (const [key, value] of Object.entries(query)) {
-    if (!key.startsWith("f_") || value === undefined) continue;
-    initialFilters[key.slice(2)] = Array.isArray(value) ? value : [value];
+    if (value === undefined) continue;
+    if (key.startsWith("f_")) {
+      initialFilters[key.slice(2)] = Array.isArray(value) ? value : [value];
+    } else if (key.startsWith("m_")) {
+      const field = key.slice(2);
+      initialFilters[field] = [...(initialFilters[field] ?? []), NO_VALUE_FILTER_TOKEN];
+    }
   }
 
   const rawMode = (Array.isArray(query.mode) ? query.mode[0] : query.mode)?.toUpperCase();

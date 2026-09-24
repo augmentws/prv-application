@@ -99,7 +99,7 @@ def enqueue_definition_assessment(
     if not settings.dbos_enabled:
         return
     options: EnqueueOptions = {
-        "workflow_name": "matter_definition_assessment_v1",
+        "workflow_name": "matter_definition_assessment_v2",
         "queue_name": "definition-assessments",
         "workflow_id": workflow_id,
         "application_name": settings.dbos_application_name,
@@ -133,12 +133,29 @@ def enqueue_definition_assessment_reanalysis(
     if not settings.dbos_enabled:
         return
     options: EnqueueOptions = {
-        "workflow_name": "matter_definition_assessment_reanalysis_v1",
+        "workflow_name": "matter_definition_assessment_reanalysis_v2",
         "queue_name": "definition-assessments",
         "workflow_id": workflow_id,
         "application_name": settings.dbos_application_name,
     }
     get_dbos_client().enqueue_in_transaction(db, options, assessment_id, attempt_id)
+
+
+def enqueue_definition_assessment_guidance_refinement(
+    db: Session,
+    workflow_id: str,
+    assessment_id: str,
+) -> None:
+    settings = get_settings()
+    if not settings.dbos_enabled:
+        return
+    options: EnqueueOptions = {
+        "workflow_name": "matter_definition_assessment_guidance_refinement_v1",
+        "queue_name": "definition-assessments",
+        "workflow_id": workflow_id,
+        "application_name": settings.dbos_application_name,
+    }
+    get_dbos_client().enqueue_in_transaction(db, options, assessment_id)
 
 
 def cancel_definition_assessment(workflow_id: str) -> None:
@@ -157,6 +174,19 @@ def enqueue_review_batch(db: Session, workflow_id: str, batch_id: str) -> None:
         "application_name": settings.dbos_application_name,
     }
     get_dbos_client().enqueue_in_transaction(db, options, batch_id)
+
+
+def enqueue_bulk_tag(db: Session, workflow_id: str, job_id: str) -> None:
+    settings = get_settings()
+    if not settings.dbos_enabled:
+        return
+    options: EnqueueOptions = {
+        "workflow_name": "matter_bulk_tag_job",
+        "queue_name": "matter-bulk-tag-plans",
+        "workflow_id": workflow_id,
+        "application_name": settings.dbos_application_name,
+    }
+    get_dbos_client().enqueue_in_transaction(db, options, job_id)
 
 
 def enqueue_search_projection(

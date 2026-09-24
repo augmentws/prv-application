@@ -26,9 +26,15 @@ def _text(*, exact: bool = False) -> dict[str, Any]:
 
 def metadata_field_mapping(definition: MetadataDefinition) -> dict[str, Any]:
     if definition.type == "TEXT":
-        return _text(exact=definition.facetable)
+        mapping = _text(exact=definition.facetable)
+        if definition.normalize_to_lowercase:
+            mapping["meta"] = {"pvr_normalize_to_lowercase": "true"}
+        return mapping
     if definition.type == "LONG_TEXT":
-        return _text()
+        mapping = _text()
+        if definition.normalize_to_lowercase:
+            mapping["meta"] = {"pvr_normalize_to_lowercase": "true"}
+        return mapping
     if definition.type == "INTEGER":
         return {"type": "long"}
     if definition.type == "DECIMAL":

@@ -8,6 +8,7 @@ from app.routers import (
     agent_conversations,
     agents,
     auth,
+    bulk_tags,
     clients,
     collection_deletions,
     document_metadata,
@@ -62,6 +63,7 @@ def health() -> dict[str, str]:
 
 
 app.include_router(auth.router)
+app.include_router(bulk_tags.router)
 app.include_router(agents.router)
 app.include_router(agent_conversations.router)
 app.include_router(tenants.router)

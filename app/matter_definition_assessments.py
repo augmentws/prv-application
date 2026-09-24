@@ -9,8 +9,9 @@ from typing import Any
 from sqlalchemy import delete, select, update
 from sqlalchemy.orm import Session
 
+from app.agent_models import resolve_agent_model
 from app.audit import record_audit
-from app.config import Settings
+from app.config import Settings, get_settings
 from app.models import (
     Matter,
     MatterDefinition,
@@ -39,6 +40,13 @@ MERGE_ALGORITHM_VERSION = "assessment-rrf-v1"
 
 class AssessmentError(ValueError):
     pass
+
+
+def _resolved_model_snapshot(resolved, settings: Settings) -> dict[str, str]:
+    return {
+        role_key: resolve_agent_model(version.model_key, settings)
+        for role_key, (_, _, version) in resolved.items()
+    }
 
 
 def utcnow() -> datetime:
@@ -161,6 +169,7 @@ def start_assessment(
     revision_number: int | None = None,
     maximum_document_count: int = 500,
     control_sample_size: int = 0,
+    use_batching: bool = True,
     acknowledge_large_run_warning: bool = False,
 ) -> MatterDefinitionAssessmentRun:
     if matter.status != "ACTIVE":
@@ -201,11 +210,14 @@ def start_assessment(
         tenant_id=matter.client.tenant_id,
     )
     bindings = binding_snapshot(resolved)
+    resolved_models = _resolved_model_snapshot(resolved, settings)
     assessment_id = uuid.uuid4()
     workflow_id = f"definition-assessment:{assessment_id}"
     configuration = {
         "maximum_document_count": maximum_document_count,
         "control_sample_size": control_sample_size,
+        "use_batching": use_batching,
+        "resolved_models": resolved_models,
         "large_run_warning_threshold": settings.definition_assessment_warning_document_count,
         "large_run_warning_acknowledged": acknowledge_large_run_warning,
         "merge_algorithm_version": MERGE_ALGORITHM_VERSION,
@@ -271,6 +283,7 @@ def start_assessment(
             "revision": selected_revision,
             "maximum_document_count": maximum_document_count,
             "control_sample_size": control_sample_size,
+            "use_batching": use_batching,
         },
     )
     db.flush()
@@ -395,6 +408,10 @@ def regenerate_assessment_synthesis(
         history = []
     assessment.configuration_snapshot = {
         **assessment.configuration_snapshot,
+        "resolved_models": {
+            **assessment.configuration_snapshot.get("resolved_models", {}),
+            "assessment_synthesis": _resolved_model_snapshot(resolved, get_settings())["assessment_synthesis"],
+        },
         "synthesis_regeneration_history": [
             *history,
             {
@@ -489,6 +506,14 @@ def regenerate_assessment_document_analyses(
         history = []
     assessment.configuration_snapshot = {
         **assessment.configuration_snapshot,
+        "resolved_models": {
+            **assessment.configuration_snapshot.get("resolved_models", {}),
+            **{
+                key: value
+                for key, value in _resolved_model_snapshot(resolved, get_settings()).items()
+                if key in {"document_analysis", "assessment_synthesis"}
+            },
+        },
         "document_analysis_regeneration_history": [
             *history,
             {

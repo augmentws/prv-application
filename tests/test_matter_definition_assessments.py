@@ -19,6 +19,7 @@ from app.assessment_execution import (
     _validate_synthesis_refinement,
     fail_assessment,
 )
+from app.assessment_guidance_refinement import create_guidance_revision
 from app.document_evidence import build_document_map_plan, segment_paragraphs
 from app.matter_definition_assessments import (
     AssessmentError,
@@ -29,6 +30,8 @@ from app.matter_definition_assessments import (
 )
 from app.models import (
     Matter,
+    MatterDefinition,
+    MatterDefinitionAssessmentQuestion,
     MatterDefinitionAssessmentRun,
     MatterDefinitionRevision,
     MatterDocument,
@@ -102,6 +105,7 @@ def test_assessment_launch_pins_inputs_and_requires_large_run_acknowledgment(
     payload = created.json()
     assert payload["name"] == "Initial hurricane coverage review"
     assert payload["requested_document_count"] == 500
+    assert payload["use_batching"] is True
     assert payload["status"] == "QUEUED"
     assert payload["review_batch_id"] is None
     assert payload["definition_content_hash"]
@@ -123,17 +127,121 @@ def test_assessment_launch_pins_inputs_and_requires_large_run_acknowledgment(
     assert acknowledged.json()["large_run_warning_acknowledged"] is True
     assert acknowledged.json()["warning_acknowledged_by_user_id"] == str(root_admin.id)
 
+    realtime = client.post(
+        base,
+        headers=auth(root_token),
+        json={"name": "Real-time assessment", "use_batching": False},
+    )
+    assert realtime.status_code == 202, realtime.text
+    assert realtime.json()["use_batching"] is False
+
     listed = client.get(base, headers=auth(root_token))
     assert listed.status_code == 200
-    assert len(listed.json()) == 2
+    assert len(listed.json()) == 3
     with TestingSessionLocal() as db:
         records = list(db.scalars(select(MatterDefinitionAssessmentRun)))
         assert all(record.workflow_run_id for record in records)
         assert all(record.search_index_generation_id for record in records)
         assert all(
-            set(record.binding_snapshot) == {"retrieval_planner", "document_analysis", "assessment_synthesis"}
+            set(record.binding_snapshot)
+            == {"retrieval_planner", "document_analysis", "assessment_synthesis", "guidance_refinement"}
             for record in records
         )
+
+
+def test_answering_all_refinement_questions_queues_and_creates_guidance_draft(
+    client: TestClient,
+    root_token: str,
+    root_admin,
+) -> None:
+    matter_id = create_assessment_matter(client, root_token, root_admin)
+    launched = client.post(
+        f"/v1/matters/{matter_id}/definition-assessments",
+        headers=auth(root_token),
+        json={"maximum_document_count": 1},
+    )
+    assert launched.status_code == 202, launched.text
+    assessment_id = uuid.UUID(launched.json()["id"])
+    with TestingSessionLocal() as db:
+        assessment = db.get(MatterDefinitionAssessmentRun, assessment_id)
+        assert assessment is not None
+        assessment.status = "COMPLETED"
+        workflow = db.get(WorkflowRun, assessment.workflow_run_id)
+        assert workflow is not None
+        workflow.status = "COMPLETED"
+        questions = [
+            MatterDefinitionAssessmentQuestion(
+                assessment_run_id=assessment.id,
+                question="Should storm-adjacent claims be included?",
+                rationale="The current boundary is ambiguous.",
+                priority="HIGH",
+                evidence=[],
+                suggested_answers=["Include them.", "Exclude them."],
+            ),
+            MatterDefinitionAssessmentQuestion(
+                assessment_run_id=assessment.id,
+                question="Should the guidance require a direct causal link?",
+                rationale="Reviewers need a consistent nexus rule.",
+                priority="MEDIUM",
+                evidence=[],
+                suggested_answers=["Require a direct link.", "Allow an indirect link."],
+            ),
+        ]
+        db.add_all(questions)
+        db.commit()
+        question_ids = [question.id for question in questions]
+
+    first = client.put(
+        f"/v1/matters/{matter_id}/definition-assessments/{assessment_id}/questions/{question_ids[0]}",
+        headers=auth(root_token),
+        json={"status": "ANSWERED", "answer": "Include them."},
+    )
+    assert first.status_code == 200, first.text
+    assert first.json()["suggested_answers"] == ["Include them.", "Exclude them."]
+    assert first.json()["answer"] == "Include them."
+    with TestingSessionLocal() as db:
+        assessment = db.get(MatterDefinitionAssessmentRun, assessment_id)
+        assert assessment is not None
+        assert assessment.guidance_refinement_status == "NOT_READY"
+
+    second = client.put(
+        f"/v1/matters/{matter_id}/definition-assessments/{assessment_id}/questions/{question_ids[1]}",
+        headers=auth(root_token),
+        json={"status": "ANSWERED", "answer": "Require a direct link."},
+    )
+    assert second.status_code == 200, second.text
+    with TestingSessionLocal() as db:
+        assessment = db.get(MatterDefinitionAssessmentRun, assessment_id)
+        assert assessment is not None
+        assert assessment.guidance_refinement_status == "QUEUED"
+        assert assessment.guidance_refinement_workflow_run_id is not None
+        refinement_workflow = db.get(WorkflowRun, assessment.guidance_refinement_workflow_run_id)
+        assert refinement_workflow is not None
+        assert set(refinement_workflow.binding_snapshot) == {"guidance_refinement"}
+
+        revision_id = create_guidance_revision(
+            db,
+            assessment.id,
+            model=TestModel(
+                custom_output_args={
+                    "content_markdown": (
+                        "# Review instructions\n\nInclude storm-adjacent claims and require a direct causal link."
+                    ),
+                    "change_summary": ["Clarified the covered claims and causal-link requirement."],
+                }
+            ),
+        )
+        db.refresh(assessment)
+        revision = db.get(MatterDefinitionRevision, revision_id)
+        definition = db.scalar(select(MatterDefinition).where(MatterDefinition.matter_id == uuid.UUID(matter_id)))
+        assert revision is not None and definition is not None
+        assert revision.source_kind == "ASSESSMENT_REFINEMENT"
+        assert revision.source_skill_run_id is not None
+        assert revision.based_on_revision == 1
+        assert definition.current_revision == 2
+        assert definition.published_revision is None
+        assert assessment.guidance_refinement_status == "COMPLETED"
+        assert assessment.refined_matter_definition_revision_id == revision.id
 
 
 def test_assessment_reads_use_live_document_counts(
@@ -487,10 +595,10 @@ def test_completed_assessment_can_regenerate_only_synthesis(
         workflow = db.get(WorkflowRun, assessment.workflow_run_id)
         assert workflow is not None
         assert ":synthesis:" in workflow.dbos_workflow_id
-        assert workflow.code_version == "7"
+        assert workflow.code_version == "8"
         assert (
             assessment.binding_snapshot["assessment_synthesis"]["output_schema_key"]
-            == "matter_definition_assessment_synthesis_output_v3"
+            == "matter_definition_assessment_synthesis_output_v4"
         )
         step = db.scalar(
             select(WorkflowStepRun).where(
@@ -606,7 +714,7 @@ def test_completed_assessment_can_reanalyze_same_frozen_batch(
             )
         ) == {"COMPLETED"}
         assert ":analysis:" in workflow.dbos_workflow_id
-        assert workflow.code_version == "7"
+        assert workflow.code_version == "8"
         history = assessment.configuration_snapshot["document_analysis_regeneration_history"]
         assert history[-1]["previous_review_batch_run_id"] == str(previous_review_run_id)
         steps = list(
@@ -855,6 +963,7 @@ def test_recurring_near_miss_patterns_require_evidence_backed_questions() -> Non
             {
                 "question": "Should unrelated insurance lines remain excluded without a crisis nexus?",
                 "evidence": evidence,
+                "suggested_answers": ["Yes, keep them excluded.", "No, include them."],
             }
         ],
     }
@@ -931,6 +1040,7 @@ def test_synthesis_refinement_requires_questions_or_structured_no_refinement_exp
         "clarification_questions": [
             {
                 "question": "Should this boundary be included?",
+                "suggested_answers": ["Include it.", "Exclude it."],
                 "evidence": [
                     {
                         "matter_document_id": document_id,

@@ -14,6 +14,7 @@ import {
   Save,
   Search,
   SlidersHorizontal,
+  Tags,
   X,
 } from "lucide-react";
 import Link from "next/link";
@@ -43,6 +44,8 @@ import type {
   CustodianRead,
   DocumentMetadataFieldRead,
   MatterRead,
+  MatterBulkTagCreate,
+  MatterBulkTagJobRead,
   MatterDateHistogramResponse,
   MatterSavedSearchCreate,
   MatterSavedSearchRead,
@@ -60,6 +63,8 @@ import type {
   UserRead,
 } from "@/generated/models";
 import { coreApi } from "@/lib/api-client";
+import { bulkTagDisplayStatus, bulkTagIsWaiting } from "@/lib/bulk-tag-jobs";
+import { NO_VALUE_FILTER_TOKEN } from "@/lib/search-filters";
 import { cn } from "@/lib/utils";
 
 const PAGE_SIZE = 50;
@@ -152,6 +157,51 @@ function resultTitle(hit: MatterSearchHit) {
   return displayValue(hit.fields.email_subject || metadata.document_title || hit.fields.original_filename || "Untitled document");
 }
 
+function resultTitleHighlight(hit: MatterSearchHit) {
+  const metadata = resultMetadata(hit);
+  const field = hit.fields.email_subject ? "email_subject"
+    : metadata.document_title ? "metadata.document_title"
+    : hit.fields.original_filename ? "original_filename"
+    : null;
+  return field ? hit.highlights?.[field]?.[0] : undefined;
+}
+
+function resultHighlightFragments(hit: MatterSearchHit) {
+  const highlights = hit.highlights ?? {};
+  const titleFragment = resultTitleHighlight(hit);
+  const priority = [
+    "body_text",
+    "email_subject",
+    "email_from",
+    "email_to",
+    "email_cc",
+    "email_bcc",
+    "source_path",
+    ...Object.keys(highlights).filter((field) => field.startsWith("metadata.")),
+    "original_filename",
+  ];
+  const seen = new Set<string>();
+  const fragments: string[] = [];
+  for (const field of priority) {
+    for (const fragment of highlights[field] ?? []) {
+      if (fragment === titleFragment || seen.has(fragment)) continue;
+      seen.add(fragment);
+      fragments.push(fragment);
+      if (fragments.length === 2) return fragments;
+    }
+  }
+  return fragments;
+}
+
+function HighlightedText({ fragment }: { fragment: string }) {
+  return <>{fragment.split(/(<(?:mark|em)>[\s\S]*?<\/(?:mark|em)>)/gi).map((part, index) => {
+    const match = part.match(/^<(?:mark|em)>([\s\S]*?)<\/(?:mark|em)>$/i);
+    return match
+      ? <mark key={index} className="rounded-sm bg-warning/35 px-0.5 text-inherit">{match[1]}</mark>
+      : <span key={index}>{part}</span>;
+  })}</>;
+}
+
 function resultFileType(hit: MatterSearchHit) {
   const metadata = resultMetadata(hit);
   const extension = displayValue(metadata.file_extension);
@@ -215,6 +265,8 @@ export function ReviewWorkspace({
   const [mobileDocumentOpen, setMobileDocumentOpen] = useState(Boolean(initialDocumentId));
   const [filtersOpen, setFiltersOpen] = useState(false);
   const [codingOpen, setCodingOpen] = useState(false);
+  const [bulkTagOpen, setBulkTagOpen] = useState(false);
+  const [bulkTagJobId, setBulkTagJobId] = useState("");
   const [facetWidth, setFacetWidth] = useState(248);
   const [resultsWidth, setResultsWidth] = useState(384);
   const [detailsWidth, setDetailsWidth] = useState(352);
@@ -308,7 +360,15 @@ export function ReviewWorkspace({
           to: range.to ? dateRangeBound(range.to, definition, true) : null,
         }];
       }
-      return [{ field: key, operator: "IN", values: values.map((value) => typedFacetValue(value, definition)) }];
+      const includeMissing = values.includes(NO_VALUE_FILTER_TOKEN);
+      const selectedValues = values.filter((value) => value !== NO_VALUE_FILTER_TOKEN);
+      if (!selectedValues.length && includeMissing) return [{ field: key, operator: "NOT_EXISTS" }];
+      return [{
+        field: key,
+        operator: "IN",
+        values: selectedValues.map((value) => typedFacetValue(value, definition)),
+        ...(includeMissing ? { include_missing: true } : {}),
+      }];
     });
     const effectiveMode = query.trim() ? searchMode : "KEYWORD";
     return {
@@ -328,6 +388,15 @@ export function ReviewWorkspace({
     queryFn: () => coreApi<MatterSearchResponse>(`/v1/matters/${matterId}/search`, { method: "POST", body: JSON.stringify(searchRequest) }),
     enabled: Boolean(matter.data && definitions.data),
     placeholderData: (previous) => previous,
+  });
+  const bulkTagJob = useQuery({
+    queryKey: ["matter-bulk-tag-job", matterId, bulkTagJobId],
+    queryFn: () => coreApi<MatterBulkTagJobRead>(`/v1/matters/${matterId}/bulk-tag-jobs/${bulkTagJobId}`),
+    enabled: Boolean(bulkTagJobId),
+    refetchInterval: (query) => {
+      const job = query.state.data;
+      return job && ["COMPLETED", "COMPLETED_WITH_ERRORS", "FAILED"].includes(job.status) ? false : 1000;
+    },
   });
 
   const effectiveSelectedDocumentId = searchResults.data?.hits.some((hit) => hit.document_id === selectedDocumentId)
@@ -361,7 +430,10 @@ export function ReviewWorkspace({
       params.set("similarity", String(nextMinimumSimilarity));
     }
     for (const [key, values] of Object.entries(nextFilters)) {
-      for (const value of values) params.append(`f_${key}`, value);
+      for (const value of values) {
+        if (value === NO_VALUE_FILTER_TOKEN) params.set(`m_${key}`, "1");
+        else params.append(`f_${key}`, value);
+      }
     }
     if (nextOffset) params.set("page", String(Math.floor(nextOffset / PAGE_SIZE) + 1));
     if (documentId) params.set("document", documentId);
@@ -407,6 +479,15 @@ export function ReviewWorkspace({
       toast.success(`${saved.name} was deleted.`);
     },
     onError: (error) => toast.error(error instanceof Error ? error.message : "The saved search could not be deleted."),
+  });
+  const createBulkTagMutation = useMutation({
+    mutationFn: (payload: MatterBulkTagCreate) => coreApi<MatterBulkTagJobRead>(`/v1/matters/${matterId}/bulk-tag-jobs`, { method: "POST", body: JSON.stringify(payload) }),
+    onSuccess: (job) => {
+      setBulkTagJobId(job.id);
+      queryClient.setQueryData(["matter-bulk-tag-job", matterId, job.id], job);
+      toast.success("Bulk tag job started.");
+    },
+    onError: (error) => toast.error(error instanceof Error ? error.message : "The bulk tag job could not be started."),
   });
 
   const submitSearch = (event: FormEvent) => {
@@ -494,8 +575,13 @@ export function ReviewWorkspace({
         if (tokens.length) nextFilters[filter.field] = tokens;
         continue;
       }
+      if (filter.operator === "NOT_EXISTS") {
+        nextFilters[filter.field] = [NO_VALUE_FILTER_TOKEN];
+        continue;
+      }
       const values = filter.operator === "IN" ? filter.values : filter.operator === "EQ" ? [filter.value] : [];
       const tokens = (values ?? []).filter((value) => value !== null && value !== undefined).map(facetToken);
+      if (filter.operator === "IN" && filter.include_missing) tokens.push(NO_VALUE_FILTER_TOKEN);
       if (tokens.length) nextFilters[filter.field] = tokens;
     }
     setDraftQuery(nextQuery);
@@ -518,6 +604,11 @@ export function ReviewWorkspace({
     0,
   );
   const total = searchResults.data?.total ?? 0;
+  const hasActiveSearch = Boolean(query.trim() || (searchRequest.filters ?? []).length);
+  const openBulkTag = () => {
+    setBulkTagJobId("");
+    setBulkTagOpen(true);
+  };
   const semanticWithoutThreshold = Boolean(query.trim()) && searchMode === "SEMANTIC" && minimumSimilarity === null;
   const pageStart = total ? offset + 1 : 0;
   const pageEnd = Math.min(offset + PAGE_SIZE, total);
@@ -608,7 +699,7 @@ export function ReviewWorkspace({
           style={{ "--review-details-width": `${detailsWidth}px` } as CSSProperties}
           aria-label="Document details"
         >
-          <DocumentDetailsPanel definitions={definitions.data ?? []} groups={groups.data ?? []} hit={selectedHit} values={metadataValues.data} valuesVersion={metadataValues.dataUpdatedAt} loading={metadataValues.isPending && Boolean(effectiveSelectedDocumentId)} saving={metadataMutation.isPending} onSave={(actions) => metadataMutation.mutateAsync(actions).then(() => undefined)} />
+          <DocumentDetailsPanel definitions={definitions.data ?? []} groups={groups.data ?? []} hit={selectedHit} values={metadataValues.data} valuesVersion={metadataValues.dataUpdatedAt} loading={metadataValues.isPending && Boolean(effectiveSelectedDocumentId)} saving={metadataMutation.isPending} onSave={(actions) => metadataMutation.mutateAsync(actions).then(() => undefined)} onBulkTag={hasActiveSearch && currentUser.data?.tenant_role === "ADMIN" ? openBulkTag : undefined} />
         </aside>
       </div>
 
@@ -622,9 +713,20 @@ export function ReviewWorkspace({
       <Dialog open={codingOpen} onOpenChange={setCodingOpen}>
         <DialogContent className="flex h-[min(90vh,52rem)] max-w-xl flex-col overflow-hidden p-0 2xl:hidden">
           <DialogTitle className="sr-only">Document details</DialogTitle>
-          <DocumentDetailsPanel definitions={definitions.data ?? []} groups={groups.data ?? []} hit={selectedHit} values={metadataValues.data} valuesVersion={metadataValues.dataUpdatedAt} loading={metadataValues.isPending && Boolean(effectiveSelectedDocumentId)} saving={metadataMutation.isPending} onSave={(actions) => metadataMutation.mutateAsync(actions).then(() => undefined)} />
+          <DocumentDetailsPanel definitions={definitions.data ?? []} groups={groups.data ?? []} hit={selectedHit} values={metadataValues.data} valuesVersion={metadataValues.dataUpdatedAt} loading={metadataValues.isPending && Boolean(effectiveSelectedDocumentId)} saving={metadataMutation.isPending} onSave={(actions) => metadataMutation.mutateAsync(actions).then(() => undefined)} onBulkTag={hasActiveSearch && currentUser.data?.tenant_role === "ADMIN" ? openBulkTag : undefined} />
         </DialogContent>
       </Dialog>
+
+      <BulkTagDialog
+        open={bulkTagOpen}
+        onOpenChange={setBulkTagOpen}
+        definitions={definitions.data ?? []}
+        search={searchRequest}
+        resultCount={total}
+        job={bulkTagJob.data}
+        submitting={createBulkTagMutation.isPending}
+        onSubmit={(payload) => createBulkTagMutation.mutateAsync(payload).then(() => undefined)}
+      />
     </main>
   );
 }
@@ -772,12 +874,16 @@ function FacetSection({ matterId, searchRequest, definition, selected, custodian
   });
   const options = useMemo(() => {
     const available = new Map((values.data?.values ?? []).map((option) => [facetToken(option.value), option]));
+    if ((values.data?.missing_count ?? 0) > 0 || selected.includes(NO_VALUE_FILTER_TOKEN)) {
+      available.set(NO_VALUE_FILTER_TOKEN, { value: NO_VALUE_FILTER_TOKEN, count: values.data?.missing_count ?? 0 });
+    }
     for (const token of selected) {
       if (!available.has(token)) available.set(token, { value: token, count: 0 });
     }
     return [...available.values()];
-  }, [selected, values.data?.values]);
-  const labelFor = (token: string) => definition.key === "custodian" ? custodianNames.get(token) ?? token
+  }, [selected, values.data?.missing_count, values.data?.values]);
+  const labelFor = (token: string) => token === NO_VALUE_FILTER_TOKEN ? "No value"
+    : definition.key === "custodian" ? custodianNames.get(token) ?? token
     : definition.type === "ENUM" ? enumLabels.get(token) ?? token
     : definition.type === "BOOLEAN" ? token === "true" ? "Yes" : "No"
     : definition.key === "file_extension" ? `.${token.replace(/^\./, "")}` : token;
@@ -829,13 +935,16 @@ function ResultsList({ results, offset, selectedDocumentId, onSelect, matter }: 
         const selected = hit.document_id === selectedDocumentId;
         const custodians = displayValue(hit.fields.custodian_names);
         const path = displayValue(hit.fields.source_path);
+        const titleHighlight = resultTitleHighlight(hit);
+        const highlightFragments = resultHighlightFragments(hit);
         return <li key={hit.document_id} className="border-b">
           <button type="button" onClick={() => onSelect(hit.document_id)} aria-current={selected ? "true" : undefined} className={cn("w-full border-l-[3px] px-3 py-3 text-left outline-none transition hover:bg-muted/70 focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-ring", selected ? "border-l-accent bg-primary/8" : "border-l-transparent")}>
             <div className="flex items-start gap-2">
               <span aria-label={`Result ${offset + index + 1}`} className="mt-0.5 font-mono text-xs tabular-nums text-muted-foreground">{offset + index + 1}</span>
               <div className="min-w-0 flex-1">
-                <p className="line-clamp-2 text-sm font-semibold leading-5">{resultTitle(hit)}</p>
-                {hit.best_passage ? <p className="mt-1 line-clamp-3 text-xs leading-5 text-foreground/80">{hit.best_passage.text}</p> : null}
+                <p className="line-clamp-2 text-sm font-semibold leading-5">{titleHighlight ? <HighlightedText fragment={titleHighlight} /> : resultTitle(hit)}</p>
+                {highlightFragments.length ? <div className="mt-1 space-y-1">{highlightFragments.map((fragment, fragmentIndex) => <p key={`${hit.document_id}-highlight-${fragmentIndex}`} className="line-clamp-2 text-xs leading-5 text-foreground/80"><HighlightedText fragment={fragment} /></p>)}</div>
+                  : hit.best_passage ? <p className="mt-1 line-clamp-3 text-xs leading-5 text-foreground/80">{hit.best_passage.text}</p> : null}
                 <p className="mt-1 truncate text-xs text-muted-foreground" title={custodians}>{custodians}</p>
                 <p className="mt-1 truncate text-xs text-muted-foreground" title={path}>{path}</p>
               </div>
@@ -905,7 +1014,7 @@ function ResizeHandle({ className, label, value, min, max, direction = 1, onChan
 
 type DetailsTab = "coding" | "metadata";
 
-function DocumentDetailsPanel({ definitions, groups, hit, values, valuesVersion, loading, saving, onSave }: {
+function DocumentDetailsPanel({ definitions, groups, hit, values, valuesVersion, loading, saving, onSave, onBulkTag }: {
   definitions: MetadataDefinitionRead[];
   groups: MetadataGroupRead[];
   hit?: MatterSearchHit;
@@ -914,6 +1023,7 @@ function DocumentDetailsPanel({ definitions, groups, hit, values, valuesVersion,
   loading: boolean;
   saving: boolean;
   onSave: (actions: CodingAction[]) => Promise<void>;
+  onBulkTag?: () => void;
 }) {
   const [tab, setTab] = useState<DetailsTab>("coding");
   const tabsId = useId();
@@ -930,7 +1040,7 @@ function DocumentDetailsPanel({ definitions, groups, hit, values, valuesVersion,
       {!hit ? <div className="grid min-h-0 flex-1 place-items-center p-5 text-center text-sm text-muted-foreground">Select a document to view its metadata.</div>
         : loading ? <div className="space-y-3 p-4">{Array.from({ length: 8 }, (_, index) => <Skeleton key={index} className="h-16 w-full" />)}</div>
         : tab === "coding"
-          ? <CodingForm key={`${hit.document_id}:${valuesVersion}`} id={`${tabsId}-panel`} definitions={definitions} visibleGroups={visibleGroups} definitionById={definitionById} valueByDefinition={valueByDefinition} saving={saving} onSave={onSave} />
+          ? <CodingForm key={`${hit.document_id}:${valuesVersion}`} id={`${tabsId}-panel`} definitions={definitions} visibleGroups={visibleGroups} definitionById={definitionById} valueByDefinition={valueByDefinition} saving={saving} onSave={onSave} onBulkTag={onBulkTag} />
           : <MetadataPanel id={`${tabsId}-panel`} definitions={definitions} visibleGroups={visibleGroups} definitionById={definitionById} valueByDefinition={valueByDefinition} hit={hit} />}
     </div>
   );
@@ -940,7 +1050,7 @@ function detailsTabClass(active: boolean) {
   return cn("relative h-10 px-3 text-sm font-semibold text-muted-foreground outline-none transition hover:text-foreground focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-ring", active && "text-primary after:absolute after:inset-x-2 after:bottom-0 after:h-0.5 after:bg-accent");
 }
 
-function CodingForm({ id, definitions, visibleGroups, definitionById, valueByDefinition, saving, onSave }: {
+function CodingForm({ id, definitions, visibleGroups, definitionById, valueByDefinition, saving, onSave, onBulkTag }: {
   id: string;
   definitions: MetadataDefinitionRead[];
   visibleGroups: MetadataGroupRead[];
@@ -948,6 +1058,7 @@ function CodingForm({ id, definitions, visibleGroups, definitionById, valueByDef
   valueByDefinition: Map<string, DocumentMetadataFieldRead>;
   saving: boolean;
   onSave: (actions: CodingAction[]) => Promise<void>;
+  onBulkTag?: () => void;
 }) {
   const editableIds = new Set(visibleGroups.flatMap((group) => group.definition_ids));
   const editableDefinitions = definitions.filter((definition) => editableIds.has(definition.id) && definition.status === "ACTIVE" && definition.reviewable && definition.value_source === "ASSERTED");
@@ -1003,13 +1114,114 @@ function CodingForm({ id, definitions, visibleGroups, definitionById, valueByDef
         {!editableDefinitions.length ? <p className="p-4 text-sm text-muted-foreground">No editable fields are visible for document coding.</p> : null}
       </div>
       <div className="flex shrink-0 items-center justify-between gap-3 border-t bg-card p-3">
-        <span className="text-xs text-muted-foreground">{dirtyCount ? `${dirtyCount} ${dirtyCount === 1 ? "field" : "fields"} changed` : "No unsaved changes"}</span>
+        <div className="flex items-center gap-2">{onBulkTag ? <Button type="button" variant="outline" size="sm" onClick={onBulkTag}><Tags />Bulk tag results</Button> : null}<span className="text-xs text-muted-foreground">{dirtyCount ? `${dirtyCount} ${dirtyCount === 1 ? "field" : "fields"} changed` : "No unsaved changes"}</span></div>
         <div className="flex gap-2">
           <Button type="button" variant="ghost" size="sm" disabled={!dirtyCount || saving} onClick={() => setDrafts(initialDrafts)}><RotateCcw />Reset</Button>
           <Button type="submit" size="sm" disabled={!dirtyCount || saving}><Save />{saving ? "Saving…" : "Save changes"}</Button>
         </div>
       </div>
     </form>
+  );
+}
+
+function BulkTagDialog({ open, onOpenChange, definitions, search, resultCount, job, submitting, onSubmit }: {
+  open: boolean;
+  onOpenChange: (open: boolean) => void;
+  definitions: MetadataDefinitionRead[];
+  search: MatterSearchRequest;
+  resultCount: number;
+  job?: MatterBulkTagJobRead;
+  submitting: boolean;
+  onSubmit: (payload: MatterBulkTagCreate) => Promise<void>;
+}) {
+  const eligible = useMemo(
+    () => definitions.filter((definition) => definition.status === "ACTIVE" && definition.reviewable && definition.value_source === "ASSERTED"),
+    [definitions],
+  );
+  const [assignments, setAssignments] = useState<Array<{ definitionId: string; values: string[] }>>([]);
+  const effectiveAssignments = assignments.length ? assignments : eligible[0] ? [{ definitionId: eligible[0].id, values: [] }] : [];
+  const terminal = Boolean(job && ["COMPLETED", "COMPLETED_WITH_ERRORS", "FAILED"].includes(job.status));
+  const changeOpen = (next: boolean) => {
+    if (!next) {
+      setAssignments([]);
+    }
+    onOpenChange(next);
+  };
+
+  const updateAssignment = (index: number, next: { definitionId: string; values: string[] }) => {
+    setAssignments(effectiveAssignments.map((assignment, assignmentIndex) => assignmentIndex === index ? next : assignment));
+  };
+
+  const addAssignment = () => {
+    const selected = new Set(effectiveAssignments.map((assignment) => assignment.definitionId));
+    const nextDefinition = eligible.find((definition) => !selected.has(definition.id));
+    if (nextDefinition) setAssignments([...effectiveAssignments, { definitionId: nextDefinition.id, values: [] }]);
+  };
+
+  const submit = async (event: FormEvent) => {
+    event.preventDefault();
+    if (!effectiveAssignments.length) return;
+    try {
+      await onSubmit({
+        search,
+        assignments: effectiveAssignments.map((assignment) => {
+          const definition = eligible.find((item) => item.id === assignment.definitionId)!;
+          return {
+            metadata_definition_id: definition.id,
+            value: definition.cardinality === "MULTIPLE"
+              ? assignment.values.map((value) => parseEditorValue(value, definition))
+              : parseEditorValue(assignment.values[0] ?? "", definition),
+          };
+        }),
+      });
+    } catch (error) {
+      toast.error(error instanceof Error ? error.message : "Check the selected field and value.");
+    }
+  };
+
+  return (
+    <Dialog open={open} onOpenChange={changeOpen}>
+      <DialogContent className="max-w-lg">
+        <DialogHeader>
+          <DialogTitle>Bulk tag search results</DialogTitle>
+          <DialogDescription>Apply coding values to the {resultCount.toLocaleString()} documents matched by this search. The submitted search is frozen for the job.</DialogDescription>
+        </DialogHeader>
+        {job ? (
+          <div className="space-y-3">
+            <div className="rounded-lg border bg-muted/30 p-3 text-sm">
+              <div className="flex items-center justify-between gap-3"><span className="font-semibold">{bulkTagDisplayStatus(job).replaceAll("_", " ").toLowerCase()}</span><span>{bulkTagIsWaiting(job) ? "Waiting for capacity" : `${job.processed_count.toLocaleString()} / ${job.matched_count.toLocaleString()}`}</span></div>
+              <div className="mt-2 h-2 overflow-hidden rounded-full bg-muted"><div className="h-full bg-primary transition-[width]" style={{ width: `${job.matched_count ? Math.min(100, job.processed_count / job.matched_count * 100) : terminal ? 100 : 0}%` }} /></div>
+              <p className="mt-2 text-xs text-muted-foreground">{job.tagged_count.toLocaleString()} tagged · {job.failed_count.toLocaleString()} failed</p>
+            </div>
+            {job.error_message ? <p role="alert" className="rounded-lg bg-destructive/10 p-3 text-sm text-destructive">{job.error_message}</p> : null}
+            <div className="flex justify-end"><Button type="button" variant="outline" onClick={() => changeOpen(false)}>{terminal ? "Close" : "Run in background"}</Button></div>
+          </div>
+        ) : (
+          <form className="space-y-4" onSubmit={submit}>
+            {search.search_mode !== "KEYWORD" ? <p role="alert" className="rounded-lg border border-warning/40 bg-warning/10 p-3 text-sm">Bulk tagging currently requires a keyword search. Switch the matter search to Keyword and run it again.</p> : null}
+            <div className="space-y-3">
+              {effectiveAssignments.map((assignment, index) => {
+                const definition = eligible.find((item) => item.id === assignment.definitionId);
+                if (!definition) return null;
+                const fieldId = `bulk-tag-field-${index}`;
+                const valueId = `bulk-tag-value-${index}`;
+                return <div key={`${assignment.definitionId}-${index}`} className="rounded-lg border p-3">
+                  <div className="flex items-end gap-2">
+                    <div className="min-w-0 flex-1 space-y-1.5"><label htmlFor={fieldId} className="text-sm font-medium">Field {index + 1}</label><Select value={definition.id} onValueChange={(definitionId) => updateAssignment(index, { definitionId, values: [] })}><SelectTrigger id={fieldId}><SelectValue /></SelectTrigger><SelectContent>{eligible.map((item) => <SelectItem key={item.id} value={item.id} disabled={effectiveAssignments.some((selected, selectedIndex) => selectedIndex !== index && selected.definitionId === item.id)}>{item.display_name}</SelectItem>)}</SelectContent></Select></div>
+                    {effectiveAssignments.length > 1 ? <Button type="button" variant="ghost" size="icon" aria-label={`Remove field ${index + 1}`} onClick={() => setAssignments(effectiveAssignments.filter((_, assignmentIndex) => assignmentIndex !== index))}><X /></Button> : null}
+                  </div>
+                  <div className="mt-3 space-y-1.5"><label htmlFor={valueId} className="text-sm font-medium">{definition.cardinality === "MULTIPLE" ? "Values" : "Value"}</label>{definition.cardinality === "MULTIPLE" ? <MultiValueField inputId={valueId} definition={definition} values={assignment.values} onChange={(values) => updateAssignment(index, { ...assignment, values })} /> : <FieldInput id={valueId} definition={definition} value={assignment.values[0] ?? ""} onChange={(value) => updateAssignment(index, { ...assignment, values: value ? [value] : [] })} />}</div>
+                </div>;
+              })}
+              <Button type="button" variant="outline" size="sm" disabled={effectiveAssignments.length >= eligible.length} onClick={addAssignment}>Add another field</Button>
+            </div>
+            {!eligible.length ? <p className="text-sm text-muted-foreground">No active reviewable coding fields are available.</p> : null}
+            <p className="text-xs text-muted-foreground">Single-value fields are set to the selected value. Multi-value fields add every selected value without removing existing coding.</p>
+            <div className="flex justify-end gap-2"><Button type="button" variant="ghost" onClick={() => changeOpen(false)}>Cancel</Button><Button type="submit" disabled={submitting || !effectiveAssignments.length || effectiveAssignments.some((assignment) => !assignment.values.length) || !resultCount || search.search_mode !== "KEYWORD"}><Tags />{submitting ? "Starting…" : "Start bulk tag job"}</Button></div>
+          </form>
+        )}
+      </DialogContent>
+    </Dialog>
   );
 }
 

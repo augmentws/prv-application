@@ -15,4 +15,5 @@ export interface MatterSearchFilter {
   values?: unknown[] | null;
   from?: unknown | null;
   to?: unknown | null;
+  include_missing?: boolean;
 }

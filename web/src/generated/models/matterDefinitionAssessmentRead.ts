@@ -7,6 +7,7 @@
  */
 import type { MatterDefinitionAssessmentReadConfigurationSnapshot } from './matterDefinitionAssessmentReadConfigurationSnapshot';
 import type { MatterDefinitionAssessmentReadCoverageSnapshot } from './matterDefinitionAssessmentReadCoverageSnapshot';
+import type { MatterDefinitionAssessmentReadGuidanceRefinementStatus } from './matterDefinitionAssessmentReadGuidanceRefinementStatus';
 import type { MatterDefinitionAssessmentReadStatus } from './matterDefinitionAssessmentReadStatus';
 import type { MatterDefinitionAssessmentReadSynthesisResult } from './matterDefinitionAssessmentReadSynthesisResult';
 
@@ -23,6 +24,7 @@ export interface MatterDefinitionAssessmentRead {
   configuration_snapshot: MatterDefinitionAssessmentReadConfigurationSnapshot;
   requested_document_count: number;
   control_sample_size: number;
+  use_batching: boolean;
   large_run_warning_acknowledged: boolean;
   warning_acknowledged_by_user_id: string | null;
   warning_acknowledged_at: string | null;
@@ -40,6 +42,10 @@ export interface MatterDefinitionAssessmentRead {
   invalid_result_count: number;
   coverage_snapshot: MatterDefinitionAssessmentReadCoverageSnapshot;
   synthesis_result: MatterDefinitionAssessmentReadSynthesisResult;
+  guidance_refinement_status: MatterDefinitionAssessmentReadGuidanceRefinementStatus;
+  guidance_refinement_workflow_run_id: string | null;
+  refined_matter_definition_revision_id: string | null;
+  guidance_refinement_error_message: string | null;
   status: MatterDefinitionAssessmentReadStatus;
   error_message: string | null;
   initiated_by_user_id: string;

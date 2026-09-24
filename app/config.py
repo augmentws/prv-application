@@ -26,6 +26,7 @@ class Settings(BaseSettings):
     opensearch_index_prefix: str = "pvr"
     search_request_timeout_seconds: float = Field(default=30.0, gt=0, le=300)
     search_bulk_batch_size: int = Field(default=500, ge=1, le=5000)
+    search_projection_document_concurrency: int = Field(default=8, ge=1, le=32)
     search_body_text_max_bytes: int = Field(default=10 * 1024 * 1024, ge=1024, le=100 * 1024 * 1024)
     agent_default_model: str | None = None
     agent_turn_queue_concurrency: int = Field(default=4, ge=1, le=100)
@@ -41,6 +42,7 @@ class Settings(BaseSettings):
     matter_embedding_batch_size: int = Field(default=250, ge=1, le=500)
     matter_embedding_document_concurrency: int = Field(default=8, ge=1, le=32)
     matter_topic_batch_size: int = Field(default=100, ge=1, le=1000)
+    matter_bulk_tag_batch_size: int = Field(default=250, ge=1, le=2000)
     embedding_text_max_bytes: int = Field(default=10 * 1024 * 1024, ge=1024, le=100 * 1024 * 1024)
     chunk_target_characters: int = Field(default=1800, ge=200, le=20000)
     chunk_max_characters: int = Field(default=2600, ge=300, le=30000)
@@ -48,6 +50,8 @@ class Settings(BaseSettings):
     definition_assessment_warning_document_count: int = Field(default=1000, ge=1)
     definition_assessment_document_concurrency: int = Field(default=8, ge=1, le=32)
     definition_assessment_map_max_characters: int = Field(default=60_000, ge=10_000, le=500_000)
+    definition_assessment_provider_batch_size: int = Field(default=50, ge=1, le=100)
+    definition_assessment_provider_batch_poll_seconds: float = Field(default=15.0, ge=1, le=300)
 
     jwt_secret: str = Field(default="development-only-change-me-please", min_length=32)
     jwt_issuer: str = "priv-view-core"

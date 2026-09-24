@@ -16,6 +16,10 @@ export interface SearchIndexGenerationRead {
   schema_hash: string;
   status: SearchIndexGenerationReadStatus;
   document_count: number;
+  physical_index_exists?: boolean | null;
+  alias_points_to_index?: boolean | null;
+  live_document_count?: number | null;
+  verification_error?: string | null;
   error_message: string | null;
   activated_at: string | null;
   created_at: string;

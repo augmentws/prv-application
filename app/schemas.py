@@ -31,7 +31,9 @@ AgentInvocationMode = Literal["CHAT", "STRUCTURED"]
 SkillScope = Literal["SYSTEM", "TENANT"]
 SkillVersionStatus = Literal["DRAFT", "PUBLISHED", "RETIRED"]
 WorkflowBindingStatus = Literal["ACTIVE", "INACTIVE"]
-MatterDefinitionSourceKind = Literal["PASTE", "MARKDOWN", "TEXT", "DOCX", "AGENT_EDIT", "USER_EDIT"]
+MatterDefinitionSourceKind = Literal[
+    "PASTE", "MARKDOWN", "TEXT", "DOCX", "AGENT_EDIT", "USER_EDIT", "ASSESSMENT_REFINEMENT"
+]
 MatterDefinitionUserSourceKind = Literal["PASTE", "MARKDOWN", "TEXT", "USER_EDIT"]
 Slug = Annotated[
     str, StringConstraints(strip_whitespace=True, to_lower=True, pattern=r"^[a-z][a-z0-9-]{1,78}[a-z0-9]$")
@@ -399,7 +401,7 @@ class MatterTopicApplyRequest(BaseModel):
     topics: list[MatterTopicProposalReview] = Field(min_length=1, max_length=200)
 
 
-SearchFilterOperator = Literal["EQ", "IN", "RANGE", "EXISTS"]
+SearchFilterOperator = Literal["EQ", "IN", "RANGE", "EXISTS", "NOT_EXISTS"]
 SearchSortDirection = Literal["ASC", "DESC"]
 SearchMode = Literal["KEYWORD", "SEMANTIC", "HYBRID"]
 SearchOperationKind = Literal["SCHEMA_SYNC", "REBUILD", "DOCUMENT_UPSERT", "DOCUMENT_DELETE"]
@@ -415,19 +417,22 @@ class MatterSearchFilter(BaseModel):
     values: list[Any] | None = Field(default=None, max_length=1000)
     from_value: Any | None = Field(default=None, alias="from")
     to_value: Any | None = Field(default=None, alias="to")
+    include_missing: bool = False
 
     @model_validator(mode="after")
     def validate_operator_values(self) -> "MatterSearchFilter":
         if self.operator == "EQ" and self.value is None:
             raise ValueError("EQ filters require value")
-        if self.operator == "IN" and not self.values:
-            raise ValueError("IN filters require one or more values")
+        if self.operator == "IN" and not self.values and not self.include_missing:
+            raise ValueError("IN filters require one or more values or include_missing")
         if self.operator == "RANGE" and self.from_value is None and self.to_value is None:
             raise ValueError("RANGE filters require from or to")
-        if self.operator == "EXISTS" and any(
+        if self.operator in {"EXISTS", "NOT_EXISTS"} and any(
             value is not None for value in (self.value, self.values, self.from_value, self.to_value)
         ):
-            raise ValueError("EXISTS filters do not accept values")
+            raise ValueError(f"{self.operator} filters do not accept values")
+        if self.include_missing and self.operator != "IN":
+            raise ValueError("include_missing is supported only for IN filters")
         return self
 
 
@@ -505,6 +510,7 @@ class MatterSearchFacetValue(BaseModel):
 class MatterFacetValuesResponse(BaseModel):
     field: MetadataKey
     values: list[MatterSearchFacetValue]
+    missing_count: int = Field(default=0, ge=0)
 
 
 class MatterSearchResponse(BaseModel):
@@ -513,6 +519,68 @@ class MatterSearchResponse(BaseModel):
     timed_out: bool
     hits: list[MatterSearchHit]
     facets: dict[str, list[MatterSearchFacetValue]]
+
+
+BulkTagJobStatus = Literal[
+    "QUEUED",
+    "SNAPSHOTTING",
+    "RUNNING",
+    "COMPLETED",
+    "COMPLETED_WITH_ERRORS",
+    "FAILED",
+]
+
+
+class MatterBulkTagAssignment(BaseModel):
+    metadata_definition_id: uuid.UUID
+    value: Any
+
+
+class MatterBulkTagCreate(BaseModel):
+    search: MatterSearchRequest
+    assignments: list[MatterBulkTagAssignment] | None = Field(default=None, min_length=1, max_length=50)
+    metadata_definition_id: uuid.UUID | None = None
+    value: Any = None
+
+    @model_validator(mode="after")
+    def validate_search_scope(self) -> "MatterBulkTagCreate":
+        if not (self.search.query or "").strip() and not self.search.filters:
+            raise ValueError("Bulk tagging requires an active search query or filter")
+        if self.search.search_mode != "KEYWORD":
+            raise ValueError("Bulk tagging currently supports keyword searches only")
+        if self.assignments is None and self.metadata_definition_id is None:
+            raise ValueError("Bulk tagging requires at least one field assignment")
+        if self.assignments is not None and self.metadata_definition_id is not None:
+            raise ValueError("Use assignments or the legacy single-field form, not both")
+        return self
+
+    def normalized_assignments(self) -> list[MatterBulkTagAssignment]:
+        if self.assignments is not None:
+            return self.assignments
+        return [MatterBulkTagAssignment(metadata_definition_id=self.metadata_definition_id, value=self.value)]
+
+
+class MatterBulkTagJobRead(ORMModel):
+    id: uuid.UUID
+    matter_id: uuid.UUID
+    metadata_definition_id: uuid.UUID
+    search_index_generation_id: uuid.UUID | None
+    search_index_snapshot: dict[str, Any]
+    search_definition: dict[str, Any]
+    value: Any
+    assignments: list[MatterBulkTagAssignment]
+    status: BulkTagJobStatus
+    matched_count: int = Field(ge=0)
+    batch_count: int = Field(ge=0)
+    processed_count: int = Field(ge=0)
+    tagged_count: int = Field(ge=0)
+    failed_count: int = Field(ge=0)
+    error_message: str | None
+    created_by_user_id: uuid.UUID
+    started_at: datetime | None
+    completed_at: datetime | None
+    created_at: datetime
+    updated_at: datetime
 
 
 SavedSearchVisibility = Literal["PRIVATE", "PUBLIC", "SHARED"]
@@ -818,6 +886,10 @@ class SearchIndexGenerationRead(ORMModel):
     schema_hash: str
     status: SearchIndexStatus
     document_count: int
+    physical_index_exists: bool | None = None
+    alias_points_to_index: bool | None = None
+    live_document_count: int | None = None
+    verification_error: str | None = None
     error_message: str | None
     activated_at: datetime | None
     created_at: datetime
@@ -863,6 +935,7 @@ class MetadataDefinitionCreate(BaseModel):
     resolution_policy: ResolutionPolicy = "EXPLICIT_ONLY"
     searchable: bool = True
     facetable: bool = False
+    normalize_to_lowercase: bool = False
     reviewable: bool = True
     ai_assignable: bool = False
 
@@ -878,6 +951,8 @@ class MetadataDefinitionCreate(BaseModel):
             raise ValueError("allowed_values is only valid for ENUM definitions")
         if self.facetable and self.type in {"LONG_TEXT", "JSON"}:
             raise ValueError("LONG_TEXT and JSON fields cannot be facetable in phase one")
+        if self.normalize_to_lowercase and self.type not in {"TEXT", "LONG_TEXT"}:
+            raise ValueError("Lowercase normalization is only valid for text fields")
         return self
 
 
@@ -890,6 +965,7 @@ class MetadataDefinitionUpdate(BaseModel):
     resolution_policy: ResolutionPolicy | None = None
     searchable: bool | None = None
     facetable: bool | None = None
+    normalize_to_lowercase: bool | None = None
     reviewable: bool | None = None
     ai_assignable: bool | None = None
     status: ResourceStatus | None = None
@@ -939,6 +1015,7 @@ class MetadataDefinitionRead(ORMModel):
     resolution_policy: ResolutionPolicy
     searchable: bool
     facetable: bool
+    normalize_to_lowercase: bool = False
     reviewable: bool
     ai_assignable: bool
     status: ResourceStatus
@@ -1422,6 +1499,7 @@ class MatterDefinitionRevisionRead(ORMModel):
     based_on_revision: int | None
     created_by_user_id: uuid.UUID
     agent_run_id: uuid.UUID | None
+    source_skill_run_id: uuid.UUID | None
     created_at: datetime
 
 
@@ -1597,6 +1675,7 @@ class MatterDefinitionAssessmentCreate(BaseModel):
     revision: int | None = Field(default=None, ge=1)
     maximum_document_count: int = Field(default=500, ge=1, le=10_000_000)
     control_sample_size: int = Field(default=0, ge=0, le=1_000_000)
+    use_batching: bool = True
     acknowledge_large_run_warning: bool = False
 
 
@@ -1613,6 +1692,7 @@ class MatterDefinitionAssessmentRead(ORMModel):
     configuration_snapshot: dict[str, Any]
     requested_document_count: int
     control_sample_size: int
+    use_batching: bool
     large_run_warning_acknowledged: bool
     warning_acknowledged_by_user_id: uuid.UUID | None
     warning_acknowledged_at: datetime | None
@@ -1630,6 +1710,12 @@ class MatterDefinitionAssessmentRead(ORMModel):
     invalid_result_count: int
     coverage_snapshot: dict[str, Any] | None
     synthesis_result: dict[str, Any] | None
+    guidance_refinement_status: Literal[
+        "NOT_READY", "QUEUED", "RUNNING", "COMPLETED", "NOT_REQUIRED", "FAILED"
+    ]
+    guidance_refinement_workflow_run_id: uuid.UUID | None
+    refined_matter_definition_revision_id: uuid.UUID | None
+    guidance_refinement_error_message: str | None
     status: MatterDefinitionAssessmentStatus
     error_message: str | None
     initiated_by_user_id: uuid.UUID
@@ -1661,6 +1747,7 @@ class MatterDefinitionAssessmentQuestionRead(ORMModel):
     priority: Literal["HIGH", "MEDIUM", "LOW"]
     blocking: bool
     evidence: list[dict[str, Any]]
+    suggested_answers: list[str]
     status: Literal["OPEN", "ANSWERED", "DISMISSED"]
     answer: str | None
     answered_by_user_id: uuid.UUID | None

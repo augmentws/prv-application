@@ -53,7 +53,7 @@ def _typed_value(definition: MetadataDefinition, value: Any) -> Any:
                 allowed = {item["key"] for item in definition.allowed_values or [] if item.get("active", True)}
                 if value not in allowed:
                     raise _bad_request(f"Value '{value}' is not active for field '{definition.key}'")
-            return value
+            return value.lower() if definition.normalize_to_lowercase else value
         if definition.type == "INTEGER":
             if isinstance(value, bool) or not isinstance(value, int):
                 raise TypeError
@@ -86,6 +86,8 @@ def _filter_clause(search_filter: MatterSearchFilter, definition: MetadataDefini
     exact_path = metadata_query_path(definition, exact=definition.facetable)
     if search_filter.operator == "EXISTS":
         return {"exists": {"field": metadata_query_path(definition)}}
+    if search_filter.operator == "NOT_EXISTS":
+        return {"bool": {"must_not": [{"exists": {"field": metadata_query_path(definition)}}]}}
     if search_filter.operator == "EQ":
         value = _typed_value(definition, search_filter.value)
         if field_type in {"TEXT", "LONG_TEXT"} and not definition.facetable:
@@ -94,7 +96,14 @@ def _filter_clause(search_filter: MatterSearchFilter, definition: MetadataDefini
     if search_filter.operator == "IN":
         if field_type in {"TEXT", "LONG_TEXT"} and not definition.facetable:
             raise _bad_request(f"Field '{definition.key}' must be facetable to use IN")
-        return {"terms": {exact_path: [_typed_value(definition, value) for value in search_filter.values or []]}}
+        clauses: list[dict[str, Any]] = []
+        if search_filter.values:
+            clauses.append({"terms": {exact_path: [_typed_value(definition, value) for value in search_filter.values]}})
+        if search_filter.include_missing:
+            clauses.append({"bool": {"must_not": [{"exists": {"field": metadata_query_path(definition)}}]}})
+        if len(clauses) == 1:
+            return clauses[0]
+        return {"bool": {"should": clauses, "minimum_should_match": 1}}
     if search_filter.operator == "RANGE":
         if field_type not in {"INTEGER", "DECIMAL", "DATE", "DATETIME"}:
             raise _bad_request(f"Field '{definition.key}' does not support RANGE")
@@ -267,8 +276,14 @@ def compile_search_request(
         "_source": {"excludes": ["chunks.embedding"]},
         "query": query,
     }
-    if request.search_mode != "SEMANTIC":
-        body["highlight"] = {"fields": {field.split("^")[0]: {} for field in query_fields}}
+    if request.query and request.search_mode != "SEMANTIC":
+        body["highlight"] = {
+            "pre_tags": ["<mark>"],
+            "post_tags": ["</mark>"],
+            "fragment_size": 180,
+            "number_of_fragments": 2,
+            "fields": {field.split("^")[0]: {} for field in query_fields},
+        }
     if aggregations:
         body["aggs"] = aggregations
     if sort:
@@ -312,11 +327,18 @@ def compile_facet_values_request(
     body["size"] = 0
     body.pop("highlight", None)
     terms = body["aggs"][field]["terms"]
+    body["aggs"][f"{field}__missing"] = {
+        "missing": {"field": metadata_query_path(definition, exact=True)}
+    }
     terms["size"] = size
     if include_values is not None:
-        terms["include"] = include_values
+        terms["include"] = [
+            value.lower() if definition.normalize_to_lowercase else value
+            for value in include_values
+        ]
     elif value_query:
-        terms["include"] = f".*{re.escape(value_query)}.*"
+        normalized_query = value_query.lower() if definition.normalize_to_lowercase else value_query
+        terms["include"] = f".*{re.escape(normalized_query)}.*"
     return body
 
 
@@ -445,6 +467,22 @@ def _best_passage(hit: dict[str, Any]) -> dict[str, Any] | None:
     }
 
 
+def _hit_highlights(hit: dict[str, Any]) -> dict[str, list[str]]:
+    highlights = hit.get("highlight") or {}
+    if not isinstance(highlights, dict):
+        return {}
+    normalized: dict[str, list[str]] = {}
+    for field, fragments in highlights.items():
+        if isinstance(fragments, str):
+            fragments = [fragments]
+        if not isinstance(fragments, list):
+            continue
+        values = [fragment for fragment in fragments if isinstance(fragment, str)]
+        if values:
+            normalized[str(field)] = values
+    return normalized
+
+
 def _facet_bucket_value(definition: MetadataDefinition | None, bucket: dict[str, Any]) -> Any:
     if definition is not None and definition.type == "BOOLEAN":
         key_as_string = bucket.get("key_as_string")
@@ -486,7 +524,7 @@ def execute_search(
             "document_id": hit["_id"],
             "score": hit.get("_score"),
             "fields": hit.get("_source") or {},
-            "highlights": hit.get("highlight") or {},
+            "highlights": _hit_highlights(hit),
             "best_passage": _best_passage(hit),
         }
         for hit in raw.get("hits", {}).get("hits", [])
@@ -524,7 +562,7 @@ def execute_facet_values(
     required_filters: list[dict[str, Any]] | None = None,
 ) -> MatterFacetValuesResponse:
     if include_values == []:
-        return MatterFacetValuesResponse(field=field, values=[])
+        return MatterFacetValuesResponse(field=field, values=[], missing_count=0)
     body = compile_facet_values_request(
         request,
         definitions,
@@ -543,6 +581,7 @@ def execute_facet_values(
     else:
         raw = client.search(alias_name, body)
     buckets = raw.get("aggregations", {}).get(field, {}).get("buckets", [])
+    missing_count = raw.get("aggregations", {}).get(f"{field}__missing", {}).get("doc_count", 0)
     definition = _definition_map(definitions).get(field)
     return MatterFacetValuesResponse(
         field=field,
@@ -550,6 +589,7 @@ def execute_facet_values(
             {"value": _facet_bucket_value(definition, bucket), "count": bucket["doc_count"]}
             for bucket in buckets
         ],
+        missing_count=int(missing_count),
     )
 
 

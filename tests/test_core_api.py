@@ -77,9 +77,14 @@ def test_core_phase_one_flow(client: TestClient, root_token: str) -> None:
     assert definitions_by_key["family_id"]["value_source"] == "SYSTEM"
     assert definitions_by_key["family_id"]["facetable"] is True
     assert definitions_by_key["file_size"]["type"] == "INTEGER"
+    assert definitions_by_key["email_from"]["normalize_to_lowercase"] is True
+    assert definitions_by_key["email_to"]["normalize_to_lowercase"] is True
+    assert definitions_by_key["email_cc"]["normalize_to_lowercase"] is True
+    assert definitions_by_key["email_bcc"]["normalize_to_lowercase"] is True
+    assert definitions_by_key["email_subject"]["normalize_to_lowercase"] is False
     assert definitions_by_key["responsiveness"]["value_source"] == "ASSERTED"
     assert definitions_by_key["responsiveness"]["template_key"] == "edrm-core"
-    assert definitions_by_key["responsiveness"]["template_version"] == 1
+    assert definitions_by_key["responsiveness"]["template_version"] == 2
 
     definition_response = client.post(
         f"/v1/matters/{matter_id}/metadata-definitions",
@@ -94,6 +99,7 @@ def test_core_phase_one_flow(client: TestClient, root_token: str) -> None:
                 {"key": "conduct", "label": "Conduct"},
             ],
             "facetable": True,
+            "normalize_to_lowercase": False,
             "ai_assignable": True,
         },
     )

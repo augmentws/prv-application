@@ -21,7 +21,7 @@ Schema changes are planned before they are applied. A new searchable metadata fi
 
 After confirmation, the worker creates and populates a new physical index and atomically moves the matter's stable alias only when the replacement is ready. It then deletes non-active physical indexes followed by their generation records. Recent projection operations remain available as the audit and diagnostic history.
 
-The matter's **Search index** tab shows the active generation, indexed and authoritative document counts, current workflow activity, and recent projection operations. The indexed count is read from the active OpenSearch generation after each successful update, so it may trail Core while import batches are still projecting. When a schema change requires reindexing, the tab explains why and asks a matter administrator to confirm. An administrator can also request a complete rebuild directly. The current active index remains searchable until its replacement is fully populated and activated.
+The matter's **Search index** tab shows the active generation, indexed and authoritative document counts, current workflow activity, and recent projection operations. During a full rebuild it reports the current phase, documents processed, total documents, percentage, and target physical index after every successful bulk batch. This progress is stored on the durable operation, so refreshing or leaving the page does not lose it. The indexed count is read from the active OpenSearch generation after each successful update, so it may trail Core while import batches are still projecting. When a schema change requires reindexing, the tab explains why and asks a matter administrator to confirm. An administrator can also request a complete rebuild directly. The current active index remains searchable until its replacement is fully populated and activated.
 
 If one or more document-update jobs fail, select **Requeue failed jobs** on the Search index tab. The retry count includes operations marked failed by the application and operations stranded as running after their durable workflow ended in an error, such as when PostgreSQL or a worker stopped during error handling. Confirming the action assigns each retryable operation a fresh durable workflow ID and queues it again. Already indexed document IDs are updated idempotently rather than duplicated. The action retries only failed or interrupted document updates; failed full rebuilds and schema operations remain visible for separate diagnosis.
 
@@ -38,7 +38,7 @@ Semantic and hybrid searches may use a dedicated query embedding model. With `EM
 - a query and `KEYWORD`, `SEMANTIC`, or `HYBRID` search mode;
 - an optional `minimum_similarity` from `0` to `1` for thresholded Semantic searches;
 - optional searchable field keys;
-- typed `EQ`, `IN`, `RANGE`, and `EXISTS` filters;
+- typed `EQ`, `IN`, `RANGE`, `EXISTS`, and `NOT_EXISTS` filters;
 - configured facetable field keys;
 - controlled sort fields; and
 - pagination.
@@ -158,11 +158,32 @@ Search-box syntax is for analyzed text. Structured metadata is handled separatel
 | Filter | Supported fields | Behavior |
 | --- | --- | --- |
 | `EQ` | Any searchable field except JSON | Exact matching for enums and facetable fields. Non-facetable Text and Long text use analyzed phrase matching. |
-| `IN` | Facetable fields | Match any value in the supplied list. Values within one `IN` filter are ORed. |
+| `IN` | Facetable fields | Match any value in the supplied list. Values within one `IN` filter are ORed. Set `include_missing` to also match documents with no indexed value. |
 | `RANGE` | Integer, Decimal, Date, and Datetime | Inclusive lower and upper bounds. Either bound may be omitted. |
 | `EXISTS` | Any searchable field except JSON | Require that the field has an indexed value. |
+| `NOT_EXISTS` | Any searchable field except JSON | Require that the field has no indexed value. |
 
-Separate filters are ANDed. In the workspace, selecting several values in one facet broadens that facet, while selecting values in different facets narrows the result. A negated metadata filter and `NOT EXISTS` are not currently exposed; the `-term` operator excludes an analyzed text term, not a typed metadata value.
+Separate filters are ANDed. In the workspace, selecting several values in one facet broadens that facet, while selecting values in different facets narrows the result. The `-term` search-box operator excludes an analyzed text term; use **No value** when the requirement is that an exact metadata field has no indexed value.
+
+### Combining facet values
+
+Values selected within the same field are combined with **OR**. For example, selecting `A` and `B` for one multi-value field means “the field contains `A` or `B`.” A document containing both values also matches.
+
+| Document values | Matches selected `A` or `B`? |
+| --- | --- |
+| `A` | Yes |
+| `B` | Yes |
+| `A`, `B` | Yes |
+| `C` | No |
+| Field missing | No |
+
+Every ordinary facet also reports a **No value** bucket. Selecting it by itself uses `NOT_EXISTS`. Selecting **No value** together with ordinary values keeps the within-field OR behavior: for example, selecting `A` and **No value** matches documents containing `A` plus documents with no indexed value for that field. Missing means the field is absent or has no indexed values; it does not mean an indexed empty string.
+
+Selections in different fields are combined with **AND**. For example, selecting `Issue = A` and `Privilege = Privileged` requires a document to match at least one selected Issue value and at least one selected Privilege value.
+
+The facet controls do not yet support excluding a specific populated value, so they cannot express “contains `A` and does not contain `B`.”
+
+Text field definitions can enable **Normalize values to lowercase**. When enabled, every single or multi-value string is converted to lowercase in the search projection, and exact filter input is normalized the same way. The standard Email from, Email to, Email CC, and Email BCC fields enable this option by default so address casing does not split facet buckets. Enabling or disabling normalization for an indexed field requires a confirmed full reindex because existing projected values must be rebuilt.
 
 Enum filters use stable enum keys rather than display labels. Date values use ISO `YYYY-MM-DD`; date-times use ISO 8601, preferably with `Z` or an explicit UTC offset. JSON fields cannot be filtered, faceted, or sorted. `IN` requires a facetable field.
 
@@ -193,7 +214,7 @@ Open a matter and select **Search & Review** to enter the full-screen review wor
 
 The workspace has four coordinated areas on a wide desktop:
 
-- **Filters** starts with every filter group closed so the panel remains compact. Open an ordinary facet to see its eight most common values and current counts. Type in **Find** to retrieve up to 20 matching values beyond that initial list. Active searchable Date and Datetime definitions instead open a date histogram plus an inclusive **From** and **To** range. Choose Week, Month, or Year for the calendar buckets, or select a non-empty bucket to apply its range. Datetime bounds cover the complete selected UTC days. Counts respect the current query and filters in other groups, while ignoring the date field's own selection so its full matching distribution remains visible. Selecting more than one value within a field broadens that field, while selections across different fields narrow the result set. Long values are clipped within the panel instead of creating horizontal scrolling.
+- **Filters** starts with every filter group closed so the panel remains compact. Open an ordinary facet to see its eight most common values, a **No value** bucket when documents are missing the field, and current counts. Type in **Find** to retrieve up to 20 matching populated values beyond that initial list. Active searchable Date and Datetime definitions instead open a date histogram plus an inclusive **From** and **To** range. Choose Week, Month, or Year for the calendar buckets, or select a non-empty bucket to apply its range. Datetime bounds cover the complete selected UTC days. Counts respect the current query and filters in other groups, while ignoring the field's own selection so its full matching distribution remains visible. Selecting more than one value—including **No value**—within a field broadens that field, while selections across different fields narrow the result set. Long values are clipped within the panel instead of creating horizontal scrolling.
 - **Results** shows the matching documents. Select a row to open the source artifact without leaving the search.
 - **Document viewer** displays email and text content inline. Email metadata has its own scrollable panel; drag the horizontal divider beneath it up or down to give the message body more or less room. Focus the divider and use the up and down arrow keys for keyboard resizing. Other native file types can be downloaded and opened in their native application.
 - **Document details** has separate **Coding** and **Metadata** tabs. Coding contains only editable asserted fields and stages changes until **Save changes** is selected. Metadata shows all fields in document-visible groups as read-only values, including imported, system, and current asserted values.
@@ -214,7 +235,19 @@ The results footer supports previous and next navigation, direct entry of a page
 
 For body text, the indexer uses extracted text when available, then OCR text, then compatible native content such as EML or plain text. Search terms, mode, active facet values and date ranges, the page, and the selected document are retained in the address, so the current workspace can be bookmarked or reopened. On smaller screens, filters and coding open as focused panels and results and document viewing become separate views.
 
+Keyword and Hybrid result cards show up to two matching fragments returned directly by OpenSearch. Matching terms are highlighted in document text, email headers, paths, filenames, and searchable text metadata. The browser renders the returned markers as text and highlights without interpreting document content as HTML.
+
 Metadata coding updates Core immediately and queues a high-priority search projection update. After saving, the workspace reports that search is updating, watches the projection operation, and refreshes the result and facet data when it completes. If projection fails, the workspace reports the index error while preserving the successfully saved Core value.
+
+### Bulk tag search results
+
+Matter administrators can apply coding values to every document matched by an active Keyword search. Enter a query or apply at least one filter, open the **Coding** panel, and select **Bulk tag results**. The action is absent when no search or filter is active and is not available in a review batch.
+
+Choose one or more active reviewable asserted fields and their values, confirm the displayed result count, and start the job. A single-value field accepts one value and replaces its current coding. A multi-value field accepts multiple values in the same job and adds all of them without removing existing values. All selected fields are applied in the same bulk operation and the search scope is materialized only once.
+
+The job stores the submitted search with pagination removed and pins the active physical search-index generation. It then materializes the matching document IDs into durable batches before applying coding, so changing the search in the browser does not change the running job's scope. Each document change uses the normal metadata event ledger, audit trail, current-value projection, and search projection workflow. The dialog reports matched, processed, tagged, and failed counts and may be closed while the durable job continues.
+
+Bulk tagging currently supports Keyword searches only. For safety, an empty matter search cannot start a bulk tag job; use an explicit query or filter. Semantic and Hybrid result sets are not currently accepted because their bounded relevance candidate sets do not provide a stable exhaustive scope for a corpus mutation.
 
 ## Saved searches
 
@@ -232,4 +265,4 @@ Only the owner can delete a saved search. Sharing with user groups is planned bu
 
 ## Current limitations
 
-The search projection covers document identity, collection-item metadata, email headers, family, custodian data, resolved current metadata values, and body text. At most 10 MiB of text is loaded from an artifact by default; administrators can change this deployment setting. Existing matter documents must be reindexed after body indexing is enabled or after a preferred extracted/OCR artifact is added. Native binary formats without extracted or OCR text do not have a searchable body. Documents without completed chunk-vector artifacts cannot appear from semantic retrieval, although hybrid search can still find them through keyword matching. Unthresholded semantic retrieval is an approximate nearest-neighbor search over a bounded candidate set, so its total and facet counts describe those candidates rather than every potentially related document. Bulk coding, review queues, hit-term navigation, family navigation, group-based saved-search sharing, and a specialized virtualized result grid are not yet available.
+The search projection covers document identity, collection-item metadata, email headers, family, custodian data, resolved current metadata values, and body text. At most 10 MiB of text is loaded from an artifact by default; administrators can change this deployment setting. Existing matter documents must be reindexed after body indexing is enabled or after a preferred extracted/OCR artifact is added. Native binary formats without extracted or OCR text do not have a searchable body. Documents without completed chunk-vector artifacts cannot appear from semantic retrieval, although hybrid search can still find them through keyword matching. Unthresholded semantic retrieval is an approximate nearest-neighbor search over a bounded candidate set, so its total and facet counts describe those candidates rather than every potentially related document. Review queues, hit-term navigation, family navigation, group-based saved-search sharing, and a specialized virtualized result grid are not yet available.
