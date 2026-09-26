@@ -11,11 +11,13 @@ The first Phase 1 foundation is implemented:
 - a provider-neutral `SystemOneDecisionEngine` request/response contract and adapter registry;
 - matter-admin APIs for task creation, definition revision, structural specification validation, version history,
   and atomic publication;
+- a bootstrapped, managed compiler skill and durable workflow that compile an exact draft task version, validate
+  source references and metadata mappings, and persist SkillRun/model-usage provenance;
 - generated OpenAPI/TypeScript client types and backend contract tests.
 
-The existing Matter Definition remains authoritative. The compiler skill, Jev adapter, immutable Decision Result
-ledger, execution workflow, compatibility importer, and product UI are subsequent slices and are not implied by
-the presence of these foundation APIs.
+The existing Matter Definition remains authoritative. The Jev adapter, immutable Decision Result ledger, execution
+workflow, compatibility importer, and product UI are subsequent slices and are not implied by the presence of these
+foundation APIs.
 
 ## Goal
 

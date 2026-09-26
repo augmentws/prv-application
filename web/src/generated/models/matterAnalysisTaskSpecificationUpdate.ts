@@ -5,7 +5,7 @@
  * Phase-one Core API for authentication, hierarchical tenants, clients, matters, and matter metadata definitions.
  * OpenAPI spec version: 0.1.0
  */
-import type { DecisionSpecificationInput } from './decisionSpecificationInput';
+import type { DecisionSpecification } from './decisionSpecification';
 import type { MatterAnalysisTaskSpecificationUpdateCompilerModelConfiguration } from './matterAnalysisTaskSpecificationUpdateCompilerModelConfiguration';
 import type { MatterAnalysisTaskSpecificationUpdateEvidencePolicy } from './matterAnalysisTaskSpecificationUpdateEvidencePolicy';
 import type { MatterAnalysisTaskSpecificationUpdateInputContract } from './matterAnalysisTaskSpecificationUpdateInputContract';
@@ -15,7 +15,7 @@ import type { MatterAnalysisTaskSpecificationUpdateSourceProvenance } from './ma
 import type { MatterAnalysisTaskSpecificationUpdateValidationReport } from './matterAnalysisTaskSpecificationUpdateValidationReport';
 
 export interface MatterAnalysisTaskSpecificationUpdate {
-  decision_specification: DecisionSpecificationInput;
+  decision_specification: DecisionSpecification;
   input_contract?: MatterAnalysisTaskSpecificationUpdateInputContract;
   output_contract?: MatterAnalysisTaskSpecificationUpdateOutputContract;
   evidence_policy?: MatterAnalysisTaskSpecificationUpdateEvidencePolicy;

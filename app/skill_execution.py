@@ -33,6 +33,7 @@ async def execute_skill_run(
     dynamic_input: dict[str, Any],
     cache_identity: dict[str, Any],
     output_validators: tuple[Callable[[dict[str, Any]], None], ...] = (),
+    usage_job_type: str = "MATTER_DEFINITION_ASSESSMENT",
     model: Any | None = None,
 ) -> tuple[dict[str, Any], SkillRun]:
     skill_run = create_skill_run(
@@ -55,6 +56,7 @@ async def execute_skill_run(
             dynamic_input=dynamic_input,
             cache_identity=cache_identity,
             output_validators=output_validators,
+            usage_job_type=usage_job_type,
             model=model,
         )
         complete_skill_run(db, skill_run)
@@ -109,6 +111,7 @@ async def execute_skill_call(
     cache_identity: dict[str, Any],
     output_validators: tuple[Callable[[dict[str, Any]], None], ...] = (),
     attempt: int = 1,
+    usage_job_type: str = "MATTER_DEFINITION_ASSESSMENT",
     model: Any | None = None,
 ) -> dict[str, Any]:
     request = StructuredModelRequest(
@@ -136,7 +139,7 @@ async def execute_skill_call(
         client_id=workflow.client_id,
         matter_id=workflow.matter_id,
         started_by_user_id=workflow.initiated_by_user_id,
-        job_type="MATTER_DEFINITION_ASSESSMENT",
+        job_type=usage_job_type,
         job_id=workflow.id,
         job_created_at=workflow.created_at,
         details={"workflow_key": workflow.workflow_key, "role_key": step.role_key},

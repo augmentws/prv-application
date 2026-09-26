@@ -5,13 +5,13 @@
  * Phase-one Core API for authentication, hierarchical tenants, clients, matters, and matter metadata definitions.
  * OpenAPI spec version: 0.1.0
  */
-import type { DecisionPolicyOutput } from './decisionPolicyOutput';
-import type { DecisionSpecificationOutputQuestions } from './decisionSpecificationOutputQuestions';
+import type { DecisionPolicy } from './decisionPolicy';
+import type { DecisionSpecificationQuestions } from './decisionSpecificationQuestions';
 import type { DecisionStateContract } from './decisionStateContract';
 
-export interface DecisionSpecificationOutput {
+export interface DecisionSpecification {
   schema_version?: 'review-decision-specification-v1';
-  questions: DecisionSpecificationOutputQuestions;
-  decision_policy?: DecisionPolicyOutput;
+  questions: DecisionSpecificationQuestions;
+  decision_policy?: DecisionPolicy;
   state_contract: DecisionStateContract;
 }

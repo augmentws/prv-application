@@ -2123,6 +2123,7 @@ class MatterAnalysisTaskVersion(Base):
         Index("ix_matter_analysis_task_version_task_status", "matter_analysis_task_id", "status"),
         Index("ix_analysis_task_version_skill_definition", "compiler_skill_definition_version_id"),
         Index("ix_analysis_task_version_skill_run", "compiler_skill_run_id"),
+        Index("ix_analysis_task_version_workflow", "compiler_workflow_run_id"),
         Index("ix_analysis_task_version_creator", "created_by_user_id"),
         Index("ix_analysis_task_version_publisher", "published_by_user_id"),
     )
@@ -2147,6 +2148,9 @@ class MatterAnalysisTaskVersion(Base):
     )
     compiler_skill_run_id: Mapped[uuid.UUID | None] = mapped_column(
         Uuid, ForeignKey("skill_run.id", ondelete="SET NULL"), nullable=True
+    )
+    compiler_workflow_run_id: Mapped[uuid.UUID | None] = mapped_column(
+        Uuid, ForeignKey("workflow_run.id", ondelete="SET NULL"), nullable=True
     )
     compiler_model_configuration: Mapped[dict[str, Any]] = mapped_column(JSON, default=dict)
     validation_report: Mapped[dict[str, Any]] = mapped_column(JSON, default=dict)

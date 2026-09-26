@@ -5,12 +5,12 @@
  * Phase-one Core API for authentication, hierarchical tenants, clients, matters, and matter metadata definitions.
  * OpenAPI spec version: 0.1.0
  */
-import type { DecisionPolicyExpressionOutputOperator } from './decisionPolicyExpressionOutputOperator';
+import type { DecisionPolicyExpressionOperator } from './decisionPolicyExpressionOperator';
 import type { DecisionPredicate } from './decisionPredicate';
 
-export interface DecisionPolicyExpressionOutput {
-  operator: DecisionPolicyExpressionOutputOperator;
+export interface DecisionPolicyExpression {
+  operator: DecisionPolicyExpressionOperator;
   predicate?: DecisionPredicate | null;
   /** @maxItems 100 */
-  operands?: DecisionPolicyExpressionOutput[];
+  operands?: DecisionPredicate[];
 }

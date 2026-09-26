@@ -6,6 +6,7 @@ from sqlalchemy import select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
+from app.analysis_task_compilation import queue_analysis_task_compilation
 from app.analysis_tasks import (
     MatterAnalysisTaskError,
     MatterAnalysisTaskNotFound,
@@ -268,6 +269,49 @@ def update_analysis_task_specification(
             "matter_id": str(matter.id),
             "version": task_version.version,
             "specification_content_hash": task_version.specification_content_hash,
+        },
+    )
+    db.commit()
+    db.refresh(task)
+    db.refresh(task_version)
+    return _task_read(db, task, task_version)
+
+
+@router.post(
+    "/{task_id}/versions/{version_number}/compile",
+    response_model=MatterAnalysisTaskRead,
+    status_code=status.HTTP_202_ACCEPTED,
+)
+def compile_analysis_task_specification(
+    matter_id: uuid.UUID,
+    task_id: uuid.UUID,
+    version_number: int,
+    principal: Principal = Depends(get_principal),
+    db: Session = Depends(get_db),
+) -> MatterAnalysisTaskRead:
+    matter = _require_matter_admin(db, principal, matter_id)
+    task = _require_task(db, matter_id=matter_id, task_id=task_id)
+    try:
+        task_version, workflow = queue_analysis_task_compilation(
+            db,
+            matter=matter,
+            task=task,
+            version_number=version_number,
+            initiated_by_user_id=principal.user.id,
+        )
+    except MatterAnalysisTaskError as exc:
+        _raise_task_error(exc)
+    record_audit(
+        db,
+        tenant_id=matter.client.tenant_id,
+        actor_user_id=principal.user.id,
+        action="matter_analysis_task.compilation.started",
+        target_type="matter_analysis_task",
+        target_id=task.id,
+        details={
+            "matter_id": str(matter.id),
+            "version": task_version.version,
+            "workflow_run_id": str(workflow.id),
         },
     )
     db.commit()

@@ -1672,6 +1672,7 @@ class MatterAnalysisTaskVersionRead(ORMModel):
     routing_policy: dict[str, Any]
     compiler_skill_definition_version_id: uuid.UUID | None
     compiler_skill_run_id: uuid.UUID | None
+    compiler_workflow_run_id: uuid.UUID | None
     compiler_model_configuration: dict[str, Any]
     validation_report: dict[str, Any]
     source_provenance: dict[str, Any]

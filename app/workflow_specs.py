@@ -70,7 +70,26 @@ MATTER_DEFINITION_ASSESSMENT_SPEC = WorkflowSpec(
     ),
 )
 
-WORKFLOW_SPECS = {MATTER_DEFINITION_ASSESSMENT_SPEC.key: MATTER_DEFINITION_ASSESSMENT_SPEC}
+MATTER_ANALYSIS_TASK_COMPILATION_SPEC = WorkflowSpec(
+    key="matter_analysis_task_compilation_v1",
+    code_version="1",
+    name="Matter Analysis Task compilation",
+    description="Compiles a reviewed Task Definition into a provider-neutral Decision Specification.",
+    roles=(
+        WorkflowRoleSpec(
+            key="decision_specification_compiler",
+            input_schema_key="matter_analysis_task_compiler_input_v1",
+            output_schema_key="matter_analysis_task_compiler_output_v1",
+            allowed_capabilities=frozenset({"structured_output", "prompt_caching", "long_context"}),
+            allowed_tool_keys=frozenset(),
+        ),
+    ),
+)
+
+WORKFLOW_SPECS = {
+    MATTER_DEFINITION_ASSESSMENT_SPEC.key: MATTER_DEFINITION_ASSESSMENT_SPEC,
+    MATTER_ANALYSIS_TASK_COMPILATION_SPEC.key: MATTER_ANALYSIS_TASK_COMPILATION_SPEC,
+}
 
 
 def get_workflow_spec(workflow_key: str) -> WorkflowSpec:

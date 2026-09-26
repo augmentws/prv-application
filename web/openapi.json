@@ -3062,6 +3062,73 @@
         }
       }
     },
+    "/v1/matters/{matter_id}/analysis-tasks/{task_id}/versions/{version_number}/compile": {
+      "post": {
+        "tags": [
+          "matter analysis tasks"
+        ],
+        "summary": "Compile Analysis Task Specification",
+        "operationId": "compile_analysis_task_specification_v1_matters__matter_id__analysis_tasks__task_id__versions__version_number__compile_post",
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "matter_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid",
+              "title": "Matter Id"
+            }
+          },
+          {
+            "name": "task_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid",
+              "title": "Task Id"
+            }
+          },
+          {
+            "name": "version_number",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "integer",
+              "title": "Version Number"
+            }
+          }
+        ],
+        "responses": {
+          "202": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/MatterAnalysisTaskRead"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/v1/matters/{matter_id}/analysis-tasks/{task_id}/versions/{version_number}/publish": {
       "post": {
         "tags": [
@@ -14714,7 +14781,7 @@
         ],
         "title": "DecisionFieldMapping"
       },
-      "DecisionPolicy-Input": {
+      "DecisionPolicy": {
         "properties": {
           "version": {
             "type": "string",
@@ -14724,7 +14791,7 @@
           },
           "recommendations": {
             "additionalProperties": {
-              "$ref": "#/components/schemas/DecisionPolicyExpression-Input"
+              "$ref": "#/components/schemas/DecisionPolicyExpression"
             },
             "type": "object",
             "maxProperties": 100,
@@ -14732,7 +14799,7 @@
           },
           "routes": {
             "additionalProperties": {
-              "$ref": "#/components/schemas/DecisionPolicyExpression-Input"
+              "$ref": "#/components/schemas/DecisionPolicyExpression"
             },
             "type": "object",
             "maxProperties": 100,
@@ -14743,36 +14810,7 @@
         "type": "object",
         "title": "DecisionPolicy"
       },
-      "DecisionPolicy-Output": {
-        "properties": {
-          "version": {
-            "type": "string",
-            "const": "decision-policy-v1",
-            "title": "Version",
-            "default": "decision-policy-v1"
-          },
-          "recommendations": {
-            "additionalProperties": {
-              "$ref": "#/components/schemas/DecisionPolicyExpression-Output"
-            },
-            "type": "object",
-            "maxProperties": 100,
-            "title": "Recommendations"
-          },
-          "routes": {
-            "additionalProperties": {
-              "$ref": "#/components/schemas/DecisionPolicyExpression-Output"
-            },
-            "type": "object",
-            "maxProperties": 100,
-            "title": "Routes"
-          }
-        },
-        "additionalProperties": false,
-        "type": "object",
-        "title": "DecisionPolicy"
-      },
-      "DecisionPolicyExpression-Input": {
+      "DecisionPolicyExpression": {
         "properties": {
           "operator": {
             "type": "string",
@@ -14796,45 +14834,7 @@
           },
           "operands": {
             "items": {
-              "$ref": "#/components/schemas/DecisionPolicyExpression-Input"
-            },
-            "type": "array",
-            "maxItems": 100,
-            "title": "Operands"
-          }
-        },
-        "additionalProperties": false,
-        "type": "object",
-        "required": [
-          "operator"
-        ],
-        "title": "DecisionPolicyExpression"
-      },
-      "DecisionPolicyExpression-Output": {
-        "properties": {
-          "operator": {
-            "type": "string",
-            "enum": [
-              "PREDICATE",
-              "ALL",
-              "ANY",
-              "NOT"
-            ],
-            "title": "Operator"
-          },
-          "predicate": {
-            "anyOf": [
-              {
-                "$ref": "#/components/schemas/DecisionPredicate"
-              },
-              {
-                "type": "null"
-              }
-            ]
-          },
-          "operands": {
-            "items": {
-              "$ref": "#/components/schemas/DecisionPolicyExpression-Output"
+              "$ref": "#/components/schemas/DecisionPredicate"
             },
             "type": "array",
             "maxItems": 100,
@@ -14935,7 +14935,7 @@
         ],
         "title": "DecisionSourceReference"
       },
-      "DecisionSpecification-Input": {
+      "DecisionSpecification": {
         "properties": {
           "schema_version": {
             "type": "string",
@@ -14971,57 +14971,7 @@
             "title": "Questions"
           },
           "decision_policy": {
-            "$ref": "#/components/schemas/DecisionPolicy-Input"
-          },
-          "state_contract": {
-            "$ref": "#/components/schemas/DecisionStateContract"
-          }
-        },
-        "additionalProperties": false,
-        "type": "object",
-        "required": [
-          "questions",
-          "state_contract"
-        ],
-        "title": "DecisionSpecification"
-      },
-      "DecisionSpecification-Output": {
-        "properties": {
-          "schema_version": {
-            "type": "string",
-            "const": "review-decision-specification-v1",
-            "title": "Schema Version",
-            "default": "review-decision-specification-v1"
-          },
-          "questions": {
-            "additionalProperties": {
-              "oneOf": [
-                {
-                  "$ref": "#/components/schemas/ChoiceDecisionQuestion"
-                },
-                {
-                  "$ref": "#/components/schemas/ScoreDecisionQuestion"
-                },
-                {
-                  "$ref": "#/components/schemas/NoulDecisionQuestion"
-                }
-              ],
-              "discriminator": {
-                "propertyName": "type",
-                "mapping": {
-                  "choice": "#/components/schemas/ChoiceDecisionQuestion",
-                  "noul": "#/components/schemas/NoulDecisionQuestion",
-                  "score": "#/components/schemas/ScoreDecisionQuestion"
-                }
-              }
-            },
-            "type": "object",
-            "maxProperties": 500,
-            "minProperties": 1,
-            "title": "Questions"
-          },
-          "decision_policy": {
-            "$ref": "#/components/schemas/DecisionPolicy-Output"
+            "$ref": "#/components/schemas/DecisionPolicy"
           },
           "state_contract": {
             "$ref": "#/components/schemas/DecisionStateContract"
@@ -15763,7 +15713,7 @@
       "MatterAnalysisTaskSpecificationUpdate": {
         "properties": {
           "decision_specification": {
-            "$ref": "#/components/schemas/DecisionSpecification-Input"
+            "$ref": "#/components/schemas/DecisionSpecification"
           },
           "input_contract": {
             "additionalProperties": true,
@@ -15901,7 +15851,7 @@
           "decision_specification": {
             "anyOf": [
               {
-                "$ref": "#/components/schemas/DecisionSpecification-Output"
+                "$ref": "#/components/schemas/DecisionSpecification"
               },
               {
                 "type": "null"
@@ -15962,6 +15912,18 @@
               }
             ],
             "title": "Compiler Skill Run Id"
+          },
+          "compiler_workflow_run_id": {
+            "anyOf": [
+              {
+                "type": "string",
+                "format": "uuid"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Compiler Workflow Run Id"
           },
           "compiler_model_configuration": {
             "additionalProperties": true,
@@ -16030,6 +15992,7 @@
           "routing_policy",
           "compiler_skill_definition_version_id",
           "compiler_skill_run_id",
+          "compiler_workflow_run_id",
           "compiler_model_configuration",
           "validation_report",
           "source_provenance",

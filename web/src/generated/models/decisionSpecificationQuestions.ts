@@ -9,4 +9,4 @@ import type { ChoiceDecisionQuestion } from './choiceDecisionQuestion';
 import type { NoulDecisionQuestion } from './noulDecisionQuestion';
 import type { ScoreDecisionQuestion } from './scoreDecisionQuestion';
 
-export type DecisionSpecificationInputQuestions = {[key: string]: ChoiceDecisionQuestion | ScoreDecisionQuestion | NoulDecisionQuestion};
+export type DecisionSpecificationQuestions = {[key: string]: ChoiceDecisionQuestion | ScoreDecisionQuestion | NoulDecisionQuestion};

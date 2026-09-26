@@ -121,6 +121,8 @@ def append_analysis_task_version(
         raise MatterAnalysisTaskConflict("Analysis task has no current version")
     if prior_version.status == "DRAFT":
         prior_version.status = "RETIRED"
+        if prior_version.compilation_status == "GENERATING":
+            prior_version.compilation_status = "STALE"
 
     next_version = task.current_version + 1
     task.current_version = next_version

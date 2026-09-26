@@ -158,6 +158,23 @@ def enqueue_definition_assessment_guidance_refinement(
     get_dbos_client().enqueue_in_transaction(db, options, assessment_id)
 
 
+def enqueue_analysis_task_compilation(
+    db: Session,
+    workflow_id: str,
+    task_version_id: str,
+) -> None:
+    settings = get_settings()
+    if not settings.dbos_enabled:
+        return
+    options: EnqueueOptions = {
+        "workflow_name": "matter_analysis_task_compilation_v1",
+        "queue_name": "analysis-task-compilations",
+        "workflow_id": workflow_id,
+        "application_name": settings.dbos_application_name,
+    }
+    get_dbos_client().enqueue_in_transaction(db, options, task_version_id)
+
+
 def cancel_definition_assessment(workflow_id: str) -> None:
     if get_settings().dbos_enabled:
         get_dbos_client().cancel_workflow(workflow_id, cancel_children=True)

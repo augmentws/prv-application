@@ -5,6 +5,6 @@
  * Phase-one Core API for authentication, hierarchical tenants, clients, matters, and matter metadata definitions.
  * OpenAPI spec version: 0.1.0
  */
-import type { DecisionPolicyExpressionInput } from './decisionPolicyExpressionInput';
+import type { DecisionPolicyExpression } from './decisionPolicyExpression';
 
-export type DecisionPolicyInputRoutes = {[key: string]: DecisionPolicyExpressionInput};
+export type DecisionPolicyRoutes = {[key: string]: DecisionPolicyExpression};

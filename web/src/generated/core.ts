@@ -3439,6 +3439,60 @@ const res = await fetch(getUpdateAnalysisTaskSpecificationV1MattersMatterIdAnaly
 
 
 
+export type compileAnalysisTaskSpecificationV1MattersMatterIdAnalysisTasksTaskIdVersionsVersionNumberCompilePostResponse202 = {
+  data: MatterAnalysisTaskRead
+  status: 202
+}
+
+export type compileAnalysisTaskSpecificationV1MattersMatterIdAnalysisTasksTaskIdVersionsVersionNumberCompilePostResponse422 = {
+  data: HTTPValidationError
+  status: 422
+}
+
+export type compileAnalysisTaskSpecificationV1MattersMatterIdAnalysisTasksTaskIdVersionsVersionNumberCompilePostResponseSuccess = (compileAnalysisTaskSpecificationV1MattersMatterIdAnalysisTasksTaskIdVersionsVersionNumberCompilePostResponse202) & {
+  headers: Headers;
+};
+export type compileAnalysisTaskSpecificationV1MattersMatterIdAnalysisTasksTaskIdVersionsVersionNumberCompilePostResponseError = (compileAnalysisTaskSpecificationV1MattersMatterIdAnalysisTasksTaskIdVersionsVersionNumberCompilePostResponse422) & {
+  headers: Headers;
+};
+
+export type compileAnalysisTaskSpecificationV1MattersMatterIdAnalysisTasksTaskIdVersionsVersionNumberCompilePostResponse = (compileAnalysisTaskSpecificationV1MattersMatterIdAnalysisTasksTaskIdVersionsVersionNumberCompilePostResponseSuccess | compileAnalysisTaskSpecificationV1MattersMatterIdAnalysisTasksTaskIdVersionsVersionNumberCompilePostResponseError)
+
+export const getCompileAnalysisTaskSpecificationV1MattersMatterIdAnalysisTasksTaskIdVersionsVersionNumberCompilePostUrl = (matterId: string,
+    taskId: string,
+    versionNumber: number,) => {
+
+
+
+
+  return `/api/core/v1/matters/${matterId}/analysis-tasks/${taskId}/versions/${versionNumber}/compile`
+}
+
+/**
+ * @summary Compile Analysis Task Specification
+ */
+export const compileAnalysisTaskSpecificationV1MattersMatterIdAnalysisTasksTaskIdVersionsVersionNumberCompilePost = async (matterId: string,
+    taskId: string,
+    versionNumber: number, options?: RequestInit): Promise<compileAnalysisTaskSpecificationV1MattersMatterIdAnalysisTasksTaskIdVersionsVersionNumberCompilePostResponse> => {
+
+  const res = await fetch(getCompileAnalysisTaskSpecificationV1MattersMatterIdAnalysisTasksTaskIdVersionsVersionNumberCompilePostUrl(matterId,taskId,versionNumber),
+  {
+    ...options,
+    method: 'POST'
+
+
+  }
+)
+
+
+  const body = [204, 205, 304].includes(res.status) ? null : await res.text();
+
+  const data: compileAnalysisTaskSpecificationV1MattersMatterIdAnalysisTasksTaskIdVersionsVersionNumberCompilePostResponse['data'] = body ? JSON.parse(body) : {}
+  return { data, status: res.status, headers: res.headers } as compileAnalysisTaskSpecificationV1MattersMatterIdAnalysisTasksTaskIdVersionsVersionNumberCompilePostResponse
+}
+
+
+
 export type publishAnalysisTaskV1MattersMatterIdAnalysisTasksTaskIdVersionsVersionNumberPublishPostResponse200 = {
   data: MatterAnalysisTaskRead
   status: 200

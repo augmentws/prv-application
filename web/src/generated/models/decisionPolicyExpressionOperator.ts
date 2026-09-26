@@ -6,10 +6,10 @@
  * OpenAPI spec version: 0.1.0
  */
 
-export type DecisionPolicyExpressionOutputOperator = typeof DecisionPolicyExpressionOutputOperator[keyof typeof DecisionPolicyExpressionOutputOperator];
+export type DecisionPolicyExpressionOperator = typeof DecisionPolicyExpressionOperator[keyof typeof DecisionPolicyExpressionOperator];
 
 
-export const DecisionPolicyExpressionOutputOperator = {
+export const DecisionPolicyExpressionOperator = {
   PREDICATE: 'PREDICATE',
   ALL: 'ALL',
   ANY: 'ANY',
