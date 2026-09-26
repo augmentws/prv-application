@@ -1,14 +1,18 @@
+import asyncio
 from datetime import UTC, datetime
 
 import pytest
 from pydantic import ValidationError
 
+from app.config import Settings
 from app.decision_engine import (
     DecisionEngineNotRegistered,
     DecisionEngineRegistry,
     DecisionEnvelope,
+    DecisionRequest,
     NoulDecisionAnswer,
 )
+from app.decision_execution import execute_decision_request
 from app.decision_specifications import DecisionSpecification
 
 
@@ -97,3 +101,68 @@ def test_decision_engine_registry_requires_unique_registered_keys() -> None:
         registry.register("jev", engine)
     with pytest.raises(DecisionEngineNotRegistered):
         registry.get("missing")
+
+
+def test_decision_execution_produces_shared_invocation_telemetry() -> None:
+    now = datetime.now(UTC)
+    envelope = DecisionEnvelope.model_validate(
+        {
+            "answers": {"privilege.legal_advice": {"type": "noul", "noul": 0.91}},
+            "provider": "typesafe",
+            "model": "jev-2026-09-01",
+            "provider_request_id": "req_123",
+            "usage": {"request_count": 2, "input_tokens": 50, "output_tokens": 4},
+            "latency_ms": 125,
+            "started_at": now,
+            "completed_at": now,
+            "attempts": 2,
+        }
+    )
+
+    class StubEngine:
+        async def evaluate(self, request):
+            return envelope
+
+    specification = DecisionSpecification.model_validate(
+        {
+            "questions": {
+                "privilege.legal_advice": {
+                    "type": "noul",
+                    "instructions": "Does the document request or provide legal advice?",
+                    "source_refs": [
+                        {
+                            "task_version_id": "56d6dd2c-41ad-4854-b696-a7b34c31becb",
+                            "heading": "Legal advice",
+                            "excerpt_hash": "a" * 64,
+                        }
+                    ],
+                    "aggregation": {"operator": "ANY_WINDOW"},
+                }
+            },
+            "state_contract": {
+                "builder_version": "document-review-state-v1",
+                "required_paths": ["document.paragraphs"],
+            },
+        }
+    )
+    registry = DecisionEngineRegistry()
+    registry.register("jev", StubEngine())
+    execution = asyncio.run(
+        execute_decision_request(
+            DecisionRequest(
+                state={"document": {"paragraphs": []}},
+                questions=specification.questions,
+                model_key="jev-latest",
+                run_id="run-123",
+            ),
+            engine_key="jev",
+            registry=registry,
+            settings=Settings(model_trace_enabled=False),
+        )
+    )
+
+    assert execution.decision is envelope
+    assert len(execution.model_configuration_hash) == 64
+    assert execution.invocations[0].provider == "typesafe"
+    assert execution.invocations[0].request_count == 2
+    assert execution.invocations[0].input_tokens == 50

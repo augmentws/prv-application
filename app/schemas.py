@@ -12,6 +12,7 @@ from pydantic import (
     model_validator,
 )
 
+from app.decision_engine import DecisionAnswer
 from app.decision_specifications import DecisionSpecification
 
 ResourceStatus = Literal["ACTIVE", "SUSPENDED", "ARCHIVED"]
@@ -47,6 +48,12 @@ MatterAnalysisTaskType = Literal[
 MatterAnalysisTaskStatus = Literal["ACTIVE", "SUSPENDED", "ARCHIVED"]
 MatterAnalysisTaskVersionStatus = Literal["DRAFT", "PUBLISHED", "RETIRED"]
 MatterAnalysisTaskCompilationStatus = Literal["NOT_GENERATED", "STALE", "GENERATING", "READY", "FAILED"]
+DecisionConfidenceKind = Literal[
+    "PROVIDER_CONFIDENCE",
+    "SELECTED_PROBABILITY",
+    "DERIVED_PROBABILITY",
+    "NONE",
+]
 Slug = Annotated[
     str, StringConstraints(strip_whitespace=True, to_lower=True, pattern=r"^[a-z][a-z0-9-]{1,78}[a-z0-9]$")
 ]
@@ -943,6 +950,9 @@ class ReviewBatchRunValueRead(BaseModel):
     value_ordinal: int
     value: Any
     confidence: float | None
+    confidence_kind: DecisionConfidenceKind | None
+    review_decision_result_id: uuid.UUID | None
+    question_key: str | None
 
 
 class ReviewBatchReviewerValueRead(BaseModel):
@@ -1697,6 +1707,49 @@ class MatterAnalysisTaskRead(ORMModel):
     created_at: datetime
     updated_at: datetime
     version: MatterAnalysisTaskVersionRead
+
+
+class ReviewDecisionResultRead(ORMModel):
+    id: uuid.UUID
+    review_batch_run_id: uuid.UUID
+    workflow_run_id: uuid.UUID
+    matter_document_id: uuid.UUID
+    matter_analysis_task_version_id: uuid.UUID
+    definition_content_hash: str
+    specification_content_hash: str
+    source_artifact_id: uuid.UUID
+    source_content_hash: str
+    state_content_hash: str
+    question_set_hash: str
+    decision_policy_hash: str
+    paragraph_map_version: str
+    status: Literal["COMPLETED", "PARTIAL", "FAILED", "SKIPPED"]
+    coverage: dict[str, Any]
+    answers: dict[str, DecisionAnswer]
+    recommendations: dict[str, Any]
+    routes: dict[str, Any]
+    evidence: dict[str, Any]
+    raw_answer_hash: str | None
+    policy_evaluation_hash: str | None
+    engine_key: str | None
+    provider: str | None
+    model: str | None
+    provider_request_id: str | None
+    provider_metadata: dict[str, Any]
+    evaluation_skill_run_id: uuid.UUID | None
+    evidence_skill_run_id: uuid.UUID | None
+    model_invocation_id: uuid.UUID | None
+    reused_from_result_id: uuid.UUID | None
+    attempts: int
+    request_count: int
+    input_tokens: int
+    output_tokens: int
+    latency_ms: int
+    error_code: str | None
+    error_message: str | None
+    started_at: datetime
+    completed_at: datetime
+    created_at: datetime
 
 
 AgentConversationWorkflow = Literal["MATTER_DEFINITION_SETUP", "BATCH_CHAT"]

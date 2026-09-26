@@ -17,6 +17,25 @@ class DecisionEngineNotRegistered(DecisionEngineError):
     pass
 
 
+class DecisionEngineProviderError(DecisionEngineError):
+    def __init__(
+        self,
+        message: str,
+        *,
+        provider: str,
+        code: str,
+        retryable: bool,
+        provider_request_id: str | None = None,
+        retry_after_seconds: float | None = None,
+    ) -> None:
+        super().__init__(message)
+        self.provider = provider
+        self.code = code
+        self.retryable = retryable
+        self.provider_request_id = provider_request_id
+        self.retry_after_seconds = retry_after_seconds
+
+
 class DecisionModel(BaseModel):
     model_config = ConfigDict(extra="forbid")
 

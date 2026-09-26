@@ -13,11 +13,15 @@ The first Phase 1 foundation is implemented:
   and atomic publication;
 - a bootstrapped, managed compiler skill and durable workflow that compile an exact draft task version, validate
   source references and metadata mappings, and persist SkillRun/model-usage provenance;
+- the official TypeSafe SDK-backed `jev` adapter with code-owned registration, provider/model admission control,
+  bounded 429-aware retries, filesystem tracing, and shared ModelInvocation telemetry;
+- a database-enforced immutable Decision Result ledger with full typed answers, explicit coverage, task/document/
+  workflow provenance, reusable-input hashes, and confidence-kind provenance on projected batch values;
 - generated OpenAPI/TypeScript client types and backend contract tests.
 
-The existing Matter Definition remains authoritative. The Jev adapter, immutable Decision Result ledger, execution
-workflow, compatibility importer, and product UI are subsequent slices and are not implied by the presence of these
-foundation APIs.
+The existing Matter Definition remains authoritative. The single-document execution/playground, batch execution
+workflow, compatibility importer, and product UI are subsequent slices and are not implied by the presence of
+these foundation APIs.
 
 ## Goal
 

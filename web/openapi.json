@@ -7105,6 +7105,84 @@
         }
       }
     },
+    "/v1/matters/{matter_id}/review-batches/{batch_id}/runs/{run_id}/documents/{document_id}/decision-result": {
+      "get": {
+        "tags": [
+          "review batches"
+        ],
+        "summary": "Get Review Batch Document Decision Result",
+        "operationId": "get_review_batch_document_decision_result_v1_matters__matter_id__review_batches__batch_id__runs__run_id__documents__document_id__decision_result_get",
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "matter_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid",
+              "title": "Matter Id"
+            }
+          },
+          {
+            "name": "batch_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid",
+              "title": "Batch Id"
+            }
+          },
+          {
+            "name": "run_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid",
+              "title": "Run Id"
+            }
+          },
+          {
+            "name": "document_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid",
+              "title": "Document Id"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ReviewDecisionResultRead"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/v1/matters/{matter_id}/review-batches/{batch_id}/review-run": {
       "post": {
         "tags": [
@@ -13239,6 +13317,43 @@
           "file"
         ],
         "title": "Body_upload_source_container_v1_collections__collection_id__source_containers_upload_post"
+      },
+      "ChoiceDecisionAnswer": {
+        "properties": {
+          "type": {
+            "type": "string",
+            "const": "choice",
+            "title": "Type"
+          },
+          "choice": {
+            "type": "string",
+            "title": "Choice"
+          },
+          "probabilities": {
+            "additionalProperties": {
+              "type": "number"
+            },
+            "type": "object",
+            "maxProperties": 255,
+            "minProperties": 2,
+            "title": "Probabilities"
+          },
+          "confidence": {
+            "type": "number",
+            "maximum": 1.0,
+            "minimum": 0.0,
+            "title": "Confidence"
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "type",
+          "choice",
+          "probabilities",
+          "confidence"
+        ],
+        "title": "ChoiceDecisionAnswer"
       },
       "ChoiceDecisionQuestion": {
         "properties": {
@@ -20511,6 +20626,28 @@
         ],
         "title": "NoulCriteria"
       },
+      "NoulDecisionAnswer": {
+        "properties": {
+          "type": {
+            "type": "string",
+            "const": "noul",
+            "title": "Type"
+          },
+          "noul": {
+            "type": "number",
+            "maximum": 1.0,
+            "minimum": 0.0,
+            "title": "Noul"
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "type",
+          "noul"
+        ],
+        "title": "NoulDecisionAnswer"
+      },
       "NoulDecisionQuestion": {
         "properties": {
           "instructions": {
@@ -21821,6 +21958,46 @@
               }
             ],
             "title": "Confidence"
+          },
+          "confidence_kind": {
+            "anyOf": [
+              {
+                "type": "string",
+                "enum": [
+                  "PROVIDER_CONFIDENCE",
+                  "SELECTED_PROBABILITY",
+                  "DERIVED_PROBABILITY",
+                  "NONE"
+                ]
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Confidence Kind"
+          },
+          "review_decision_result_id": {
+            "anyOf": [
+              {
+                "type": "string",
+                "format": "uuid"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Review Decision Result Id"
+          },
+          "question_key": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Question Key"
           }
         },
         "type": "object",
@@ -21830,9 +22007,394 @@
           "metadata_definition_id",
           "value_ordinal",
           "value",
-          "confidence"
+          "confidence",
+          "confidence_kind",
+          "review_decision_result_id",
+          "question_key"
         ],
         "title": "ReviewBatchRunValueRead"
+      },
+      "ReviewDecisionResultRead": {
+        "properties": {
+          "id": {
+            "type": "string",
+            "format": "uuid",
+            "title": "Id"
+          },
+          "review_batch_run_id": {
+            "type": "string",
+            "format": "uuid",
+            "title": "Review Batch Run Id"
+          },
+          "workflow_run_id": {
+            "type": "string",
+            "format": "uuid",
+            "title": "Workflow Run Id"
+          },
+          "matter_document_id": {
+            "type": "string",
+            "format": "uuid",
+            "title": "Matter Document Id"
+          },
+          "matter_analysis_task_version_id": {
+            "type": "string",
+            "format": "uuid",
+            "title": "Matter Analysis Task Version Id"
+          },
+          "definition_content_hash": {
+            "type": "string",
+            "title": "Definition Content Hash"
+          },
+          "specification_content_hash": {
+            "type": "string",
+            "title": "Specification Content Hash"
+          },
+          "source_artifact_id": {
+            "type": "string",
+            "format": "uuid",
+            "title": "Source Artifact Id"
+          },
+          "source_content_hash": {
+            "type": "string",
+            "title": "Source Content Hash"
+          },
+          "state_content_hash": {
+            "type": "string",
+            "title": "State Content Hash"
+          },
+          "question_set_hash": {
+            "type": "string",
+            "title": "Question Set Hash"
+          },
+          "decision_policy_hash": {
+            "type": "string",
+            "title": "Decision Policy Hash"
+          },
+          "paragraph_map_version": {
+            "type": "string",
+            "title": "Paragraph Map Version"
+          },
+          "status": {
+            "type": "string",
+            "enum": [
+              "COMPLETED",
+              "PARTIAL",
+              "FAILED",
+              "SKIPPED"
+            ],
+            "title": "Status"
+          },
+          "coverage": {
+            "additionalProperties": true,
+            "type": "object",
+            "title": "Coverage"
+          },
+          "answers": {
+            "additionalProperties": {
+              "oneOf": [
+                {
+                  "$ref": "#/components/schemas/ChoiceDecisionAnswer"
+                },
+                {
+                  "$ref": "#/components/schemas/ScoreDecisionAnswer"
+                },
+                {
+                  "$ref": "#/components/schemas/NoulDecisionAnswer"
+                }
+              ],
+              "discriminator": {
+                "propertyName": "type",
+                "mapping": {
+                  "choice": "#/components/schemas/ChoiceDecisionAnswer",
+                  "noul": "#/components/schemas/NoulDecisionAnswer",
+                  "score": "#/components/schemas/ScoreDecisionAnswer"
+                }
+              }
+            },
+            "type": "object",
+            "title": "Answers"
+          },
+          "recommendations": {
+            "additionalProperties": true,
+            "type": "object",
+            "title": "Recommendations"
+          },
+          "routes": {
+            "additionalProperties": true,
+            "type": "object",
+            "title": "Routes"
+          },
+          "evidence": {
+            "additionalProperties": true,
+            "type": "object",
+            "title": "Evidence"
+          },
+          "raw_answer_hash": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Raw Answer Hash"
+          },
+          "policy_evaluation_hash": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Policy Evaluation Hash"
+          },
+          "engine_key": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Engine Key"
+          },
+          "provider": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Provider"
+          },
+          "model": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Model"
+          },
+          "provider_request_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Provider Request Id"
+          },
+          "provider_metadata": {
+            "additionalProperties": true,
+            "type": "object",
+            "title": "Provider Metadata"
+          },
+          "evaluation_skill_run_id": {
+            "anyOf": [
+              {
+                "type": "string",
+                "format": "uuid"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Evaluation Skill Run Id"
+          },
+          "evidence_skill_run_id": {
+            "anyOf": [
+              {
+                "type": "string",
+                "format": "uuid"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Evidence Skill Run Id"
+          },
+          "model_invocation_id": {
+            "anyOf": [
+              {
+                "type": "string",
+                "format": "uuid"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Model Invocation Id"
+          },
+          "reused_from_result_id": {
+            "anyOf": [
+              {
+                "type": "string",
+                "format": "uuid"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Reused From Result Id"
+          },
+          "attempts": {
+            "type": "integer",
+            "title": "Attempts"
+          },
+          "request_count": {
+            "type": "integer",
+            "title": "Request Count"
+          },
+          "input_tokens": {
+            "type": "integer",
+            "title": "Input Tokens"
+          },
+          "output_tokens": {
+            "type": "integer",
+            "title": "Output Tokens"
+          },
+          "latency_ms": {
+            "type": "integer",
+            "title": "Latency Ms"
+          },
+          "error_code": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Error Code"
+          },
+          "error_message": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Error Message"
+          },
+          "started_at": {
+            "type": "string",
+            "format": "date-time",
+            "title": "Started At"
+          },
+          "completed_at": {
+            "type": "string",
+            "format": "date-time",
+            "title": "Completed At"
+          },
+          "created_at": {
+            "type": "string",
+            "format": "date-time",
+            "title": "Created At"
+          }
+        },
+        "type": "object",
+        "required": [
+          "id",
+          "review_batch_run_id",
+          "workflow_run_id",
+          "matter_document_id",
+          "matter_analysis_task_version_id",
+          "definition_content_hash",
+          "specification_content_hash",
+          "source_artifact_id",
+          "source_content_hash",
+          "state_content_hash",
+          "question_set_hash",
+          "decision_policy_hash",
+          "paragraph_map_version",
+          "status",
+          "coverage",
+          "answers",
+          "recommendations",
+          "routes",
+          "evidence",
+          "raw_answer_hash",
+          "policy_evaluation_hash",
+          "engine_key",
+          "provider",
+          "model",
+          "provider_request_id",
+          "provider_metadata",
+          "evaluation_skill_run_id",
+          "evidence_skill_run_id",
+          "model_invocation_id",
+          "reused_from_result_id",
+          "attempts",
+          "request_count",
+          "input_tokens",
+          "output_tokens",
+          "latency_ms",
+          "error_code",
+          "error_message",
+          "started_at",
+          "completed_at",
+          "created_at"
+        ],
+        "title": "ReviewDecisionResultRead"
+      },
+      "ScoreDecisionAnswer": {
+        "properties": {
+          "type": {
+            "type": "string",
+            "const": "score",
+            "title": "Type"
+          },
+          "score": {
+            "type": "number",
+            "title": "Score"
+          },
+          "legend": {
+            "additionalProperties": true,
+            "type": "object",
+            "maxProperties": 100,
+            "minProperties": 2,
+            "title": "Legend"
+          },
+          "probabilities": {
+            "additionalProperties": {
+              "type": "number"
+            },
+            "type": "object",
+            "maxProperties": 100,
+            "minProperties": 2,
+            "title": "Probabilities"
+          },
+          "confidence": {
+            "type": "number",
+            "maximum": 1.0,
+            "minimum": 0.0,
+            "title": "Confidence"
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "type",
+          "score",
+          "legend",
+          "probabilities",
+          "confidence"
+        ],
+        "title": "ScoreDecisionAnswer"
       },
       "ScoreDecisionQuestion": {
         "properties": {

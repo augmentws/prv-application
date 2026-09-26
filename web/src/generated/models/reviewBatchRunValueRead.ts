@@ -5,6 +5,7 @@
  * Phase-one Core API for authentication, hierarchical tenants, clients, matters, and matter metadata definitions.
  * OpenAPI spec version: 0.1.0
  */
+import type { ReviewBatchRunValueReadConfidenceKind } from './reviewBatchRunValueReadConfidenceKind';
 
 export interface ReviewBatchRunValueRead {
   review_batch_run_id: string;
@@ -13,4 +14,7 @@ export interface ReviewBatchRunValueRead {
   value_ordinal: number;
   value: unknown;
   confidence: number | null;
+  confidence_kind: ReviewBatchRunValueReadConfidenceKind;
+  review_decision_result_id: string | null;
+  question_key: string | null;
 }

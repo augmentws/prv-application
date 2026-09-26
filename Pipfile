@@ -26,6 +26,7 @@ transformers = "==4.57.6"
 regex = "*"
 jsonschema = "*"
 tiktoken = "*"
+typesafe-sdk = "==0.7.1"
 
 [dev-packages]
 pytest = "*"

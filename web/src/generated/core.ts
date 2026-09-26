@@ -149,6 +149,7 @@ import type {
   ReviewBatchRunProgressRead,
   ReviewBatchRunRead,
   ReviewBatchRunValueRead,
+  ReviewDecisionResultRead,
   SearchCollectionItemsV1CollectionsCollectionIdSearchGetParams,
   SearchIndexGenerationRead,
   SearchProjectionOperationRead,
@@ -7122,6 +7123,62 @@ export const getReviewBatchDocumentAnalysisV1MattersMatterIdReviewBatchesBatchId
 
   const data: getReviewBatchDocumentAnalysisV1MattersMatterIdReviewBatchesBatchIdRunsRunIdDocumentsDocumentIdAnalysisGetResponse['data'] = body ? JSON.parse(body) : {}
   return { data, status: res.status, headers: res.headers } as getReviewBatchDocumentAnalysisV1MattersMatterIdReviewBatchesBatchIdRunsRunIdDocumentsDocumentIdAnalysisGetResponse
+}
+
+
+
+export type getReviewBatchDocumentDecisionResultV1MattersMatterIdReviewBatchesBatchIdRunsRunIdDocumentsDocumentIdDecisionResultGetResponse200 = {
+  data: ReviewDecisionResultRead
+  status: 200
+}
+
+export type getReviewBatchDocumentDecisionResultV1MattersMatterIdReviewBatchesBatchIdRunsRunIdDocumentsDocumentIdDecisionResultGetResponse422 = {
+  data: HTTPValidationError
+  status: 422
+}
+
+export type getReviewBatchDocumentDecisionResultV1MattersMatterIdReviewBatchesBatchIdRunsRunIdDocumentsDocumentIdDecisionResultGetResponseSuccess = (getReviewBatchDocumentDecisionResultV1MattersMatterIdReviewBatchesBatchIdRunsRunIdDocumentsDocumentIdDecisionResultGetResponse200) & {
+  headers: Headers;
+};
+export type getReviewBatchDocumentDecisionResultV1MattersMatterIdReviewBatchesBatchIdRunsRunIdDocumentsDocumentIdDecisionResultGetResponseError = (getReviewBatchDocumentDecisionResultV1MattersMatterIdReviewBatchesBatchIdRunsRunIdDocumentsDocumentIdDecisionResultGetResponse422) & {
+  headers: Headers;
+};
+
+export type getReviewBatchDocumentDecisionResultV1MattersMatterIdReviewBatchesBatchIdRunsRunIdDocumentsDocumentIdDecisionResultGetResponse = (getReviewBatchDocumentDecisionResultV1MattersMatterIdReviewBatchesBatchIdRunsRunIdDocumentsDocumentIdDecisionResultGetResponseSuccess | getReviewBatchDocumentDecisionResultV1MattersMatterIdReviewBatchesBatchIdRunsRunIdDocumentsDocumentIdDecisionResultGetResponseError)
+
+export const getGetReviewBatchDocumentDecisionResultV1MattersMatterIdReviewBatchesBatchIdRunsRunIdDocumentsDocumentIdDecisionResultGetUrl = (matterId: string,
+    batchId: string,
+    runId: string,
+    documentId: string,) => {
+
+
+
+
+  return `/api/core/v1/matters/${matterId}/review-batches/${batchId}/runs/${runId}/documents/${documentId}/decision-result`
+}
+
+/**
+ * @summary Get Review Batch Document Decision Result
+ */
+export const getReviewBatchDocumentDecisionResultV1MattersMatterIdReviewBatchesBatchIdRunsRunIdDocumentsDocumentIdDecisionResultGet = async (matterId: string,
+    batchId: string,
+    runId: string,
+    documentId: string, options?: RequestInit): Promise<getReviewBatchDocumentDecisionResultV1MattersMatterIdReviewBatchesBatchIdRunsRunIdDocumentsDocumentIdDecisionResultGetResponse> => {
+
+  const res = await fetch(getGetReviewBatchDocumentDecisionResultV1MattersMatterIdReviewBatchesBatchIdRunsRunIdDocumentsDocumentIdDecisionResultGetUrl(matterId,batchId,runId,documentId),
+  {
+    ...options,
+    method: 'GET'
+
+
+  }
+)
+
+
+  const body = [204, 205, 304].includes(res.status) ? null : await res.text();
+
+  const data: getReviewBatchDocumentDecisionResultV1MattersMatterIdReviewBatchesBatchIdRunsRunIdDocumentsDocumentIdDecisionResultGetResponse['data'] = body ? JSON.parse(body) : {}
+  return { data, status: res.status, headers: res.headers } as getReviewBatchDocumentDecisionResultV1MattersMatterIdReviewBatchesBatchIdRunsRunIdDocumentsDocumentIdDecisionResultGetResponse
 }
 
 

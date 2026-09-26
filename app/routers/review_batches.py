@@ -34,6 +34,7 @@ from app.models import (
     ReviewBatchRun,
     ReviewBatchRunDocument,
     ReviewBatchRunValue,
+    ReviewDecisionResult,
     SkillRun,
     User,
 )
@@ -67,6 +68,7 @@ from app.schemas import (
     ReviewBatchRunProgressRead,
     ReviewBatchRunRead,
     ReviewBatchRunValueRead,
+    ReviewDecisionResultRead,
 )
 from app.search.query import batch_topic_filter
 from app.search.service import sync_review_batch_search
@@ -761,6 +763,9 @@ def _run_value_read(row: ReviewBatchRunValue) -> ReviewBatchRunValueRead:
         value_ordinal=row.value_ordinal,
         value=event_value(row),
         confidence=row.confidence,
+        confidence_kind=row.confidence_kind,
+        review_decision_result_id=row.review_decision_result_id,
+        question_key=row.question_key,
     )
 
 
@@ -906,6 +911,32 @@ def get_review_batch_document_analysis(
         output_artifact_id=artifact_id,
         analysis=analysis,
     )
+
+
+@router.get(
+    "/{batch_id}/runs/{run_id}/documents/{document_id}/decision-result",
+    response_model=ReviewDecisionResultRead,
+)
+def get_review_batch_document_decision_result(
+    matter_id: uuid.UUID,
+    batch_id: uuid.UUID,
+    run_id: uuid.UUID,
+    document_id: uuid.UUID,
+    principal: Principal = Depends(get_principal),
+    db: Session = Depends(get_db),
+) -> ReviewDecisionResult:
+    _matter(db, matter_id, principal)
+    batch = _batch(db, matter_id, batch_id)
+    run = _run(db, batch.id, run_id)
+    result = db.scalar(
+        select(ReviewDecisionResult).where(
+            ReviewDecisionResult.review_batch_run_id == run.id,
+            ReviewDecisionResult.matter_document_id == document_id,
+        )
+    )
+    if result is None:
+        raise HTTPException(status_code=404, detail="Decision Result not found")
+    return result
 
 
 @router.post("/{batch_id}/review-run", response_model=ReviewBatchRunRead)

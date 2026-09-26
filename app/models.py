@@ -1218,7 +1218,14 @@ class ReviewBatchRunValue(Base):
             "confidence IS NULL OR (confidence >= 0 AND confidence <= 1)",
             name="ck_review_batch_run_value_confidence",
         ),
+        CheckConstraint(
+            "confidence_kind IS NULL OR (confidence IS NULL AND confidence_kind = 'NONE') OR "
+            "(confidence IS NOT NULL AND confidence_kind IN "
+            "('PROVIDER_CONFIDENCE', 'SELECTED_PROBABILITY', 'DERIVED_PROBABILITY'))",
+            name="ck_review_batch_run_value_confidence_kind",
+        ),
         Index("ix_review_batch_run_value_document", "matter_document_id", "metadata_definition_id"),
+        Index("ix_review_batch_run_value_decision_result", "review_decision_result_id"),
     )
 
     review_batch_run_id: Mapped[uuid.UUID] = mapped_column(
@@ -1239,6 +1246,11 @@ class ReviewBatchRunValue(Base):
     value_datetime: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     value_json: Mapped[Any | None] = mapped_column(JSON(none_as_null=True))
     confidence: Mapped[float | None] = mapped_column(Float)
+    confidence_kind: Mapped[str | None] = mapped_column(String(30))
+    review_decision_result_id: Mapped[uuid.UUID | None] = mapped_column(
+        Uuid, ForeignKey("review_decision_result.id", ondelete="RESTRICT"), nullable=True
+    )
+    question_key: Mapped[str | None] = mapped_column(String(500))
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow, onupdate=utcnow)
 
@@ -2187,6 +2199,94 @@ class MatterAnalysisTaskVersionDependency(Base):
     )
     role: Mapped[str] = mapped_column(String(100), primary_key=True)
     dependency_content_hash: Mapped[str] = mapped_column(String(64))
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+
+
+class ReviewDecisionResult(Base):
+    """Immutable typed decision output for one document in one isolated review run."""
+
+    __tablename__ = "review_decision_result"
+    __table_args__ = (
+        UniqueConstraint(
+            "review_batch_run_id",
+            "matter_document_id",
+            name="uq_review_decision_result_run_document",
+        ),
+        CheckConstraint(
+            "status IN ('COMPLETED', 'PARTIAL', 'FAILED', 'SKIPPED')",
+            name="ck_review_decision_result_status",
+        ),
+        CheckConstraint(
+            "attempts > 0 AND request_count >= 0 AND input_tokens >= 0 AND output_tokens >= 0 "
+            "AND latency_ms >= 0",
+            name="ck_review_decision_result_usage",
+        ),
+        CheckConstraint(
+            "status IN ('FAILED', 'SKIPPED') OR "
+            "(engine_key IS NOT NULL AND provider IS NOT NULL AND model IS NOT NULL "
+            "AND raw_answer_hash IS NOT NULL AND policy_evaluation_hash IS NOT NULL)",
+            name="ck_review_decision_result_completed_shape",
+        ),
+        Index("ix_review_decision_result_task_version", "matter_analysis_task_version_id", "created_at"),
+        Index("ix_review_decision_result_document", "matter_document_id", "created_at"),
+        Index("ix_review_decision_result_workflow", "workflow_run_id", "status"),
+    )
+
+    id: Mapped[uuid.UUID] = mapped_column(Uuid, primary_key=True, default=uuid.uuid4)
+    review_batch_run_id: Mapped[uuid.UUID] = mapped_column(
+        Uuid, ForeignKey("review_batch_run.id", ondelete="RESTRICT"), index=True
+    )
+    workflow_run_id: Mapped[uuid.UUID] = mapped_column(
+        Uuid, ForeignKey("workflow_run.id", ondelete="RESTRICT"), index=True
+    )
+    matter_document_id: Mapped[uuid.UUID] = mapped_column(
+        Uuid, ForeignKey("matter_document.id", ondelete="RESTRICT"), index=True
+    )
+    matter_analysis_task_version_id: Mapped[uuid.UUID] = mapped_column(
+        Uuid, ForeignKey("matter_analysis_task_version.id", ondelete="RESTRICT"), index=True
+    )
+    definition_content_hash: Mapped[str] = mapped_column(String(64))
+    specification_content_hash: Mapped[str] = mapped_column(String(64))
+    source_artifact_id: Mapped[uuid.UUID] = mapped_column(Uuid)
+    source_content_hash: Mapped[str] = mapped_column(String(64))
+    state_content_hash: Mapped[str] = mapped_column(String(64))
+    question_set_hash: Mapped[str] = mapped_column(String(64))
+    decision_policy_hash: Mapped[str] = mapped_column(String(64))
+    paragraph_map_version: Mapped[str] = mapped_column(String(100))
+    status: Mapped[str] = mapped_column(String(20), index=True)
+    coverage: Mapped[dict[str, Any]] = mapped_column(JSON, default=dict)
+    answers: Mapped[dict[str, Any]] = mapped_column(JSON, default=dict)
+    recommendations: Mapped[dict[str, Any]] = mapped_column(JSON, default=dict)
+    routes: Mapped[dict[str, Any]] = mapped_column(JSON, default=dict)
+    evidence: Mapped[dict[str, Any]] = mapped_column(JSON, default=dict)
+    raw_answer_hash: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    policy_evaluation_hash: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    engine_key: Mapped[str | None] = mapped_column(String(100), nullable=True)
+    provider: Mapped[str | None] = mapped_column(String(100), nullable=True)
+    model: Mapped[str | None] = mapped_column(String(500), nullable=True)
+    provider_request_id: Mapped[str | None] = mapped_column(String(500), nullable=True)
+    provider_metadata: Mapped[dict[str, Any]] = mapped_column(JSON, default=dict)
+    evaluation_skill_run_id: Mapped[uuid.UUID | None] = mapped_column(
+        Uuid, ForeignKey("skill_run.id", ondelete="RESTRICT"), nullable=True, index=True
+    )
+    evidence_skill_run_id: Mapped[uuid.UUID | None] = mapped_column(
+        Uuid, ForeignKey("skill_run.id", ondelete="RESTRICT"), nullable=True, index=True
+    )
+    model_invocation_id: Mapped[uuid.UUID | None] = mapped_column(
+        Uuid, ForeignKey("model_invocation.id", ondelete="RESTRICT"), nullable=True, unique=True, index=True
+    )
+    reused_from_result_id: Mapped[uuid.UUID | None] = mapped_column(
+        Uuid, ForeignKey("review_decision_result.id", ondelete="RESTRICT"), nullable=True, index=True
+    )
+    attempts: Mapped[int] = mapped_column(Integer, default=1)
+    request_count: Mapped[int] = mapped_column(Integer, default=0)
+    input_tokens: Mapped[int] = mapped_column(BigInteger, default=0)
+    output_tokens: Mapped[int] = mapped_column(BigInteger, default=0)
+    latency_ms: Mapped[int] = mapped_column(Integer, default=0)
+    error_code: Mapped[str | None] = mapped_column(String(100), nullable=True)
+    error_message: Mapped[str | None] = mapped_column(Text, nullable=True)
+    started_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
+    completed_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
 
 
