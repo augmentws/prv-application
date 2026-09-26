@@ -142,6 +142,8 @@ def test_playground_queues_managed_skill_and_persists_isolated_typed_result(
     assert queued.status_code == 202, queued.text
     queued_data = queued.json()
     assert queued_data["status"] == "QUEUED"
+    assert queued_data["review_batch_id"] == batch_id
+    assert queued_data["result_id"] is None
 
     with TestingSessionLocal() as execution_db:
         workflow = execution_db.get(WorkflowRun, uuid.UUID(queued_data["workflow_run_id"]))
@@ -195,6 +197,15 @@ def test_playground_queues_managed_skill_and_persists_isolated_typed_result(
     assert fetched.status_code == 200, fetched.text
     assert fetched.json()["id"] == str(result_id)
     assert fetched.json()["coverage"]["evidence_complete"] is False
+
+    run_status = client.get(
+        f"/v1/matters/{matter_id}/analysis-tasks/{task['id']}/versions/1/playground-runs/"
+        f"{queued_data['workflow_run_id']}",
+        headers=auth(token),
+    )
+    assert run_status.status_code == 200, run_status.text
+    assert run_status.json()["status"] == "COMPLETED"
+    assert run_status.json()["result_id"] == str(result_id)
 
     with TestingSessionLocal() as check_db:
         assert check_db.scalar(select(ReviewDecisionResult).where(ReviewDecisionResult.id == result_id)) is not None

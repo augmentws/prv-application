@@ -9,6 +9,7 @@ import { useCallback, useMemo, useSyncExternalStore } from "react";
 import { toast } from "sonner";
 
 import { DataTable } from "@/components/data-table";
+import { AnalysisTasksPanel } from "@/components/analysis-tasks-panel";
 import { ResourcePageHeader } from "@/components/resource-page-header";
 import { EnumMetadataEditor } from "@/components/enum-metadata-editor";
 import { CloneMatterDialog, type CloneMatterValues } from "@/components/forms/clone-matter-dialog";
@@ -34,7 +35,7 @@ import { coreApi } from "@/lib/api-client";
 import { bulkTagDisplayStatus, bulkTagIsWaiting } from "@/lib/bulk-tag-jobs";
 import { formatDate } from "@/lib/format";
 
-type MatterTab = "overview" | "metadata" | "groups" | "definition" | "batches" | "jobs" | "search";
+type MatterTab = "overview" | "metadata" | "groups" | "definition" | "analysis" | "batches" | "jobs" | "search";
 type MatterJobType = "BULK_TAGGING" | "DOCUMENT_EMBEDDINGS" | "TOPIC_CLUSTERING" | "DOCUMENT_IMPORTS";
 
 const MATTER_JOB_TYPE_STORAGE_KEY = "priv-view:matter-jobs:selected-type";
@@ -61,7 +62,7 @@ export function MatterView({ clientId, matterId, requestedTab, selectedJobId }: 
   requestedTab?: string;
   selectedJobId?: string;
 }) {
-  const tab: MatterTab = requestedTab === "overview" || requestedTab === "groups" || requestedTab === "definition" || requestedTab === "batches" || requestedTab === "jobs" || requestedTab === "search" ? requestedTab : "metadata";
+  const tab: MatterTab = requestedTab === "overview" || requestedTab === "groups" || requestedTab === "definition" || requestedTab === "analysis" || requestedTab === "batches" || requestedTab === "jobs" || requestedTab === "search" ? requestedTab : "metadata";
   const router = useRouter();
   const queryClient = useQueryClient();
   const storedJobType = useSyncExternalStore(subscribeToMatterJobType, readStoredMatterJobType, () => "BULK_TAGGING");
@@ -374,6 +375,7 @@ export function MatterView({ clientId, matterId, requestedTab, selectedJobId }: 
             <button role="tab" aria-selected={tab === "metadata"} onClick={() => openTab("metadata")} className={tabClass(tab === "metadata")}>Metadata definitions</button>
             <button role="tab" aria-selected={tab === "groups"} onClick={() => openTab("groups")} className={tabClass(tab === "groups")}>Metadata groups</button>
             <button role="tab" aria-selected={tab === "definition"} onClick={() => openTab("definition")} className={tabClass(tab === "definition")}>Matter definition</button>
+            <button role="tab" aria-selected={tab === "analysis"} onClick={() => openTab("analysis")} className={tabClass(tab === "analysis")}>Analysis tasks</button>
             <button role="tab" aria-selected={tab === "batches"} onClick={() => openTab("batches")} className={tabClass(tab === "batches")}>Batches</button>
             <button role="tab" aria-selected={tab === "jobs"} onClick={() => openTab("jobs")} className={tabClass(tab === "jobs")}>Jobs</button>
             <button role="tab" aria-selected={tab === "search"} onClick={() => openTab("search")} className={tabClass(tab === "search")}>Search index</button>
@@ -392,6 +394,7 @@ export function MatterView({ clientId, matterId, requestedTab, selectedJobId }: 
         : tab === "metadata" ? definitions.isPending ? <TableLoading /> : definitions.error ? <QueryError message={definitions.error.message} /> : <DataTable columns={columns} data={definitions.data} emptyMessage="No metadata fields yet. Add the first field definition for this matter." />
         : tab === "groups" ? definitions.isPending || groups.isPending ? <TableLoading /> : definitions.error || groups.error ? <QueryError message={definitions.error?.message ?? groups.error?.message} /> : <MetadataGroupsPanel definitions={definitions.data} groups={groups.data} onCreate={createGroup} onVisibilityChange={changeVisibility} />
         : tab === "definition" ? <MatterDefinitionPanel matterId={matterId} />
+        : tab === "analysis" ? <AnalysisTasksPanel matterId={matterId} />
         : tab === "batches" ? reviewBatches.isPending || groups.isPending || tenantUsers.isPending ? <TableLoading /> : reviewBatches.error || groups.error || tenantUsers.error ? <QueryError message={reviewBatches.error?.message ?? groups.error?.message ?? tenantUsers.error?.message} /> : <div className="space-y-4"><div className="flex flex-wrap items-start justify-between gap-3"><div><h2 className="text-lg font-semibold">Review batches</h2><p className="text-sm text-muted-foreground">Freeze document sets for assignment, repeatable agent runs, and coding comparisons.</p></div><CreateReviewBatchDialog groups={groups.data} batches={reviewBatches.data} onCreate={createReviewBatch} /></div><DataTable columns={reviewBatchColumns} data={reviewBatches.data} emptyMessage="No review batches have been created for this matter." /></div>
         : tab === "jobs" ? jobs.isPending || embeddingJobs.isPending || topicJobs.isPending || bulkTagJobs.isPending || savedSearches.isPending ? <TableLoading /> : jobs.error || embeddingJobs.error || topicJobs.error || bulkTagJobs.error || savedSearches.error ? <QueryError message={jobs.error?.message ?? embeddingJobs.error?.message ?? topicJobs.error?.message ?? bulkTagJobs.error?.message ?? savedSearches.error?.message} /> : <div className="space-y-6">
           <div className="flex flex-wrap items-end justify-between gap-4 rounded-xl border bg-card p-4">

@@ -20,10 +20,13 @@ The first Phase 1 foundation is implemented:
 - a managed, durable single-document playground backend that evaluates a published task version against a document
   in a ready batch, applies the bounded decision policy, records shared invocation/usage telemetry, and retains an
   isolated Decision Result without publishing coding values;
+- an initial matter-admin Analysis Tasks UI for creating tasks, browsing version history, editing definitions as
+  new drafts, generating/regenerating and validating specification JSON, publishing an atomic version, launching
+  the single-document playground, and inspecting its typed Decision Result;
 - generated OpenAPI/TypeScript client types and backend contract tests.
 
-The existing Matter Definition remains authoritative. Playground UI and evidence localization, batch execution,
-the compatibility importer, and the task-management product UI are subsequent slices and are not implied by the
+The existing Matter Definition remains authoritative. Evidence localization, batch execution, the compatibility
+importer, and a structured specification editor/diff experience are subsequent slices and are not implied by the
 presence of these foundation APIs.
 
 ## Goal

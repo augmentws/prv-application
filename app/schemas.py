@@ -1675,10 +1675,13 @@ class MatterAnalysisTaskPlaygroundCreate(BaseModel):
 
 class MatterAnalysisTaskPlaygroundRunRead(BaseModel):
     workflow_run_id: uuid.UUID
+    review_batch_id: uuid.UUID
     review_batch_run_id: uuid.UUID
     matter_document_id: uuid.UUID
     task_version_id: uuid.UUID
     status: Literal["QUEUED", "RUNNING", "COMPLETED", "COMPLETED_WITH_ERRORS", "FAILED", "CANCELED"]
+    result_id: uuid.UUID | None = None
+    error_message: str | None = None
 
 
 class MatterAnalysisTaskVersionRead(ORMModel):

@@ -9,8 +9,11 @@ import type { MatterAnalysisTaskPlaygroundRunReadStatus } from './matterAnalysis
 
 export interface MatterAnalysisTaskPlaygroundRunRead {
   workflow_run_id: string;
+  review_batch_id: string;
   review_batch_run_id: string;
   matter_document_id: string;
   task_version_id: string;
   status: MatterAnalysisTaskPlaygroundRunReadStatus;
+  result_id?: string | null;
+  error_message?: string | null;
 }

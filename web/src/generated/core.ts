@@ -3565,6 +3565,62 @@ const res = await fetch(getStartAnalysisTaskPlaygroundRunV1MattersMatterIdAnalys
 
 
 
+export type getAnalysisTaskPlaygroundRunV1MattersMatterIdAnalysisTasksTaskIdVersionsVersionNumberPlaygroundRunsWorkflowRunIdGetResponse200 = {
+  data: MatterAnalysisTaskPlaygroundRunRead
+  status: 200
+}
+
+export type getAnalysisTaskPlaygroundRunV1MattersMatterIdAnalysisTasksTaskIdVersionsVersionNumberPlaygroundRunsWorkflowRunIdGetResponse422 = {
+  data: HTTPValidationError
+  status: 422
+}
+
+export type getAnalysisTaskPlaygroundRunV1MattersMatterIdAnalysisTasksTaskIdVersionsVersionNumberPlaygroundRunsWorkflowRunIdGetResponseSuccess = (getAnalysisTaskPlaygroundRunV1MattersMatterIdAnalysisTasksTaskIdVersionsVersionNumberPlaygroundRunsWorkflowRunIdGetResponse200) & {
+  headers: Headers;
+};
+export type getAnalysisTaskPlaygroundRunV1MattersMatterIdAnalysisTasksTaskIdVersionsVersionNumberPlaygroundRunsWorkflowRunIdGetResponseError = (getAnalysisTaskPlaygroundRunV1MattersMatterIdAnalysisTasksTaskIdVersionsVersionNumberPlaygroundRunsWorkflowRunIdGetResponse422) & {
+  headers: Headers;
+};
+
+export type getAnalysisTaskPlaygroundRunV1MattersMatterIdAnalysisTasksTaskIdVersionsVersionNumberPlaygroundRunsWorkflowRunIdGetResponse = (getAnalysisTaskPlaygroundRunV1MattersMatterIdAnalysisTasksTaskIdVersionsVersionNumberPlaygroundRunsWorkflowRunIdGetResponseSuccess | getAnalysisTaskPlaygroundRunV1MattersMatterIdAnalysisTasksTaskIdVersionsVersionNumberPlaygroundRunsWorkflowRunIdGetResponseError)
+
+export const getGetAnalysisTaskPlaygroundRunV1MattersMatterIdAnalysisTasksTaskIdVersionsVersionNumberPlaygroundRunsWorkflowRunIdGetUrl = (matterId: string,
+    taskId: string,
+    versionNumber: number,
+    workflowRunId: string,) => {
+
+
+
+
+  return `/api/core/v1/matters/${matterId}/analysis-tasks/${taskId}/versions/${versionNumber}/playground-runs/${workflowRunId}`
+}
+
+/**
+ * @summary Get Analysis Task Playground Run
+ */
+export const getAnalysisTaskPlaygroundRunV1MattersMatterIdAnalysisTasksTaskIdVersionsVersionNumberPlaygroundRunsWorkflowRunIdGet = async (matterId: string,
+    taskId: string,
+    versionNumber: number,
+    workflowRunId: string, options?: RequestInit): Promise<getAnalysisTaskPlaygroundRunV1MattersMatterIdAnalysisTasksTaskIdVersionsVersionNumberPlaygroundRunsWorkflowRunIdGetResponse> => {
+
+  const res = await fetch(getGetAnalysisTaskPlaygroundRunV1MattersMatterIdAnalysisTasksTaskIdVersionsVersionNumberPlaygroundRunsWorkflowRunIdGetUrl(matterId,taskId,versionNumber,workflowRunId),
+  {
+    ...options,
+    method: 'GET'
+
+
+  }
+)
+
+
+  const body = [204, 205, 304].includes(res.status) ? null : await res.text();
+
+  const data: getAnalysisTaskPlaygroundRunV1MattersMatterIdAnalysisTasksTaskIdVersionsVersionNumberPlaygroundRunsWorkflowRunIdGetResponse['data'] = body ? JSON.parse(body) : {}
+  return { data, status: res.status, headers: res.headers } as getAnalysisTaskPlaygroundRunV1MattersMatterIdAnalysisTasksTaskIdVersionsVersionNumberPlaygroundRunsWorkflowRunIdGetResponse
+}
+
+
+
 export type publishAnalysisTaskV1MattersMatterIdAnalysisTasksTaskIdVersionsVersionNumberPublishPostResponse200 = {
   data: MatterAnalysisTaskRead
   status: 200

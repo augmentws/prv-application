@@ -23,8 +23,11 @@ from app.models import (
     Matter,
     MatterAnalysisTask,
     MatterAnalysisTaskVersion,
+    ReviewBatchRun,
+    ReviewDecisionResult,
     SkillDefinitionVersion,
     SkillRun,
+    WorkflowRun,
 )
 from app.schemas import (
     MatterAnalysisTaskCreate,
@@ -35,6 +38,7 @@ from app.schemas import (
     MatterAnalysisTaskVersionCreate,
     MatterAnalysisTaskVersionRead,
 )
+from app.workflow_specs import MATTER_ANALYSIS_TASK_PLAYGROUND_SPEC
 
 router = APIRouter(prefix="/v1/matters/{matter_id}/analysis-tasks", tags=["matter analysis tasks"])
 
@@ -105,6 +109,24 @@ def _raise_task_error(exc: MatterAnalysisTaskError) -> Never:
     if isinstance(exc, MatterAnalysisTaskNotFound):
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=str(exc)) from exc
     raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=str(exc)) from exc
+
+
+def _playground_run_read(
+    workflow: WorkflowRun,
+    review_run: ReviewBatchRun,
+    result: ReviewDecisionResult | None = None,
+) -> MatterAnalysisTaskPlaygroundRunRead:
+    snapshot = workflow.input_snapshot
+    return MatterAnalysisTaskPlaygroundRunRead(
+        workflow_run_id=workflow.id,
+        review_batch_id=review_run.review_batch_id,
+        review_batch_run_id=review_run.id,
+        matter_document_id=uuid.UUID(str(snapshot["matter_document_id"])),
+        task_version_id=uuid.UUID(str(snapshot["task_version_id"])),
+        status=workflow.status,
+        result_id=result.id if result is not None else None,
+        error_message=workflow.error_message,
+    )
 
 
 @router.get("", response_model=list[MatterAnalysisTaskRead])
@@ -368,13 +390,42 @@ def start_analysis_task_playground_run(
         },
     )
     db.commit()
-    return MatterAnalysisTaskPlaygroundRunRead(
-        workflow_run_id=workflow.id,
-        review_batch_run_id=review_run.id,
-        matter_document_id=payload.matter_document_id,
-        task_version_id=task_version.id,
-        status=workflow.status,
+    return _playground_run_read(workflow, review_run)
+
+
+@router.get(
+    "/{task_id}/versions/{version_number}/playground-runs/{workflow_run_id}",
+    response_model=MatterAnalysisTaskPlaygroundRunRead,
+)
+def get_analysis_task_playground_run(
+    matter_id: uuid.UUID,
+    task_id: uuid.UUID,
+    version_number: int,
+    workflow_run_id: uuid.UUID,
+    principal: Principal = Depends(get_principal),
+    db: Session = Depends(get_db),
+) -> MatterAnalysisTaskPlaygroundRunRead:
+    _require_matter_admin(db, principal, matter_id)
+    task = _require_task(db, matter_id=matter_id, task_id=task_id)
+    task_version = _task_version(db, task_id=task.id, version_number=version_number)
+    workflow = db.get(WorkflowRun, workflow_run_id)
+    if (
+        workflow is None
+        or workflow.matter_id != matter_id
+        or workflow.workflow_key != MATTER_ANALYSIS_TASK_PLAYGROUND_SPEC.key
+        or workflow.input_snapshot.get("task_id") != str(task.id)
+        or workflow.input_snapshot.get("task_version_id") != str(task_version.id)
+    ):
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Playground run not found")
+    review_run = db.scalar(
+        select(ReviewBatchRun).where(ReviewBatchRun.workflow_run_record_id == workflow.id)
     )
+    if review_run is None:
+        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="Playground run provenance is incomplete")
+    result = db.scalar(
+        select(ReviewDecisionResult).where(ReviewDecisionResult.workflow_run_id == workflow.id)
+    )
+    return _playground_run_read(workflow, review_run, result)
 
 
 @router.post("/{task_id}/versions/{version_number}/publish", response_model=MatterAnalysisTaskRead)

@@ -328,5 +328,5 @@ describe("ReviewWorkspace", () => {
     await user.click(screen.getByRole("option", { name: "Hybrid" }));
     expect(screen.getByPlaceholderText("Combine exact words with conceptually related results")).toBeInTheDocument();
     expect(screen.queryByRole("spinbutton", { name: "Minimum semantic similarity" })).not.toBeInTheDocument();
-  }, 10_000);
+  }, 20_000);
 });

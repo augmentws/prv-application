@@ -3206,6 +3206,83 @@
         }
       }
     },
+    "/v1/matters/{matter_id}/analysis-tasks/{task_id}/versions/{version_number}/playground-runs/{workflow_run_id}": {
+      "get": {
+        "tags": [
+          "matter analysis tasks"
+        ],
+        "summary": "Get Analysis Task Playground Run",
+        "operationId": "get_analysis_task_playground_run_v1_matters__matter_id__analysis_tasks__task_id__versions__version_number__playground_runs__workflow_run_id__get",
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "matter_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid",
+              "title": "Matter Id"
+            }
+          },
+          {
+            "name": "task_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid",
+              "title": "Task Id"
+            }
+          },
+          {
+            "name": "version_number",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "integer",
+              "title": "Version Number"
+            }
+          },
+          {
+            "name": "workflow_run_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid",
+              "title": "Workflow Run Id"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/MatterAnalysisTaskPlaygroundRunRead"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/v1/matters/{matter_id}/analysis-tasks/{task_id}/versions/{version_number}/publish": {
       "post": {
         "tags": [
@@ -15822,6 +15899,11 @@
             "format": "uuid",
             "title": "Workflow Run Id"
           },
+          "review_batch_id": {
+            "type": "string",
+            "format": "uuid",
+            "title": "Review Batch Id"
+          },
           "review_batch_run_id": {
             "type": "string",
             "format": "uuid",
@@ -15848,11 +15930,35 @@
               "CANCELED"
             ],
             "title": "Status"
+          },
+          "result_id": {
+            "anyOf": [
+              {
+                "type": "string",
+                "format": "uuid"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Result Id"
+          },
+          "error_message": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Error Message"
           }
         },
         "type": "object",
         "required": [
           "workflow_run_id",
+          "review_batch_id",
           "review_batch_run_id",
           "matter_document_id",
           "task_version_id",
