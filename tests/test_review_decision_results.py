@@ -292,6 +292,7 @@ def test_decision_result_is_complete_auditable_and_idempotent(
         "question_count": 1,
         "answered_question_count": 1,
         "missing_question_keys": [],
+        "question_complete": True,
         "complete": True,
     }
     assert result.answers["privilege.legal_advice"] == {"type": "noul", "noul": 0.91}
@@ -321,7 +322,7 @@ def test_completed_decision_result_cannot_hide_partial_coverage(db: Session, roo
     ids = _provenance(db, root_admin)
     envelope = _envelope()
     envelope.answers = {}
-    with pytest.raises(ReviewDecisionResultError, match="must answer every"):
+    with pytest.raises(ReviewDecisionResultError, match="complete question"):
         record_review_decision_result(
             db,
             workflow_run_id=ids["workflow"],

@@ -58,6 +58,7 @@ class Settings(BaseSettings):
     typesafe_max_retries: int = Field(default=5, ge=0, le=20)
     typesafe_retry_base_seconds: float = Field(default=1.0, gt=0, le=300)
     typesafe_retry_max_seconds: float = Field(default=120.0, gt=0, le=3600)
+    analysis_task_decision_max_characters: int = Field(default=100_000, ge=10_000, le=2_000_000)
     matter_embedding_batch_size: int = Field(default=250, ge=1, le=500)
     matter_embedding_document_concurrency: int = Field(default=8, ge=1, le=32)
     matter_topic_batch_size: int = Field(default=100, ge=1, le=1000)

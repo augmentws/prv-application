@@ -3129,6 +3129,83 @@
         }
       }
     },
+    "/v1/matters/{matter_id}/analysis-tasks/{task_id}/versions/{version_number}/playground-runs": {
+      "post": {
+        "tags": [
+          "matter analysis tasks"
+        ],
+        "summary": "Start Analysis Task Playground Run",
+        "operationId": "start_analysis_task_playground_run_v1_matters__matter_id__analysis_tasks__task_id__versions__version_number__playground_runs_post",
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "matter_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid",
+              "title": "Matter Id"
+            }
+          },
+          {
+            "name": "task_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid",
+              "title": "Task Id"
+            }
+          },
+          {
+            "name": "version_number",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "integer",
+              "title": "Version Number"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/MatterAnalysisTaskPlaygroundCreate"
+              }
+            }
+          }
+        },
+        "responses": {
+          "202": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/MatterAnalysisTaskPlaygroundRunRead"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/v1/matters/{matter_id}/analysis-tasks/{task_id}/versions/{version_number}/publish": {
       "post": {
         "tags": [
@@ -15716,6 +15793,72 @@
           "definition_markdown"
         ],
         "title": "MatterAnalysisTaskCreate"
+      },
+      "MatterAnalysisTaskPlaygroundCreate": {
+        "properties": {
+          "review_batch_id": {
+            "type": "string",
+            "format": "uuid",
+            "title": "Review Batch Id"
+          },
+          "matter_document_id": {
+            "type": "string",
+            "format": "uuid",
+            "title": "Matter Document Id"
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "review_batch_id",
+          "matter_document_id"
+        ],
+        "title": "MatterAnalysisTaskPlaygroundCreate"
+      },
+      "MatterAnalysisTaskPlaygroundRunRead": {
+        "properties": {
+          "workflow_run_id": {
+            "type": "string",
+            "format": "uuid",
+            "title": "Workflow Run Id"
+          },
+          "review_batch_run_id": {
+            "type": "string",
+            "format": "uuid",
+            "title": "Review Batch Run Id"
+          },
+          "matter_document_id": {
+            "type": "string",
+            "format": "uuid",
+            "title": "Matter Document Id"
+          },
+          "task_version_id": {
+            "type": "string",
+            "format": "uuid",
+            "title": "Task Version Id"
+          },
+          "status": {
+            "type": "string",
+            "enum": [
+              "QUEUED",
+              "RUNNING",
+              "COMPLETED",
+              "COMPLETED_WITH_ERRORS",
+              "FAILED",
+              "CANCELED"
+            ],
+            "title": "Status"
+          }
+        },
+        "type": "object",
+        "required": [
+          "workflow_run_id",
+          "review_batch_run_id",
+          "matter_document_id",
+          "task_version_id",
+          "status"
+        ],
+        "title": "MatterAnalysisTaskPlaygroundRunRead"
       },
       "MatterAnalysisTaskRead": {
         "properties": {

@@ -6,7 +6,9 @@ from sqlalchemy.orm import Session
 
 from app.models import SkillDefinition, SkillDefinitionVersion, WorkflowSkillBinding
 
-SUPPORTED_SKILL_CAPABILITIES = frozenset({"structured_output", "prompt_caching", "long_context"})
+SUPPORTED_SKILL_CAPABILITIES = frozenset(
+    {"structured_output", "prompt_caching", "long_context", "typed_decision"}
+)
 
 
 @dataclass(frozen=True)
@@ -86,9 +88,26 @@ MATTER_ANALYSIS_TASK_COMPILATION_SPEC = WorkflowSpec(
     ),
 )
 
+MATTER_ANALYSIS_TASK_PLAYGROUND_SPEC = WorkflowSpec(
+    key="matter_analysis_task_playground_v1",
+    code_version="1",
+    name="Matter Analysis Task playground",
+    description="Evaluates one document against a published Decision Specification without publishing coding.",
+    roles=(
+        WorkflowRoleSpec(
+            key="decision_evaluation",
+            input_schema_key="matter_analysis_task_decision_input_v1",
+            output_schema_key="matter_analysis_task_decision_output_v1",
+            allowed_capabilities=frozenset({"typed_decision"}),
+            allowed_tool_keys=frozenset(),
+        ),
+    ),
+)
+
 WORKFLOW_SPECS = {
     MATTER_DEFINITION_ASSESSMENT_SPEC.key: MATTER_DEFINITION_ASSESSMENT_SPEC,
     MATTER_ANALYSIS_TASK_COMPILATION_SPEC.key: MATTER_ANALYSIS_TASK_COMPILATION_SPEC,
+    MATTER_ANALYSIS_TASK_PLAYGROUND_SPEC.key: MATTER_ANALYSIS_TASK_PLAYGROUND_SPEC,
 }
 
 

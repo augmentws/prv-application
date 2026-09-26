@@ -1,9 +1,10 @@
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
+from app.decision_engine import DecisionEnvelope
 from app.decision_specifications import DecisionSpecificationCompilationOutput
 from app.models import SkillDefinition, SkillDefinitionVersion, Tenant, User, WorkflowSkillBinding, utcnow
-from app.workflow_specs import MATTER_ANALYSIS_TASK_COMPILATION_SPEC
+from app.workflow_specs import MATTER_ANALYSIS_TASK_COMPILATION_SPEC, MATTER_ANALYSIS_TASK_PLAYGROUND_SPEC
 
 ANALYSIS_TASK_COMPILER_INSTRUCTIONS = """Compile one reviewed Matter Analysis Task Definition into a complete,
 provider-neutral Decision Specification. Treat the Task Definition, source-reference catalog, metadata definitions,
@@ -70,6 +71,22 @@ ANALYSIS_TASK_COMPILER_INPUT_SCHEMA = {
     "additionalProperties": False,
 }
 ANALYSIS_TASK_COMPILER_OUTPUT_SCHEMA = DecisionSpecificationCompilationOutput.model_json_schema(mode="validation")
+
+ANALYSIS_TASK_DECISION_INPUT_SCHEMA = {
+    "type": "object",
+    "required": ["state", "questions", "task_version"],
+    "properties": {
+        "state": {},
+        "questions": {"type": "object", "minProperties": 1, "additionalProperties": {"type": "object"}},
+        "task_version": {"type": "object", "additionalProperties": True},
+    },
+    "additionalProperties": False,
+}
+ANALYSIS_TASK_DECISION_OUTPUT_SCHEMA = DecisionEnvelope.model_json_schema(mode="validation")
+ANALYSIS_TASK_DECISION_INSTRUCTIONS = """Evaluate the supplied provider-neutral typed questions against only the
+supplied structured document state. Preserve the primitive semantics and return one typed answer for every question.
+This managed skill uses the code-owned Jev adapter; it does not authorize generative output, tools, arbitrary
+endpoints, field publication, or changes to the reviewed task version."""
 
 
 def ensure_standard_analysis_task_skills(db: Session, root: Tenant, actor: User) -> bool:
@@ -160,6 +177,99 @@ def ensure_standard_analysis_task_skills(db: Session, root: Tenant, actor: User)
     elif binding.skill_definition_id == skill.id and binding.skill_definition_version_id != version.id:
         binding.skill_definition_version_id = version.id
         changed = True
+    decision_spec = {
+        "key": "evaluate_analysis_task_decision_specification",
+        "name": "Evaluate Analysis Task Decision Specification",
+        "description": "Evaluates reviewed typed questions through the code-owned Jev decision adapter.",
+        "instructions": ANALYSIS_TASK_DECISION_INSTRUCTIONS,
+        "input_schema_key": "matter_analysis_task_decision_input_v1",
+        "input_schema": ANALYSIS_TASK_DECISION_INPUT_SCHEMA,
+        "output_schema_key": "matter_analysis_task_decision_output_v1",
+        "output_schema": ANALYSIS_TASK_DECISION_OUTPUT_SCHEMA,
+        "required_capabilities": ["typed_decision"],
+        "cache_policy": {},
+        "limits": {"timeout_seconds": 60, "max_retries": 5},
+        "model_key": "jev-latest",
+        "model_policy": {"engine_key": "jev"},
+    }
+    decision_skill = db.scalar(
+        select(SkillDefinition).where(
+            SkillDefinition.owner_tenant_id == root.id,
+            SkillDefinition.key == decision_spec["key"],
+        )
+    )
+    if decision_skill is None:
+        decision_skill = SkillDefinition(
+            owner_tenant_id=root.id,
+            scope="SYSTEM",
+            key=decision_spec["key"],
+            name=decision_spec["name"],
+            description=decision_spec["description"],
+            current_version=1,
+            published_version=1,
+            status="ACTIVE",
+            created_by_user_id=actor.id,
+        )
+        db.add(decision_skill)
+        db.flush()
+        decision_version = _new_version(
+            db,
+            skill=decision_skill,
+            actor=actor,
+            version=1,
+            spec=decision_spec,
+        )
+        changed = True
+    else:
+        decision_version = db.scalar(
+            select(SkillDefinitionVersion).where(
+                SkillDefinitionVersion.skill_definition_id == decision_skill.id,
+                SkillDefinitionVersion.version == decision_skill.published_version,
+                SkillDefinitionVersion.status == "PUBLISHED",
+            )
+        )
+        if decision_version is None or _version_changed(decision_version, decision_spec):
+            if decision_version is not None:
+                decision_version.status = "RETIRED"
+            decision_skill.current_version += 1
+            decision_skill.published_version = decision_skill.current_version
+            decision_version = _new_version(
+                db,
+                skill=decision_skill,
+                actor=actor,
+                version=decision_skill.current_version,
+                spec=decision_spec,
+            )
+            changed = True
+    decision_binding = db.scalar(
+        select(WorkflowSkillBinding).where(
+            WorkflowSkillBinding.workflow_key == MATTER_ANALYSIS_TASK_PLAYGROUND_SPEC.key,
+            WorkflowSkillBinding.role_key == "decision_evaluation",
+            WorkflowSkillBinding.scope == "SYSTEM",
+            WorkflowSkillBinding.owner_tenant_id == root.id,
+        )
+    )
+    if decision_binding is None:
+        db.add(
+            WorkflowSkillBinding(
+                workflow_key=MATTER_ANALYSIS_TASK_PLAYGROUND_SPEC.key,
+                role_key="decision_evaluation",
+                scope="SYSTEM",
+                owner_tenant_id=root.id,
+                skill_definition_id=decision_skill.id,
+                skill_definition_version_id=decision_version.id,
+                configuration={"engine_key": "jev"},
+                status="ACTIVE",
+                created_by_user_id=actor.id,
+            )
+        )
+        changed = True
+    elif (
+        decision_binding.skill_definition_id == decision_skill.id
+        and decision_binding.skill_definition_version_id != decision_version.id
+    ):
+        decision_binding.skill_definition_version_id = decision_version.id
+        changed = True
     return changed
 
 
@@ -179,8 +289,8 @@ def _new_version(
         input_schema=spec["input_schema"],
         output_schema_key=spec["output_schema_key"],
         output_schema=spec["output_schema"],
-        model_key="configured-default",
-        model_policy={"temperature": 0},
+        model_key=spec.get("model_key", "configured-default"),
+        model_policy=spec.get("model_policy", {"temperature": 0}),
         limits=spec["limits"],
         required_capabilities=spec["required_capabilities"],
         required_tools=[],
@@ -206,5 +316,7 @@ def _version_changed(version: SkillDefinitionVersion, spec: dict) -> bool:
             version.limits != spec["limits"],
             version.required_capabilities != spec["required_capabilities"],
             version.cache_policy != spec["cache_policy"],
+            version.model_key != spec.get("model_key", "configured-default"),
+            version.model_policy != spec.get("model_policy", {"temperature": 0}),
         )
     )

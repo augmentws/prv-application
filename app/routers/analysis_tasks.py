@@ -7,6 +7,7 @@ from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
 from app.analysis_task_compilation import queue_analysis_task_compilation
+from app.analysis_task_playground import queue_analysis_task_playground
 from app.analysis_tasks import (
     MatterAnalysisTaskError,
     MatterAnalysisTaskNotFound,
@@ -27,6 +28,8 @@ from app.models import (
 )
 from app.schemas import (
     MatterAnalysisTaskCreate,
+    MatterAnalysisTaskPlaygroundCreate,
+    MatterAnalysisTaskPlaygroundRunRead,
     MatterAnalysisTaskRead,
     MatterAnalysisTaskSpecificationUpdate,
     MatterAnalysisTaskVersionCreate,
@@ -318,6 +321,60 @@ def compile_analysis_task_specification(
     db.refresh(task)
     db.refresh(task_version)
     return _task_read(db, task, task_version)
+
+
+@router.post(
+    "/{task_id}/versions/{version_number}/playground-runs",
+    response_model=MatterAnalysisTaskPlaygroundRunRead,
+    status_code=status.HTTP_202_ACCEPTED,
+)
+def start_analysis_task_playground_run(
+    matter_id: uuid.UUID,
+    task_id: uuid.UUID,
+    version_number: int,
+    payload: MatterAnalysisTaskPlaygroundCreate,
+    principal: Principal = Depends(get_principal),
+    db: Session = Depends(get_db),
+) -> MatterAnalysisTaskPlaygroundRunRead:
+    matter = _require_matter_admin(db, principal, matter_id)
+    task = _require_task(db, matter_id=matter_id, task_id=task_id)
+    task_version = _task_version(db, task_id=task.id, version_number=version_number)
+    try:
+        workflow, review_run = queue_analysis_task_playground(
+            db,
+            matter=matter,
+            task=task,
+            task_version=task_version,
+            review_batch_id=payload.review_batch_id,
+            matter_document_id=payload.matter_document_id,
+            initiated_by_user_id=principal.user.id,
+        )
+    except MatterAnalysisTaskError as exc:
+        _raise_task_error(exc)
+    record_audit(
+        db,
+        tenant_id=matter.client.tenant_id,
+        actor_user_id=principal.user.id,
+        action="matter_analysis_task.playground.started",
+        target_type="workflow_run",
+        target_id=workflow.id,
+        details={
+            "matter_id": str(matter.id),
+            "task_id": str(task.id),
+            "task_version_id": str(task_version.id),
+            "review_batch_id": str(payload.review_batch_id),
+            "review_batch_run_id": str(review_run.id),
+            "matter_document_id": str(payload.matter_document_id),
+        },
+    )
+    db.commit()
+    return MatterAnalysisTaskPlaygroundRunRead(
+        workflow_run_id=workflow.id,
+        review_batch_run_id=review_run.id,
+        matter_document_id=payload.matter_document_id,
+        task_version_id=task_version.id,
+        status=workflow.status,
+    )
 
 
 @router.post("/{task_id}/versions/{version_number}/publish", response_model=MatterAnalysisTaskRead)

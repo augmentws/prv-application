@@ -17,11 +17,14 @@ The first Phase 1 foundation is implemented:
   bounded 429-aware retries, filesystem tracing, and shared ModelInvocation telemetry;
 - a database-enforced immutable Decision Result ledger with full typed answers, explicit coverage, task/document/
   workflow provenance, reusable-input hashes, and confidence-kind provenance on projected batch values;
+- a managed, durable single-document playground backend that evaluates a published task version against a document
+  in a ready batch, applies the bounded decision policy, records shared invocation/usage telemetry, and retains an
+  isolated Decision Result without publishing coding values;
 - generated OpenAPI/TypeScript client types and backend contract tests.
 
-The existing Matter Definition remains authoritative. The single-document execution/playground, batch execution
-workflow, compatibility importer, and product UI are subsequent slices and are not implied by the presence of
-these foundation APIs.
+The existing Matter Definition remains authoritative. Playground UI and evidence localization, batch execution,
+the compatibility importer, and the task-management product UI are subsequent slices and are not implied by the
+presence of these foundation APIs.
 
 ## Goal
 

@@ -124,10 +124,16 @@ def record_review_decision_result(
     if not answered_keys.issubset(expected_keys):
         raise ReviewDecisionResultError("Decision answers contain unknown question keys")
     missing_keys = sorted(expected_keys - answered_keys)
-    if status == "COMPLETED" and missing_keys:
-        raise ReviewDecisionResultError("A completed Decision Result must answer every specification question")
-    if status == "PARTIAL" and not missing_keys:
-        raise ReviewDecisionResultError("A partial Decision Result must identify at least one missing answer")
+    extra_coverage = coverage_details or {}
+    declared_incomplete = any(
+        key.endswith("_complete") and value is False for key, value in extra_coverage.items()
+    )
+    if status == "COMPLETED" and (missing_keys or declared_incomplete):
+        raise ReviewDecisionResultError(
+            "A completed Decision Result must have complete question, input, and evidence coverage"
+        )
+    if status == "PARTIAL" and not missing_keys and not declared_incomplete:
+        raise ReviewDecisionResultError("A partial Decision Result must identify incomplete coverage")
     if invocation.status != "COMPLETED":
         raise ReviewDecisionResultError("Decision Result requires a completed ModelInvocation")
     if invocation.provider != envelope.provider or invocation.model != envelope.model:
@@ -151,9 +157,9 @@ def record_review_decision_result(
         "question_count": len(expected_keys),
         "answered_question_count": len(answered_keys),
         "missing_question_keys": missing_keys,
-        "complete": not missing_keys,
+        "question_complete": not missing_keys,
+        "complete": not missing_keys and not declared_incomplete,
     }
-    extra_coverage = coverage_details or {}
     if set(reserved_coverage).intersection(extra_coverage):
         raise ReviewDecisionResultError("coverage_details cannot replace reserved coverage fields")
     coverage = {**extra_coverage, **reserved_coverage}

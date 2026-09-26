@@ -81,6 +81,8 @@ import type {
   ListTopicJobsV1MattersMatterIdTopicJobsGetParams,
   LoginRequest,
   MatterAnalysisTaskCreate,
+  MatterAnalysisTaskPlaygroundCreate,
+  MatterAnalysisTaskPlaygroundRunRead,
   MatterAnalysisTaskRead,
   MatterAnalysisTaskSpecificationUpdate,
   MatterAnalysisTaskVersionCreate,
@@ -3490,6 +3492,75 @@ export const compileAnalysisTaskSpecificationV1MattersMatterIdAnalysisTasksTaskI
 
   const data: compileAnalysisTaskSpecificationV1MattersMatterIdAnalysisTasksTaskIdVersionsVersionNumberCompilePostResponse['data'] = body ? JSON.parse(body) : {}
   return { data, status: res.status, headers: res.headers } as compileAnalysisTaskSpecificationV1MattersMatterIdAnalysisTasksTaskIdVersionsVersionNumberCompilePostResponse
+}
+
+
+
+export type startAnalysisTaskPlaygroundRunV1MattersMatterIdAnalysisTasksTaskIdVersionsVersionNumberPlaygroundRunsPostResponse202 = {
+  data: MatterAnalysisTaskPlaygroundRunRead
+  status: 202
+}
+
+export type startAnalysisTaskPlaygroundRunV1MattersMatterIdAnalysisTasksTaskIdVersionsVersionNumberPlaygroundRunsPostResponse422 = {
+  data: HTTPValidationError
+  status: 422
+}
+
+export type startAnalysisTaskPlaygroundRunV1MattersMatterIdAnalysisTasksTaskIdVersionsVersionNumberPlaygroundRunsPostResponseSuccess = (startAnalysisTaskPlaygroundRunV1MattersMatterIdAnalysisTasksTaskIdVersionsVersionNumberPlaygroundRunsPostResponse202) & {
+  headers: Headers;
+};
+export type startAnalysisTaskPlaygroundRunV1MattersMatterIdAnalysisTasksTaskIdVersionsVersionNumberPlaygroundRunsPostResponseError = (startAnalysisTaskPlaygroundRunV1MattersMatterIdAnalysisTasksTaskIdVersionsVersionNumberPlaygroundRunsPostResponse422) & {
+  headers: Headers;
+};
+
+export type startAnalysisTaskPlaygroundRunV1MattersMatterIdAnalysisTasksTaskIdVersionsVersionNumberPlaygroundRunsPostResponse = (startAnalysisTaskPlaygroundRunV1MattersMatterIdAnalysisTasksTaskIdVersionsVersionNumberPlaygroundRunsPostResponseSuccess | startAnalysisTaskPlaygroundRunV1MattersMatterIdAnalysisTasksTaskIdVersionsVersionNumberPlaygroundRunsPostResponseError)
+
+export const getStartAnalysisTaskPlaygroundRunV1MattersMatterIdAnalysisTasksTaskIdVersionsVersionNumberPlaygroundRunsPostUrl = (matterId: string,
+    taskId: string,
+    versionNumber: number,) => {
+
+
+
+
+  return `/api/core/v1/matters/${matterId}/analysis-tasks/${taskId}/versions/${versionNumber}/playground-runs`
+}
+
+/**
+ * @summary Start Analysis Task Playground Run
+ */
+export const startAnalysisTaskPlaygroundRunV1MattersMatterIdAnalysisTasksTaskIdVersionsVersionNumberPlaygroundRunsPost = async (matterId: string,
+    taskId: string,
+    versionNumber: number,
+    matterAnalysisTaskPlaygroundCreate: MatterAnalysisTaskPlaygroundCreate, options?: RequestInit): Promise<startAnalysisTaskPlaygroundRunV1MattersMatterIdAnalysisTasksTaskIdVersionsVersionNumberPlaygroundRunsPostResponse> => {
+
+    const getHeaders = (h?: NonNullable<RequestInit['headers']>): Record<string, string | readonly string[]> => {
+    if (!h) return {};
+    if (h instanceof Headers) return Object.fromEntries(h.entries());
+    if (Symbol.iterator in h) {
+      return Object.fromEntries(
+        Array.from(h as Iterable<Iterable<string>>, (entry) => Array.from(entry) as [string, string]),
+      );
+    }
+    const headers: Record<string, string | readonly string[]> = {};
+    for (const [name, value] of Object.entries<string | readonly string[] | undefined>(h)) {
+      if (value !== undefined) headers[name] = value;
+    }
+    return headers;
+  };
+const res = await fetch(getStartAnalysisTaskPlaygroundRunV1MattersMatterIdAnalysisTasksTaskIdVersionsVersionNumberPlaygroundRunsPostUrl(matterId,taskId,versionNumber),
+  {
+    ...options,
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json', ...getHeaders(options?.headers) },
+    body: JSON.stringify(matterAnalysisTaskPlaygroundCreate)
+  }
+)
+
+
+  const body = [204, 205, 304].includes(res.status) ? null : await res.text();
+
+  const data: startAnalysisTaskPlaygroundRunV1MattersMatterIdAnalysisTasksTaskIdVersionsVersionNumberPlaygroundRunsPostResponse['data'] = body ? JSON.parse(body) : {}
+  return { data, status: res.status, headers: res.headers } as startAnalysisTaskPlaygroundRunV1MattersMatterIdAnalysisTasksTaskIdVersionsVersionNumberPlaygroundRunsPostResponse
 }
 
 

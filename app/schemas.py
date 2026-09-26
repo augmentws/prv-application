@@ -1666,6 +1666,21 @@ class MatterAnalysisTaskSpecificationUpdate(BaseModel):
     source_provenance: dict[str, Any] = Field(default_factory=dict)
 
 
+class MatterAnalysisTaskPlaygroundCreate(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    review_batch_id: uuid.UUID
+    matter_document_id: uuid.UUID
+
+
+class MatterAnalysisTaskPlaygroundRunRead(BaseModel):
+    workflow_run_id: uuid.UUID
+    review_batch_run_id: uuid.UUID
+    matter_document_id: uuid.UUID
+    task_version_id: uuid.UUID
+    status: Literal["QUEUED", "RUNNING", "COMPLETED", "COMPLETED_WITH_ERRORS", "FAILED", "CANCELED"]
+
+
 class MatterAnalysisTaskVersionRead(ORMModel):
     id: uuid.UUID
     matter_analysis_task_id: uuid.UUID
