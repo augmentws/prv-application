@@ -12,6 +12,8 @@ from pydantic import (
     model_validator,
 )
 
+from app.decision_specifications import DecisionSpecification
+
 ResourceStatus = Literal["ACTIVE", "SUSPENDED", "ARCHIVED"]
 AdminRole = Literal["ADMIN"]
 MetadataType = Literal["TEXT", "LONG_TEXT", "INTEGER", "DECIMAL", "BOOLEAN", "DATE", "DATETIME", "ENUM", "JSON"]
@@ -35,6 +37,16 @@ MatterDefinitionSourceKind = Literal[
     "PASTE", "MARKDOWN", "TEXT", "DOCX", "AGENT_EDIT", "USER_EDIT", "ASSESSMENT_REFINEMENT"
 ]
 MatterDefinitionUserSourceKind = Literal["PASTE", "MARKDOWN", "TEXT", "USER_EDIT"]
+MatterAnalysisTaskType = Literal[
+    "ISSUE_REVIEW",
+    "PRIVILEGE_REVIEW",
+    "TOPIC_GENERATION",
+    "DATA_EXPLORATION",
+    "CUSTOM_DECISION",
+]
+MatterAnalysisTaskStatus = Literal["ACTIVE", "SUSPENDED", "ARCHIVED"]
+MatterAnalysisTaskVersionStatus = Literal["DRAFT", "PUBLISHED", "RETIRED"]
+MatterAnalysisTaskCompilationStatus = Literal["NOT_GENERATED", "STALE", "GENERATING", "READY", "FAILED"]
 Slug = Annotated[
     str, StringConstraints(strip_whitespace=True, to_lower=True, pattern=r"^[a-z][a-z0-9-]{1,78}[a-z0-9]$")
 ]
@@ -1610,6 +1622,80 @@ class MatterDefinitionRead(ORMModel):
     created_at: datetime
     updated_at: datetime
     revision: MatterDefinitionRevisionRead
+
+
+class MatterAnalysisTaskCreate(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    key: MetadataKey
+    name: str = Field(min_length=1, max_length=200)
+    description: str | None = Field(default=None, max_length=10_000)
+    task_type: MatterAnalysisTaskType
+    definition_markdown: str = Field(min_length=1, max_length=2_000_000)
+
+
+class MatterAnalysisTaskVersionCreate(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    definition_markdown: str = Field(min_length=1, max_length=2_000_000)
+    based_on_version: int = Field(ge=1)
+
+
+class MatterAnalysisTaskSpecificationUpdate(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    decision_specification: DecisionSpecification
+    input_contract: dict[str, Any] = Field(default_factory=dict)
+    output_contract: dict[str, Any] = Field(default_factory=dict)
+    evidence_policy: dict[str, Any] = Field(default_factory=dict)
+    routing_policy: dict[str, Any] = Field(default_factory=dict)
+    compiler_skill_definition_version_id: uuid.UUID | None = None
+    compiler_skill_run_id: uuid.UUID | None = None
+    compiler_model_configuration: dict[str, Any] = Field(default_factory=dict)
+    validation_report: dict[str, Any] = Field(default_factory=dict)
+    source_provenance: dict[str, Any] = Field(default_factory=dict)
+
+
+class MatterAnalysisTaskVersionRead(ORMModel):
+    id: uuid.UUID
+    matter_analysis_task_id: uuid.UUID
+    version: int
+    status: MatterAnalysisTaskVersionStatus
+    compilation_status: MatterAnalysisTaskCompilationStatus
+    definition_markdown: str
+    definition_content_hash: str
+    decision_specification: DecisionSpecification | None
+    specification_content_hash: str | None
+    input_contract: dict[str, Any]
+    output_contract: dict[str, Any]
+    evidence_policy: dict[str, Any]
+    routing_policy: dict[str, Any]
+    compiler_skill_definition_version_id: uuid.UUID | None
+    compiler_skill_run_id: uuid.UUID | None
+    compiler_model_configuration: dict[str, Any]
+    validation_report: dict[str, Any]
+    source_provenance: dict[str, Any]
+    created_by_user_id: uuid.UUID
+    published_by_user_id: uuid.UUID | None
+    created_at: datetime
+    published_at: datetime | None
+
+
+class MatterAnalysisTaskRead(ORMModel):
+    id: uuid.UUID
+    matter_id: uuid.UUID
+    key: str
+    name: str
+    description: str | None
+    task_type: MatterAnalysisTaskType
+    workflow_key: str
+    current_version: int
+    published_version: int | None
+    status: MatterAnalysisTaskStatus
+    created_by_user_id: uuid.UUID
+    created_at: datetime
+    updated_at: datetime
+    version: MatterAnalysisTaskVersionRead
 
 
 AgentConversationWorkflow = Literal["MATTER_DEFINITION_SETUP", "BATCH_CHAT"]

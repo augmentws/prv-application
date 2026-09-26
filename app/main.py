@@ -8,6 +8,7 @@ from app.config import get_settings
 from app.routers import (
     agent_conversations,
     agents,
+    analysis_tasks,
     auth,
     bulk_tags,
     clients,
@@ -72,6 +73,7 @@ app.include_router(tenants.router)
 app.include_router(clients.router)
 app.include_router(collection_deletions.router)
 app.include_router(matters.router)
+app.include_router(analysis_tasks.router)
 app.include_router(matter_definitions.router)
 app.include_router(matter_imports.router)
 app.include_router(matter_embeddings.router)

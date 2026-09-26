@@ -80,6 +80,11 @@ import type {
   ListSearchOperationsV1MattersMatterIdSearchOperationsGetParams,
   ListTopicJobsV1MattersMatterIdTopicJobsGetParams,
   LoginRequest,
+  MatterAnalysisTaskCreate,
+  MatterAnalysisTaskRead,
+  MatterAnalysisTaskSpecificationUpdate,
+  MatterAnalysisTaskVersionCreate,
+  MatterAnalysisTaskVersionRead,
   MatterBulkTagCreate,
   MatterBulkTagJobRead,
   MatterBulkTagPreviewRequest,
@@ -3075,6 +3080,415 @@ export const getMatterV1MattersMatterIdGet = async (matterId: string, options?: 
 
   const data: getMatterV1MattersMatterIdGetResponse['data'] = body ? JSON.parse(body) : {}
   return { data, status: res.status, headers: res.headers } as getMatterV1MattersMatterIdGetResponse
+}
+
+
+
+export type listAnalysisTasksV1MattersMatterIdAnalysisTasksGetResponse200 = {
+  data: MatterAnalysisTaskRead[]
+  status: 200
+}
+
+export type listAnalysisTasksV1MattersMatterIdAnalysisTasksGetResponse422 = {
+  data: HTTPValidationError
+  status: 422
+}
+
+export type listAnalysisTasksV1MattersMatterIdAnalysisTasksGetResponseSuccess = (listAnalysisTasksV1MattersMatterIdAnalysisTasksGetResponse200) & {
+  headers: Headers;
+};
+export type listAnalysisTasksV1MattersMatterIdAnalysisTasksGetResponseError = (listAnalysisTasksV1MattersMatterIdAnalysisTasksGetResponse422) & {
+  headers: Headers;
+};
+
+export type listAnalysisTasksV1MattersMatterIdAnalysisTasksGetResponse = (listAnalysisTasksV1MattersMatterIdAnalysisTasksGetResponseSuccess | listAnalysisTasksV1MattersMatterIdAnalysisTasksGetResponseError)
+
+export const getListAnalysisTasksV1MattersMatterIdAnalysisTasksGetUrl = (matterId: string,) => {
+
+
+
+
+  return `/api/core/v1/matters/${matterId}/analysis-tasks`
+}
+
+/**
+ * @summary List Analysis Tasks
+ */
+export const listAnalysisTasksV1MattersMatterIdAnalysisTasksGet = async (matterId: string, options?: RequestInit): Promise<listAnalysisTasksV1MattersMatterIdAnalysisTasksGetResponse> => {
+
+  const res = await fetch(getListAnalysisTasksV1MattersMatterIdAnalysisTasksGetUrl(matterId),
+  {
+    ...options,
+    method: 'GET'
+
+
+  }
+)
+
+
+  const body = [204, 205, 304].includes(res.status) ? null : await res.text();
+
+  const data: listAnalysisTasksV1MattersMatterIdAnalysisTasksGetResponse['data'] = body ? JSON.parse(body) : {}
+  return { data, status: res.status, headers: res.headers } as listAnalysisTasksV1MattersMatterIdAnalysisTasksGetResponse
+}
+
+
+
+export type createMatterAnalysisTaskV1MattersMatterIdAnalysisTasksPostResponse201 = {
+  data: MatterAnalysisTaskRead
+  status: 201
+}
+
+export type createMatterAnalysisTaskV1MattersMatterIdAnalysisTasksPostResponse422 = {
+  data: HTTPValidationError
+  status: 422
+}
+
+export type createMatterAnalysisTaskV1MattersMatterIdAnalysisTasksPostResponseSuccess = (createMatterAnalysisTaskV1MattersMatterIdAnalysisTasksPostResponse201) & {
+  headers: Headers;
+};
+export type createMatterAnalysisTaskV1MattersMatterIdAnalysisTasksPostResponseError = (createMatterAnalysisTaskV1MattersMatterIdAnalysisTasksPostResponse422) & {
+  headers: Headers;
+};
+
+export type createMatterAnalysisTaskV1MattersMatterIdAnalysisTasksPostResponse = (createMatterAnalysisTaskV1MattersMatterIdAnalysisTasksPostResponseSuccess | createMatterAnalysisTaskV1MattersMatterIdAnalysisTasksPostResponseError)
+
+export const getCreateMatterAnalysisTaskV1MattersMatterIdAnalysisTasksPostUrl = (matterId: string,) => {
+
+
+
+
+  return `/api/core/v1/matters/${matterId}/analysis-tasks`
+}
+
+/**
+ * @summary Create Matter Analysis Task
+ */
+export const createMatterAnalysisTaskV1MattersMatterIdAnalysisTasksPost = async (matterId: string,
+    matterAnalysisTaskCreate: MatterAnalysisTaskCreate, options?: RequestInit): Promise<createMatterAnalysisTaskV1MattersMatterIdAnalysisTasksPostResponse> => {
+
+    const getHeaders = (h?: NonNullable<RequestInit['headers']>): Record<string, string | readonly string[]> => {
+    if (!h) return {};
+    if (h instanceof Headers) return Object.fromEntries(h.entries());
+    if (Symbol.iterator in h) {
+      return Object.fromEntries(
+        Array.from(h as Iterable<Iterable<string>>, (entry) => Array.from(entry) as [string, string]),
+      );
+    }
+    const headers: Record<string, string | readonly string[]> = {};
+    for (const [name, value] of Object.entries<string | readonly string[] | undefined>(h)) {
+      if (value !== undefined) headers[name] = value;
+    }
+    return headers;
+  };
+const res = await fetch(getCreateMatterAnalysisTaskV1MattersMatterIdAnalysisTasksPostUrl(matterId),
+  {
+    ...options,
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json', ...getHeaders(options?.headers) },
+    body: JSON.stringify(matterAnalysisTaskCreate)
+  }
+)
+
+
+  const body = [204, 205, 304].includes(res.status) ? null : await res.text();
+
+  const data: createMatterAnalysisTaskV1MattersMatterIdAnalysisTasksPostResponse['data'] = body ? JSON.parse(body) : {}
+  return { data, status: res.status, headers: res.headers } as createMatterAnalysisTaskV1MattersMatterIdAnalysisTasksPostResponse
+}
+
+
+
+export type getAnalysisTaskV1MattersMatterIdAnalysisTasksTaskIdGetResponse200 = {
+  data: MatterAnalysisTaskRead
+  status: 200
+}
+
+export type getAnalysisTaskV1MattersMatterIdAnalysisTasksTaskIdGetResponse422 = {
+  data: HTTPValidationError
+  status: 422
+}
+
+export type getAnalysisTaskV1MattersMatterIdAnalysisTasksTaskIdGetResponseSuccess = (getAnalysisTaskV1MattersMatterIdAnalysisTasksTaskIdGetResponse200) & {
+  headers: Headers;
+};
+export type getAnalysisTaskV1MattersMatterIdAnalysisTasksTaskIdGetResponseError = (getAnalysisTaskV1MattersMatterIdAnalysisTasksTaskIdGetResponse422) & {
+  headers: Headers;
+};
+
+export type getAnalysisTaskV1MattersMatterIdAnalysisTasksTaskIdGetResponse = (getAnalysisTaskV1MattersMatterIdAnalysisTasksTaskIdGetResponseSuccess | getAnalysisTaskV1MattersMatterIdAnalysisTasksTaskIdGetResponseError)
+
+export const getGetAnalysisTaskV1MattersMatterIdAnalysisTasksTaskIdGetUrl = (matterId: string,
+    taskId: string,) => {
+
+
+
+
+  return `/api/core/v1/matters/${matterId}/analysis-tasks/${taskId}`
+}
+
+/**
+ * @summary Get Analysis Task
+ */
+export const getAnalysisTaskV1MattersMatterIdAnalysisTasksTaskIdGet = async (matterId: string,
+    taskId: string, options?: RequestInit): Promise<getAnalysisTaskV1MattersMatterIdAnalysisTasksTaskIdGetResponse> => {
+
+  const res = await fetch(getGetAnalysisTaskV1MattersMatterIdAnalysisTasksTaskIdGetUrl(matterId,taskId),
+  {
+    ...options,
+    method: 'GET'
+
+
+  }
+)
+
+
+  const body = [204, 205, 304].includes(res.status) ? null : await res.text();
+
+  const data: getAnalysisTaskV1MattersMatterIdAnalysisTasksTaskIdGetResponse['data'] = body ? JSON.parse(body) : {}
+  return { data, status: res.status, headers: res.headers } as getAnalysisTaskV1MattersMatterIdAnalysisTasksTaskIdGetResponse
+}
+
+
+
+export type listAnalysisTaskVersionsV1MattersMatterIdAnalysisTasksTaskIdVersionsGetResponse200 = {
+  data: MatterAnalysisTaskVersionRead[]
+  status: 200
+}
+
+export type listAnalysisTaskVersionsV1MattersMatterIdAnalysisTasksTaskIdVersionsGetResponse422 = {
+  data: HTTPValidationError
+  status: 422
+}
+
+export type listAnalysisTaskVersionsV1MattersMatterIdAnalysisTasksTaskIdVersionsGetResponseSuccess = (listAnalysisTaskVersionsV1MattersMatterIdAnalysisTasksTaskIdVersionsGetResponse200) & {
+  headers: Headers;
+};
+export type listAnalysisTaskVersionsV1MattersMatterIdAnalysisTasksTaskIdVersionsGetResponseError = (listAnalysisTaskVersionsV1MattersMatterIdAnalysisTasksTaskIdVersionsGetResponse422) & {
+  headers: Headers;
+};
+
+export type listAnalysisTaskVersionsV1MattersMatterIdAnalysisTasksTaskIdVersionsGetResponse = (listAnalysisTaskVersionsV1MattersMatterIdAnalysisTasksTaskIdVersionsGetResponseSuccess | listAnalysisTaskVersionsV1MattersMatterIdAnalysisTasksTaskIdVersionsGetResponseError)
+
+export const getListAnalysisTaskVersionsV1MattersMatterIdAnalysisTasksTaskIdVersionsGetUrl = (matterId: string,
+    taskId: string,) => {
+
+
+
+
+  return `/api/core/v1/matters/${matterId}/analysis-tasks/${taskId}/versions`
+}
+
+/**
+ * @summary List Analysis Task Versions
+ */
+export const listAnalysisTaskVersionsV1MattersMatterIdAnalysisTasksTaskIdVersionsGet = async (matterId: string,
+    taskId: string, options?: RequestInit): Promise<listAnalysisTaskVersionsV1MattersMatterIdAnalysisTasksTaskIdVersionsGetResponse> => {
+
+  const res = await fetch(getListAnalysisTaskVersionsV1MattersMatterIdAnalysisTasksTaskIdVersionsGetUrl(matterId,taskId),
+  {
+    ...options,
+    method: 'GET'
+
+
+  }
+)
+
+
+  const body = [204, 205, 304].includes(res.status) ? null : await res.text();
+
+  const data: listAnalysisTaskVersionsV1MattersMatterIdAnalysisTasksTaskIdVersionsGetResponse['data'] = body ? JSON.parse(body) : {}
+  return { data, status: res.status, headers: res.headers } as listAnalysisTaskVersionsV1MattersMatterIdAnalysisTasksTaskIdVersionsGetResponse
+}
+
+
+
+export type createAnalysisTaskVersionV1MattersMatterIdAnalysisTasksTaskIdVersionsPostResponse201 = {
+  data: MatterAnalysisTaskRead
+  status: 201
+}
+
+export type createAnalysisTaskVersionV1MattersMatterIdAnalysisTasksTaskIdVersionsPostResponse422 = {
+  data: HTTPValidationError
+  status: 422
+}
+
+export type createAnalysisTaskVersionV1MattersMatterIdAnalysisTasksTaskIdVersionsPostResponseSuccess = (createAnalysisTaskVersionV1MattersMatterIdAnalysisTasksTaskIdVersionsPostResponse201) & {
+  headers: Headers;
+};
+export type createAnalysisTaskVersionV1MattersMatterIdAnalysisTasksTaskIdVersionsPostResponseError = (createAnalysisTaskVersionV1MattersMatterIdAnalysisTasksTaskIdVersionsPostResponse422) & {
+  headers: Headers;
+};
+
+export type createAnalysisTaskVersionV1MattersMatterIdAnalysisTasksTaskIdVersionsPostResponse = (createAnalysisTaskVersionV1MattersMatterIdAnalysisTasksTaskIdVersionsPostResponseSuccess | createAnalysisTaskVersionV1MattersMatterIdAnalysisTasksTaskIdVersionsPostResponseError)
+
+export const getCreateAnalysisTaskVersionV1MattersMatterIdAnalysisTasksTaskIdVersionsPostUrl = (matterId: string,
+    taskId: string,) => {
+
+
+
+
+  return `/api/core/v1/matters/${matterId}/analysis-tasks/${taskId}/versions`
+}
+
+/**
+ * @summary Create Analysis Task Version
+ */
+export const createAnalysisTaskVersionV1MattersMatterIdAnalysisTasksTaskIdVersionsPost = async (matterId: string,
+    taskId: string,
+    matterAnalysisTaskVersionCreate: MatterAnalysisTaskVersionCreate, options?: RequestInit): Promise<createAnalysisTaskVersionV1MattersMatterIdAnalysisTasksTaskIdVersionsPostResponse> => {
+
+    const getHeaders = (h?: NonNullable<RequestInit['headers']>): Record<string, string | readonly string[]> => {
+    if (!h) return {};
+    if (h instanceof Headers) return Object.fromEntries(h.entries());
+    if (Symbol.iterator in h) {
+      return Object.fromEntries(
+        Array.from(h as Iterable<Iterable<string>>, (entry) => Array.from(entry) as [string, string]),
+      );
+    }
+    const headers: Record<string, string | readonly string[]> = {};
+    for (const [name, value] of Object.entries<string | readonly string[] | undefined>(h)) {
+      if (value !== undefined) headers[name] = value;
+    }
+    return headers;
+  };
+const res = await fetch(getCreateAnalysisTaskVersionV1MattersMatterIdAnalysisTasksTaskIdVersionsPostUrl(matterId,taskId),
+  {
+    ...options,
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json', ...getHeaders(options?.headers) },
+    body: JSON.stringify(matterAnalysisTaskVersionCreate)
+  }
+)
+
+
+  const body = [204, 205, 304].includes(res.status) ? null : await res.text();
+
+  const data: createAnalysisTaskVersionV1MattersMatterIdAnalysisTasksTaskIdVersionsPostResponse['data'] = body ? JSON.parse(body) : {}
+  return { data, status: res.status, headers: res.headers } as createAnalysisTaskVersionV1MattersMatterIdAnalysisTasksTaskIdVersionsPostResponse
+}
+
+
+
+export type updateAnalysisTaskSpecificationV1MattersMatterIdAnalysisTasksTaskIdVersionsVersionNumberSpecificationPutResponse200 = {
+  data: MatterAnalysisTaskRead
+  status: 200
+}
+
+export type updateAnalysisTaskSpecificationV1MattersMatterIdAnalysisTasksTaskIdVersionsVersionNumberSpecificationPutResponse422 = {
+  data: HTTPValidationError
+  status: 422
+}
+
+export type updateAnalysisTaskSpecificationV1MattersMatterIdAnalysisTasksTaskIdVersionsVersionNumberSpecificationPutResponseSuccess = (updateAnalysisTaskSpecificationV1MattersMatterIdAnalysisTasksTaskIdVersionsVersionNumberSpecificationPutResponse200) & {
+  headers: Headers;
+};
+export type updateAnalysisTaskSpecificationV1MattersMatterIdAnalysisTasksTaskIdVersionsVersionNumberSpecificationPutResponseError = (updateAnalysisTaskSpecificationV1MattersMatterIdAnalysisTasksTaskIdVersionsVersionNumberSpecificationPutResponse422) & {
+  headers: Headers;
+};
+
+export type updateAnalysisTaskSpecificationV1MattersMatterIdAnalysisTasksTaskIdVersionsVersionNumberSpecificationPutResponse = (updateAnalysisTaskSpecificationV1MattersMatterIdAnalysisTasksTaskIdVersionsVersionNumberSpecificationPutResponseSuccess | updateAnalysisTaskSpecificationV1MattersMatterIdAnalysisTasksTaskIdVersionsVersionNumberSpecificationPutResponseError)
+
+export const getUpdateAnalysisTaskSpecificationV1MattersMatterIdAnalysisTasksTaskIdVersionsVersionNumberSpecificationPutUrl = (matterId: string,
+    taskId: string,
+    versionNumber: number,) => {
+
+
+
+
+  return `/api/core/v1/matters/${matterId}/analysis-tasks/${taskId}/versions/${versionNumber}/specification`
+}
+
+/**
+ * @summary Update Analysis Task Specification
+ */
+export const updateAnalysisTaskSpecificationV1MattersMatterIdAnalysisTasksTaskIdVersionsVersionNumberSpecificationPut = async (matterId: string,
+    taskId: string,
+    versionNumber: number,
+    matterAnalysisTaskSpecificationUpdate: MatterAnalysisTaskSpecificationUpdate, options?: RequestInit): Promise<updateAnalysisTaskSpecificationV1MattersMatterIdAnalysisTasksTaskIdVersionsVersionNumberSpecificationPutResponse> => {
+
+    const getHeaders = (h?: NonNullable<RequestInit['headers']>): Record<string, string | readonly string[]> => {
+    if (!h) return {};
+    if (h instanceof Headers) return Object.fromEntries(h.entries());
+    if (Symbol.iterator in h) {
+      return Object.fromEntries(
+        Array.from(h as Iterable<Iterable<string>>, (entry) => Array.from(entry) as [string, string]),
+      );
+    }
+    const headers: Record<string, string | readonly string[]> = {};
+    for (const [name, value] of Object.entries<string | readonly string[] | undefined>(h)) {
+      if (value !== undefined) headers[name] = value;
+    }
+    return headers;
+  };
+const res = await fetch(getUpdateAnalysisTaskSpecificationV1MattersMatterIdAnalysisTasksTaskIdVersionsVersionNumberSpecificationPutUrl(matterId,taskId,versionNumber),
+  {
+    ...options,
+    method: 'PUT',
+    headers: { 'Content-Type': 'application/json', ...getHeaders(options?.headers) },
+    body: JSON.stringify(matterAnalysisTaskSpecificationUpdate)
+  }
+)
+
+
+  const body = [204, 205, 304].includes(res.status) ? null : await res.text();
+
+  const data: updateAnalysisTaskSpecificationV1MattersMatterIdAnalysisTasksTaskIdVersionsVersionNumberSpecificationPutResponse['data'] = body ? JSON.parse(body) : {}
+  return { data, status: res.status, headers: res.headers } as updateAnalysisTaskSpecificationV1MattersMatterIdAnalysisTasksTaskIdVersionsVersionNumberSpecificationPutResponse
+}
+
+
+
+export type publishAnalysisTaskV1MattersMatterIdAnalysisTasksTaskIdVersionsVersionNumberPublishPostResponse200 = {
+  data: MatterAnalysisTaskRead
+  status: 200
+}
+
+export type publishAnalysisTaskV1MattersMatterIdAnalysisTasksTaskIdVersionsVersionNumberPublishPostResponse422 = {
+  data: HTTPValidationError
+  status: 422
+}
+
+export type publishAnalysisTaskV1MattersMatterIdAnalysisTasksTaskIdVersionsVersionNumberPublishPostResponseSuccess = (publishAnalysisTaskV1MattersMatterIdAnalysisTasksTaskIdVersionsVersionNumberPublishPostResponse200) & {
+  headers: Headers;
+};
+export type publishAnalysisTaskV1MattersMatterIdAnalysisTasksTaskIdVersionsVersionNumberPublishPostResponseError = (publishAnalysisTaskV1MattersMatterIdAnalysisTasksTaskIdVersionsVersionNumberPublishPostResponse422) & {
+  headers: Headers;
+};
+
+export type publishAnalysisTaskV1MattersMatterIdAnalysisTasksTaskIdVersionsVersionNumberPublishPostResponse = (publishAnalysisTaskV1MattersMatterIdAnalysisTasksTaskIdVersionsVersionNumberPublishPostResponseSuccess | publishAnalysisTaskV1MattersMatterIdAnalysisTasksTaskIdVersionsVersionNumberPublishPostResponseError)
+
+export const getPublishAnalysisTaskV1MattersMatterIdAnalysisTasksTaskIdVersionsVersionNumberPublishPostUrl = (matterId: string,
+    taskId: string,
+    versionNumber: number,) => {
+
+
+
+
+  return `/api/core/v1/matters/${matterId}/analysis-tasks/${taskId}/versions/${versionNumber}/publish`
+}
+
+/**
+ * @summary Publish Analysis Task
+ */
+export const publishAnalysisTaskV1MattersMatterIdAnalysisTasksTaskIdVersionsVersionNumberPublishPost = async (matterId: string,
+    taskId: string,
+    versionNumber: number, options?: RequestInit): Promise<publishAnalysisTaskV1MattersMatterIdAnalysisTasksTaskIdVersionsVersionNumberPublishPostResponse> => {
+
+  const res = await fetch(getPublishAnalysisTaskV1MattersMatterIdAnalysisTasksTaskIdVersionsVersionNumberPublishPostUrl(matterId,taskId,versionNumber),
+  {
+    ...options,
+    method: 'POST'
+
+
+  }
+)
+
+
+  const body = [204, 205, 304].includes(res.status) ? null : await res.text();
+
+  const data: publishAnalysisTaskV1MattersMatterIdAnalysisTasksTaskIdVersionsVersionNumberPublishPostResponse['data'] = body ? JSON.parse(body) : {}
+  return { data, status: res.status, headers: res.headers } as publishAnalysisTaskV1MattersMatterIdAnalysisTasksTaskIdVersionsVersionNumberPublishPostResponse
 }
 
 

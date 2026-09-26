@@ -2691,6 +2691,444 @@
         }
       }
     },
+    "/v1/matters/{matter_id}/analysis-tasks": {
+      "get": {
+        "tags": [
+          "matter analysis tasks"
+        ],
+        "summary": "List Analysis Tasks",
+        "operationId": "list_analysis_tasks_v1_matters__matter_id__analysis_tasks_get",
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "matter_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid",
+              "title": "Matter Id"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "array",
+                  "items": {
+                    "$ref": "#/components/schemas/MatterAnalysisTaskRead"
+                  },
+                  "title": "Response List Analysis Tasks V1 Matters  Matter Id  Analysis Tasks Get"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      },
+      "post": {
+        "tags": [
+          "matter analysis tasks"
+        ],
+        "summary": "Create Matter Analysis Task",
+        "operationId": "create_matter_analysis_task_v1_matters__matter_id__analysis_tasks_post",
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "matter_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid",
+              "title": "Matter Id"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/MatterAnalysisTaskCreate"
+              }
+            }
+          }
+        },
+        "responses": {
+          "201": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/MatterAnalysisTaskRead"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v1/matters/{matter_id}/analysis-tasks/{task_id}": {
+      "get": {
+        "tags": [
+          "matter analysis tasks"
+        ],
+        "summary": "Get Analysis Task",
+        "operationId": "get_analysis_task_v1_matters__matter_id__analysis_tasks__task_id__get",
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "matter_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid",
+              "title": "Matter Id"
+            }
+          },
+          {
+            "name": "task_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid",
+              "title": "Task Id"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/MatterAnalysisTaskRead"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v1/matters/{matter_id}/analysis-tasks/{task_id}/versions": {
+      "get": {
+        "tags": [
+          "matter analysis tasks"
+        ],
+        "summary": "List Analysis Task Versions",
+        "operationId": "list_analysis_task_versions_v1_matters__matter_id__analysis_tasks__task_id__versions_get",
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "matter_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid",
+              "title": "Matter Id"
+            }
+          },
+          {
+            "name": "task_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid",
+              "title": "Task Id"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "array",
+                  "items": {
+                    "$ref": "#/components/schemas/MatterAnalysisTaskVersionRead"
+                  },
+                  "title": "Response List Analysis Task Versions V1 Matters  Matter Id  Analysis Tasks  Task Id  Versions Get"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      },
+      "post": {
+        "tags": [
+          "matter analysis tasks"
+        ],
+        "summary": "Create Analysis Task Version",
+        "operationId": "create_analysis_task_version_v1_matters__matter_id__analysis_tasks__task_id__versions_post",
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "matter_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid",
+              "title": "Matter Id"
+            }
+          },
+          {
+            "name": "task_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid",
+              "title": "Task Id"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/MatterAnalysisTaskVersionCreate"
+              }
+            }
+          }
+        },
+        "responses": {
+          "201": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/MatterAnalysisTaskRead"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v1/matters/{matter_id}/analysis-tasks/{task_id}/versions/{version_number}/specification": {
+      "put": {
+        "tags": [
+          "matter analysis tasks"
+        ],
+        "summary": "Update Analysis Task Specification",
+        "operationId": "update_analysis_task_specification_v1_matters__matter_id__analysis_tasks__task_id__versions__version_number__specification_put",
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "matter_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid",
+              "title": "Matter Id"
+            }
+          },
+          {
+            "name": "task_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid",
+              "title": "Task Id"
+            }
+          },
+          {
+            "name": "version_number",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "integer",
+              "title": "Version Number"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/MatterAnalysisTaskSpecificationUpdate"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/MatterAnalysisTaskRead"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v1/matters/{matter_id}/analysis-tasks/{task_id}/versions/{version_number}/publish": {
+      "post": {
+        "tags": [
+          "matter analysis tasks"
+        ],
+        "summary": "Publish Analysis Task",
+        "operationId": "publish_analysis_task_v1_matters__matter_id__analysis_tasks__task_id__versions__version_number__publish_post",
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "matter_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid",
+              "title": "Matter Id"
+            }
+          },
+          {
+            "name": "task_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid",
+              "title": "Task Id"
+            }
+          },
+          {
+            "name": "version_number",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "integer",
+              "title": "Version Number"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/MatterAnalysisTaskRead"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/v1/matters/{matter_id}/definition": {
       "get": {
         "tags": [
@@ -12735,6 +13173,90 @@
         ],
         "title": "Body_upload_source_container_v1_collections__collection_id__source_containers_upload_post"
       },
+      "ChoiceDecisionQuestion": {
+        "properties": {
+          "instructions": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "additionalProperties": true,
+                "type": "object"
+              },
+              {
+                "items": {},
+                "type": "array"
+              }
+            ],
+            "title": "Instructions"
+          },
+          "source_refs": {
+            "items": {
+              "$ref": "#/components/schemas/DecisionSourceReference"
+            },
+            "type": "array",
+            "maxItems": 100,
+            "minItems": 1,
+            "title": "Source Refs"
+          },
+          "aggregation": {
+            "$ref": "#/components/schemas/DecisionAggregation"
+          },
+          "evidence": {
+            "$ref": "#/components/schemas/DecisionEvidencePolicy"
+          },
+          "field_mapping": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/DecisionFieldMapping"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "type": {
+            "type": "string",
+            "const": "choice",
+            "title": "Type"
+          },
+          "criteria": {
+            "additionalProperties": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "additionalProperties": true,
+                  "type": "object"
+                },
+                {
+                  "items": {},
+                  "type": "array"
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            },
+            "type": "object",
+            "maxProperties": 255,
+            "minProperties": 2,
+            "title": "Criteria"
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "instructions",
+          "source_refs",
+          "aggregation",
+          "type",
+          "criteria"
+        ],
+        "title": "ChoiceDecisionQuestion"
+      },
       "ClientCreate": {
         "properties": {
           "name": {
@@ -14130,6 +14652,446 @@
         ],
         "title": "DateHistogramBucket"
       },
+      "DecisionAggregation": {
+        "properties": {
+          "operator": {
+            "type": "string",
+            "enum": [
+              "ANY_WINDOW",
+              "ALL_WINDOWS",
+              "MAX_PROBABILITY",
+              "HIGHEST_CONFIDENCE_CHOICE",
+              "INSUFFICIENT_IF_PARTIAL"
+            ],
+            "title": "Operator"
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "operator"
+        ],
+        "title": "DecisionAggregation"
+      },
+      "DecisionEvidencePolicy": {
+        "properties": {
+          "required": {
+            "type": "boolean",
+            "title": "Required",
+            "default": true
+          },
+          "minimum_exists_probability": {
+            "type": "number",
+            "maximum": 1.0,
+            "minimum": 0.0,
+            "title": "Minimum Exists Probability",
+            "default": 0.7
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "title": "DecisionEvidencePolicy"
+      },
+      "DecisionFieldMapping": {
+        "properties": {
+          "metadata_definition_key": {
+            "type": "string",
+            "pattern": "^[a-z][a-z0-9_]{0,99}$",
+            "title": "Metadata Definition Key"
+          },
+          "value": {
+            "title": "Value"
+          },
+          "uncertainty": {
+            "$ref": "#/components/schemas/DecisionUncertaintyMapping"
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "metadata_definition_key",
+          "value"
+        ],
+        "title": "DecisionFieldMapping"
+      },
+      "DecisionPolicy-Input": {
+        "properties": {
+          "version": {
+            "type": "string",
+            "const": "decision-policy-v1",
+            "title": "Version",
+            "default": "decision-policy-v1"
+          },
+          "recommendations": {
+            "additionalProperties": {
+              "$ref": "#/components/schemas/DecisionPolicyExpression-Input"
+            },
+            "type": "object",
+            "maxProperties": 100,
+            "title": "Recommendations"
+          },
+          "routes": {
+            "additionalProperties": {
+              "$ref": "#/components/schemas/DecisionPolicyExpression-Input"
+            },
+            "type": "object",
+            "maxProperties": 100,
+            "title": "Routes"
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "title": "DecisionPolicy"
+      },
+      "DecisionPolicy-Output": {
+        "properties": {
+          "version": {
+            "type": "string",
+            "const": "decision-policy-v1",
+            "title": "Version",
+            "default": "decision-policy-v1"
+          },
+          "recommendations": {
+            "additionalProperties": {
+              "$ref": "#/components/schemas/DecisionPolicyExpression-Output"
+            },
+            "type": "object",
+            "maxProperties": 100,
+            "title": "Recommendations"
+          },
+          "routes": {
+            "additionalProperties": {
+              "$ref": "#/components/schemas/DecisionPolicyExpression-Output"
+            },
+            "type": "object",
+            "maxProperties": 100,
+            "title": "Routes"
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "title": "DecisionPolicy"
+      },
+      "DecisionPolicyExpression-Input": {
+        "properties": {
+          "operator": {
+            "type": "string",
+            "enum": [
+              "PREDICATE",
+              "ALL",
+              "ANY",
+              "NOT"
+            ],
+            "title": "Operator"
+          },
+          "predicate": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/DecisionPredicate"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "operands": {
+            "items": {
+              "$ref": "#/components/schemas/DecisionPolicyExpression-Input"
+            },
+            "type": "array",
+            "maxItems": 100,
+            "title": "Operands"
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "operator"
+        ],
+        "title": "DecisionPolicyExpression"
+      },
+      "DecisionPolicyExpression-Output": {
+        "properties": {
+          "operator": {
+            "type": "string",
+            "enum": [
+              "PREDICATE",
+              "ALL",
+              "ANY",
+              "NOT"
+            ],
+            "title": "Operator"
+          },
+          "predicate": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/DecisionPredicate"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "operands": {
+            "items": {
+              "$ref": "#/components/schemas/DecisionPolicyExpression-Output"
+            },
+            "type": "array",
+            "maxItems": 100,
+            "title": "Operands"
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "operator"
+        ],
+        "title": "DecisionPolicyExpression"
+      },
+      "DecisionPredicate": {
+        "properties": {
+          "question_key": {
+            "type": "string",
+            "title": "Question Key"
+          },
+          "measure": {
+            "type": "string",
+            "enum": [
+              "noul",
+              "confidence",
+              "score",
+              "probability"
+            ],
+            "title": "Measure"
+          },
+          "comparator": {
+            "type": "string",
+            "enum": [
+              "GT",
+              "GTE",
+              "LT",
+              "LTE",
+              "EQ"
+            ],
+            "title": "Comparator"
+          },
+          "threshold": {
+            "type": "number",
+            "title": "Threshold"
+          },
+          "option": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Option"
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "question_key",
+          "measure",
+          "comparator",
+          "threshold"
+        ],
+        "title": "DecisionPredicate"
+      },
+      "DecisionSourceReference": {
+        "properties": {
+          "task_version_id": {
+            "type": "string",
+            "format": "uuid",
+            "title": "Task Version Id"
+          },
+          "heading": {
+            "anyOf": [
+              {
+                "type": "string",
+                "maxLength": 500,
+                "minLength": 1
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Heading"
+          },
+          "excerpt_hash": {
+            "type": "string",
+            "pattern": "^[0-9a-f]{64}$",
+            "title": "Excerpt Hash"
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "task_version_id",
+          "excerpt_hash"
+        ],
+        "title": "DecisionSourceReference"
+      },
+      "DecisionSpecification-Input": {
+        "properties": {
+          "schema_version": {
+            "type": "string",
+            "const": "review-decision-specification-v1",
+            "title": "Schema Version",
+            "default": "review-decision-specification-v1"
+          },
+          "questions": {
+            "additionalProperties": {
+              "oneOf": [
+                {
+                  "$ref": "#/components/schemas/ChoiceDecisionQuestion"
+                },
+                {
+                  "$ref": "#/components/schemas/ScoreDecisionQuestion"
+                },
+                {
+                  "$ref": "#/components/schemas/NoulDecisionQuestion"
+                }
+              ],
+              "discriminator": {
+                "propertyName": "type",
+                "mapping": {
+                  "choice": "#/components/schemas/ChoiceDecisionQuestion",
+                  "noul": "#/components/schemas/NoulDecisionQuestion",
+                  "score": "#/components/schemas/ScoreDecisionQuestion"
+                }
+              }
+            },
+            "type": "object",
+            "maxProperties": 500,
+            "minProperties": 1,
+            "title": "Questions"
+          },
+          "decision_policy": {
+            "$ref": "#/components/schemas/DecisionPolicy-Input"
+          },
+          "state_contract": {
+            "$ref": "#/components/schemas/DecisionStateContract"
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "questions",
+          "state_contract"
+        ],
+        "title": "DecisionSpecification"
+      },
+      "DecisionSpecification-Output": {
+        "properties": {
+          "schema_version": {
+            "type": "string",
+            "const": "review-decision-specification-v1",
+            "title": "Schema Version",
+            "default": "review-decision-specification-v1"
+          },
+          "questions": {
+            "additionalProperties": {
+              "oneOf": [
+                {
+                  "$ref": "#/components/schemas/ChoiceDecisionQuestion"
+                },
+                {
+                  "$ref": "#/components/schemas/ScoreDecisionQuestion"
+                },
+                {
+                  "$ref": "#/components/schemas/NoulDecisionQuestion"
+                }
+              ],
+              "discriminator": {
+                "propertyName": "type",
+                "mapping": {
+                  "choice": "#/components/schemas/ChoiceDecisionQuestion",
+                  "noul": "#/components/schemas/NoulDecisionQuestion",
+                  "score": "#/components/schemas/ScoreDecisionQuestion"
+                }
+              }
+            },
+            "type": "object",
+            "maxProperties": 500,
+            "minProperties": 1,
+            "title": "Questions"
+          },
+          "decision_policy": {
+            "$ref": "#/components/schemas/DecisionPolicy-Output"
+          },
+          "state_contract": {
+            "$ref": "#/components/schemas/DecisionStateContract"
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "questions",
+          "state_contract"
+        ],
+        "title": "DecisionSpecification"
+      },
+      "DecisionStateContract": {
+        "properties": {
+          "builder_version": {
+            "type": "string",
+            "maxLength": 100,
+            "minLength": 1,
+            "title": "Builder Version"
+          },
+          "required_paths": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array",
+            "maxItems": 100,
+            "minItems": 1,
+            "title": "Required Paths"
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "builder_version",
+          "required_paths"
+        ],
+        "title": "DecisionStateContract"
+      },
+      "DecisionUncertaintyMapping": {
+        "properties": {
+          "kind": {
+            "type": "string",
+            "enum": [
+              "PROVIDER_CONFIDENCE",
+              "SELECTED_PROBABILITY",
+              "DERIVED_PROBABILITY",
+              "NONE"
+            ],
+            "title": "Kind"
+          },
+          "source": {
+            "type": "string",
+            "enum": [
+              "PROVIDER_CONFIDENCE",
+              "SELECTED_OPTION_PROBABILITY",
+              "MAPPED_BOOLEAN_PROBABILITY",
+              "NONE"
+            ],
+            "title": "Source"
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "kind",
+          "source"
+        ],
+        "title": "DecisionUncertaintyMapping"
+      },
       "DerivedArtifactUploadResponse": {
         "properties": {
           "artifact": {
@@ -14636,6 +15598,447 @@
           "password"
         ],
         "title": "LoginRequest"
+      },
+      "MatterAnalysisTaskCreate": {
+        "properties": {
+          "key": {
+            "type": "string",
+            "pattern": "^[a-z][a-z0-9_]{0,99}$",
+            "title": "Key"
+          },
+          "name": {
+            "type": "string",
+            "maxLength": 200,
+            "minLength": 1,
+            "title": "Name"
+          },
+          "description": {
+            "anyOf": [
+              {
+                "type": "string",
+                "maxLength": 10000
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Description"
+          },
+          "task_type": {
+            "type": "string",
+            "enum": [
+              "ISSUE_REVIEW",
+              "PRIVILEGE_REVIEW",
+              "TOPIC_GENERATION",
+              "DATA_EXPLORATION",
+              "CUSTOM_DECISION"
+            ],
+            "title": "Task Type"
+          },
+          "definition_markdown": {
+            "type": "string",
+            "maxLength": 2000000,
+            "minLength": 1,
+            "title": "Definition Markdown"
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "key",
+          "name",
+          "task_type",
+          "definition_markdown"
+        ],
+        "title": "MatterAnalysisTaskCreate"
+      },
+      "MatterAnalysisTaskRead": {
+        "properties": {
+          "id": {
+            "type": "string",
+            "format": "uuid",
+            "title": "Id"
+          },
+          "matter_id": {
+            "type": "string",
+            "format": "uuid",
+            "title": "Matter Id"
+          },
+          "key": {
+            "type": "string",
+            "title": "Key"
+          },
+          "name": {
+            "type": "string",
+            "title": "Name"
+          },
+          "description": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Description"
+          },
+          "task_type": {
+            "type": "string",
+            "enum": [
+              "ISSUE_REVIEW",
+              "PRIVILEGE_REVIEW",
+              "TOPIC_GENERATION",
+              "DATA_EXPLORATION",
+              "CUSTOM_DECISION"
+            ],
+            "title": "Task Type"
+          },
+          "workflow_key": {
+            "type": "string",
+            "title": "Workflow Key"
+          },
+          "current_version": {
+            "type": "integer",
+            "title": "Current Version"
+          },
+          "published_version": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Published Version"
+          },
+          "status": {
+            "type": "string",
+            "enum": [
+              "ACTIVE",
+              "SUSPENDED",
+              "ARCHIVED"
+            ],
+            "title": "Status"
+          },
+          "created_by_user_id": {
+            "type": "string",
+            "format": "uuid",
+            "title": "Created By User Id"
+          },
+          "created_at": {
+            "type": "string",
+            "format": "date-time",
+            "title": "Created At"
+          },
+          "updated_at": {
+            "type": "string",
+            "format": "date-time",
+            "title": "Updated At"
+          },
+          "version": {
+            "$ref": "#/components/schemas/MatterAnalysisTaskVersionRead"
+          }
+        },
+        "type": "object",
+        "required": [
+          "id",
+          "matter_id",
+          "key",
+          "name",
+          "description",
+          "task_type",
+          "workflow_key",
+          "current_version",
+          "published_version",
+          "status",
+          "created_by_user_id",
+          "created_at",
+          "updated_at",
+          "version"
+        ],
+        "title": "MatterAnalysisTaskRead"
+      },
+      "MatterAnalysisTaskSpecificationUpdate": {
+        "properties": {
+          "decision_specification": {
+            "$ref": "#/components/schemas/DecisionSpecification-Input"
+          },
+          "input_contract": {
+            "additionalProperties": true,
+            "type": "object",
+            "title": "Input Contract"
+          },
+          "output_contract": {
+            "additionalProperties": true,
+            "type": "object",
+            "title": "Output Contract"
+          },
+          "evidence_policy": {
+            "additionalProperties": true,
+            "type": "object",
+            "title": "Evidence Policy"
+          },
+          "routing_policy": {
+            "additionalProperties": true,
+            "type": "object",
+            "title": "Routing Policy"
+          },
+          "compiler_skill_definition_version_id": {
+            "anyOf": [
+              {
+                "type": "string",
+                "format": "uuid"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Compiler Skill Definition Version Id"
+          },
+          "compiler_skill_run_id": {
+            "anyOf": [
+              {
+                "type": "string",
+                "format": "uuid"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Compiler Skill Run Id"
+          },
+          "compiler_model_configuration": {
+            "additionalProperties": true,
+            "type": "object",
+            "title": "Compiler Model Configuration"
+          },
+          "validation_report": {
+            "additionalProperties": true,
+            "type": "object",
+            "title": "Validation Report"
+          },
+          "source_provenance": {
+            "additionalProperties": true,
+            "type": "object",
+            "title": "Source Provenance"
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "decision_specification"
+        ],
+        "title": "MatterAnalysisTaskSpecificationUpdate"
+      },
+      "MatterAnalysisTaskVersionCreate": {
+        "properties": {
+          "definition_markdown": {
+            "type": "string",
+            "maxLength": 2000000,
+            "minLength": 1,
+            "title": "Definition Markdown"
+          },
+          "based_on_version": {
+            "type": "integer",
+            "minimum": 1.0,
+            "title": "Based On Version"
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "definition_markdown",
+          "based_on_version"
+        ],
+        "title": "MatterAnalysisTaskVersionCreate"
+      },
+      "MatterAnalysisTaskVersionRead": {
+        "properties": {
+          "id": {
+            "type": "string",
+            "format": "uuid",
+            "title": "Id"
+          },
+          "matter_analysis_task_id": {
+            "type": "string",
+            "format": "uuid",
+            "title": "Matter Analysis Task Id"
+          },
+          "version": {
+            "type": "integer",
+            "title": "Version"
+          },
+          "status": {
+            "type": "string",
+            "enum": [
+              "DRAFT",
+              "PUBLISHED",
+              "RETIRED"
+            ],
+            "title": "Status"
+          },
+          "compilation_status": {
+            "type": "string",
+            "enum": [
+              "NOT_GENERATED",
+              "STALE",
+              "GENERATING",
+              "READY",
+              "FAILED"
+            ],
+            "title": "Compilation Status"
+          },
+          "definition_markdown": {
+            "type": "string",
+            "title": "Definition Markdown"
+          },
+          "definition_content_hash": {
+            "type": "string",
+            "title": "Definition Content Hash"
+          },
+          "decision_specification": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/DecisionSpecification-Output"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "specification_content_hash": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Specification Content Hash"
+          },
+          "input_contract": {
+            "additionalProperties": true,
+            "type": "object",
+            "title": "Input Contract"
+          },
+          "output_contract": {
+            "additionalProperties": true,
+            "type": "object",
+            "title": "Output Contract"
+          },
+          "evidence_policy": {
+            "additionalProperties": true,
+            "type": "object",
+            "title": "Evidence Policy"
+          },
+          "routing_policy": {
+            "additionalProperties": true,
+            "type": "object",
+            "title": "Routing Policy"
+          },
+          "compiler_skill_definition_version_id": {
+            "anyOf": [
+              {
+                "type": "string",
+                "format": "uuid"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Compiler Skill Definition Version Id"
+          },
+          "compiler_skill_run_id": {
+            "anyOf": [
+              {
+                "type": "string",
+                "format": "uuid"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Compiler Skill Run Id"
+          },
+          "compiler_model_configuration": {
+            "additionalProperties": true,
+            "type": "object",
+            "title": "Compiler Model Configuration"
+          },
+          "validation_report": {
+            "additionalProperties": true,
+            "type": "object",
+            "title": "Validation Report"
+          },
+          "source_provenance": {
+            "additionalProperties": true,
+            "type": "object",
+            "title": "Source Provenance"
+          },
+          "created_by_user_id": {
+            "type": "string",
+            "format": "uuid",
+            "title": "Created By User Id"
+          },
+          "published_by_user_id": {
+            "anyOf": [
+              {
+                "type": "string",
+                "format": "uuid"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Published By User Id"
+          },
+          "created_at": {
+            "type": "string",
+            "format": "date-time",
+            "title": "Created At"
+          },
+          "published_at": {
+            "anyOf": [
+              {
+                "type": "string",
+                "format": "date-time"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Published At"
+          }
+        },
+        "type": "object",
+        "required": [
+          "id",
+          "matter_analysis_task_id",
+          "version",
+          "status",
+          "compilation_status",
+          "definition_markdown",
+          "definition_content_hash",
+          "decision_specification",
+          "specification_content_hash",
+          "input_contract",
+          "output_contract",
+          "evidence_policy",
+          "routing_policy",
+          "compiler_skill_definition_version_id",
+          "compiler_skill_run_id",
+          "compiler_model_configuration",
+          "validation_report",
+          "source_provenance",
+          "created_by_user_id",
+          "published_by_user_id",
+          "created_at",
+          "published_at"
+        ],
+        "title": "MatterAnalysisTaskVersionRead"
       },
       "MatterBulkTagAssignment": {
         "properties": {
@@ -19096,6 +20499,124 @@
         ],
         "title": "MetadataMutationRead"
       },
+      "NoulCriteria": {
+        "properties": {
+          "true": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "additionalProperties": true,
+                "type": "object"
+              },
+              {
+                "items": {},
+                "type": "array"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "True"
+          },
+          "false": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "additionalProperties": true,
+                "type": "object"
+              },
+              {
+                "items": {},
+                "type": "array"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "False"
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "true",
+          "false"
+        ],
+        "title": "NoulCriteria"
+      },
+      "NoulDecisionQuestion": {
+        "properties": {
+          "instructions": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "additionalProperties": true,
+                "type": "object"
+              },
+              {
+                "items": {},
+                "type": "array"
+              }
+            ],
+            "title": "Instructions"
+          },
+          "source_refs": {
+            "items": {
+              "$ref": "#/components/schemas/DecisionSourceReference"
+            },
+            "type": "array",
+            "maxItems": 100,
+            "minItems": 1,
+            "title": "Source Refs"
+          },
+          "aggregation": {
+            "$ref": "#/components/schemas/DecisionAggregation"
+          },
+          "evidence": {
+            "$ref": "#/components/schemas/DecisionEvidencePolicy"
+          },
+          "field_mapping": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/DecisionFieldMapping"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "type": {
+            "type": "string",
+            "const": "noul",
+            "title": "Type"
+          },
+          "criteria": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/NoulCriteria"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "instructions",
+          "source_refs",
+          "aggregation",
+          "type"
+        ],
+        "title": "NoulDecisionQuestion"
+      },
       "RefreshRequest": {
         "properties": {
           "refresh_token": {
@@ -20349,6 +21870,90 @@
           "confidence"
         ],
         "title": "ReviewBatchRunValueRead"
+      },
+      "ScoreDecisionQuestion": {
+        "properties": {
+          "instructions": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "additionalProperties": true,
+                "type": "object"
+              },
+              {
+                "items": {},
+                "type": "array"
+              }
+            ],
+            "title": "Instructions"
+          },
+          "source_refs": {
+            "items": {
+              "$ref": "#/components/schemas/DecisionSourceReference"
+            },
+            "type": "array",
+            "maxItems": 100,
+            "minItems": 1,
+            "title": "Source Refs"
+          },
+          "aggregation": {
+            "$ref": "#/components/schemas/DecisionAggregation"
+          },
+          "evidence": {
+            "$ref": "#/components/schemas/DecisionEvidencePolicy"
+          },
+          "field_mapping": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/DecisionFieldMapping"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "type": {
+            "type": "string",
+            "const": "score",
+            "title": "Type"
+          },
+          "criteria": {
+            "items": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "additionalProperties": true,
+                  "type": "object"
+                },
+                {
+                  "items": {},
+                  "type": "array"
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            },
+            "type": "array",
+            "maxItems": 100,
+            "minItems": 2,
+            "title": "Criteria"
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "instructions",
+          "source_refs",
+          "aggregation",
+          "type",
+          "criteria"
+        ],
+        "title": "ScoreDecisionQuestion"
       },
       "SearchIndexGenerationRead": {
         "properties": {

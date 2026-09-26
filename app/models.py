@@ -1593,7 +1593,9 @@ class AgentDefinition(TimestampMixin, Base):
     )
 
     id: Mapped[uuid.UUID] = mapped_column(Uuid, primary_key=True, default=uuid.uuid4)
-    owner_tenant_id: Mapped[uuid.UUID] = mapped_column(Uuid, ForeignKey("tenant.id", ondelete="RESTRICT"), index=True)
+    owner_tenant_id: Mapped[uuid.UUID] = mapped_column(
+        Uuid, ForeignKey("tenant.id", ondelete="RESTRICT"), index=True
+    )
     scope: Mapped[str] = mapped_column(String(20))
     key: Mapped[str] = mapped_column(String(100))
     name: Mapped[str] = mapped_column(String(200))
@@ -1666,9 +1668,7 @@ class SkillDefinition(TimestampMixin, Base):
     )
 
     id: Mapped[uuid.UUID] = mapped_column(Uuid, primary_key=True, default=uuid.uuid4)
-    owner_tenant_id: Mapped[uuid.UUID] = mapped_column(
-        Uuid, ForeignKey("tenant.id", ondelete="RESTRICT"), index=True
-    )
+    owner_tenant_id: Mapped[uuid.UUID] = mapped_column(Uuid, ForeignKey("tenant.id", ondelete="RESTRICT"), index=True)
     scope: Mapped[str] = mapped_column(String(20))
     key: Mapped[str] = mapped_column(String(100))
     name: Mapped[str] = mapped_column(String(200))
@@ -2069,6 +2069,121 @@ class AgentToolExecution(Base):
     error_message: Mapped[str | None] = mapped_column(Text)
     started_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
     completed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+
+
+class MatterAnalysisTask(TimestampMixin, Base):
+    __tablename__ = "matter_analysis_task"
+    __table_args__ = (
+        UniqueConstraint("matter_id", "key", name="uq_matter_analysis_task_matter_key"),
+        CheckConstraint(
+            "task_type IN ('ISSUE_REVIEW', 'PRIVILEGE_REVIEW', 'TOPIC_GENERATION', "
+            "'DATA_EXPLORATION', 'CUSTOM_DECISION')",
+            name="ck_matter_analysis_task_type",
+        ),
+        CheckConstraint(
+            "status IN ('ACTIVE', 'SUSPENDED', 'ARCHIVED')",
+            name="ck_matter_analysis_task_status",
+        ),
+        CheckConstraint("current_version > 0", name="ck_matter_analysis_task_current_version"),
+        CheckConstraint(
+            "published_version IS NULL OR (published_version > 0 AND published_version <= current_version)",
+            name="ck_matter_analysis_task_published_version",
+        ),
+        Index("ix_matter_analysis_task_matter_type", "matter_id", "task_type"),
+    )
+
+    id: Mapped[uuid.UUID] = mapped_column(Uuid, primary_key=True, default=uuid.uuid4)
+    matter_id: Mapped[uuid.UUID] = mapped_column(Uuid, ForeignKey("matter.id", ondelete="CASCADE"), index=True)
+    key: Mapped[str] = mapped_column(String(100))
+    name: Mapped[str] = mapped_column(String(200))
+    description: Mapped[str | None] = mapped_column(Text)
+    task_type: Mapped[str] = mapped_column(String(30), index=True)
+    workflow_key: Mapped[str] = mapped_column(String(100))
+    current_version: Mapped[int] = mapped_column(Integer, default=1)
+    published_version: Mapped[int | None] = mapped_column(Integer)
+    status: Mapped[str] = mapped_column(String(20), default="ACTIVE")
+    created_by_user_id: Mapped[uuid.UUID] = mapped_column(
+        Uuid, ForeignKey("app_user.id", ondelete="RESTRICT"), index=True
+    )
+
+
+class MatterAnalysisTaskVersion(Base):
+    __tablename__ = "matter_analysis_task_version"
+    __table_args__ = (
+        UniqueConstraint("matter_analysis_task_id", "version", name="uq_matter_analysis_task_version"),
+        CheckConstraint("version > 0", name="ck_matter_analysis_task_version_positive"),
+        CheckConstraint(
+            "status IN ('DRAFT', 'PUBLISHED', 'RETIRED')",
+            name="ck_matter_analysis_task_version_status",
+        ),
+        CheckConstraint(
+            "compilation_status IN ('NOT_GENERATED', 'STALE', 'GENERATING', 'READY', 'FAILED')",
+            name="ck_matter_analysis_task_compilation_status",
+        ),
+        Index("ix_matter_analysis_task_version_task_status", "matter_analysis_task_id", "status"),
+        Index("ix_analysis_task_version_skill_definition", "compiler_skill_definition_version_id"),
+        Index("ix_analysis_task_version_skill_run", "compiler_skill_run_id"),
+        Index("ix_analysis_task_version_creator", "created_by_user_id"),
+        Index("ix_analysis_task_version_publisher", "published_by_user_id"),
+    )
+
+    id: Mapped[uuid.UUID] = mapped_column(Uuid, primary_key=True, default=uuid.uuid4)
+    matter_analysis_task_id: Mapped[uuid.UUID] = mapped_column(
+        Uuid, ForeignKey("matter_analysis_task.id", ondelete="CASCADE"), index=True
+    )
+    version: Mapped[int] = mapped_column(Integer)
+    status: Mapped[str] = mapped_column(String(20), default="DRAFT")
+    compilation_status: Mapped[str] = mapped_column(String(30), default="NOT_GENERATED")
+    definition_markdown: Mapped[str] = mapped_column(Text)
+    definition_content_hash: Mapped[str] = mapped_column(String(64), index=True)
+    decision_specification: Mapped[dict[str, Any] | None] = mapped_column(JSON, nullable=True)
+    specification_content_hash: Mapped[str | None] = mapped_column(String(64), nullable=True, index=True)
+    input_contract: Mapped[dict[str, Any]] = mapped_column(JSON, default=dict)
+    output_contract: Mapped[dict[str, Any]] = mapped_column(JSON, default=dict)
+    evidence_policy: Mapped[dict[str, Any]] = mapped_column(JSON, default=dict)
+    routing_policy: Mapped[dict[str, Any]] = mapped_column(JSON, default=dict)
+    compiler_skill_definition_version_id: Mapped[uuid.UUID | None] = mapped_column(
+        Uuid, ForeignKey("skill_definition_version.id", ondelete="RESTRICT"), nullable=True
+    )
+    compiler_skill_run_id: Mapped[uuid.UUID | None] = mapped_column(
+        Uuid, ForeignKey("skill_run.id", ondelete="SET NULL"), nullable=True
+    )
+    compiler_model_configuration: Mapped[dict[str, Any]] = mapped_column(JSON, default=dict)
+    validation_report: Mapped[dict[str, Any]] = mapped_column(JSON, default=dict)
+    source_provenance: Mapped[dict[str, Any]] = mapped_column(JSON, default=dict)
+    created_by_user_id: Mapped[uuid.UUID] = mapped_column(
+        Uuid, ForeignKey("app_user.id", ondelete="RESTRICT")
+    )
+    published_by_user_id: Mapped[uuid.UUID | None] = mapped_column(
+        Uuid, ForeignKey("app_user.id", ondelete="RESTRICT"), nullable=True
+    )
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+    published_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+
+
+class MatterAnalysisTaskVersionDependency(Base):
+    __tablename__ = "matter_analysis_task_version_dependency"
+    __table_args__ = (
+        CheckConstraint(
+            "matter_analysis_task_version_id <> dependency_task_version_id",
+            name="ck_matter_analysis_task_dependency_not_self",
+        ),
+        Index("ix_analysis_task_dependency_version", "dependency_task_version_id"),
+    )
+
+    matter_analysis_task_version_id: Mapped[uuid.UUID] = mapped_column(
+        Uuid,
+        ForeignKey("matter_analysis_task_version.id", ondelete="CASCADE"),
+        primary_key=True,
+    )
+    dependency_task_version_id: Mapped[uuid.UUID] = mapped_column(
+        Uuid,
+        ForeignKey("matter_analysis_task_version.id", ondelete="RESTRICT"),
+        primary_key=True,
+    )
+    role: Mapped[str] = mapped_column(String(100), primary_key=True)
+    dependency_content_hash: Mapped[str] = mapped_column(String(64))
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
 
 
 class MatterDefinition(TimestampMixin, Base):
