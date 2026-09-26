@@ -3,6 +3,7 @@ import uuid
 from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
+from app.agent_events import publish_agent_event
 from app.agent_workflows import agent_supports_workflow
 from app.models import (
     AgentActionDecision,
@@ -70,6 +71,12 @@ def create_conversation(
     )
     db.add(conversation)
     db.flush()
+    publish_agent_event(
+        db,
+        conversation,
+        "conversation.created",
+        payload={"title": conversation.title, "status": conversation.status},
+    )
     return conversation
 
 
@@ -135,6 +142,29 @@ def create_turn(
     db.add(run)
     conversation.status = "ACTIVE"
     db.flush()
+    publish_agent_event(db, conversation, "turn.created", turn_id=turn.id, payload={"status": turn.status})
+    publish_agent_event(
+        db,
+        conversation,
+        "message.created",
+        turn_id=turn.id,
+        message_id=user_message.id,
+        payload={"role": user_message.role, "sequence": user_message.sequence},
+    )
+    publish_agent_event(
+        db,
+        conversation,
+        "run.created",
+        turn_id=turn.id,
+        run_id=run.id,
+        payload={"status": run.status, "sequence": run.sequence},
+    )
+    publish_agent_event(
+        db,
+        conversation,
+        "conversation.updated",
+        payload={"status": conversation.status},
+    )
     enqueue_agent_run(db, run.workflow_id, str(run.id))
     return turn, user_message, run
 
@@ -163,6 +193,18 @@ def decide_action(
     db.add(decision)
     action_request.status = "APPROVED" if decision_value == "APPROVE" else "REJECTED"
     db.flush()
+    conversation = db.get(AgentConversation, action_request.conversation_id)
+    if conversation is None:
+        raise AgentConversationError("Agent conversation is not available")
+    publish_agent_event(
+        db,
+        conversation,
+        "action_request.updated",
+        turn_id=action_request.turn_id,
+        run_id=action_request.agent_run_id,
+        action_request_id=action_request.id,
+        payload={"status": action_request.status},
+    )
 
     pending_count = db.scalar(
         select(func.count())
@@ -205,5 +247,29 @@ def decide_action(
     if conversation is not None:
         conversation.status = "ACTIVE"
     db.flush()
+    if conversation is None:
+        raise AgentConversationError("Agent conversation is not available")
+    publish_agent_event(
+        db,
+        conversation,
+        "run.created",
+        turn_id=resumed_run.turn_id,
+        run_id=resumed_run.id,
+        payload={"status": resumed_run.status, "sequence": resumed_run.sequence},
+    )
+    if turn is not None:
+        publish_agent_event(
+            db,
+            conversation,
+            "turn.updated",
+            turn_id=turn.id,
+            payload={"status": turn.status},
+        )
+    publish_agent_event(
+        db,
+        conversation,
+        "conversation.updated",
+        payload={"status": conversation.status},
+    )
     enqueue_agent_run(db, resumed_run.workflow_id, str(resumed_run.id))
     return decision, resumed_run

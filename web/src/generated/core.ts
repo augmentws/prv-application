@@ -92,6 +92,7 @@ import type {
   MatterDefinitionAssessmentQuestionRead,
   MatterDefinitionAssessmentQuestionUpdate,
   MatterDefinitionAssessmentRead,
+  MatterDefinitionAssessmentUpdate,
   MatterDefinitionRead,
   MatterDefinitionRevisionCreate,
   MatterDefinitionRevisionRead,
@@ -155,6 +156,7 @@ import type {
   SkillDefinitionVersionRead,
   SkillVersionCreate,
   SourceContainerUploadResponse,
+  StreamAgentEventsV1MattersMatterIdAgentEventsGetParams,
   TenantCreate,
   TenantCreated,
   TenantRead,
@@ -1724,6 +1726,58 @@ const res = await fetch(getUpdateAgentConversationV1AgentConversationsConversati
 
   const data: updateAgentConversationV1AgentConversationsConversationIdPatchResponse['data'] = body ? JSON.parse(body) : {}
   return { data, status: res.status, headers: res.headers } as updateAgentConversationV1AgentConversationsConversationIdPatchResponse
+}
+
+
+
+export type streamAgentEventsV1MattersMatterIdAgentEventsGetResponse422 = {
+  data: HTTPValidationError
+  status: 422
+}
+
+;
+export type streamAgentEventsV1MattersMatterIdAgentEventsGetResponseError = (streamAgentEventsV1MattersMatterIdAgentEventsGetResponse422) & {
+  headers: Headers;
+};
+
+export type streamAgentEventsV1MattersMatterIdAgentEventsGetResponse = (streamAgentEventsV1MattersMatterIdAgentEventsGetResponseError)
+
+export const getStreamAgentEventsV1MattersMatterIdAgentEventsGetUrl = (matterId: string,
+    params: StreamAgentEventsV1MattersMatterIdAgentEventsGetParams,) => {
+  const normalizedParams = new URLSearchParams();
+
+  Object.entries(params || {}).forEach(([key, value]) => {
+
+    if (value !== undefined) {
+      normalizedParams.append(key, value === null ? 'null' : String(value))
+    }
+  });
+
+  const stringifiedParams = normalizedParams.toString();
+
+  return stringifiedParams.length > 0 ? `/api/core/v1/matters/${matterId}/agent-events?${stringifiedParams}` : `/api/core/v1/matters/${matterId}/agent-events`
+}
+
+/**
+ * @summary Stream Agent Events
+ */
+export const streamAgentEventsV1MattersMatterIdAgentEventsGet = async (matterId: string,
+    params: StreamAgentEventsV1MattersMatterIdAgentEventsGetParams, options?: RequestInit): Promise<streamAgentEventsV1MattersMatterIdAgentEventsGetResponse> => {
+
+  const res = await fetch(getStreamAgentEventsV1MattersMatterIdAgentEventsGetUrl(matterId,params),
+  {
+    ...options,
+    method: 'GET'
+
+
+  }
+)
+
+
+  const body = [204, 205, 304].includes(res.status) ? null : await res.text();
+
+  const data: streamAgentEventsV1MattersMatterIdAgentEventsGetResponse['data'] = body ? JSON.parse(body) : {}
+  return { data, status: res.status, headers: res.headers } as streamAgentEventsV1MattersMatterIdAgentEventsGetResponse
 }
 
 
@@ -8409,6 +8463,125 @@ export const listAssessmentsV1MattersMatterIdDefinitionAssessmentsGet = async (m
 
 
 
+export type updateAssessmentV1MattersMatterIdDefinitionAssessmentsAssessmentIdPatchResponse200 = {
+  data: MatterDefinitionAssessmentRead
+  status: 200
+}
+
+export type updateAssessmentV1MattersMatterIdDefinitionAssessmentsAssessmentIdPatchResponse422 = {
+  data: HTTPValidationError
+  status: 422
+}
+
+export type updateAssessmentV1MattersMatterIdDefinitionAssessmentsAssessmentIdPatchResponseSuccess = (updateAssessmentV1MattersMatterIdDefinitionAssessmentsAssessmentIdPatchResponse200) & {
+  headers: Headers;
+};
+export type updateAssessmentV1MattersMatterIdDefinitionAssessmentsAssessmentIdPatchResponseError = (updateAssessmentV1MattersMatterIdDefinitionAssessmentsAssessmentIdPatchResponse422) & {
+  headers: Headers;
+};
+
+export type updateAssessmentV1MattersMatterIdDefinitionAssessmentsAssessmentIdPatchResponse = (updateAssessmentV1MattersMatterIdDefinitionAssessmentsAssessmentIdPatchResponseSuccess | updateAssessmentV1MattersMatterIdDefinitionAssessmentsAssessmentIdPatchResponseError)
+
+export const getUpdateAssessmentV1MattersMatterIdDefinitionAssessmentsAssessmentIdPatchUrl = (matterId: string,
+    assessmentId: string,) => {
+
+
+
+
+  return `/api/core/v1/matters/${matterId}/definition-assessments/${assessmentId}`
+}
+
+/**
+ * @summary Update Assessment
+ */
+export const updateAssessmentV1MattersMatterIdDefinitionAssessmentsAssessmentIdPatch = async (matterId: string,
+    assessmentId: string,
+    matterDefinitionAssessmentUpdate: MatterDefinitionAssessmentUpdate, options?: RequestInit): Promise<updateAssessmentV1MattersMatterIdDefinitionAssessmentsAssessmentIdPatchResponse> => {
+
+    const getHeaders = (h?: NonNullable<RequestInit['headers']>): Record<string, string | readonly string[]> => {
+    if (!h) return {};
+    if (h instanceof Headers) return Object.fromEntries(h.entries());
+    if (Symbol.iterator in h) {
+      return Object.fromEntries(
+        Array.from(h as Iterable<Iterable<string>>, (entry) => Array.from(entry) as [string, string]),
+      );
+    }
+    const headers: Record<string, string | readonly string[]> = {};
+    for (const [name, value] of Object.entries<string | readonly string[] | undefined>(h)) {
+      if (value !== undefined) headers[name] = value;
+    }
+    return headers;
+  };
+const res = await fetch(getUpdateAssessmentV1MattersMatterIdDefinitionAssessmentsAssessmentIdPatchUrl(matterId,assessmentId),
+  {
+    ...options,
+    method: 'PATCH',
+    headers: { 'Content-Type': 'application/json', ...getHeaders(options?.headers) },
+    body: JSON.stringify(matterDefinitionAssessmentUpdate)
+  }
+)
+
+
+  const body = [204, 205, 304].includes(res.status) ? null : await res.text();
+
+  const data: updateAssessmentV1MattersMatterIdDefinitionAssessmentsAssessmentIdPatchResponse['data'] = body ? JSON.parse(body) : {}
+  return { data, status: res.status, headers: res.headers } as updateAssessmentV1MattersMatterIdDefinitionAssessmentsAssessmentIdPatchResponse
+}
+
+
+
+export type getAssessmentV1MattersMatterIdDefinitionAssessmentsAssessmentIdGetResponse200 = {
+  data: MatterDefinitionAssessmentRead
+  status: 200
+}
+
+export type getAssessmentV1MattersMatterIdDefinitionAssessmentsAssessmentIdGetResponse422 = {
+  data: HTTPValidationError
+  status: 422
+}
+
+export type getAssessmentV1MattersMatterIdDefinitionAssessmentsAssessmentIdGetResponseSuccess = (getAssessmentV1MattersMatterIdDefinitionAssessmentsAssessmentIdGetResponse200) & {
+  headers: Headers;
+};
+export type getAssessmentV1MattersMatterIdDefinitionAssessmentsAssessmentIdGetResponseError = (getAssessmentV1MattersMatterIdDefinitionAssessmentsAssessmentIdGetResponse422) & {
+  headers: Headers;
+};
+
+export type getAssessmentV1MattersMatterIdDefinitionAssessmentsAssessmentIdGetResponse = (getAssessmentV1MattersMatterIdDefinitionAssessmentsAssessmentIdGetResponseSuccess | getAssessmentV1MattersMatterIdDefinitionAssessmentsAssessmentIdGetResponseError)
+
+export const getGetAssessmentV1MattersMatterIdDefinitionAssessmentsAssessmentIdGetUrl = (matterId: string,
+    assessmentId: string,) => {
+
+
+
+
+  return `/api/core/v1/matters/${matterId}/definition-assessments/${assessmentId}`
+}
+
+/**
+ * @summary Get Assessment
+ */
+export const getAssessmentV1MattersMatterIdDefinitionAssessmentsAssessmentIdGet = async (matterId: string,
+    assessmentId: string, options?: RequestInit): Promise<getAssessmentV1MattersMatterIdDefinitionAssessmentsAssessmentIdGetResponse> => {
+
+  const res = await fetch(getGetAssessmentV1MattersMatterIdDefinitionAssessmentsAssessmentIdGetUrl(matterId,assessmentId),
+  {
+    ...options,
+    method: 'GET'
+
+
+  }
+)
+
+
+  const body = [204, 205, 304].includes(res.status) ? null : await res.text();
+
+  const data: getAssessmentV1MattersMatterIdDefinitionAssessmentsAssessmentIdGetResponse['data'] = body ? JSON.parse(body) : {}
+  return { data, status: res.status, headers: res.headers } as getAssessmentV1MattersMatterIdDefinitionAssessmentsAssessmentIdGetResponse
+}
+
+
+
 export type retryFailedAssessmentV1MattersMatterIdDefinitionAssessmentsAssessmentIdRetryPostResponse202 = {
   data: MatterDefinitionAssessmentRead
   status: 202
@@ -8561,58 +8734,6 @@ export const regenerateDocumentAnalysesV1MattersMatterIdDefinitionAssessmentsAss
 
   const data: regenerateDocumentAnalysesV1MattersMatterIdDefinitionAssessmentsAssessmentIdRegenerateDocumentAnalysesPostResponse['data'] = body ? JSON.parse(body) : {}
   return { data, status: res.status, headers: res.headers } as regenerateDocumentAnalysesV1MattersMatterIdDefinitionAssessmentsAssessmentIdRegenerateDocumentAnalysesPostResponse
-}
-
-
-
-export type getAssessmentV1MattersMatterIdDefinitionAssessmentsAssessmentIdGetResponse200 = {
-  data: MatterDefinitionAssessmentRead
-  status: 200
-}
-
-export type getAssessmentV1MattersMatterIdDefinitionAssessmentsAssessmentIdGetResponse422 = {
-  data: HTTPValidationError
-  status: 422
-}
-
-export type getAssessmentV1MattersMatterIdDefinitionAssessmentsAssessmentIdGetResponseSuccess = (getAssessmentV1MattersMatterIdDefinitionAssessmentsAssessmentIdGetResponse200) & {
-  headers: Headers;
-};
-export type getAssessmentV1MattersMatterIdDefinitionAssessmentsAssessmentIdGetResponseError = (getAssessmentV1MattersMatterIdDefinitionAssessmentsAssessmentIdGetResponse422) & {
-  headers: Headers;
-};
-
-export type getAssessmentV1MattersMatterIdDefinitionAssessmentsAssessmentIdGetResponse = (getAssessmentV1MattersMatterIdDefinitionAssessmentsAssessmentIdGetResponseSuccess | getAssessmentV1MattersMatterIdDefinitionAssessmentsAssessmentIdGetResponseError)
-
-export const getGetAssessmentV1MattersMatterIdDefinitionAssessmentsAssessmentIdGetUrl = (matterId: string,
-    assessmentId: string,) => {
-
-
-
-
-  return `/api/core/v1/matters/${matterId}/definition-assessments/${assessmentId}`
-}
-
-/**
- * @summary Get Assessment
- */
-export const getAssessmentV1MattersMatterIdDefinitionAssessmentsAssessmentIdGet = async (matterId: string,
-    assessmentId: string, options?: RequestInit): Promise<getAssessmentV1MattersMatterIdDefinitionAssessmentsAssessmentIdGetResponse> => {
-
-  const res = await fetch(getGetAssessmentV1MattersMatterIdDefinitionAssessmentsAssessmentIdGetUrl(matterId,assessmentId),
-  {
-    ...options,
-    method: 'GET'
-
-
-  }
-)
-
-
-  const body = [204, 205, 304].includes(res.status) ? null : await res.text();
-
-  const data: getAssessmentV1MattersMatterIdDefinitionAssessmentsAssessmentIdGetResponse['data'] = body ? JSON.parse(body) : {}
-  return { data, status: res.status, headers: res.headers } as getAssessmentV1MattersMatterIdDefinitionAssessmentsAssessmentIdGetResponse
 }
 
 

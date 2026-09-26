@@ -31,6 +31,15 @@ class Settings(BaseSettings):
     agent_default_model: str | None = None
     agent_turn_queue_concurrency: int = Field(default=4, ge=1, le=100)
     agent_approval_timeout_seconds: int = Field(default=7 * 24 * 60 * 60, ge=60, le=30 * 24 * 60 * 60)
+    agent_streaming_enabled: bool = True
+    agent_stream_heartbeat_seconds: float = Field(default=15.0, ge=1, le=60)
+    agent_stream_max_lifetime_seconds: int = Field(default=600, ge=30, le=3600)
+    agent_stream_subscriber_queue_size: int = Field(default=32, ge=1, le=1000)
+    agent_stream_replay_page_size: int = Field(default=250, ge=1, le=1000)
+    agent_stream_replay_limit: int = Field(default=5000, ge=1, le=100_000)
+    agent_stream_event_payload_max_bytes: int = Field(default=16_384, ge=1024, le=1_048_576)
+    agent_stream_event_retention_days: int = Field(default=7, ge=1, le=365)
+    agent_stream_cleanup_interval_seconds: int = Field(default=3600, ge=60, le=86_400)
     model_trace_enabled: bool = False
     model_trace_directory: str = ".model-traces"
     model_rate_limit_requests_per_minute: int = Field(default=12, ge=1, le=100_000)
@@ -42,6 +51,7 @@ class Settings(BaseSettings):
     matter_embedding_batch_size: int = Field(default=250, ge=1, le=500)
     matter_embedding_document_concurrency: int = Field(default=8, ge=1, le=32)
     matter_topic_batch_size: int = Field(default=100, ge=1, le=1000)
+    matter_topic_assignment_concurrency: int = Field(default=8, ge=1, le=32)
     matter_bulk_tag_batch_size: int = Field(default=250, ge=1, le=2000)
     embedding_text_max_bytes: int = Field(default=10 * 1024 * 1024, ge=1024, le=100 * 1024 * 1024)
     chunk_target_characters: int = Field(default=1800, ge=200, le=20000)
@@ -75,6 +85,8 @@ class Settings(BaseSettings):
             raise ValueError("CHUNK_OVERLAP_CHARACTERS must be smaller than CHUNK_TARGET_CHARACTERS")
         if self.model_rate_limit_retry_base_seconds > self.model_rate_limit_retry_max_seconds:
             raise ValueError("MODEL_RATE_LIMIT_RETRY_BASE_SECONDS must not exceed MODEL_RATE_LIMIT_RETRY_MAX_SECONDS")
+        if self.agent_stream_replay_page_size > self.agent_stream_replay_limit:
+            raise ValueError("AGENT_STREAM_REPLAY_PAGE_SIZE must not exceed AGENT_STREAM_REPLAY_LIMIT")
         return self
 
 

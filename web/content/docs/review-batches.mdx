@@ -58,6 +58,8 @@ The initial evidence source is the newest compatible structured `SUMMARY` artifa
 
 Batch chat requires a ready search projection, document embeddings for semantic retrieval, and summary artifacts for answer evidence. A batch may be opened before all three are available, but the chat panel explains which prerequisite is missing rather than silently falling back to unscoped matter search or source document text. Switching the answer evidence from summaries to full document content is a future extension of the retrieval contract.
 
+The Batch Chat panel uses the same authenticated lifecycle stream as Matter Definition Chat. A **Live** indicator means normal conversation polling is disabled. The panel reconnects from its last durable event cursor after a transient interruption and automatically restores polling after repeated stream failures. Assistant text is displayed when the final message is committed; token-by-token output is not streamed.
+
 ## Agent evaluation
 
 Each human or agent pass receives a separate run identity. Re-running an updated agent against the same batch creates a new run and preserves the earlier output. The two runs—or an agent run and a human reference run—can then be compared field by field.

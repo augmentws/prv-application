@@ -5,6 +5,8 @@ description: Add large collection selections to a matter and follow durable back
 
 Matter jobs add collection documents and run durable document processing. The matter stores a link to each source collection item; the Artifact Service continues to own native files and derived artifacts.
 
+Use the **Job type** picker on the matter's **Jobs** tab to switch between bulk tagging, document embeddings, topic clustering, and document imports. Only the selected job type is displayed. The browser remembers the last selection and restores it when you return to the Jobs tab. Opening a specific document-import job automatically selects **Document imports**.
+
 The **Jobs** tab also shows bulk tag jobs started from matter search. Each row identifies the target field and value, the frozen query or filter scope, current status and progress, tagged and failed counts, and any available error. A snapshotted job with no completed document batches displays **Waiting** and **Waiting for capacity** until its first batch reports progress. Active bulk tag jobs refresh automatically, so you can close the original progress dialog and follow them here.
 
 Matter **ADMIN** users can start and cancel these jobs. The source collection and destination matter must belong to the same client, and the matter must be active.
@@ -67,17 +69,35 @@ Choose an operating mode:
 - **Automatic discovery** learns a natural topic count from the sample and can leave unrelated material unassigned.
 - **Fixed topic count** creates the exact requested number of sample clusters. Use this when a predictable taxonomy size matters more than learning the natural count.
 
+Choose a document scope:
+
+- **Entire matter** analyzes every document with usable embeddings.
+- **Include only a saved search** analyzes only documents matched by the selected saved search.
+- **Entire matter excluding a saved search** analyzes the matter except for documents matched by the selected saved search. This is useful for removing form email, newsletters, and other known noise from topic discovery.
+
+Saved-search scopes currently support Keyword saved searches so the complete matching set can be enumerated. Priv-View snapshots the search definition and current physical search index when the job is created, so later saved-search edits or deletion do not change the run. The selected scope controls both topic discovery and full-corpus topic assignment. With an exclusion scope, excluded documents are not sampled or assigned by that run; any topic values they already have remain unchanged.
+
 Both modes reduce embedding noise with PCA before clustering and keep their full-corpus assignment centroids in the original embedding space. Fixed mode runs MiniBatch K-means with the requested count. Automatic discovery evaluates bounded MiniBatch K-means candidates of 10, 20, 30, 40, and 50 topics, subject to the available sample and configured maximum, then selects the best-separated result while penalizing a solution dominated by one cluster. Generated names use terms that distinguish one cluster from the others and ignore common email-routing vocabulary.
 
 **Sample chunks** controls how many chunk vectors are used to discover the clusters. It does not control the number of topics. Increasing the sample improves corpus coverage but uses more clustering time and memory. Blank and very short chunks are excluded, and exact duplicate chunk text is sampled only once. Long documents are capped and represented by chunks spaced across their eligible content so they do not dominate discovery.
 
 Discovery does not immediately change metadata. When discovery finishes, the job enters **Awaiting review**. Select **Review topics** to open the job's dedicated review page and inspect the proposed names, keywords, sample sizes, and representative excerpts without placing the proposal set in a modal. You can rename a topic, revise its description, exclude it, or include or exclude the entire set. At least one topic must remain included before applying.
 
-Select **Apply topics** only after the proposal set is ready. The approved set is recorded with the reviewing user and time, then assignment visits every document in the frozen job scope using durable batches. Closing the browser while the job is awaiting review or applying is safe.
+After a run leaves **Awaiting review**, the Jobs table keeps a **View topics** action whenever that run retained proposals. The historical page is read-only and shows the saved names, descriptions, keywords, excerpts, and inclusion decisions.
 
-**Replace existing topic values when approved** is selected by default. Each processed document receives a metadata `CLEAR` event followed by its newly assigned topics. The current values are replaced, while the complete metadata event history remains available. Clear the option to append newly discovered topics instead.
+When starting discovery, choose where the approved values will be stored. The destination is fixed for that run and shown again on the review page:
 
-Applying an approved set automatically creates an active, facetable, multi-value `topics` enum field when the matter does not already have one. Discovery alone does not create the field. Application also creates an **Analysis** metadata group and places the field there. If `topics` already exists, it must be an active, asserted, multi-value enum. Stable enum keys identify included proposals even when their display names are similar.
+- **Use Topics field** uses the standard `topics` field and creates it when necessary.
+- **Choose an existing field** adds the approved topics to an existing field's allowed values. Only active, asserted, multi-value enum fields are available because a document can receive more than one topic.
+- **Create a new field** creates a facetable, multi-value enum in the Analysis group using the name and key you provide.
+
+Select **Apply topics** only after the proposal set is ready. The approved set, destination field, reviewing user, and review time are recorded, then assignment visits every document in the frozen job scope using durable batches. Closing the browser while the job is awaiting review or applying is safe.
+
+Assignment batches run concurrently. After all assignments are durable, one checkpointed search-projection pass updates OpenSearch for the frozen document scope. This avoids serializing every assignment batch behind a separate index refresh. Operators can tune assignment parallelism with `MATTER_TOPIC_ASSIGNMENT_CONCURRENCY`; the default is `8`.
+
+**Replace existing values in the destination field when approved** is selected by default. Each processed document receives a metadata `CLEAR` event followed by its newly assigned topics. The current destination-field values are replaced, while the complete metadata event history remains available. Clear the option to append newly discovered topics instead.
+
+Discovery alone does not create or modify a metadata field. When the selected destination must be created, application also creates an **Analysis** metadata group when necessary and places the field there. Stable enum keys identify included proposals even when their display names are similar.
 
 Topic names are generated from the strongest terms in representative sample chunks. Renaming a proposal does not change its learned centroid. During assignment, every available chunk is compared with the approved topic centroids, and a document receives its strongest qualifying topics. Documents without a qualifying topic are counted as unassigned. Published values are written through the same metadata ledger and search-projection path as other agent-authored metadata, so they are searchable and facetable after their batch finishes.
 

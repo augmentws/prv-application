@@ -34,7 +34,7 @@ Select **Chat** in the right panel, select **New**, and ask the agent to review 
 - find unclear or conflicting reviewer instructions;
 - propose a clearer complete draft.
 
-The screen polls the durable conversation records while the agent works. A queued or running turn disables the composer until it completes or requests approval. Completion applies to an individual turn and run, not to the chat: the same chat remains open for later questions.
+The screen opens one authenticated live-update stream while the agent works. Conversation, run, message, and approval changes appear after they are durably committed. If the stream is unavailable or the browser is offline, the status changes to **Polling** or **Offline** and the screen automatically falls back to periodic refreshes. A queued or running turn disables the composer until it completes or requests approval. Completion applies to an individual turn and run, not to the chat: the same chat remains open for later questions.
 
 ## Approve proposed changes
 
@@ -49,6 +49,8 @@ Review and save the current draft, then select **Publish current draft**. Publis
 ## Assess the guidance against the corpus
 
 Select **Assessment** in the right panel, then select **New** to test one immutable definition revision against documents already in the matter. The compact header contains the assessment selector and actions. A matter search index and the assessment workflow worker must be available. Choose a maximum document count and, optionally, a random control sample. The default maximum is 500.
+
+Use **Rename assessment** beside the assessment selector to give an active or historical assessment a clearer name. Renaming changes only its display name; the pinned definition revision, frozen document set, workflow history, and results remain unchanged. If its generated review batch still has the original assessment name, Priv-View updates that batch name as well.
 
 Requests above 1,000 documents show a capacity warning. A matter administrator can continue only after selecting the explicit **Continue with N documents** acknowledgment. This is currently a warning rather than a hard cost limit; future controls may add budgets and provider-price estimates.
 
@@ -104,7 +106,7 @@ Matter Definition.
 
 ## Current limitations
 
-- Conversation updates use polling rather than streamed response tokens.
+- Chat lifecycle changes are streamed, but assistant text appears only after the final message is durably committed; token-by-token model output is not streamed yet.
 - DOCX source ingestion and Artifact Service source preservation are planned but not yet available.
 - Field type, cardinality, and stable-key migrations are not performed by the setup agent. Create a replacement field or use a future explicit migration workflow when stored values already exist.
 - Root system-agent management is available. Tenant-agent APIs exist, but a tenant administration screen is not yet available.

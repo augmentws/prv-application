@@ -1390,6 +1390,97 @@
         }
       }
     },
+    "/v1/matters/{matter_id}/agent-events": {
+      "get": {
+        "tags": [
+          "agent conversations"
+        ],
+        "summary": "Stream Agent Events",
+        "operationId": "stream_agent_events_v1_matters__matter_id__agent_events_get",
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "matter_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid",
+              "title": "Matter Id"
+            }
+          },
+          {
+            "name": "workflow_type",
+            "in": "query",
+            "required": true,
+            "schema": {
+              "enum": [
+                "MATTER_DEFINITION_SETUP",
+                "BATCH_CHAT"
+              ],
+              "type": "string",
+              "title": "Workflow Type"
+            }
+          },
+          {
+            "name": "review_batch_id",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string",
+                  "format": "uuid"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Review Batch Id"
+            }
+          },
+          {
+            "name": "after",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "integer",
+                  "minimum": 0
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "After"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "text/event-stream": {}
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/v1/agent-conversations/{conversation_id}/turns": {
       "post": {
         "tags": [
@@ -8352,6 +8443,130 @@
         }
       }
     },
+    "/v1/matters/{matter_id}/definition-assessments/{assessment_id}": {
+      "patch": {
+        "tags": [
+          "matter definition assessments"
+        ],
+        "summary": "Update Assessment",
+        "operationId": "update_assessment_v1_matters__matter_id__definition_assessments__assessment_id__patch",
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "matter_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid",
+              "title": "Matter Id"
+            }
+          },
+          {
+            "name": "assessment_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid",
+              "title": "Assessment Id"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/MatterDefinitionAssessmentUpdate"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/MatterDefinitionAssessmentRead"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      },
+      "get": {
+        "tags": [
+          "matter definition assessments"
+        ],
+        "summary": "Get Assessment",
+        "operationId": "get_assessment_v1_matters__matter_id__definition_assessments__assessment_id__get",
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "matter_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid",
+              "title": "Matter Id"
+            }
+          },
+          {
+            "name": "assessment_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid",
+              "title": "Assessment Id"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/MatterDefinitionAssessmentRead"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/v1/matters/{matter_id}/definition-assessments/{assessment_id}/retry": {
       "post": {
         "tags": [
@@ -8504,64 +8719,6 @@
         ],
         "responses": {
           "202": {
-            "description": "Successful Response",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/MatterDefinitionAssessmentRead"
-                }
-              }
-            }
-          },
-          "422": {
-            "description": "Validation Error",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/HTTPValidationError"
-                }
-              }
-            }
-          }
-        }
-      }
-    },
-    "/v1/matters/{matter_id}/definition-assessments/{assessment_id}": {
-      "get": {
-        "tags": [
-          "matter definition assessments"
-        ],
-        "summary": "Get Assessment",
-        "operationId": "get_assessment_v1_matters__matter_id__definition_assessments__assessment_id__get",
-        "security": [
-          {
-            "HTTPBearer": []
-          }
-        ],
-        "parameters": [
-          {
-            "name": "matter_id",
-            "in": "path",
-            "required": true,
-            "schema": {
-              "type": "string",
-              "format": "uuid",
-              "title": "Matter Id"
-            }
-          },
-          {
-            "name": "assessment_id",
-            "in": "path",
-            "required": true,
-            "schema": {
-              "type": "string",
-              "format": "uuid",
-              "title": "Assessment Id"
-            }
-          }
-        ],
-        "responses": {
-          "200": {
             "description": "Successful Response",
             "content": {
               "application/json": {
@@ -15526,6 +15683,21 @@
         ],
         "title": "MatterDefinitionAssessmentRead"
       },
+      "MatterDefinitionAssessmentUpdate": {
+        "properties": {
+          "name": {
+            "type": "string",
+            "maxLength": 200,
+            "minLength": 1,
+            "title": "Name"
+          }
+        },
+        "type": "object",
+        "required": [
+          "name"
+        ],
+        "title": "MatterDefinitionAssessmentUpdate"
+      },
       "MatterDefinitionRead": {
         "properties": {
           "id": {
@@ -17307,6 +17479,53 @@
             "maxItems": 200,
             "minItems": 1,
             "title": "Topics"
+          },
+          "destination_mode": {
+            "type": "string",
+            "enum": [
+              "TOPICS",
+              "EXISTING_FIELD",
+              "NEW_FIELD"
+            ],
+            "title": "Destination Mode",
+            "default": "TOPICS"
+          },
+          "existing_metadata_definition_id": {
+            "anyOf": [
+              {
+                "type": "string",
+                "format": "uuid"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Existing Metadata Definition Id"
+          },
+          "new_field_key": {
+            "anyOf": [
+              {
+                "type": "string",
+                "pattern": "^[a-z][a-z0-9_]{0,99}$"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "New Field Key"
+          },
+          "new_field_name": {
+            "anyOf": [
+              {
+                "type": "string",
+                "maxLength": 200,
+                "minLength": 1
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "New Field Name"
           }
         },
         "type": "object",
@@ -17431,6 +17650,75 @@
             ],
             "title": "Assignment Mode",
             "default": "REPLACE"
+          },
+          "scope_mode": {
+            "type": "string",
+            "enum": [
+              "ENTIRE_MATTER",
+              "INCLUDE_SAVED_SEARCH",
+              "EXCLUDE_SAVED_SEARCH"
+            ],
+            "title": "Scope Mode",
+            "default": "ENTIRE_MATTER"
+          },
+          "saved_search_id": {
+            "anyOf": [
+              {
+                "type": "string",
+                "format": "uuid"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Saved Search Id"
+          },
+          "destination_mode": {
+            "type": "string",
+            "enum": [
+              "TOPICS",
+              "EXISTING_FIELD",
+              "NEW_FIELD"
+            ],
+            "title": "Destination Mode",
+            "default": "TOPICS"
+          },
+          "existing_metadata_definition_id": {
+            "anyOf": [
+              {
+                "type": "string",
+                "format": "uuid"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Existing Metadata Definition Id"
+          },
+          "new_field_key": {
+            "anyOf": [
+              {
+                "type": "string",
+                "pattern": "^[a-z][a-z0-9_]{0,99}$"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "New Field Key"
+          },
+          "new_field_name": {
+            "anyOf": [
+              {
+                "type": "string",
+                "maxLength": 200,
+                "minLength": 1
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "New Field Name"
           }
         },
         "type": "object",
@@ -17514,6 +17802,88 @@
               "APPEND"
             ],
             "title": "Assignment Mode"
+          },
+          "scope_mode": {
+            "type": "string",
+            "enum": [
+              "ENTIRE_MATTER",
+              "INCLUDE_SAVED_SEARCH",
+              "EXCLUDE_SAVED_SEARCH"
+            ],
+            "title": "Scope Mode"
+          },
+          "saved_search_id": {
+            "anyOf": [
+              {
+                "type": "string",
+                "format": "uuid"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Saved Search Id"
+          },
+          "saved_search_name": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Saved Search Name"
+          },
+          "destination_mode": {
+            "anyOf": [
+              {
+                "type": "string",
+                "enum": [
+                  "TOPICS",
+                  "EXISTING_FIELD",
+                  "NEW_FIELD"
+                ]
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Destination Mode"
+          },
+          "destination_metadata_definition_id": {
+            "anyOf": [
+              {
+                "type": "string",
+                "format": "uuid"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Destination Metadata Definition Id"
+          },
+          "destination_field_key": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Destination Field Key"
+          },
+          "destination_field_name": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Destination Field Name"
           },
           "configuration_hash": {
             "type": "string",
@@ -17653,6 +18023,13 @@
           "sample_size",
           "requested_topic_count",
           "assignment_mode",
+          "scope_mode",
+          "saved_search_id",
+          "saved_search_name",
+          "destination_mode",
+          "destination_metadata_definition_id",
+          "destination_field_key",
+          "destination_field_name",
           "configuration_hash",
           "document_count",
           "sampled_chunk_count",

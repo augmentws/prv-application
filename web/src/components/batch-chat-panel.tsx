@@ -22,6 +22,7 @@ import { coreApi } from "@/lib/api-client";
 import type { BatchDocumentReference } from "@/lib/document-references";
 import { normalizeParagraphReference } from "@/lib/document-references";
 import { formatDate } from "@/lib/format";
+import { useAgentChatStream } from "@/hooks/use-agent-chat-stream";
 import { cn } from "@/lib/utils";
 
 export function BatchChatPanel({ matterId, batchId, searchReady, onOpenDocument }: {
@@ -36,6 +37,7 @@ export function BatchChatPanel({ matterId, batchId, searchReady, onOpenDocument 
   const [newTitle, setNewTitle] = useState("");
   const [message, setMessage] = useState("");
   const scrollRef = useRef<HTMLDivElement>(null);
+  const chatStream = useAgentChatStream({ matterId, workflowType: "BATCH_CHAT", reviewBatchId: batchId });
   const agents = useQuery({
     queryKey: ["matter-agents", matterId, "BATCH_CHAT"],
     queryFn: () => coreApi<AgentDefinitionRead[]>(`/v1/matters/${matterId}/agents?workflow_type=BATCH_CHAT`),
@@ -43,7 +45,7 @@ export function BatchChatPanel({ matterId, batchId, searchReady, onOpenDocument 
   const conversations = useQuery({
     queryKey: ["batch-chat-conversations", matterId, batchId],
     queryFn: () => coreApi<AgentConversationRead[]>(`/v1/matters/${matterId}/agent-conversations?workflow_type=BATCH_CHAT&review_batch_id=${batchId}`),
-    refetchInterval: 2000,
+    refetchInterval: chatStream.pollingEnabled ? 2000 : false,
   });
   const effectiveConversationId = creating ? "" : selectedConversationId || conversations.data?.[0]?.id || "";
   const selectedConversation = conversations.data?.find((item) => item.id === effectiveConversationId);
@@ -51,13 +53,13 @@ export function BatchChatPanel({ matterId, batchId, searchReady, onOpenDocument 
     queryKey: ["agent-messages", effectiveConversationId],
     queryFn: () => coreApi<AgentMessageRead[]>(`/v1/agent-conversations/${effectiveConversationId}/messages`),
     enabled: Boolean(effectiveConversationId),
-    refetchInterval: effectiveConversationId ? 1500 : false,
+    refetchInterval: chatStream.pollingEnabled && effectiveConversationId ? 1500 : false,
   });
   const runs = useQuery({
     queryKey: ["agent-runs", effectiveConversationId],
     queryFn: () => coreApi<AgentRunRead[]>(`/v1/agent-conversations/${effectiveConversationId}/runs`),
     enabled: Boolean(effectiveConversationId),
-    refetchInterval: effectiveConversationId ? 1500 : false,
+    refetchInterval: chatStream.pollingEnabled && effectiveConversationId ? 1500 : false,
   });
   const latestRun = runs.data?.at(-1);
   const activeRun = Boolean(latestRun && ["QUEUED", "RUNNING"].includes(latestRun.status));
@@ -77,7 +79,7 @@ export function BatchChatPanel({ matterId, batchId, searchReady, onOpenDocument 
       }),
     }),
     onSuccess: (created) => {
-      queryClient.setQueryData<AgentConversationRead[]>(["batch-chat-conversations", matterId, batchId], (current) => [created, ...(current ?? [])]);
+      queryClient.setQueryData<AgentConversationRead[]>(["batch-chat-conversations", matterId, batchId], (current) => [created, ...(current ?? []).filter((item) => item.id !== created.id)]);
       setSelectedConversationId(created.id);
       setCreating(false);
       setNewTitle("");
@@ -91,8 +93,8 @@ export function BatchChatPanel({ matterId, batchId, searchReady, onOpenDocument 
       body: JSON.stringify({ message: content }),
     }),
     onSuccess: (created) => {
-      queryClient.setQueryData<AgentMessageRead[]>(["agent-messages", effectiveConversationId], (current) => [...(current ?? []), created.message]);
-      queryClient.setQueryData<AgentRunRead[]>(["agent-runs", effectiveConversationId], (current) => [...(current ?? []), created.run]);
+      queryClient.setQueryData<AgentMessageRead[]>(["agent-messages", effectiveConversationId], (current) => [...(current ?? []).filter((item) => item.id !== created.message.id), created.message]);
+      queryClient.setQueryData<AgentRunRead[]>(["agent-runs", effectiveConversationId], (current) => [...(current ?? []).filter((item) => item.id !== created.run.id), created.run]);
       setMessage("");
     },
     onError: (error) => toast.error(error instanceof Error ? error.message : "The question could not be sent."),
@@ -123,7 +125,7 @@ export function BatchChatPanel({ matterId, batchId, searchReady, onOpenDocument 
 
   return <div className="flex min-h-0 flex-1 flex-col">
     <div className="space-y-2 border-b p-3">
-      <div className="flex items-center justify-between gap-2"><div className="flex items-center gap-2 text-sm font-semibold text-agent"><Bot className="size-4" />Batch Chat Agent</div><StatusBadge status={selectedConversation.status} /></div>
+      <div className="flex items-center justify-between gap-2"><div className="flex items-center gap-2 text-sm font-semibold text-agent"><Bot className="size-4" />Batch Chat Agent <span className="text-xs font-normal text-muted-foreground">{chatStream.state === "live" ? "Live" : chatStream.state === "fallback" ? "Polling" : chatStream.state === "offline" ? "Offline" : "Connecting"}</span></div><StatusBadge status={selectedConversation.status} /></div>
       <div className="flex gap-2"><Select value={effectiveConversationId} onValueChange={setSelectedConversationId}><SelectTrigger className="min-w-0 flex-1" aria-label="Batch chat"><SelectValue /></SelectTrigger><SelectContent>{conversations.data?.map((conversation) => <SelectItem key={conversation.id} value={conversation.id}>{conversation.title ?? formatDate(conversation.created_at)}</SelectItem>)}</SelectContent></Select><Button size="icon" variant="outline" aria-label="New batch chat" onClick={() => setCreating(true)}><Plus /></Button></div>
     </div>
     <div ref={scrollRef} className="min-h-0 flex-1 space-y-3 overflow-y-auto p-4" aria-live="polite">

@@ -226,11 +226,13 @@ def compile_search_request(
     elif request.search_mode == "KEYWORD":
         query = _keyword_query(filters, request.query, query_fields)
     else:
+        candidate_count = request.candidate_limit or min(
+            10_000, max(SEMANTIC_CANDIDATE_FLOOR, request.offset + request.size)
+        )
         semantic_query = _semantic_query(
             filters,
             query_vector or [],
-            candidate_count=request.candidate_limit
-            or min(10_000, max(SEMANTIC_CANDIDATE_FLOOR, request.offset + request.size)),
+            candidate_count=candidate_count,
             minimum_similarity=request.minimum_similarity,
         )
         if request.search_mode == "SEMANTIC":
@@ -238,6 +240,7 @@ def compile_search_request(
         else:
             query = {
                 "hybrid": {
+                    "pagination_depth": candidate_count,
                     "queries": [
                         _keyword_query(filters, request.query, query_fields),
                         semantic_query,
@@ -576,11 +579,9 @@ def execute_facet_values(
         query_vector=query_vector,
         required_filters=required_filters,
     )
-    if request.search_mode == "HYBRID":
-        client.ensure_rrf_search_pipeline(RRF_SEARCH_PIPELINE)
-        raw = client.search(alias_name, body, search_pipeline=RRF_SEARCH_PIPELINE)
-    else:
-        raw = client.search(alias_name, body)
+    # Aggregation-only requests have no fetch hits for an RRF processor to rewrite.
+    # Running the score pipeline with size=0 causes OpenSearch to reject the query/fetch count mismatch.
+    raw = client.search(alias_name, body)
     buckets = raw.get("aggregations", {}).get(field, {}).get("buckets", [])
     missing_count = raw.get("aggregations", {}).get(f"{field}__missing", {}).get("doc_count", 0)
     definition = _definition_map(definitions).get(field)
@@ -617,11 +618,7 @@ def execute_batch_topic_facets(
         query_vector=query_vector,
         required_filters=required_filters,
     )
-    if request.search_mode == "HYBRID":
-        client.ensure_rrf_search_pipeline(RRF_SEARCH_PIPELINE)
-        raw = client.search(alias_name, body, search_pipeline=RRF_SEARCH_PIPELINE)
-    else:
-        raw = client.search(alias_name, body)
+    raw = client.search(alias_name, body)
     buckets = (
         raw.get("aggregations", {})
         .get("batch_topics", {})
@@ -658,11 +655,7 @@ def execute_date_histogram(
         query_vector=query_vector,
         required_filters=required_filters,
     )
-    if request.search_mode == "HYBRID":
-        client.ensure_rrf_search_pipeline(RRF_SEARCH_PIPELINE)
-        raw = client.search(alias_name, body, search_pipeline=RRF_SEARCH_PIPELINE)
-    else:
-        raw = client.search(alias_name, body)
+    raw = client.search(alias_name, body)
     buckets = raw.get("aggregations", {}).get(field, {}).get("buckets", [])
     return MatterDateHistogramResponse(
         field=field,

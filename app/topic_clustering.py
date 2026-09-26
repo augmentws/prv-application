@@ -34,6 +34,9 @@ from app.models import (
     MetadataGroupField,
     SearchProjectionOperation,
 )
+from app.schemas import MatterSearchRequest
+from app.search.client import OpenSearchClient
+from app.search.query import compile_search_request
 from app.search.service import process_search_operation
 
 logger = logging.getLogger(__name__)
@@ -409,20 +412,53 @@ def _ensure_topic_definition(
     db: Session,
     job: MatterTopicJob,
     topics: list[MatterTopicCluster],
+    *,
+    destination_mode: str = "TOPICS",
+    existing_definition_id: uuid.UUID | None = None,
+    new_field_key: str | None = None,
+    new_field_name: str | None = None,
 ) -> tuple[MetadataDefinition, bool]:
-    definition = db.scalar(
-        select(MetadataDefinition).where(
-            MetadataDefinition.matter_id == job.matter_id,
-            MetadataDefinition.key == "topics",
+    if destination_mode == "TOPICS":
+        definition = db.scalar(
+            select(MetadataDefinition).where(
+                MetadataDefinition.matter_id == job.matter_id,
+                MetadataDefinition.key == "topics",
+            )
         )
-    )
+        field_key = "topics"
+        field_name = "Topics"
+        field_description = "Named topics assigned by matter topic-clustering jobs."
+    elif destination_mode == "EXISTING_FIELD":
+        if existing_definition_id is None:
+            raise ValueError("Select an existing destination field")
+        definition = db.get(MetadataDefinition, existing_definition_id)
+        if definition is None or definition.matter_id != job.matter_id:
+            raise ValueError("The selected destination field was not found in this matter")
+        field_key = definition.key
+        field_name = definition.display_name
+        field_description = definition.description
+    elif destination_mode == "NEW_FIELD":
+        definition = db.scalar(
+            select(MetadataDefinition).where(
+                MetadataDefinition.matter_id == job.matter_id,
+                MetadataDefinition.key == new_field_key,
+            )
+        )
+        if definition is not None:
+            raise ValueError("A metadata field with the requested key already exists")
+        field_key = str(new_field_key)
+        field_name = str(new_field_name)
+        field_description = "Named topics assigned by a matter topic-clustering job."
+    else:
+        raise ValueError(f"Unsupported topic destination mode: {destination_mode}")
+
     created = definition is None
     if definition is None:
         definition = MetadataDefinition(
             matter_id=job.matter_id,
-            key="topics",
-            display_name="Topics",
-            description="Named topics assigned by matter topic-clustering jobs.",
+            key=field_key,
+            display_name=field_name,
+            description=field_description,
             type="ENUM",
             cardinality="MULTIPLE",
             allowed_values=[],
@@ -484,7 +520,7 @@ def _ensure_topic_definition(
             action="metadata_definition.created",
             target_type="metadata_definition",
             target_id=definition.id,
-            details={"matter_id": str(job.matter_id), "key": "topics", "source": "topic_job"},
+            details={"matter_id": str(job.matter_id), "key": definition.key, "source": "topic_job"},
         )
     elif (
         definition.type != "ENUM"
@@ -492,7 +528,7 @@ def _ensure_topic_definition(
         or definition.value_source != "ASSERTED"
         or definition.status != "ACTIVE"
     ):
-        raise ValueError("The existing topics field must be an active, asserted, multi-value ENUM")
+        raise ValueError("The destination field must be an active, asserted, multi-value ENUM")
 
     existing = {item["key"] for item in definition.allowed_values or []}
     options = list(definition.allowed_values or [])
@@ -533,6 +569,60 @@ def _sync_topic_schema(job_id: uuid.UUID) -> None:
     process_search_operation(operation_id)
 
 
+def _scoped_documents(db: Session, job: MatterTopicJob) -> list[MatterDocument]:
+    scope = job.configuration.get("document_scope") or {"mode": "ENTIRE_MATTER"}
+    mode = scope.get("mode", "ENTIRE_MATTER")
+    documents = list(
+        db.scalars(
+            select(MatterDocument)
+            .where(MatterDocument.matter_id == job.matter_id)
+            .order_by(MatterDocument.id)
+        )
+    )
+    if mode == "ENTIRE_MATTER":
+        return documents
+
+    request = MatterSearchRequest.model_validate(scope.get("search"))
+    if request.search_mode != "KEYWORD":
+        raise ValueError("Topic clustering saved-search scope must use Keyword search")
+    definitions = list(
+        db.scalars(select(MetadataDefinition).where(MetadataDefinition.matter_id == job.matter_id))
+    )
+    body = compile_search_request(
+        request.model_copy(update={"offset": 0, "size": 500, "facets": [], "sort": []}),
+        definitions,
+        tenant_id=str(job.matter.client.tenant_id),
+        matter_id=str(job.matter_id),
+    )
+    body.pop("highlight", None)
+    body.pop("from", None)
+    body["_source"] = ["document_id"]
+    body["sort"] = [{"document_id": "asc"}]
+    matched_ids: set[uuid.UUID] = set()
+    client = OpenSearchClient(get_settings())
+    try:
+        while True:
+            raw = client.search(str(scope["search_index_name"]), body)
+            hits = raw.get("hits", {}).get("hits", [])
+            if not hits:
+                break
+            matched_ids.update(
+                uuid.UUID(str((hit.get("_source") or {}).get("document_id") or hit.get("_id")))
+                for hit in hits
+            )
+            if len(hits) < body["size"]:
+                break
+            body["search_after"] = hits[-1]["sort"]
+    finally:
+        client.close()
+
+    if mode == "INCLUDE_SAVED_SEARCH":
+        return [document for document in documents if document.id in matched_ids]
+    if mode == "EXCLUDE_SAVED_SEARCH":
+        return [document for document in documents if document.id not in matched_ids]
+    raise ValueError(f"Unsupported topic document scope: {mode}")
+
+
 def discover_and_plan(job_id: uuid.UUID) -> int:
     with SessionLocal() as db:
         job = db.get(MatterTopicJob, job_id)
@@ -553,13 +643,7 @@ def discover_and_plan(job_id: uuid.UUID) -> int:
             return job.topic_count
         job.status = "SAMPLING"
         job.started_at = job.started_at or utcnow()
-        documents = list(
-            db.scalars(
-                select(MatterDocument)
-                .where(MatterDocument.matter_id == job.matter_id)
-                .order_by(MatterDocument.id)
-            )
-        )
+        documents = _scoped_documents(db, job)
         job.document_count = len(documents)
         db.commit()
         if not documents:
@@ -614,14 +698,40 @@ def discover_and_plan(job_id: uuid.UUID) -> int:
     return len(topics)
 
 
-def prepare_application(db: Session, job: MatterTopicJob, *, reviewer_user_id: uuid.UUID) -> None:
+def prepare_application(
+    db: Session,
+    job: MatterTopicJob,
+    *,
+    reviewer_user_id: uuid.UUID,
+    destination_mode: str = "TOPICS",
+    existing_definition_id: uuid.UUID | None = None,
+    new_field_key: str | None = None,
+    new_field_name: str | None = None,
+) -> None:
     if job.status != "AWAITING_REVIEW":
         raise ValueError("Topic proposals are not awaiting review")
     topics = [topic for topic in job.clusters if topic.included]
     if not topics:
         raise ValueError("At least one topic must be included")
-    definition, _ = _ensure_topic_definition(db, job, topics)
+    definition, _ = _ensure_topic_definition(
+        db,
+        job,
+        topics,
+        destination_mode=destination_mode,
+        existing_definition_id=existing_definition_id,
+        new_field_key=new_field_key,
+        new_field_name=new_field_name,
+    )
     job.metadata_definition_id = definition.id
+    configuration = dict(job.configuration)
+    configuration["topic_destination"] = {
+        "mode": destination_mode,
+        "metadata_definition_id": str(definition.id),
+        "field_key": definition.key,
+        "field_name": definition.display_name,
+    }
+    job.configuration = configuration
+    flag_modified(job, "configuration")
     job.topic_count = len(topics)
     job.reviewed_by_user_id = reviewer_user_id
     job.reviewed_at = utcnow()
@@ -674,11 +784,16 @@ def _assign_document(job: MatterTopicJob, document: MatterDocument, clusters: li
     return candidates[: int(job.configuration["max_topics_per_document"])]
 
 
-def _index_topic_batch(job: MatterTopicJob, batch: MatterTopicBatch) -> None:
+def index_topic_application(job_id: uuid.UUID) -> None:
+    """Project all documents from an approved topic run in one checkpointed operation."""
+
     if not get_settings().search_enabled:
         return
-    workflow_id = f"topic-index:{batch.id}"
+    workflow_id = f"topic-index:{job_id}:application"
     with SessionLocal() as db:
+        job = db.get(MatterTopicJob, job_id)
+        if job is None:
+            raise ValueError("Matter topic job not found")
         operation = db.scalar(
             select(SearchProjectionOperation).where(SearchProjectionOperation.workflow_id == workflow_id)
         )
@@ -686,7 +801,7 @@ def _index_topic_batch(job: MatterTopicJob, batch: MatterTopicBatch) -> None:
             operation = SearchProjectionOperation(
                 matter_id=job.matter_id,
                 kind="DOCUMENT_UPSERT",
-                payload={"document_ids": batch.document_ids},
+                payload={"topic_job_id": str(job.id)},
                 status="QUEUED",
                 workflow_id=workflow_id,
                 created_by_user_id=job.created_by_user_id,
@@ -705,6 +820,12 @@ def process_batch(batch_id: uuid.UUID) -> dict[str, int]:
         job = db.get(MatterTopicJob, batch.job_id)
         if job is None or job.metadata_definition_id is None:
             raise ValueError("Matter topic job is not ready for publishing")
+        destination = db.get(MetadataDefinition, job.metadata_definition_id)
+        if destination is None or destination.matter_id != job.matter_id:
+            raise ValueError("Matter topic destination field was not found")
+        audit_scope = "topics" if destination.key == "topics" else "topic_field"
+        audit_verb = "replaced" if job.assignment_mode == "REPLACE" else "appended"
+        audit_action = f"document.{audit_scope}.{audit_verb}"
         if batch.status == "COMPLETED":
             return {
                 "processed_count": batch.processed_count,
@@ -769,10 +890,16 @@ def process_batch(batch_id: uuid.UUID) -> dict[str, int]:
                             db,
                             tenant_id=job.matter.client.tenant_id,
                             actor_user_id=job.created_by_user_id,
-                            action="document.topics.replaced" if job.assignment_mode == "REPLACE" else "document.topics.appended",
+                            action=audit_action,
                             target_type="matter_document",
                             target_id=document.id,
-                            details={"matter_id": str(job.matter_id), "topic_job_id": str(job.id), "topic_keys": values},
+                            details={
+                                "matter_id": str(job.matter_id),
+                                "topic_job_id": str(job.id),
+                                "metadata_definition_id": str(destination.id),
+                                "field_key": destination.key,
+                                "topic_keys": values,
+                            },
                         )
                     assigned += int(bool(values))
                     outliers += int(not values)
@@ -789,7 +916,6 @@ def process_batch(batch_id: uuid.UUID) -> dict[str, int]:
             batch.metadata_applied = True
             db.commit()
 
-        _index_topic_batch(job, batch)
         batch.status = "COMPLETED"
         db.commit()
         return {

@@ -110,6 +110,20 @@ def test_assessment_launch_pins_inputs_and_requires_large_run_acknowledgment(
     assert payload["review_batch_id"] is None
     assert payload["definition_content_hash"]
 
+    renamed = client.patch(
+        f"{base}/{payload['id']}",
+        headers=auth(root_token),
+        json={"name": "  Renamed   hurricane assessment  "},
+    )
+    assert renamed.status_code == 200, renamed.text
+    assert renamed.json()["name"] == "Renamed hurricane assessment"
+    blank_name = client.patch(
+        f"{base}/{payload['id']}",
+        headers=auth(root_token),
+        json={"name": "   "},
+    )
+    assert blank_name.status_code == 422
+
     warned = client.post(
         base,
         headers=auth(root_token),
@@ -138,6 +152,7 @@ def test_assessment_launch_pins_inputs_and_requires_large_run_acknowledgment(
     listed = client.get(base, headers=auth(root_token))
     assert listed.status_code == 200
     assert len(listed.json()) == 3
+    assert any(item["name"] == "Renamed hurricane assessment" for item in listed.json())
     with TestingSessionLocal() as db:
         records = list(db.scalars(select(MatterDefinitionAssessmentRun)))
         assert all(record.workflow_run_id for record in records)

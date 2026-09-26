@@ -208,6 +208,7 @@ MatterTopicJobStatus = Literal[
     "CANCELED",
 ]
 MatterTopicOperatingMode = Literal["AUTO", "FIXED"]
+MatterTopicDestinationMode = Literal["TOPICS", "EXISTING_FIELD", "NEW_FIELD"]
 MatterTopicAssignmentMode = Literal["REPLACE", "APPEND"]
 CollectionRecordType = Literal["EMAIL", "FILE", "CHAT", "TRANSCRIPT", "OTHER"]
 CollectionProcessingStatus = Literal["NOT_PROCESSED", "METADATA_INCOMPLETE", "READY", "FAILED"]
@@ -333,6 +334,12 @@ class MatterTopicJobCreate(BaseModel):
     sample_size: int = Field(default=10_000, ge=10, le=200_000)
     requested_topic_count: int | None = Field(default=None, ge=2, le=200)
     assignment_mode: MatterTopicAssignmentMode = "REPLACE"
+    scope_mode: Literal["ENTIRE_MATTER", "INCLUDE_SAVED_SEARCH", "EXCLUDE_SAVED_SEARCH"] = "ENTIRE_MATTER"
+    saved_search_id: uuid.UUID | None = None
+    destination_mode: MatterTopicDestinationMode = "TOPICS"
+    existing_metadata_definition_id: uuid.UUID | None = None
+    new_field_key: MetadataKey | None = None
+    new_field_name: str | None = Field(default=None, min_length=1, max_length=200)
 
     @model_validator(mode="after")
     def validate_operating_mode(self) -> "MatterTopicJobCreate":
@@ -342,6 +349,33 @@ class MatterTopicJobCreate(BaseModel):
             raise ValueError("requested_topic_count is only valid in FIXED mode")
         if self.requested_topic_count is not None and self.requested_topic_count > self.sample_size:
             raise ValueError("requested_topic_count cannot exceed sample_size")
+        if self.scope_mode == "ENTIRE_MATTER" and self.saved_search_id is not None:
+            raise ValueError("Entire matter scope does not accept a saved search")
+        if self.scope_mode != "ENTIRE_MATTER" and self.saved_search_id is None:
+            raise ValueError("Saved-search scope requires saved_search_id")
+        if self.destination_mode == "TOPICS":
+            if any(
+                value is not None
+                for value in (
+                    self.existing_metadata_definition_id,
+                    self.new_field_key,
+                    self.new_field_name,
+                )
+            ):
+                raise ValueError("The Topics destination does not accept field details")
+        elif self.destination_mode == "EXISTING_FIELD":
+            if self.existing_metadata_definition_id is None:
+                raise ValueError("Existing-field destination requires a metadata definition")
+            if self.new_field_key is not None or self.new_field_name is not None:
+                raise ValueError("Existing-field destination does not accept new field details")
+        elif self.new_field_key is None or self.new_field_name is None:
+            raise ValueError("New-field destination requires a field name and key")
+        elif self.existing_metadata_definition_id is not None:
+            raise ValueError("New-field destination does not accept an existing metadata definition")
+        elif not self.new_field_name.strip():
+            raise ValueError("New field name cannot be blank")
+        else:
+            self.new_field_name = self.new_field_name.strip()
         return self
 
 
@@ -370,6 +404,13 @@ class MatterTopicJobRead(ORMModel):
     sample_size: int
     requested_topic_count: int | None
     assignment_mode: MatterTopicAssignmentMode
+    scope_mode: Literal["ENTIRE_MATTER", "INCLUDE_SAVED_SEARCH", "EXCLUDE_SAVED_SEARCH"]
+    saved_search_id: uuid.UUID | None
+    saved_search_name: str | None
+    destination_mode: MatterTopicDestinationMode | None
+    destination_metadata_definition_id: uuid.UUID | None
+    destination_field_key: str | None
+    destination_field_name: str | None
     configuration_hash: str
     document_count: int
     sampled_chunk_count: int
@@ -399,6 +440,37 @@ class MatterTopicProposalReview(BaseModel):
 
 class MatterTopicApplyRequest(BaseModel):
     topics: list[MatterTopicProposalReview] = Field(min_length=1, max_length=200)
+    destination_mode: MatterTopicDestinationMode = "TOPICS"
+    existing_metadata_definition_id: uuid.UUID | None = None
+    new_field_key: MetadataKey | None = None
+    new_field_name: str | None = Field(default=None, min_length=1, max_length=200)
+
+    @model_validator(mode="after")
+    def validate_destination(self) -> "MatterTopicApplyRequest":
+        if self.destination_mode == "TOPICS":
+            if any(
+                value is not None
+                for value in (
+                    self.existing_metadata_definition_id,
+                    self.new_field_key,
+                    self.new_field_name,
+                )
+            ):
+                raise ValueError("The Topics destination does not accept field details")
+        elif self.destination_mode == "EXISTING_FIELD":
+            if self.existing_metadata_definition_id is None:
+                raise ValueError("Existing-field destination requires a metadata definition")
+            if self.new_field_key is not None or self.new_field_name is not None:
+                raise ValueError("Existing-field destination does not accept new field details")
+        elif self.new_field_key is None or self.new_field_name is None:
+            raise ValueError("New-field destination requires a field name and key")
+        elif self.existing_metadata_definition_id is not None:
+            raise ValueError("New-field destination does not accept an existing metadata definition")
+        elif not self.new_field_name.strip():
+            raise ValueError("New field name cannot be blank")
+        else:
+            self.new_field_name = self.new_field_name.strip()
+        return self
 
 
 SearchFilterOperator = Literal["EQ", "IN", "RANGE", "EXISTS", "NOT_EXISTS"]
@@ -463,6 +535,8 @@ class MatterSearchRequest(BaseModel):
             raise ValueError("minimum_similarity is supported only for SEMANTIC search")
         if self.candidate_limit is not None and self.search_mode == "KEYWORD":
             raise ValueError("candidate_limit is supported only for SEMANTIC and HYBRID search")
+        if self.search_mode == "HYBRID" and self.candidate_limit is not None and self.candidate_limit > 100:
+            raise ValueError("HYBRID candidate_limit must be less than or equal to 100")
         return self
 
 
@@ -543,6 +617,12 @@ class MatterBulkTagPreviewRequest(BaseModel):
     search: MatterSearchRequest
     candidate_limit: int = Field(ge=1, le=10_000)
 
+    @model_validator(mode="after")
+    def validate_candidate_limit(self) -> "MatterBulkTagPreviewRequest":
+        if self.search.search_mode == "HYBRID" and self.candidate_limit > 100:
+            raise ValueError("HYBRID candidate_limit must be less than or equal to 100")
+        return self
+
 
 class MatterBulkTagPreviewResponse(BaseModel):
     candidate_count: int = Field(ge=0)
@@ -564,6 +644,8 @@ class MatterBulkTagCreate(BaseModel):
             raise ValueError("candidate_limit is supported only for semantic and hybrid bulk tagging")
         if self.search.search_mode != "KEYWORD" and self.candidate_limit is None:
             raise ValueError("Semantic and hybrid bulk tagging requires a candidate_limit")
+        if self.search.search_mode == "HYBRID" and self.candidate_limit is not None and self.candidate_limit > 100:
+            raise ValueError("HYBRID candidate_limit must be less than or equal to 100")
         if self.assignments is None and self.metadata_definition_id is None:
             raise ValueError("Bulk tagging requires at least one field assignment")
         if self.assignments is not None and self.metadata_definition_id is not None:
@@ -1693,6 +1775,18 @@ class MatterDefinitionAssessmentCreate(BaseModel):
     control_sample_size: int = Field(default=0, ge=0, le=1_000_000)
     use_batching: bool = True
     acknowledge_large_run_warning: bool = False
+
+
+class MatterDefinitionAssessmentUpdate(BaseModel):
+    name: str = Field(min_length=1, max_length=200)
+
+    @field_validator("name")
+    @classmethod
+    def normalize_name(cls, value: str) -> str:
+        name = " ".join(value.split())
+        if not name:
+            raise ValueError("Assessment name must not be blank")
+        return name
 
 
 class MatterDefinitionAssessmentRead(ORMModel):

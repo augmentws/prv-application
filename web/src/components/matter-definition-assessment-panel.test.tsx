@@ -1,5 +1,5 @@
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
-import { cleanup, render, screen, waitFor } from "@testing-library/react";
+import { cleanup, render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { afterEach, describe, expect, it, vi } from "vitest";
 
@@ -73,7 +73,7 @@ describe("MatterDefinitionAssessmentPanel regeneration", () => {
     const assessment = {
       id: "assessment-1",
       name: "Coverage assessment",
-      status: "COMPLETED",
+      status: "COMPLETED_WITH_ERRORS",
       review_batch_id: "batch-1",
       selected_count: 12,
       summarized_count: 11,
@@ -85,8 +85,13 @@ describe("MatterDefinitionAssessmentPanel regeneration", () => {
       coverage_snapshot: { status: "SUFFICIENT" },
       synthesis_result: {},
     };
+    let renamePayload: Record<string, unknown> | undefined;
     vi.mocked(coreApi).mockImplementation(async (path, init) => {
       if (path === "/v1/matters/matter-1/definition-assessments") return [assessment] as never;
+      if (path === "/v1/matters/matter-1/definition-assessments/assessment-1" && init?.method === "PATCH") {
+        renamePayload = JSON.parse(String(init.body));
+        return { ...assessment, name: renamePayload?.name } as never;
+      }
       if (path.endsWith("/queries")) return [] as never;
       if (path.endsWith("/questions")) return [] as never;
       if (path.includes("/execution?include_skill_runs=false")) return {
@@ -115,6 +120,17 @@ describe("MatterDefinitionAssessmentPanel regeneration", () => {
       </QueryClientProvider>,
     );
 
+    const coverageHeading = await screen.findByText("Coverage: sufficient");
+    expect(within(coverageHeading.parentElement as HTMLElement).getByText("completed with errors")).toBeInTheDocument();
+    await user.click(screen.getByRole("button", { name: "Rename assessment" }));
+    const renameInput = screen.getByLabelText("Assessment name");
+    await user.clear(renameInput);
+    await user.type(renameInput, "Updated coverage assessment");
+    await user.click(screen.getByRole("button", { name: "Rename" }));
+    await waitFor(() => {
+      expect(renamePayload).toEqual({ name: "Updated coverage assessment" });
+      expect(screen.getByRole("combobox", { name: "Assessment" })).toHaveTextContent("Updated coverage assessment");
+    });
     await user.click(await screen.findByRole("button", { name: "Regenerate assessment" }));
     expect(screen.getByText("Reuse current document analyses")).toBeInTheDocument();
     expect(screen.getByText("Reanalyze the frozen batch")).toBeInTheDocument();

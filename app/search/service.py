@@ -25,6 +25,8 @@ from app.models import (
     MatterDocumentImportJob,
     MatterEmbeddingBatch,
     MatterEmbeddingJob,
+    MatterTopicBatch,
+    MatterTopicJob,
     MetadataDefinition,
     ReviewBatch,
     ReviewBatchDocument,
@@ -720,6 +722,104 @@ class SearchIndexManager:
         self.db.commit()
         return indexed_count
 
+    def upsert_topic_job(
+        self,
+        matter_id: uuid.UUID,
+        topic_job_id: uuid.UUID,
+        *,
+        operation: SearchProjectionOperation | None = None,
+    ) -> int:
+        """Project one topic application's frozen document scope with durable retry checkpoints."""
+
+        generation = self.ensure(matter_id)
+        job = self.db.get(MatterTopicJob, topic_job_id)
+        if job is None or job.matter_id != matter_id:
+            raise ValueError("Matter topic job not found")
+        definitions = list(
+            self.db.scalars(
+                select(MetadataDefinition).where(
+                    MetadataDefinition.matter_id == matter_id,
+                    MetadataDefinition.status == "ACTIVE",
+                )
+            )
+        )
+        checkpoint = 0
+        retry_document_ids: list[uuid.UUID] = []
+        if operation is not None:
+            raw_checkpoint = operation.payload.get("next_document_offset", 0)
+            if isinstance(raw_checkpoint, int) and raw_checkpoint >= 0:
+                checkpoint = raw_checkpoint
+            raw_retry_ids = operation.payload.get("retry_document_ids", [])
+            if isinstance(raw_retry_ids, list):
+                retry_document_ids = [uuid.UUID(value) for value in raw_retry_ids]
+
+        indexed_count = checkpoint
+        document_ids: list[uuid.UUID] = []
+
+        def save_progress(*, next_offset: int, failed_ids: list[str] | None = None) -> None:
+            if operation is None:
+                return
+            operation.payload = {
+                **operation.payload,
+                "next_document_offset": next_offset,
+                "retry_document_ids": failed_ids or [],
+            }
+            self.db.commit()
+
+        def flush(*, advances_checkpoint: bool) -> None:
+            nonlocal indexed_count
+            if not document_ids:
+                return
+            attempted_ids = list(document_ids)
+            documents = list(
+                self.db.scalars(
+                    select(MatterDocument).where(
+                        MatterDocument.matter_id == matter_id,
+                        MatterDocument.id.in_(attempted_ids),
+                    )
+                )
+            )
+            next_offset = indexed_count + len(attempted_ids) if advances_checkpoint else indexed_count
+            try:
+                self._bulk_upsert(generation.index_name, documents, definitions)
+            except OpenSearchBulkError as exc:
+                failed_ids = exc.failed_document_ids or [str(value) for value in attempted_ids]
+                save_progress(next_offset=next_offset, failed_ids=failed_ids)
+                raise
+            if advances_checkpoint:
+                indexed_count = next_offset
+            save_progress(next_offset=indexed_count)
+            document_ids.clear()
+
+        if retry_document_ids:
+            document_ids.extend(retry_document_ids)
+            flush(advances_checkpoint=False)
+
+        batch_document_ids = self.db.scalars(
+            select(MatterTopicBatch.document_ids)
+            .where(
+                MatterTopicBatch.job_id == job.id,
+                MatterTopicBatch.status == "COMPLETED",
+                MatterTopicBatch.metadata_applied.is_(True),
+            )
+            .order_by(MatterTopicBatch.batch_number)
+        )
+        visited_count = 0
+        for batch_ids in batch_document_ids:
+            for value in batch_ids:
+                if visited_count < checkpoint:
+                    visited_count += 1
+                    continue
+                visited_count += 1
+                document_ids.append(uuid.UUID(value))
+                if len(document_ids) >= self.settings.search_bulk_batch_size:
+                    flush(advances_checkpoint=True)
+        flush(advances_checkpoint=True)
+        self.client.refresh(generation.index_name)
+        generation.document_count = self.client.count(generation.index_name)
+        self.db.commit()
+        return indexed_count
+
     def delete_documents(self, matter_id: uuid.UUID, document_ids: list[uuid.UUID]) -> int:
         self._lock_matter_search(matter_id)
         generation = self.active(matter_id)
@@ -968,8 +1068,15 @@ def process_search_operation(operation_id: uuid.UUID) -> None:
                     operation=operation if operation.kind == "REBUILD" else None,
                 )
             elif operation.kind == "DOCUMENT_UPSERT":
+                topic_job_id = operation.payload.get("topic_job_id")
                 embedding_job_id = operation.payload.get("embedding_job_id")
-                if embedding_job_id:
+                if topic_job_id:
+                    manager.upsert_topic_job(
+                        operation.matter_id,
+                        uuid.UUID(topic_job_id),
+                        operation=operation,
+                    )
+                elif embedding_job_id:
                     manager.upsert_embedding_job(
                         operation.matter_id,
                         uuid.UUID(embedding_job_id),

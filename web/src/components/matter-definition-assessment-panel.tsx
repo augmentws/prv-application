@@ -1,7 +1,7 @@
 "use client";
 
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { AlertTriangle, ExternalLink, LoaderCircle, Play, RotateCcw, Sparkles, Workflow } from "lucide-react";
+import { AlertTriangle, ExternalLink, LoaderCircle, PencilLine, Play, RotateCcw, Sparkles, Workflow } from "lucide-react";
 import Link from "next/link";
 import { useEffect, useMemo, useState } from "react";
 import { createPortal } from "react-dom";
@@ -21,6 +21,7 @@ import type {
   MatterDefinitionAssessmentQueryRead,
   MatterDefinitionAssessmentQuestionRead,
   MatterDefinitionAssessmentRead,
+  MatterDefinitionAssessmentUpdate,
   MatterDefinitionRevisionRead,
   WorkflowExecutionRead,
 } from "@/generated/models";
@@ -46,6 +47,8 @@ function objectValue(value: unknown): Record<string, unknown> {
 export function MatterDefinitionAssessmentPanel({ matterId, revisions, publishedRevision, embedded = false, toolbarElement }: { matterId: string; revisions: MatterDefinitionRevisionRead[]; publishedRevision: number | null; embedded?: boolean; toolbarElement?: HTMLElement | null }) {
   const queryClient = useQueryClient();
   const [launchOpen, setLaunchOpen] = useState(false);
+  const [renameOpen, setRenameOpen] = useState(false);
+  const [renameName, setRenameName] = useState("");
   const [regenerateOpen, setRegenerateOpen] = useState(false);
   const [selectedId, setSelectedId] = useState("");
   const [revision, setRevision] = useState(String(revisions[0]?.revision ?? 1));
@@ -94,6 +97,16 @@ export function MatterDefinitionAssessmentPanel({ matterId, revisions, published
       toast.success("Corpus assessment started.");
     },
     onError: (error) => toast.error(error instanceof Error ? error.message : "The assessment could not be started."),
+  });
+  const rename = useMutation({
+    mutationFn: ({ assessmentId, payload }: { assessmentId: string; payload: MatterDefinitionAssessmentUpdate }) => coreApi<MatterDefinitionAssessmentRead>(`/v1/matters/${matterId}/definition-assessments/${assessmentId}`, { method: "PATCH", body: JSON.stringify(payload) }),
+    onSuccess: async (updated) => {
+      queryClient.setQueryData<MatterDefinitionAssessmentRead[]>(["definition-assessments", matterId], (current) => current?.map((run) => run.id === updated.id ? updated : run));
+      await queryClient.invalidateQueries({ queryKey: ["review-batches", matterId] });
+      setRenameOpen(false);
+      toast.success("Assessment renamed.");
+    },
+    onError: (error) => toast.error(error instanceof Error ? error.message : "The assessment could not be renamed."),
   });
   const retry = useMutation({
     mutationFn: (assessmentId: string) => coreApi<MatterDefinitionAssessmentRead>(`/v1/matters/${matterId}/definition-assessments/${assessmentId}/retry`, { method: "POST" }),
@@ -151,6 +164,9 @@ export function MatterDefinitionAssessmentPanel({ matterId, revisions, published
   const usage = execution.data;
   const cacheRatio = usage?.input_tokens ? Math.round((usage.cached_input_tokens / usage.input_tokens) * 100) : 0;
   const canRetry = assessmentCanRetry(selected?.status, selected?.failed_count);
+  const statusInCoverage = Boolean(
+    selected?.coverage_snapshot && ["COMPLETED", "COMPLETED_WITH_ERRORS"].includes(selected.status),
+  );
 
   useEffect(() => {
     if (selected?.guidance_refinement_status !== "COMPLETED") return;
@@ -171,10 +187,23 @@ export function MatterDefinitionAssessmentPanel({ matterId, revisions, published
     });
   };
 
+  const openRename = () => {
+    if (!selected) return;
+    setRenameName(selected.name);
+    setRenameOpen(true);
+  };
+
+  const submitRename = () => {
+    const nextName = renameName.trim();
+    if (!selected || !nextName) return;
+    rename.mutate({ assessmentId: selected.id, payload: { name: nextName } });
+  };
+
   const toolbar = (
     <>
       {runs.data?.length ? <Select value={effectiveId} onValueChange={setSelectedId}><SelectTrigger className="min-w-0 max-w-64 flex-1" aria-label="Assessment"><SelectValue /></SelectTrigger><SelectContent>{runs.data.map((run) => <SelectItem key={run.id} value={run.id}>{run.name} · {run.status.toLowerCase().replaceAll("_", " ")}</SelectItem>)}</SelectContent></Select> : <p className="min-w-0 flex-1 truncate text-right text-xs text-muted-foreground">No assessments</p>}
-      {selected ? <StatusBadge status={selected.status} /> : null}
+      {selected ? <Button type="button" size="icon" className="size-8 shrink-0" variant="outline" disabled={rename.isPending} aria-label="Rename assessment" onClick={openRename}><PencilLine /></Button> : null}
+      {selected && !statusInCoverage ? <StatusBadge status={selected.status} /> : null}
       {selected?.review_batch_id ? <Button asChild size="icon" className="size-8 shrink-0" variant="outline"><Link href={`/review/matters/${matterId}?batch=${selected.review_batch_id}`} aria-label="Open assessment batch"><ExternalLink /></Link></Button> : null}
       {selected && ["COMPLETED", "COMPLETED_WITH_ERRORS"].includes(selected.status) && selected.selected_count > 0 ? <Button type="button" size="icon" className="size-8 shrink-0" variant="outline" aria-label="Regenerate assessment" onClick={() => setRegenerateOpen(true)}><RotateCcw /></Button> : null}
       <Button type="button" size="sm" className="shrink-0" onClick={() => setLaunchOpen(true)} disabled={!revisions.length}><Play />New</Button>
@@ -195,7 +224,7 @@ export function MatterDefinitionAssessmentPanel({ matterId, revisions, published
           <Metric label="Estimated input" value={selected.estimated_input_tokens?.toLocaleString() ?? "Pending"} />
           <Metric label="Cache reads" value={`${cacheRatio}%`} />
         </div>
-        {selected.coverage_snapshot ? <div className={`rounded-lg border p-3 text-sm ${objectValue(selected.coverage_snapshot).status === "INSUFFICIENT" ? "border-conflict/40 bg-conflict/8" : "bg-muted/30"}`}><p className="font-semibold">Coverage: {String(objectValue(selected.coverage_snapshot).status ?? "pending").toLowerCase()}</p><p className="mt-1 text-xs text-muted-foreground">{selected.summarized_count} successful of {selected.selected_count} selected · {selected.partial_coverage_count} partial · {selected.invalid_result_count} invalid</p></div> : null}
+        {selected.coverage_snapshot ? <div className={`rounded-lg border p-3 text-sm ${objectValue(selected.coverage_snapshot).status === "INSUFFICIENT" ? "border-conflict/40 bg-conflict/8" : "bg-muted/30"}`}><div className="flex flex-wrap items-center justify-between gap-2"><p className="font-semibold">Coverage: {String(objectValue(selected.coverage_snapshot).status ?? "pending").toLowerCase()}</p>{statusInCoverage ? <StatusBadge status={selected.status} /> : null}</div><p className="mt-1 text-xs text-muted-foreground">{selected.summarized_count} successful of {selected.selected_count} selected · {selected.partial_coverage_count} partial · {selected.invalid_result_count} invalid</p></div> : null}
 
         {queries.data?.length ? <section><h3 className="mb-2 text-xs font-bold uppercase tracking-[0.08em] text-muted-foreground">Retrieval plan</h3><div className="space-y-2">{queries.data.map((item) => <div key={item.id} className="rounded-lg border p-3"><div className="flex items-center justify-between gap-3"><p className="text-sm font-semibold">{item.criterion_label}</p><Badge variant="outline">{item.result_count} results</Badge></div><p className="mt-1 text-xs text-muted-foreground">{item.rationale}</p></div>)}</div></section> : null}
 
@@ -217,6 +246,8 @@ export function MatterDefinitionAssessmentPanel({ matterId, revisions, published
       <label className="flex cursor-pointer items-start gap-2 rounded-lg border p-3 text-sm"><input className="mt-1 size-4 accent-primary" type="checkbox" checked={useBatching} onChange={(event) => setUseBatching(event.target.checked)} /><span><strong>Use Batch API</strong><span className="mt-0.5 block text-xs text-muted-foreground">Submit eligible document summaries asynchronously through the model provider&apos;s lower-cost Batch API. Oversized map/reduce documents continue through real-time processing.</span></span></label>
       {requested > 1000 ? <label className="flex cursor-pointer items-start gap-2 rounded-lg border border-conflict/40 bg-conflict/8 p-3 text-sm"><input className="mt-1 size-4 accent-primary" type="checkbox" checked={warningAcknowledged} onChange={(event) => setWarningAcknowledged(event.target.checked)} /><span><strong className="flex items-center gap-1"><AlertTriangle className="size-4" />Large analysis</strong>Continue with {requested.toLocaleString()} documents. This can use substantial model capacity.</span></label> : null}
     </div><DialogFooter><Button type="button" variant="outline" onClick={() => setLaunchOpen(false)}>Cancel</Button><Button type="button" disabled={launch.isPending || !name.trim() || (requested > 1000 && !warningAcknowledged)} onClick={submitLaunch}>{launch.isPending ? <LoaderCircle className="animate-spin" /> : <Play />}Start assessment</Button></DialogFooter></DialogContent></Dialog>
+
+    <Dialog open={renameOpen} onOpenChange={(open) => { if (!rename.isPending) setRenameOpen(open); }}><DialogContent><DialogHeader><DialogTitle>Rename assessment</DialogTitle><DialogDescription>Change how this assessment appears in assessment history. Its frozen batch and results are unchanged.</DialogDescription></DialogHeader><div className="space-y-2"><label className="text-sm font-medium" htmlFor="rename-assessment-name">Assessment name</label><Input id="rename-assessment-name" autoFocus maxLength={200} value={renameName} onChange={(event) => setRenameName(event.target.value)} onKeyDown={(event) => { if (event.key === "Enter") { event.preventDefault(); submitRename(); } }} /></div><DialogFooter><Button type="button" variant="outline" disabled={rename.isPending} onClick={() => setRenameOpen(false)}>Cancel</Button><Button type="button" disabled={!renameName.trim() || rename.isPending} onClick={submitRename}>{rename.isPending ? <LoaderCircle className="animate-spin" /> : <PencilLine />}Rename</Button></DialogFooter></DialogContent></Dialog>
 
     <Dialog open={regenerateOpen} onOpenChange={(open) => { if (!regenerateSynthesis.isPending && !regenerateDocumentAnalyses.isPending) setRegenerateOpen(open); }}><DialogContent><DialogHeader><DialogTitle>Regenerate assessment</DialogTitle><DialogDescription>Choose whether to reuse the current document analyses or run the current managed skills over the same frozen batch.</DialogDescription></DialogHeader><div className="space-y-3">
       <div className="rounded-lg border p-4"><h3 className="font-semibold">Reuse current document analyses</h3><p className="mt-1 text-sm text-muted-foreground">Regenerates the refinement questions and topic synthesis from the {selected?.summarized_count.toLocaleString() ?? 0} existing analyses. Documents are not processed again.</p><Button type="button" className="mt-3" variant="outline" disabled={!selected || selected.summarized_count === 0 || regenerateSynthesis.isPending || regenerateDocumentAnalyses.isPending} onClick={() => selected && regenerateSynthesis.mutate(selected.id)}>{regenerateSynthesis.isPending ? <LoaderCircle className="animate-spin" /> : <RotateCcw />}Reuse analyses</Button></div>

@@ -5,6 +5,7 @@
  * Phase-one Core API for authentication, hierarchical tenants, clients, matters, and matter metadata definitions.
  * OpenAPI spec version: 0.1.0
  */
+import type { MatterTopicApplyRequestDestinationMode } from './matterTopicApplyRequestDestinationMode';
 import type { MatterTopicProposalReview } from './matterTopicProposalReview';
 
 export interface MatterTopicApplyRequest {
@@ -13,4 +14,8 @@ export interface MatterTopicApplyRequest {
      * @maxItems 200
      */
   topics: MatterTopicProposalReview[];
+  destination_mode?: MatterTopicApplyRequestDestinationMode;
+  existing_metadata_definition_id?: string | null;
+  new_field_key?: string | null;
+  new_field_name?: string | null;
 }

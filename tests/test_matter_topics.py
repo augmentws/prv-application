@@ -1,4 +1,5 @@
 import uuid
+from datetime import datetime, timezone
 from types import SimpleNamespace
 
 import numpy as np
@@ -6,12 +7,19 @@ import pytest
 from fastapi.testclient import TestClient
 from sqlalchemy.orm import Session
 
-from app.models import MatterEmbeddingJob, MatterTopicCluster, MatterTopicJob, MetadataDefinition
+from app.models import (
+    MatterEmbeddingJob,
+    MatterTopicCluster,
+    MatterTopicJob,
+    MetadataDefinition,
+    SearchIndexGeneration,
+)
 from app.topic_clustering import (
     _automatic_kmeans_labels,
     _cluster_discriminative_terms,
     _evenly_spaced_indexes,
     _sample,
+    _scoped_documents,
     _topic_sample_key,
     discover_topics,
 )
@@ -75,7 +83,14 @@ def test_create_list_and_cancel_topic_job(
     created = client.post(
         f"/v1/matters/{matter['id']}/topic-jobs",
         headers=auth(root_token),
-        json={"operating_mode": "FIXED", "sample_size": 500, "requested_topic_count": 8},
+        json={
+            "operating_mode": "FIXED",
+            "sample_size": 500,
+            "requested_topic_count": 8,
+            "destination_mode": "NEW_FIELD",
+            "new_field_key": "communication_topics",
+            "new_field_name": "Communication topics",
+        },
     )
     assert created.status_code == 202, created.text
     assert created.json()["status"] == "QUEUED"
@@ -83,6 +98,16 @@ def test_create_list_and_cancel_topic_job(
     assert created.json()["sample_size"] == 500
     assert created.json()["requested_topic_count"] == 8
     assert created.json()["assignment_mode"] == "REPLACE"
+    assert created.json()["scope_mode"] == "ENTIRE_MATTER"
+    assert created.json()["saved_search_id"] is None
+    assert created.json()["saved_search_name"] is None
+    assert created.json()["destination_mode"] == "NEW_FIELD"
+    assert created.json()["destination_metadata_definition_id"] is None
+    assert created.json()["destination_field_key"] == "communication_topics"
+    assert created.json()["destination_field_name"] == "Communication topics"
+    assert db.query(MetadataDefinition).filter_by(
+        matter_id=uuid.UUID(matter["id"]), key="communication_topics"
+    ).first() is None
 
     duplicate = client.post(
         f"/v1/matters/{matter['id']}/topic-jobs",
@@ -101,6 +126,146 @@ def test_create_list_and_cancel_topic_job(
     )
     assert canceled.status_code == 200
     assert canceled.json()["status"] == "CANCELED"
+
+
+def test_topic_job_snapshots_keyword_saved_search_scope(
+    client: TestClient,
+    root_token: str,
+    root_admin,
+    db: Session,
+) -> None:
+    matter = _matter(client, root_token)
+    matter_id = uuid.UUID(matter["id"])
+    embedding_job = MatterEmbeddingJob(
+        matter_id=matter_id,
+        status="COMPLETED",
+        workflow_id=f"test-embedding:{uuid.uuid4()}",
+        configuration_hash="b" * 64,
+        configuration={"embedding": {"dimensions": 8}},
+        embedding_model="test-model",
+        embedding_dimensions=8,
+        embedding_normalized=True,
+        total_count=1,
+        processed_count=1,
+        embedded_count=1,
+        chunk_count=5,
+        created_by_user_id=root_admin.id,
+    )
+    generation = SearchIndexGeneration(
+        matter_id=matter_id,
+        generation=1,
+        index_name=f"matter-{matter_id}-000001",
+        alias_name=f"matter-{matter_id}",
+        schema_hash="c" * 64,
+        status="ACTIVE",
+        schema_snapshot={},
+        activated_at=datetime.now(timezone.utc),
+    )
+    db.add_all([embedding_job, generation])
+    db.commit()
+
+    saved = client.post(
+        f"/v1/matters/{matter_id}/saved-searches",
+        headers=auth(root_token),
+        json={
+            "name": "Form mail",
+            "visibility": "PRIVATE",
+            "search": {
+                "query": "unsubscribe",
+                "search_mode": "KEYWORD",
+                "filters": [],
+                "offset": 25,
+                "size": 50,
+            },
+        },
+    )
+    assert saved.status_code == 201, saved.text
+
+    created = client.post(
+        f"/v1/matters/{matter_id}/topic-jobs",
+        headers=auth(root_token),
+        json={
+            "operating_mode": "AUTO",
+            "sample_size": 500,
+            "scope_mode": "EXCLUDE_SAVED_SEARCH",
+            "saved_search_id": saved.json()["id"],
+        },
+    )
+    assert created.status_code == 202, created.text
+    assert created.json()["scope_mode"] == "EXCLUDE_SAVED_SEARCH"
+    assert created.json()["saved_search_id"] == saved.json()["id"]
+    assert created.json()["saved_search_name"] == "Form mail"
+
+    db.expire_all()
+    job = db.get(MatterTopicJob, uuid.UUID(created.json()["id"]))
+    assert job is not None
+    scope = job.configuration["document_scope"]
+    assert scope["mode"] == "EXCLUDE_SAVED_SEARCH"
+    assert scope["saved_search_name"] == "Form mail"
+    assert scope["search"]["query"] == "unsubscribe"
+    assert scope["search"]["offset"] == 0
+    assert scope["search_index_name"] == generation.index_name
+
+
+@pytest.mark.parametrize(
+    ("mode", "expected_indexes"),
+    [
+        ("INCLUDE_SAVED_SEARCH", [0, 2]),
+        ("EXCLUDE_SAVED_SEARCH", [1]),
+    ],
+)
+def test_saved_search_scope_filters_topic_documents(monkeypatch, mode, expected_indexes) -> None:
+    document_ids = [uuid.uuid4() for _ in range(3)]
+    documents = [SimpleNamespace(id=document_id) for document_id in document_ids]
+
+    class FakeSession:
+        def __init__(self):
+            self.calls = 0
+
+        def scalars(self, statement):
+            del statement
+            self.calls += 1
+            return documents if self.calls == 1 else []
+
+    class FakeOpenSearchClient:
+        def __init__(self, settings):
+            del settings
+
+        def search(self, index_name, body):
+            assert index_name == "matter-snapshot-000001"
+            assert body["sort"] == [{"document_id": "asc"}]
+            return {
+                "hits": {
+                    "hits": [
+                        {"_source": {"document_id": str(document_ids[0])}, "sort": [str(document_ids[0])]},
+                        {"_source": {"document_id": str(document_ids[2])}, "sort": [str(document_ids[2])]},
+                    ]
+                }
+            }
+
+        def close(self):
+            return None
+
+    monkeypatch.setattr("app.topic_clustering.OpenSearchClient", FakeOpenSearchClient)
+    monkeypatch.setattr(
+        "app.topic_clustering.compile_search_request",
+        lambda request, definitions, **kwargs: {"from": 0, "size": request.size},
+    )
+    job = SimpleNamespace(
+        matter_id=uuid.uuid4(),
+        matter=SimpleNamespace(client=SimpleNamespace(tenant_id=uuid.uuid4())),
+        configuration={
+            "document_scope": {
+                "mode": mode,
+                "search": {"query": "unsubscribe", "search_mode": "KEYWORD"},
+                "search_index_name": "matter-snapshot-000001",
+            }
+        },
+    )
+
+    scoped = _scoped_documents(FakeSession(), job)
+
+    assert [document.id for document in scoped] == [document_ids[index] for index in expected_indexes]
 
 
 def test_fixed_topic_discovery_returns_named_clusters() -> None:
@@ -268,11 +433,13 @@ def test_evenly_spaced_topic_chunk_indexes() -> None:
     assert _evenly_spaced_indexes(3, 5) == [0, 1, 2]
 
 
+@pytest.mark.parametrize("destination_mode", ["TOPICS", "EXISTING_FIELD", "NEW_FIELD"])
 def test_reviewed_topics_are_published_only_after_apply(
     client: TestClient,
     root_token: str,
     root_admin,
     db: Session,
+    destination_mode: str,
 ) -> None:
     matter = _matter(client, root_token)
     matter_id = uuid.UUID(matter["id"])
@@ -325,9 +492,50 @@ def test_reviewed_topics_are_published_only_after_apply(
         for ordinal, (name, centroid) in enumerate((("Finance", [1.0, 0.0]), ("Energy", [0.0, 1.0])))
     ]
     db.add_all(clusters)
+    existing_definition = None
+    if destination_mode == "EXISTING_FIELD":
+        existing_definition = MetadataDefinition(
+            matter_id=matter_id,
+            key="case_themes",
+            display_name="Case themes",
+            description="Existing case themes.",
+            type="ENUM",
+            cardinality="MULTIPLE",
+            allowed_values=[{"key": "legacy", "label": "Legacy", "description": None, "active": True}],
+            value_source="ASSERTED",
+            assertion_policy="IMMEDIATE",
+            resolution_policy="LATEST_VALID",
+            searchable=True,
+            facetable=True,
+            reviewable=True,
+            ai_assignable=True,
+            status="ACTIVE",
+        )
+        db.add(existing_definition)
+    db.flush()
+    destination_snapshot = {
+        "mode": destination_mode,
+        "metadata_definition_id": str(existing_definition.id) if existing_definition else None,
+        "field_key": {
+            "TOPICS": "topics",
+            "EXISTING_FIELD": "case_themes",
+            "NEW_FIELD": "communication_topics",
+        }[destination_mode],
+        "field_name": {
+            "TOPICS": "Topics",
+            "EXISTING_FIELD": "Case themes",
+            "NEW_FIELD": "Communication topics",
+        }[destination_mode],
+    }
+    job.configuration = {**job.configuration, "topic_destination": destination_snapshot}
     db.commit()
 
     assert db.query(MetadataDefinition).filter_by(matter_id=matter_id, key="topics").first() is None
+    expected_key = "topics"
+    if destination_mode == "EXISTING_FIELD":
+        expected_key = "case_themes"
+    elif destination_mode == "NEW_FIELD":
+        expected_key = "communication_topics"
     response = client.post(
         f"/v1/matters/{matter['id']}/topic-jobs/{job.id}/apply",
         headers=auth(root_token),
@@ -345,7 +553,7 @@ def test_reviewed_topics_are_published_only_after_apply(
                     "description": None,
                     "included": False,
                 },
-            ]
+            ],
         },
     )
     assert response.status_code == 202, response.text
@@ -355,8 +563,9 @@ def test_reviewed_topics_are_published_only_after_apply(
     assert body["reviewed_by_user_id"] == str(root_admin.id)
     assert body["reviewed_at"] is not None
     assert [cluster["included"] for cluster in body["clusters"]] == [True, False]
-    definition = db.query(MetadataDefinition).filter_by(matter_id=matter_id, key="topics").one()
-    assert definition.allowed_values == [
+    db.expire_all()
+    definition = db.query(MetadataDefinition).filter_by(matter_id=matter_id, key=expected_key).one()
+    expected_values = [
         {
             "key": clusters[0].topic_key,
             "label": "Financial transactions",
@@ -364,3 +573,14 @@ def test_reviewed_topics_are_published_only_after_apply(
             "active": True,
         }
     ]
+    if destination_mode == "EXISTING_FIELD":
+        expected_values.insert(0, {"key": "legacy", "label": "Legacy", "description": None, "active": True})
+    assert definition.allowed_values == expected_values
+    assert body["metadata_definition_id"] == str(definition.id)
+    db.refresh(job)
+    assert job.configuration["topic_destination"] == {
+        "mode": destination_mode,
+        "metadata_definition_id": str(definition.id),
+        "field_key": expected_key,
+        "field_name": definition.display_name,
+    }

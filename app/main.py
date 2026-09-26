@@ -3,6 +3,7 @@ from fastapi.encoders import jsonable_encoder
 from fastapi.exceptions import RequestValidationError
 from fastapi.responses import JSONResponse
 
+from app.agent_events import agent_event_lifespan
 from app.config import get_settings
 from app.routers import (
     agent_conversations,
@@ -35,6 +36,7 @@ app = FastAPI(
     title="Priv-View Core API",
     version="0.1.0",
     description="Phase-one Core API for authentication, hierarchical tenants, clients, matters, and matter metadata definitions.",
+    lifespan=agent_event_lifespan,
 )
 
 

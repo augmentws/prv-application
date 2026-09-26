@@ -519,6 +519,40 @@ class MatterTopicJob(TimestampMixin, Base):
     completed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     canceled_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
 
+    @property
+    def scope_mode(self) -> str:
+        return str((self.configuration.get("document_scope") or {}).get("mode", "ENTIRE_MATTER"))
+
+    @property
+    def saved_search_id(self) -> uuid.UUID | None:
+        value = (self.configuration.get("document_scope") or {}).get("saved_search_id")
+        return uuid.UUID(str(value)) if value else None
+
+    @property
+    def saved_search_name(self) -> str | None:
+        value = (self.configuration.get("document_scope") or {}).get("saved_search_name")
+        return str(value) if value else None
+
+    @property
+    def destination_mode(self) -> str | None:
+        value = (self.configuration.get("topic_destination") or {}).get("mode")
+        return str(value) if value else None
+
+    @property
+    def destination_metadata_definition_id(self) -> uuid.UUID | None:
+        value = (self.configuration.get("topic_destination") or {}).get("metadata_definition_id")
+        return uuid.UUID(str(value)) if value else None
+
+    @property
+    def destination_field_key(self) -> str | None:
+        value = (self.configuration.get("topic_destination") or {}).get("field_key")
+        return str(value) if value else None
+
+    @property
+    def destination_field_name(self) -> str | None:
+        value = (self.configuration.get("topic_destination") or {}).get("field_name")
+        return str(value) if value else None
+
     matter: Mapped[Matter] = relationship()
     embedding_job: Mapped[MatterEmbeddingJob] = relationship()
     metadata_definition: Mapped["MetadataDefinition | None"] = relationship()
@@ -1752,6 +1786,66 @@ class AgentConversation(TimestampMixin, Base):
     initiated_by_user_id: Mapped[uuid.UUID] = mapped_column(
         Uuid, ForeignKey("app_user.id", ondelete="RESTRICT"), index=True
     )
+
+
+class AgentConversationEventCursor(TimestampMixin, Base):
+    __tablename__ = "agent_conversation_event_cursor"
+    __table_args__ = (
+        CheckConstraint("newest_sequence >= 0", name="ck_agent_conversation_event_cursor_newest"),
+        CheckConstraint("oldest_sequence >= 1", name="ck_agent_conversation_event_cursor_oldest"),
+    )
+
+    matter_id: Mapped[uuid.UUID] = mapped_column(
+        Uuid, ForeignKey("matter.id", ondelete="CASCADE"), primary_key=True
+    )
+    newest_sequence: Mapped[int] = mapped_column(BigInteger, default=0)
+    oldest_sequence: Mapped[int] = mapped_column(BigInteger, default=1)
+
+
+class AgentConversationEvent(Base):
+    __tablename__ = "agent_conversation_event"
+    __table_args__ = (
+        UniqueConstraint("matter_id", "matter_sequence", name="uq_agent_conversation_event_matter_sequence"),
+        CheckConstraint("matter_sequence > 0", name="ck_agent_conversation_event_sequence_positive"),
+        CheckConstraint("schema_version > 0", name="ck_agent_conversation_event_schema_version_positive"),
+        Index(
+            "ix_agent_conversation_event_scope_sequence",
+            "matter_id",
+            "workflow_type",
+            "review_batch_id",
+            "matter_sequence",
+        ),
+        Index("ix_agent_conversation_event_conversation_sequence", "conversation_id", "matter_sequence"),
+    )
+
+    id: Mapped[uuid.UUID] = mapped_column(Uuid, primary_key=True, default=uuid.uuid4)
+    tenant_id: Mapped[uuid.UUID] = mapped_column(Uuid, ForeignKey("tenant.id", ondelete="RESTRICT"), index=True)
+    matter_id: Mapped[uuid.UUID] = mapped_column(Uuid, ForeignKey("matter.id", ondelete="CASCADE"), index=True)
+    conversation_id: Mapped[uuid.UUID] = mapped_column(
+        Uuid, ForeignKey("agent_conversation.id", ondelete="CASCADE"), index=True
+    )
+    workflow_type: Mapped[str] = mapped_column(String(50))
+    review_batch_id: Mapped[uuid.UUID | None] = mapped_column(
+        Uuid, ForeignKey("review_batch.id", ondelete="SET NULL"), nullable=True, index=True
+    )
+    matter_sequence: Mapped[int] = mapped_column(BigInteger)
+    event_type: Mapped[str] = mapped_column(String(80), index=True)
+    schema_version: Mapped[int] = mapped_column(Integer, default=1)
+    turn_id: Mapped[uuid.UUID | None] = mapped_column(
+        Uuid, ForeignKey("agent_turn.id", ondelete="SET NULL"), nullable=True, index=True
+    )
+    agent_run_id: Mapped[uuid.UUID | None] = mapped_column(
+        Uuid, ForeignKey("agent_run.id", ondelete="SET NULL"), nullable=True, index=True
+    )
+    message_id: Mapped[uuid.UUID | None] = mapped_column(
+        Uuid, ForeignKey("agent_message.id", ondelete="SET NULL"), nullable=True, index=True
+    )
+    action_request_id: Mapped[uuid.UUID | None] = mapped_column(
+        Uuid, ForeignKey("agent_action_request.id", ondelete="SET NULL"), nullable=True, index=True
+    )
+    attempt_id: Mapped[str | None] = mapped_column(String(255))
+    payload: Mapped[dict[str, Any]] = mapped_column(JSON, default=dict)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
 
 
 class AgentTurn(TimestampMixin, Base):

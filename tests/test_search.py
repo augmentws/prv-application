@@ -23,6 +23,8 @@ from app.models import (
     MatterDocumentImportJob,
     MatterEmbeddingBatch,
     MatterEmbeddingJob,
+    MatterTopicBatch,
+    MatterTopicJob,
     MetadataDefinition,
     SearchIndexGeneration,
     SearchProjectionOperation,
@@ -428,8 +430,25 @@ def test_query_compiler_builds_filtered_nested_semantic_and_hybrid_queries() -> 
         query_vector=query_vector,
     )
     clauses = hybrid_body["query"]["hybrid"]["queries"]
+    assert hybrid_body["query"]["hybrid"]["pagination_depth"] == 100
     assert clauses[0]["bool"]["must"][0]["simple_query_string"]["query"] == hybrid.query
     assert clauses[1]["nested"]["query"]["knn"]["chunks.embedding"]["vector"] == query_vector
+
+    hybrid_page_two = hybrid.model_copy(update={"candidate_limit": 100, "offset": 50, "size": 50})
+    hybrid_page_two_body = compile_search_request(
+        hybrid_page_two,
+        definitions,
+        tenant_id="tenant-1",
+        matter_id="matter-1",
+        query_vector=query_vector,
+    )
+    assert hybrid_page_two_body["from"] == 50
+    assert hybrid_page_two_body["query"]["hybrid"]["pagination_depth"] == 100
+
+    with pytest.raises(ValueError, match="less than or equal to 100"):
+        MatterSearchRequest.model_validate(
+            {"query": "pricing", "search_mode": "HYBRID", "candidate_limit": 101}
+        )
 
     with pytest.raises(ValueError, match="SEMANTIC search requires a query"):
         MatterSearchRequest.model_validate({"search_mode": "SEMANTIC"})
@@ -527,6 +546,35 @@ def test_boolean_facet_values_use_boolean_bucket_labels() -> None:
         matter_id="matter-1",
         value_query=None,
         size=8,
+    )
+
+    assert [(item.value, item.count) for item in response.values] == [(True, 4), (False, 2)]
+    assert response.missing_count == 3
+
+
+class FakeHybridFacetClient(FakeBooleanFacetClient):
+    def ensure_rrf_search_pipeline(self, pipeline_id: str) -> None:
+        raise AssertionError(f"Aggregation-only request must not load pipeline {pipeline_id}")
+
+    def search(self, index: str, body: dict, *, search_pipeline: str | None = None) -> dict:
+        assert search_pipeline is None
+        assert body["size"] == 0
+        assert "hybrid" in body["query"]
+        return super().search(index, body)
+
+
+def test_hybrid_facet_values_skip_rrf_pipeline() -> None:
+    response = execute_facet_values(
+        FakeHybridFacetClient(),  # type: ignore[arg-type]
+        "matter-documents",
+        MatterSearchRequest(query="price", search_mode="HYBRID", candidate_limit=100),
+        [definition("key_document", "BOOLEAN", facetable=True)],
+        field="key_document",
+        tenant_id="tenant-1",
+        matter_id="matter-1",
+        value_query=None,
+        size=8,
+        query_vector=[0.1] * 32,
     )
 
     assert [(item.value, item.count) for item in response.values] == [(True, 4), (False, 2)]
@@ -893,6 +941,137 @@ def test_embedding_job_indexing_checkpoints_and_retries_only_failed_documents(
     assert operation.payload["retry_document_ids"] == []
     fake.refresh.assert_called_once_with("matter-embedding-index")
     fake.count.assert_called_once_with("matter-embedding-index")
+    assert generation.document_count == 3
+
+
+def test_topic_job_indexing_consolidates_batches_and_retries_only_failed_documents(
+    db: Session,
+    root_admin: User,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    client_record = Client(tenant_id=root_admin.tenant_id, name="Topic Index Client")
+    db.add(client_record)
+    db.flush()
+    matter = Matter(client_id=client_record.id, name="Topic Index Matter")
+    db.add(matter)
+    db.flush()
+    source_collection_id = uuid.uuid4()
+    import_job = MatterDocumentImportJob(
+        matter_id=matter.id,
+        source_collection_id=source_collection_id,
+        selection_type="EXPLICIT",
+        selection={},
+        selection_summary="Topic index test",
+        status="COMPLETED",
+        workflow_id=f"import:{uuid.uuid4()}",
+        created_by_user_id=root_admin.id,
+    )
+    db.add(import_job)
+    db.flush()
+    documents = [
+        MatterDocument(
+            matter_id=matter.id,
+            source_collection_id=source_collection_id,
+            collection_item_id=uuid.uuid4(),
+            added_by_import_job_id=import_job.id,
+        )
+        for _ in range(3)
+    ]
+    db.add_all(documents)
+    embedding_job = MatterEmbeddingJob(
+        matter_id=matter.id,
+        status="COMPLETED",
+        workflow_id=f"embedding:{uuid.uuid4()}",
+        configuration_hash="e" * 64,
+        configuration={},
+        embedding_model="test-model",
+        embedding_dimensions=32,
+        embedding_normalized=True,
+        created_by_user_id=root_admin.id,
+    )
+    db.add(embedding_job)
+    db.flush()
+    topic_job = MatterTopicJob(
+        matter_id=matter.id,
+        embedding_job_id=embedding_job.id,
+        status="PUBLISHING",
+        workflow_id=f"matter-topics:{uuid.uuid4()}",
+        operating_mode="AUTO",
+        sample_size=100,
+        assignment_mode="REPLACE",
+        configuration_hash="t" * 64,
+        configuration={},
+        created_by_user_id=root_admin.id,
+    )
+    db.add(topic_job)
+    db.flush()
+    db.add_all(
+        [
+            MatterTopicBatch(
+                job_id=topic_job.id,
+                batch_number=0,
+                document_ids=[str(document.id) for document in documents[:2]],
+                status="COMPLETED",
+                item_count=2,
+                processed_count=2,
+                metadata_applied=True,
+            ),
+            MatterTopicBatch(
+                job_id=topic_job.id,
+                batch_number=1,
+                document_ids=[str(documents[2].id)],
+                status="COMPLETED",
+                item_count=1,
+                processed_count=1,
+                metadata_applied=True,
+            ),
+        ]
+    )
+    operation = SearchProjectionOperation(
+        matter_id=matter.id,
+        kind="DOCUMENT_UPSERT",
+        payload={"topic_job_id": str(topic_job.id)},
+        status="RUNNING",
+        workflow_id=f"topic-index:{topic_job.id}:application",
+        created_by_user_id=root_admin.id,
+    )
+    db.add(operation)
+    db.commit()
+
+    fake = Mock()
+    fake.count.return_value = 3
+    generation = SimpleNamespace(index_name="matter-topic-index", document_count=0)
+    manager = SearchIndexManager(db, fake, Settings(search_bulk_batch_size=2))
+    monkeypatch.setattr(manager, "ensure", Mock(return_value=generation))
+    bulk_upsert = Mock(
+        side_effect=[
+            None,
+            OpenSearchBulkError(
+                "cluster_block_exception: disk usage exceeded flood-stage watermark",
+                failed_document_ids=[str(documents[2].id)],
+            ),
+        ]
+    )
+    monkeypatch.setattr(manager, "_bulk_upsert", bulk_upsert)
+
+    with pytest.raises(OpenSearchBulkError):
+        manager.upsert_topic_job(matter.id, topic_job.id, operation=operation)
+
+    assert [len(call.args[1]) for call in bulk_upsert.call_args_list] == [2, 1]
+    assert operation.payload["next_document_offset"] == 3
+    assert operation.payload["retry_document_ids"] == [str(documents[2].id)]
+    fake.refresh.assert_not_called()
+
+    bulk_upsert.reset_mock(side_effect=True)
+    indexed_count = manager.upsert_topic_job(matter.id, topic_job.id, operation=operation)
+
+    assert indexed_count == 3
+    bulk_upsert.assert_called_once()
+    assert {document.id for document in bulk_upsert.call_args.args[1]} == {documents[2].id}
+    assert operation.payload["next_document_offset"] == 3
+    assert operation.payload["retry_document_ids"] == []
+    fake.refresh.assert_called_once_with("matter-topic-index")
+    fake.count.assert_called_once_with("matter-topic-index")
     assert generation.document_count == 3
 
 

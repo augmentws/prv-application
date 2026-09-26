@@ -49,6 +49,10 @@ Semantic vectors use the OpenSearch FAISS engine with an HNSW index and cosine s
 
 Semantic search without a minimum similarity is top-k retrieval: the matter workspace ranks a stable window of up to 1,600 candidates, and every eligible vector has some nearest-neighbor score. Paging through results does not enlarge or otherwise change that window. The UI therefore labels the count as semantic candidates rather than exact matches. Set **Min similarity** to a cosine-similarity value from `0` through `1` to use FAISS radial search; decimal values such as `.035` are accepted. Lower values include more loosely related documents, while higher values return fewer, more closely related documents. Leave the field blank to use the candidate window. The application converts the user-facing cosine value into OpenSearch's internal FAISS score. Thresholds are supported only for Semantic search because Hybrid's reciprocal-rank-fusion score is on a different scale.
 
+Hybrid search uses a stable reciprocal-rank-fusion depth of 100 results per shard on every results page. This is separate from Semantic search's 1,600-document candidate window: the smaller Hybrid depth keeps OpenSearch's multi-shard RRF processor responsive while supporting page two and later with active filters. Moving between pages preserves the same fusion depth and ranking basis.
+
+Hybrid result retrieval uses the RRF search pipeline. Facet counts and date histograms are aggregation-only requests and do not need fused document scores, so they execute the same controlled Hybrid query without the RRF phase-results processor. This avoids OpenSearch query/fetch count errors when an aggregation intentionally requests zero document hits.
+
 ## Keyword search syntax
 
 Keyword and the keyword portion of Hybrid search use OpenSearch's `simple_query_string` parser. This intentionally provides a forgiving, controlled syntax: malformed fragments are ignored instead of causing the entire search to fail. It is not the full OpenSearch Query DSL.

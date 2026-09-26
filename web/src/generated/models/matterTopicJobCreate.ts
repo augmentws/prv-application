@@ -6,7 +6,9 @@
  * OpenAPI spec version: 0.1.0
  */
 import type { MatterTopicJobCreateAssignmentMode } from './matterTopicJobCreateAssignmentMode';
+import type { MatterTopicJobCreateDestinationMode } from './matterTopicJobCreateDestinationMode';
 import type { MatterTopicJobCreateOperatingMode } from './matterTopicJobCreateOperatingMode';
+import type { MatterTopicJobCreateScopeMode } from './matterTopicJobCreateScopeMode';
 
 export interface MatterTopicJobCreate {
   operating_mode?: MatterTopicJobCreateOperatingMode;
@@ -17,4 +19,10 @@ export interface MatterTopicJobCreate {
   sample_size?: number;
   requested_topic_count?: number | null;
   assignment_mode?: MatterTopicJobCreateAssignmentMode;
+  scope_mode?: MatterTopicJobCreateScopeMode;
+  saved_search_id?: string | null;
+  destination_mode?: MatterTopicJobCreateDestinationMode;
+  existing_metadata_definition_id?: string | null;
+  new_field_key?: string | null;
+  new_field_name?: string | null;
 }

@@ -24,6 +24,7 @@ from app.models import (
     MatterDefinitionAssessmentQuery,
     MatterDefinitionAssessmentQuestion,
     MatterDefinitionAssessmentRun,
+    ReviewBatch,
     ReviewBatchRunDocument,
     SkillRun,
     WorkflowRun,
@@ -35,6 +36,7 @@ from app.schemas import (
     MatterDefinitionAssessmentQuestionRead,
     MatterDefinitionAssessmentQuestionUpdate,
     MatterDefinitionAssessmentRead,
+    MatterDefinitionAssessmentUpdate,
     SkillRunExecutionRead,
     WorkflowExecutionRead,
     WorkflowStepExecutionRead,
@@ -133,6 +135,43 @@ def create_assessment(
         raise HTTPException(status_code=503, detail="The assessment could not be queued") from exc
     db.refresh(assessment)
     return assessment
+
+
+@router.patch("/{assessment_id}", response_model=MatterDefinitionAssessmentRead)
+def update_assessment(
+    matter_id: uuid.UUID,
+    assessment_id: uuid.UUID,
+    payload: MatterDefinitionAssessmentUpdate,
+    principal: Principal = Depends(get_principal),
+    db: Session = Depends(get_db),
+) -> MatterDefinitionAssessmentRead:
+    matter = _matter(db, matter_id, principal)
+    assessment = _assessment(db, matter_id, assessment_id)
+    previous_name = assessment.name
+    assessment.name = payload.name
+    batch_renamed = False
+    if assessment.review_batch_id is not None:
+        batch = db.get(ReviewBatch, assessment.review_batch_id)
+        if batch is not None and batch.name == previous_name:
+            batch.name = payload.name
+            batch_renamed = True
+    record_audit(
+        db,
+        tenant_id=matter.client.tenant_id,
+        actor_user_id=principal.user.id,
+        action="matter_definition.assessment.renamed",
+        target_type="matter_definition_assessment_run",
+        target_id=assessment.id,
+        details={
+            "matter_id": str(matter.id),
+            "previous_name": previous_name,
+            "name": assessment.name,
+            "review_batch_renamed": batch_renamed,
+        },
+    )
+    db.commit()
+    db.refresh(assessment)
+    return _assessment_reads(db, [assessment])[0]
 
 
 @router.post("/{assessment_id}/retry", response_model=MatterDefinitionAssessmentRead, status_code=status.HTTP_202_ACCEPTED)

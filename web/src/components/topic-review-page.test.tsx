@@ -44,7 +44,14 @@ describe("TopicReviewPage", () => {
     vi.mocked(coreApi).mockImplementation(async (path, init) => {
       if (path === "/v1/clients/client-1") return { id: "client-1", name: "Client" } as never;
       if (path === "/v1/matters/matter-1") return { id: "matter-1", name: "Matter" } as never;
-      if (path === "/v1/matters/matter-1/topic-jobs/topic-job-1" && !init?.method) return job as never;
+      if (path === "/v1/matters/matter-1/metadata-definitions") return [] as never;
+      if (path === "/v1/matters/matter-1/topic-jobs/topic-job-1" && !init?.method) return {
+        ...job,
+        destination_mode: "NEW_FIELD",
+        destination_metadata_definition_id: null,
+        destination_field_key: "communication_topics",
+        destination_field_name: "Communication topics",
+      } as never;
       if (path === "/v1/matters/matter-1/topic-jobs/topic-job-1/apply" && init?.method === "POST") return { ...job, status: "PUBLISHING" } as never;
       throw new Error(`Unexpected API request: ${path}`);
     });
@@ -57,12 +64,36 @@ describe("TopicReviewPage", () => {
     const name = screen.getByLabelText("Topic name");
     await user.clear(name);
     await user.type(name, "Coordinated pricing");
+    expect(screen.getByText(/stored in/)).toHaveTextContent("Communication topics");
+    expect(screen.queryByRole("combobox", { name: "Destination field option" })).not.toBeInTheDocument();
     await user.click(screen.getByRole("button", { name: "Apply 1 topic" }));
 
     await waitFor(() => {
       const applyCall = vi.mocked(coreApi).mock.calls.find(([path]) => path.endsWith("/apply"));
-      expect(JSON.parse(String(applyCall?.[1]?.body))).toEqual({ topics: [{ id: "cluster-1", name: "Coordinated pricing", description: "Pricing discussions", included: true }] });
+      expect(JSON.parse(String(applyCall?.[1]?.body))).toEqual({
+        topics: [{ id: "cluster-1", name: "Coordinated pricing", description: "Pricing discussions", included: true }],
+      });
       expect(push).toHaveBeenCalledWith("/app/clients/client-1/matters/matter-1?tab=jobs");
     });
+  });
+
+  it("shows retained proposals from a completed run as read-only", async () => {
+    vi.mocked(coreApi).mockImplementation(async (path) => {
+      if (path === "/v1/clients/client-1") return { id: "client-1", name: "Client" } as never;
+      if (path === "/v1/matters/matter-1") return { id: "matter-1", name: "Matter" } as never;
+      if (path === "/v1/matters/matter-1/metadata-definitions") return [] as never;
+      if (path === "/v1/matters/matter-1/topic-jobs/topic-job-1") return { ...job, status: "COMPLETED" } as never;
+      throw new Error(`Unexpected API request: ${path}`);
+    });
+    const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false }, mutations: { retry: false } } });
+
+    render(<QueryClientProvider client={queryClient}><TopicReviewPage clientId="client-1" matterId="matter-1" jobId="topic-job-1" /></QueryClientProvider>);
+
+    expect(await screen.findByRole("heading", { name: "View topic proposals" })).toBeInTheDocument();
+    expect(screen.getByText("We should align the proposed prices.")).toBeInTheDocument();
+    expect(screen.getByLabelText("Topic name")).toBeDisabled();
+    expect(screen.getByRole("checkbox", { name: "Include topic 1" })).toBeDisabled();
+    expect(screen.queryByRole("button", { name: /Apply/ })).not.toBeInTheDocument();
+    expect(screen.queryByRole("heading", { name: "Destination field" })).not.toBeInTheDocument();
   });
 });

@@ -3,11 +3,14 @@ import uuid
 
 from dbos import DBOS, Queue, SetWorkflowID
 
+from app.config import get_settings
+from app.search.client import is_retryable_opensearch_error
 from app.topic_clustering import (
     application_batch_ids,
     complete_job,
     discover_and_plan,
     fail_job,
+    index_topic_application,
     process_batch,
     refresh_job,
 )
@@ -15,7 +18,10 @@ from app.topic_clustering import (
 logger = logging.getLogger(__name__)
 
 PLAN_QUEUE = Queue("matter-topic-plans", global_concurrency=1)
-BATCH_QUEUE = Queue("matter-topic-batches", global_concurrency=2)
+BATCH_QUEUE = Queue(
+    "matter-topic-batches",
+    global_concurrency=get_settings().matter_topic_assignment_concurrency,
+)
 
 
 @DBOS.step(name="discover_matter_topics", retries_allowed=True, max_attempts=3)
@@ -41,6 +47,18 @@ def matter_topic_batch(batch_id: str) -> dict[str, int]:
 @DBOS.step(name="refresh_matter_topic_progress")
 def refresh(job_id: str) -> None:
     refresh_job(uuid.UUID(job_id))
+
+
+@DBOS.step(
+    name="index_matter_topic_application",
+    retries_allowed=True,
+    interval_seconds=30,
+    max_attempts=16,
+    backoff_rate=2,
+    should_retry=is_retryable_opensearch_error,
+)
+def index_application(job_id: str) -> None:
+    index_topic_application(uuid.UUID(job_id))
 
 
 @DBOS.step(name="complete_matter_topic_job")
@@ -78,6 +96,7 @@ def matter_topic_application(job_id: str) -> None:
         for handle in handles:
             handle.get_result()
             refresh(job_id)
+        index_application(job_id)
         complete(job_id)
         logger.info("Completed approved matter topic application job_id=%s", job_id)
     except Exception as exc:

@@ -92,4 +92,5 @@ them with a durable, authenticated server-streaming path while keeping the datab
 temporary polling fallback during rollout.
 
 The architecture, delivery sequence, test plan, and acceptance criteria are documented in the
-[chatbot server-streaming conversion plan](chatbot-server-streaming-plan.md).
+[chatbot server-streaming conversion plan](chatbot-server-streaming-plan.md). The follow-on work for progressive
+assistant output is documented separately in the [chatbot token-streaming implementation plan](chatbot-token-streaming-plan.md).

@@ -69,6 +69,7 @@ import { cn } from "@/lib/utils";
 
 const PAGE_SIZE = 50;
 const SEMANTIC_CANDIDATE_LIMIT = 1600;
+const HYBRID_CANDIDATE_LIMIT = 100;
 const PREFERRED_FACETS = ["custodian", "file_extension", "responsiveness", "privilege", "key_document"];
 const SEARCH_PROJECTION_POLL_MS = 500;
 const SEARCH_PROJECTION_POLL_ATTEMPTS = 60;
@@ -388,7 +389,9 @@ export function ReviewWorkspace({
       query: query.trim() || null,
       search_mode: effectiveMode,
       minimum_similarity: effectiveMode === "SEMANTIC" ? minimumSimilarity : null,
-      candidate_limit: effectiveMode !== "KEYWORD" ? SEMANTIC_CANDIDATE_LIMIT : null,
+      candidate_limit: effectiveMode === "SEMANTIC"
+        ? SEMANTIC_CANDIDATE_LIMIT
+        : effectiveMode === "HYBRID" ? HYBRID_CANDIDATE_LIMIT : null,
       filters: searchFilters,
       facets: [],
       sort: query.trim() ? [{ field: "_score", direction: "DESC" }] : [{ field: "created_at", direction: "DESC" }],
@@ -407,7 +410,11 @@ export function ReviewWorkspace({
     queryKey: ["matter-bulk-tag-preview", matterId, searchRequest],
     queryFn: () => coreApi<{ candidate_count: number; matched_count: number }>(`/v1/matters/${matterId}/bulk-tag-jobs/preview`, {
       method: "POST",
-      body: JSON.stringify({ search: searchRequest, candidate_limit: searchRequest.candidate_limit ?? SEMANTIC_CANDIDATE_LIMIT }),
+      body: JSON.stringify({
+        search: searchRequest,
+        candidate_limit: searchRequest.candidate_limit
+          ?? (searchRequest.search_mode === "HYBRID" ? HYBRID_CANDIDATE_LIMIT : SEMANTIC_CANDIDATE_LIMIT),
+      }),
     }),
     enabled: bulkTagOpen && searchRequest.search_mode !== "KEYWORD" && Boolean(searchRequest.filters?.length),
   });

@@ -50,6 +50,7 @@ import type {
 } from "@/generated/models";
 import { coreApi } from "@/lib/api-client";
 import { formatDate } from "@/lib/format";
+import { type AgentChatStreamState, useAgentChatStream } from "@/hooks/use-agent-chat-stream";
 import { cn } from "@/lib/utils";
 
 type DraftSourceKind = "PASTE" | "MARKDOWN" | "TEXT" | "USER_EDIT";
@@ -72,6 +73,7 @@ export function MatterDefinitionPanel({ matterId }: { matterId: string }) {
   const [selectedRevisionNumber, setSelectedRevisionNumber] = useState<number | null>(null);
   const [toolHeaderElement, setToolHeaderElement] = useState<HTMLDivElement | null>(null);
   const sidePanelId = useId();
+  const chatStream = useAgentChatStream({ matterId, workflowType: "MATTER_DEFINITION_SETUP" });
 
   const definition = useQuery({
     queryKey: ["matter-definition", matterId],
@@ -90,7 +92,7 @@ export function MatterDefinitionPanel({ matterId }: { matterId: string }) {
   const conversations = useQuery({
     queryKey: ["agent-conversations", matterId],
     queryFn: () => coreApi<AgentConversationRead[]>(`/v1/matters/${matterId}/agent-conversations?workflow_type=MATTER_DEFINITION_SETUP`),
-    refetchInterval: 2000,
+    refetchInterval: chatStream.pollingEnabled ? 2000 : false,
   });
 
   const effectiveConversationId = selectedConversationId || conversations.data?.[0]?.id || "";
@@ -99,19 +101,19 @@ export function MatterDefinitionPanel({ matterId }: { matterId: string }) {
     queryKey: ["agent-messages", effectiveConversationId],
     queryFn: () => coreApi<AgentMessageRead[]>(`/v1/agent-conversations/${effectiveConversationId}/messages`),
     enabled: Boolean(effectiveConversationId),
-    refetchInterval: effectiveConversationId ? 1500 : false,
+    refetchInterval: chatStream.pollingEnabled && effectiveConversationId ? 1500 : false,
   });
   const runs = useQuery({
     queryKey: ["agent-runs", effectiveConversationId],
     queryFn: () => coreApi<AgentRunRead[]>(`/v1/agent-conversations/${effectiveConversationId}/runs`),
     enabled: Boolean(effectiveConversationId),
-    refetchInterval: effectiveConversationId ? 1500 : false,
+    refetchInterval: chatStream.pollingEnabled && effectiveConversationId ? 1500 : false,
   });
   const actions = useQuery({
     queryKey: ["agent-actions", effectiveConversationId],
     queryFn: () => coreApi<AgentActionRequestRead[]>(`/v1/agent-conversations/${effectiveConversationId}/action-requests`),
     enabled: Boolean(effectiveConversationId),
-    refetchInterval: effectiveConversationId ? 1500 : false,
+    refetchInterval: chatStream.pollingEnabled && effectiveConversationId ? 1500 : false,
   });
 
   const currentRevision = definition.data?.current_revision ?? null;
@@ -158,7 +160,7 @@ export function MatterDefinitionPanel({ matterId }: { matterId: string }) {
       body: JSON.stringify({ agent_definition_id: agentId, title, workflow_type: "MATTER_DEFINITION_SETUP" }),
     }),
     onSuccess: (created) => {
-      queryClient.setQueryData<AgentConversationRead[]>(["agent-conversations", matterId], (current) => [created, ...(current ?? [])]);
+      queryClient.setQueryData<AgentConversationRead[]>(["agent-conversations", matterId], (current) => [created, ...(current ?? []).filter((item) => item.id !== created.id)]);
       setSelectedConversationId(created.id);
       toast.success("Chat started.");
     },
@@ -183,8 +185,8 @@ export function MatterDefinitionPanel({ matterId }: { matterId: string }) {
       body: JSON.stringify({ message }),
     }),
     onSuccess: (created) => {
-      queryClient.setQueryData<AgentMessageRead[]>(["agent-messages", effectiveConversationId], (current) => [...(current ?? []), created.message]);
-      queryClient.setQueryData<AgentRunRead[]>(["agent-runs", effectiveConversationId], (current) => [...(current ?? []), created.run]);
+      queryClient.setQueryData<AgentMessageRead[]>(["agent-messages", effectiveConversationId], (current) => [...(current ?? []).filter((item) => item.id !== created.message.id), created.message]);
+      queryClient.setQueryData<AgentRunRead[]>(["agent-runs", effectiveConversationId], (current) => [...(current ?? []).filter((item) => item.id !== created.run.id), created.run]);
       void queryClient.invalidateQueries({ queryKey: ["agent-conversations", matterId] });
     },
     onError: (error) => toast.error(error instanceof Error ? error.message : "The message could not be sent."),
@@ -200,7 +202,7 @@ export function MatterDefinitionPanel({ matterId }: { matterId: string }) {
         current?.map((item) => item.id === result.action_request.id ? result.action_request : item),
       );
       if (result.resumed_run) {
-        queryClient.setQueryData<AgentRunRead[]>(["agent-runs", effectiveConversationId], (current) => [...(current ?? []), result.resumed_run!]);
+        queryClient.setQueryData<AgentRunRead[]>(["agent-runs", effectiveConversationId], (current) => [...(current ?? []).filter((item) => item.id !== result.resumed_run!.id), result.resumed_run!]);
       }
       void queryClient.invalidateQueries({ queryKey: ["agent-conversations", matterId] });
       toast.success(result.decision.decision === "APPROVE" ? "Change approved. The agent is applying it." : "Change rejected. The agent will continue without it.");
@@ -460,6 +462,7 @@ export function MatterDefinitionPanel({ matterId }: { matterId: string }) {
                 renaming={renameConversation.isPending}
                 submitting={submitTurn.isPending}
                 deciding={decideAction.isPending}
+                streamState={chatStream.state}
                 onSelectConversation={setSelectedConversationId}
                 onStartConversation={(agentId, title) => startConversation.mutate({ agentId, title })}
                 onRenameConversation={(conversationId, title) => renameConversation.mutate({ conversationId, title })}
@@ -523,6 +526,7 @@ function AgentWorkspace({
   renaming,
   submitting,
   deciding,
+  streamState,
   onSelectConversation,
   onStartConversation,
   onRenameConversation,
@@ -545,6 +549,7 @@ function AgentWorkspace({
   renaming: boolean;
   submitting: boolean;
   deciding: boolean;
+  streamState: AgentChatStreamState;
   onSelectConversation: (id: string) => void;
   onStartConversation: (agentId: string, title: string) => void;
   onRenameConversation: (conversationId: string, title: string) => void;
@@ -597,6 +602,9 @@ function AgentWorkspace({
 
   const toolbar = (
     <>
+      <span className="hidden text-xs text-muted-foreground sm:inline" title="Chat update connection">
+        {streamState === "live" ? "Live" : streamState === "fallback" ? "Polling" : streamState === "offline" ? "Offline" : "Connecting"}
+      </span>
       {conversations.length ? (
         <Select value={selectedConversationId} onValueChange={onSelectConversation}>
           <SelectTrigger id="agent-conversation" className="min-w-0 max-w-64 flex-1" aria-label="Chat"><SelectValue placeholder="Select a chat" /></SelectTrigger>

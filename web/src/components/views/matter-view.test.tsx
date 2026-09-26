@@ -1,5 +1,6 @@
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { cleanup, render, screen } from "@testing-library/react";
+import userEvent from "@testing-library/user-event";
 import type { ReactNode } from "react";
 import { afterEach, describe, expect, it, vi } from "vitest";
 
@@ -15,6 +16,7 @@ vi.mock("next/link", () => ({
 afterEach(() => {
   cleanup();
   vi.clearAllMocks();
+  window.localStorage.clear();
 });
 
 describe("MatterView jobs", () => {
@@ -31,6 +33,7 @@ describe("MatterView jobs", () => {
       if (path === "/v1/matters/matter-1/metadata-groups") return [] as never;
       if (path === "/v1/matters/matter-1/document-imports") return [] as never;
       if (path === "/v1/matters/matter-1/embedding-jobs") return [] as never;
+      if (path === "/v1/matters/matter-1/saved-searches") return [] as never;
       if (path === "/v1/matters/matter-1/topic-jobs") return [{
         id: "topic-job-1",
         operating_mode: "AUTO",
@@ -45,6 +48,20 @@ describe("MatterView jobs", () => {
         failed_count: 0,
         created_at: "2026-09-24T11:00:00Z",
         clusters: [],
+      }, {
+        id: "topic-job-2",
+        operating_mode: "AUTO",
+        requested_topic_count: null,
+        sample_size: 1000,
+        assignment_mode: "APPEND",
+        status: "COMPLETED",
+        document_count: 100,
+        processed_document_count: 100,
+        topic_count: 1,
+        assigned_document_count: 95,
+        failed_count: 0,
+        created_at: "2026-09-24T10:00:00Z",
+        clusters: [{ id: "cluster-1", name: "Pricing" }],
       }] as never;
       if (path === "/v1/matters/matter-1/bulk-tag-jobs?limit=100") return [{
         id: "bulk-1",
@@ -63,6 +80,7 @@ describe("MatterView jobs", () => {
       throw new Error(`Unexpected API request: ${path}`);
     });
     const client = new QueryClient({ defaultOptions: { queries: { retry: false }, mutations: { retry: false } } });
+    const user = userEvent.setup();
 
     render(<QueryClientProvider client={client}><MatterView clientId="client-1" matterId="matter-1" requestedTab="jobs" /></QueryClientProvider>);
 
@@ -71,6 +89,15 @@ describe("MatterView jobs", () => {
     expect(screen.getByText("“price coordination” + 1 filter")).toBeInTheDocument();
     expect(screen.getByText("waiting")).toBeInTheDocument();
     expect(screen.getByText("Waiting for capacity")).toBeInTheDocument();
+    expect(screen.queryByRole("heading", { name: "Topic clustering" })).not.toBeInTheDocument();
+
+    await user.click(screen.getByRole("combobox", { name: "Job type" }));
+    await user.click(screen.getByRole("option", { name: "Topic clustering" }));
+
+    expect(screen.getByRole("heading", { name: "Topic clustering" })).toBeInTheDocument();
+    expect(screen.queryByRole("heading", { name: "Bulk tagging" })).not.toBeInTheDocument();
     expect(screen.getByRole("link", { name: "Review topics" })).toHaveAttribute("href", "/app/clients/client-1/matters/matter-1/topic-jobs/topic-job-1");
+    expect(screen.getByRole("link", { name: "View topics" })).toHaveAttribute("href", "/app/clients/client-1/matters/matter-1/topic-jobs/topic-job-2");
+    expect(window.localStorage.getItem("priv-view:matter-jobs:selected-type")).toBe("TOPIC_CLUSTERING");
   });
 });

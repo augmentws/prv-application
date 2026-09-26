@@ -17,6 +17,7 @@ from pydantic_ai import (
 from pydantic_ai.messages import ModelMessagesTypeAdapter
 from sqlalchemy import func, select
 
+from app.agent_events import publish_agent_event
 from app.agent_models import resolve_agent_model
 from app.agent_tools import AGENT_TOOL_REGISTRY, EXECUTABLE_AGENT_TOOL_KEYS
 from app.artifact_gateway import read_artifact_bytes
@@ -269,6 +270,18 @@ def _record_tool(
             if action_request is not None:
                 action_request.status = "EXECUTED"
                 action_request.executed_at = utcnow()
+                conversation = db.get(AgentConversation, action_request.conversation_id)
+                if conversation is None:
+                    raise ValueError("Agent conversation is not available")
+                publish_agent_event(
+                    db,
+                    conversation,
+                    "action_request.updated",
+                    turn_id=action_request.turn_id,
+                    run_id=run.id,
+                    action_request_id=action_request.id,
+                    payload={"status": action_request.status},
+                )
             db.commit()
             return result
         except Exception as exc:
@@ -1023,6 +1036,27 @@ def prepare_agent_run(run_id: uuid.UUID) -> PreparedAgentRun:
         run.started_at = run.started_at or utcnow()
         turn.status = "RUNNING"
         conversation.status = "ACTIVE"
+        publish_agent_event(
+            db,
+            conversation,
+            "run.updated",
+            turn_id=turn.id,
+            run_id=run.id,
+            payload={"status": run.status},
+        )
+        publish_agent_event(
+            db,
+            conversation,
+            "turn.updated",
+            turn_id=turn.id,
+            payload={"status": turn.status},
+        )
+        publish_agent_event(
+            db,
+            conversation,
+            "conversation.updated",
+            payload={"status": conversation.status},
+        )
         db.commit()
         return PreparedAgentRun(
             run_id=str(run.id),
@@ -1175,12 +1209,13 @@ def persist_agent_run_outcome(run_id: uuid.UUID, outcome: AgentRunOutcome) -> No
         refresh_agent_run_usage(db, run)
         run.status = outcome.status
         run.completed_at = utcnow()
+        action_requests: list[AgentActionRequest] = []
+        assistant_message: AgentMessage | None = None
         if outcome.status == "WAITING_APPROVAL":
             if not outcome.actions:
                 raise ValueError("Waiting agent run did not produce an approval request")
             for action in outcome.actions:
-                db.add(
-                    AgentActionRequest(
+                action_request = AgentActionRequest(
                         conversation_id=run.conversation_id,
                         turn_id=run.turn_id,
                         agent_run_id=run.id,
@@ -1190,7 +1225,8 @@ def persist_agent_run_outcome(run_id: uuid.UUID, outcome: AgentRunOutcome) -> No
                         summary=action["summary"],
                         status="PENDING",
                     )
-                )
+                db.add(action_request)
+                action_requests.append(action_request)
             turn.status = "WAITING_APPROVAL"
             conversation.status = "WAITING_APPROVAL"
         else:
@@ -1202,8 +1238,7 @@ def persist_agent_run_outcome(run_id: uuid.UUID, outcome: AgentRunOutcome) -> No
                 )
                 or 0
             ) + 1
-            db.add(
-                AgentMessage(
+            assistant_message = AgentMessage(
                     conversation_id=conversation.id,
                     turn_id=turn.id,
                     sequence=message_sequence,
@@ -1211,11 +1246,53 @@ def persist_agent_run_outcome(run_id: uuid.UUID, outcome: AgentRunOutcome) -> No
                     content=outcome.output_text or "",
                     agent_run_id=run.id,
                 )
-            )
+            db.add(assistant_message)
             turn.status = "COMPLETED"
             turn.completed_at = utcnow()
             # Completion belongs to this turn/run. The chat remains open for the next turn.
             conversation.status = "ACTIVE"
+        db.flush()
+        for action_request in action_requests:
+            publish_agent_event(
+                db,
+                conversation,
+                "action_request.created",
+                turn_id=turn.id,
+                run_id=run.id,
+                action_request_id=action_request.id,
+                payload={"status": action_request.status, "tool_key": action_request.tool_key},
+            )
+        if assistant_message is not None:
+            publish_agent_event(
+                db,
+                conversation,
+                "message.created",
+                turn_id=turn.id,
+                run_id=run.id,
+                message_id=assistant_message.id,
+                payload={"role": assistant_message.role, "sequence": assistant_message.sequence},
+            )
+        publish_agent_event(
+            db,
+            conversation,
+            "run.updated",
+            turn_id=turn.id,
+            run_id=run.id,
+            payload={"status": run.status},
+        )
+        publish_agent_event(
+            db,
+            conversation,
+            "turn.updated",
+            turn_id=turn.id,
+            payload={"status": turn.status},
+        )
+        publish_agent_event(
+            db,
+            conversation,
+            "conversation.updated",
+            payload={"status": conversation.status},
+        )
         db.commit()
 
 
@@ -1234,4 +1311,26 @@ def fail_agent_run(run_id: uuid.UUID, message: str) -> None:
             turn.error_message = message
         if conversation is not None:
             conversation.status = "FAILED"
+            publish_agent_event(
+                db,
+                conversation,
+                "run.updated",
+                turn_id=run.turn_id,
+                run_id=run.id,
+                payload={"status": run.status},
+            )
+            if turn is not None:
+                publish_agent_event(
+                    db,
+                    conversation,
+                    "turn.updated",
+                    turn_id=turn.id,
+                    payload={"status": turn.status},
+                )
+            publish_agent_event(
+                db,
+                conversation,
+                "conversation.updated",
+                payload={"status": conversation.status},
+            )
         db.commit()

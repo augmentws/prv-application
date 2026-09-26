@@ -1,10 +1,15 @@
+import asyncio
+import json
+import time
 import uuid
 
-from fastapi import APIRouter, Depends, HTTPException, Query, status
+from fastapi import APIRouter, Depends, HTTPException, Query, Request, status
+from fastapi.responses import StreamingResponse
 from sqlalchemy import select
-from sqlalchemy.orm import Session
+from sqlalchemy.orm import Session, sessionmaker
 
 from app.agent_conversations import AgentConversationError, create_conversation, create_turn, decide_action
+from app.agent_events import agent_event_hub, publish_agent_event
 from app.audit import record_audit
 from app.config import Settings, get_settings
 from app.database import get_db
@@ -12,11 +17,14 @@ from app.dependencies import Principal, can_admin_matter, get_principal
 from app.models import (
     AgentActionRequest,
     AgentConversation,
+    AgentConversationEvent,
+    AgentConversationEventCursor,
     AgentDefinition,
     AgentMessage,
     AgentRun,
     AgentTurn,
     Matter,
+    ReviewBatch,
 )
 from app.schemas import (
     AgentActionDecisionCreate,
@@ -146,6 +154,12 @@ def update_agent_conversation(
     conversation = _conversation_admin(db, principal, conversation_id, for_update=True)
     previous_title = conversation.title
     conversation.title = payload.title
+    publish_agent_event(
+        db,
+        conversation,
+        "conversation.updated",
+        payload={"title": conversation.title, "status": conversation.status},
+    )
     record_audit(
         db,
         tenant_id=conversation.tenant_id,
@@ -157,6 +171,169 @@ def update_agent_conversation(
     )
     db.commit()
     return conversation
+
+
+def _sse_frame(event: str, data: dict[str, object], *, event_id: int | None = None) -> str:
+    lines = [f"event: {event}"]
+    if event_id is not None:
+        lines.append(f"id: {event_id}")
+    encoded = json.dumps(data, separators=(",", ":"), default=str)
+    lines.extend(f"data: {line}" for line in encoded.splitlines() or [""])
+    return "\n".join(lines) + "\n\n"
+
+
+@router.get(
+    "/matters/{matter_id}/agent-events",
+    response_class=StreamingResponse,
+    responses={200: {"content": {"text/event-stream": {}}}},
+)
+async def stream_agent_events(
+    matter_id: uuid.UUID,
+    request: Request,
+    workflow_type: AgentConversationWorkflow = Query(),
+    review_batch_id: uuid.UUID | None = Query(default=None),
+    after: int | None = Query(default=None, ge=0),
+    principal: Principal = Depends(get_principal),
+    db: Session = Depends(get_db),
+    settings: Settings = Depends(get_settings),
+) -> StreamingResponse:
+    if not settings.agent_streaming_enabled:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Agent event streaming is disabled")
+    _matter_admin(db, principal, matter_id)
+    if workflow_type == "BATCH_CHAT":
+        batch = db.get(ReviewBatch, review_batch_id) if review_batch_id is not None else None
+        if batch is None or batch.matter_id != matter_id:
+            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Review batch not found")
+    elif review_batch_id is not None:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail="review_batch_id is supported only for BATCH_CHAT streams",
+        )
+
+    header_cursor = request.headers.get("last-event-id")
+    try:
+        parsed_header_cursor = int(header_cursor) if header_cursor is not None else None
+    except ValueError as exc:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Last-Event-ID must be an integer") from exc
+    if parsed_header_cursor is not None and parsed_header_cursor < 0:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Last-Event-ID must not be negative")
+    if after is not None and parsed_header_cursor is not None and after != parsed_header_cursor:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Conflicting stream cursors")
+    requested_cursor = after if after is not None else parsed_header_cursor
+    stream_session = sessionmaker(bind=db.get_bind(), autoflush=False, expire_on_commit=False)
+
+    def cursor_state() -> tuple[int, int]:
+        with stream_session() as stream_db:
+            cursor = stream_db.get(AgentConversationEventCursor, matter_id)
+            return (cursor.newest_sequence, cursor.oldest_sequence) if cursor is not None else (0, 1)
+
+    def read_events(start: int, through: int) -> list[AgentConversationEvent]:
+        with stream_session() as stream_db:
+            query = select(AgentConversationEvent).where(
+                AgentConversationEvent.matter_id == matter_id,
+                AgentConversationEvent.workflow_type == workflow_type,
+                AgentConversationEvent.matter_sequence > start,
+                AgentConversationEvent.matter_sequence <= through,
+            )
+            if review_batch_id is None:
+                query = query.where(AgentConversationEvent.review_batch_id.is_(None))
+            else:
+                query = query.where(AgentConversationEvent.review_batch_id == review_batch_id)
+            return list(
+                stream_db.scalars(
+                    query.order_by(AgentConversationEvent.matter_sequence).limit(settings.agent_stream_replay_page_size)
+                )
+            )
+
+    async def generate():
+        subscription = agent_event_hub.subscribe(matter_id)
+        cursor = requested_cursor
+        replayed = 0
+        deadline = time.monotonic() + settings.agent_stream_max_lifetime_seconds
+        try:
+            high_water, oldest = await asyncio.to_thread(cursor_state)
+            if cursor is None:
+                cursor = high_water
+                yield _sse_frame("stream.ready", {"schema_version": 1, "matter_sequence": cursor})
+            elif cursor > high_water:
+                yield _sse_frame(
+                    "snapshot.required",
+                    {"schema_version": 1, "matter_sequence": high_water, "reason": "cursor_ahead"},
+                )
+                return
+            elif cursor < oldest - 1:
+                yield _sse_frame(
+                    "snapshot.required",
+                    {"schema_version": 1, "matter_sequence": high_water, "reason": "cursor_expired"},
+                )
+                return
+
+            while True:
+                high_water, oldest = await asyncio.to_thread(cursor_state)
+                if cursor < oldest - 1:
+                    yield _sse_frame(
+                        "snapshot.required",
+                        {"schema_version": 1, "matter_sequence": high_water, "reason": "cursor_expired"},
+                    )
+                    return
+                while cursor < high_water:
+                    events = await asyncio.to_thread(read_events, cursor, high_water)
+                    if not events:
+                        cursor = high_water
+                        break
+                    for event in events:
+                        replayed += 1
+                        if replayed > settings.agent_stream_replay_limit:
+                            yield _sse_frame(
+                                "snapshot.required",
+                                {"schema_version": 1, "matter_sequence": high_water, "reason": "replay_limit"},
+                            )
+                            return
+                        cursor = event.matter_sequence
+                        yield _sse_frame(
+                            event.event_type,
+                            {
+                                "schema_version": event.schema_version,
+                                "matter_sequence": event.matter_sequence,
+                                "conversation_id": str(event.conversation_id),
+                                "turn_id": str(event.turn_id) if event.turn_id else None,
+                                "run_id": str(event.agent_run_id) if event.agent_run_id else None,
+                                "message_id": str(event.message_id) if event.message_id else None,
+                                "action_request_id": str(event.action_request_id) if event.action_request_id else None,
+                                "payload": event.payload,
+                            },
+                            event_id=event.matter_sequence,
+                        )
+                    if len(events) < settings.agent_stream_replay_page_size:
+                        cursor = high_water
+                        break
+                yield _sse_frame("stream.checkpoint", {"schema_version": 1, "matter_sequence": cursor})
+                if await request.is_disconnected():
+                    return
+                if time.monotonic() >= deadline:
+                    yield _sse_frame("stream.rotate", {"schema_version": 1, "matter_sequence": cursor})
+                    return
+                try:
+                    await asyncio.wait_for(
+                        subscription.queue.get(),
+                        timeout=min(
+                            settings.agent_stream_heartbeat_seconds,
+                            max(0.1, deadline - time.monotonic()),
+                        ),
+                    )
+                except TimeoutError:
+                    yield ": heartbeat\n\n"
+        finally:
+            agent_event_hub.unsubscribe(subscription)
+
+    return StreamingResponse(
+        generate(),
+        media_type="text/event-stream",
+        headers={
+            "Cache-Control": "no-cache, no-store, no-transform",
+            "X-Accel-Buffering": "no",
+        },
+    )
 
 
 @router.post(

@@ -17,7 +17,15 @@ from app.agent_runtime import (
     persist_agent_run_outcome,
     prepare_agent_run,
 )
-from app.models import AgentConversation, AgentRun, AuditRecord, ModelInvocation, ReviewBatch, User
+from app.models import (
+    AgentConversation,
+    AgentConversationEvent,
+    AgentRun,
+    AuditRecord,
+    ModelInvocation,
+    ReviewBatch,
+    User,
+)
 from app.schemas import MatterSearchResponse
 from tests.test_agents_and_matter_definitions import agent_payload, auth, create_tenant_context
 
@@ -123,6 +131,28 @@ def test_agent_runtime_completes_with_injected_pydantic_model(
     )
     assert [message["role"] for message in messages.json()] == ["USER", "ASSISTANT"]
     assert messages.json()[1]["content"] == "The guidance is ready for field reconciliation."
+    with TestingSessionLocal() as db:
+        event_types = list(
+            db.scalars(
+                select(AgentConversationEvent.event_type)
+                .where(AgentConversationEvent.conversation_id == uuid.UUID(conversation_id))
+                .order_by(AgentConversationEvent.matter_sequence)
+            )
+        )
+        assert event_types == [
+            "conversation.created",
+            "turn.created",
+            "message.created",
+            "run.created",
+            "conversation.updated",
+            "run.updated",
+            "turn.updated",
+            "conversation.updated",
+            "message.created",
+            "run.updated",
+            "turn.updated",
+            "conversation.updated",
+        ]
 
 
 def test_failed_conversation_accepts_a_new_turn(

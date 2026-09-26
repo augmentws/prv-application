@@ -7,7 +7,9 @@
  */
 import type { MatterTopicClusterRead } from './matterTopicClusterRead';
 import type { MatterTopicJobReadAssignmentMode } from './matterTopicJobReadAssignmentMode';
+import type { MatterTopicJobReadDestinationMode } from './matterTopicJobReadDestinationMode';
 import type { MatterTopicJobReadOperatingMode } from './matterTopicJobReadOperatingMode';
+import type { MatterTopicJobReadScopeMode } from './matterTopicJobReadScopeMode';
 import type { MatterTopicJobReadStatus } from './matterTopicJobReadStatus';
 
 export interface MatterTopicJobRead {
@@ -21,6 +23,13 @@ export interface MatterTopicJobRead {
   sample_size: number;
   requested_topic_count: number | null;
   assignment_mode: MatterTopicJobReadAssignmentMode;
+  scope_mode: MatterTopicJobReadScopeMode;
+  saved_search_id: string | null;
+  saved_search_name: string | null;
+  destination_mode: MatterTopicJobReadDestinationMode;
+  destination_metadata_definition_id: string | null;
+  destination_field_key: string | null;
+  destination_field_name: string | null;
   configuration_hash: string;
   document_count: number;
   sampled_chunk_count: number;

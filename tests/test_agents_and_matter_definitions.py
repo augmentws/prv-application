@@ -1,3 +1,5 @@
+import uuid
+
 import pytest
 from fastapi.testclient import TestClient
 from sqlalchemy import func, select
@@ -5,7 +7,14 @@ from sqlalchemy.orm import Session
 
 from app.agent_invocation import AGENT_HANDLERS
 from app.bootstrap import ensure_standard_agents
-from app.models import AgentDefinition, AgentDefinitionVersion, AgentVersionTool, User
+from app.models import (
+    AgentConversationEvent,
+    AgentConversationEventCursor,
+    AgentDefinition,
+    AgentDefinitionVersion,
+    AgentVersionTool,
+    User,
+)
 
 
 def auth(token: str) -> dict[str, str]:
@@ -425,6 +434,7 @@ def test_matter_definition_revisions_and_publish(client: TestClient, root_token:
 def test_matter_definition_conversations_can_be_named_and_renamed(
     client: TestClient,
     root_token: str,
+    db: Session,
 ) -> None:
     _, tenant_token, matter_id = create_tenant_context(client, root_token)
     agent_response = client.post(
@@ -474,3 +484,32 @@ def test_matter_definition_conversations_can_be_named_and_renamed(
         json={"title": "   "},
     )
     assert blank_response.status_code == 422
+
+    db.expire_all()
+    events = list(
+        db.scalars(
+            select(AgentConversationEvent)
+            .where(AgentConversationEvent.conversation_id == uuid.UUID(conversation["id"]))
+            .order_by(AgentConversationEvent.matter_sequence)
+        )
+    )
+    assert [event.event_type for event in events] == ["conversation.created", "conversation.updated"]
+    assert [event.matter_sequence for event in events] == [1, 2]
+    assert events[1].payload == {"title": "Privilege questions", "status": "ACTIVE"}
+    cursor = db.get(AgentConversationEventCursor, uuid.UUID(matter_id))
+    assert cursor is not None
+    assert cursor.newest_sequence == 2
+
+    conflicting_cursor = client.get(
+        f"/v1/matters/{matter_id}/agent-events?workflow_type=MATTER_DEFINITION_SETUP&after=1",
+        headers={**auth(tenant_token), "Last-Event-ID": "2"},
+    )
+    assert conflicting_cursor.status_code == 400
+
+    ahead_cursor = client.get(
+        f"/v1/matters/{matter_id}/agent-events?workflow_type=MATTER_DEFINITION_SETUP&after=999",
+        headers=auth(tenant_token),
+    )
+    assert ahead_cursor.status_code == 200
+    assert "event: snapshot.required" in ahead_cursor.text
+    assert '"reason":"cursor_ahead"' in ahead_cursor.text
