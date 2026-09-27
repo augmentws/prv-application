@@ -19,6 +19,8 @@ from app.analysis_tasks import (
 )
 from app.config import Settings, get_settings
 from app.decision_specifications import (
+    DOCUMENT_REVIEW_STATE_BUILDER_VERSION,
+    DOCUMENT_REVIEW_STATE_PATHS,
     ChoiceDecisionQuestion,
     DecisionSpecification,
     DecisionSpecificationCompilationOutput,
@@ -457,6 +459,18 @@ def _compiler_output_validator(
     def validate(output: dict[str, Any]) -> None:
         compiled = DecisionSpecificationCompilationOutput.model_validate(output)
         specification = compiled.decision_specification
+        if specification.state_contract.builder_version != DOCUMENT_REVIEW_STATE_BUILDER_VERSION:
+            raise ValueError(
+                f"state_contract.builder_version must be {DOCUMENT_REVIEW_STATE_BUILDER_VERSION}"
+            )
+        unavailable_paths = sorted(
+            set(specification.state_contract.required_paths) - DOCUMENT_REVIEW_STATE_PATHS
+        )
+        if unavailable_paths:
+            raise ValueError(
+                "state_contract requires paths unavailable from the document state builder: "
+                + ", ".join(unavailable_paths)
+            )
         for key, question in specification.questions.items():
             for reference in question.source_refs:
                 if reference.task_version_id != task_version_id:
@@ -490,7 +504,15 @@ def parse_compiler_wire_output(output: dict[str, Any]) -> DecisionSpecificationC
         raise ValueError(f"compiled_output_json is not valid JSON: {exc.msg}") from exc
     if not isinstance(parsed, dict):
         raise ValueError("compiled_output_json must decode to a JSON object")  # noqa: TRY004
-    return DecisionSpecificationCompilationOutput.model_validate(parsed)
+    try:
+        return DecisionSpecificationCompilationOutput.model_validate(parsed)
+    except ValueError as exc:
+        raise ValueError(
+            f"{exc}; compiler repair rules: question keys require at least one dotted namespace "
+            "(for example responsiveness.overall); state_contract.required_paths may contain only document builder "
+            "input paths, never question or metadata keys; predicate option is permitted only with measure "
+            "probability and must match a Choice criteria key"
+        ) from exc
 
 
 def _compiler_wire_output_validator(

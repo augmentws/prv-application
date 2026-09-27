@@ -12,6 +12,7 @@ from app.analysis_task_compilation import (
     parse_compiler_wire_output,
 )
 from app.analysis_task_skills import ensure_standard_analysis_task_skills
+from app.decision_specifications import DecisionSpecificationCompilationOutput
 from app.models import (
     ExternalProviderUsage,
     MatterAnalysisTaskVersion,
@@ -235,3 +236,13 @@ def test_compiler_wire_output_rejects_invalid_embedded_json() -> None:
         assert "not valid JSON" in str(exc)
     else:
         raise AssertionError("invalid embedded JSON should fail validation")
+
+
+def test_compiler_schema_exposes_dotted_question_and_state_path_patterns() -> None:
+    schema = DecisionSpecificationCompilationOutput.model_json_schema(mode="validation")
+    definitions = schema["$defs"]
+    questions = definitions["DecisionSpecification"]["properties"]["questions"]
+    state_paths = definitions["DecisionStateContract"]["properties"]["required_paths"]
+    pattern = r"^[a-z][a-z0-9_]*(?:\.[a-z][a-z0-9_]*)+$"
+    assert set(questions["patternProperties"]) == {pattern}
+    assert state_paths["items"]["pattern"] == pattern

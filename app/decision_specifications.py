@@ -25,6 +25,23 @@ CriterionValue = str | dict[str, Any] | list[Any] | None
 
 QUESTION_KEY_PATTERN = re.compile(r"^[a-z][a-z0-9_]*(?:\.[a-z][a-z0-9_]*)+$")
 OPTION_KEY_PATTERN = re.compile(r"^[a-z][a-z0-9_]{0,99}$")
+STATE_PATH_PATTERN = re.compile(r"^[a-z][a-z0-9_]*(?:\.[a-z][a-z0-9_]*)+$")
+QuestionKey = Annotated[str, Field(pattern=QUESTION_KEY_PATTERN.pattern)]
+StatePath = Annotated[str, Field(pattern=STATE_PATH_PATTERN.pattern)]
+
+DOCUMENT_REVIEW_STATE_BUILDER_VERSION = "document-review-state-v1"
+DOCUMENT_REVIEW_STATE_PATHS = frozenset(
+    {
+        "matter.id",
+        "runtime.today",
+        "document.id",
+        "document.collection_item_id",
+        "document.source_content_hash",
+        "document.text",
+        "document.metadata",
+        "document.paragraphs",
+    }
+)
 
 
 class SpecificationModel(BaseModel):
@@ -149,7 +166,7 @@ DecisionQuestion = Annotated[
 
 
 class DecisionPredicate(SpecificationModel):
-    question_key: str
+    question_key: QuestionKey
     measure: Literal["noul", "confidence", "score", "probability"]
     comparator: Literal["GT", "GTE", "LT", "LTE", "EQ"]
     threshold: float
@@ -191,15 +208,11 @@ class DecisionPolicy(SpecificationModel):
 
 class DecisionStateContract(SpecificationModel):
     builder_version: str = Field(min_length=1, max_length=100)
-    required_paths: list[str] = Field(min_length=1, max_length=100)
+    required_paths: list[StatePath] = Field(min_length=1, max_length=100)
 
     @field_validator("required_paths")
     @classmethod
     def validate_required_paths(cls, value: list[str]) -> list[str]:
-        pattern = re.compile(r"^[a-z][a-z0-9_]*(?:\.[a-z][a-z0-9_]*)+$")
-        invalid = sorted(path for path in value if not pattern.fullmatch(path))
-        if invalid:
-            raise ValueError(f"invalid state paths: {', '.join(invalid)}")
         if len(value) != len(set(value)):
             raise ValueError("state paths must be unique")
         return value
@@ -207,7 +220,7 @@ class DecisionStateContract(SpecificationModel):
 
 class DecisionSpecification(SpecificationModel):
     schema_version: Literal["review-decision-specification-v1"] = "review-decision-specification-v1"
-    questions: dict[str, DecisionQuestion] = Field(min_length=1, max_length=500)
+    questions: dict[QuestionKey, DecisionQuestion] = Field(min_length=1, max_length=500)
     decision_policy: DecisionPolicy = Field(default_factory=DecisionPolicy)
     state_contract: DecisionStateContract
 
@@ -257,7 +270,7 @@ class DecisionSpecification(SpecificationModel):
 class DecisionCompilationWarning(SpecificationModel):
     code: str = Field(min_length=1, max_length=100)
     message: str = Field(min_length=1, max_length=2000)
-    question_key: str | None = None
+    question_key: QuestionKey | None = None
 
 
 class DecisionCompilationOmission(SpecificationModel):
@@ -268,7 +281,7 @@ class DecisionCompilationOmission(SpecificationModel):
 
 class DecisionSpecificationCompilationOutput(SpecificationModel):
     decision_specification: DecisionSpecification
-    question_rationales: dict[str, str] = Field(min_length=1, max_length=500)
+    question_rationales: dict[QuestionKey, str] = Field(min_length=1, max_length=500)
     omissions: list[DecisionCompilationOmission] = Field(default_factory=list, max_length=500)
     warnings: list[DecisionCompilationWarning] = Field(default_factory=list, max_length=500)
 
