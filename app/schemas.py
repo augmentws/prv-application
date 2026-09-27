@@ -749,9 +749,16 @@ class MatterSavedSearchExecute(BaseModel):
 
 
 ReviewBatchSelectionType = Literal[
-    "ALL_MATTER", "SEARCH_QUERY", "RANDOM_MATTER", "RANDOM_BATCH", "DEFINITION_ASSESSMENT"
+    "ALL_MATTER",
+    "SEARCH_QUERY",
+    "RANDOM_MATTER",
+    "RANDOM_BATCH",
+    "RANDOM_SAVED_SEARCH",
+    "DEFINITION_ASSESSMENT",
 ]
-InteractiveReviewBatchSelectionType = Literal["ALL_MATTER", "SEARCH_QUERY", "RANDOM_MATTER", "RANDOM_BATCH"]
+InteractiveReviewBatchSelectionType = Literal[
+    "ALL_MATTER", "SEARCH_QUERY", "RANDOM_MATTER", "RANDOM_BATCH", "RANDOM_SAVED_SEARCH"
+]
 ReviewBatchValueVisibility = Literal["OWN_VALUES", "ALL_REVIEWER_VALUES"]
 ReviewBatchStatus = Literal["QUEUED", "BUILDING", "READY", "FAILED", "ARCHIVED"]
 ReviewBatchSearchStatus = Literal["QUEUED", "SYNCING", "READY", "FAILED", "NOT_CONFIGURED"]
@@ -775,6 +782,7 @@ class ReviewBatchCreate(BaseModel):
     selection_type: InteractiveReviewBatchSelectionType
     search: MatterSearchRequest | None = None
     source_batch_id: uuid.UUID | None = None
+    saved_search_id: uuid.UUID | None = None
     sample_size: int | None = Field(default=None, ge=1, le=10_000_000)
     random_seed: str | None = Field(default=None, min_length=1, max_length=100)
     assigned_user_id: uuid.UUID | None = None
@@ -796,6 +804,13 @@ class ReviewBatchCreate(BaseModel):
                 raise ValueError("RANDOM_BATCH batches require source_batch_id")
         elif self.source_batch_id is not None:
             raise ValueError("source_batch_id is only valid for RANDOM_BATCH batches")
+        if self.selection_type == "RANDOM_SAVED_SEARCH":
+            if self.saved_search_id is None:
+                raise ValueError("RANDOM_SAVED_SEARCH batches require saved_search_id")
+            if self.sample_size is None:
+                raise ValueError("RANDOM_SAVED_SEARCH batches require sample_size")
+        elif self.saved_search_id is not None:
+            raise ValueError("saved_search_id is only valid for RANDOM_SAVED_SEARCH batches")
         if self.selection_type in {"ALL_MATTER", "SEARCH_QUERY"} and self.sample_size is not None:
             raise ValueError("sample_size is only valid for random batches")
         return self

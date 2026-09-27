@@ -103,7 +103,7 @@ export function MatterView({ clientId, matterId, requestedTab, selectedJobId }: 
   const savedSearches = useQuery({
     queryKey: ["matter-saved-searches", matterId],
     queryFn: () => coreApi<MatterSavedSearchRead[]>(`/v1/matters/${matterId}/saved-searches`),
-    enabled: tab === "jobs",
+    enabled: tab === "jobs" || tab === "batches",
   });
   const bulkTagJobs = useQuery({
     queryKey: ["matter-bulk-tag-jobs", matterId],
@@ -349,7 +349,7 @@ export function MatterView({ clientId, matterId, requestedTab, selectedJobId }: 
   }, [definitions.data]);
   const reviewBatchColumns = useMemo<ColumnDef<ReviewBatchRead>[]>(() => [
     { accessorKey: "name", header: "Batch", cell: ({ row }) => <div><p className="font-semibold">{row.original.name}</p>{row.original.description ? <p className="max-w-md truncate text-xs text-muted-foreground" title={row.original.description}>{row.original.description}</p> : null}</div> },
-    { accessorKey: "selection_type", header: "Created from", cell: ({ row }) => <span className="text-muted-foreground">{batchSelectionLabel(row.original.selection_type)}</span> },
+    { accessorKey: "selection_type", header: "Created from", cell: ({ row }) => <span className="text-muted-foreground">{batchSelectionLabel(row.original)}</span> },
     { accessorKey: "document_count", header: "Documents", cell: ({ row }) => ["QUEUED", "BUILDING"].includes(row.original.status) ? <span className="text-muted-foreground">Building…</span> : <span className="tabular-nums">{row.original.document_count.toLocaleString()}</span> },
     { id: "coding", header: "Coding", cell: ({ row }) => <div className="flex items-center gap-2"><span className="text-muted-foreground">{row.original.coding_groups.length ? `${row.original.coding_groups.length} group${row.original.coding_groups.length === 1 ? "" : "s"}` : "No groups"}</span><AssignBatchCodingGroupsDialog batch={row.original} groups={groups.data ?? []} onSave={assignBatchCodingGroups} /></div> },
     { id: "assignee", header: "Assigned to", cell: ({ row }) => <Select value={row.original.assigned_user_id ?? "unassigned"} onValueChange={(value) => assignReviewBatchMutation.mutate({ batchId: row.original.id, userId: value === "unassigned" ? null : value })} disabled={assignReviewBatchMutation.isPending}><SelectTrigger className="w-48"><SelectValue /></SelectTrigger><SelectContent><SelectItem value="unassigned">Unassigned</SelectItem>{(tenantUsers.data ?? []).filter((user) => user.status === "ACTIVE").map((user) => <SelectItem key={user.id} value={user.id}>{user.display_name}</SelectItem>)}</SelectContent></Select> },
@@ -395,7 +395,7 @@ export function MatterView({ clientId, matterId, requestedTab, selectedJobId }: 
         : tab === "groups" ? definitions.isPending || groups.isPending ? <TableLoading /> : definitions.error || groups.error ? <QueryError message={definitions.error?.message ?? groups.error?.message} /> : <MetadataGroupsPanel definitions={definitions.data} groups={groups.data} onCreate={createGroup} onVisibilityChange={changeVisibility} />
         : tab === "definition" ? <MatterDefinitionPanel matterId={matterId} />
         : tab === "analysis" ? <AnalysisTasksPanel matterId={matterId} />
-        : tab === "batches" ? reviewBatches.isPending || groups.isPending || tenantUsers.isPending ? <TableLoading /> : reviewBatches.error || groups.error || tenantUsers.error ? <QueryError message={reviewBatches.error?.message ?? groups.error?.message ?? tenantUsers.error?.message} /> : <div className="space-y-4"><div className="flex flex-wrap items-start justify-between gap-3"><div><h2 className="text-lg font-semibold">Review batches</h2><p className="text-sm text-muted-foreground">Freeze document sets for assignment, repeatable agent runs, and coding comparisons.</p></div><CreateReviewBatchDialog groups={groups.data} batches={reviewBatches.data} onCreate={createReviewBatch} /></div><DataTable columns={reviewBatchColumns} data={reviewBatches.data} emptyMessage="No review batches have been created for this matter." /></div>
+        : tab === "batches" ? reviewBatches.isPending || groups.isPending || tenantUsers.isPending || savedSearches.isPending ? <TableLoading /> : reviewBatches.error || groups.error || tenantUsers.error || savedSearches.error ? <QueryError message={reviewBatches.error?.message ?? groups.error?.message ?? tenantUsers.error?.message ?? savedSearches.error?.message} /> : <div className="space-y-4"><div className="flex flex-wrap items-start justify-between gap-3"><div><h2 className="text-lg font-semibold">Review batches</h2><p className="text-sm text-muted-foreground">Freeze document sets for assignment, repeatable agent runs, and coding comparisons.</p></div><CreateReviewBatchDialog groups={groups.data} batches={reviewBatches.data} savedSearches={savedSearches.data} onCreate={createReviewBatch} /></div><DataTable columns={reviewBatchColumns} data={reviewBatches.data} emptyMessage="No review batches have been created for this matter." /></div>
         : tab === "jobs" ? jobs.isPending || embeddingJobs.isPending || topicJobs.isPending || bulkTagJobs.isPending || savedSearches.isPending ? <TableLoading /> : jobs.error || embeddingJobs.error || topicJobs.error || bulkTagJobs.error || savedSearches.error ? <QueryError message={jobs.error?.message ?? embeddingJobs.error?.message ?? topicJobs.error?.message ?? bulkTagJobs.error?.message ?? savedSearches.error?.message} /> : <div className="space-y-6">
           <div className="flex flex-wrap items-end justify-between gap-4 rounded-xl border bg-card p-4">
             <div><h2 className="text-lg font-semibold">Matter jobs</h2><p className="text-sm text-muted-foreground">Choose which type of background work to view.</p></div>
@@ -429,8 +429,12 @@ function tabClass(active: boolean) {
   return `relative px-4 py-3 text-sm font-semibold outline-none transition focus-visible:ring-2 focus-visible:ring-ring ${active ? "text-primary after:absolute after:inset-x-1 after:bottom-0 after:h-0.5 after:bg-accent" : "text-muted-foreground hover:text-foreground"}`;
 }
 
-function batchSelectionLabel(value: ReviewBatchRead["selection_type"]) {
-  return { ALL_MATTER: "All matter documents", SEARCH_QUERY: "Keyword search", RANDOM_MATTER: "Random matter sample", RANDOM_BATCH: "Random batch sample", DEFINITION_ASSESSMENT: "Matter Definition assessment" }[value];
+function batchSelectionLabel(batch: ReviewBatchRead) {
+  if (batch.selection_type === "RANDOM_SAVED_SEARCH") {
+    const name = batch.selection_definition.saved_search_name;
+    return typeof name === "string" ? `${name} sample` : "Random saved-search sample";
+  }
+  return { ALL_MATTER: "All matter documents", SEARCH_QUERY: "Keyword search", RANDOM_MATTER: "Random matter sample", RANDOM_BATCH: "Random batch sample", DEFINITION_ASSESSMENT: "Matter Definition assessment" }[batch.selection_type];
 }
 
 function Summary({ icon: Icon, label, value }: { icon: typeof ListChecks; label: string; value: number | string }) {

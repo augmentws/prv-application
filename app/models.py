@@ -854,7 +854,7 @@ class ReviewBatch(TimestampMixin, Base):
     __table_args__ = (
         CheckConstraint(
             "selection_type IN ('ALL_MATTER', 'SEARCH_QUERY', 'RANDOM_MATTER', 'RANDOM_BATCH', "
-            "'DEFINITION_ASSESSMENT')",
+            "'RANDOM_SAVED_SEARCH', 'DEFINITION_ASSESSMENT')",
             name="ck_review_batch_selection_type",
         ),
         CheckConstraint(

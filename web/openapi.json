@@ -15121,6 +15121,7 @@
         "properties": {
           "question_key": {
             "type": "string",
+            "pattern": "^[a-z][a-z0-9_]*(?:\\.[a-z][a-z0-9_]*)+$",
             "title": "Question Key"
           },
           "measure": {
@@ -15213,24 +15214,26 @@
             "default": "review-decision-specification-v1"
           },
           "questions": {
-            "additionalProperties": {
-              "oneOf": [
-                {
-                  "$ref": "#/components/schemas/ChoiceDecisionQuestion"
-                },
-                {
-                  "$ref": "#/components/schemas/ScoreDecisionQuestion"
-                },
-                {
-                  "$ref": "#/components/schemas/NoulDecisionQuestion"
-                }
-              ],
-              "discriminator": {
-                "propertyName": "type",
-                "mapping": {
-                  "choice": "#/components/schemas/ChoiceDecisionQuestion",
-                  "noul": "#/components/schemas/NoulDecisionQuestion",
-                  "score": "#/components/schemas/ScoreDecisionQuestion"
+            "patternProperties": {
+              "^[a-z][a-z0-9_]*(?:\\.[a-z][a-z0-9_]*)+$": {
+                "oneOf": [
+                  {
+                    "$ref": "#/components/schemas/ChoiceDecisionQuestion"
+                  },
+                  {
+                    "$ref": "#/components/schemas/ScoreDecisionQuestion"
+                  },
+                  {
+                    "$ref": "#/components/schemas/NoulDecisionQuestion"
+                  }
+                ],
+                "discriminator": {
+                  "propertyName": "type",
+                  "mapping": {
+                    "choice": "#/components/schemas/ChoiceDecisionQuestion",
+                    "noul": "#/components/schemas/NoulDecisionQuestion",
+                    "score": "#/components/schemas/ScoreDecisionQuestion"
+                  }
                 }
               }
             },
@@ -15264,7 +15267,8 @@
           },
           "required_paths": {
             "items": {
-              "type": "string"
+              "type": "string",
+              "pattern": "^[a-z][a-z0-9_]*(?:\\.[a-z][a-z0-9_]*)+$"
             },
             "type": "array",
             "maxItems": 100,
@@ -21237,7 +21241,8 @@
               "ALL_MATTER",
               "SEARCH_QUERY",
               "RANDOM_MATTER",
-              "RANDOM_BATCH"
+              "RANDOM_BATCH",
+              "RANDOM_SAVED_SEARCH"
             ],
             "title": "Selection Type"
           },
@@ -21262,6 +21267,18 @@
               }
             ],
             "title": "Source Batch Id"
+          },
+          "saved_search_id": {
+            "anyOf": [
+              {
+                "type": "string",
+                "format": "uuid"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Saved Search Id"
           },
           "sample_size": {
             "anyOf": [
@@ -21595,6 +21612,7 @@
               "SEARCH_QUERY",
               "RANDOM_MATTER",
               "RANDOM_BATCH",
+              "RANDOM_SAVED_SEARCH",
               "DEFINITION_ASSESSMENT"
             ],
             "title": "Selection Type"

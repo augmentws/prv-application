@@ -15,6 +15,7 @@ export interface DecisionStateContract {
   /**
      * @minItems 1
      * @maxItems 100
+     * @items.pattern ^[a-z][a-z0-9_]*(?:\.[a-z][a-z0-9_]*)+$
      */
   required_paths: string[];
 }

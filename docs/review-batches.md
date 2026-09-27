@@ -24,6 +24,7 @@ Run values intentionally do not update `metadata_event`, `document_metadata_curr
 - `SEARCH_QUERY` re-executes a controlled keyword query and records the active physical search-index generation used to build the batch. The selection definition snapshots its generation number, physical name, schema hash, and activation time so provenance survives normal index-generation cleanup.
 - `RANDOM_MATTER` deterministically orders all current matter documents by the stored seed and optionally takes a sample.
 - `RANDOM_BATCH` applies the same deterministic sampling to an existing ready batch.
+- `RANDOM_SAVED_SEARCH` authorizes and snapshots an accessible Keyword saved search, exhaustively enumerates its matches from the recorded active physical index generation, deterministically orders those IDs by the stored seed, and takes the requested sample. The batch does not depend on the saved-search row after creation.
 
 The initial search-query builder supports keyword searches only. Semantic and hybrid batch selection need a separately defined candidate-set policy because approximate vector retrieval is not an exhaustive corpus predicate.
 

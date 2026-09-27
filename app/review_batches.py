@@ -27,6 +27,11 @@ def _stable_key(document_id: uuid.UUID, seed: str) -> bytes:
     return hashlib.sha256(f"{seed}:{document_id}".encode()).digest()
 
 
+def _sample_document_ids(ids: list[uuid.UUID], batch: ReviewBatch) -> list[uuid.UUID]:
+    ids.sort(key=lambda value: _stable_key(value, batch.random_seed or str(batch.id)))
+    return ids[: batch.sample_size] if batch.sample_size is not None else ids
+
+
 def _database_document_ids(db: Session, batch: ReviewBatch) -> list[uuid.UUID]:
     if batch.selection_type == "RANDOM_BATCH":
         ids = list(
@@ -45,9 +50,7 @@ def _database_document_ids(db: Session, batch: ReviewBatch) -> list[uuid.UUID]:
             )
         )
     if batch.selection_type.startswith("RANDOM"):
-        ids.sort(key=lambda value: _stable_key(value, batch.random_seed or str(batch.id)))
-        if batch.sample_size is not None:
-            ids = ids[: batch.sample_size]
+        ids = _sample_document_ids(ids, batch)
     return ids
 
 
@@ -119,8 +122,10 @@ def materialize_review_batch(db: Session, batch_id: uuid.UUID, settings: Setting
     if matter is None:
         raise ValueError("Matter not found")
     try:
-        if batch.selection_type == "SEARCH_QUERY":
+        if batch.selection_type in {"SEARCH_QUERY", "RANDOM_SAVED_SEARCH"}:
             document_ids = _search_document_ids(db, batch, matter, settings)
+            if batch.selection_type == "RANDOM_SAVED_SEARCH":
+                document_ids = _sample_document_ids(document_ids, batch)
         else:
             document_ids = _database_document_ids(db, batch)
         db.execute(delete(ReviewBatchDocument).where(ReviewBatchDocument.review_batch_id == batch.id))

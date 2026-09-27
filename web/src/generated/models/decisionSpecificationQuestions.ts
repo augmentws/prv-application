@@ -5,8 +5,5 @@
  * Phase-one Core API for authentication, hierarchical tenants, clients, matters, and matter metadata definitions.
  * OpenAPI spec version: 0.1.0
  */
-import type { ChoiceDecisionQuestion } from './choiceDecisionQuestion';
-import type { NoulDecisionQuestion } from './noulDecisionQuestion';
-import type { ScoreDecisionQuestion } from './scoreDecisionQuestion';
 
-export type DecisionSpecificationQuestions = {[key: string]: ChoiceDecisionQuestion | ScoreDecisionQuestion | NoulDecisionQuestion};
+export type DecisionSpecificationQuestions = { [key: string]: unknown };

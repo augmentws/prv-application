@@ -9,6 +9,7 @@ import type { DecisionPredicateComparator } from './decisionPredicateComparator'
 import type { DecisionPredicateMeasure } from './decisionPredicateMeasure';
 
 export interface DecisionPredicate {
+  /** @pattern ^[a-z][a-z0-9_]*(?:\.[a-z][a-z0-9_]*)+$ */
   question_key: string;
   measure: DecisionPredicateMeasure;
   comparator: DecisionPredicateComparator;

@@ -1,4 +1,6 @@
+import hashlib
 import uuid
+from datetime import datetime, timezone
 
 from conftest import TestingSessionLocal
 from fastapi.testclient import TestClient
@@ -11,7 +13,9 @@ from app.models import (
     MetadataGroup,
     MetadataGroupField,
     ReviewBatch,
+    ReviewBatchDocument,
     ReviewBatchRun,
+    SearchIndexGeneration,
     WorkflowRun,
 )
 from app.schemas import MatterSearchResponse
@@ -224,6 +228,117 @@ def test_batch_selection_validation(client: TestClient, root_token: str, root_ad
         json={"name": "Bad search batch", "selection_type": "SEARCH_QUERY"},
     )
     assert response.status_code == 422
+    missing_saved_search = client.post(
+        f"/v1/matters/{matter_id}/review-batches",
+        headers=auth(root_token),
+        json={"name": "Missing saved search", "selection_type": "RANDOM_SAVED_SEARCH", "sample_size": 10},
+    )
+    assert missing_saved_search.status_code == 422
+    missing_sample_size = client.post(
+        f"/v1/matters/{matter_id}/review-batches",
+        headers=auth(root_token),
+        json={
+            "name": "Missing sample size",
+            "selection_type": "RANDOM_SAVED_SEARCH",
+            "saved_search_id": str(uuid.uuid4()),
+        },
+    )
+    assert missing_sample_size.status_code == 422
+
+
+def test_random_saved_search_batch_snapshots_and_samples_matching_documents(
+    client: TestClient,
+    root_token: str,
+    root_admin,
+    monkeypatch,
+) -> None:
+    matter_id = create_matter(client, root_token, str(root_admin.tenant_id))
+    document_ids = add_documents(matter_id, root_admin.id, count=5)
+    eligible_ids = document_ids[:4]
+    with TestingSessionLocal() as db:
+        generation = SearchIndexGeneration(
+            matter_id=uuid.UUID(matter_id),
+            generation=1,
+            index_name=f"matter-{matter_id}-000001",
+            alias_name=f"matter-{matter_id}",
+            schema_hash="a" * 64,
+            status="ACTIVE",
+            document_count=len(document_ids),
+            schema_snapshot={},
+            activated_at=datetime.now(timezone.utc),
+        )
+        db.add(generation)
+        db.commit()
+        generation_id = str(generation.id)
+
+    class FakeOpenSearchClient:
+        def __init__(self, _settings):
+            pass
+
+        def search(self, index_name, body):
+            assert index_name == f"matter-{matter_id}-000001"
+            assert body["size"] == 500
+            return {
+                "hits": {
+                    "hits": [
+                        {"_source": {"document_id": document_id}, "sort": [document_id]}
+                        for document_id in eligible_ids
+                    ]
+                }
+            }
+
+        def close(self):
+            pass
+
+    monkeypatch.setattr("app.review_batches.OpenSearchClient", FakeOpenSearchClient)
+    saved = client.post(
+        f"/v1/matters/{matter_id}/saved-searches",
+        headers=auth(root_token),
+        json={
+            "name": "Insurance correspondence",
+            "visibility": "PRIVATE",
+            "search": {"query": "insurance", "search_mode": "KEYWORD"},
+        },
+    )
+    assert saved.status_code == 201, saved.text
+    seed = "saved-search-sample"
+    created = client.post(
+        f"/v1/matters/{matter_id}/review-batches",
+        headers=auth(root_token),
+        json={
+            "name": "Saved search sample",
+            "selection_type": "RANDOM_SAVED_SEARCH",
+            "saved_search_id": saved.json()["id"],
+            "sample_size": 2,
+            "random_seed": seed,
+        },
+    )
+    assert created.status_code == 202, created.text
+    batch = created.json()
+    assert batch["status"] == "READY"
+    assert batch["document_count"] == 2
+    assert batch["sample_size"] == 2
+    assert batch["random_seed"] == seed
+    assert batch["search_index_generation_id"] == generation_id
+    assert batch["selection_definition"]["saved_search_id"] == saved.json()["id"]
+    assert batch["selection_definition"]["saved_search_name"] == "Insurance correspondence"
+    assert batch["selection_definition"]["search"]["query"] == "insurance"
+    assert batch["selection_definition"]["search_index_generation"]["generation"] == 1
+
+    expected = sorted(
+        eligible_ids,
+        key=lambda document_id: hashlib.sha256(f"{seed}:{document_id}".encode()).digest(),
+    )[:2]
+    with TestingSessionLocal() as db:
+        actual = [
+            str(document_id)
+            for document_id in db.scalars(
+                select(ReviewBatchDocument.matter_document_id)
+                .where(ReviewBatchDocument.review_batch_id == uuid.UUID(batch["id"]))
+                .order_by(ReviewBatchDocument.sequence_number)
+            )
+        ]
+    assert actual == expected
 
 
 def test_workflow_review_run_has_workflow_owner(

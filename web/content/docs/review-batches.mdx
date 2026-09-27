@@ -15,8 +15,10 @@ Choose how to select documents:
 - **Keyword search results** runs the entered query against filenames, paths, searchable metadata, email fields, and document body text.
 - **Random matter sample** selects a repeatable random sample from the matter.
 - **Random sample from batch** selects from an existing ready batch.
+- **Random sample from saved search** runs an accessible Keyword saved search and samples only its matching documents.
 
 Leaving the random sample size empty includes all source documents in a randomized order. The system stores the random seed, so the selection is reproducible.
+Saved-search samples require a sample size. Priv-View snapshots the saved search definition, its name and update time, the active physical search generation, and the random seed. Later edits or deletion of the saved search do not change the frozen batch.
 
 Select one or more shared metadata groups to define the coding fields. The system snapshots those fields when the batch is created. Later edits to the matter group do not silently change the batch.
 
@@ -68,4 +70,4 @@ Run results do not change the matter’s ordinary metadata or search index. Publ
 
 ## Current limitations
 
-Keyword query batches are supported; semantic and hybrid result sets are not yet available for ordinary batch creation. Assessment retrieval can use all controlled search modes. Adjudication and publish-to-matter controls remain planned.
+Keyword query batches and samples from Keyword saved searches are supported; semantic and hybrid result sets are not yet available for ordinary batch creation. Assessment retrieval can use all controlled search modes. Adjudication and publish-to-matter controls remain planned.

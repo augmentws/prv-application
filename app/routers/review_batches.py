@@ -39,6 +39,7 @@ from app.models import (
     User,
 )
 from app.review_batches import materialize_review_batch, refresh_run_document_count
+from app.routers.saved_searches import _saved_search
 from app.routers.search import execute_matter_batch_topic_facets, execute_matter_facet_values, execute_matter_search
 from app.schemas import (
     BatchTopicRead,
@@ -264,11 +265,31 @@ def create_review_batch(
         source = _batch(db, matter_id, payload.source_batch_id)
         if source.status != "READY":
             raise HTTPException(status_code=409, detail="Source batch is not ready")
+    saved_search = None
+    if payload.saved_search_id is not None:
+        saved_search = _saved_search(db, matter.id, payload.saved_search_id, principal)
+        saved_request = MatterSearchRequest.model_validate(saved_search.search_definition)
+        if saved_request.search_mode != "KEYWORD":
+            raise HTTPException(
+                status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
+                detail="Review batch sampling currently requires a Keyword saved search",
+            )
     batch_id = uuid.uuid4()
     seed = payload.random_seed or (str(batch_id) if payload.selection_type.startswith("RANDOM") else None)
     selection = {"type": payload.selection_type}
     if payload.search is not None:
         selection["search"] = payload.search.model_copy(update={"offset": 0}).model_dump(mode="json", by_alias=True)
+    if saved_search is not None:
+        selection.update(
+            {
+                "saved_search_id": str(saved_search.id),
+                "saved_search_name": saved_search.name,
+                "saved_search_updated_at": saved_search.updated_at.isoformat(),
+                "search": MatterSearchRequest.model_validate(saved_search.search_definition)
+                .model_copy(update={"offset": 0})
+                .model_dump(mode="json", by_alias=True),
+            }
+        )
     batch = ReviewBatch(
         id=batch_id,
         matter_id=matter.id,
@@ -299,7 +320,11 @@ def create_review_batch(
         action="review_batch.created",
         target_type="review_batch",
         target_id=batch.id,
-        details={"matter_id": str(matter.id), "selection_type": batch.selection_type},
+        details={
+            "matter_id": str(matter.id),
+            "selection_type": batch.selection_type,
+            "saved_search_id": str(saved_search.id) if saved_search is not None else None,
+        },
     )
     enqueue_review_batch(db, batch.workflow_id, str(batch.id))
     db.commit()
