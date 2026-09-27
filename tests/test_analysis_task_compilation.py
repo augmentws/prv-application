@@ -1,3 +1,4 @@
+import json
 import uuid
 
 from fastapi.testclient import TestClient
@@ -8,6 +9,7 @@ from sqlalchemy.orm import Session
 from app.analysis_task_compilation import (
     build_source_reference_catalog,
     compile_analysis_task_version,
+    parse_compiler_wire_output,
 )
 from app.analysis_task_skills import ensure_standard_analysis_task_skills
 from app.models import (
@@ -94,6 +96,10 @@ def _compiler_output(task_version_id: str, excerpt_hash: str) -> dict:
     }
 
 
+def _compiler_wire_output(task_version_id: str, excerpt_hash: str) -> dict:
+    return {"compiled_output_json": json.dumps(_compiler_output(task_version_id, excerpt_hash))}
+
+
 def test_standard_analysis_task_compiler_skill_is_idempotent(db: Session, root_admin) -> None:
     root = db.get(Tenant, root_admin.tenant_id)
     assert root is not None
@@ -172,7 +178,7 @@ def test_compiler_persists_validated_specification_and_provenance(
         db,
         version_id,
         model=TestModel(
-            custom_output_args=_compiler_output(
+            custom_output_args=_compiler_wire_output(
                 str(version_id),
                 references[0]["excerpt_hash"],
             )
@@ -214,3 +220,18 @@ def test_source_catalog_uses_reviewable_heading_and_exact_excerpt_hash() -> None
     ]
     assert all(entry["task_version_id"] == str(version_id) for entry in catalog)
     assert all(len(entry["excerpt_hash"]) == 64 for entry in catalog)
+
+
+def test_compiler_wire_output_parses_full_compilation_result() -> None:
+    version_id = uuid.uuid4()
+    compiled = parse_compiler_wire_output(_compiler_wire_output(str(version_id), "a" * 64))
+    assert set(compiled.decision_specification.questions) == {"privilege.legal_advice"}
+
+
+def test_compiler_wire_output_rejects_invalid_embedded_json() -> None:
+    try:
+        parse_compiler_wire_output({"compiled_output_json": "not-json"})
+    except ValueError as exc:
+        assert "not valid JSON" in str(exc)
+    else:
+        raise AssertionError("invalid embedded JSON should fail validation")

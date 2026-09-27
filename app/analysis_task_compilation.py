@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import json
 import re
 import uuid
 from datetime import datetime, timezone
@@ -276,7 +277,8 @@ def compile_analysis_task_version(
     metadata_definitions = metadata_definition_snapshot(db, matter.id)
     dependencies = dependency_snapshot(db, task_version.id)
     prior = _prior_published_specification(db, task)
-    validator = _compiler_output_validator(
+    compiled_output_schema = DecisionSpecificationCompilationOutput.model_json_schema(mode="validation")
+    validator = _compiler_wire_output_validator(
         task_version_id=task_version.id,
         references=references,
         metadata_definitions=metadata_definitions,
@@ -302,6 +304,7 @@ def compile_analysis_task_version(
                 "metadata_definitions": metadata_definitions,
                 "dependency_versions": dependencies,
                 "specification_schema": DecisionSpecification.model_json_schema(mode="validation"),
+                "compiled_output_schema": compiled_output_schema,
             },
             dynamic_input={
                 "task": {
@@ -331,7 +334,7 @@ def compile_analysis_task_version(
             model=model if model is not None else pinned_model,
         )
     )
-    compiled = DecisionSpecificationCompilationOutput.model_validate(output)
+    compiled = parse_compiler_wire_output(output)
     deterministic_warnings = _deterministic_warnings(compiled.decision_specification)
     validation_report = {
         "status": "VALID",
@@ -473,6 +476,38 @@ def _compiler_output_validator(
                     raise ValueError(
                         f"Omission {omission.subject} cites a source reference outside the supplied catalog"
                     )
+
+    return validate
+
+
+def parse_compiler_wire_output(output: dict[str, Any]) -> DecisionSpecificationCompilationOutput:
+    raw = output.get("compiled_output_json")
+    if not isinstance(raw, str) or not raw.strip():
+        raise ValueError("compiled_output_json must contain a non-empty JSON string")
+    try:
+        parsed = json.loads(raw)
+    except json.JSONDecodeError as exc:
+        raise ValueError(f"compiled_output_json is not valid JSON: {exc.msg}") from exc
+    if not isinstance(parsed, dict):
+        raise ValueError("compiled_output_json must decode to a JSON object")  # noqa: TRY004
+    return DecisionSpecificationCompilationOutput.model_validate(parsed)
+
+
+def _compiler_wire_output_validator(
+    *,
+    task_version_id: uuid.UUID,
+    references: list[dict[str, Any]],
+    metadata_definitions: list[dict[str, Any]],
+):
+    validate_compiled = _compiler_output_validator(
+        task_version_id=task_version_id,
+        references=references,
+        metadata_definitions=metadata_definitions,
+    )
+
+    def validate(output: dict[str, Any]) -> None:
+        compiled = parse_compiler_wire_output(output)
+        validate_compiled(compiled.model_dump(mode="json"))
 
     return validate
 

@@ -74,14 +74,14 @@ MATTER_DEFINITION_ASSESSMENT_SPEC = WorkflowSpec(
 
 MATTER_ANALYSIS_TASK_COMPILATION_SPEC = WorkflowSpec(
     key="matter_analysis_task_compilation_v1",
-    code_version="1",
+    code_version="2",
     name="Matter Analysis Task compilation",
     description="Compiles a reviewed Task Definition into a provider-neutral Decision Specification.",
     roles=(
         WorkflowRoleSpec(
             key="decision_specification_compiler",
             input_schema_key="matter_analysis_task_compiler_input_v1",
-            output_schema_key="matter_analysis_task_compiler_output_v1",
+            output_schema_key="matter_analysis_task_compiler_output_v2",
             allowed_capabilities=frozenset({"structured_output", "prompt_caching", "long_context"}),
             allowed_tool_keys=frozenset(),
         ),
