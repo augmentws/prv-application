@@ -3,6 +3,8 @@ from typing import Any, Protocol
 
 from google import genai
 
+from app.provider_schemas import provider_output_schema
+
 
 @dataclass(frozen=True)
 class BatchModelTarget:
@@ -61,37 +63,6 @@ class BatchProviderAdapter(Protocol):
     def cancel(self, batch_id: str) -> None: ...
 
 
-def _supported_gemini_schema(value: Any) -> Any:
-    supported = {
-        "$id",
-        "$defs",
-        "$ref",
-        "$anchor",
-        "type",
-        "format",
-        "title",
-        "description",
-        "enum",
-        "items",
-        "prefixItems",
-        "minItems",
-        "maxItems",
-        "minimum",
-        "maximum",
-        "anyOf",
-        "oneOf",
-        "properties",
-        "additionalProperties",
-        "required",
-        "propertyOrdering",
-    }
-    if isinstance(value, list):
-        return [_supported_gemini_schema(item) for item in value]
-    if not isinstance(value, dict):
-        return value
-    return {key: _supported_gemini_schema(item) for key, item in value.items() if key in supported}
-
-
 class GoogleBatchProvider:
     provider = "google"
 
@@ -115,7 +86,7 @@ class GoogleBatchProvider:
             provider_config: dict[str, Any] = {
                 "system_instruction": "\n\n".join(request.instructions),
                 "response_mime_type": "application/json",
-                "response_json_schema": _supported_gemini_schema(request.output_schema),
+                "response_json_schema": provider_output_schema(request.output_schema, provider="google"),
                 "max_output_tokens": request.limits.get("max_output_tokens"),
             }
             for key in ("temperature", "top_p", "top_k", "seed"):

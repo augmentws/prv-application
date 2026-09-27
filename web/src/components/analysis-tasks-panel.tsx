@@ -262,7 +262,7 @@ function VersionWorkspace({ matterId, task, version, onTaskUpdated }: { matterId
             {version.compilation_status === "GENERATING" ? <div className="flex min-h-[28rem] items-center justify-center gap-3 text-sm text-muted-foreground"><LoaderCircle className="size-5 animate-spin text-primary" />Generating and validating the Decision Specification…</div> : <Textarea aria-label="Decision Specification JSON" className="min-h-[28rem] resize-y font-mono text-xs leading-5" value={specification} onChange={(event) => setSpecification(event.target.value)} readOnly={!editable} placeholder="Generate a specification from the task definition." />}
             {editable && version.compilation_status !== "GENERATING" ? <div className="flex flex-wrap justify-end gap-2"><Button variant="outline" onClick={() => compile.mutate()} disabled={compile.isPending || definitionChanged}>{compile.isPending ? <LoaderCircle className="animate-spin" /> : <Sparkles />}{version.decision_specification ? "Regenerate" : "Generate"}</Button><Button variant="outline" onClick={() => saveSpecification.mutate()} disabled={!specification.trim() || saveSpecification.isPending}>{saveSpecification.isPending ? <LoaderCircle className="animate-spin" /> : <Check />}Validate & save JSON</Button><Button onClick={() => publish.mutate()} disabled={version.compilation_status !== "READY" || publish.isPending}>{publish.isPending ? <LoaderCircle className="animate-spin" /> : <Check />}{publish.isPending ? "Publishing…" : "Publish version"}</Button></div> : null}
             {editable && definitionChanged ? <p className="text-xs text-muted-foreground">Save the changed definition as a new draft before generating its specification.</p> : null}
-            {version.compilation_status === "FAILED" ? <p role="alert" className="rounded-lg bg-destructive/10 p-3 text-sm text-destructive">{stringValue(version.validation_report.error) || "Specification generation failed. Review the model trace, then regenerate."}</p> : null}
+            {version.compilation_status === "FAILED" ? <p role="alert" className="rounded-lg bg-destructive/10 p-3 text-sm text-destructive">{compilationError(version.validation_report) || "Specification generation failed. Review the model trace, then regenerate."}</p> : null}
           </CardContent>
         </Card>
       </div>
@@ -376,3 +376,9 @@ function shortHash(value: string) { return value.slice(0, 10); }
 function friendly(value: string) { return value.toLowerCase().replaceAll("_", " "); }
 function arrayValue(value: unknown) { return Array.isArray(value) ? value : []; }
 function stringValue(value: unknown) { return typeof value === "string" ? value : undefined; }
+function compilationError(report: Record<string, unknown>) {
+  const direct = stringValue(report.error);
+  if (direct) return direct;
+  const first = arrayValue(report.errors)[0];
+  return first && typeof first === "object" ? stringValue((first as Record<string, unknown>).message) : undefined;
+}

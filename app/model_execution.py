@@ -8,12 +8,14 @@ from typing import Any, Generic, Literal, TypeVar
 from jsonschema import Draft202012Validator
 from jsonschema.exceptions import SchemaError
 from pydantic_ai import Agent, CachePoint, ModelRetry, StructuredDict, UsageLimits
+from pydantic_ai.exceptions import ModelHTTPError
 from pydantic_ai.messages import ModelRequest, ModelResponse
 
 from app.agent_models import resolve_agent_model
 from app.config import get_settings
 from app.model_rate_limits import model_rate_limit_hooks
 from app.model_tracing import ModelCallTrace, model_call_trace_context, start_model_call_trace
+from app.provider_schemas import provider_output_schema
 from app.provider_usage import external_model_identity
 
 OutputT = TypeVar("OutputT")
@@ -321,6 +323,15 @@ async def run_model(
         if active_trace is not None:
             active_trace.fail(exc)
         raise
+    except ModelHTTPError as exc:
+        if active_trace is not None:
+            active_trace.fail(exc)
+        retryable = exc.status_code in {408, 409, 425, 429} or exc.status_code >= 500
+        raise ModelExecutionError(
+            "MODEL_FAILURE" if retryable else "INVALID_REQUEST",
+            str(exc),
+            retryable=retryable,
+        ) from exc
     except Exception as exc:
         if active_trace is not None:
             active_trace.fail(exc)
@@ -374,6 +385,11 @@ async def execute_structured_model(
 ) -> tuple[ModelRunEnvelope[dict[str, Any]], PromptAssembly]:
     selected_model = model if model is not None else resolve_agent_model(request.model_key, get_settings())
     assembly = assemble_structured_prompt(request, resolved_model=selected_model)
+    provider_identity = external_model_identity(selected_model)
+    admitted_output_schema = provider_output_schema(
+        request.output_schema,
+        provider=provider_identity[0] if provider_identity is not None else None,
+    )
     trace = start_model_call_trace(
         get_settings(),
         request_type=request.request_type,
@@ -385,6 +401,7 @@ async def execute_structured_model(
             "stable_context": request.stable_context,
             "dynamic_input": request.dynamic_input,
             "output_schema": request.output_schema,
+            "provider_output_schema": admitted_output_schema,
             "model_key": request.model_key,
             "resolved_model": str(selected_model),
             "model_settings": assembly.model_settings,
@@ -400,7 +417,7 @@ async def execute_structured_model(
         selected_model,
         name="priv_view_structured_model_executor",
         output_type=StructuredDict(
-            request.output_schema,
+            admitted_output_schema,
             name=f"{request.request_type.replace('-', '_')}_result",
             description="Return a result that exactly matches the supplied JSON schema.",
         ),
