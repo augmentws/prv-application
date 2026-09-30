@@ -15,13 +15,13 @@ const baseDefinitions: MetadataDefinitionRead[] = [
     id: "definition-custodian", matter_id: "matter-1", key: "custodian", display_name: "Custodian", description: null,
     type: "TEXT", cardinality: "MULTIPLE", allowed_values: null, value_source: "SYSTEM", reference_target: "CUSTODIAN",
     template_key: "edrm-core", template_version: 1, assertion_policy: "IMMEDIATE", resolution_policy: "EXPLICIT_ONLY",
-    searchable: true, facetable: true, reviewable: true, ai_assignable: false, status: "ACTIVE", created_at: "2026-09-14T12:00:00Z",
+    searchable: true, facetable: true, hierarchy_separator: null, reviewable: true, ai_assignable: false, status: "ACTIVE", created_at: "2026-09-14T12:00:00Z",
   },
   {
     id: "definition-responsive", matter_id: "matter-1", key: "responsiveness", display_name: "Responsiveness", description: null,
     type: "ENUM", cardinality: "SINGLE", allowed_values: [{ key: "responsive", label: "Responsive", active: true }], value_source: "ASSERTED", reference_target: null,
     template_key: "edrm-core", template_version: 1, assertion_policy: "IMMEDIATE", resolution_policy: "EXPLICIT_ONLY",
-    searchable: true, facetable: true, reviewable: true, ai_assignable: true, status: "ACTIVE", created_at: "2026-09-14T12:00:00Z",
+    searchable: true, facetable: true, hierarchy_separator: null, reviewable: true, ai_assignable: true, status: "ACTIVE", created_at: "2026-09-14T12:00:00Z",
   },
 ];
 
@@ -43,6 +43,16 @@ const definitions: MetadataDefinitionRead[] = [
     cardinality: "MULTIPLE",
     allowed_values: [{ key: "topic_1", label: "Topic one", active: true }, { key: "topic_2", label: "Topic two", active: true }],
     reviewable: true,
+  },
+  {
+    ...baseDefinitions[1],
+    id: "definition-category",
+    key: "category",
+    display_name: "Initiative",
+    type: "TEXT",
+    allowed_values: null,
+    hierarchy_separator: "/",
+    reviewable: false,
   },
   {
     ...baseDefinitions[1],
@@ -140,6 +150,11 @@ describe("ReviewWorkspace", () => {
       if (path.endsWith("/search") && init?.method === "POST") return searchResponse as never;
       if (path.endsWith("/bulk-tag-jobs/preview") && init?.method === "POST") return { candidate_count: 126, matched_count: 42 } as never;
       if (path.endsWith("/facets/custodian/values") && init?.method === "POST") return { field: "custodian", values: [{ value: "custodian-1", count: 1 }], missing_count: 7 } as never;
+      if (path.endsWith("/facets/category/values") && init?.method === "POST") {
+        const request = JSON.parse(String(init.body)) as { parent: string | null };
+        if (request.parent === "Initiatives") return { field: "category", values: [{ value: "Initiatives/344", label: "344", parent: "Initiatives", has_children: false, count: 1 }] } as never;
+        return { field: "category", values: [{ value: "Initiatives", label: "Initiatives", parent: null, has_children: true, count: 1 }] } as never;
+      }
       if (path.includes("/date-histogram") && init?.method === "POST") {
         const field = path.includes("document_date") ? "document_date" : "email_sent";
         return { field, interval: "month", buckets: [{ start: "2024-01-01T00:00:00Z", count: 1 }] } as never;
@@ -241,6 +256,17 @@ describe("ReviewWorkspace", () => {
       const searchCalls = vi.mocked(coreApi).mock.calls.filter(([path, init]) => path.endsWith("/search") && init?.method === "POST");
       const lastRequest = JSON.parse(String(searchCalls.at(-1)?.[1]?.body)) as { filters: { field: string; values: string[] }[] };
       expect(lastRequest.filters).toContainEqual({ field: "custodian", operator: "IN", values: ["custodian-1"] });
+    });
+
+    const openFilterDialog = screen.getByRole("dialog", { name: "Filter documents" });
+    await user.click(within(openFilterDialog).getByRole("button", { name: "Initiative" }));
+    await user.click(await within(openFilterDialog).findByRole("button", { name: "Show children of Initiatives" }));
+    await user.click(await within(openFilterDialog).findByRole("checkbox", { name: /344/ }));
+
+    await waitFor(() => {
+      const searchCalls = vi.mocked(coreApi).mock.calls.filter(([path, init]) => path.endsWith("/search") && init?.method === "POST");
+      const lastRequest = JSON.parse(String(searchCalls.at(-1)?.[1]?.body)) as { filters: { field: string; values: string[] }[] };
+      expect(lastRequest.filters).toContainEqual({ field: "category", operator: "IN", values: ["Initiatives/344"] });
     });
 
     await user.click(screen.getByRole("button", { name: "Close" }));

@@ -119,7 +119,25 @@ System and imported fields are read-only through this event API because their au
 - **Visible to reviewers** marks the field for reviewer-facing experiences.
 - **Agents may assign values** allows processing agents to propose or assign values when agent workflows are implemented.
 
-For Enum fields, enter one option per line as `stable_key | Display label`.
+For imported collection metadata that already carries a path, create a **Text** field and enable **Interpret delimited values as a hierarchy** under **Hierarchy paths**. Enter `/` as the hierarchy delimiter. Enabling the option also enables **Searchable** and **Available as a filter**. For example, `/` interprets these source values as a hierarchy:
+
+```text
+Initiatives/344
+Initiatives/344/Workstream A
+Archive/2025
+```
+
+The source value remains unchanged. During search indexing, Priv-View also projects each prefix: `Initiatives`, `Initiatives/344`, and `Initiatives/344/Workstream A`. This lets a parent filter include every descendant without creating enum options from collection data. Empty path segments, paths deeper than 32 levels, segments longer than 200 characters, and complete paths longer than 4,096 characters are rejected during projection. Whitespace around each segment is removed in the hierarchy projection.
+
+For Enum fields, enter one option per line as `stable_key | Display label`. To create a hierarchy, add the stable key of the parent as a third value and list parents before their children:
+
+```text
+legal | Legal
+contracts | Contracts | legal
+nda | NDAs | contracts
+```
+
+The parent relationship is immutable after an option is created. Labels and descriptions may still change. A parent cannot be deactivated while it has active children; deactivate its children first. Hierarchical enum fields must also be marked **Available as a filter** to appear as drill-down facets in Search & Review.
 
 The Matter Definition setup agent can also propose creation or configuration changes for matter-owned **Asserted** fields. Each proposal requires an authorized matter administrator to approve it before execution. Enum keys remain stable: the agent may add a value, update its label or description, or deactivate it, but does not delete historical values. System and Imported definitions are not editable through these tools.
 

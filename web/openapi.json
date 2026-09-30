@@ -17208,6 +17208,18 @@
             "type": "boolean",
             "title": "Active",
             "default": true
+          },
+          "parent_key": {
+            "anyOf": [
+              {
+                "type": "string",
+                "pattern": "^[A-Za-z][A-Za-z0-9_-]{0,99}$"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Parent Key"
           }
         },
         "type": "object",
@@ -20289,6 +20301,19 @@
             "minimum": 1.0,
             "title": "Size",
             "default": 20
+          },
+          "parent": {
+            "anyOf": [
+              {
+                "type": "string",
+                "maxLength": 4096,
+                "minLength": 1
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Parent"
           }
         },
         "type": "object",
@@ -20678,6 +20703,33 @@
             "type": "integer",
             "minimum": 0.0,
             "title": "Count"
+          },
+          "label": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Label"
+          },
+          "parent": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Parent"
+          },
+          "has_children": {
+            "type": "boolean",
+            "title": "Has Children",
+            "default": false
           }
         },
         "type": "object",
@@ -21898,6 +21950,19 @@
             "title": "Normalize To Lowercase",
             "default": false
           },
+          "hierarchy_separator": {
+            "anyOf": [
+              {
+                "type": "string",
+                "maxLength": 10,
+                "minLength": 1
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Hierarchy Separator"
+          },
           "reviewable": {
             "type": "boolean",
             "title": "Reviewable",
@@ -22058,6 +22123,17 @@
             "title": "Normalize To Lowercase",
             "default": false
           },
+          "hierarchy_separator": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Hierarchy Separator"
+          },
           "reviewable": {
             "type": "boolean",
             "title": "Reviewable"
@@ -22197,6 +22273,19 @@
             ],
             "title": "Normalize To Lowercase"
           },
+          "hierarchy_separator": {
+            "anyOf": [
+              {
+                "type": "string",
+                "maxLength": 10,
+                "minLength": 1
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Hierarchy Separator"
+          },
           "reviewable": {
             "anyOf": [
               {
@@ -22264,6 +22353,18 @@
               }
             ],
             "title": "Description"
+          },
+          "parent_key": {
+            "anyOf": [
+              {
+                "type": "string",
+                "pattern": "^[A-Za-z][A-Za-z0-9_-]{0,99}$"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Parent Key"
           }
         },
         "additionalProperties": false,
@@ -23843,6 +23944,19 @@
             "minimum": 1.0,
             "title": "Size",
             "default": 20
+          },
+          "parent": {
+            "anyOf": [
+              {
+                "type": "string",
+                "maxLength": 4096,
+                "minLength": 1
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Parent"
           }
         },
         "type": "object",

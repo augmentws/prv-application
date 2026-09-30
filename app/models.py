@@ -1333,6 +1333,7 @@ class MetadataDefinition(TimestampMixin, Base):
     searchable: Mapped[bool] = mapped_column(Boolean, default=True)
     facetable: Mapped[bool] = mapped_column(Boolean, default=False)
     normalize_to_lowercase: Mapped[bool] = mapped_column(Boolean, default=False)
+    hierarchy_separator: Mapped[str | None] = mapped_column(String(10))
     reviewable: Mapped[bool] = mapped_column(Boolean, default=True)
     ai_assignable: Mapped[bool] = mapped_column(Boolean, default=False)
     status: Mapped[str] = mapped_column(String(20), default="ACTIVE")

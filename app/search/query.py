@@ -4,6 +4,14 @@ from typing import Any
 
 from fastapi import HTTPException, status
 
+from app.metadata_hierarchy import (
+    HIERARCHY_ROOT,
+    enum_option_map,
+    hierarchy_path_label,
+    hierarchy_path_parent,
+    is_hierarchical_field,
+    parse_hierarchy_path,
+)
 from app.models import MetadataDefinition
 from app.schemas import (
     DateHistogramInterval,
@@ -53,6 +61,10 @@ def _typed_value(definition: MetadataDefinition, value: Any) -> Any:
                 allowed = {item["key"] for item in definition.allowed_values or [] if item.get("active", True)}
                 if value not in allowed:
                     raise _bad_request(f"Value '{value}' is not active for field '{definition.key}'")
+            if definition.type == "TEXT" and definition.hierarchy_separator is not None:
+                value = definition.hierarchy_separator.join(
+                    parse_hierarchy_path(value, definition.hierarchy_separator)
+                )
             return value.lower() if definition.normalize_to_lowercase else value
         if definition.type == "INTEGER":
             if isinstance(value, bool) or not isinstance(value, int):
@@ -90,6 +102,8 @@ def _filter_clause(search_filter: MatterSearchFilter, definition: MetadataDefini
         return {"bool": {"must_not": [{"exists": {"field": metadata_query_path(definition)}}]}}
     if search_filter.operator == "EQ":
         value = _typed_value(definition, search_filter.value)
+        if is_hierarchical_field(definition):
+            return _hierarchy_filter(definition.key, [value])
         if field_type in {"TEXT", "LONG_TEXT"} and not definition.facetable:
             return {"match_phrase": {metadata_query_path(definition): value}}
         return {"term": {exact_path: value}}
@@ -98,7 +112,12 @@ def _filter_clause(search_filter: MatterSearchFilter, definition: MetadataDefini
             raise _bad_request(f"Field '{definition.key}' must be facetable to use IN")
         clauses: list[dict[str, Any]] = []
         if search_filter.values:
-            clauses.append({"terms": {exact_path: [_typed_value(definition, value) for value in search_filter.values]}})
+            values = [_typed_value(definition, value) for value in search_filter.values]
+            clauses.append(
+                _hierarchy_filter(definition.key, values)
+                if is_hierarchical_field(definition)
+                else {"terms": {exact_path: values}}
+            )
         if search_filter.include_missing:
             clauses.append({"bool": {"must_not": [{"exists": {"field": metadata_query_path(definition)}}]}})
         if len(clauses) == 1:
@@ -114,6 +133,49 @@ def _filter_clause(search_filter: MatterSearchFilter, definition: MetadataDefini
             bounds["lte"] = _typed_value(definition, search_filter.to_value)
         return {"range": {metadata_query_path(definition): bounds}}
     raise _bad_request(f"Unsupported filter operator: {search_filter.operator}")
+
+
+def _hierarchy_filter(field: str, values: list[Any]) -> dict[str, Any]:
+    return {
+        "nested": {
+            "path": "hierarchy_facets",
+            "query": {
+                "bool": {
+                    "filter": [
+                        {"term": {"hierarchy_facets.field": field}},
+                        {"terms": {"hierarchy_facets.node_id": values}},
+                    ]
+                }
+            },
+        }
+    }
+
+
+def _hierarchy_aggregation(field: str, *, parent: str | None, size: int) -> dict[str, Any]:
+    return {
+        "nested": {"path": "hierarchy_facets"},
+        "aggs": {
+            "scope": {
+                "filter": {
+                    "bool": {
+                        "filter": [
+                            {"term": {"hierarchy_facets.field": field}},
+                            {"term": {"hierarchy_facets.parent_id": parent or HIERARCHY_ROOT}},
+                        ]
+                    }
+                },
+                "aggs": {
+                    "values": {
+                        "terms": {"field": "hierarchy_facets.node_id", "size": size},
+                        "aggs": {
+                            "documents": {"reverse_nested": {}},
+                            "children": {"filter": {"term": {"hierarchy_facets.has_children": True}}},
+                        },
+                    }
+                },
+            }
+        },
+    }
 
 
 def _keyword_query(filters: list[dict[str, Any]], query: str, query_fields: list[str]) -> dict[str, Any]:
@@ -253,9 +315,12 @@ def compile_search_request(
         definition = catalog.get(key)
         if definition is None or not definition.facetable:
             raise _bad_request(f"Unknown or non-facetable field: {key}")
-        aggregations[key] = {
-            "terms": {"field": metadata_query_path(definition, exact=True), "size": DEFAULT_FACET_SIZE}
-        }
+        if is_hierarchical_field(definition):
+            aggregations[key] = _hierarchy_aggregation(key, parent=None, size=DEFAULT_FACET_SIZE)
+        else:
+            aggregations[key] = {
+                "terms": {"field": metadata_query_path(definition, exact=True), "size": DEFAULT_FACET_SIZE}
+            }
 
     sort: list[dict[str, Any]] = []
     for item in request.sort:
@@ -304,6 +369,7 @@ def compile_facet_values_request(
     matter_id: str,
     value_query: str | None,
     size: int,
+    parent: str | None = None,
     include_values: list[str] | None = None,
     query_vector: list[float] | None = None,
     required_filters: list[dict[str, Any]] | None = None,
@@ -330,6 +396,25 @@ def compile_facet_values_request(
     )
     body["size"] = 0
     body.pop("highlight", None)
+    if is_hierarchical_field(definition):
+        if definition.type == "ENUM":
+            options = enum_option_map(definition)
+            if parent is not None and parent not in options:
+                raise _bad_request(f"Unknown parent value '{parent}' for field '{field}'")
+        elif parent is not None and definition.hierarchy_separator is not None:
+            try:
+                parent = definition.hierarchy_separator.join(
+                    parse_hierarchy_path(parent, definition.hierarchy_separator)
+                )
+            except ValueError as exc:
+                raise _bad_request(f"Invalid parent value for field '{field}'") from exc
+        body["aggs"][field] = _hierarchy_aggregation(field, parent=parent, size=size)
+        terms = body["aggs"][field]["aggs"]["scope"]["aggs"]["values"]["terms"]
+        if include_values is not None:
+            terms["include"] = include_values
+        return body
+    if parent is not None:
+        raise _bad_request(f"Field '{field}' is not hierarchical")
     terms = body["aggs"][field]["terms"]
     body["aggs"][f"{field}__missing"] = {
         "missing": {"field": metadata_query_path(definition, exact=True)}
@@ -595,6 +680,38 @@ def _facet_bucket_value(definition: MetadataDefinition | None, bucket: dict[str,
     return bucket["key"]
 
 
+def _facet_buckets(definition: MetadataDefinition | None, aggregation: dict[str, Any]) -> list[dict[str, Any]]:
+    if definition is not None and is_hierarchical_field(definition):
+        return aggregation.get("scope", {}).get("values", {}).get("buckets", [])
+    return aggregation.get("buckets", [])
+
+
+def _facet_value(definition: MetadataDefinition | None, bucket: dict[str, Any]) -> dict[str, Any]:
+    value = _facet_bucket_value(definition, bucket)
+    result: dict[str, Any] = {
+        "value": value,
+        "count": bucket.get("documents", {}).get("doc_count", bucket["doc_count"]),
+    }
+    if definition is not None and is_hierarchical_field(definition):
+        if definition.type == "ENUM":
+            options = enum_option_map(definition)
+            option = options.get(str(value), {})
+            label = option.get("label", str(value))
+            parent = option.get("parent_key")
+        else:
+            separator = definition.hierarchy_separator or "/"
+            label = hierarchy_path_label(str(value), separator)
+            parent = hierarchy_path_parent(str(value), separator)
+        result.update(
+            {
+                "label": label,
+                "parent": parent,
+                "has_children": bucket.get("children", {}).get("doc_count", 0) > 0,
+            }
+        )
+    return result
+
+
 def execute_search(
     client: OpenSearchClient,
     alias_name: str,
@@ -634,10 +751,7 @@ def execute_search(
     ]
     catalog = _definition_map(definitions)
     facets = {
-        key: [
-            {"value": _facet_bucket_value(catalog.get(key), bucket), "count": bucket["doc_count"]}
-            for bucket in value.get("buckets", [])
-        ]
+        key: [_facet_value(catalog.get(key), bucket) for bucket in _facet_buckets(catalog.get(key), value)]
         for key, value in raw.get("aggregations", {}).items()
     }
     return MatterSearchResponse(
@@ -660,6 +774,7 @@ def execute_facet_values(
     matter_id: str,
     value_query: str | None,
     size: int,
+    parent: str | None = None,
     include_values: list[str] | None = None,
     query_vector: list[float] | None = None,
     required_filters: list[dict[str, Any]] | None = None,
@@ -674,6 +789,7 @@ def execute_facet_values(
         matter_id=matter_id,
         value_query=value_query,
         size=size,
+        parent=parent,
         include_values=include_values,
         query_vector=query_vector,
         required_filters=required_filters,
@@ -681,15 +797,12 @@ def execute_facet_values(
     # Aggregation-only requests have no fetch hits for an RRF processor to rewrite.
     # Running the score pipeline with size=0 causes OpenSearch to reject the query/fetch count mismatch.
     raw = client.search(alias_name, body)
-    buckets = raw.get("aggregations", {}).get(field, {}).get("buckets", [])
     missing_count = raw.get("aggregations", {}).get(f"{field}__missing", {}).get("doc_count", 0)
     definition = _definition_map(definitions).get(field)
+    buckets = _facet_buckets(definition, raw.get("aggregations", {}).get(field, {}))
     return MatterFacetValuesResponse(
         field=field,
-        values=[
-            {"value": _facet_bucket_value(definition, bucket), "count": bucket["doc_count"]}
-            for bucket in buckets
-        ],
+        values=[_facet_value(definition, bucket) for bucket in buckets],
         missing_count=int(missing_count),
     )
 

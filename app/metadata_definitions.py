@@ -130,6 +130,7 @@ def create_metadata_definition(
         searchable=payload.searchable,
         facetable=payload.facetable,
         normalize_to_lowercase=payload.normalize_to_lowercase,
+        hierarchy_separator=payload.hierarchy_separator,
         reviewable=payload.reviewable,
         ai_assignable=payload.ai_assignable,
         status="ACTIVE",
@@ -167,6 +168,8 @@ def update_metadata_definition(
     )
     changes = payload.model_dump(exclude_unset=True)
     resulting_facetable = changes.get("facetable", definition.facetable)
+    resulting_searchable = changes.get("searchable", definition.searchable)
+    resulting_separator = changes.get("hierarchy_separator", definition.hierarchy_separator)
     if resulting_facetable and definition.type in {"LONG_TEXT", "JSON"}:
         raise MetadataDefinitionConflictError(
             "LONG_TEXT and JSON fields cannot be facetable in phase one"
@@ -176,6 +179,13 @@ def update_metadata_definition(
         raise MetadataDefinitionConflictError(
             "Lowercase normalization is only valid for text fields"
         )
+    if resulting_separator is not None:
+        if definition.type != "TEXT":
+            raise MetadataDefinitionConflictError("Path hierarchy is supported only for TEXT definitions")
+        if not resulting_searchable or not resulting_facetable:
+            raise MetadataDefinitionConflictError("Path hierarchy fields must be searchable and facetable")
+        if not resulting_separator.strip():
+            raise MetadataDefinitionConflictError("Path hierarchy separator cannot be whitespace")
     for field, value in changes.items():
         setattr(definition, field, value)
     db.flush()
@@ -216,6 +226,14 @@ def add_metadata_enum_value(
     values = [dict(value) for value in definition.allowed_values or []]
     if any(value["key"] == payload.key for value in values):
         raise MetadataDefinitionConflictError("Enum value key already exists")
+    if payload.parent_key == payload.key:
+        raise MetadataDefinitionConflictError("Enum value cannot be its own parent")
+    if payload.parent_key is not None:
+        parent = next((value for value in values if value["key"] == payload.parent_key), None)
+        if parent is None:
+            raise MetadataDefinitionConflictError("Enum value parent does not exist")
+        if not parent.get("active", True):
+            raise MetadataDefinitionConflictError("Enum value parent must be active")
     enum_value = payload.model_dump()
     enum_value["active"] = True
     values.append(enum_value)
@@ -304,6 +322,8 @@ def deactivate_metadata_enum_value(
     value = next((item for item in values if item["key"] == value_key), None)
     if value is None:
         raise MetadataDefinitionNotFoundError("Enum value not found")
+    if any(item.get("parent_key") == value_key and item.get("active", True) for item in values):
+        raise MetadataDefinitionConflictError("Deactivate active child values before deactivating their parent")
     value["active"] = False
     definition.allowed_values = values
     flag_modified(definition, "allowed_values")

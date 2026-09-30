@@ -28,6 +28,7 @@ export interface MetadataDefinitionCreate {
   searchable?: boolean;
   facetable?: boolean;
   normalize_to_lowercase?: boolean;
+  hierarchy_separator?: string | null;
   reviewable?: boolean;
   ai_assignable?: boolean;
 }

@@ -17,6 +17,7 @@ export interface MetadataDefinitionUpdate {
   searchable?: boolean | null;
   facetable?: boolean | null;
   normalize_to_lowercase?: boolean | null;
+  hierarchy_separator?: string | null;
   reviewable?: boolean | null;
   ai_assignable?: boolean | null;
   status?: MetadataDefinitionUpdateStatus;

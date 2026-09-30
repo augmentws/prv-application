@@ -24,4 +24,21 @@ describe("CreateMetadataDialog", () => {
       normalize_to_lowercase: true,
     })));
   });
+
+  it("shows and configures hierarchy paths for text metadata fields", async () => {
+    const user = userEvent.setup();
+    render(<CreateMetadataDialog onCreate={vi.fn()} />);
+
+    await user.click(screen.getByRole("button", { name: "Add field" }));
+
+    const hierarchy = screen.getByRole("checkbox", { name: /Interpret delimited values as a hierarchy/ });
+    expect(hierarchy).not.toBeChecked();
+    expect(screen.queryByRole("textbox", { name: "Hierarchy delimiter" })).not.toBeInTheDocument();
+
+    await user.click(hierarchy);
+
+    expect(screen.getByRole("textbox", { name: "Hierarchy delimiter" })).toHaveValue("/");
+    expect(screen.getByRole("checkbox", { name: "Searchable" })).toBeChecked();
+    expect(screen.getByRole("checkbox", { name: "Available as a filter" })).toBeChecked();
+  });
 });

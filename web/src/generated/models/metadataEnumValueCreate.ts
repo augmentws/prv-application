@@ -15,4 +15,5 @@ export interface MetadataEnumValueCreate {
      */
   label: string;
   description?: string | null;
+  parent_key?: string | null;
 }

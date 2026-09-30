@@ -16,6 +16,7 @@ from app.artifact_gateway import SearchItemSnapshot
 from app.config import Settings
 from app.embeddings.chunking import TextChunk
 from app.embeddings.parquet import write_chunk_set, write_vector_set
+from app.metadata_hierarchy import hierarchy_entries
 from app.models import (
     Client,
     Matter,
@@ -52,7 +53,7 @@ from app.search.query import (
     execute_facet_values,
     execute_search,
 )
-from app.search.schema import SearchReindexRequired
+from app.search.schema import SearchReindexRequired, plan_schema_change
 from app.search.service import SearchIndexManager, build_document_projection
 
 
@@ -86,6 +87,7 @@ def definition(
     searchable: bool = True,
     facetable: bool = False,
     normalize_to_lowercase: bool = False,
+    hierarchy_separator: str | None = None,
 ) -> MetadataDefinition:
     return MetadataDefinition(
         id=uuid.uuid4(),
@@ -100,6 +102,7 @@ def definition(
         searchable=searchable,
         facetable=facetable,
         normalize_to_lowercase=normalize_to_lowercase,
+        hierarchy_separator=hierarchy_separator,
         reviewable=True,
         ai_assignable=False,
         status="ACTIVE",
@@ -110,7 +113,7 @@ def test_mapping_uses_versioned_ediscovery_analyzers_and_numeric_types() -> None
     mapping = compile_document_index(
         [
             definition("notes", "LONG_TEXT"),
-            definition("issue", "TEXT", facetable=True),
+            definition("issue", "TEXT", facetable=True, hierarchy_separator="/"),
             definition("page_count", "INTEGER"),
             definition("confidence", "DECIMAL"),
             definition("private_value", "TEXT", searchable=False),
@@ -133,6 +136,17 @@ def test_mapping_uses_versioned_ediscovery_analyzers_and_numeric_types() -> None
             "topic_key": {"type": "keyword"},
         },
     }
+    assert mapping["mappings"]["properties"]["hierarchy_facets"] == {
+        "type": "nested",
+        "properties": {
+            "field": {"type": "keyword"},
+            "node_id": {"type": "keyword"},
+            "parent_id": {"type": "keyword"},
+            "depth": {"type": "integer"},
+            "has_children": {"type": "boolean"},
+        },
+    }
+    assert mapping["mappings"]["_meta"]["path_hierarchies"] == {"issue": "/"}
     assert vector_method == {
         "name": "hnsw",
         "engine": "faiss",
@@ -147,6 +161,18 @@ def test_mapping_uses_versioned_ediscovery_analyzers_and_numeric_types() -> None
     assert properties["page_count"] == {"type": "long"}
     assert properties["confidence"] == {"type": "double"}
     assert "private_value" not in properties
+
+
+def test_adding_or_changing_a_path_hierarchy_separator_requires_reindex() -> None:
+    initiative = definition("initiative", "TEXT", facetable=True)
+    current = compile_document_index([initiative])
+    initiative.hierarchy_separator = "/"
+    desired = compile_document_index([initiative])
+
+    plan = plan_schema_change(current, desired)
+
+    assert plan.action == "REINDEX_REQUIRED"
+    assert "mapping behavior" in " ".join(plan.reasons).casefold()
 
 
 def test_query_compiler_injects_scope_and_validates_matter_fields() -> None:
@@ -307,6 +333,143 @@ def test_facet_value_query_normalizes_lowercase_search_text() -> None:
     )
 
     assert body["aggs"]["email_from"]["terms"]["include"] == ".*example\\.com.*"
+
+
+def test_hierarchical_enum_filters_and_facets_use_ancestor_projection() -> None:
+    category = definition("category", "ENUM", facetable=True)
+    category.allowed_values = [
+        {"key": "legal", "label": "Legal", "active": True, "parent_key": None},
+        {"key": "contracts", "label": "Contracts", "active": True, "parent_key": "legal"},
+        {"key": "nda", "label": "NDAs", "active": True, "parent_key": "contracts"},
+    ]
+    request = MatterSearchRequest.model_validate(
+        {
+            "filters": [{"field": "category", "operator": "IN", "values": ["legal"]}],
+            "facets": ["category"],
+        }
+    )
+
+    body = compile_search_request(
+        request,
+        [category],
+        tenant_id="tenant-1",
+        matter_id="matter-1",
+    )
+
+    assert {
+        "nested": {
+            "path": "hierarchy_facets",
+            "query": {
+                "bool": {
+                    "filter": [
+                        {"term": {"hierarchy_facets.field": "category"}},
+                        {"terms": {"hierarchy_facets.node_id": ["legal"]}},
+                    ]
+                }
+            },
+        }
+    } in body["query"]["bool"]["filter"]
+    root_scope = body["aggs"]["category"]["aggs"]["scope"]
+    assert {"term": {"hierarchy_facets.parent_id": "__root__"}} in root_scope["filter"]["bool"]["filter"]
+
+    facet_body = compile_facet_values_request(
+        request,
+        [category],
+        field="category",
+        tenant_id="tenant-1",
+        matter_id="matter-1",
+        value_query=None,
+        size=20,
+        parent="legal",
+    )
+    child_scope = facet_body["aggs"]["category"]["aggs"]["scope"]
+    assert {"term": {"hierarchy_facets.parent_id": "legal"}} in child_scope["filter"]["bool"]["filter"]
+    assert child_scope["aggs"]["values"]["aggs"] == {
+        "documents": {"reverse_nested": {}},
+        "children": {"filter": {"term": {"hierarchy_facets.has_children": True}}},
+    }
+
+    assert hierarchy_entries([category], {"category": "nda"}) == [
+        {"field": "category", "node_id": "nda", "parent_id": "contracts", "depth": 2, "has_children": False},
+        {"field": "category", "node_id": "contracts", "parent_id": "legal", "depth": 1, "has_children": True},
+        {"field": "category", "node_id": "legal", "parent_id": "__root__", "depth": 0, "has_children": True},
+    ]
+    flat = definition("status", "ENUM", facetable=True)
+    flat.allowed_values = [{"key": "open", "label": "Open", "active": True}]
+    assert hierarchy_entries([flat], {"status": "open"}) == [
+        {"field": "status", "node_id": "open", "parent_id": "__root__", "depth": 0, "has_children": False}
+    ]
+
+
+def test_delimited_text_values_are_projected_and_queried_as_hierarchy_paths() -> None:
+    initiative = definition(
+        "initiative",
+        "TEXT",
+        facetable=True,
+        hierarchy_separator="/",
+    )
+
+    assert hierarchy_entries(
+        [initiative],
+        {"initiative": ["Initiatives/344", "Initiatives/344/Workstream", "Archive/2025"]},
+    ) == [
+        {"field": "initiative", "node_id": "Initiatives", "parent_id": "__root__", "depth": 0, "has_children": True},
+        {
+            "field": "initiative",
+            "node_id": "Initiatives/344",
+            "parent_id": "Initiatives",
+            "depth": 1,
+            "has_children": True,
+        },
+        {
+            "field": "initiative",
+            "node_id": "Initiatives/344/Workstream",
+            "parent_id": "Initiatives/344",
+            "depth": 2,
+            "has_children": False,
+        },
+        {"field": "initiative", "node_id": "Archive", "parent_id": "__root__", "depth": 0, "has_children": True},
+        {"field": "initiative", "node_id": "Archive/2025", "parent_id": "Archive", "depth": 1, "has_children": False},
+    ]
+
+    request = MatterSearchRequest.model_validate(
+        {
+            "filters": [{"field": "initiative", "operator": "IN", "values": ["Initiatives"]}],
+            "facets": ["initiative"],
+        }
+    )
+    body = compile_search_request(
+        request,
+        [initiative],
+        tenant_id="tenant-1",
+        matter_id="matter-1",
+    )
+    assert {
+        "nested": {
+            "path": "hierarchy_facets",
+            "query": {
+                "bool": {
+                    "filter": [
+                        {"term": {"hierarchy_facets.field": "initiative"}},
+                        {"terms": {"hierarchy_facets.node_id": ["Initiatives"]}},
+                    ]
+                }
+            },
+        }
+    } in body["query"]["bool"]["filter"]
+
+    facet_body = compile_facet_values_request(
+        request,
+        [initiative],
+        field="initiative",
+        tenant_id="tenant-1",
+        matter_id="matter-1",
+        value_query=None,
+        size=20,
+        parent=" Initiatives / 344 ",
+    )
+    child_scope = facet_body["aggs"]["initiative"]["aggs"]["scope"]
+    assert {"term": {"hierarchy_facets.parent_id": "Initiatives/344"}} in child_scope["filter"]["bool"]["filter"]
 
 
 def test_batch_topic_filter_and_facet_keep_batch_taxonomy_and_topic_in_one_nested_scope() -> None:
@@ -624,6 +787,109 @@ def test_hybrid_facet_values_skip_rrf_pipeline() -> None:
     assert response.missing_count == 3
 
 
+class FakeHierarchyFacetClient:
+    def search(self, index: str, body: dict) -> dict:
+        return {
+            "aggregations": {
+                "category": {
+                    "scope": {
+                        "values": {
+                            "buckets": [
+                                {
+                                    "key": "contracts",
+                                    "doc_count": 7,
+                                    "documents": {"doc_count": 5},
+                                    "children": {"doc_count": 2},
+                                }
+                            ]
+                        }
+                    }
+                }
+            }
+        }
+
+
+def test_hierarchical_facet_values_return_document_counts_and_navigation_metadata() -> None:
+    category = definition("category", "ENUM", facetable=True)
+    category.allowed_values = [
+        {"key": "legal", "label": "Legal", "active": True, "parent_key": None},
+        {"key": "contracts", "label": "Contracts", "active": True, "parent_key": "legal"},
+        {"key": "nda", "label": "NDAs", "active": True, "parent_key": "contracts"},
+    ]
+
+    response = execute_facet_values(
+        FakeHierarchyFacetClient(),  # type: ignore[arg-type]
+        "matter-documents",
+        MatterSearchRequest(),
+        [category],
+        field="category",
+        tenant_id="tenant-1",
+        matter_id="matter-1",
+        value_query=None,
+        size=8,
+        parent="legal",
+    )
+
+    assert response.values[0].model_dump() == {
+        "value": "contracts",
+        "count": 5,
+        "label": "Contracts",
+        "parent": "legal",
+        "has_children": True,
+    }
+
+
+class FakePathHierarchyFacetClient:
+    def search(self, index: str, body: dict) -> dict:
+        return {
+            "aggregations": {
+                "initiative": {
+                    "scope": {
+                        "values": {
+                            "buckets": [
+                                {
+                                    "key": "Initiatives/344",
+                                    "doc_count": 7,
+                                    "documents": {"doc_count": 5},
+                                    "children": {"doc_count": 1},
+                                }
+                            ]
+                        }
+                    }
+                }
+            }
+        }
+
+
+def test_path_hierarchy_facet_values_return_segment_labels_and_parent_paths() -> None:
+    initiative = definition(
+        "initiative",
+        "TEXT",
+        facetable=True,
+        hierarchy_separator="/",
+    )
+    response = execute_facet_values(
+        FakePathHierarchyFacetClient(),  # type: ignore[arg-type]
+        "matter-documents",
+        MatterSearchRequest(),
+        [initiative],
+        field="initiative",
+        tenant_id="tenant-1",
+        matter_id="matter-1",
+        value_query=None,
+        size=8,
+        parent="Initiatives",
+    )
+
+    assert response.values[0].model_dump() == {
+        "value": "Initiatives/344",
+        "count": 5,
+        "label": "344",
+        "parent": "Initiatives",
+        "has_children": True,
+    }
+
+
 class FakeDateHistogramClient:
     def search(self, index: str, body: dict) -> dict:
         assert index == "matter-documents"
@@ -724,7 +990,7 @@ def test_document_projection_includes_artifact_body_text(monkeypatch: pytest.Mon
         native_sha256="a" * 64,
         native_byte_length=100,
         page_count=None,
-        raw_metadata={},
+        raw_metadata={"initiative": "Initiatives/344"},
         unmapped_metadata={},
         body_text="The confidential project is Juniper.",
     )
@@ -741,6 +1007,7 @@ def test_document_projection_includes_artifact_body_text(monkeypatch: pytest.Mon
     definitions = [
         definition("email_from", "TEXT", facetable=True, normalize_to_lowercase=True),
         definition("email_to", "TEXT", facetable=True, normalize_to_lowercase=True),
+        definition("initiative", "TEXT", facetable=True, hierarchy_separator="/"),
     ]
     definitions[1].cardinality = "MULTIPLE"
     projection = build_document_projection(db, document, definitions, batch_ids=batch_ids)
@@ -751,6 +1018,23 @@ def test_document_projection_includes_artifact_body_text(monkeypatch: pytest.Mon
     assert projection["email_to"] == ["recipient@example.com"]
     assert projection["metadata"]["email_from"] == "sender@example.com"
     assert projection["metadata"]["email_to"] == ["recipient@example.com"]
+    assert projection["metadata"]["initiative"] == "Initiatives/344"
+    assert projection["hierarchy_facets"] == [
+        {
+            "field": "initiative",
+            "node_id": "Initiatives",
+            "parent_id": "__root__",
+            "depth": 0,
+            "has_children": True,
+        },
+        {
+            "field": "initiative",
+            "node_id": "Initiatives/344",
+            "parent_id": "Initiatives",
+            "depth": 1,
+            "has_children": False,
+        },
+    ]
 
 
 def test_document_projection_attaches_nested_chunk_vectors(monkeypatch: pytest.MonkeyPatch) -> None:

@@ -16,4 +16,5 @@ export interface EnumValue {
   label: string;
   description?: string | null;
   active?: boolean;
+  parent_key?: string | null;
 }

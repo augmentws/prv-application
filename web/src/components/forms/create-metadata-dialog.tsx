@@ -22,6 +22,8 @@ const schema = z.object({
   type: z.enum(types),
   cardinality: z.enum(["SINGLE", "MULTIPLE"]),
   enum_options: z.string().optional(),
+  hierarchical: z.boolean(),
+  hierarchy_separator: z.string().max(10, "Use at most 10 characters").optional(),
   searchable: z.boolean(),
   facetable: z.boolean(),
   normalize_to_lowercase: z.boolean(),
@@ -34,6 +36,15 @@ const schema = z.object({
   if (values.facetable && ["LONG_TEXT", "JSON"].includes(values.type)) {
     context.addIssue({ code: "custom", path: ["facetable"], message: "Long text and JSON fields cannot be faceted" });
   }
+  if (values.hierarchical) {
+    if (values.type !== "TEXT") {
+      context.addIssue({ code: "custom", path: ["hierarchy_separator"], message: "Path hierarchy is available for text fields" });
+    } else if (!values.searchable || !values.facetable) {
+      context.addIssue({ code: "custom", path: ["hierarchy_separator"], message: "Path hierarchy requires searchable and filterable behavior" });
+    } else if (!values.hierarchy_separator?.trim()) {
+      context.addIssue({ code: "custom", path: ["hierarchy_separator"], message: "Enter a hierarchy delimiter" });
+    }
+  }
 });
 
 type FormValues = z.infer<typeof schema>;
@@ -41,22 +52,23 @@ type FormValues = z.infer<typeof schema>;
 function enumValues(source?: string) {
   if (!source) return null;
   return source.split("\n").map((line) => line.trim()).filter(Boolean).map((line) => {
-    const [rawKey, ...labelParts] = line.split("|");
+    const [rawKey, rawLabel, rawParent] = line.split("|");
     const key = rawKey.trim();
-    const label = (labelParts.join("|").trim() || key.replaceAll("_", " ")).replace(/^./, (value) => value.toUpperCase());
-    return { key, label, description: null, active: true };
+    const label = ((rawLabel ?? "").trim() || key.replaceAll("_", " ")).replace(/^./, (value) => value.toUpperCase());
+    return { key, label, description: null, active: true, parent_key: rawParent?.trim() || null };
   });
 }
 
 export function CreateMetadataDialog({ onCreate }: { onCreate: (values: MetadataDefinitionCreate) => Promise<void> }) {
   const [open, setOpen] = useState(false);
-  const { register, control, handleSubmit, reset, setError, watch, formState: { errors, isSubmitting } } = useForm<FormValues>({
+  const { register, control, handleSubmit, reset, setError, setValue, watch, formState: { errors, isSubmitting } } = useForm<FormValues>({
     resolver: zodResolver(schema),
-    defaultValues: { type: "TEXT", cardinality: "SINGLE", searchable: true, facetable: false, normalize_to_lowercase: false, reviewable: true, ai_assignable: false },
+    defaultValues: { type: "TEXT", cardinality: "SINGLE", hierarchical: false, hierarchy_separator: "/", searchable: true, facetable: false, normalize_to_lowercase: false, reviewable: true, ai_assignable: false },
   });
   // React Hook Form owns field subscriptions; React Compiler safely skips this form component.
   // eslint-disable-next-line react-hooks/incompatible-library
   const selectedType = watch("type");
+  const hierarchical = watch("hierarchical");
 
   async function submit(values: FormValues) {
     try {
@@ -72,6 +84,7 @@ export function CreateMetadataDialog({ onCreate }: { onCreate: (values: Metadata
         searchable: values.searchable,
         facetable: values.facetable,
         normalize_to_lowercase: ["TEXT", "LONG_TEXT"].includes(values.type) && values.normalize_to_lowercase,
+        hierarchy_separator: values.type === "TEXT" && values.hierarchical ? values.hierarchy_separator : null,
         reviewable: values.reviewable,
         ai_assignable: values.ai_assignable,
       });
@@ -85,7 +98,7 @@ export function CreateMetadataDialog({ onCreate }: { onCreate: (values: Metadata
   return (
     <Dialog open={open} onOpenChange={setOpen}>
       <DialogTrigger asChild><Button><Braces />Add field</Button></DialogTrigger>
-      <DialogContent className="max-w-2xl">
+      <DialogContent className="max-h-[90vh] max-w-2xl overflow-y-auto">
         <DialogHeader><DialogTitle>Add metadata field</DialogTitle><DialogDescription>Define a field available within this matter.</DialogDescription></DialogHeader>
         <form className="space-y-5" onSubmit={handleSubmit(submit)}>
           <div className="grid gap-4 sm:grid-cols-2">
@@ -94,10 +107,14 @@ export function CreateMetadataDialog({ onCreate }: { onCreate: (values: Metadata
           </div>
           <div className="space-y-2"><Label htmlFor="field-description">Description</Label><Textarea id="field-description" placeholder="Explain how this field should be used." {...register("description")} /></div>
           <div className="grid gap-4 sm:grid-cols-2">
-            <div className="space-y-2"><Label>Value type</Label><Controller control={control} name="type" render={({ field }) => <Select value={field.value} onValueChange={field.onChange}><SelectTrigger><SelectValue /></SelectTrigger><SelectContent>{types.map((type) => <SelectItem key={type} value={type}>{type.replace("_", " ").toLowerCase().replace(/^./, (value) => value.toUpperCase())}</SelectItem>)}</SelectContent></Select>} /></div>
+            <div className="space-y-2"><Label>Value type</Label><Controller control={control} name="type" render={({ field }) => <Select value={field.value} onValueChange={(value) => { field.onChange(value); if (value !== "TEXT") setValue("hierarchical", false); }}><SelectTrigger><SelectValue /></SelectTrigger><SelectContent>{types.map((type) => <SelectItem key={type} value={type}>{type.replace("_", " ").toLowerCase().replace(/^./, (value) => value.toUpperCase())}</SelectItem>)}</SelectContent></Select>} /></div>
             <div className="space-y-2"><Label>Cardinality</Label><Controller control={control} name="cardinality" render={({ field }) => <Select value={field.value} onValueChange={field.onChange}><SelectTrigger><SelectValue /></SelectTrigger><SelectContent><SelectItem value="SINGLE">Single value</SelectItem><SelectItem value="MULTIPLE">Multiple values</SelectItem></SelectContent></Select>} /></div>
           </div>
-          {selectedType === "ENUM" ? <div className="space-y-2"><Label htmlFor="enum-options">Enum options</Label><Textarea id="enum-options" placeholder={"responsive | Responsive\nnot_responsive | Not responsive"} {...register("enum_options")} /><p className="text-xs leading-5 text-muted-foreground">One option per line: stable_key | Display label</p>{errors.enum_options ? <p className="text-sm text-destructive">{errors.enum_options.message}</p> : null}</div> : null}
+          {selectedType === "ENUM" ? <div className="space-y-2"><Label htmlFor="enum-options">Enum options</Label><Textarea id="enum-options" placeholder={"legal | Legal\ncontracts | Contracts | legal\nnda | NDAs | contracts"} {...register("enum_options")} /><p className="text-xs leading-5 text-muted-foreground">One option per line: stable_key | Display label | optional_parent_key. List parents before their children.</p>{errors.enum_options ? <p className="text-sm text-destructive">{errors.enum_options.message}</p> : null}</div> : null}
+          {selectedType === "TEXT" ? <fieldset className="space-y-3 rounded-lg border p-4"><legend className="px-1 text-sm font-semibold">Hierarchy paths</legend>
+            <Controller control={control} name="hierarchical" render={({ field }) => <label className="flex items-start gap-2 text-sm"><input type="checkbox" className="mt-0.5 size-4 rounded border-input accent-primary" checked={field.value} onChange={(event) => { field.onChange(event.target.checked); if (event.target.checked) { setValue("searchable", true); setValue("facetable", true); setValue("hierarchy_separator", "/"); } }} /><span><span className="font-medium">Interpret delimited values as a hierarchy</span><span className="mt-1 block text-xs leading-5 text-muted-foreground">Use this for collection values such as <code>Initiatives/344</code>. The imported value remains unchanged.</span></span></label>} />
+            {hierarchical ? <div className="space-y-2"><Label htmlFor="hierarchy-separator">Hierarchy delimiter</Label><Input id="hierarchy-separator" className="max-w-32" placeholder="/" maxLength={10} {...register("hierarchy_separator")} /><p className="text-xs text-muted-foreground">Each value is split independently using this delimiter.</p>{errors.hierarchy_separator ? <p className="text-sm text-destructive">{errors.hierarchy_separator.message}</p> : null}</div> : null}
+          </fieldset> : null}
           <fieldset className="grid gap-3 rounded-lg border bg-muted/25 p-4 sm:grid-cols-2"><legend className="px-1 text-sm font-semibold">Behavior</legend>
             {[
               { name: "searchable", label: "Searchable" },

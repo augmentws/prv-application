@@ -45,6 +45,7 @@ from app.schemas import (
     AssertionPolicy,
     Cardinality,
     EnumValueKey,
+    HierarchySeparator,
     MetadataEnumValueCreate,
     MetadataKey,
     MetadataType,
@@ -96,6 +97,7 @@ def durable_create_matter_metadata_definition(
     normalize_to_lowercase: bool = False,
     reviewable: bool = True,
     ai_assignable: bool = False,
+    hierarchy_separator: HierarchySeparator | None = None,
 ) -> dict:
     return create_matter_metadata_definition(
         ctx,
@@ -113,6 +115,7 @@ def durable_create_matter_metadata_definition(
         normalize_to_lowercase,
         reviewable,
         ai_assignable,
+        hierarchy_separator,
     )
 
 
@@ -131,6 +134,7 @@ def durable_update_matter_metadata_definition(
     reviewable: bool | None = None,
     ai_assignable: bool | None = None,
     status: ResourceStatus | None = None,
+    hierarchy_separator: HierarchySeparator | None = None,
 ) -> dict:
     return update_matter_metadata_definition(
         ctx,
@@ -146,6 +150,7 @@ def durable_update_matter_metadata_definition(
         reviewable,
         ai_assignable,
         status,
+        hierarchy_separator,
     )
 
 
