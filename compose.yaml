@@ -17,7 +17,7 @@ services:
       - ./docker/postgres/init:/docker-entrypoint-initdb.d:ro
 
   minio:
-    image: quay.io/minio/minio:RELEASE.2025-06-13T11-33-47Z
+    image: quay.io/minio/minio:RELEASE.2026-09-19T17-05-25Z 
     command: server /data --console-address ":9001"
     environment:
       MINIO_ROOT_USER: minioadmin
