@@ -57,6 +57,8 @@ EnumValueKey = Annotated[
     StringConstraints(strip_whitespace=True, pattern=r"^[A-Za-z][A-Za-z0-9_-]{0,99}$"),
 ]
 AgentConversationTitle = Annotated[str, StringConstraints(strip_whitespace=True, min_length=1, max_length=200)]
+HierarchySeparator = Annotated[str, StringConstraints(min_length=1, max_length=10)]
+HierarchyNodeId = Annotated[str, StringConstraints(min_length=1, max_length=4096)]
 
 
 class ORMModel(BaseModel):
@@ -592,6 +594,7 @@ class MatterFacetValuesRequest(BaseModel):
     search: MatterSearchRequest
     query: str | None = Field(default=None, max_length=200)
     size: int = Field(default=20, ge=1, le=50)
+    parent: HierarchyNodeId | None = None
 
 
 class MatterDateHistogramRequest(BaseModel):
@@ -630,6 +633,9 @@ class MatterSearchHit(BaseModel):
 class MatterSearchFacetValue(BaseModel):
     value: Any
     count: int = Field(ge=0)
+    label: str | None = None
+    parent: str | None = None
+    has_children: bool = False
 
 
 class MatterFacetValuesResponse(BaseModel):
@@ -1177,6 +1183,27 @@ class EnumValue(BaseModel):
     label: str = Field(min_length=1, max_length=200)
     description: str | None = Field(default=None, max_length=2000)
     active: bool = True
+    parent_key: EnumValueKey | None = None
+
+
+def _validate_enum_hierarchy(values: list[EnumValue]) -> None:
+    by_key = {value.key: value for value in values}
+    for value in values:
+        if value.parent_key == value.key:
+            raise ValueError(f"ENUM value '{value.key}' cannot be its own parent")
+        if value.parent_key is not None and value.parent_key not in by_key:
+            raise ValueError(f"ENUM value '{value.key}' references unknown parent '{value.parent_key}'")
+        if value.parent_key is not None and value.active and not by_key[value.parent_key].active:
+            raise ValueError(f"Active ENUM value '{value.key}' cannot have an inactive parent")
+
+    for value in values:
+        visited: set[str] = set()
+        current: EnumValue | None = value
+        while current is not None and current.parent_key is not None:
+            if current.key in visited:
+                raise ValueError("ENUM allowed-value hierarchy cannot contain a cycle")
+            visited.add(current.key)
+            current = by_key[current.parent_key]
 
 
 class MetadataDefinitionCreate(BaseModel):
@@ -1191,6 +1218,7 @@ class MetadataDefinitionCreate(BaseModel):
     searchable: bool = True
     facetable: bool = False
     normalize_to_lowercase: bool = False
+    hierarchy_separator: HierarchySeparator | None = None
     reviewable: bool = True
     ai_assignable: bool = False
 
@@ -1202,12 +1230,20 @@ class MetadataDefinitionCreate(BaseModel):
             keys = [value.key for value in self.allowed_values]
             if len(keys) != len(set(keys)):
                 raise ValueError("ENUM allowed-value keys must be unique")
+            _validate_enum_hierarchy(self.allowed_values)
         elif self.allowed_values is not None:
             raise ValueError("allowed_values is only valid for ENUM definitions")
         if self.facetable and self.type in {"LONG_TEXT", "JSON"}:
             raise ValueError("LONG_TEXT and JSON fields cannot be facetable in phase one")
         if self.normalize_to_lowercase and self.type not in {"TEXT", "LONG_TEXT"}:
             raise ValueError("Lowercase normalization is only valid for text fields")
+        if self.hierarchy_separator is not None:
+            if self.type != "TEXT":
+                raise ValueError("Path hierarchy is supported only for TEXT definitions")
+            if not self.searchable or not self.facetable:
+                raise ValueError("Path hierarchy fields must be searchable and facetable")
+            if not self.hierarchy_separator.strip():
+                raise ValueError("Path hierarchy separator cannot be whitespace")
         return self
 
 
@@ -1221,6 +1257,7 @@ class MetadataDefinitionUpdate(BaseModel):
     searchable: bool | None = None
     facetable: bool | None = None
     normalize_to_lowercase: bool | None = None
+    hierarchy_separator: HierarchySeparator | None = None
     reviewable: bool | None = None
     ai_assignable: bool | None = None
     status: ResourceStatus | None = None
@@ -1238,6 +1275,7 @@ class MetadataEnumValueCreate(BaseModel):
     key: EnumValueKey
     label: str = Field(min_length=1, max_length=200)
     description: str | None = Field(default=None, max_length=2000)
+    parent_key: EnumValueKey | None = None
 
 
 class MetadataEnumValueUpdate(BaseModel):
@@ -1271,6 +1309,7 @@ class MetadataDefinitionRead(ORMModel):
     searchable: bool
     facetable: bool
     normalize_to_lowercase: bool = False
+    hierarchy_separator: str | None = None
     reviewable: bool
     ai_assignable: bool
     status: ResourceStatus

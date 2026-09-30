@@ -20,6 +20,7 @@ class MetadataDefinitionTemplate:
     searchable: bool = True
     facetable: bool = False
     normalize_to_lowercase: bool = False
+    hierarchy_separator: str | None = None
     reviewable: bool = True
     ai_assignable: bool = False
     assertion_policy: str = "IMMEDIATE"
@@ -259,6 +260,7 @@ def instantiate_metadata_profile(
             searchable=template.searchable,
             facetable=template.facetable,
             normalize_to_lowercase=template.normalize_to_lowercase,
+            hierarchy_separator=template.hierarchy_separator,
             reviewable=template.reviewable,
             ai_assignable=template.ai_assignable,
             status="ACTIVE",

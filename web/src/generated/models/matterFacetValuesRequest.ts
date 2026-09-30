@@ -15,4 +15,5 @@ export interface MatterFacetValuesRequest {
      * @maximum 50
      */
   size?: number;
+  parent?: string | null;
 }

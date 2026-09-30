@@ -13,6 +13,7 @@ export interface AgentConversationRead {
   tenant_id: string;
   client_id: string;
   matter_id: string;
+  matter_definition_id: string | null;
   review_batch_id: string | null;
   agent_definition_id: string;
   agent_definition_version_id: string;

@@ -13,6 +13,7 @@ from app.database import SessionLocal
 from app.document_metadata import current_metadata_values, event_value
 from app.embeddings.configuration import canonical_hash, processing_configuration
 from app.embeddings.parquet import read_chunk_set, read_vector_set
+from app.metadata_hierarchy import hierarchy_entries
 from app.models import (
     BatchTopic,
     BatchTopicAssignment,
@@ -249,6 +250,7 @@ def build_document_projection(
         for definition in definitions
         if definition.status == "ACTIVE" and definition.searchable
     }
+    projected_hierarchy_facets = hierarchy_entries(definitions, searchable_metadata)
     embedding_settings = get_embedding_settings()
     configuration_hash = canonical_hash(processing_configuration(get_settings(), embedding_settings))
     chunk_artifacts = load_current_chunk_artifacts(
@@ -285,6 +287,7 @@ def build_document_projection(
         "batch_ids": [str(value) for value in (batch_ids or [])],
         "batch_topics": batch_topics or [],
         "batch_coding": batch_coding or [],
+        "hierarchy_facets": projected_hierarchy_facets,
         "created_at": document.created_at.isoformat(),
         "record_type": snapshot.record_type,
         "processing_status": snapshot.processing_status,

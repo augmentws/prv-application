@@ -78,6 +78,7 @@ from app.schemas import (
     EnumValueKey,
     MatterSearchRequest,
     MatterSearchSort,
+    HierarchySeparator,
     MetadataDefinitionCreate,
     MetadataDefinitionUpdate,
     MetadataEnumValueCreate,
@@ -360,6 +361,7 @@ def list_editable_metadata(ctx: RunContext[AgentRuntimeDeps]) -> dict[str, Any]:
                     "type": definition.type,
                     "cardinality": definition.cardinality,
                     "allowed_values": definition.allowed_values or [],
+                    "hierarchy_separator": definition.hierarchy_separator,
                 }
                 for definition in definitions
             ]
@@ -434,6 +436,7 @@ def create_matter_metadata_definition(
     normalize_to_lowercase: bool = False,
     reviewable: bool = True,
     ai_assignable: bool = False,
+    hierarchy_separator: HierarchySeparator | None = None,
 ) -> dict[str, Any]:
     """Create a matter-owned coding field after the matter administrator approves it."""
     if not ctx.tool_call_approved:
@@ -453,6 +456,7 @@ def create_matter_metadata_definition(
         "normalize_to_lowercase": normalize_to_lowercase,
         "reviewable": reviewable,
         "ai_assignable": ai_assignable,
+        "hierarchy_separator": hierarchy_separator,
     }
     payload = MetadataDefinitionCreate(
         key=key,
@@ -466,6 +470,7 @@ def create_matter_metadata_definition(
         searchable=searchable,
         facetable=facetable,
         normalize_to_lowercase=normalize_to_lowercase,
+        hierarchy_separator=hierarchy_separator,
         reviewable=reviewable,
         ai_assignable=ai_assignable,
     )
@@ -507,6 +512,7 @@ def update_matter_metadata_definition(
     reviewable: bool | None = None,
     ai_assignable: bool | None = None,
     status: ResourceStatus | None = None,
+    hierarchy_separator: HierarchySeparator | None = None,
 ) -> dict[str, Any]:
     """Update editable coding-field settings without changing its stable key or type."""
     if not ctx.tool_call_approved:
@@ -521,6 +527,7 @@ def update_matter_metadata_definition(
             "searchable": searchable,
             "facetable": facetable,
             "normalize_to_lowercase": normalize_to_lowercase,
+            "hierarchy_separator": hierarchy_separator,
             "reviewable": reviewable,
             "ai_assignable": ai_assignable,
             "status": status,

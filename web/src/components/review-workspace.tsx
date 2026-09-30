@@ -896,32 +896,47 @@ function FacetSection({ matterId, searchRequest, definition, selected, custodian
 }) {
   const [open, setOpen] = useState(false);
   const [valueQuery, setValueQuery] = useState("");
+  const [parent, setParent] = useState<string | null>(null);
   const debouncedQuery = useDebouncedValue(valueQuery.trim(), 250);
-  const enumLabels = useMemo(() => new Map((definition.allowed_values ?? []).map((option) => [option.key, option.label])), [definition.allowed_values]);
+  const enumOptions = useMemo(() => new Map((definition.allowed_values ?? []).map((option) => [option.key, option])), [definition.allowed_values]);
+  const enumLabels = useMemo(() => new Map([...enumOptions].map(([key, option]) => [key, option.label])), [enumOptions]);
+  const hierarchySeparator = definition.hierarchy_separator;
+  const hierarchical = Boolean(hierarchySeparator) || (definition.type === "ENUM" && [...enumOptions.values()].some((option) => option.parent_key));
   const values = useQuery({
-    queryKey: ["matter-facet-values", matterId, definition.key, searchRequest, debouncedQuery],
+    queryKey: ["matter-facet-values", matterId, definition.key, searchRequest, debouncedQuery, parent],
     queryFn: () => coreApi<MatterFacetValuesResponse>(`/v1/matters/${matterId}/facets/${definition.key}/values`, {
       method: "POST",
-      body: JSON.stringify({ search: searchRequest, query: debouncedQuery || null, size: debouncedQuery ? 20 : 8 }),
+      body: JSON.stringify({ search: searchRequest, query: debouncedQuery || null, size: debouncedQuery ? 20 : 8, parent }),
     }),
     enabled: open,
-    placeholderData: (previous) => previous,
+    placeholderData: hierarchical ? undefined : (previous) => previous,
   });
   const options = useMemo(() => {
     const available = new Map((values.data?.values ?? []).map((option) => [facetToken(option.value), option]));
-    if ((values.data?.missing_count ?? 0) > 0 || selected.includes(NO_VALUE_FILTER_TOKEN)) {
-      available.set(NO_VALUE_FILTER_TOKEN, { value: NO_VALUE_FILTER_TOKEN, count: values.data?.missing_count ?? 0 });
-    }
-    for (const token of selected) {
-      if (!available.has(token)) available.set(token, { value: token, count: 0 });
+    if (!hierarchical) {
+      if ((values.data?.missing_count ?? 0) > 0 || selected.includes(NO_VALUE_FILTER_TOKEN)) {
+        available.set(NO_VALUE_FILTER_TOKEN, { value: NO_VALUE_FILTER_TOKEN, count: values.data?.missing_count ?? 0 });
+      }
+      for (const token of selected) {
+        if (!available.has(token)) available.set(token, { value: token, count: 0, label: null, parent: null, has_children: false });
+      }
     }
     return [...available.values()];
-  }, [selected, values.data?.missing_count, values.data?.values]);
+  }, [hierarchical, selected, values.data?.missing_count, values.data?.values]);
   const labelFor = (token: string) => token === NO_VALUE_FILTER_TOKEN ? "No value"
     : definition.key === "custodian" ? custodianNames.get(token) ?? token
     : definition.type === "ENUM" ? enumLabels.get(token) ?? token
     : definition.type === "BOOLEAN" ? token === "true" ? "Yes" : "No"
     : definition.key === "file_extension" ? `.${token.replace(/^\./, "")}` : token;
+  const parentOption = parent ? enumOptions.get(parent) : undefined;
+  const pathSegments = parent && hierarchySeparator ? parent.split(hierarchySeparator) : [];
+  const parentLabel = parentOption?.label ?? pathSegments.at(-1) ?? parent;
+  const parentParent = parentOption?.parent_key
+    ?? (hierarchySeparator && pathSegments.length > 1 ? pathSegments.slice(0, -1).join(hierarchySeparator) : null);
+  const navigate = (nextParent: string | null) => {
+    setParent(nextParent);
+    setValueQuery("");
+  };
 
   return (
     <section className="min-w-0">
@@ -931,6 +946,10 @@ function FacetSection({ matterId, searchRequest, definition, selected, custodian
         {selected.length ? <Badge variant="accent">{selected.length}</Badge> : null}
       </button>
       {open ? <div className="space-y-2 px-3 pb-3">
+        {hierarchical && parent ? <div className="flex min-w-0 items-center gap-1 rounded-md bg-muted/60 px-1 py-1">
+          <Button type="button" variant="ghost" size="sm" className="h-7 shrink-0 px-2" onClick={() => navigate(parentParent)}><ArrowLeft />Back</Button>
+          <span className="min-w-0 flex-1 truncate pr-1 text-xs font-medium" title={parentLabel ?? undefined}>{parentLabel}</span>
+        </div> : null}
         {definition.type !== "BOOLEAN" ? <div className="relative"><Search className="pointer-events-none absolute left-2.5 top-1/2 size-3.5 -translate-y-1/2 text-muted-foreground" /><Input value={valueQuery} onChange={(event) => setValueQuery(event.target.value)} className="h-8 pl-8 text-sm" placeholder={`Find ${definition.display_name.toLowerCase()}…`} aria-label={`Find ${definition.display_name} values`} /></div> : null}
         {values.isPending ? <p className="px-1 text-xs text-muted-foreground">Loading values…</p>
           : values.error ? <p className="px-1 text-xs text-destructive">Values could not be loaded.</p>
@@ -938,12 +957,15 @@ function FacetSection({ matterId, searchRequest, definition, selected, custodian
             {options.map((option) => {
               const token = facetToken(option.value);
               const checked = selected.includes(token);
-              const label = labelFor(token);
-              return <label key={token} className="flex min-h-8 min-w-0 cursor-pointer items-center gap-2 overflow-hidden rounded-md px-1.5 py-1 text-sm hover:bg-muted">
+              const label = option.label ?? labelFor(token);
+              return <div key={token} className="flex min-h-8 min-w-0 items-center overflow-hidden rounded-md hover:bg-muted">
+                <label className="flex min-w-0 flex-1 cursor-pointer items-center gap-2 overflow-hidden px-1.5 py-1 text-sm">
                 <input type="checkbox" checked={checked} onChange={() => onToggle(definition.key, token)} className="size-4 shrink-0 accent-primary" />
                 <span className="min-w-0 flex-1 truncate" title={label}>{label}</span>
                 <span className="font-mono text-xs tabular-nums text-muted-foreground">{option.count ? option.count.toLocaleString() : "—"}</span>
-              </label>;
+                </label>
+                {hierarchical && option.has_children ? <Button type="button" variant="ghost" size="icon" className="size-8 shrink-0" aria-label={`Show children of ${label}`} onClick={() => navigate(token)}><ChevronRight /></Button> : null}
+              </div>;
             })}
           </div> : <p className="px-1 text-xs text-muted-foreground">No matching values.</p>}
       </div> : null}

@@ -10,4 +10,5 @@ import type { ListAgentConversationsV1MattersMatterIdAgentConversationsGetWorkfl
 export type ListAgentConversationsV1MattersMatterIdAgentConversationsGetParams = {
 workflow_type?: ListAgentConversationsV1MattersMatterIdAgentConversationsGetWorkflowType;
 review_batch_id?: string | null;
+guidance_id?: string | null;
 };

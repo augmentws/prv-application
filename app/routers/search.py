@@ -262,6 +262,7 @@ def execute_matter_facet_values(
             matter_id=str(matter.id),
             value_query=value_query or None,
             size=payload.size,
+            parent=payload.parent,
             include_values=include_values,
             query_vector=query_vector,
             required_filters=required_filters,

@@ -12,4 +12,5 @@ export interface AgentConversationCreate {
   title?: string | null;
   workflow_type?: AgentConversationCreateWorkflowType;
   review_batch_id?: string | null;
+  matter_definition_id?: string | null;
 }

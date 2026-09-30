@@ -10,4 +10,7 @@ export interface MatterSearchFacetValue {
   value: unknown;
   /** @minimum 0 */
   count: number;
+  label?: string | null;
+  parent?: string | null;
+  has_children?: boolean;
 }

@@ -59,6 +59,11 @@ def compile_document_index(
 ) -> dict[str, Any]:
     searchable = [definition for definition in definitions if definition.status == "ACTIVE" and definition.searchable]
     metadata_properties = {definition.key: metadata_field_mapping(definition) for definition in searchable}
+    path_hierarchies = {
+        definition.key: definition.hierarchy_separator
+        for definition in searchable
+        if definition.type == "TEXT" and definition.hierarchy_separator is not None
+    }
     return {
         "settings": {
             "index": {"knn": True},
@@ -68,9 +73,10 @@ def compile_document_index(
                     SEARCH_ANALYZER: {"type": "custom", "tokenizer": "standard", "filter": ["lowercase"]},
                     QUOTE_ANALYZER: {"type": "custom", "tokenizer": "standard", "filter": ["lowercase"]},
                 }
-            }
+            },
         },
         "mappings": {
+            "_meta": {"path_hierarchies": path_hierarchies},
             "dynamic": "strict",
             "properties": {
                 "document_id": {"type": "keyword"},
@@ -109,6 +115,16 @@ def compile_document_index(
                         "confidence": {"type": "double"},
                         "confidence_kind": {"type": "keyword"},
                         "question_key": {"type": "keyword", "ignore_above": 4096},
+                    },
+                },
+                "hierarchy_facets": {
+                    "type": "nested",
+                    "properties": {
+                        "field": {"type": "keyword"},
+                        "node_id": {"type": "keyword"},
+                        "parent_id": {"type": "keyword"},
+                        "depth": {"type": "integer"},
+                        "has_children": {"type": "boolean"},
                     },
                 },
                 "created_at": {"type": "date", "format": "strict_date_optional_time"},

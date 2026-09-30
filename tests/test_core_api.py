@@ -107,6 +107,7 @@ def test_core_phase_one_flow(client: TestClient, root_token: str) -> None:
     assert definition_response.json()["key"] == "issue_tag"
     assert definition_response.json()["value_source"] == "ASSERTED"
     assert definition_response.json()["template_key"] is None
+    assert definition_response.json()["allowed_values"][0]["parent_key"] is None
 
     duplicate_definition = client.post(
         f"/v1/matters/{matter_id}/metadata-definitions",
@@ -130,6 +131,48 @@ def test_core_phase_one_flow(client: TestClient, root_token: str) -> None:
     )
     assert invalid_enum.status_code == 422
 
+    invalid_hierarchy = client.post(
+        f"/v1/matters/{matter_id}/metadata-definitions",
+        headers=auth(tenant_token),
+        json={
+            "key": "invalid_hierarchy",
+            "display_name": "Invalid hierarchy",
+            "type": "ENUM",
+            "allowed_values": [
+                {"key": "child", "label": "Child", "parent_key": "missing"},
+            ],
+        },
+    )
+    assert invalid_hierarchy.status_code == 422
+
+    path_hierarchy = client.post(
+        f"/v1/matters/{matter_id}/metadata-definitions",
+        headers=auth(tenant_token),
+        json={
+            "key": "initiative_path",
+            "display_name": "Initiative",
+            "type": "TEXT",
+            "searchable": True,
+            "facetable": True,
+            "hierarchy_separator": "/",
+        },
+    )
+    assert path_hierarchy.status_code == 201, path_hierarchy.text
+    assert path_hierarchy.json()["hierarchy_separator"] == "/"
+
+    invalid_path_hierarchy = client.post(
+        f"/v1/matters/{matter_id}/metadata-definitions",
+        headers=auth(tenant_token),
+        json={
+            "key": "bad_initiative_path",
+            "display_name": "Bad initiative",
+            "type": "TEXT",
+            "facetable": False,
+            "hierarchy_separator": "/",
+        },
+    )
+    assert invalid_path_hierarchy.status_code == 422
+
     definition_id = definition_response.json()["id"]
     update_definition = client.patch(
         f"/v1/matters/{matter_id}/metadata-definitions/{definition_id}",
@@ -143,7 +186,12 @@ def test_core_phase_one_flow(client: TestClient, root_token: str) -> None:
     add_enum = client.post(
         f"/v1/matters/{matter_id}/metadata-definitions/{definition_id}/enum-values",
         headers=auth(tenant_token),
-        json={"key": "finance", "label": "Finance", "description": "Financial issues"},
+        json={
+            "key": "finance",
+            "label": "Finance",
+            "description": "Financial issues",
+            "parent_key": "contract",
+        },
     )
     assert add_enum.status_code == 201, add_enum.text
     assert add_enum.json()["allowed_values"][-1] == {
@@ -151,7 +199,15 @@ def test_core_phase_one_flow(client: TestClient, root_token: str) -> None:
         "label": "Finance",
         "description": "Financial issues",
         "active": True,
+        "parent_key": "contract",
     }
+
+    active_parent = client.post(
+        f"/v1/matters/{matter_id}/metadata-definitions/{definition_id}/enum-values/contract/deactivate",
+        headers=auth(tenant_token),
+    )
+    assert active_parent.status_code == 409
+    assert active_parent.json()["error"]["message"] == "Deactivate active child values before deactivating their parent"
 
     update_enum = client.patch(
         f"/v1/matters/{matter_id}/metadata-definitions/{definition_id}/enum-values/finance",

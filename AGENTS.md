@@ -101,6 +101,10 @@ The application supports creating, reading, and configuring matter-level metadat
 
 Matter-document values for `ASSERTED` definitions use an immutable `metadata_event` ledger plus the rebuildable `document_metadata_current` projection. Every supported write path must lock the matter document, append the event, resolve the affected field, replace its current projection, record an audit entry, and create a durable document-search upsert in one Core transaction. Do not use database triggers for metadata resolution and do not update projection rows directly. Internal agent, extractor, import, rule, and system writers must call the same command service as the human-facing API. `SYSTEM` and `IMPORTED` definitions remain read-only through the assertion API and resolve from their owning relationship or source projection.
 
+Enum options may form a hierarchy through an immutable `parent_key` that references another option in the same definition. Parent keys must exist, hierarchies must be acyclic, and a parent with active children cannot be deactivated. Hierarchical enum filters match the selected node and all descendants; their facets aggregate direct children with unique root-document counts while retaining self-excluding facet behavior.
+
+Facetable searchable Text definitions may declare an optional `hierarchy_separator`. Collection values remain authoritative and unchanged, while search projection splits them into trimmed segments and emits every full path prefix into `hierarchy_facets`. Full prefixes, rather than leaf labels, are node IDs. Delimiter parsing is opt-in; never infer hierarchy from punctuation in collection data or mutate a controlled enum from observed values. Changing a hierarchy separator is a schema change that requires a full reindex.
+
 Numeric metadata needs two storage categories:
 
 - Integer values use a signed 64-bit integer backed by PostgreSQL `BIGINT` and stored in `value_long`.
@@ -120,6 +124,7 @@ Numeric metadata needs two storage categories:
 - The document projection indexes body text from the active collection `NORMALIZED_TEXT` artifact when available, then `EXTRACTED_TEXT`, `OCR_TEXT`, or a text-compatible native artifact such as EML or plain text. The configured byte limit bounds text loaded into one projection; existing matter documents require a matter-index rebuild after a collection activates a new normalized-text run.
 - Matter search supports `KEYWORD`, `SEMANTIC`, and `HYBRID` modes. Semantic queries use the configured embedding gateway with query prompting, apply authorized matter and metadata filters inside nested k-NN retrieval, and expose the best matching chunk as a passage. Hybrid queries combine lexical and nested-vector clauses using an OpenSearch reciprocal-rank-fusion search pipeline. Keyword remains the default and non-keyword modes require a query and relevance sorting.
 - Facetable short text has an exact keyword subfield. Identifiers and enums use keyword mappings, `INTEGER` maps to OpenSearch `long`, and `DECIMAL` maps to OpenSearch `double`.
+- Enum assignments project the assigned node plus each ancestor into the root `hierarchy_facets` nested collection, including root entries for currently flat enums so their first child can be added without a special backfill. Delimited Text values project each full path prefix into the same collection. Hierarchy filtering and direct-child aggregation must constrain the metadata field and node relationship in the same nested scope, and bucket counts must use `reverse_nested` so they count matter documents rather than nested entries.
 
 ### Saved Searches
 
