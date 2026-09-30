@@ -9,6 +9,7 @@ from collections import Counter
 from pathlib import Path
 
 from scripts.import_client.adapters import (
+    Athome4LoadfileAdapter,
     Emc2Adapter,
     EnronCsvAdapter,
     JebBushInventoryAdapter,
@@ -26,7 +27,8 @@ def build_parser() -> argparse.ArgumentParser:
         description="Preprocess a supported local dataset and upload it through the OpenAPI-defined Core API.",
     )
     parser.add_argument(
-        "adapter", choices=("enron-csv", "emc2", "jeb-bush-inventory")
+        "adapter",
+        choices=("athome4-loadfile", "enron-csv", "emc2", "jeb-bush-inventory"),
     )
     parser.add_argument("--source", type=Path, required=True)
     parser.add_argument("--base-url", default=os.getenv("PVR_IMPORT_BASE_URL", "http://127.0.0.1:8000"))
@@ -57,6 +59,8 @@ def build_parser() -> argparse.ArgumentParser:
 
 
 def create_adapter(args: argparse.Namespace) -> DatasetAdapter:
+    if args.adapter == "athome4-loadfile":
+        return Athome4LoadfileAdapter(args.source)
     if args.adapter == "enron-csv":
         return EnronCsvAdapter(args.source)
     if args.adapter == "emc2":

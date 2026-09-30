@@ -17,4 +17,5 @@ export const MatterDefinitionRevisionReadSourceKind = {
   AGENT_EDIT: 'AGENT_EDIT',
   USER_EDIT: 'USER_EDIT',
   ASSESSMENT_REFINEMENT: 'ASSESSMENT_REFINEMENT',
+  CLONE: 'CLONE',
 } as const;

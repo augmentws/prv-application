@@ -3,6 +3,8 @@ from typing import Any, Protocol
 
 from google import genai
 
+from app.provider_schemas import provider_output_schema
+
 
 @dataclass(frozen=True)
 class BatchModelTarget:
@@ -61,37 +63,6 @@ class BatchProviderAdapter(Protocol):
     def cancel(self, batch_id: str) -> None: ...
 
 
-def _supported_gemini_schema(value: Any) -> Any:
-    supported = {
-        "$id",
-        "$defs",
-        "$ref",
-        "$anchor",
-        "type",
-        "format",
-        "title",
-        "description",
-        "enum",
-        "items",
-        "prefixItems",
-        "minItems",
-        "maxItems",
-        "minimum",
-        "maximum",
-        "anyOf",
-        "oneOf",
-        "properties",
-        "additionalProperties",
-        "required",
-        "propertyOrdering",
-    }
-    if isinstance(value, list):
-        return [_supported_gemini_schema(item) for item in value]
-    if not isinstance(value, dict):
-        return value
-    return {key: _supported_gemini_schema(item) for key, item in value.items() if key in supported}
-
-
 class GoogleBatchProvider:
     provider = "google"
 
@@ -115,7 +86,12 @@ class GoogleBatchProvider:
             provider_config: dict[str, Any] = {
                 "system_instruction": "\n\n".join(request.instructions),
                 "response_mime_type": "application/json",
-                "response_json_schema": _supported_gemini_schema(request.output_schema),
+                "response_schema": provider_output_schema(
+                    request.output_schema,
+                    provider="google",
+                    inline_references=True,
+                    include_additional_properties=False,
+                ),
                 "max_output_tokens": request.limits.get("max_output_tokens"),
             }
             for key in ("temperature", "top_p", "top_k", "seed"):
@@ -128,42 +104,58 @@ class GoogleBatchProvider:
                     "config": provider_config,
                 }
             )
-        job = self._client().batches.create(
-            model=model,
-            src=source,
-            config={"display_name": display_name},
-        )
+        client = self._client()
+        try:
+            job = client.batches.create(
+                model=model,
+                src=source,
+                config={"display_name": display_name},
+            )
+        finally:
+            client.close()
         if not job.name:
             raise ValueError("Gemini Batch API did not return a batch name")
         return BatchSubmission(batch_id=job.name, status=self._state(job))
 
     def poll(self, batch_id: str) -> BatchPoll:
-        job = self._client().batches.get(name=batch_id)
+        client = self._client()
+        try:
+            job = client.batches.get(name=batch_id)
+        finally:
+            client.close()
         return BatchPoll(status=self._state(job), error=str(job.error) if job.error else None)
 
     def results(self, batch_id: str) -> tuple[str, list[BatchModelResult]]:
-        job = self._client().batches.get(name=batch_id)
-        values: list[BatchModelResult] = []
-        responses = list(job.dest.inlined_responses or []) if job.dest else []
-        for item in responses:
-            custom_id = str((item.metadata or {}).get("custom_id") or "")
-            response = item.response
-            usage = response.usage_metadata if response else None
-            values.append(
-                BatchModelResult(
-                    custom_id=custom_id,
-                    output_text=response.text if response else None,
-                    provider_request_id=response.response_id if response else None,
-                    input_tokens=int(usage.prompt_token_count or 0) if usage else 0,
-                    cached_input_tokens=int(usage.cached_content_token_count or 0) if usage else 0,
-                    output_tokens=int(usage.candidates_token_count or 0) if usage else 0,
-                    error=str(item.error) if item.error else None,
+        client = self._client()
+        try:
+            job = client.batches.get(name=batch_id)
+            values: list[BatchModelResult] = []
+            responses = list(job.dest.inlined_responses or []) if job.dest else []
+            for item in responses:
+                custom_id = str((item.metadata or {}).get("custom_id") or "")
+                response = item.response
+                usage = response.usage_metadata if response else None
+                values.append(
+                    BatchModelResult(
+                        custom_id=custom_id,
+                        output_text=response.text if response else None,
+                        provider_request_id=response.response_id if response else None,
+                        input_tokens=int(usage.prompt_token_count or 0) if usage else 0,
+                        cached_input_tokens=int(usage.cached_content_token_count or 0) if usage else 0,
+                        output_tokens=int(usage.candidates_token_count or 0) if usage else 0,
+                        error=str(item.error) if item.error else None,
+                    )
                 )
-            )
+        finally:
+            client.close()
         return self._state(job), values
 
     def cancel(self, batch_id: str) -> None:
-        self._client().batches.cancel(name=batch_id)
+        client = self._client()
+        try:
+            client.batches.cancel(name=batch_id)
+        finally:
+            client.close()
 
 
 _ADAPTERS: dict[str, BatchProviderAdapter] = {"google": GoogleBatchProvider()}

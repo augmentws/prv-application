@@ -3,6 +3,7 @@ import json
 import uuid
 from datetime import datetime, timezone
 from types import SimpleNamespace
+from typing import get_args
 
 import pytest
 from conftest import TestingSessionLocal
@@ -17,6 +18,7 @@ from app.assessment_execution import (
     _synthesis_context,
     _validate_retrieval_plan,
     _validate_synthesis_refinement,
+    collect_retrieval_hits,
     fail_assessment,
 )
 from app.assessment_guidance_refinement import create_guidance_revision
@@ -47,11 +49,26 @@ from app.models import (
     WorkflowStepRun,
 )
 from app.routers.matter_definition_assessments import _assessment_reads
+from app.schemas import MatterDefinitionSourceKind, MatterSearchHit, MatterSearchResponse
 from app.standard_skills import ensure_standard_assessment_skills
+from app.workflows.matter_definition_assessments import guidance_refinement_failure_message
 
 
 def auth(token: str) -> dict[str, str]:
     return {"Authorization": f"Bearer {token}"}
+
+
+def test_matter_definition_source_kind_column_fits_every_supported_value() -> None:
+    source_kind_column = MatterDefinitionRevision.__table__.c.source_kind
+
+    assert source_kind_column.type.length >= max(map(len, get_args(MatterDefinitionSourceKind)))
+
+
+def test_guidance_refinement_failure_message_uses_last_step_error() -> None:
+    wrapped_error = RuntimeError("retry wrapper")
+    wrapped_error.errors = [ValueError("first failure"), ValueError("database rejected source kind")]
+
+    assert guidance_refinement_failure_message(wrapped_error) == "database rejected source kind"
 
 
 def create_assessment_matter(client: TestClient, root_token: str, root_admin) -> str:
@@ -373,6 +390,63 @@ def test_candidate_merge_is_deterministic_deduplicated_and_preserves_provenance(
     assert {item["criterion_key"] for item in first_candidate.provenance} == {"issue_1", "issue_2"}
     assert selected[-1].document_id == control
     assert selected[-1].reason == "CONTROL_SAMPLE"
+
+
+def test_retrieval_backfills_after_deduplication_before_freezing_batch() -> None:
+    first, second, third, fourth, fifth = (uuid.uuid4() for _ in range(5))
+    rows = [
+        SimpleNamespace(
+            ordinal=1,
+            criterion_key="issue_1",
+            search_request={"query": "first", "search_mode": "KEYWORD", "size": 2},
+            result_count=0,
+        ),
+        SimpleNamespace(
+            ordinal=2,
+            criterion_key="issue_2",
+            search_request={"query": "second", "search_mode": "KEYWORD", "size": 2},
+            result_count=0,
+        ),
+    ]
+    pages = {
+        (1, 0): [first, second],
+        (2, 0): [first, second],
+        (1, 2): [third, fourth],
+        (2, 2): [third, fifth],
+    }
+    calls: list[tuple[int, int]] = []
+
+    def execute_page(row, request):
+        calls.append((row.ordinal, request.offset))
+        return MatterSearchResponse(
+            total=4,
+            took_ms=1,
+            timed_out=False,
+            hits=[
+                MatterSearchHit(document_id=document_id, score=1.0, fields={})
+                for document_id in pages[(row.ordinal, request.offset)]
+            ],
+            facets={},
+        )
+
+    hits = collect_retrieval_hits(
+        rows,  # type: ignore[arg-type]
+        maximum_document_count=4,
+        execute_page=execute_page,
+    )
+    selected, _ = merge_retrieval_candidates(
+        hits,
+        maximum_document_count=4,
+        query_quotas={1: 2, 2: 2},
+        control_document_ids=[],
+        control_sample_size=0,
+        seed="stable-seed",
+    )
+
+    assert calls == [(1, 0), (2, 0), (1, 2), (2, 2)]
+    assert len({item.document_id for item in selected}) == 4
+    assert len(selected) == 4
+    assert [row.result_count for row in rows] == [4, 4]
 
 
 def test_retrieval_plan_validator_requires_controlled_nested_search() -> None:

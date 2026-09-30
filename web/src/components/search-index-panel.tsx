@@ -353,6 +353,7 @@ function operationLabel(kind: SearchProjectionOperationRead["kind"]) {
     REBUILD: "Full rebuild",
     DOCUMENT_UPSERT: "Document update",
     DOCUMENT_DELETE: "Document removal",
+    BATCH_CODING_SYNC: "Batch coding sync",
   };
   return labels[kind];
 }

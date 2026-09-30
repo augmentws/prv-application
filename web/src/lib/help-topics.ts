@@ -29,6 +29,11 @@ export const helpTopics = {
     summary: "Learn how matter indexes, searches, filters, facets, and rebuilds work.",
     href: "/docs/matter-search",
   },
+  tokenUsage: {
+    title: "Token usage help",
+    summary: "Learn how matter token totals, cache metrics, model breakdowns, and usage-ledger entries are calculated.",
+    href: "/docs/token-usage",
+  },
   matterDefinition: {
     title: "Matter Definition help",
     summary: "Learn how to draft reviewer guidance, work with the setup agent, approve changes, and publish a revision.",

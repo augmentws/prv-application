@@ -363,6 +363,105 @@ def batch_topic_filter(*, batch_id: str, taxonomy_id: str, topic_keys: list[str]
     }
 
 
+def batch_coding_value_path(definition: MetadataDefinition, *, exact: bool = True) -> str:
+    if definition.type in {"TEXT", "LONG_TEXT"}:
+        return "batch_coding.value_text.exact" if exact else "batch_coding.value_text"
+    if definition.type == "ENUM":
+        return "batch_coding.value_keyword"
+    if definition.type == "INTEGER":
+        return "batch_coding.value_long"
+    if definition.type == "DECIMAL":
+        return "batch_coding.value_double"
+    if definition.type == "BOOLEAN":
+        return "batch_coding.value_boolean"
+    if definition.type == "DATE":
+        return "batch_coding.value_date"
+    if definition.type == "DATETIME":
+        return "batch_coding.value_datetime"
+    raise _bad_request(f"Field '{definition.key}' does not support batch coding search")
+
+
+def batch_coding_filter(
+    *,
+    batch_id: str,
+    run_id: str,
+    definition: MetadataDefinition,
+    values: list[Any],
+    minimum_confidence: float | None = None,
+) -> dict[str, Any]:
+    filters: list[dict[str, Any]] = [
+        {"term": {"batch_coding.batch_id": batch_id}},
+        {"term": {"batch_coding.run_id": run_id}},
+        {"term": {"batch_coding.field_id": str(definition.id)}},
+        {
+            "terms": {
+                batch_coding_value_path(definition): [
+                    _typed_value(definition, value) for value in values
+                ]
+            }
+        },
+    ]
+    if minimum_confidence is not None:
+        filters.append({"range": {"batch_coding.confidence": {"gte": minimum_confidence}}})
+    return {
+        "nested": {
+            "path": "batch_coding",
+            "query": {"bool": {"filter": filters}},
+        }
+    }
+
+
+def compile_batch_coding_facet_request(
+    request: MatterSearchRequest,
+    definitions: list[MetadataDefinition],
+    *,
+    definition: MetadataDefinition,
+    tenant_id: str,
+    matter_id: str,
+    batch_id: str,
+    run_id: str,
+    query_vector: list[float] | None = None,
+    required_filters: list[dict[str, Any]] | None = None,
+) -> dict[str, Any]:
+    body = compile_search_request(
+        request.model_copy(update={"facets": [], "offset": 0, "size": 1}),
+        definitions,
+        tenant_id=tenant_id,
+        matter_id=matter_id,
+        query_vector=query_vector,
+        required_filters=required_filters,
+    )
+    body["size"] = 0
+    body.pop("highlight", None)
+    body["aggs"] = {
+        "batch_coding": {
+            "nested": {"path": "batch_coding"},
+            "aggs": {
+                "scope": {
+                    "filter": {
+                        "bool": {
+                            "filter": [
+                                {"term": {"batch_coding.batch_id": batch_id}},
+                                {"term": {"batch_coding.run_id": run_id}},
+                                {"term": {"batch_coding.field_id": str(definition.id)}},
+                            ]
+                        }
+                    },
+                    "aggs": {
+                        "values": {
+                            "terms": {
+                                "field": batch_coding_value_path(definition),
+                                "size": 200,
+                            }
+                        }
+                    },
+                }
+            },
+        }
+    }
+    return body
+
+
 def compile_batch_topic_facet_request(
     request: MatterSearchRequest,
     definitions: list[MetadataDefinition],
@@ -629,6 +728,48 @@ def execute_batch_topic_facets(
     return MatterFacetValuesResponse(
         field="batch_topic",
         values=[{"value": bucket["key"], "count": int(bucket["doc_count"])} for bucket in buckets],
+    )
+
+
+def execute_batch_coding_facets(
+    client: OpenSearchClient,
+    alias_name: str,
+    request: MatterSearchRequest,
+    definitions: list[MetadataDefinition],
+    *,
+    definition: MetadataDefinition,
+    tenant_id: str,
+    matter_id: str,
+    batch_id: str,
+    run_id: str,
+    query_vector: list[float] | None = None,
+    required_filters: list[dict[str, Any]] | None = None,
+) -> MatterFacetValuesResponse:
+    body = compile_batch_coding_facet_request(
+        request,
+        definitions,
+        definition=definition,
+        tenant_id=tenant_id,
+        matter_id=matter_id,
+        batch_id=batch_id,
+        run_id=run_id,
+        query_vector=query_vector,
+        required_filters=required_filters,
+    )
+    raw = client.search(alias_name, body)
+    buckets = (
+        raw.get("aggregations", {})
+        .get("batch_coding", {})
+        .get("scope", {})
+        .get("values", {})
+        .get("buckets", [])
+    )
+    return MatterFacetValuesResponse(
+        field=definition.key,
+        values=[
+            {"value": _facet_bucket_value(definition, bucket), "count": int(bucket["doc_count"])}
+            for bucket in buckets
+        ],
     )
 
 

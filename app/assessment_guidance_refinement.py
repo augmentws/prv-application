@@ -65,8 +65,9 @@ def queue_guidance_refinement(
         return assessment
 
     matter = db.get(Matter, assessment.matter_id)
-    if matter is None:
-        raise ValueError("Assessment matter is unavailable")
+    source_revision = db.get(MatterDefinitionRevision, assessment.matter_definition_revision_id)
+    if matter is None or source_revision is None:
+        raise ValueError("Assessment matter or guidance revision is unavailable")
     resolved = resolve_workflow_skill_bindings(
         db,
         workflow_key=MATTER_DEFINITION_ASSESSMENT_SPEC.key,
@@ -97,6 +98,7 @@ def queue_guidance_refinement(
         status="QUEUED",
         input_snapshot={
             "assessment_id": str(assessment.id),
+            "guidance_id": str(source_revision.matter_definition_id),
             "matter_definition_revision_id": str(assessment.matter_definition_revision_id),
             "resolved_questions": resolved_questions,
         },
@@ -204,6 +206,7 @@ def create_guidance_revision(
             cache_identity={
                 "tenant_id": str(workflow.tenant_id),
                 "matter_id": str(matter.id),
+                "guidance_id": str(source_revision.matter_definition_id),
                 "assessment_id": str(assessment.id),
                 "definition_content_hash": assessment.definition_content_hash,
                 "skill_version_id": str(version.id),
@@ -216,6 +219,7 @@ def create_guidance_revision(
         _, revision = append_matter_definition_revision(
             db,
             matter=matter,
+            matter_definition_id=source_revision.matter_definition_id,
             actor_user_id=actor_user_id,
             content_markdown=str(output["content_markdown"]).strip(),
             source_kind="ASSESSMENT_REFINEMENT",
@@ -248,6 +252,7 @@ def create_guidance_revision(
         target_id=assessment.id,
         details={
             "matter_id": str(matter.id),
+            "guidance_id": str(source_revision.matter_definition_id),
             "source_revision": source_revision.revision,
             "created_revision": revision.revision,
             "skill_run_id": str(skill_run.id),

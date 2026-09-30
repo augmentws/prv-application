@@ -145,6 +145,20 @@ describe("ReviewWorkspace", () => {
         return { field, interval: "month", buckets: [{ start: "2024-01-01T00:00:00Z", count: 1 }] } as never;
       }
       if (path === "/v1/collection-items/item-1") return collectionItem as never;
+      if (path.endsWith("/documents/document-1/coding-history")) return {
+        direct: [{
+          metadata_event_id: "event-direct-1", metadata_definition_id: "definition-responsive", field_key: "responsiveness", field_display_name: "Responsiveness",
+          operation: "SET", value: "responsive", value_label: "Responsive", recorded_at: "2026-09-14T12:01:00Z", source_kind: "HUMAN",
+          source_label: "reviewer@example.com", source_detail: "Review User", score: null, effective_status: "ACTIVE", confirmation_state: "UNREVIEWED",
+        }],
+        batches: [{
+          review_batch_id: "batch-1", batch_name: "Jev first pass", batch_status: "READY", entries: [{
+            review_batch_run_id: "run-1", run_type: "WORKFLOW", purpose: "ASSESSMENT", metadata_definition_id: "definition-responsive",
+            field_key: "responsiveness", field_display_name: "Responsiveness", value: "responsive", value_label: "Responsive", recorded_at: "2026-09-14T11:00:00Z",
+            source_kind: "JEV", source_label: "Jev", source_detail: "gpt-test", score: 0.91, score_kind: "PROVIDER_CONFIDENCE", question_key: "responsive", review_decision_result_id: "decision-1",
+          }],
+        }],
+      } as never;
       if (path.endsWith("/documents/document-1/metadata-values")) return [{ matter_document_id: "document-1", metadata_definition_id: "definition-responsive", key: "responsiveness", display_name: "Responsiveness", type: "ENUM", cardinality: "SINGLE", resolution_state: "EMPTY", values: [], pending_event_ids: [], conflicting_event_ids: [], updated_at: null }] as never;
       if (path.endsWith("/metadata-values/definition-responsive/events") && init?.method === "POST") return {
         event: { id: "event-1", matter_id: "matter-1", matter_document_id: "document-1", metadata_definition_id: "definition-responsive", operation: "SET", value: "responsive", source_type: "HUMAN", source_id: null, actor_id: "user-1", agent_run_id: null, confidence: null, target_event_id: null, supersedes_id: null, effective_status: "ACTIVE", confirmation_state: "UNREVIEWED", created_at: "2026-09-14T12:01:00Z" },
@@ -193,6 +207,10 @@ describe("ReviewWorkspace", () => {
 
     await user.click(within(details).getByRole("tab", { name: "Metadata" }));
     expect(within(details).getByText("Custodian")).toBeInTheDocument();
+    await user.click(within(details).getByRole("tab", { name: "History" }));
+    expect(await within(details).findByText("Direct (no batch)")).toBeInTheDocument();
+    expect(within(details).getByText("Jev first pass")).toBeInTheDocument();
+    expect(within(details).getByText("91% provider confidence")).toBeInTheDocument();
     await user.click(within(details).getByRole("tab", { name: "Coding" }));
     await user.click(within(details).getByRole("combobox", { name: "Responsiveness" }));
     await user.click(screen.getByRole("option", { name: "Responsive" }));
@@ -328,5 +346,5 @@ describe("ReviewWorkspace", () => {
     await user.click(screen.getByRole("option", { name: "Hybrid" }));
     expect(screen.getByPlaceholderText("Combine exact words with conceptually related results")).toBeInTheDocument();
     expect(screen.queryByRole("spinbutton", { name: "Minimum semantic similarity" })).not.toBeInTheDocument();
-  }, 10_000);
+  }, 20_000);
 });

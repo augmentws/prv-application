@@ -4,7 +4,6 @@ import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { AlertTriangle, ExternalLink, LoaderCircle, PencilLine, Play, RotateCcw, Sparkles, Workflow } from "lucide-react";
 import Link from "next/link";
 import { useEffect, useMemo, useState } from "react";
-import { createPortal } from "react-dom";
 import { toast } from "sonner";
 
 import { QueryError } from "@/components/query-state";
@@ -44,7 +43,23 @@ function objectValue(value: unknown): Record<string, unknown> {
   return value !== null && typeof value === "object" && !Array.isArray(value) ? value as Record<string, unknown> : {};
 }
 
-export function MatterDefinitionAssessmentPanel({ matterId, revisions, publishedRevision, embedded = false, toolbarElement }: { matterId: string; revisions: MatterDefinitionRevisionRead[]; publishedRevision: number | null; embedded?: boolean; toolbarElement?: HTMLElement | null }) {
+export function MatterDefinitionAssessmentPanel({
+  matterId,
+  guidanceId,
+  guidanceName = "Review Guidance",
+  guidanceArchived = false,
+  revisions,
+  publishedRevision,
+  embedded = false,
+}: {
+  matterId: string;
+  guidanceId?: string;
+  guidanceName?: string;
+  guidanceArchived?: boolean;
+  revisions: MatterDefinitionRevisionRead[];
+  publishedRevision: number | null;
+  embedded?: boolean;
+}) {
   const queryClient = useQueryClient();
   const [launchOpen, setLaunchOpen] = useState(false);
   const [renameOpen, setRenameOpen] = useState(false);
@@ -58,14 +73,17 @@ export function MatterDefinitionAssessmentPanel({ matterId, revisions, published
   const [useBatching, setUseBatching] = useState(true);
   const [warningAcknowledged, setWarningAcknowledged] = useState(false);
 
+  const assessmentBase = guidanceId
+    ? `/v1/matters/${matterId}/guidance/${guidanceId}/assessments`
+    : `/v1/matters/${matterId}/definition-assessments`;
   const runs = useQuery({
-    queryKey: ["definition-assessments", matterId],
-    queryFn: () => coreApi<MatterDefinitionAssessmentRead[]>(`/v1/matters/${matterId}/definition-assessments`),
+    queryKey: ["definition-assessments", matterId, guidanceId],
+    queryFn: () => coreApi<MatterDefinitionAssessmentRead[]>(assessmentBase),
     refetchInterval: (query) => query.state.data?.some((run) =>
       !TERMINAL.has(run.status) || ["QUEUED", "RUNNING"].includes(run.guidance_refinement_status)
     ) ? 2000 : false,
   });
-  const effectiveId = selectedId || runs.data?.[0]?.id || "";
+  const effectiveId = runs.data?.some((run) => run.id === selectedId) ? selectedId : runs.data?.[0]?.id || "";
   const selected = runs.data?.find((run) => run.id === effectiveId);
   const includeSkillRuns = selected?.status !== "COMPLETED";
   const queries = useQuery({
@@ -88,9 +106,9 @@ export function MatterDefinitionAssessmentPanel({ matterId, revisions, published
   });
 
   const launch = useMutation({
-    mutationFn: (payload: MatterDefinitionAssessmentCreate) => coreApi<MatterDefinitionAssessmentRead>(`/v1/matters/${matterId}/definition-assessments`, { method: "POST", body: JSON.stringify(payload) }),
+    mutationFn: (payload: MatterDefinitionAssessmentCreate) => coreApi<MatterDefinitionAssessmentRead>(assessmentBase, { method: "POST", body: JSON.stringify(payload) }),
     onSuccess: async (created) => {
-      await queryClient.invalidateQueries({ queryKey: ["definition-assessments", matterId] });
+      await queryClient.invalidateQueries({ queryKey: ["definition-assessments", matterId, guidanceId] });
       setSelectedId(created.id);
       setLaunchOpen(false);
       setName("");
@@ -101,7 +119,7 @@ export function MatterDefinitionAssessmentPanel({ matterId, revisions, published
   const rename = useMutation({
     mutationFn: ({ assessmentId, payload }: { assessmentId: string; payload: MatterDefinitionAssessmentUpdate }) => coreApi<MatterDefinitionAssessmentRead>(`/v1/matters/${matterId}/definition-assessments/${assessmentId}`, { method: "PATCH", body: JSON.stringify(payload) }),
     onSuccess: async (updated) => {
-      queryClient.setQueryData<MatterDefinitionAssessmentRead[]>(["definition-assessments", matterId], (current) => current?.map((run) => run.id === updated.id ? updated : run));
+      queryClient.setQueryData<MatterDefinitionAssessmentRead[]>(["definition-assessments", matterId, guidanceId], (current) => current?.map((run) => run.id === updated.id ? updated : run));
       await queryClient.invalidateQueries({ queryKey: ["review-batches", matterId] });
       setRenameOpen(false);
       toast.success("Assessment renamed.");
@@ -111,7 +129,7 @@ export function MatterDefinitionAssessmentPanel({ matterId, revisions, published
   const retry = useMutation({
     mutationFn: (assessmentId: string) => coreApi<MatterDefinitionAssessmentRead>(`/v1/matters/${matterId}/definition-assessments/${assessmentId}/retry`, { method: "POST" }),
     onSuccess: async (updated) => {
-      queryClient.setQueryData<MatterDefinitionAssessmentRead[]>(["definition-assessments", matterId], (current) => current?.map((run) => run.id === updated.id ? updated : run));
+      queryClient.setQueryData<MatterDefinitionAssessmentRead[]>(["definition-assessments", matterId, guidanceId], (current) => current?.map((run) => run.id === updated.id ? updated : run));
       await queryClient.invalidateQueries({ queryKey: ["definition-assessment-execution", matterId, updated.id] });
       toast.success(`${updated.name} was queued to resume.`);
     },
@@ -120,7 +138,7 @@ export function MatterDefinitionAssessmentPanel({ matterId, revisions, published
   const regenerateSynthesis = useMutation({
     mutationFn: (assessmentId: string) => coreApi<MatterDefinitionAssessmentRead>(`/v1/matters/${matterId}/definition-assessments/${assessmentId}/regenerate-synthesis`, { method: "POST" }),
     onSuccess: async (updated) => {
-      queryClient.setQueryData<MatterDefinitionAssessmentRead[]>(["definition-assessments", matterId], (current) => current?.map((run) => run.id === updated.id ? updated : run));
+      queryClient.setQueryData<MatterDefinitionAssessmentRead[]>(["definition-assessments", matterId, guidanceId], (current) => current?.map((run) => run.id === updated.id ? updated : run));
       await Promise.all([
         queryClient.invalidateQueries({ queryKey: ["definition-assessment-execution", matterId, updated.id] }),
         queryClient.invalidateQueries({ queryKey: ["definition-assessment-questions", matterId, updated.id] }),
@@ -133,7 +151,7 @@ export function MatterDefinitionAssessmentPanel({ matterId, revisions, published
   const regenerateDocumentAnalyses = useMutation({
     mutationFn: (assessmentId: string) => coreApi<MatterDefinitionAssessmentRead>(`/v1/matters/${matterId}/definition-assessments/${assessmentId}/regenerate-document-analyses`, { method: "POST" }),
     onSuccess: async (updated) => {
-      queryClient.setQueryData<MatterDefinitionAssessmentRead[]>(["definition-assessments", matterId], (current) => current?.map((run) => run.id === updated.id ? updated : run));
+      queryClient.setQueryData<MatterDefinitionAssessmentRead[]>(["definition-assessments", matterId, guidanceId], (current) => current?.map((run) => run.id === updated.id ? updated : run));
       await Promise.all([
         queryClient.invalidateQueries({ queryKey: ["definition-assessment-execution", matterId, updated.id] }),
         queryClient.invalidateQueries({ queryKey: ["definition-assessment-questions", matterId, updated.id] }),
@@ -148,7 +166,7 @@ export function MatterDefinitionAssessmentPanel({ matterId, revisions, published
     onSuccess: async () => {
       await Promise.all([
         queryClient.invalidateQueries({ queryKey: ["definition-assessment-questions", matterId, effectiveId] }),
-        queryClient.invalidateQueries({ queryKey: ["definition-assessments", matterId] }),
+        queryClient.invalidateQueries({ queryKey: ["definition-assessments", matterId, guidanceId] }),
       ]);
       toast.success("Refinement decision saved.");
     },
@@ -160,7 +178,10 @@ export function MatterDefinitionAssessmentPanel({ matterId, revisions, published
   const refinement = objectValue(report.refinement_assessment);
   const findings = Array.isArray(report.findings) ? report.findings : [];
   const stageIndex = assessmentStageIndex(selected?.status);
-  const definitionState = publishedRevision === Number(revision) ? "Published" : "Draft";
+  const effectiveRevision = revisions.some((item) => String(item.revision) === revision)
+    ? revision
+    : String(revisions[0]?.revision ?? 1);
+  const definitionState = publishedRevision === Number(effectiveRevision) ? "Published" : "Draft";
   const usage = execution.data;
   const cacheRatio = usage?.input_tokens ? Math.round((usage.cached_input_tokens / usage.input_tokens) * 100) : 0;
   const canRetry = assessmentCanRetry(selected?.status, selected?.failed_count);
@@ -171,15 +192,15 @@ export function MatterDefinitionAssessmentPanel({ matterId, revisions, published
   useEffect(() => {
     if (selected?.guidance_refinement_status !== "COMPLETED") return;
     void Promise.all([
-      queryClient.invalidateQueries({ queryKey: ["matter-definition", matterId] }),
-      queryClient.invalidateQueries({ queryKey: ["matter-definition-revisions", matterId] }),
+      queryClient.invalidateQueries({ queryKey: ["matter-guidance", matterId] }),
+      queryClient.invalidateQueries({ queryKey: ["matter-guidance-revisions", matterId, guidanceId] }),
     ]);
-  }, [matterId, queryClient, selected?.guidance_refinement_status]);
+  }, [guidanceId, matterId, queryClient, selected?.guidance_refinement_status]);
 
   const submitLaunch = () => {
     launch.mutate({
       name: name.trim(),
-      revision: Number(revision),
+      revision: Number(effectiveRevision),
       maximum_document_count: requested,
       control_sample_size: Math.max(0, Number(controlSize) || 0),
       use_batching: useBatching,
@@ -205,13 +226,14 @@ export function MatterDefinitionAssessmentPanel({ matterId, revisions, published
       {selected ? <Button type="button" size="icon" className="size-8 shrink-0" variant="outline" disabled={rename.isPending} aria-label="Rename assessment" onClick={openRename}><PencilLine /></Button> : null}
       {selected && !statusInCoverage ? <StatusBadge status={selected.status} /> : null}
       {selected?.review_batch_id ? <Button asChild size="icon" className="size-8 shrink-0" variant="outline"><Link href={`/review/matters/${matterId}?batch=${selected.review_batch_id}`} aria-label="Open assessment batch"><ExternalLink /></Link></Button> : null}
+      {selected?.review_batch_id ? <Button asChild size="sm" className="shrink-0" variant="outline"><Link href={`/review/matters/${matterId}?batch=${selected.review_batch_id}&analysis=run`}><Play />Run analysis</Link></Button> : null}
       {selected && ["COMPLETED", "COMPLETED_WITH_ERRORS"].includes(selected.status) && selected.selected_count > 0 ? <Button type="button" size="icon" className="size-8 shrink-0" variant="outline" aria-label="Regenerate assessment" onClick={() => setRegenerateOpen(true)}><RotateCcw /></Button> : null}
-      <Button type="button" size="sm" className="shrink-0" onClick={() => setLaunchOpen(true)} disabled={!revisions.length}><Play />New</Button>
+      <Button type="button" size="sm" className="shrink-0" onClick={() => setLaunchOpen(true)} disabled={!revisions.length || guidanceArchived}><Play />New</Button>
     </>
   );
 
   return <Card className={cn("overflow-hidden", embedded && "flex h-full min-h-0 flex-col rounded-none border-0 shadow-none")}>
-    {toolbarElement ? createPortal(toolbar, toolbarElement) : <div className="flex shrink-0 items-center gap-2 border-b p-2">{toolbar}</div>}
+    <div className="flex shrink-0 items-center gap-2 border-b p-2" aria-label="Assessment controls">{toolbar}</div>
     <div className={cn(embedded && "min-h-0 flex-1 overflow-y-auto overscroll-contain")}>
       {runs.error ? <div className="p-4"><QueryError message={runs.error.message} /></div> : runs.isPending ? <p className="p-4 text-sm text-muted-foreground">Loading assessment history…</p> : !runs.data?.length ? <p className="p-4 text-sm text-muted-foreground">No corpus assessments have been run for this Matter Definition.</p> : <div className="space-y-4 p-4">
       {selected ? <>
@@ -239,9 +261,9 @@ export function MatterDefinitionAssessmentPanel({ matterId, revisions, published
       </div>}
     </div>
 
-    <Dialog open={launchOpen} onOpenChange={setLaunchOpen}><DialogContent><DialogHeader><DialogTitle>Assess Matter Definition against corpus</DialogTitle><DialogDescription>The selected revision and workflow bindings are pinned for the full run. The resulting batch and analyses remain isolated from matter-wide metadata.</DialogDescription></DialogHeader><div className="space-y-4">
+    <Dialog open={launchOpen} onOpenChange={setLaunchOpen}><DialogContent><DialogHeader><DialogTitle>Assess {guidanceName} against corpus</DialogTitle><DialogDescription>The selected guidance profile, revision, and workflow bindings are pinned for the full run. The resulting batch and analyses remain isolated from matter-wide metadata.</DialogDescription></DialogHeader><div className="space-y-4">
       <div><label className="text-sm font-medium" htmlFor="assessment-name">Assessment name</label><Input id="assessment-name" className="mt-1" value={name} maxLength={200} placeholder="Example: Initial hurricane coverage review" onChange={(event) => setName(event.target.value)} /><p className="mt-1 text-xs text-muted-foreground">This name is also used for the generated review batch.</p></div>
-      <div><label className="text-sm font-medium" htmlFor="assessment-revision">Definition revision</label><Select value={revision} onValueChange={setRevision}><SelectTrigger id="assessment-revision" className="mt-1"><SelectValue /></SelectTrigger><SelectContent>{revisions.map((item) => <SelectItem key={item.id} value={String(item.revision)}>Revision {item.revision}{publishedRevision === item.revision ? " · published" : " · draft"}</SelectItem>)}</SelectContent></Select><p className="mt-1 text-xs text-muted-foreground">{definitionState} revision</p></div>
+      <div><label className="text-sm font-medium" htmlFor="assessment-revision">Definition revision</label><Select value={effectiveRevision} onValueChange={setRevision}><SelectTrigger id="assessment-revision" className="mt-1"><SelectValue /></SelectTrigger><SelectContent>{revisions.map((item) => <SelectItem key={item.id} value={String(item.revision)}>Revision {item.revision}{publishedRevision === item.revision ? " · published" : " · draft"}</SelectItem>)}</SelectContent></Select><p className="mt-1 text-xs text-muted-foreground">{definitionState} revision</p></div>
       <div className="grid grid-cols-2 gap-3"><div><label className="text-sm font-medium" htmlFor="assessment-maximum">Maximum documents</label><Input id="assessment-maximum" className="mt-1" type="number" min={1} value={maximum} onChange={(event) => { setMaximum(event.target.value); setWarningAcknowledged(false); }} /></div><div><label className="text-sm font-medium" htmlFor="assessment-control">Control sample</label><Input id="assessment-control" className="mt-1" type="number" min={0} value={controlSize} onChange={(event) => setControlSize(event.target.value)} /></div></div>
       <label className="flex cursor-pointer items-start gap-2 rounded-lg border p-3 text-sm"><input className="mt-1 size-4 accent-primary" type="checkbox" checked={useBatching} onChange={(event) => setUseBatching(event.target.checked)} /><span><strong>Use Batch API</strong><span className="mt-0.5 block text-xs text-muted-foreground">Submit eligible document summaries asynchronously through the model provider&apos;s lower-cost Batch API. Oversized map/reduce documents continue through real-time processing.</span></span></label>
       {requested > 1000 ? <label className="flex cursor-pointer items-start gap-2 rounded-lg border border-conflict/40 bg-conflict/8 p-3 text-sm"><input className="mt-1 size-4 accent-primary" type="checkbox" checked={warningAcknowledged} onChange={(event) => setWarningAcknowledged(event.target.checked)} /><span><strong className="flex items-center gap-1"><AlertTriangle className="size-4" />Large analysis</strong>Continue with {requested.toLocaleString()} documents. This can use substantial model capacity.</span></label> : null}

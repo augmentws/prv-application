@@ -25,7 +25,13 @@ from app.schemas import (
 )
 from app.search.client import OpenSearchClient, OpenSearchError
 from app.search.operations import create_search_operation
-from app.search.query import execute_batch_topic_facets, execute_date_histogram, execute_facet_values, execute_search
+from app.search.query import (
+    execute_batch_coding_facets,
+    execute_batch_topic_facets,
+    execute_date_histogram,
+    execute_facet_values,
+    execute_search,
+)
 from app.workflows.dispatcher import enqueue_search_projection, get_dbos_client
 
 router = APIRouter(prefix="/v1/matters/{matter_id}", tags=["matter search"])
@@ -321,6 +327,68 @@ def execute_matter_batch_topic_facets(
             matter_id=str(matter.id),
             batch_id=str(batch_id),
             taxonomy_id=str(taxonomy_id),
+            query_vector=query_vector,
+            required_filters=required_filters,
+        )
+    except OpenSearchError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="Search is temporarily unavailable",
+        ) from exc
+    finally:
+        client.close()
+
+
+def execute_matter_batch_coding_facets(
+    matter: Matter,
+    payload: MatterSearchRequest,
+    *,
+    definition: MetadataDefinition,
+    batch_id: uuid.UUID,
+    run_id: uuid.UUID,
+    db: Session,
+    settings: Settings,
+    required_filters: list[dict[str, Any]] | None = None,
+) -> MatterFacetValuesResponse:
+    if not settings.search_enabled:
+        raise HTTPException(status_code=status.HTTP_503_SERVICE_UNAVAILABLE, detail="Search is disabled")
+    generation = db.scalar(
+        select(SearchIndexGeneration).where(
+            SearchIndexGeneration.matter_id == matter.id,
+            SearchIndexGeneration.status == "ACTIVE",
+        )
+    )
+    if generation is None:
+        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="Matter search index is not ready")
+    definitions = list(
+        db.scalars(
+            select(MetadataDefinition).where(
+                MetadataDefinition.matter_id == matter.id,
+                MetadataDefinition.status == "ACTIVE",
+            )
+        )
+    )
+    query_vector = None
+    if payload.search_mode != "KEYWORD":
+        try:
+            query_vector = get_query_embedding_gateway().embed([payload.query or ""], "query").embeddings[0]
+        except Exception as exc:
+            raise HTTPException(
+                status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+                detail="Semantic query embedding is temporarily unavailable",
+            ) from exc
+    client = OpenSearchClient(settings)
+    try:
+        return execute_batch_coding_facets(
+            client,
+            generation.alias_name,
+            payload,
+            definitions,
+            definition=definition,
+            tenant_id=str(matter.client.tenant_id),
+            matter_id=str(matter.id),
+            batch_id=str(batch_id),
+            run_id=str(run_id),
             query_vector=query_vector,
             required_filters=required_filters,
         )

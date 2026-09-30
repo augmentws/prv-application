@@ -11,8 +11,10 @@ from email.message import EmailMessage
 from pathlib import Path
 
 import httpx
+import pytest
 
 from scripts.import_client.adapters import emc2
+from scripts.import_client.adapters.athome4_loadfile import Athome4LoadfileAdapter
 from scripts.import_client.adapters.base import DatasetAdapter
 from scripts.import_client.adapters.emc2 import Emc2Adapter
 from scripts.import_client.adapters.enron_csv import EnronCsvAdapter
@@ -25,6 +27,133 @@ from scripts.import_client.importer import BaseImporter
 from scripts.import_client.models import CustodianSpec, EmailMetadata, EmailRecipient, ImportItem, SourceContainer
 
 REPOSITORY_ROOT = Path(__file__).resolve().parents[1]
+
+
+def _write_athome4_loadfile(
+    path: Path,
+    rows: list[dict[str, str]],
+) -> None:
+    with path.open("w", newline="", encoding="utf-8") as handle:
+        writer = csv.DictWriter(
+            handle,
+            fieldnames=[
+                "docid_2016",
+                "docid_2015",
+                "path",
+                "tr2016_labels",
+                "tr2016_important",
+                "tr2016_facets",
+                "tr2015_labels",
+            ],
+        )
+        writer.writeheader()
+        writer.writerows(rows)
+
+
+def test_athome4_adapter_maps_trec_metadata_and_sent_header(
+    tmp_path: Path,
+) -> None:
+    corpus = tmp_path / "athome4"
+    bucket = corpus / "000"
+    bucket.mkdir(parents=True)
+    first = bucket / "000001"
+    first.write_bytes(
+        b"From: Sender <sender@example.com>\r\n"
+        b"Sent: Wednesday, January 1, 2003 9:47 AM\r\n"
+        b"To: Jeb Bush <jeb@jeb.org>\r\n"
+        b"Subject: Test\r\n\r\nBody\x92\r\n"
+    )
+    source = tmp_path / "athome4_loadfile.csv"
+    _write_athome4_loadfile(
+        source,
+        [
+            {
+                "docid_2016": "000001",
+                "docid_2015": "0000-1",
+                "path": str(first),
+                "tr2016_labels": "Felon Disenfranchisement;2000 Recount",
+                "tr2016_important": "2000 Recount",
+                "tr2016_facets": (
+                    "2000 Recount/32;Felon Disenfranchisement/329;"
+                    "Felon Disenfranchisement/338"
+                ),
+                "tr2015_labels": "Manatee County",
+            }
+        ],
+    )
+
+    adapter = Athome4LoadfileAdapter(source)
+    container = next(iter(adapter.source_containers()))
+    items = list(BaseImporter.iter_preprocessed_items(adapter, container))
+
+    assert len(items) == 1
+    item = items[0]
+    assert item.source_item_id == "athome4:000001"
+    assert item.original_filename == "000001"
+    assert item.original_source_path == "000/000001"
+    assert item.content.endswith(b"Body\x92\r\n")
+    assert item.custodians == (adapter.custodian,)
+    assert item.email is not None
+    assert item.email.subject == "Test"
+    assert item.email.sent_at is not None
+    assert item.unmapped_metadata == {
+        "CONTROL_NUMBER": "000001",
+        "docid_2016": "000001",
+        "docid_2015": "0000-1",
+        "tr2016_labels": ["Felon Disenfranchisement", "2000 Recount"],
+        "tr2016_important": ["2000 Recount"],
+        "tr2016_facets": [
+            "2000 Recount/32",
+            "Felon Disenfranchisement/329",
+            "Felon Disenfranchisement/338",
+        ],
+        "tr2015_labels": ["Manatee County"],
+    }
+    assert item.raw_metadata["loadfile_row_number"] == 2
+    assert item.raw_metadata["loadfile_source_path"] == str(first)
+
+
+def test_athome4_adapter_rejects_path_outside_first_corpus_root(
+    tmp_path: Path,
+) -> None:
+    first_bucket = tmp_path / "first" / "000"
+    second_bucket = tmp_path / "second" / "000"
+    first_bucket.mkdir(parents=True)
+    second_bucket.mkdir(parents=True)
+    first = first_bucket / "000001"
+    second = second_bucket / "000002"
+    first.write_text("Subject: First\n\nBody", encoding="utf-8")
+    second.write_text("Subject: Second\n\nBody", encoding="utf-8")
+    source = tmp_path / "athome4_loadfile.csv"
+    empty_metadata = {
+        "tr2016_labels": "",
+        "tr2016_important": "",
+        "tr2016_facets": "",
+        "tr2015_labels": "",
+    }
+    _write_athome4_loadfile(
+        source,
+        [
+            {
+                "docid_2016": "000001",
+                "docid_2015": "0000-1",
+                "path": str(first),
+                **empty_metadata,
+            },
+            {
+                "docid_2016": "000002",
+                "docid_2015": "0001-2",
+                "path": str(second),
+                **empty_metadata,
+            },
+        ],
+    )
+
+    adapter = Athome4LoadfileAdapter(source)
+    container = next(iter(adapter.source_containers()))
+
+    with pytest.raises(ValueError, match="escapes corpus root at row 3"):
+        list(BaseImporter.iter_preprocessed_items(adapter, container))
 
 
 def test_openapi_client_resolves_operation_ids_and_authenticates() -> None:

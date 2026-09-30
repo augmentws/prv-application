@@ -4,6 +4,7 @@ from app.agent_workflows import (
     STANDARD_BATCH_CHAT_AGENT_KEY,
     STANDARD_MATTER_DEFINITION_AGENT_KEY,
 )
+from app.analysis_task_skills import ensure_standard_analysis_task_skills
 from app.config import get_settings
 from app.database import SessionLocal
 from app.document_cleaner import (
@@ -230,6 +231,8 @@ def bootstrap_root() -> tuple[Tenant, User, bool]:
                 db.flush()
             if ensure_standard_assessment_skills(db, existing_root, existing_user):
                 db.flush()
+            if ensure_standard_analysis_task_skills(db, existing_root, existing_user):
+                db.flush()
             db.commit()
             return existing_root, existing_user, False
 
@@ -261,6 +264,7 @@ def bootstrap_root() -> tuple[Tenant, User, bool]:
         )
         ensure_standard_agents(db, root, user)
         ensure_standard_assessment_skills(db, root, user)
+        ensure_standard_analysis_task_skills(db, root, user)
         db.commit()
         return root, user, True
 

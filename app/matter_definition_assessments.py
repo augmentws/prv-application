@@ -12,6 +12,7 @@ from sqlalchemy.orm import Session
 from app.agent_models import resolve_agent_model
 from app.audit import record_audit
 from app.config import Settings, get_settings
+from app.matter_definitions import MatterDefinitionError, get_guidance, resolve_legacy_guidance
 from app.models import (
     Matter,
     MatterDefinition,
@@ -165,6 +166,7 @@ def start_assessment(
     matter: Matter,
     initiated_by_user_id: uuid.UUID,
     settings: Settings,
+    matter_definition_id: uuid.UUID | None = None,
     name: str | None = None,
     revision_number: int | None = None,
     maximum_document_count: int = 500,
@@ -184,9 +186,22 @@ def start_assessment(
             f"Assessments over {settings.definition_assessment_warning_document_count} documents require "
             "large-run warning acknowledgment"
         )
-    definition = db.scalar(select(MatterDefinition).where(MatterDefinition.matter_id == matter.id))
+    try:
+        definition = (
+            get_guidance(
+                db,
+                matter_id=matter.id,
+                guidance_id=matter_definition_id,
+            )
+            if matter_definition_id is not None
+            else resolve_legacy_guidance(db, matter_id=matter.id)
+        )
+    except MatterDefinitionError as exc:
+        raise AssessmentError(str(exc)) from exc
     if definition is None:
-        raise AssessmentError("Matter Definition not found")
+        raise AssessmentError("Review Guidance not found")
+    if definition.status != "ACTIVE":
+        raise AssessmentError("Archived Review Guidance cannot start a new assessment")
     selected_revision = revision_number or definition.current_revision
     revision = db.scalar(
         select(MatterDefinitionRevision).where(
@@ -238,7 +253,10 @@ def start_assessment(
         status="QUEUED",
         input_snapshot={
             "assessment_id": str(assessment_id),
+            "guidance_id": str(definition.id),
+            "guidance_key": definition.key,
             "matter_definition_revision_id": str(revision.id),
+            "revision": revision.revision,
             "definition_content_hash": hashlib.sha256(revision.content_markdown.encode()).hexdigest(),
         },
         binding_snapshot=bindings,
@@ -280,7 +298,10 @@ def start_assessment(
         target_id=assessment.id,
         details={
             "matter_id": str(matter.id),
+            "guidance_id": str(definition.id),
+            "guidance_key": definition.key,
             "revision": selected_revision,
+            "matter_definition_revision_id": str(revision.id),
             "maximum_document_count": maximum_document_count,
             "control_sample_size": control_sample_size,
             "use_batching": use_batching,
@@ -647,6 +668,12 @@ def materialize_assessment_batch(
     )
     batch_id = uuid.uuid4()
     generation = db.get(SearchIndexGeneration, assessment.search_index_generation_id)
+    revision = db.get(MatterDefinitionRevision, assessment.matter_definition_revision_id)
+    definition = (
+        db.get(MatterDefinition, revision.matter_definition_id) if revision is not None else None
+    )
+    if revision is None or definition is None:
+        raise AssessmentError("Assessment guidance reference is invalid")
     batch = ReviewBatch(
         id=batch_id,
         matter_id=assessment.matter_id,
@@ -656,6 +683,13 @@ def materialize_assessment_batch(
         selection_definition={
             "type": "DEFINITION_ASSESSMENT",
             "assessment_run_id": str(assessment.id),
+            "guidance_id": str(definition.id),
+            "guidance_key": definition.key,
+            "guidance_name": definition.name,
+            "guidance_revision": revision.revision,
+            "guidance_revision_state": (
+                "PUBLISHED" if definition.published_revision == revision.revision else "DRAFT"
+            ),
             "matter_definition_revision_id": str(assessment.matter_definition_revision_id),
             "definition_content_hash": assessment.definition_content_hash,
             "search_index_generation": {

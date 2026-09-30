@@ -1,17 +1,46 @@
 # System One Decision Engine Plan
 
-Status: proposed
+Status: implementation in progress
+
+## Implementation progress
+
+The first Phase 1 foundation is implemented:
+
+- side-by-side `MatterAnalysisTask`, atomic task-version, and pinned version-dependency storage;
+- provider-neutral Decision Specification models with primitive-aware uncertainty and bounded policy validation;
+- a provider-neutral `SystemOneDecisionEngine` request/response contract and adapter registry;
+- matter-admin APIs for task creation, definition revision, structural specification validation, version history,
+  and atomic publication;
+- a bootstrapped, managed compiler skill and durable workflow that compile an exact draft task version, validate
+  source references and metadata mappings, and persist SkillRun/model-usage provenance;
+- the official TypeSafe SDK-backed `jev` adapter with code-owned registration, provider/model admission control,
+  bounded 429-aware retries, filesystem tracing, and shared ModelInvocation telemetry;
+- a database-enforced immutable Decision Result ledger with full typed answers, explicit coverage, task/document/
+  workflow provenance, reusable-input hashes, and confidence-kind provenance on projected batch values;
+- a managed, durable single-document playground backend that evaluates a published task version against a document
+  in a ready batch, applies the bounded decision policy, records shared invocation/usage telemetry, and retains an
+  isolated Decision Result without publishing coding values;
+- an initial matter-admin Analysis Tasks UI for creating tasks, browsing version history, editing definitions as
+  new drafts, generating/regenerating and validating specification JSON, publishing an atomic version, launching
+  the single-document playground, and inspecting its typed Decision Result;
+- a single `QUESTION_ANSWERING` analysis-task type for compiling reviewed guidance into typed questions and
+  evaluating those questions through Jev;
+- generated OpenAPI/TypeScript client types and backend contract tests.
+
+The existing Matter Definition remains authoritative. Evidence localization, batch execution, and a structured
+specification editor/diff experience are subsequent slices and are not implied by the presence of these foundation
+APIs.
 
 ## Goal
 
 Turn a matter's reviewed guidance into versioned, executable analysis tasks, then use a System One provider such
 as TypeSafe Jev to perform fast typed decisions over documents.
 
-The generalized unit is a `MatterAnalysisTask`. Each task has its own human-authored definition and generated
-Decision Specification. They are one publication unit and share one immutable task-version number. Initial task
-types cover matter-issue first-pass review, privilege review, topic generation, and bounded data-exploration
-tasks. A generative model compiles a task definition into a structured draft specification. A matter
-administrator reviews, edits, tests, and publishes the complete task version before it can be executed.
+The current generalized unit is a `QUESTION_ANSWERING` `MatterAnalysisTask`. Each task has its own human-authored
+definition and generated Decision Specification. They are one publication unit and share one immutable task-version
+number. A generative model compiles a task definition into a structured draft specification. A matter administrator
+reviews, edits, tests, and publishes the complete task version before it can be executed. Future task types must add
+genuinely different workflow behavior rather than relabeling this Jev-backed lifecycle.
 
 Jev results are provisional review decisions. They do not silently update matter metadata. Code-owned rules and
 primitive-aware uncertainty thresholds decide whether a result is presented as a suggestion, sent to a
@@ -111,8 +140,8 @@ available throughout migration.
 ### `matter_analysis_task`
 
 - `id`, `matter_id`, stable `key`, `name`, and optional `description`;
-- `task_type`: initially `ISSUE_REVIEW`, `PRIVILEGE_REVIEW`, `TOPIC_GENERATION`, `DATA_EXPLORATION`, or
-  `CUSTOM_DECISION`;
+- `task_type`: currently `QUESTION_ANSWERING`; future task types must introduce distinct workflow behavior rather
+  than acting as labels over the same compiler/Jev lifecycle;
 - code-owned `workflow_key` selecting an allowed execution shape;
 - `current_version` and nullable `published_version`;
 - `status`: `ACTIVE`, `SUSPENDED`, or `ARCHIVED`;
@@ -153,11 +182,7 @@ are:
 
 | Task type | Generative stage | System One stage |
 | --- | --- | --- |
-| `ISSUE_REVIEW` | Compile guidance; optional uncertain-case explanation | First-pass issue decisions |
-| `PRIVILEGE_REVIEW` | Compile guidance; optional uncertain-case explanation | Atomic privilege decisions |
-| `TOPIC_GENERATION` | Generate candidate taxonomy and labels | Evaluate candidates and assign documents |
-| `DATA_EXPLORATION` | Formulate questions and synthesize findings | Score/classify documents or passages |
-| `CUSTOM_DECISION` | Optional code-approved stage | Bounded typed questions |
+| `QUESTION_ANSWERING` | Compile reviewed guidance into a Decision Specification | Evaluate bounded typed questions through Jev |
 
 Jev does not replace generation where the output is open-ended text. Topic creation remains generative; System
 One evaluates or applies the resulting bounded taxonomy. Data exploration may use generative synthesis after
@@ -176,25 +201,21 @@ viewing version history, compiling the specification, testing, and publishing th
 
 ## Phase 2: compatibility import and controlled deprecation
 
-### Legacy import
+### Existing specialized workflows
 
-Provide an idempotent importer that creates an `ISSUE_REVIEW` task version from the current published Matter
-Definition. Record the legacy MatterDefinitionRevision ID, content hash, and import time in the new version's
-provenance. Do not alter or delete the legacy record.
-
-Existing topic configuration may later seed a `TOPIC_GENERATION` task, but topic migration occurs only after the
-issue-review path has reached parity.
+Matter Definition remains a separate specialized workflow with its existing chat, assessment, batching, refinement,
+comparison, and summary behavior. It is not projected into the generic analysis-task domain. A future migration may
+place it behind a shared task shell only when that shell can represent the complete Matter Definition lifecycle.
 
 ### Authority phases
 
-1. **Legacy authoritative:** the existing implementation remains writable. Imported task versions are shadow
-   configuration used only for development, playground evaluation, and comparison.
+1. **Legacy authoritative:** the existing Matter Definition implementation remains writable and independent.
 2. **Shadow execution:** new workflows run on evaluation batches and create isolated results. They do not change
    legacy outputs or matter metadata.
 3. **Per-task cutover:** after parity and calibration, a matter explicitly selects the new task as authoritative
    for that use case.
-4. **Compatibility view:** existing Matter Definition endpoints and UI resolve through the authoritative
-   `ISSUE_REVIEW` task while retaining their external contract where practical.
+4. **Compatibility view:** only introduce a shared task abstraction after it can preserve the specialized workflow's
+   complete external contract and history.
 5. **Deprecation:** legacy writes are disabled before old storage is removed. Historical assessments,
    conversations, summaries, and run provenance remain readable.
 
@@ -257,6 +278,12 @@ not have an independently publishable version or moving pointer.
 The JSON is authoritative. The UI renders it as a readable question catalog with an advanced JSON view and a
 canonical export. A generated Markdown rendering may be attached for convenience, but it is not the source of
 truth and does not require a new Artifact type. The enclosing task version is the only publication boundary.
+
+Multi-class Choice assignments use an explicit `SELECTED_OPTION` mapping and recommendation. The field mapping's
+`option_value_map` allowlists the Choice options that may become metadata values; fallback options such as `unclear`
+are deliberately omitted. A `SELECTED_OPTION` recommendation adds the minimum selected-option probability. Policy
+evaluation returns the mapped value only when the option is allowlisted and meets the threshold, and otherwise fails
+closed without producing a coding recommendation.
 
 ## Phase 4: compiler managed skill
 
@@ -441,15 +468,20 @@ Creation produces:
 - one linked `ReviewBatchRun` with `run_type=WORKFLOW`;
 - frozen task-version, model, field-schema, and batch snapshots;
 - one `ReviewBatchRunDocument` per batch member;
-- workflow steps for preparation, decision evaluation, evidence localization, projection, and completion.
+- workflow steps for preparation, decision and evidence evaluation, projection, and completion. Evidence remains a
+  distinct logical result contract even when its companion questions share the same provider invocation.
 
 ### Per-document execution
 
 1. Load the preferred faithful source text from Artifact Service.
 2. Build deterministic state from document metadata and the versioned paragraph map.
-3. If the document fits the provider input limit, evaluate all compatible questions together.
+3. If the document fits the provider input limit, evaluate all compatible decision questions together. For each
+   question whose evidence policy is required, include an evidence-existence Noul and a paragraph-location Choice in
+   the same Jev request.
 4. Otherwise, evaluate bounded paragraph windows and apply the question's reviewed aggregation policy.
-5. Locate and validate supporting paragraph IDs for actionable positive or boundary answers.
+5. Locate and validate supporting paragraph IDs for actionable positive or boundary answers. A Choice localization
+   never establishes evidence by itself because it must select an option; require its companion existence probability
+   to meet the question's reviewed threshold.
 6. Apply the bounded decision-policy interpreter.
 7. Store the immutable Decision Result.
 8. Project mapped suggestions into isolated `ReviewBatchRunValue` rows.
@@ -607,7 +639,7 @@ Automatic publication is out of scope for the first release.
 ### Migration and compatibility tests
 
 - create new task tables without changing existing Matter Definition behavior;
-- idempotently import the current published Matter Definition into an `ISSUE_REVIEW` task version;
+- preserve existing Matter Definition revisions without creating analysis-task projections;
 - preserve current draft/published revisions, assessments, conversations, and summaries;
 - enforce one writable authority during legacy, shadow, cutover, and compatibility phases;
 - switch a matter to the new authority and roll it back without losing either history;
@@ -615,7 +647,7 @@ Automatic publication is out of scope for the first release.
 
 ### UI tests
 
-- create issue-review, privilege-review, topic-generation, and exploration tasks;
+- create Question Answering tasks for different reviewed purposes;
 - edit a Task Definition and verify its Decision Specification becomes stale;
 - generate, edit, validate, diff, and atomically publish a task version;
 - run the single-document playground;
@@ -634,13 +666,13 @@ fixtures, not billable provider calls.
    architecture decision record.
 2. Add the side-by-side MatterAnalysisTask and jointly versioned definition/specification persistence, APIs, and
    generated client types without changing current behavior.
-3. Add the idempotent legacy Matter Definition importer, authority state, feature flag, and rollback path.
+3. Keep Matter Definition independent until the task framework supports its complete specialized workflow.
 4. Bootstrap the compiler managed skill and add draft generation/regeneration plus deterministic validation.
 5. Build the structured task-definition and specification review/edit/diff/publish UI.
 6. Implement `SystemOneDecisionEngine`, its fake adapter, invocation telemetry integration, and the Jev adapter.
 7. Add immutable Decision Results, explicit confidence semantics, and the single-document playground.
 8. Add evidence localization, calibration runs, and threshold review.
-9. Implement `ISSUE_REVIEW` and `PRIVILEGE_REVIEW` durable batch workflows in shadow mode.
+9. Implement durable `QUESTION_ANSWERING` batch workflows in shadow mode.
 10. Integrate results into batch Analysis/Coding and add comparison/filtering.
 11. Cut over issue review per matter, then place the legacy Matter Definition API behind the compatibility view.
 12. Extend the task framework to topic generation/assignment and bounded data-exploration workflows.
@@ -651,7 +683,8 @@ the specification editor, provider fake, and single-document playground are usab
 
 ## MVP acceptance criteria
 
-- A matter administrator can create independently governed `ISSUE_REVIEW` and `PRIVILEGE_REVIEW` tasks.
+- A matter administrator can create independently governed `QUESTION_ANSWERING` tasks without duplicating the
+  existing Matter Definition workflow.
 - Editing a Task Definition creates a draft task version and prevents publication until its generated Decision
   Specification is current and valid.
 - A generative compiler can produce a validated draft Decision Specification with traceable definition references.

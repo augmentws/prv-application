@@ -5,6 +5,7 @@ import {
   ArrowLeft,
   ChevronDown,
   ChevronRight,
+  Clock3,
   FileSearch,
   FileText,
   Filter,
@@ -43,6 +44,7 @@ import type {
   CollectionItemRead,
   CustodianRead,
   DocumentMetadataFieldRead,
+  DocumentCodingHistoryRead,
   MatterRead,
   MatterBulkTagCreate,
   MatterBulkTagJobRead,
@@ -490,6 +492,7 @@ export function ReviewWorkspace({
       );
       const fieldCount = updates.size;
       const operationIds = mutations.flatMap((mutation) => mutation.search_operation_id ? [mutation.search_operation_id] : []);
+      void queryClient.invalidateQueries({ queryKey: ["document-coding-history", matterId, effectiveSelectedDocumentId] });
       toast.success(`${fieldCount} ${fieldCount === 1 ? "field" : "fields"} saved.${operationIds.length ? " Updating search…" : ""}`);
       if (operationIds.length) void refreshAfterSearchProjection(operationIds);
     },
@@ -729,7 +732,7 @@ export function ReviewWorkspace({
           style={{ "--review-details-width": `${detailsWidth}px` } as CSSProperties}
           aria-label="Document details"
         >
-          <DocumentDetailsPanel definitions={definitions.data ?? []} groups={groups.data ?? []} hit={selectedHit} values={metadataValues.data} valuesVersion={metadataValues.dataUpdatedAt} loading={metadataValues.isPending && Boolean(effectiveSelectedDocumentId)} saving={metadataMutation.isPending} onSave={(actions) => metadataMutation.mutateAsync(actions).then(() => undefined)} onBulkTag={hasActiveSearch && currentUser.data?.tenant_role === "ADMIN" ? openBulkTag : undefined} />
+          <DocumentDetailsPanel matterId={matterId} definitions={definitions.data ?? []} groups={groups.data ?? []} hit={selectedHit} values={metadataValues.data} valuesVersion={metadataValues.dataUpdatedAt} loading={metadataValues.isPending && Boolean(effectiveSelectedDocumentId)} saving={metadataMutation.isPending} onSave={(actions) => metadataMutation.mutateAsync(actions).then(() => undefined)} onBulkTag={hasActiveSearch && currentUser.data?.tenant_role === "ADMIN" ? openBulkTag : undefined} />
         </aside>
       </div>
 
@@ -743,7 +746,7 @@ export function ReviewWorkspace({
       <Dialog open={codingOpen} onOpenChange={setCodingOpen}>
         <DialogContent className="flex h-[min(90vh,52rem)] max-w-xl flex-col overflow-hidden p-0 2xl:hidden">
           <DialogTitle className="sr-only">Document details</DialogTitle>
-          <DocumentDetailsPanel definitions={definitions.data ?? []} groups={groups.data ?? []} hit={selectedHit} values={metadataValues.data} valuesVersion={metadataValues.dataUpdatedAt} loading={metadataValues.isPending && Boolean(effectiveSelectedDocumentId)} saving={metadataMutation.isPending} onSave={(actions) => metadataMutation.mutateAsync(actions).then(() => undefined)} onBulkTag={hasActiveSearch && currentUser.data?.tenant_role === "ADMIN" ? openBulkTag : undefined} />
+          <DocumentDetailsPanel matterId={matterId} definitions={definitions.data ?? []} groups={groups.data ?? []} hit={selectedHit} values={metadataValues.data} valuesVersion={metadataValues.dataUpdatedAt} loading={metadataValues.isPending && Boolean(effectiveSelectedDocumentId)} saving={metadataMutation.isPending} onSave={(actions) => metadataMutation.mutateAsync(actions).then(() => undefined)} onBulkTag={hasActiveSearch && currentUser.data?.tenant_role === "ADMIN" ? openBulkTag : undefined} />
         </DialogContent>
       </Dialog>
 
@@ -1044,9 +1047,10 @@ function ResizeHandle({ className, label, value, min, max, direction = 1, onChan
   );
 }
 
-type DetailsTab = "coding" | "metadata";
+type DetailsTab = "coding" | "metadata" | "history";
 
-function DocumentDetailsPanel({ definitions, groups, hit, values, valuesVersion, loading, saving, onSave, onBulkTag }: {
+function DocumentDetailsPanel({ matterId, definitions, groups, hit, values, valuesVersion, loading, saving, onSave, onBulkTag }: {
+  matterId: string;
   definitions: MetadataDefinitionRead[];
   groups: MetadataGroupRead[];
   hit?: MatterSearchHit;
@@ -1062,24 +1066,90 @@ function DocumentDetailsPanel({ definitions, groups, hit, values, valuesVersion,
   const definitionById = new Map(definitions.map((definition) => [definition.id, definition]));
   const valueByDefinition = new Map((values ?? []).map((field) => [field.metadata_definition_id, field]));
   const visibleGroups = groups.filter((group) => group.status === "ACTIVE" && group.document_visible);
+  const codingHistory = useQuery({
+    queryKey: ["document-coding-history", matterId, hit?.document_id],
+    queryFn: () => coreApi<DocumentCodingHistoryRead>(`/v1/matters/${matterId}/documents/${hit!.document_id}/coding-history`),
+    enabled: tab === "history" && Boolean(hit?.document_id),
+  });
 
   return (
     <div className="flex min-h-0 min-w-0 flex-1 flex-col overflow-hidden">
       <div className="flex h-11 shrink-0 items-end border-b px-2" role="tablist" aria-label="Document details">
         <button id={`${tabsId}-coding`} type="button" role="tab" aria-selected={tab === "coding"} aria-controls={`${tabsId}-panel`} onClick={() => setTab("coding")} className={detailsTabClass(tab === "coding")}>Coding</button>
         <button id={`${tabsId}-metadata`} type="button" role="tab" aria-selected={tab === "metadata"} aria-controls={`${tabsId}-panel`} onClick={() => setTab("metadata")} className={detailsTabClass(tab === "metadata")}>Metadata</button>
+        <button id={`${tabsId}-history`} type="button" role="tab" aria-selected={tab === "history"} aria-controls={`${tabsId}-panel`} onClick={() => setTab("history")} className={detailsTabClass(tab === "history")}>History</button>
       </div>
       {!hit ? <div className="grid min-h-0 flex-1 place-items-center p-5 text-center text-sm text-muted-foreground">Select a document to view its metadata.</div>
-        : loading ? <div className="space-y-3 p-4">{Array.from({ length: 8 }, (_, index) => <Skeleton key={index} className="h-16 w-full" />)}</div>
+        : tab !== "history" && loading ? <div className="space-y-3 p-4">{Array.from({ length: 8 }, (_, index) => <Skeleton key={index} className="h-16 w-full" />)}</div>
         : tab === "coding"
           ? <CodingForm key={`${hit.document_id}:${valuesVersion}`} id={`${tabsId}-panel`} definitions={definitions} visibleGroups={visibleGroups} definitionById={definitionById} valueByDefinition={valueByDefinition} saving={saving} onSave={onSave} onBulkTag={onBulkTag} />
-          : <MetadataPanel id={`${tabsId}-panel`} definitions={definitions} visibleGroups={visibleGroups} definitionById={definitionById} valueByDefinition={valueByDefinition} hit={hit} />}
+          : tab === "metadata"
+            ? <MetadataPanel id={`${tabsId}-panel`} definitions={definitions} visibleGroups={visibleGroups} definitionById={definitionById} valueByDefinition={valueByDefinition} hit={hit} />
+            : <DocumentCodingHistoryPanel id={`${tabsId}-panel`} history={codingHistory.data} loading={codingHistory.isPending} error={codingHistory.error?.message} />}
     </div>
   );
 }
 
 function detailsTabClass(active: boolean) {
   return cn("relative h-10 px-3 text-sm font-semibold text-muted-foreground outline-none transition hover:text-foreground focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-ring", active && "text-primary after:absolute after:inset-x-2 after:bottom-0 after:h-0.5 after:bg-accent");
+}
+
+type DocumentHistoryEntry = DocumentCodingHistoryRead["direct"][number] | DocumentCodingHistoryRead["batches"][number]["entries"][number];
+
+function formatHistoryDate(value: string) {
+  const date = new Date(value);
+  if (Number.isNaN(date.valueOf())) return value;
+  return new Intl.DateTimeFormat(undefined, { dateStyle: "medium", timeStyle: "short" }).format(date);
+}
+
+function documentHistoryScore(entry: DocumentHistoryEntry) {
+  if (entry.score === null || entry.score === undefined) return null;
+  const kind = "score_kind" in entry ? entry.score_kind?.toLowerCase().replaceAll("_", " ") : null;
+  return `${Math.round(entry.score * 1000) / 10}%${kind ? ` ${kind}` : " score"}`;
+}
+
+function DocumentHistoryEntries({ entries }: { entries: DocumentHistoryEntry[] }) {
+  if (!entries.length) return <p className="rounded-lg border border-dashed p-3 text-sm text-muted-foreground">No coding activity in this section.</p>;
+  return <ol className="space-y-3">{entries.map((entry) => {
+    const rawCode = displayValue(entry.value);
+    const showRawCode = rawCode !== "—" && entry.value_label !== rawCode;
+    const score = documentHistoryScore(entry);
+    const direct = "metadata_event_id" in entry;
+    const key = direct
+      ? entry.metadata_event_id
+      : `${entry.review_batch_run_id}:${entry.metadata_definition_id}:${entry.recorded_at}:${rawCode}`;
+    return <li key={key} className="rounded-lg border bg-background p-3 shadow-xs">
+      <div className="flex items-start justify-between gap-3">
+        <div className="min-w-0"><p className="text-xs font-medium uppercase tracking-wide text-muted-foreground">{entry.field_display_name}</p><p className="mt-1 break-words text-sm font-semibold">{entry.value_label}</p>{showRawCode ? <p className="mt-0.5 break-all font-mono text-[11px] text-muted-foreground">{rawCode}</p> : null}</div>
+        <Badge variant={entry.source_kind === "HUMAN" ? "accent" : "outline"}>{entry.source_kind === "JEV" ? "Jev" : entry.source_kind.toLowerCase()}</Badge>
+      </div>
+      {direct ? <div className="mt-2 flex flex-wrap gap-1"><Badge variant="outline">{entry.operation.toLowerCase()}</Badge>{entry.effective_status !== "ACTIVE" ? <Badge variant="outline">{entry.effective_status.toLowerCase()}</Badge> : null}</div> : null}
+      <dl className="mt-3 grid grid-cols-[auto_1fr] gap-x-3 gap-y-1 text-xs"><dt className="text-muted-foreground">Date</dt><dd>{formatHistoryDate(entry.recorded_at)}</dd><dt className="text-muted-foreground">Source</dt><dd className="min-w-0 break-words">{entry.source_label}{entry.source_detail ? <span className="text-muted-foreground"> · {entry.source_detail}</span> : null}</dd><dt className="text-muted-foreground">Score</dt><dd>{score ?? "—"}</dd></dl>
+    </li>;
+  })}</ol>;
+}
+
+function DocumentCodingHistoryPanel({ id, history, loading, error }: {
+  id: string;
+  history?: DocumentCodingHistoryRead;
+  loading: boolean;
+  error?: string;
+}) {
+  if (loading) return <div id={id} role="tabpanel" className="space-y-3 p-4">{Array.from({ length: 5 }, (_, index) => <Skeleton key={index} className="h-28" />)}</div>;
+  if (error) return <div id={id} role="tabpanel" className="p-4"><QueryError message={error} /></div>;
+  if (!history) return <div id={id} role="tabpanel" className="grid flex-1 place-items-center p-5 text-center text-sm text-muted-foreground">No coding history is available.</div>;
+  const hasEntries = history.direct.length > 0 || history.batches.some((batch) => batch.entries.length > 0);
+  return <div id={id} role="tabpanel" className="min-h-0 flex-1 overflow-y-auto p-4">
+    {!hasEntries && !history.batches.length ? <div className="mb-4 rounded-lg border border-dashed p-5 text-center"><Clock3 className="mx-auto text-muted-foreground" /><p className="mt-3 font-semibold">No coding history</p><p className="mt-1 text-sm text-muted-foreground">Direct coding and batch activity will appear here.</p></div> : null}
+    <section>
+      <div className="mb-3 flex items-center justify-between gap-2"><div><h3 className="text-sm font-semibold">Direct (no batch)</h3><p className="text-xs text-muted-foreground">Authoritative coding applied to the matter.</p></div><Badge variant="accent">final</Badge></div>
+      <DocumentHistoryEntries entries={history.direct} />
+    </section>
+    {history.batches.map((batch) => <section key={batch.review_batch_id} className="mt-6 border-t pt-4">
+      <div className="mb-3 flex items-center justify-between gap-2"><div className="min-w-0"><h3 className="truncate text-sm font-semibold" title={batch.batch_name}>{batch.batch_name}</h3><p className="text-xs text-muted-foreground">Batch coding history</p></div><Badge variant="outline">{batch.batch_status.toLowerCase()}</Badge></div>
+      <DocumentHistoryEntries entries={batch.entries} />
+    </section>)}
+  </div>;
 }
 
 function CodingForm({ id, definitions, visibleGroups, definitionById, valueByDefinition, saving, onSave, onBulkTag }: {

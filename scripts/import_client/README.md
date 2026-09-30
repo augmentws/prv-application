@@ -10,6 +10,7 @@ This package preprocesses local datasets and uploads them through the Priv-View 
 
 Current adapters:
 
+- `athome4-loadfile` streams the TREC Athome4 CSV load file, preserves the CSV as a source container, and uploads each referenced flattened Jeb Bush email without changing its bytes. It stores the two document IDs plus the 2015/2016 labels, important-topic values, and facets as imported JSON metadata. Semicolon-delimited judgments become arrays, and the adapter recognizes Athome4's nonstandard `Sent` email header.
 - `enron-csv` reads the full Enron multiline `file,message` CSV format and derives the custodian key from the first maildir path segment. `top.csv` is the head-100 sample of the same `enron.csv` format. The base importer parses each emitted email and its attachments.
 - `emc2` discovers each custodian MBOX and the DOJ ZIP, maps their custodians, and classifies known chat/transcript filenames. The base importer performs all MBOX message, attachment, and ZIP-member iteration. The published EMC-2 `crisis_team_evaluation.txt` attachment has one malformed base64 character; the adapter applies a hash-verified repair and records it in the item's raw metadata.
 - `jeb-bush-inventory` streams the Jeb Bush `inventory.csv`. It uploads each EML as an EMAIL item and each existing, non-empty `<attachment-path>.txt` extraction sidecar as a child FILE item in the same family. It does not upload the original binary attachments or standalone image/OCR sidecars. Source attachment names, MIME types, sizes, and hashes remain in the text item's raw metadata. The adapter deliberately disables generic MIME attachment expansion so those binaries are not uploaded a second time. If an inventory EML is missing from disk, the adapter warns, skips that EML and its attachment rows, and continues with the next EML. If `skip.csv` exists beside `inventory.csv`, each non-empty first-column value is treated as an exact relative path to omit. A matching EML also omits its attachment rows; a matching attachment path (with or without its `.txt` suffix) omits only that text sidecar. Optional `path`, `file`, or `filename` headers are ignored. Every matched EML or attachment prints one `Skipped by skip.csv: <path>` message to stderr.
@@ -19,6 +20,10 @@ Malformed email headers do not stop an import. Before upload, the importer repla
 ## Inspect without uploading
 
 ```bash
+pipenv run python -m scripts.import_client athome4-loadfile \
+  --source /Volumes/WorkingData/trec/athome4_loadfile.csv \
+  --dry-run
+
 pipenv run python -m scripts.import_client enron-csv \
   --source ../enron/top.csv \
   --dry-run
@@ -45,6 +50,12 @@ export PVR_IMPORT_TENANT_SLUG="tenant-slug"
 export PVR_IMPORT_CLIENT_ID="client UUID"
 export PVR_IMPORT_EMAIL="admin@example.com"
 export PVR_IMPORT_PASSWORD="local development password"
+
+pipenv run python -m scripts.import_client athome4-loadfile \
+  --source /Volumes/WorkingData/trec/athome4_loadfile.csv \
+  --collection-name "TREC Athome4" \
+  --workers 8 \
+  --continue-on-error
 
 pipenv run python -m scripts.import_client enron-csv \
   --source ../enron/enron.csv \

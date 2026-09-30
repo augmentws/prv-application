@@ -137,6 +137,20 @@ def test_single_value_events_update_projection_and_preserve_history(
     assert history[1]["effective_status"] == "SUPERSEDED"
     assert history[3]["effective_status"] == "ACTIVE"
 
+    document_history_response = client.get(
+        f"/v1/matters/{matter_id}/documents/{document_id}/coding-history",
+        headers=auth(root_token),
+    )
+    assert document_history_response.status_code == 200, document_history_response.text
+    document_history = document_history_response.json()
+    assert document_history["batches"] == []
+    assert document_history["direct"][0]["value_label"] == "Needs review"
+    assert document_history["direct"][0]["field_display_name"] == "Responsiveness"
+    assert document_history["direct"][0]["source_kind"] == "HUMAN"
+    assert document_history["direct"][0]["source_label"] == root_admin.email
+    assert document_history["direct"][1]["value_label"] == "Reject: Responsive"
+    assert document_history["direct"][1]["effective_status"] == "ACTIVE"
+
     cleared = client.post(url, headers=auth(root_token), json={"operation": "CLEAR"})
     assert cleared.status_code == 201, cleared.text
     assert cleared.json()["current"]["resolution_state"] == "EMPTY"

@@ -48,6 +48,17 @@ class Settings(BaseSettings):
     model_rate_limit_retry_base_seconds: float = Field(default=1.0, gt=0, le=300)
     model_rate_limit_retry_max_seconds: float = Field(default=120.0, gt=0, le=3600)
     model_rate_limit_characters_per_token: float = Field(default=3.0, ge=1, le=10)
+    typesafe_api_key: str | None = None
+    typesafe_base_url: str | None = None
+    typesafe_default_model: str = "jev-latest"
+    typesafe_timeout_seconds: float = Field(default=60.0, gt=0, le=600)
+    typesafe_concurrency: int = Field(default=4, ge=1, le=100)
+    typesafe_requests_per_minute: int = Field(default=15, ge=1, le=100_000)
+    typesafe_input_tokens_per_minute: int = Field(default=200_000, ge=1, le=1_000_000_000)
+    typesafe_max_retries: int = Field(default=5, ge=0, le=20)
+    typesafe_retry_base_seconds: float = Field(default=1.0, gt=0, le=300)
+    typesafe_retry_max_seconds: float = Field(default=120.0, gt=0, le=3600)
+    analysis_task_decision_max_characters: int = Field(default=100_000, ge=10_000, le=2_000_000)
     matter_embedding_batch_size: int = Field(default=250, ge=1, le=500)
     matter_embedding_document_concurrency: int = Field(default=8, ge=1, le=32)
     matter_topic_batch_size: int = Field(default=100, ge=1, le=1000)
@@ -85,6 +96,8 @@ class Settings(BaseSettings):
             raise ValueError("CHUNK_OVERLAP_CHARACTERS must be smaller than CHUNK_TARGET_CHARACTERS")
         if self.model_rate_limit_retry_base_seconds > self.model_rate_limit_retry_max_seconds:
             raise ValueError("MODEL_RATE_LIMIT_RETRY_BASE_SECONDS must not exceed MODEL_RATE_LIMIT_RETRY_MAX_SECONDS")
+        if self.typesafe_retry_base_seconds > self.typesafe_retry_max_seconds:
+            raise ValueError("TYPESAFE_RETRY_BASE_SECONDS must not exceed TYPESAFE_RETRY_MAX_SECONDS")
         if self.agent_stream_replay_page_size > self.agent_stream_replay_limit:
             raise ValueError("AGENT_STREAM_REPLAY_PAGE_SIZE must not exceed AGENT_STREAM_REPLAY_LIMIT")
         return self

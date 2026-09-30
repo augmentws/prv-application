@@ -32,6 +32,8 @@ The API accepts the same typed request used by matter search, including query te
 
 Execution deserializes the stored definition, optionally applies an offset and page-size override, and passes it through the ordinary matter-search command. The request therefore receives the same authorization scoping, validation, embedding behavior, and OpenSearch execution as an unsaved query. Because execution uses the current active index, results can change after ingestion, coding, reindexing, or other corpus changes.
 
+An accessible Keyword saved search can also be used as the source set for a random review-batch sample. Batch creation snapshots the search definition and provenance before materialization, so later saved-search edits or deletion do not change the resulting batch.
+
 ## API
 
 All routes are below `/v1/matters/{matter_id}/saved-searches`:

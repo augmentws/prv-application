@@ -15,6 +15,7 @@ from app.models import (
     AgentRun,
     AgentTurn,
     Matter,
+    MatterDefinition,
     ReviewBatch,
 )
 from app.workflows.dispatcher import enqueue_agent_run
@@ -32,6 +33,7 @@ def create_conversation(
     title: str | None,
     workflow_type: str,
     review_batch_id: uuid.UUID | None,
+    matter_definition_id: uuid.UUID | None = None,
     actor_user_id: uuid.UUID,
 ) -> AgentConversation:
     if agent.status != "ACTIVE" or agent.published_version is None:
@@ -48,6 +50,10 @@ def create_conversation(
             raise AgentConversationError("Review batch must be ready before starting a chat")
     elif review_batch_id is not None:
         raise AgentConversationError("Review batch scope is supported only for batch chat")
+    if workflow_type == "MATTER_DEFINITION_SETUP" and matter_definition_id is not None:
+        guidance = db.get(MatterDefinition, matter_definition_id)
+        if guidance is None or guidance.matter_id != matter.id:
+            raise AgentConversationError("Review Guidance is not available to this matter")
     version = db.scalar(
         select(AgentDefinitionVersion).where(
             AgentDefinitionVersion.agent_definition_id == agent.id,
@@ -61,6 +67,7 @@ def create_conversation(
         tenant_id=matter.client.tenant_id,
         client_id=matter.client_id,
         matter_id=matter.id,
+        matter_definition_id=matter_definition_id,
         review_batch_id=review_batch_id,
         agent_definition_id=agent.id,
         agent_definition_version_id=version.id,

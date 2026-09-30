@@ -41,7 +41,9 @@ from app.search.mappings import (
     schema_hash,
 )
 from app.search.query import (
+    batch_coding_filter,
     batch_topic_filter,
+    compile_batch_coding_facet_request,
     compile_batch_topic_facet_request,
     compile_date_histogram_request,
     compile_facet_values_request,
@@ -335,6 +337,47 @@ def test_batch_topic_filter_and_facet_keep_batch_taxonomy_and_topic_in_one_neste
         {"term": {"batch_topics.taxonomy_id": "taxonomy-2"}},
     ]
     assert scoped["aggs"]["values"]["terms"]["field"] == "batch_topics.topic_key"
+
+
+def test_batch_coding_filter_and_facet_keep_run_field_and_value_in_one_nested_scope() -> None:
+    issue = definition("issue_tag", "ENUM")
+    issue.allowed_values = [
+        {"key": "hurricane", "label": "Hurricane", "active": True},
+        {"key": "regulatory", "label": "Regulatory", "active": True},
+    ]
+    coding_filter = batch_coding_filter(
+        batch_id="batch-1",
+        run_id="run-2",
+        definition=issue,
+        values=["hurricane", "regulatory"],
+        minimum_confidence=0.7,
+    )
+    nested_filters = coding_filter["nested"]["query"]["bool"]["filter"]
+    assert nested_filters == [
+        {"term": {"batch_coding.batch_id": "batch-1"}},
+        {"term": {"batch_coding.run_id": "run-2"}},
+        {"term": {"batch_coding.field_id": str(issue.id)}},
+        {"terms": {"batch_coding.value_keyword": ["hurricane", "regulatory"]}},
+        {"range": {"batch_coding.confidence": {"gte": 0.7}}},
+    ]
+
+    body = compile_batch_coding_facet_request(
+        MatterSearchRequest(),
+        [issue],
+        definition=issue,
+        tenant_id="tenant-1",
+        matter_id="matter-1",
+        batch_id="batch-1",
+        run_id="run-2",
+        required_filters=[{"term": {"batch_ids": "batch-1"}}],
+    )
+    scope = body["aggs"]["batch_coding"]["aggs"]["scope"]
+    assert scope["filter"]["bool"]["filter"] == [
+        {"term": {"batch_coding.batch_id": "batch-1"}},
+        {"term": {"batch_coding.run_id": "run-2"}},
+        {"term": {"batch_coding.field_id": str(issue.id)}},
+    ]
+    assert scope["aggs"]["values"]["terms"]["field"] == "batch_coding.value_keyword"
 
 
 def test_date_histogram_is_calendar_bucketed_and_self_excluding() -> None:
@@ -1419,6 +1462,39 @@ def test_matter_creation_queues_index_and_search_waits_for_active_generation(
     )
     assert search_response.status_code == 409
     assert search_response.json()["error"]["message"] == "Matter search index is not ready"
+
+
+def test_search_operations_lists_batch_coding_sync_kind(
+    client: TestClient,
+    root_token: str,
+    db: Session,
+) -> None:
+    headers = auth(root_token)
+    tenant_id = client.get("/v1/auth/me", headers=headers).json()["tenant_id"]
+    created_client = client.post(
+        f"/v1/tenants/{tenant_id}/clients",
+        headers=headers,
+        json={"name": "Batch Coding Search Test Client"},
+    ).json()
+    matter = client.post(
+        f"/v1/clients/{created_client['id']}/matters",
+        headers=headers,
+        json={"name": "Batch Coding Search Test Matter"},
+    ).json()
+    operation = SearchProjectionOperation(
+        matter_id=uuid.UUID(matter["id"]),
+        kind="BATCH_CODING_SYNC",
+        payload={"batch_id": str(uuid.uuid4()), "run_id": str(uuid.uuid4())},
+        status="COMPLETED",
+        workflow_id=f"search-projection:{uuid.uuid4()}",
+    )
+    db.add(operation)
+    db.commit()
+
+    response = client.get(f"/v1/matters/{matter['id']}/search-operations", headers=headers)
+
+    assert response.status_code == 200, response.text
+    assert "BATCH_CODING_SYNC" in [item["kind"] for item in response.json()]
 
 
 def test_search_index_status_reports_missing_index_on_configured_server(

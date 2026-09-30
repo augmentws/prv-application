@@ -1,0 +1,20 @@
+---
+title: Token usage
+description: Review external model token consumption for a matter.
+---
+
+Open a matter and select **Token usage** to see every external model call attributed to that matter. The report is built from the immutable provider-usage ledger and includes analysis tasks, embeddings, matter-definition work, topic processing, and other workflows that record a matter ID.
+
+## Totals
+
+**Total tokens** is input tokens plus output tokens. **Cached input** is shown separately because providers normally report it as a subset of input rather than an additional token category. **Cache writes** are also shown separately and are not added to the total.
+
+The summary covers the full matter history. The detailed ledger is paginated so every entry remains available without loading the entire history at once.
+
+## Breakdowns
+
+The provider and model table shows which model consumed the tokens. The workflow table groups usage by the operation that caused it, such as a batch Analysis Task or an embedding job. The detailed ledger retains the job ID, initiating user, provider, model, token categories, and date for audit and reconciliation.
+
+## Monetary cost
+
+The current ledger records token quantities but does not preserve the provider price schedule that was effective when each request ran. The interface therefore does not present a dollar estimate that could change retroactively or combine unlike cache and batch discounts. Versioned price snapshots and monetary estimates can be added later without changing the token ledger.

@@ -3,6 +3,7 @@ from typing import Any
 
 import pytest
 from pydantic_ai import Agent, CachePoint
+from pydantic_ai.exceptions import ModelHTTPError
 from pydantic_ai.models.test import TestModel
 
 from app.model_execution import (
@@ -15,6 +16,7 @@ from app.model_execution import (
     run_model,
     validate_structured_output,
 )
+from app.provider_schemas import provider_output_schema
 
 
 def request_for(document: str) -> StructuredModelRequest:
@@ -60,6 +62,33 @@ def test_structured_output_schema_validation_is_strict() -> None:
         validate_structured_output({}, schema)
     with pytest.raises(StructuredOutputValidationError, match="Additional properties"):
         validate_structured_output({"answer": "responsive", "extra": True}, schema)
+
+
+def test_gemini_admission_schema_removes_unsupported_constraints_but_preserves_property_names() -> None:
+    schema = {
+        "type": "object",
+        "properties": {
+            "answer": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 100,
+                "pattern": "^[a-z]+$",
+                "default": "unknown",
+            },
+            "value": {},
+        },
+        "required": ["answer"],
+        "additionalProperties": False,
+        "maxProperties": 2,
+    }
+
+    admitted = provider_output_schema(schema, provider="google")
+
+    assert set(admitted["properties"]) == {"answer", "value"}
+    assert admitted["properties"]["answer"] == {"type": "string"}
+    assert admitted["properties"]["value"]["anyOf"]
+    assert "maxProperties" not in admitted
+    assert provider_output_schema(schema, provider="openai") is schema
 
 
 def test_structured_executor_returns_invocation_telemetry() -> None:
@@ -120,3 +149,26 @@ def test_run_model_omits_runtime_hooks_when_rate_limit_capability_is_registered(
 
     assert envelope.output == "ok"
     assert agent.runtime_capabilities is None
+
+
+@pytest.mark.parametrize(("status_code", "retryable"), [(400, False), (429, True), (503, True)])
+def test_run_model_classifies_provider_http_retries(status_code: int, retryable: bool) -> None:
+    class FailingAgent:
+        async def run(self, *args: Any, **kwargs: Any):
+            raise ModelHTTPError(status_code, "gemini-test", {"error": "provider failure"})
+
+    with pytest.raises(ModelExecutionError) as caught:
+        asyncio.run(
+            run_model(
+                FailingAgent(),  # type: ignore[arg-type]
+                prompt="hello",
+                instructions=["Respond briefly."],
+                model="google:gemini-test",
+                model_settings={},
+                limits={"max_requests": 2},
+                model_configuration_hash="test-hash",
+            )
+        )
+
+    assert caught.value.retryable is retryable
+    assert caught.value.code == ("MODEL_FAILURE" if retryable else "INVALID_REQUEST")

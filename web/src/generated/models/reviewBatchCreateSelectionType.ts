@@ -14,4 +14,5 @@ export const ReviewBatchCreateSelectionType = {
   SEARCH_QUERY: 'SEARCH_QUERY',
   RANDOM_MATTER: 'RANDOM_MATTER',
   RANDOM_BATCH: 'RANDOM_BATCH',
+  RANDOM_SAVED_SEARCH: 'RANDOM_SAVED_SEARCH',
 } as const;

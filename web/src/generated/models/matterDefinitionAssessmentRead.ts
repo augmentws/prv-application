@@ -16,6 +16,9 @@ export interface MatterDefinitionAssessmentRead {
   name: string;
   matter_id: string;
   matter_definition_revision_id: string;
+  guidance_id?: string | null;
+  guidance_key?: string | null;
+  guidance_name?: string | null;
   definition_content_hash: string;
   workflow_run_id: string;
   search_index_generation_id: string | null;

@@ -44,7 +44,11 @@ def _timestamp(message: Message, header: str):
     return parsed.astimezone(timezone.utc)
 
 
-def email_metadata(message: Message) -> EmailMetadata:
+def email_metadata(
+    message: Message,
+    *,
+    sent_headers: tuple[str, ...] = ("date",),
+) -> EmailMetadata:
     recipients: list[EmailRecipient] = []
     for recipient_type, header in (("TO", "to"), ("CC", "cc"), ("BCC", "bcc")):
         values = [_decoded_header(value) for value in _raw_header_values(message, header)]
@@ -56,10 +60,15 @@ def email_metadata(message: Message) -> EmailMetadata:
                     email_address=address or None,
                 )
             )
+    sent_at = None
+    for header in sent_headers:
+        sent_at = _timestamp(message, header)
+        if sent_at is not None:
+            break
     return EmailMetadata(
         sender=_first_header(message, "from"),
         subject=_first_header(message, "subject"),
-        sent_at=_timestamp(message, "date"),
+        sent_at=sent_at,
         message_id=_first_header(message, "message-id"),
         recipients=tuple(recipients),
     )

@@ -6,7 +6,9 @@ from sqlalchemy.orm import Session
 
 from app.models import SkillDefinition, SkillDefinitionVersion, WorkflowSkillBinding
 
-SUPPORTED_SKILL_CAPABILITIES = frozenset({"structured_output", "prompt_caching", "long_context"})
+SUPPORTED_SKILL_CAPABILITIES = frozenset(
+    {"structured_output", "prompt_caching", "long_context", "typed_decision"}
+)
 
 
 @dataclass(frozen=True)
@@ -70,7 +72,60 @@ MATTER_DEFINITION_ASSESSMENT_SPEC = WorkflowSpec(
     ),
 )
 
-WORKFLOW_SPECS = {MATTER_DEFINITION_ASSESSMENT_SPEC.key: MATTER_DEFINITION_ASSESSMENT_SPEC}
+MATTER_ANALYSIS_TASK_COMPILATION_SPEC = WorkflowSpec(
+    key="matter_analysis_task_compilation_v1",
+    code_version="2",
+    name="Matter Analysis Task compilation",
+    description="Compiles a reviewed Task Definition into a provider-neutral Decision Specification.",
+    roles=(
+        WorkflowRoleSpec(
+            key="decision_specification_compiler",
+            input_schema_key="matter_analysis_task_compiler_input_v1",
+            output_schema_key="matter_analysis_task_compiler_output_v2",
+            allowed_capabilities=frozenset({"structured_output", "prompt_caching", "long_context"}),
+            allowed_tool_keys=frozenset(),
+        ),
+    ),
+)
+
+MATTER_ANALYSIS_TASK_PLAYGROUND_SPEC = WorkflowSpec(
+    key="matter_analysis_task_playground_v1",
+    code_version="1",
+    name="Matter Analysis Task playground",
+    description="Evaluates one document against a published Decision Specification without publishing coding.",
+    roles=(
+        WorkflowRoleSpec(
+            key="decision_evaluation",
+            input_schema_key="matter_analysis_task_decision_input_v1",
+            output_schema_key="matter_analysis_task_decision_output_v1",
+            allowed_capabilities=frozenset({"typed_decision"}),
+            allowed_tool_keys=frozenset(),
+        ),
+    ),
+)
+
+MATTER_ANALYSIS_TASK_BATCH_SPEC = WorkflowSpec(
+    key="matter_analysis_task_batch_v1",
+    code_version="1",
+    name="Matter Analysis Task batch run",
+    description="Evaluates every document in a frozen review batch without publishing coding.",
+    roles=(
+        WorkflowRoleSpec(
+            key="decision_evaluation",
+            input_schema_key="matter_analysis_task_decision_input_v1",
+            output_schema_key="matter_analysis_task_decision_output_v1",
+            allowed_capabilities=frozenset({"typed_decision"}),
+            allowed_tool_keys=frozenset(),
+        ),
+    ),
+)
+
+WORKFLOW_SPECS = {
+    MATTER_DEFINITION_ASSESSMENT_SPEC.key: MATTER_DEFINITION_ASSESSMENT_SPEC,
+    MATTER_ANALYSIS_TASK_COMPILATION_SPEC.key: MATTER_ANALYSIS_TASK_COMPILATION_SPEC,
+    MATTER_ANALYSIS_TASK_PLAYGROUND_SPEC.key: MATTER_ANALYSIS_TASK_PLAYGROUND_SPEC,
+    MATTER_ANALYSIS_TASK_BATCH_SPEC.key: MATTER_ANALYSIS_TASK_BATCH_SPEC,
+}
 
 
 def get_workflow_spec(workflow_key: str) -> WorkflowSpec:

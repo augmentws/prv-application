@@ -5,11 +5,16 @@
  * Phase-one Core API for authentication, hierarchical tenants, clients, matters, and matter metadata definitions.
  * OpenAPI spec version: 0.1.0
  */
+import type { MatterDefinitionReadStatus } from './matterDefinitionReadStatus';
 import type { MatterDefinitionRevisionRead } from './matterDefinitionRevisionRead';
 
 export interface MatterDefinitionRead {
   id: string;
   matter_id: string;
+  key: string;
+  name: string;
+  description: string | null;
+  status: MatterDefinitionReadStatus;
   current_revision: number;
   published_revision: number | null;
   created_by_user_id: string;

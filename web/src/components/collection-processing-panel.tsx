@@ -157,7 +157,8 @@ export function CollectionProcessingPanel({ collectionId }: { collectionId: stri
       body: JSON.stringify({ rules }),
     }),
     onSuccess: async (value) => {
-      setDraftRules(value.rules);
+      queryClient.setQueryData(["collection-processing-profile", collectionId], value);
+      setDraftRules(null);
       await queryClient.invalidateQueries({ queryKey: ["collection-processing-profile", collectionId] });
       toast.success("Processing rules saved.");
     },
@@ -344,7 +345,7 @@ export function CollectionProcessingPanel({ collectionId }: { collectionId: stri
           <div className="flex gap-2">
             <HelpLink topic="documentCleaner" />
             <Button variant="outline" onClick={addRule}><Plus />Add rule</Button>
-            <Button disabled={!dirty || save.isPending} onClick={() => save.mutate()}><Save />Save rules</Button>
+            <Button disabled={!dirty || save.isPending} onClick={() => save.mutate()}><Save />{save.isPending ? "Saving…" : "Save rules"}</Button>
           </div>
         </div>
 
@@ -402,6 +403,14 @@ export function CollectionProcessingPanel({ collectionId }: { collectionId: stri
               }}><Trash2 /></Button>
             </div>
           ))}
+        </div>
+        <div className="mt-5 flex flex-wrap items-center justify-between gap-3 border-t pt-4">
+          <p aria-live="polite" className={`text-sm ${dirty ? "font-medium text-amber-700 dark:text-amber-400" : "text-muted-foreground"}`}>
+            {dirty ? "You have unsaved collection rule changes." : "Collection rule changes are saved."}
+          </p>
+          <Button disabled={!dirty || save.isPending} onClick={() => save.mutate()}>
+            <Save />{save.isPending ? "Saving…" : "Save changes"}
+          </Button>
         </div>
       </Card>
 
