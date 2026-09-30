@@ -25,12 +25,12 @@ services:
     ports:
       - "9000:9000"
       - "9001:9001"
-  volumes:
-    - type: bind
-      source: /mnt/minio-data
-      target: /data
-      bind:
-        create_host_path: false
+    volumes:
+      - type: bind
+        source: /mnt/minio-data
+        target: /data
+        bind:
+          create_host_path: false
 
   opensearch:
     image: opensearchproject/opensearch:3.8.0
