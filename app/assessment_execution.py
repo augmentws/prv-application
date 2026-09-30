@@ -3,6 +3,8 @@ import json
 import re
 import uuid
 from collections import Counter, defaultdict
+from collections.abc import Callable
+from dataclasses import dataclass
 from datetime import datetime, timezone
 from typing import Any
 
@@ -10,6 +12,7 @@ from sqlalchemy import delete, func, select
 from sqlalchemy.orm import Session
 
 from app.artifact_gateway import get_preferred_text_source, read_artifact_bytes, store_derived_artifact
+from app.audit import record_audit
 from app.config import Settings, get_settings
 from app.document_evidence import (
     PARAGRAPH_MAP_VERSION,
@@ -50,7 +53,7 @@ from app.models import (
     WorkflowRun,
     WorkflowStepRun,
 )
-from app.schemas import MatterSearchRequest
+from app.schemas import MatterSearchRequest, MatterSearchResponse
 from app.search.client import OpenSearchClient
 from app.search.query import execute_search
 from app.skill_execution import (
@@ -75,6 +78,7 @@ REFINEMENT_DIMENSIONS = {
     "GEOGRAPHIC_SCOPE",
     "ACTOR_ENTITY_SCOPE",
 }
+MAX_RETRIEVAL_OFFSET = 10_000
 
 
 def utcnow() -> datetime:
@@ -169,6 +173,67 @@ def _validate_retrieval_plan(output: dict[str, Any]) -> None:
         _normalized_query(item, ordinal=index)
 
 
+@dataclass
+class _RetrievalQueryCursor:
+    row: MatterDefinitionAssessmentQuery
+    request: MatterSearchRequest
+    offset: int = 0
+    exhausted: bool = False
+
+
+def collect_retrieval_hits(
+    query_rows: list[MatterDefinitionAssessmentQuery],
+    *,
+    maximum_document_count: int,
+    execute_page: Callable[[MatterDefinitionAssessmentQuery, MatterSearchRequest], MatterSearchResponse],
+) -> list[RetrievalHit]:
+    """Retrieve balanced rounds until deduplication leaves enough unique documents."""
+
+    cursors = [
+        _RetrievalQueryCursor(
+            row=row,
+            request=MatterSearchRequest.model_validate(row.search_request),
+        )
+        for row in query_rows
+    ]
+    hits: list[RetrievalHit] = []
+    unique_document_ids: set[uuid.UUID] = set()
+    while len(unique_document_ids) < maximum_document_count:
+        fetched_any = False
+        for cursor in cursors:
+            if cursor.exhausted:
+                continue
+            remaining_offset = MAX_RETRIEVAL_OFFSET - cursor.offset
+            if remaining_offset <= 0:
+                cursor.exhausted = True
+                continue
+            page_size = min(cursor.request.size, remaining_offset)
+            page_request = cursor.request.model_copy(update={"offset": cursor.offset, "size": page_size})
+            response = execute_page(cursor.row, page_request)
+            cursor.row.result_count = response.total
+            page_hits = list(response.hits)
+            for rank, hit in enumerate(page_hits, start=cursor.offset + 1):
+                hits.append(
+                    RetrievalHit(
+                        document_id=hit.document_id,
+                        query_ordinal=cursor.row.ordinal,
+                        criterion_key=cursor.row.criterion_key,
+                        rank=rank,
+                        score=hit.score,
+                        best_passage=(hit.best_passage.model_dump(mode="json") if hit.best_passage else None),
+                    )
+                )
+                unique_document_ids.add(hit.document_id)
+            cursor.offset += len(page_hits)
+            fetched_any = fetched_any or bool(page_hits)
+            cursor.exhausted = (
+                len(page_hits) < page_size or cursor.offset >= response.total or cursor.offset >= MAX_RETRIEVAL_OFFSET
+            )
+        if not fetched_any or all(cursor.exhausted for cursor in cursors):
+            break
+    return hits
+
+
 def plan_retrieval(db: Session, assessment_id: uuid.UUID, *, model: Any | None = None) -> dict[str, Any]:
     assessment, workflow, revision, matter = _records(db, assessment_id)
     existing = assessment.configuration_snapshot.get("retrieval_plan")
@@ -199,6 +264,7 @@ def plan_retrieval(db: Session, assessment_id: uuid.UUID, *, model: Any | None =
             cache_identity={
                 "tenant_id": str(workflow.tenant_id),
                 "matter_id": str(matter.id),
+                "guidance_id": str(revision.matter_definition_id),
                 "revision_hash": assessment.definition_content_hash,
                 "skill_version_id": str(version.id),
             },
@@ -275,35 +341,36 @@ def retrieve_and_materialize(db: Session, assessment_id: uuid.UUID, settings: Se
             .order_by(MatterDefinitionAssessmentQuery.ordinal)
         )
     )
-    hits: list[RetrievalHit] = []
     client = OpenSearchClient(settings)
     try:
-        for row in query_rows:
-            request = MatterSearchRequest.model_validate(row.search_request)
-            query_vector = None
-            if request.search_mode != "KEYWORD":
-                query_vector = get_query_embedding_gateway().embed([request.query or ""], "query").embeddings[0]
-            response = execute_search(
+        query_vectors: dict[int, list[float] | None] = {}
+
+        def execute_page(
+            row: MatterDefinitionAssessmentQuery,
+            request: MatterSearchRequest,
+        ) -> MatterSearchResponse:
+            if row.ordinal not in query_vectors:
+                query_vectors[row.ordinal] = (
+                    get_query_embedding_gateway().embed([request.query or ""], "query").embeddings[0]
+                    if request.search_mode != "KEYWORD"
+                    else None
+                )
+            return execute_search(
                 client,
                 generation.index_name,
                 request,
                 definitions,
                 tenant_id=str(matter.client.tenant_id),
                 matter_id=str(matter.id),
-                query_vector=query_vector,
+                query_vector=query_vectors[row.ordinal],
             )
-            row.result_count = response.total
-            hits.extend(
-                RetrievalHit(
-                    document_id=hit.document_id,
-                    query_ordinal=row.ordinal,
-                    criterion_key=row.criterion_key,
-                    rank=rank,
-                    score=hit.score,
-                    best_passage=hit.best_passage.model_dump(mode="json") if hit.best_passage else None,
-                )
-                for rank, hit in enumerate(response.hits, start=1)
-            )
+
+        hits = collect_retrieval_hits(
+            query_rows,
+            maximum_document_count=assessment.requested_document_count,
+            execute_page=execute_page,
+        )
+        for _ in query_rows:
             step.completed_count += 1
     finally:
         client.close()
@@ -496,6 +563,7 @@ def persist_document_analysis(
         {
             "source_content_hash": source.content_hash,
             "review_batch_run_id": str(assessment.review_batch_run_id),
+            "guidance_id": str(revision.matter_definition_id),
             "definition_content_hash": assessment.definition_content_hash,
             "skill_version_id": str(version.id),
             "model_key": version.model_key,
@@ -517,6 +585,7 @@ def persist_document_analysis(
             "matter_document_id": str(document.id),
             "review_batch_id": str(assessment.review_batch_id),
             "review_batch_run_id": str(assessment.review_batch_run_id),
+            "guidance_id": str(revision.matter_definition_id),
             "matter_definition_revision_id": str(revision.id),
             "skill_definition_version_id": str(version.id),
             "schema_version": version.output_schema_key,
@@ -555,6 +624,7 @@ async def _execute_document_analysis(
     cache_identity = {
         "tenant_id": str(workflow.tenant_id),
         "matter_id": str(assessment.matter_id),
+        "guidance_id": str(revision.matter_definition_id),
         "revision_hash": assessment.definition_content_hash,
         "skill_version_id": str(version.id),
         "schema_version": version.output_schema_key,
@@ -1194,6 +1264,7 @@ def synthesize_assessment(
                 cache_identity={
                     "tenant_id": str(workflow.tenant_id),
                     "matter_id": str(matter.id),
+                    "guidance_id": str(revision.matter_definition_id),
                     "revision_hash": assessment.definition_content_hash,
                     "skill_version_id": str(version.id),
                     "assessment_id": str(assessment.id),
@@ -1236,7 +1307,7 @@ def fail_document(db: Session, assessment_id: uuid.UUID, document_id: uuid.UUID,
 
 
 def complete_assessment(db: Session, assessment_id: uuid.UUID) -> None:
-    assessment, workflow, _, _ = _records(db, assessment_id)
+    assessment, workflow, revision, matter = _records(db, assessment_id)
     refresh_progress(db, assessment_id)
     db.refresh(assessment)
     now = utcnow()
@@ -1263,6 +1334,21 @@ def complete_assessment(db: Session, assessment_id: uuid.UUID) -> None:
     if review_run is not None:
         review_run.status = final_status
         review_run.completed_at = now
+    record_audit(
+        db,
+        tenant_id=matter.client.tenant_id,
+        actor_user_id=assessment.initiated_by_user_id,
+        action="matter_definition.assessment.completed",
+        target_type="matter_definition_assessment_run",
+        target_id=assessment.id,
+        details={
+            "matter_id": str(matter.id),
+            "guidance_id": str(revision.matter_definition_id),
+            "matter_definition_revision_id": str(revision.id),
+            "revision": revision.revision,
+            "status": final_status,
+        },
+    )
     db.commit()
 
 

@@ -1,7 +1,7 @@
 "use client";
 
 import { useQuery } from "@tanstack/react-query";
-import { Download, FileText, GripHorizontal, Mail } from "lucide-react";
+import { Braces, Download, FileText, GripHorizontal, Mail } from "lucide-react";
 import { useEffect, useMemo, useRef, useState } from "react";
 
 import { QueryError } from "@/components/query-state";
@@ -70,6 +70,57 @@ function EmailHeader({ item }: { item: CollectionItemRead }) {
   );
 }
 
+function MetadataValue({ value }: { value: unknown }) {
+  if (Array.isArray(value)) {
+    if (!value.length) return <span className="italic text-muted-foreground">Empty list</span>;
+    if (value.every((entry) => entry == null || ["string", "number", "boolean"].includes(typeof entry))) {
+      return (
+        <div className="flex flex-wrap gap-1.5">
+          {value.map((entry, index) => (
+            <Badge key={`${index}:${String(entry)}`} variant="accent" className="max-w-full whitespace-normal break-words text-left font-normal">
+              {entry == null ? "null" : String(entry)}
+            </Badge>
+          ))}
+        </div>
+      );
+    }
+  }
+  if (value == null) return <span className="italic text-muted-foreground">Null</span>;
+  if (typeof value === "object") {
+    return <pre className="max-h-64 overflow-auto whitespace-pre-wrap break-words rounded-md bg-muted/45 p-3 font-mono text-xs leading-5">{JSON.stringify(value, null, 2)}</pre>;
+  }
+  return <span className="break-words">{String(value)}</span>;
+}
+
+export function UnmappedMetadataPanel({ metadata }: { metadata: Record<string, unknown> }) {
+  const entries = Object.entries(metadata).sort(([left], [right]) => left.localeCompare(right));
+  return (
+    <section className="min-h-0 flex-1 overflow-y-auto bg-background p-5" aria-label="Unmapped metadata">
+      <div className="mx-auto max-w-4xl">
+        <div className="mb-4 flex items-start gap-3">
+          <span className="grid size-9 shrink-0 place-items-center rounded-lg bg-muted text-muted-foreground"><Braces className="size-4" /></span>
+          <div>
+            <h3 className="font-semibold">Unmapped metadata</h3>
+            <p className="mt-0.5 text-sm text-muted-foreground">Source fields retained during collection import.</p>
+          </div>
+        </div>
+        {entries.length ? (
+          <dl className="divide-y rounded-lg border">
+            {entries.map(([key, value]) => (
+              <div key={key} className="grid gap-2 px-4 py-3 sm:grid-cols-[13rem_minmax(0,1fr)] sm:gap-5">
+                <dt className="break-all font-mono text-xs font-semibold text-muted-foreground">{key}</dt>
+                <dd className="min-w-0 text-sm"><MetadataValue value={value} /></dd>
+              </div>
+            ))}
+          </dl>
+        ) : (
+          <div className="rounded-lg border border-dashed p-8 text-center text-sm text-muted-foreground">This document has no unmapped metadata.</div>
+        )}
+      </div>
+    </section>
+  );
+}
+
 interface TextParagraphRange {
   number: number;
   start: number;
@@ -95,16 +146,18 @@ export function textParagraphRanges(source: string): TextParagraphRange[] {
   return ranges;
 }
 
-export function DocumentViewerSurface({ item, className, highlightedParagraphs = [], highlightTerms = [] }: {
+export function DocumentViewerSurface({ item, className, highlightedParagraphs = [], highlightTerms = [], showUnmappedMetadata = false }: {
   item: CollectionItemRead;
   className?: string;
   highlightedParagraphs?: number[];
   highlightTerms?: string[];
+  showUnmappedMetadata?: boolean;
 }) {
   const viewerRef = useRef<HTMLElement>(null);
   const firstHighlightRef = useRef<HTMLElement>(null);
   const emailHeaderDrag = useRef<{ y: number; height: number } | null>(null);
   const [emailHeaderHeight, setEmailHeaderHeight] = useState(EMAIL_HEADER_DEFAULT_HEIGHT);
+  const [view, setView] = useState<"document" | "metadata">("document");
   const kind = previewKind(item);
   const content = useQuery({
     queryKey: ["artifact-content", item.native_artifact.id],
@@ -192,11 +245,17 @@ export function DocumentViewerSurface({ item, className, highlightedParagraphs =
             </div>
             <p className="truncate text-xs text-muted-foreground">{item.original_filename} · {formatBytes(item.native_artifact.byte_length)}</p>
           </div>
+          {showUnmappedMetadata ? (
+            <div role="tablist" aria-label="Document views" className="flex shrink-0 rounded-md border bg-muted/30 p-0.5">
+              <button type="button" role="tab" aria-selected={view === "document"} onClick={() => setView("document")} className={viewerTabClass(view === "document")}>Document</button>
+              <button type="button" role="tab" aria-selected={view === "metadata"} onClick={() => setView("metadata")} className={viewerTabClass(view === "metadata")}>Metadata</button>
+            </div>
+          ) : null}
           <Button asChild variant="outline" size="sm"><a href={downloadUrl} download><Download />Download</a></Button>
         </div>
       </header>
 
-      {kind === "email" ? (
+      {view === "metadata" ? <UnmappedMetadataPanel metadata={item.unmapped_metadata} /> : <>{kind === "email" ? (
         <>
           <div className="shrink-0 overflow-y-auto bg-muted/35" style={{ height: `${emailHeaderHeight}px` }}>
             <EmailHeader item={item} />
@@ -252,16 +311,21 @@ export function DocumentViewerSurface({ item, className, highlightedParagraphs =
           </pre>
         )}
       </div>
+      </>}
     </section>
   );
 }
 
-export function DocumentViewerDialog({ item, onClose }: { item: CollectionItemRead | null; onClose: () => void }) {
+function viewerTabClass(active: boolean) {
+  return `rounded px-2.5 py-1 text-xs font-medium outline-none transition focus-visible:ring-2 focus-visible:ring-ring ${active ? "bg-background text-foreground shadow-sm" : "text-muted-foreground hover:text-foreground"}`;
+}
+
+export function DocumentViewerDialog({ item, onClose, showUnmappedMetadata = false }: { item: CollectionItemRead | null; onClose: () => void; showUnmappedMetadata?: boolean }) {
   return (
     <Dialog open={Boolean(item)} onOpenChange={(open) => { if (!open) onClose(); }}>
       <DialogContent className="h-[min(90vh,56rem)] max-w-5xl overflow-hidden p-0">
         <DialogTitle className="sr-only">{item?.email?.subject?.trim() || item?.original_filename || "Document"}</DialogTitle>
-        {item ? <DocumentViewerSurface item={item} className="h-full" /> : null}
+        {item ? <DocumentViewerSurface item={item} className="h-full" showUnmappedMetadata={showUnmappedMetadata} /> : null}
       </DialogContent>
     </Dialog>
   );

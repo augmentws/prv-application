@@ -497,7 +497,7 @@ export function CollectionView({ clientId, collectionId }: { clientId: string; c
               </div>
             </div>
           )}
-          <DocumentViewerDialog item={selectedItem} onClose={() => setSelectedItem(null)} />
+          <DocumentViewerDialog item={selectedItem} onClose={() => setSelectedItem(null)} showUnmappedMetadata />
         </>
       ) : tab === "date-histogram" ? (
         <Card className="p-5">

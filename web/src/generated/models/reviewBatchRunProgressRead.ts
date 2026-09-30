@@ -13,4 +13,5 @@ export interface ReviewBatchRunProgressRead {
   in_progress_count: number;
   completed_count: number;
   skipped_count: number;
+  failed_count: number;
 }

@@ -122,6 +122,10 @@ describe("MatterDefinitionAssessmentPanel regeneration", () => {
 
     const coverageHeading = await screen.findByText("Coverage: sufficient");
     expect(within(coverageHeading.parentElement as HTMLElement).getByText("completed with errors")).toBeInTheDocument();
+    expect(screen.getByRole("link", { name: "Run analysis" })).toHaveAttribute(
+      "href",
+      "/review/matters/matter-1?batch=batch-1&analysis=run",
+    );
     await user.click(screen.getByRole("button", { name: "Rename assessment" }));
     const renameInput = screen.getByLabelText("Assessment name");
     await user.clear(renameInput);

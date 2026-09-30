@@ -10,7 +10,7 @@ from sqlalchemy.orm import Session, sessionmaker
 from app.artifact_gateway import SearchItemSnapshot, get_search_item_snapshot, load_current_chunk_artifacts
 from app.config import Settings, get_settings
 from app.database import SessionLocal
-from app.document_metadata import current_metadata_values
+from app.document_metadata import current_metadata_values, event_value
 from app.embeddings.configuration import canonical_hash, processing_configuration
 from app.embeddings.parquet import read_chunk_set, read_vector_set
 from app.models import (
@@ -30,6 +30,8 @@ from app.models import (
     MetadataDefinition,
     ReviewBatch,
     ReviewBatchDocument,
+    ReviewBatchRunValue,
+    ReviewBatchSearchCodingRun,
     SearchIndexGeneration,
     SearchProjectionOperation,
 )
@@ -153,6 +155,39 @@ def _index_metadata_value(value: Any, definition: MetadataDefinition) -> Any:
     return serialized
 
 
+def batch_coding_projection_value(
+    value: ReviewBatchRunValue,
+    definition: MetadataDefinition,
+    *,
+    batch_id: uuid.UUID,
+) -> dict[str, Any] | None:
+    if definition.type == "JSON":
+        return None
+    raw_value = _index_metadata_value(event_value(value), definition)
+    projected: dict[str, Any] = {
+        "batch_id": str(batch_id),
+        "run_id": str(value.review_batch_run_id),
+        "field_id": str(definition.id),
+        "field_key": definition.key,
+        "value_type": definition.type,
+        "confidence": value.confidence,
+        "confidence_kind": value.confidence_kind,
+        "question_key": value.question_key,
+    }
+    slot = {
+        "TEXT": "value_text",
+        "LONG_TEXT": "value_text",
+        "ENUM": "value_keyword",
+        "INTEGER": "value_long",
+        "DECIMAL": "value_double",
+        "BOOLEAN": "value_boolean",
+        "DATE": "value_date",
+        "DATETIME": "value_datetime",
+    }[definition.type]
+    projected[slot] = raw_value
+    return {key: item for key, item in projected.items() if item is not None}
+
+
 def build_document_projection(
     db: Session,
     document: MatterDocument,
@@ -160,6 +195,7 @@ def build_document_projection(
     *,
     batch_ids: list[uuid.UUID] | None = None,
     batch_topics: list[dict[str, str]] | None = None,
+    batch_coding: list[dict[str, Any]] | None = None,
 ) -> dict[str, Any]:
     matter = db.get(Matter, document.matter_id)
     if matter is None:
@@ -248,6 +284,7 @@ def build_document_projection(
         "collection_item_id": str(document.collection_item_id),
         "batch_ids": [str(value) for value in (batch_ids or [])],
         "batch_topics": batch_topics or [],
+        "batch_coding": batch_coding or [],
         "created_at": document.created_at.isoformat(),
         "record_type": snapshot.record_type,
         "processing_status": snapshot.processing_status,
@@ -831,6 +868,104 @@ class SearchIndexManager:
         self.db.commit()
         return len(document_ids)
 
+    def sync_batch_coding(self, batch_id: uuid.UUID, run_id: uuid.UUID) -> int:
+        batch = self.db.get(ReviewBatch, batch_id)
+        selection = self.db.get(ReviewBatchSearchCodingRun, batch_id)
+        if batch is None or selection is None or selection.review_batch_run_id != run_id:
+            raise ValueError("Selected batch coding run not found")
+        if not self.settings.search_enabled:
+            selection.status = "NOT_CONFIGURED"
+            selection.error_message = None
+            self.db.commit()
+            return 0
+
+        selection.status = "SYNCING"
+        selection.error_message = None
+        self.db.commit()
+        try:
+            generation = self.ensure(batch.matter_id)
+            self._lock_matter_search(batch.matter_id)
+            document_ids = list(
+                self.db.scalars(
+                    select(ReviewBatchDocument.matter_document_id)
+                    .where(ReviewBatchDocument.review_batch_id == batch.id)
+                    .order_by(ReviewBatchDocument.sequence_number)
+                )
+            )
+            for offset in range(0, len(document_ids), self.settings.search_bulk_batch_size):
+                page = document_ids[offset : offset + self.settings.search_bulk_batch_size]
+                projected_by_document: dict[uuid.UUID, list[dict[str, Any]]] = {
+                    document_id: [] for document_id in page
+                }
+                rows = self.db.execute(
+                    select(ReviewBatchRunValue, MetadataDefinition)
+                    .join(
+                        MetadataDefinition,
+                        MetadataDefinition.id == ReviewBatchRunValue.metadata_definition_id,
+                    )
+                    .where(
+                        ReviewBatchRunValue.review_batch_run_id == run_id,
+                        ReviewBatchRunValue.matter_document_id.in_(page),
+                        MetadataDefinition.status == "ACTIVE",
+                    )
+                    .order_by(
+                        ReviewBatchRunValue.matter_document_id,
+                        ReviewBatchRunValue.metadata_definition_id,
+                        ReviewBatchRunValue.value_ordinal,
+                    )
+                ).all()
+                for value, definition in rows:
+                    projected = batch_coding_projection_value(
+                        value,
+                        definition,
+                        batch_id=batch.id,
+                    )
+                    if projected is not None:
+                        projected_by_document[value.matter_document_id].append(projected)
+                self.client.bulk(
+                    generation.index_name,
+                    (
+                        (
+                            "update",
+                            str(document_id),
+                            {
+                                "script": {
+                                    "source": (
+                                        "if (ctx._source.batch_coding == null) { "
+                                        "ctx._source.batch_coding = []; } "
+                                        "for (int i = ctx._source.batch_coding.size() - 1; i >= 0; i--) { "
+                                        "if (ctx._source.batch_coding[i].batch_id == params.batch_id) { "
+                                        "ctx._source.batch_coding.remove(i); } } "
+                                        "ctx._source.batch_coding.addAll(params.values);"
+                                    ),
+                                    "params": {
+                                        "batch_id": str(batch.id),
+                                        "values": projected_by_document[document_id],
+                                    },
+                                }
+                            },
+                        )
+                        for document_id in page
+                    ),
+                )
+            self.client.refresh(generation.index_name)
+            self.db.expire(selection)
+            if selection.review_batch_run_id != run_id:
+                raise ValueError("The selected batch coding run changed during projection")
+            selection.status = "READY"
+            selection.projected_at = utcnow()
+            selection.error_message = None
+            self.db.commit()
+            return len(document_ids)
+        except Exception as exc:
+            self.db.rollback()
+            failed = self.db.get(ReviewBatchSearchCodingRun, batch_id)
+            if failed is not None and failed.review_batch_run_id == run_id:
+                failed.status = "FAILED"
+                failed.error_message = str(exc)[:4000]
+                self.db.commit()
+            raise
+
     def _bulk_upsert(
         self,
         index_name: str,
@@ -876,6 +1011,43 @@ class SearchIndexManager:
                         "topic_key": topic_key,
                     }
                 )
+            batch_coding: dict[uuid.UUID, list[dict[str, Any]]] = {
+                document.id: [] for document in batch
+            }
+            coding_rows = self.db.execute(
+                select(
+                    ReviewBatchRunValue,
+                    MetadataDefinition,
+                    ReviewBatchSearchCodingRun.review_batch_id,
+                )
+                .join(
+                    ReviewBatchSearchCodingRun,
+                    ReviewBatchSearchCodingRun.review_batch_run_id
+                    == ReviewBatchRunValue.review_batch_run_id,
+                )
+                .join(
+                    MetadataDefinition,
+                    MetadataDefinition.id == ReviewBatchRunValue.metadata_definition_id,
+                )
+                .where(
+                    ReviewBatchRunValue.matter_document_id.in_(batch_coding),
+                    ReviewBatchSearchCodingRun.status == "READY",
+                    MetadataDefinition.status == "ACTIVE",
+                )
+                .order_by(
+                    ReviewBatchSearchCodingRun.review_batch_id,
+                    ReviewBatchRunValue.metadata_definition_id,
+                    ReviewBatchRunValue.value_ordinal,
+                )
+            ).all()
+            for value, definition, coding_batch_id in coding_rows:
+                projected = batch_coding_projection_value(
+                    value,
+                    definition,
+                    batch_id=coding_batch_id,
+                )
+                if projected is not None:
+                    batch_coding[value.matter_document_id].append(projected)
             bind = self.db.get_bind()
             worker_count = min(self.settings.search_projection_document_concurrency, len(batch))
             if bind.dialect.name == "sqlite":
@@ -893,6 +1065,7 @@ class SearchIndexManager:
                             definitions,
                             batch_ids=memberships[document.id],
                             batch_topics=batch_topics[document.id],
+                            batch_coding=batch_coding[document.id],
                         ),
                     )
                     for document in batch
@@ -905,15 +1078,30 @@ class SearchIndexManager:
                 )
 
                 work_items = [
-                    (document.id, memberships[document.id], batch_topics[document.id])
+                    (
+                        document.id,
+                        memberships[document.id],
+                        batch_topics[document.id],
+                        batch_coding[document.id],
+                    )
                     for document in batch
                 ]
 
                 def build_operation(
-                    item: tuple[uuid.UUID, list[uuid.UUID], list[dict[str, str]]],
+                    item: tuple[
+                        uuid.UUID,
+                        list[uuid.UUID],
+                        list[dict[str, str]],
+                        list[dict[str, Any]],
+                    ],
                     session_factory=projection_session,
                 ) -> tuple[str, str, dict[str, Any]]:
-                    document_id, document_batch_ids, document_batch_topics = item
+                    (
+                        document_id,
+                        document_batch_ids,
+                        document_batch_topics,
+                        document_batch_coding,
+                    ) = item
                     with session_factory() as worker_db:
                         document = worker_db.get(MatterDocument, document_id)
                         if document is None:
@@ -924,6 +1112,7 @@ class SearchIndexManager:
                             definitions,
                             batch_ids=document_batch_ids,
                             batch_topics=document_batch_topics,
+                            batch_coding=document_batch_coding,
                         )
                         return "index", str(document_id), projection
 
@@ -1091,6 +1280,11 @@ def process_search_operation(operation_id: uuid.UUID) -> None:
                 manager.delete_documents(
                     operation.matter_id,
                     [uuid.UUID(value) for value in operation.payload.get("document_ids", [])],
+                )
+            elif operation.kind == "BATCH_CODING_SYNC":
+                manager.sync_batch_coding(
+                    uuid.UUID(operation.payload["batch_id"]),
+                    uuid.UUID(operation.payload["run_id"]),
                 )
             else:
                 raise ValueError(f"Unsupported search projection operation: {operation.kind}")

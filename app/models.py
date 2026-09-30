@@ -693,7 +693,8 @@ class SearchProjectionOperation(TimestampMixin, Base):
     __table_args__ = (
         UniqueConstraint("workflow_id", name="uq_search_projection_workflow"),
         CheckConstraint(
-            "kind IN ('SCHEMA_SYNC', 'REBUILD', 'DOCUMENT_UPSERT', 'DOCUMENT_DELETE')",
+            "kind IN ('SCHEMA_SYNC', 'REBUILD', 'DOCUMENT_UPSERT', 'DOCUMENT_DELETE', "
+            "'BATCH_CODING_SYNC')",
             name="ck_search_projection_kind",
         ),
         CheckConstraint(
@@ -1255,6 +1256,33 @@ class ReviewBatchRunValue(Base):
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow, onupdate=utcnow)
 
 
+class ReviewBatchSearchCodingRun(TimestampMixin, Base):
+    """The single batch run whose isolated coding is projected into search."""
+
+    __tablename__ = "review_batch_search_coding_run"
+    __table_args__ = (
+        CheckConstraint(
+            "status IN ('QUEUED', 'SYNCING', 'READY', 'FAILED', 'NOT_CONFIGURED')",
+            name="ck_review_batch_search_coding_status",
+        ),
+        UniqueConstraint("review_batch_run_id", name="uq_review_batch_search_coding_run"),
+    )
+
+    review_batch_id: Mapped[uuid.UUID] = mapped_column(
+        Uuid, ForeignKey("review_batch.id", ondelete="CASCADE"), primary_key=True
+    )
+    review_batch_run_id: Mapped[uuid.UUID] = mapped_column(
+        Uuid, ForeignKey("review_batch_run.id", ondelete="CASCADE"), index=True
+    )
+    status: Mapped[str] = mapped_column(String(20), default="QUEUED", index=True)
+    selected_by_user_id: Mapped[uuid.UUID] = mapped_column(
+        Uuid, ForeignKey("app_user.id", ondelete="RESTRICT"), index=True
+    )
+    selected_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+    projected_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    error_message: Mapped[str | None] = mapped_column(Text)
+
+
 class MetadataDefinition(TimestampMixin, Base):
     __tablename__ = "metadata_definition"
     __table_args__ = (
@@ -1769,7 +1797,8 @@ class AgentConversation(TimestampMixin, Base):
         ),
         CheckConstraint(
             "(workflow_type = 'MATTER_DEFINITION_SETUP' AND review_batch_id IS NULL) OR "
-            "(workflow_type = 'BATCH_CHAT' AND review_batch_id IS NOT NULL)",
+            "(workflow_type = 'BATCH_CHAT' AND review_batch_id IS NOT NULL "
+            "AND matter_definition_id IS NULL)",
             name="ck_agent_conversation_workflow_scope",
         ),
         CheckConstraint(
@@ -1783,6 +1812,9 @@ class AgentConversation(TimestampMixin, Base):
     tenant_id: Mapped[uuid.UUID] = mapped_column(Uuid, ForeignKey("tenant.id", ondelete="RESTRICT"), index=True)
     client_id: Mapped[uuid.UUID] = mapped_column(Uuid, ForeignKey("client.id", ondelete="RESTRICT"), index=True)
     matter_id: Mapped[uuid.UUID] = mapped_column(Uuid, ForeignKey("matter.id", ondelete="CASCADE"), index=True)
+    matter_definition_id: Mapped[uuid.UUID | None] = mapped_column(
+        Uuid, ForeignKey("matter_definition.id", ondelete="RESTRICT"), nullable=True, index=True
+    )
     review_batch_id: Mapped[uuid.UUID | None] = mapped_column(
         Uuid, ForeignKey("review_batch.id", ondelete="RESTRICT"), nullable=True, index=True
     )
@@ -2088,8 +2120,7 @@ class MatterAnalysisTask(TimestampMixin, Base):
     __table_args__ = (
         UniqueConstraint("matter_id", "key", name="uq_matter_analysis_task_matter_key"),
         CheckConstraint(
-            "task_type IN ('ISSUE_REVIEW', 'PRIVILEGE_REVIEW', 'TOPIC_GENERATION', "
-            "'DATA_EXPLORATION', 'CUSTOM_DECISION')",
+            "task_type IN ('QUESTION_ANSWERING')",
             name="ck_matter_analysis_task_type",
         ),
         CheckConstraint(
@@ -2293,16 +2324,22 @@ class ReviewDecisionResult(Base):
 class MatterDefinition(TimestampMixin, Base):
     __tablename__ = "matter_definition"
     __table_args__ = (
-        UniqueConstraint("matter_id", name="uq_matter_definition_matter"),
+        UniqueConstraint("matter_id", "key", name="uq_matter_definition_matter_key"),
         CheckConstraint("current_revision > 0", name="ck_matter_definition_current_revision"),
         CheckConstraint(
             "published_revision IS NULL OR (published_revision > 0 AND published_revision <= current_revision)",
             name="ck_matter_definition_published_revision",
         ),
+        CheckConstraint("status IN ('ACTIVE', 'ARCHIVED')", name="ck_matter_definition_status"),
+        Index("ix_matter_definition_matter_status", "matter_id", "status"),
     )
 
     id: Mapped[uuid.UUID] = mapped_column(Uuid, primary_key=True, default=uuid.uuid4)
     matter_id: Mapped[uuid.UUID] = mapped_column(Uuid, ForeignKey("matter.id", ondelete="CASCADE"), index=True)
+    key: Mapped[str] = mapped_column(String(100), default="general_review")
+    name: Mapped[str] = mapped_column(String(200), default="General Review Guidance")
+    description: Mapped[str | None] = mapped_column(Text)
+    status: Mapped[str] = mapped_column(String(20), default="ACTIVE")
     current_revision: Mapped[int] = mapped_column(Integer, default=1)
     published_revision: Mapped[int | None] = mapped_column(Integer)
     created_by_user_id: Mapped[uuid.UUID] = mapped_column(
@@ -2317,7 +2354,7 @@ class MatterDefinitionRevision(Base):
         CheckConstraint("revision > 0", name="ck_matter_definition_revision_positive"),
         CheckConstraint(
             "source_kind IN ('PASTE', 'MARKDOWN', 'TEXT', 'DOCX', 'AGENT_EDIT', 'USER_EDIT', "
-            "'ASSESSMENT_REFINEMENT')",
+            "'ASSESSMENT_REFINEMENT', 'CLONE')",
             name="ck_matter_definition_revision_source_kind",
         ),
     )
@@ -2328,7 +2365,7 @@ class MatterDefinitionRevision(Base):
     )
     revision: Mapped[int] = mapped_column(Integer)
     content_markdown: Mapped[str] = mapped_column(Text)
-    source_kind: Mapped[str] = mapped_column(String(20))
+    source_kind: Mapped[str] = mapped_column(String(40))
     source_artifact_id: Mapped[uuid.UUID | None] = mapped_column(Uuid, index=True)
     source_filename: Mapped[str | None] = mapped_column(String(500))
     based_on_revision: Mapped[int | None] = mapped_column(Integer)
@@ -2339,6 +2376,13 @@ class MatterDefinitionRevision(Base):
     source_skill_run_id: Mapped[uuid.UUID | None] = mapped_column(
         Uuid, ForeignKey("skill_run.id", ondelete="SET NULL"), nullable=True, index=True
     )
+    source_guidance_id: Mapped[uuid.UUID | None] = mapped_column(
+        Uuid, ForeignKey("matter_definition.id", ondelete="RESTRICT"), nullable=True, index=True
+    )
+    source_revision_id: Mapped[uuid.UUID | None] = mapped_column(
+        Uuid, ForeignKey("matter_definition_revision.id", ondelete="RESTRICT"), nullable=True, index=True
+    )
+    source_content_hash: Mapped[str | None] = mapped_column(String(64), nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
 
 

@@ -8,10 +8,12 @@
 import type { MatterSavedSearchUserRead } from './matterSavedSearchUserRead';
 import type { ReviewBatchCodingGroupRead } from './reviewBatchCodingGroupRead';
 import type { ReviewBatchReadReviewerValueVisibility } from './reviewBatchReadReviewerValueVisibility';
+import type { ReviewBatchReadSearchableCodingStatus } from './reviewBatchReadSearchableCodingStatus';
 import type { ReviewBatchReadSearchStatus } from './reviewBatchReadSearchStatus';
 import type { ReviewBatchReadSelectionDefinition } from './reviewBatchReadSelectionDefinition';
 import type { ReviewBatchReadSelectionType } from './reviewBatchReadSelectionType';
 import type { ReviewBatchReadStatus } from './reviewBatchReadStatus';
+import type { ReviewBatchSearchCodingFieldRead } from './reviewBatchSearchCodingFieldRead';
 
 export interface ReviewBatchRead {
   id: string;
@@ -30,6 +32,10 @@ export interface ReviewBatchRead {
   status: ReviewBatchReadStatus;
   search_status: ReviewBatchReadSearchStatus;
   search_error_message: string | null;
+  searchable_coding_run_id: string | null;
+  searchable_coding_status: ReviewBatchReadSearchableCodingStatus;
+  searchable_coding_error_message: string | null;
+  searchable_coding_fields: ReviewBatchSearchCodingFieldRead[];
   workflow_id: string;
   document_count: number;
   error_message: string | null;

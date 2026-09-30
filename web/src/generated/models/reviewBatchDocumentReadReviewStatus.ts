@@ -14,4 +14,5 @@ export const ReviewBatchDocumentReadReviewStatus = {
   IN_PROGRESS: 'IN_PROGRESS',
   COMPLETED: 'COMPLETED',
   SKIPPED: 'SKIPPED',
+  FAILED: 'FAILED',
 } as const;

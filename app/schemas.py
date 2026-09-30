@@ -35,16 +35,10 @@ SkillScope = Literal["SYSTEM", "TENANT"]
 SkillVersionStatus = Literal["DRAFT", "PUBLISHED", "RETIRED"]
 WorkflowBindingStatus = Literal["ACTIVE", "INACTIVE"]
 MatterDefinitionSourceKind = Literal[
-    "PASTE", "MARKDOWN", "TEXT", "DOCX", "AGENT_EDIT", "USER_EDIT", "ASSESSMENT_REFINEMENT"
+    "PASTE", "MARKDOWN", "TEXT", "DOCX", "AGENT_EDIT", "USER_EDIT", "ASSESSMENT_REFINEMENT", "CLONE"
 ]
 MatterDefinitionUserSourceKind = Literal["PASTE", "MARKDOWN", "TEXT", "USER_EDIT"]
-MatterAnalysisTaskType = Literal[
-    "ISSUE_REVIEW",
-    "PRIVILEGE_REVIEW",
-    "TOPIC_GENERATION",
-    "DATA_EXPLORATION",
-    "CUSTOM_DECISION",
-]
+MatterAnalysisTaskType = Literal["QUESTION_ANSWERING"]
 MatterAnalysisTaskStatus = Literal["ACTIVE", "SUSPENDED", "ARCHIVED"]
 MatterAnalysisTaskVersionStatus = Literal["DRAFT", "PUBLISHED", "RETIRED"]
 MatterAnalysisTaskCompilationStatus = Literal["NOT_GENERATED", "STALE", "GENERATING", "READY", "FAILED"]
@@ -202,6 +196,35 @@ class ExternalProviderUsageRead(ORMModel):
     total_tokens: int
     details: dict[str, Any]
     created_at: datetime
+
+
+class ProviderUsageTotalsRead(BaseModel):
+    record_count: int
+    request_count: int
+    input_tokens: int
+    cached_input_tokens: int
+    cache_write_tokens: int
+    output_tokens: int
+    total_tokens: int
+
+
+class ProviderUsageModelBreakdownRead(ProviderUsageTotalsRead):
+    provider: str
+    model: str
+
+
+class ProviderUsageJobBreakdownRead(ProviderUsageTotalsRead):
+    job_type: str
+
+
+class MatterProviderUsageReportRead(BaseModel):
+    matter_id: uuid.UUID
+    totals: ProviderUsageTotalsRead
+    by_model: list[ProviderUsageModelBreakdownRead]
+    by_job_type: list[ProviderUsageJobBreakdownRead]
+    entries: list[ExternalProviderUsageRead]
+    entries_offset: int
+    entries_limit: int
 
 
 MatterDocumentSelectionType = Literal["QUERY", "EXPLICIT"]
@@ -495,7 +518,13 @@ class MatterTopicApplyRequest(BaseModel):
 SearchFilterOperator = Literal["EQ", "IN", "RANGE", "EXISTS", "NOT_EXISTS"]
 SearchSortDirection = Literal["ASC", "DESC"]
 SearchMode = Literal["KEYWORD", "SEMANTIC", "HYBRID"]
-SearchOperationKind = Literal["SCHEMA_SYNC", "REBUILD", "DOCUMENT_UPSERT", "DOCUMENT_DELETE"]
+SearchOperationKind = Literal[
+    "SCHEMA_SYNC",
+    "REBUILD",
+    "DOCUMENT_UPSERT",
+    "DOCUMENT_DELETE",
+    "BATCH_CODING_SYNC",
+]
 SearchOperationStatus = Literal["QUEUED", "RUNNING", "AWAITING_USER", "COMPLETED", "FAILED"]
 SearchIndexStatus = Literal["CREATING", "ACTIVE", "RETIRED", "FAILED"]
 DateHistogramInterval = Literal["week", "month", "year"]
@@ -844,6 +873,14 @@ class ReviewBatchCodingGroupRead(BaseModel):
     fields: list[ReviewBatchCodingFieldRead]
 
 
+class ReviewBatchSearchCodingFieldRead(BaseModel):
+    metadata_definition_id: uuid.UUID
+    key: str
+    display_name: str
+    type: MetadataType
+    value_count: int
+
+
 class ReviewBatchRead(BaseModel):
     id: uuid.UUID
     matter_id: uuid.UUID
@@ -861,6 +898,10 @@ class ReviewBatchRead(BaseModel):
     status: ReviewBatchStatus
     search_status: ReviewBatchSearchStatus
     search_error_message: str | None
+    searchable_coding_run_id: uuid.UUID | None
+    searchable_coding_status: ReviewBatchSearchStatus | None
+    searchable_coding_error_message: str | None
+    searchable_coding_fields: list[ReviewBatchSearchCodingFieldRead]
     workflow_id: str
     document_count: int
     error_message: str | None
@@ -876,7 +917,7 @@ class ReviewBatchDocumentRead(BaseModel):
     source_collection_id: uuid.UUID
     collection_item_id: uuid.UUID
     sequence_number: int
-    review_status: Literal["NOT_STARTED", "IN_PROGRESS", "COMPLETED", "SKIPPED"]
+    review_status: Literal["NOT_STARTED", "IN_PROGRESS", "COMPLETED", "SKIPPED", "FAILED"]
 
 
 class ReviewBatchNoteCreate(BaseModel):
@@ -932,6 +973,12 @@ class ReviewBatchRunRead(ORMModel):
     updated_at: datetime
 
 
+class ReviewBatchAnalysisRunCreate(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    matter_analysis_task_id: uuid.UUID
+
+
 class ReviewBatchDocumentAnalysisRead(BaseModel):
     review_batch_run_id: uuid.UUID
     matter_document_id: uuid.UUID
@@ -970,6 +1017,30 @@ class ReviewBatchRunValueRead(BaseModel):
     question_key: str | None
 
 
+class ReviewBatchSearchCodingSelectionRead(BaseModel):
+    review_batch_id: uuid.UUID
+    review_batch_run_id: uuid.UUID
+    status: ReviewBatchSearchStatus
+    selected_by_user_id: uuid.UUID
+    selected_at: datetime
+    projected_at: datetime | None
+    error_message: str | None
+
+
+class ReviewBatchCodingSearchFilter(BaseModel):
+    field: MetadataKey
+    values: list[Any] = Field(min_length=1, max_length=1000)
+    minimum_confidence: float | None = Field(default=None, ge=0, le=1)
+
+
+class ReviewBatchSearchRequest(MatterSearchRequest):
+    coding_filters: list[ReviewBatchCodingSearchFilter] = Field(default_factory=list, max_length=100)
+
+
+class ReviewBatchFacetValuesRequest(MatterFacetValuesRequest):
+    search: ReviewBatchSearchRequest
+
+
 class ReviewBatchReviewerValueRead(BaseModel):
     review_batch_run_id: uuid.UUID
     actor_user_id: uuid.UUID
@@ -985,6 +1056,54 @@ class ReviewBatchDocumentCodingRead(BaseModel):
     reviewer_values: list[ReviewBatchReviewerValueRead]
 
 
+class ReviewBatchCodingHistoryEntryRead(BaseModel):
+    review_batch_run_id: uuid.UUID
+    run_type: ReviewBatchRunType
+    purpose: ReviewBatchRunPurpose
+    metadata_definition_id: uuid.UUID
+    field_key: str
+    field_display_name: str
+    value: Any
+    value_label: str
+    recorded_at: datetime
+    source_kind: Literal["HUMAN", "JEV", "AGENT", "WORKFLOW"]
+    source_label: str
+    source_detail: str | None
+    score: float | None
+    score_kind: DecisionConfidenceKind | None
+    question_key: str | None
+    review_decision_result_id: uuid.UUID | None
+
+
+class DirectCodingHistoryEntryRead(BaseModel):
+    metadata_event_id: uuid.UUID
+    metadata_definition_id: uuid.UUID
+    field_key: str
+    field_display_name: str
+    operation: MetadataOperation
+    value: Any | None
+    value_label: str
+    recorded_at: datetime
+    source_kind: MetadataEventSource
+    source_label: str
+    source_detail: str | None
+    score: float | None
+    effective_status: MetadataEffectiveStatus
+    confirmation_state: MetadataConfirmationState
+
+
+class DocumentCodingHistoryBatchRead(BaseModel):
+    review_batch_id: uuid.UUID
+    batch_name: str
+    batch_status: str
+    entries: list[ReviewBatchCodingHistoryEntryRead]
+
+
+class DocumentCodingHistoryRead(BaseModel):
+    direct: list[DirectCodingHistoryEntryRead]
+    batches: list[DocumentCodingHistoryBatchRead]
+
+
 class ReviewBatchRunProgressRead(BaseModel):
     review_batch_run_id: uuid.UUID
     document_count: int
@@ -992,6 +1111,7 @@ class ReviewBatchRunProgressRead(BaseModel):
     in_progress_count: int
     completed_count: int
     skipped_count: int
+    failed_count: int
 
 
 class ReviewBatchComparisonFieldRead(BaseModel):
@@ -1635,18 +1755,78 @@ class MatterDefinitionRevisionRead(ORMModel):
     created_by_user_id: uuid.UUID
     agent_run_id: uuid.UUID | None
     source_skill_run_id: uuid.UUID | None
+    source_guidance_id: uuid.UUID | None
+    source_revision_id: uuid.UUID | None
+    source_content_hash: str | None
     created_at: datetime
 
 
 class MatterDefinitionRead(ORMModel):
     id: uuid.UUID
     matter_id: uuid.UUID
+    key: str
+    name: str
+    description: str | None
+    status: Literal["ACTIVE", "ARCHIVED"]
     current_revision: int
     published_revision: int | None
     created_by_user_id: uuid.UUID
     created_at: datetime
     updated_at: datetime
     revision: MatterDefinitionRevisionRead
+
+
+class MatterDefinitionCreate(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    key: MetadataKey
+    name: str = Field(min_length=1, max_length=200)
+    description: str | None = Field(default=None, max_length=10_000)
+    content_markdown: str = Field(min_length=1, max_length=2_000_000)
+    source_kind: MatterDefinitionUserSourceKind = "PASTE"
+    source_filename: str | None = Field(default=None, max_length=500)
+
+    @field_validator("name")
+    @classmethod
+    def normalize_name(cls, value: str) -> str:
+        name = " ".join(value.split())
+        if not name:
+            raise ValueError("Guidance name must not be blank")
+        return name
+
+
+class MatterDefinitionUpdate(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    name: str | None = Field(default=None, min_length=1, max_length=200)
+    description: str | None = Field(default=None, max_length=10_000)
+
+    @model_validator(mode="after")
+    def validate_update(self) -> "MatterDefinitionUpdate":
+        if not self.model_fields_set:
+            raise ValueError("At least one guidance property must be supplied")
+        if self.name is not None:
+            self.name = " ".join(self.name.split())
+            if not self.name:
+                raise ValueError("Guidance name must not be blank")
+        return self
+
+
+class MatterDefinitionCloneCreate(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    key: MetadataKey
+    name: str = Field(min_length=1, max_length=200)
+    description: str | None = Field(default=None, max_length=10_000)
+    source_revision: int | None = Field(default=None, ge=1)
+
+    @field_validator("name")
+    @classmethod
+    def normalize_name(cls, value: str) -> str:
+        name = " ".join(value.split())
+        if not name:
+            raise ValueError("Guidance name must not be blank")
+        return name
 
 
 class MatterAnalysisTaskCreate(BaseModel):
@@ -1797,6 +1977,7 @@ class AgentConversationCreate(BaseModel):
     title: AgentConversationTitle | None = None
     workflow_type: AgentConversationWorkflow = "MATTER_DEFINITION_SETUP"
     review_batch_id: uuid.UUID | None = None
+    matter_definition_id: uuid.UUID | None = None
 
     @model_validator(mode="after")
     def validate_workflow_scope(self) -> "AgentConversationCreate":
@@ -1804,6 +1985,8 @@ class AgentConversationCreate(BaseModel):
             raise ValueError("BATCH_CHAT conversations require review_batch_id")
         if self.workflow_type != "BATCH_CHAT" and self.review_batch_id is not None:
             raise ValueError("review_batch_id is supported only for BATCH_CHAT conversations")
+        if self.workflow_type == "BATCH_CHAT" and self.matter_definition_id is not None:
+            raise ValueError("matter_definition_id is supported only for Matter Definition conversations")
         return self
 
 
@@ -1816,6 +1999,7 @@ class AgentConversationRead(ORMModel):
     tenant_id: uuid.UUID
     client_id: uuid.UUID
     matter_id: uuid.UUID
+    matter_definition_id: uuid.UUID | None
     review_batch_id: uuid.UUID | None
     agent_definition_id: uuid.UUID
     agent_definition_version_id: uuid.UUID
@@ -1967,6 +2151,9 @@ class MatterDefinitionAssessmentRead(ORMModel):
     name: str
     matter_id: uuid.UUID
     matter_definition_revision_id: uuid.UUID
+    guidance_id: uuid.UUID | None = None
+    guidance_key: str | None = None
+    guidance_name: str | None = None
     definition_content_hash: str
     workflow_run_id: uuid.UUID
     search_index_generation_id: uuid.UUID | None

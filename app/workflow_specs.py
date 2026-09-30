@@ -104,10 +104,27 @@ MATTER_ANALYSIS_TASK_PLAYGROUND_SPEC = WorkflowSpec(
     ),
 )
 
+MATTER_ANALYSIS_TASK_BATCH_SPEC = WorkflowSpec(
+    key="matter_analysis_task_batch_v1",
+    code_version="1",
+    name="Matter Analysis Task batch run",
+    description="Evaluates every document in a frozen review batch without publishing coding.",
+    roles=(
+        WorkflowRoleSpec(
+            key="decision_evaluation",
+            input_schema_key="matter_analysis_task_decision_input_v1",
+            output_schema_key="matter_analysis_task_decision_output_v1",
+            allowed_capabilities=frozenset({"typed_decision"}),
+            allowed_tool_keys=frozenset(),
+        ),
+    ),
+)
+
 WORKFLOW_SPECS = {
     MATTER_DEFINITION_ASSESSMENT_SPEC.key: MATTER_DEFINITION_ASSESSMENT_SPEC,
     MATTER_ANALYSIS_TASK_COMPILATION_SPEC.key: MATTER_ANALYSIS_TASK_COMPILATION_SPEC,
     MATTER_ANALYSIS_TASK_PLAYGROUND_SPEC.key: MATTER_ANALYSIS_TASK_PLAYGROUND_SPEC,
+    MATTER_ANALYSIS_TASK_BATCH_SPEC.key: MATTER_ANALYSIS_TASK_BATCH_SPEC,
 }
 
 

@@ -35,6 +35,59 @@ function renderPanel() {
 }
 
 describe("CollectionProcessingPanel", () => {
+  it("saves edits from the collection-specific rule list", async () => {
+    let revision = 1;
+    let savedRules = [customRule];
+
+    vi.mocked(coreApi).mockImplementation(async (path, init) => {
+      if (path === "/v1/collections/collection-1/text-processing/profile" && init?.method === "PUT") {
+        savedRules = JSON.parse(init.body as string).rules;
+        revision += 1;
+        return {
+          collection_id: "collection-1",
+          processor_version: "collection-text-v7",
+          revision,
+          default_rules: [],
+          rules: savedRules,
+          active_run_id: null,
+          updated_at: "2026-09-22T12:10:00Z",
+        } as never;
+      }
+      if (path === "/v1/collections/collection-1/text-processing/profile") return {
+        collection_id: "collection-1",
+        processor_version: "collection-text-v7",
+        revision,
+        default_rules: [],
+        rules: savedRules,
+        active_run_id: null,
+        updated_at: "2026-09-22T12:00:00Z",
+      } as never;
+      if (path === "/v1/collections/collection-1/search?limit=25&offset=0") return { items: [], total: 0 } as never;
+      if (path === "/v1/collections/collection-1/text-processing/runs") return [] as never;
+      if (path === "/v1/agent-packages?scope_type=COLLECTION&scope_id=collection-1") return [] as never;
+      throw new Error(`Unexpected API request: ${path}`);
+    });
+
+    const user = userEvent.setup();
+    renderPanel();
+
+    const pattern = await screen.findByLabelText("Start / match expression");
+    expect(screen.getByText("Collection rule changes are saved.")).toBeInTheDocument();
+    await user.clear(pattern);
+    await user.type(pattern, "^UPDATED FOOTER$");
+
+    expect(screen.getByText("You have unsaved collection rule changes.")).toBeInTheDocument();
+    await user.click(screen.getByRole("button", { name: "Save changes" }));
+
+    await waitFor(() => {
+      const request = vi.mocked(coreApi).mock.calls.find(([path, options]) => (
+        path === "/v1/collections/collection-1/text-processing/profile" && options?.method === "PUT"
+      ));
+      expect(JSON.parse(request?.[1]?.body as string).rules[0].pattern).toBe("^UPDATED FOOTER$");
+      expect(screen.getByText("Collection rule changes are saved.")).toBeInTheDocument();
+    });
+  });
+
   it("can exclude a rule from a test and shows the rules applied to each processed preview", async () => {
     vi.mocked(coreApi).mockImplementation(async (path, init) => {
       if (path === "/v1/collections/collection-1/text-processing/profile" && init?.method === "PUT") {

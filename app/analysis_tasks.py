@@ -12,11 +12,7 @@ from app.decision_specifications import DecisionSpecification, validate_specific
 from app.models import Matter, MatterAnalysisTask, MatterAnalysisTaskVersion, utcnow
 
 TASK_WORKFLOW_KEYS: dict[str, str] = {
-    "ISSUE_REVIEW": "issue_review_v1",
-    "PRIVILEGE_REVIEW": "privilege_review_v1",
-    "TOPIC_GENERATION": "topic_generation_v1",
-    "DATA_EXPLORATION": "data_exploration_v1",
-    "CUSTOM_DECISION": "custom_decision_v1",
+    "QUESTION_ANSWERING": "question_answering_v1",
 }
 
 
@@ -42,6 +38,13 @@ def canonical_json(value: Any) -> str:
 
 def json_content_hash(value: Any) -> str:
     return content_hash(canonical_json(value))
+
+
+def can_attach_analysis_task_specification(
+    _task: MatterAnalysisTask,
+    task_version: MatterAnalysisTaskVersion,
+) -> bool:
+    return task_version.status == "DRAFT"
 
 
 def create_analysis_task(
@@ -176,7 +179,13 @@ def set_analysis_task_specification(
     )
     if task_version is None:
         raise MatterAnalysisTaskNotFound("Matter Analysis Task version not found")
-    if task_version.status != "DRAFT":
+    if not (
+        task_version.status == "DRAFT"
+        or (
+            can_attach_analysis_task_specification(task, task_version)
+            and task_version.compilation_status == "GENERATING"
+        )
+    ):
         raise MatterAnalysisTaskConflict("Published or retired task versions are immutable")
 
     try:

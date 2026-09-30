@@ -58,8 +58,8 @@ const task = {
   key: "privilege_review",
   name: "Privilege review",
   description: "First-pass privilege review",
-  task_type: "PRIVILEGE_REVIEW",
-  workflow_key: "privilege_review_v1",
+  task_type: "QUESTION_ANSWERING",
+  workflow_key: "question_answering_v1",
   current_version: 1,
   published_version: 1,
   status: "ACTIVE",
@@ -70,6 +70,49 @@ const task = {
 } as const;
 
 describe("AnalysisTasksPanel", () => {
+  it("offers Question answering as the only task type", async () => {
+    vi.mocked(coreApi).mockImplementation(async (path) => {
+      if (path === "/v1/matters/matter-1/analysis-tasks") return [] as never;
+      throw new Error(`Unexpected API request: ${path}`);
+    });
+    const user = userEvent.setup();
+    const client = new QueryClient({ defaultOptions: { queries: { retry: false }, mutations: { retry: false } } });
+    render(<QueryClientProvider client={client}><AnalysisTasksPanel matterId="matter-1" /></QueryClientProvider>);
+
+    await user.click(await screen.findByRole("button", { name: "New analysis task" }));
+    await user.click(screen.getByRole("combobox", { name: "Task type" }));
+    expect(screen.getAllByRole("option")).toHaveLength(1);
+    expect(screen.getByRole("option", { name: "Question answering" })).toBeInTheDocument();
+  });
+
+  it("creates a draft revision from an unchanged published version", async () => {
+    vi.mocked(coreApi).mockImplementation(async (path, init) => {
+      if (path === "/v1/matters/matter-1/analysis-tasks") return [task] as never;
+      if (path === "/v1/matters/matter-1/analysis-tasks/task-1/versions" && init?.method === "POST") {
+        return task as never;
+      }
+      if (path === "/v1/matters/matter-1/analysis-tasks/task-1/versions") return [version] as never;
+      if (path === "/v1/matters/matter-1/review-batches") return [] as never;
+      throw new Error(`Unexpected API request: ${path}`);
+    });
+    const user = userEvent.setup();
+    const client = new QueryClient({ defaultOptions: { queries: { retry: false }, mutations: { retry: false } } });
+    render(<QueryClientProvider client={client}><AnalysisTasksPanel matterId="matter-1" /></QueryClientProvider>);
+
+    await user.click(await screen.findByRole("button", { name: "Create draft revision" }));
+
+    await waitFor(() => expect(vi.mocked(coreApi)).toHaveBeenCalledWith(
+      "/v1/matters/matter-1/analysis-tasks/task-1/versions",
+      expect.objectContaining({
+        method: "POST",
+        body: JSON.stringify({
+          definition_markdown: version.definition_markdown,
+          based_on_version: 1,
+        }),
+      }),
+    ));
+  });
+
   it("launches a published task against one batch document and displays its result", async () => {
     vi.mocked(coreApi).mockImplementation(async (path, init) => {
       if (path === "/v1/matters/matter-1/analysis-tasks") return [task] as never;

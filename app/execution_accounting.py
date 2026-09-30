@@ -151,11 +151,17 @@ def refresh_agent_run_usage(db: Session, run: AgentRun) -> UsageAggregate:
     return usage
 
 
-def refresh_skill_run_usage(db: Session, run: SkillRun) -> UsageAggregate:
+def refresh_skill_run_usage(
+    db: Session,
+    run: SkillRun,
+    *,
+    refresh_workflow_usage: bool = True,
+) -> UsageAggregate:
     usage = invocation_usage(db, skill_run_id=run.id)
     apply_usage_aggregate(run, usage)
     db.flush()
-    refresh_workflow_execution_usage(db, run.workflow_run_id)
+    if refresh_workflow_usage:
+        refresh_workflow_execution_usage(db, run.workflow_run_id)
     return usage
 
 

@@ -21,9 +21,11 @@ from app.matter_definition_assessments import (
 )
 from app.models import (
     Matter,
+    MatterDefinition,
     MatterDefinitionAssessmentQuery,
     MatterDefinitionAssessmentQuestion,
     MatterDefinitionAssessmentRun,
+    MatterDefinitionRevision,
     ReviewBatch,
     ReviewBatchRunDocument,
     SkillRun,
@@ -44,6 +46,10 @@ from app.schemas import (
 from app.workflows.dispatcher import cancel_definition_assessment
 
 router = APIRouter(prefix="/v1/matters/{matter_id}/definition-assessments", tags=["matter definition assessments"])
+guidance_router = APIRouter(
+    prefix="/v1/matters/{matter_id}/guidance/{guidance_id}/assessments",
+    tags=["review guidance assessments"],
+)
 
 TERMINAL_STATUSES = {"COMPLETED", "COMPLETED_WITH_ERRORS", "FAILED", "CANCELED"}
 
@@ -69,10 +75,44 @@ def _assessment(db: Session, matter_id: uuid.UUID, assessment_id: uuid.UUID) -> 
     return assessment
 
 
+def _guidance_audit_details(
+    db: Session,
+    assessment: MatterDefinitionAssessmentRun,
+) -> dict[str, str | int]:
+    revision = db.get(MatterDefinitionRevision, assessment.matter_definition_revision_id)
+    definition = db.get(MatterDefinition, revision.matter_definition_id) if revision else None
+    if revision is None or definition is None:
+        return {"matter_definition_revision_id": str(assessment.matter_definition_revision_id)}
+    return {
+        "guidance_id": str(definition.id),
+        "guidance_key": definition.key,
+        "revision": revision.revision,
+        "matter_definition_revision_id": str(revision.id),
+    }
+
+
 def _assessment_reads(
     db: Session,
     assessments: list[MatterDefinitionAssessmentRun],
 ) -> list[MatterDefinitionAssessmentRead]:
+    revision_ids = (
+        {assessment.matter_definition_revision_id for assessment in assessments}
+        if hasattr(db, "scalars")
+        else set()
+    )
+    revisions = {
+        revision.id: revision
+        for revision in db.scalars(
+            select(MatterDefinitionRevision).where(MatterDefinitionRevision.id.in_(revision_ids))
+        )
+    } if revision_ids else {}
+    guidance_ids = {revision.matter_definition_id for revision in revisions.values()}
+    guidance = {
+        definition.id: definition
+        for definition in db.scalars(
+            select(MatterDefinition).where(MatterDefinition.id.in_(guidance_ids))
+        )
+    } if guidance_ids else {}
     run_ids = [assessment.review_batch_run_id for assessment in assessments if assessment.review_batch_run_id]
     live_counts: dict[uuid.UUID, dict[str, int]] = defaultdict(dict)
     if run_ids:
@@ -91,6 +131,16 @@ def _assessment_reads(
     results: list[MatterDefinitionAssessmentRead] = []
     for assessment in assessments:
         result = MatterDefinitionAssessmentRead.model_validate(assessment)
+        revision = revisions.get(assessment.matter_definition_revision_id)
+        definition = guidance.get(revision.matter_definition_id) if revision else None
+        if definition is not None:
+            result = result.model_copy(
+                update={
+                    "guidance_id": definition.id,
+                    "guidance_key": definition.key,
+                    "guidance_name": definition.name,
+                }
+            )
         if assessment.review_batch_run_id in live_counts:
             counts = live_counts[assessment.review_batch_run_id]
             result = result.model_copy(
@@ -104,19 +154,20 @@ def _assessment_reads(
     return results
 
 
-@router.post("", response_model=MatterDefinitionAssessmentRead, status_code=status.HTTP_202_ACCEPTED)
-def create_assessment(
-    matter_id: uuid.UUID,
+def _create_assessment_for_guidance(
+    *,
+    db: Session,
+    matter: Matter,
+    guidance_id: uuid.UUID | None,
     payload: MatterDefinitionAssessmentCreate,
-    principal: Principal = Depends(get_principal),
-    db: Session = Depends(get_db),
-    settings: Settings = Depends(get_settings),
+    principal: Principal,
+    settings: Settings,
 ) -> MatterDefinitionAssessmentRun:
-    matter = _matter(db, matter_id, principal)
     try:
         assessment = start_assessment(
             db,
             matter=matter,
+            matter_definition_id=guidance_id,
             initiated_by_user_id=principal.user.id,
             settings=settings,
             name=payload.name,
@@ -135,6 +186,85 @@ def create_assessment(
         raise HTTPException(status_code=503, detail="The assessment could not be queued") from exc
     db.refresh(assessment)
     return assessment
+
+
+@guidance_router.post(
+    "",
+    response_model=MatterDefinitionAssessmentRead,
+    status_code=status.HTTP_202_ACCEPTED,
+)
+def create_guidance_assessment(
+    matter_id: uuid.UUID,
+    guidance_id: uuid.UUID,
+    payload: MatterDefinitionAssessmentCreate,
+    principal: Principal = Depends(get_principal),
+    db: Session = Depends(get_db),
+    settings: Settings = Depends(get_settings),
+) -> MatterDefinitionAssessmentRead:
+    matter = _matter(db, matter_id, principal)
+    assessment = _create_assessment_for_guidance(
+        db=db,
+        matter=matter,
+        guidance_id=guidance_id,
+        payload=payload,
+        principal=principal,
+        settings=settings,
+    )
+    return _assessment_reads(db, [assessment])[0]
+
+
+@guidance_router.get("", response_model=list[MatterDefinitionAssessmentRead])
+def list_guidance_assessments(
+    matter_id: uuid.UUID,
+    guidance_id: uuid.UUID,
+    principal: Principal = Depends(get_principal),
+    db: Session = Depends(get_db),
+) -> list[MatterDefinitionAssessmentRead]:
+    _matter(db, matter_id, principal)
+    guidance_exists = db.scalar(
+        select(MatterDefinition.id).where(
+            MatterDefinition.id == guidance_id,
+            MatterDefinition.matter_id == matter_id,
+        )
+    )
+    if guidance_exists is None:
+        raise HTTPException(status_code=404, detail="Review Guidance not found")
+    assessments = list(
+        db.scalars(
+            select(MatterDefinitionAssessmentRun)
+            .join(
+                MatterDefinitionRevision,
+                MatterDefinitionRevision.id
+                == MatterDefinitionAssessmentRun.matter_definition_revision_id,
+            )
+            .where(
+                MatterDefinitionAssessmentRun.matter_id == matter_id,
+                MatterDefinitionRevision.matter_definition_id == guidance_id,
+            )
+            .order_by(MatterDefinitionAssessmentRun.created_at.desc())
+        )
+    )
+    return _assessment_reads(db, assessments)
+
+
+@router.post("", response_model=MatterDefinitionAssessmentRead, status_code=status.HTTP_202_ACCEPTED)
+def create_assessment(
+    matter_id: uuid.UUID,
+    payload: MatterDefinitionAssessmentCreate,
+    principal: Principal = Depends(get_principal),
+    db: Session = Depends(get_db),
+    settings: Settings = Depends(get_settings),
+) -> MatterDefinitionAssessmentRead:
+    matter = _matter(db, matter_id, principal)
+    assessment = _create_assessment_for_guidance(
+        db=db,
+        matter=matter,
+        guidance_id=None,
+        payload=payload,
+        principal=principal,
+        settings=settings,
+    )
+    return _assessment_reads(db, [assessment])[0]
 
 
 @router.patch("/{assessment_id}", response_model=MatterDefinitionAssessmentRead)
@@ -164,6 +294,7 @@ def update_assessment(
         target_id=assessment.id,
         details={
             "matter_id": str(matter.id),
+            **_guidance_audit_details(db, assessment),
             "previous_name": previous_name,
             "name": assessment.name,
             "review_batch_renamed": batch_renamed,
@@ -180,7 +311,7 @@ def retry_failed_assessment(
     assessment_id: uuid.UUID,
     principal: Principal = Depends(get_principal),
     db: Session = Depends(get_db),
-) -> MatterDefinitionAssessmentRun:
+) -> MatterDefinitionAssessmentRead:
     matter = _matter(db, matter_id, principal)
     assessment = _assessment(db, matter_id, assessment_id)
     try:
@@ -192,14 +323,14 @@ def retry_failed_assessment(
             action="matter_definition.assessment.retried",
             target_type="matter_definition_assessment_run",
             target_id=assessment.id,
-            details={"matter_id": str(matter.id)},
+            details={"matter_id": str(matter.id), **_guidance_audit_details(db, assessment)},
         )
         db.commit()
     except AssessmentError as exc:
         db.rollback()
         raise HTTPException(status_code=409, detail=str(exc)) from exc
     db.refresh(assessment)
-    return assessment
+    return _assessment_reads(db, [assessment])[0]
 
 
 @router.post(
@@ -212,7 +343,7 @@ def regenerate_synthesis(
     assessment_id: uuid.UUID,
     principal: Principal = Depends(get_principal),
     db: Session = Depends(get_db),
-) -> MatterDefinitionAssessmentRun:
+) -> MatterDefinitionAssessmentRead:
     matter = _matter(db, matter_id, principal)
     assessment = _assessment(db, matter_id, assessment_id)
     try:
@@ -224,14 +355,14 @@ def regenerate_synthesis(
             action="matter_definition.assessment.synthesis_regenerated",
             target_type="matter_definition_assessment_run",
             target_id=assessment.id,
-            details={"matter_id": str(matter.id)},
+            details={"matter_id": str(matter.id), **_guidance_audit_details(db, assessment)},
         )
         db.commit()
     except AssessmentError as exc:
         db.rollback()
         raise HTTPException(status_code=409, detail=str(exc)) from exc
     db.refresh(assessment)
-    return assessment
+    return _assessment_reads(db, [assessment])[0]
 
 
 @router.post(
@@ -244,7 +375,7 @@ def regenerate_document_analyses(
     assessment_id: uuid.UUID,
     principal: Principal = Depends(get_principal),
     db: Session = Depends(get_db),
-) -> MatterDefinitionAssessmentRun:
+) -> MatterDefinitionAssessmentRead:
     matter = _matter(db, matter_id, principal)
     assessment = _assessment(db, matter_id, assessment_id)
     try:
@@ -258,6 +389,7 @@ def regenerate_document_analyses(
             target_id=assessment.id,
             details={
                 "matter_id": str(matter.id),
+                **_guidance_audit_details(db, assessment),
                 "review_batch_id": str(assessment.review_batch_id),
                 "review_batch_run_id": str(assessment.review_batch_run_id),
             },
@@ -267,7 +399,7 @@ def regenerate_document_analyses(
         db.rollback()
         raise HTTPException(status_code=409, detail=str(exc)) from exc
     db.refresh(assessment)
-    return assessment
+    return _assessment_reads(db, [assessment])[0]
 
 
 @router.get("", response_model=list[MatterDefinitionAssessmentRead])
@@ -354,11 +486,11 @@ def cancel_assessment(
     assessment_id: uuid.UUID,
     principal: Principal = Depends(get_principal),
     db: Session = Depends(get_db),
-) -> MatterDefinitionAssessmentRun:
+) -> MatterDefinitionAssessmentRead:
     matter = _matter(db, matter_id, principal)
     assessment = _assessment(db, matter_id, assessment_id)
     if assessment.status in TERMINAL_STATUSES:
-        return assessment
+        return _assessment_reads(db, [assessment])[0]
     now = utcnow()
     assessment.status = "CANCELED"
     assessment.canceled_at = now
@@ -374,14 +506,14 @@ def cancel_assessment(
         action="matter_definition.assessment.canceled",
         target_type="matter_definition_assessment_run",
         target_id=assessment.id,
-        details={"matter_id": str(matter.id)},
+        details={"matter_id": str(matter.id), **_guidance_audit_details(db, assessment)},
     )
     db.commit()
     cancel_provider_batches(db, assessment.id)
     if workflow is not None:
         cancel_definition_assessment(workflow.dbos_workflow_id)
     db.refresh(assessment)
-    return assessment
+    return _assessment_reads(db, [assessment])[0]
 
 
 @router.get("/{assessment_id}/queries", response_model=list[MatterDefinitionAssessmentQueryRead])

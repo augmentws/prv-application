@@ -1,9 +1,9 @@
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
-import { cleanup, render, screen, waitFor } from "@testing-library/react";
+import { cleanup, render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { afterEach, describe, expect, it, vi } from "vitest";
 
-import { BatchReviewWorkspace } from "@/components/batch-review-workspace";
+import { AnalysisRunSelect, BatchReviewWorkspace } from "@/components/batch-review-workspace";
 import type { ReviewBatchRead } from "@/generated/models";
 import { coreApi } from "@/lib/api-client";
 
@@ -32,6 +32,10 @@ const batch = {
   status: "READY",
   search_status: "READY",
   search_error_message: null,
+  searchable_coding_run_id: null,
+  searchable_coding_status: null,
+  searchable_coding_error_message: null,
+  searchable_coding_fields: [],
   workflow_id: "review-batch:batch-1",
   document_count: 1,
   error_message: null,
@@ -61,21 +65,87 @@ const batch = {
   completed_at: "2026-09-15T12:00:00Z",
 } satisfies ReviewBatchRead;
 
+const analysisTask = {
+  id: "task-1",
+  matter_id: "matter-1",
+  key: "privilege_review",
+  name: "Privilege review",
+  description: "First-pass privilege review",
+  task_type: "QUESTION_ANSWERING",
+  workflow_key: "question_answering_v1",
+  current_version: 2,
+  published_version: 1,
+  status: "ACTIVE",
+  created_by_user_id: "user-1",
+  created_at: "2026-09-26T12:00:00Z",
+  updated_at: "2026-09-26T12:10:00Z",
+  version: {},
+} as const;
+
+const analysisRun = {
+  id: "analysis-run-1",
+  review_batch_id: "batch-1",
+  run_type: "WORKFLOW",
+  purpose: "REVIEW",
+  status: "COMPLETED",
+  result_policy: "ISOLATED",
+  parent_run_id: null,
+  actor_user_id: null,
+  agent_definition_version_id: null,
+  workflow_run_record_id: "workflow-run-1",
+  configuration_snapshot: { mode: "BATCH", task_id: "task-1", task_name: "Privilege review", task_version: 1 },
+  initiated_by_user_id: "user-1",
+  processed_document_count: 0,
+  error_message: null,
+  started_at: null,
+  completed_at: null,
+  created_at: "2026-09-27T12:00:00Z",
+  updated_at: "2026-09-27T12:00:00Z",
+} as const;
+
 afterEach(() => {
   cleanup();
   vi.clearAllMocks();
 });
 
 describe("BatchReviewWorkspace", () => {
-  it("starts the reviewer run and saves the coding panel as one document request", async () => {
+  it("allows the displayed analysis run to be changed", async () => {
+    const user = userEvent.setup();
+    const onSelectRun = vi.fn();
+    const newerRun = {
+      ...analysisRun,
+      id: "analysis-run-newer",
+      configuration_snapshot: { ...analysisRun.configuration_snapshot, task_version: 2 },
+      created_at: "2026-09-27T12:00:00Z",
+    } as const;
+
+    render(<AnalysisRunSelect runs={[newerRun]} matterDefinitionAssessment={{ runId: "assessment-run", version: 1, createdAt: "2026-09-26T12:00:00Z" }} selectedRunId={newerRun.id} onSelectRun={onSelectRun} />);
+
+    const selector = screen.getByRole("combobox", { name: "Analysis run" });
+    expect(selector).toHaveTextContent("published v2");
+    await user.click(selector);
+    await user.click(screen.getByRole("option", { name: /Matter Definition assessment.*v1/i }));
+    expect(onSelectRun).toHaveBeenCalledWith("assessment-run");
+  });
+
+  it("starts and reruns analysis, then saves the coding panel as one document request", async () => {
+    let codingSearchReady = false;
     vi.mocked(coreApi).mockImplementation(async (path, init) => {
       if (path === "/v1/matters/matter-1") return { id: "matter-1", client_id: "client-1", name: "Investigation", status: "ACTIVE", created_at: "2026-09-15T12:00:00Z" } as never;
       if (path === "/v1/clients/client-1") return { id: "client-1", name: "Batch Client" } as never;
       if (path === "/v1/clients/client-1/custodians") return [] as never;
       if (path === "/v1/matters/matter-1/metadata-definitions") return [] as never;
       if (path === "/v1/matters/matter-1/metadata-groups") return [] as never;
-      if (path === "/v1/matters/matter-1/review-batches/batch-1" && !init?.method) return batch as never;
-      if (path === "/v1/matters/matter-1/review-batches/batch-1/topic-taxonomy") return null as never;
+      if (path === "/v1/matters/matter-1/review-batches/batch-1" && !init?.method) return codingSearchReady ? {
+        ...batch,
+        searchable_coding_run_id: "analysis-run-1",
+        searchable_coding_status: "READY",
+        searchable_coding_fields: [{ metadata_definition_id: "definition-1", key: "responsiveness", display_name: "Responsiveness", type: "ENUM", value_count: 1 }],
+      } as never : batch as never;
+      if (path === "/v1/matters/matter-1/review-batches/batch-1/runs" && !init?.method) return [] as never;
+      if (path === "/v1/matters/matter-1/review-batches/batch-1/topic-taxonomy") return { review_batch_run_id: "assessment-run", version: 1, topics: [] } as never;
+      if (path === "/v1/matters/matter-1/review-batches/batch-1/topic-facets" && init?.method === "POST") return { values: [] } as never;
+      if (path.endsWith("/runs/assessment-run/documents/document-1/analysis")) return { matter_document_id: "document-1", status: "COMPLETED", analysis: {} } as never;
       if (path === "/v1/matters/matter-1/review-batches/batch-1/search" && init?.method === "POST") return {
         total: 1,
         took_ms: 2,
@@ -97,6 +167,14 @@ describe("BatchReviewWorkspace", () => {
         facets: {},
       } as never;
       if (path.endsWith("/review-run") && init?.method === "POST") return { id: "run-1", review_batch_id: "batch-1", run_type: "HUMAN", purpose: "REVIEW", status: "RUNNING", result_policy: "ISOLATED", parent_run_id: null, actor_user_id: "user-1", agent_definition_version_id: null, configuration_snapshot: {}, initiated_by_user_id: "user-1", processed_document_count: 0, error_message: null, started_at: "2026-09-15T12:00:00Z", completed_at: null, created_at: "2026-09-15T12:00:00Z", updated_at: "2026-09-15T12:00:00Z" } as never;
+      if (path === "/v1/matters/matter-1/analysis-tasks") return [analysisTask] as never;
+      if (path === "/v1/matters/matter-1/review-batches/batch-1/analysis-runs" && init?.method === "POST") return analysisRun as never;
+      if (path.endsWith("/runs/analysis-run-1/coding-search") && init?.method === "POST") {
+        codingSearchReady = true;
+        return { review_batch_id: "batch-1", review_batch_run_id: "analysis-run-1", status: "READY" } as never;
+      }
+      if (path.endsWith("/runs/analysis-run-1/progress")) return { review_batch_run_id: "analysis-run-1", document_count: 1, not_started_count: 1, in_progress_count: 0, completed_count: 0, skipped_count: 0, failed_count: 0 } as never;
+      if (path.includes("/documents?run_id=analysis-run-1&document_id=document-1")) return [{ matter_document_id: "document-1", source_collection_id: "collection-1", collection_item_id: "item-1", sequence_number: 1, review_status: "NOT_STARTED" }] as never;
       if (path.includes(`/documents?run_id=run-1&document_id=${citedDocumentId}`)) return [{ matter_document_id: citedDocumentId, source_collection_id: "collection-1", collection_item_id: "item-2", sequence_number: 2, review_status: "NOT_STARTED" }] as never;
       if (path.includes("/documents?run_id=run-1")) return [{ matter_document_id: "document-1", source_collection_id: "collection-1", collection_item_id: "item-1", sequence_number: 1, review_status: "NOT_STARTED" }] as never;
       if (path.endsWith("/runs/run-1/progress")) return { review_batch_run_id: "run-1", document_count: 1, not_started_count: 1, in_progress_count: 0, completed_count: 0, skipped_count: 0 } as never;
@@ -128,17 +206,47 @@ describe("BatchReviewWorkspace", () => {
     });
     const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
     const user = userEvent.setup();
-    render(<QueryClientProvider client={queryClient}><BatchReviewWorkspace matterId="matter-1" batchId="batch-1" /></QueryClientProvider>);
+    render(<QueryClientProvider client={queryClient}><BatchReviewWorkspace matterId="matter-1" batchId="batch-1" initialAnalysisDialogOpen /></QueryClientProvider>);
 
     expect(await screen.findByText("Contract review request")).toBeInTheDocument();
     expect(await screen.findByText("contract.eml")).toBeInTheDocument();
     expect(screen.getByRole("main")).toHaveClass("h-dvh", "min-h-0", "max-h-dvh", "overflow-hidden");
     expect(screen.getByLabelText("Batch review layout")).toHaveStyle({
-      gridTemplateColumns: "24rem minmax(0, 1fr) 25rem",
+      gridTemplateColumns: "24rem minmax(0, 1fr) 30rem",
       gridTemplateRows: "minmax(0, 1fr)",
     });
     expect(screen.getByLabelText("Batch documents")).toHaveClass("min-h-0", "overflow-hidden");
-    expect(screen.getByLabelText("Batch analysis, coding, and chat")).toHaveClass("min-h-0", "overflow-hidden");
+    expect(screen.getByLabelText("Batch analysis, coding, history, and chat")).toHaveClass("min-h-0", "overflow-hidden");
+
+    expect(await screen.findByText("Run analysis against this batch")).toBeInTheDocument();
+    await user.click(screen.getByRole("button", { name: "Cancel" }));
+    expect(screen.getByText("Matter Definition assessment")).toBeInTheDocument();
+    expect(screen.getByText("This is the original assessment output, not a JEV Analysis Task run.")).toBeInTheDocument();
+    await user.click(within(screen.getByLabelText("Batch analysis, coding, history, and chat")).getByRole("button", { name: "Run analysis" }));
+    expect(await screen.findByText("Run analysis against this batch")).toBeInTheDocument();
+    expect(await screen.findByRole("combobox", { name: "Published task" })).toHaveTextContent("Privilege review");
+    expect(screen.getByText("A newer draft is not published")).toBeInTheDocument();
+    await user.click(screen.getByRole("button", { name: "Run on 1 documents" }));
+
+    await waitFor(() => {
+      const launchCall = vi.mocked(coreApi).mock.calls.find(([path, init]) => path.endsWith("/analysis-runs") && init?.method === "POST");
+      expect(JSON.parse(String(launchCall?.[1]?.body))).toEqual({ matter_analysis_task_id: "task-1" });
+    });
+    expect(await screen.findByText("Published v1 · isolated results")).toBeInTheDocument();
+    await user.click(screen.getByRole("combobox", { name: "Analysis run" }));
+    await user.click(screen.getByRole("option", { name: /Matter Definition assessment.*v1/i }));
+    expect(await screen.findByText("This is the original assessment output, not a JEV Analysis Task run.")).toBeInTheDocument();
+    await user.click(screen.getByRole("combobox", { name: "Analysis run" }));
+    await user.click(screen.getByRole("option", { name: /Privilege review.*published v1/i }));
+    expect(await screen.findByText("Published v1 · isolated results")).toBeInTheDocument();
+    await user.click(screen.getByRole("button", { name: "Run again" }));
+    expect(await screen.findByRole("combobox", { name: "Published task" })).toHaveTextContent("Privilege review");
+    await user.click(screen.getByRole("button", { name: "Cancel" }));
+    await user.click(screen.getByRole("button", { name: "Make searchable" }));
+    expect(await screen.findByRole("button", { name: "Batch Coding (1)" })).toBeInTheDocument();
+    await user.click(screen.getByRole("button", { name: "View filters" }));
+    expect(screen.getByLabelText("Batch Coding fields")).toHaveFocus();
+
     await user.click(screen.getByRole("combobox", { name: "Search mode" }));
     await user.click(screen.getByRole("option", { name: "Semantic" }));
     await user.type(screen.getByRole("spinbutton", { name: "Minimum semantic similarity" }), "0.8");
@@ -182,5 +290,5 @@ describe("BatchReviewWorkspace", () => {
     await user.click(await screen.findByRole("button", { name: `[Document ${citedDocumentId} ¶1-5]` }));
     expect(await screen.findByText("cited-document.eml")).toBeInTheDocument();
     expect(screen.getByTestId("highlighted-paragraphs")).toHaveTextContent("1,2,3,4,5");
-  });
+  }, 10_000);
 });

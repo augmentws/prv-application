@@ -14,4 +14,5 @@ export const SearchProjectionOperationReadKind = {
   REBUILD: 'REBUILD',
   DOCUMENT_UPSERT: 'DOCUMENT_UPSERT',
   DOCUMENT_DELETE: 'DOCUMENT_DELETE',
+  BATCH_CODING_SYNC: 'BATCH_CODING_SYNC',
 } as const;

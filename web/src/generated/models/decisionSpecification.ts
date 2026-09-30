@@ -8,9 +8,11 @@
 import type { DecisionPolicy } from './decisionPolicy';
 import type { DecisionSpecificationQuestions } from './decisionSpecificationQuestions';
 import type { DecisionStateContract } from './decisionStateContract';
+import type { MatterDecisionContext } from './matterDecisionContext';
 
 export interface DecisionSpecification {
   schema_version?: 'review-decision-specification-v1';
+  decision_context?: MatterDecisionContext;
   questions: DecisionSpecificationQuestions;
   decision_policy?: DecisionPolicy;
   state_contract: DecisionStateContract;

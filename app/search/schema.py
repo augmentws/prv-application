@@ -6,7 +6,7 @@ from app.search.mappings import schema_hash
 SchemaChangeAction = Literal["NO_CHANGE", "IN_PLACE", "REINDEX_REQUIRED"]
 
 # These root fields are additive and have a separate, bounded backfill path.
-IN_PLACE_ADDITIVE_ROOT_FIELDS = frozenset({"batch_ids", "batch_topics"})
+IN_PLACE_ADDITIVE_ROOT_FIELDS = frozenset({"batch_ids", "batch_topics", "batch_coding"})
 
 
 @dataclass(frozen=True)

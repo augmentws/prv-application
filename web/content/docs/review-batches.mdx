@@ -60,13 +60,31 @@ The initial evidence source is the newest compatible structured `SUMMARY` artifa
 
 Batch chat requires a ready search projection, document embeddings for semantic retrieval, and summary artifacts for answer evidence. A batch may be opened before all three are available, but the chat panel explains which prerequisite is missing rather than silently falling back to unscoped matter search or source document text. Switching the answer evidence from summaries to full document content is a future extension of the retrieval contract.
 
+## Evidence in Batch Coding analysis
+
+When a published analysis task requires evidence, the JEV request asks the task's decision questions and companion evidence questions together. JEV checks whether document evidence exists and ranks the document's numbered paragraphs for each required decision. Priv-View validates the selected paragraph identifiers before storing them with the immutable decision result. Matter guidance is decision context; it is never stored as document evidence.
+
+A result is complete only when every required decision question has a qualifying document paragraph at or above its configured evidence-existence threshold. Missing or weak evidence remains visible as partial coverage and does not erase the underlying typed decision. Evidence localization currently supports up to 255 numbered paragraphs in one request. A longer document remains partial until windowed evidence localization is available; Priv-View does not silently search only part of it.
+
 The Batch Chat panel uses the same authenticated lifecycle stream as Matter Definition Chat. A **Live** indicator means normal conversation polling is disabled. The panel reconnects from its last durable event cursor after a transient interruption and automatically restores polling after repeated stream failures. Assistant text is displayed when the final message is committed; token-by-token output is not streamed.
 
 ## Agent evaluation
 
 Each human or agent pass receives a separate run identity. Re-running an updated agent against the same batch creates a new run and preserves the earlier output. The two runs—or an agent run and a human reference run—can then be compared field by field.
 
-Run results do not change the matter’s ordinary metadata or search index. Publishing accepted evaluation results into matter coding is planned as a separate explicit action.
+Run results do not change the matter’s ordinary metadata. A manager may explicitly project one run into batch-scoped search for analysis, but publishing accepted evaluation results into final matter coding remains a separate planned action.
+
+## Analysis tasks and selected issue recommendations
+
+A published Analysis Task can be run from the batch **Analysis** panel. The run pins that exact task version and stores an immutable Decision Result for each document. Published task versions cannot be edited. Select **Create draft revision** in the task workspace to start a new version with the same definition, then regenerate or edit its Decision Specification before publishing it.
+
+Generated Decision Specifications include a frozen `decision_context` derived from the reviewed Task Definition. It summarizes the controlling guidance, responsiveness scope, inclusions, exclusions, issue definitions, entities, dates, terminology, and examples needed for the decision. The compiler also attaches every exact reviewed definition excerpt and its content hash as `source_material`, so the generated summary is not the provider's only source of matter guidance. Every document request sends this context to Jev as `matter.decision_context` alongside the document text, metadata, and paragraphs. Older specifications without embedded source material receive the complete pinned Task Definition as a runtime compatibility fallback; regenerate and publish a new task version to make the structured context directly reviewable.
+
+For a multi-class issue question, the Decision Specification can use a `SELECTED_OPTION` recommendation. The question's field mapping explicitly lists which model options may become `issue_tag` values, and the policy sets the minimum selected-option probability. A mapped option that meets the threshold produces a recommendation containing the issue value and probability. An unmapped fallback such as `unclear`, or a selected option below the threshold, fails closed and does not recommend a tag.
+
+Matched, field-mapped recommendations are also stored as typed values on the isolated analysis run. After the run completes, select **Make searchable** in the Analysis panel to choose that run as the batch's searchable coding source. A batch can expose only one selected run at a time. When projection finishes, a **Batch Coding** section appears with batch-only filters and facets for responsiveness, privilege, issue, or any other mapped field produced by that run.
+
+This operation does not accept or publish the values as final matter tags. The database remains authoritative for every run, while OpenSearch contains a rebuildable, bounded projection identified by batch, selected run, field, value, and score. Ordinary matter search and metadata remain unchanged. Selecting a different completed run replaces only this batch's searchable coding projection.
 
 ## Current limitations
 

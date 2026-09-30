@@ -1,23 +1,29 @@
 "use client";
 
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
+import DiffMatchPatch from "diff-match-patch";
 import {
+  Archive,
+  ArchiveRestore,
   Check,
   ChevronDown,
   ClipboardCheck,
   Clock3,
+  Copy,
   FileText,
+  GitCompareArrows,
   History,
   LoaderCircle,
   MessageSquareText,
   PencilLine,
+  Plus,
   Save,
   Send,
   Sparkles,
   Upload,
   X,
 } from "lucide-react";
-import { useEffect, useId, useRef, useState } from "react";
+import { useEffect, useId, useMemo, useRef, useState } from "react";
 import { createPortal } from "react-dom";
 import { toast } from "sonner";
 
@@ -65,33 +71,52 @@ interface DraftEdit {
 
 export function MatterDefinitionPanel({ matterId }: { matterId: string }) {
   const queryClient = useQueryClient();
+  const [selectedGuidanceId, setSelectedGuidanceId] = useState("");
+  const [guidanceDialog, setGuidanceDialog] = useState<"create" | "clone" | "edit" | null>(null);
+  const [guidanceKey, setGuidanceKey] = useState("");
+  const [guidanceName, setGuidanceName] = useState("");
+  const [guidanceDescription, setGuidanceDescription] = useState("");
+  const [guidanceInitialContent, setGuidanceInitialContent] = useState("");
   const [draftEdit, setDraftEdit] = useState<DraftEdit | null>(null);
   const [publishOpen, setPublishOpen] = useState(false);
   const [selectedConversationId, setSelectedConversationId] = useState<string>("");
   const [sidePanel, setSidePanel] = useState<MatterDefinitionSidePanel>("agent");
   const [historyOpen, setHistoryOpen] = useState(false);
   const [selectedRevisionNumber, setSelectedRevisionNumber] = useState<number | null>(null);
+  const [compareOpen, setCompareOpen] = useState(false);
   const [toolHeaderElement, setToolHeaderElement] = useState<HTMLDivElement | null>(null);
   const sidePanelId = useId();
   const chatStream = useAgentChatStream({ matterId, workflowType: "MATTER_DEFINITION_SETUP" });
 
-  const definition = useQuery({
-    queryKey: ["matter-definition", matterId],
-    queryFn: () => coreApi<MatterDefinitionRead | null>(`/v1/matters/${matterId}/definition`),
+  const guidance = useQuery({
+    queryKey: ["matter-guidance", matterId],
+    queryFn: () => coreApi<MatterDefinitionRead[]>(`/v1/matters/${matterId}/guidance`),
     refetchInterval: 2000,
   });
+  const effectiveGuidanceId = selectedGuidanceId
+    || guidance.data?.find((item) => item.status === "ACTIVE")?.id
+    || guidance.data?.[0]?.id
+    || "";
+  const selectedDefinition = guidance.data?.find((item) => item.id === effectiveGuidanceId) ?? null;
+  const definition = {
+    data: selectedDefinition,
+    isPending: guidance.isPending,
+    error: guidance.error,
+  };
   const revisions = useQuery({
-    queryKey: ["matter-definition-revisions", matterId],
-    queryFn: () => coreApi<MatterDefinitionRevisionRead[]>(`/v1/matters/${matterId}/definition/revisions`),
+    queryKey: ["matter-guidance-revisions", matterId, effectiveGuidanceId],
+    queryFn: () => coreApi<MatterDefinitionRevisionRead[]>(`/v1/matters/${matterId}/guidance/${effectiveGuidanceId}/revisions`),
+    enabled: Boolean(effectiveGuidanceId),
     refetchInterval: 3000,
   });
   const agents = useQuery({
     queryKey: ["matter-agents", matterId],
     queryFn: () => coreApi<AgentDefinitionRead[]>(`/v1/matters/${matterId}/agents`),
   });
+  const conversationListPath = `/v1/matters/${matterId}/agent-conversations?workflow_type=MATTER_DEFINITION_SETUP${effectiveGuidanceId ? `&guidance_id=${effectiveGuidanceId}` : ""}`;
   const conversations = useQuery({
-    queryKey: ["agent-conversations", matterId],
-    queryFn: () => coreApi<AgentConversationRead[]>(`/v1/matters/${matterId}/agent-conversations?workflow_type=MATTER_DEFINITION_SETUP`),
+    queryKey: ["agent-conversations", matterId, effectiveGuidanceId],
+    queryFn: () => coreApi<AgentConversationRead[]>(conversationListPath),
     refetchInterval: chatStream.pollingEnabled ? 2000 : false,
   });
 
@@ -127,8 +152,14 @@ export function MatterDefinitionPanel({ matterId }: { matterId: string }) {
   const loadedRevision = draftEdit?.basedOnRevision ?? currentRevision;
   const dirty = draftEdit !== null;
 
+  const updateGuidanceCache = (updated: MatterDefinitionRead) => {
+    queryClient.setQueryData<MatterDefinitionRead[]>(["matter-guidance", matterId], (current) =>
+      current?.map((item) => item.id === updated.id ? updated : item),
+    );
+  };
+
   const saveDraft = useMutation({
-    mutationFn: () => coreApi<MatterDefinitionRead>(`/v1/matters/${matterId}/definition/revisions`, {
+    mutationFn: () => coreApi<MatterDefinitionRead>(`/v1/matters/${matterId}/guidance/${effectiveGuidanceId}/revisions`, {
       method: "POST",
       body: JSON.stringify({
         content_markdown: draft,
@@ -138,29 +169,99 @@ export function MatterDefinitionPanel({ matterId }: { matterId: string }) {
       }),
     }),
     onSuccess: (updated) => {
-      queryClient.setQueryData(["matter-definition", matterId], updated);
-      void queryClient.invalidateQueries({ queryKey: ["matter-definition-revisions", matterId] });
+      updateGuidanceCache(updated);
+      void queryClient.invalidateQueries({ queryKey: ["matter-guidance-revisions", matterId, effectiveGuidanceId] });
       setDraftEdit(null);
       toast.success(`Draft revision ${updated.current_revision} was saved.`);
     },
     onError: (error) => toast.error(error instanceof Error ? error.message : "The Matter Definition could not be saved."),
   });
   const publish = useMutation({
-    mutationFn: (revision: number) => coreApi<MatterDefinitionRead>(`/v1/matters/${matterId}/definition/revisions/${revision}/publish`, { method: "POST" }),
+    mutationFn: (revision: number) => coreApi<MatterDefinitionRead>(`/v1/matters/${matterId}/guidance/${effectiveGuidanceId}/revisions/${revision}/publish`, { method: "POST" }),
     onSuccess: (updated) => {
-      queryClient.setQueryData(["matter-definition", matterId], updated);
+      updateGuidanceCache(updated);
       setPublishOpen(false);
       toast.success(`Revision ${updated.published_revision} is now the published guidance.`);
     },
     onError: (error) => toast.error(error instanceof Error ? error.message : "The Matter Definition could not be published."),
   });
+  const createGuidance = useMutation({
+    mutationFn: () => coreApi<MatterDefinitionRead>(`/v1/matters/${matterId}/guidance`, {
+      method: "POST",
+      body: JSON.stringify({
+        key: guidanceKey.trim(),
+        name: guidanceName.trim(),
+        description: guidanceDescription.trim() || null,
+        content_markdown: guidanceInitialContent.trim(),
+        source_kind: "PASTE",
+      }),
+    }),
+    onSuccess: (created) => {
+      queryClient.setQueryData<MatterDefinitionRead[]>(["matter-guidance", matterId], (current) => [...(current ?? []), created]);
+      setSelectedGuidanceId(created.id);
+      resetSelectedGuidanceState();
+      setGuidanceDialog(null);
+      toast.success(`${created.name} was created.`);
+    },
+    onError: (error) => toast.error(error instanceof Error ? error.message : "Review Guidance could not be created."),
+  });
+  const cloneGuidance = useMutation({
+    mutationFn: () => coreApi<MatterDefinitionRead>(`/v1/matters/${matterId}/guidance/${effectiveGuidanceId}/clone`, {
+      method: "POST",
+      body: JSON.stringify({
+        key: guidanceKey.trim(),
+        name: guidanceName.trim(),
+        description: guidanceDescription.trim() || null,
+        source_revision: selectedRevisionNumber ?? definition.data?.current_revision ?? null,
+      }),
+    }),
+    onSuccess: (created) => {
+      queryClient.setQueryData<MatterDefinitionRead[]>(["matter-guidance", matterId], (current) => [...(current ?? []), created]);
+      setSelectedGuidanceId(created.id);
+      resetSelectedGuidanceState();
+      setGuidanceDialog(null);
+      toast.success(`${created.name} was cloned.`);
+    },
+    onError: (error) => toast.error(error instanceof Error ? error.message : "Review Guidance could not be cloned."),
+  });
+  const updateGuidance = useMutation({
+    mutationFn: () => coreApi<MatterDefinitionRead>(`/v1/matters/${matterId}/guidance/${effectiveGuidanceId}`, {
+      method: "PATCH",
+      body: JSON.stringify({
+        name: guidanceName.trim(),
+        description: guidanceDescription.trim() || null,
+      }),
+    }),
+    onSuccess: (updated) => {
+      updateGuidanceCache(updated);
+      setGuidanceDialog(null);
+      toast.success("Review Guidance details were updated.");
+    },
+    onError: (error) => toast.error(error instanceof Error ? error.message : "Review Guidance could not be updated."),
+  });
+  const setGuidanceStatus = useMutation({
+    mutationFn: (nextStatus: "ARCHIVED" | "ACTIVE") => coreApi<MatterDefinitionRead>(
+      `/v1/matters/${matterId}/guidance/${effectiveGuidanceId}/${nextStatus === "ARCHIVED" ? "archive" : "restore"}`,
+      { method: "POST" },
+    ),
+    onSuccess: (updated) => {
+      updateGuidanceCache(updated);
+      toast.success(updated.status === "ARCHIVED" ? `${updated.name} was archived.` : `${updated.name} was restored.`);
+    },
+    onError: (error) => toast.error(error instanceof Error ? error.message : "Review Guidance status could not be changed."),
+  });
   const startConversation = useMutation({
     mutationFn: ({ agentId, title }: { agentId: string; title: string }) => coreApi<AgentConversationRead>(`/v1/matters/${matterId}/agent-conversations`, {
       method: "POST",
-      body: JSON.stringify({ agent_definition_id: agentId, title, workflow_type: "MATTER_DEFINITION_SETUP" }),
+      body: JSON.stringify({
+        agent_definition_id: agentId,
+        title,
+        workflow_type: "MATTER_DEFINITION_SETUP",
+        matter_definition_id: effectiveGuidanceId || null,
+      }),
     }),
     onSuccess: (created) => {
-      queryClient.setQueryData<AgentConversationRead[]>(["agent-conversations", matterId], (current) => [created, ...(current ?? []).filter((item) => item.id !== created.id)]);
+      queryClient.setQueryData<AgentConversationRead[]>(["agent-conversations", matterId, effectiveGuidanceId], (current) => [created, ...(current ?? []).filter((item) => item.id !== created.id)]);
       setSelectedConversationId(created.id);
       toast.success("Chat started.");
     },
@@ -172,7 +273,7 @@ export function MatterDefinitionPanel({ matterId }: { matterId: string }) {
       body: JSON.stringify({ title }),
     }),
     onSuccess: (updated) => {
-      queryClient.setQueryData<AgentConversationRead[]>(["agent-conversations", matterId], (current) =>
+      queryClient.setQueryData<AgentConversationRead[]>(["agent-conversations", matterId, effectiveGuidanceId], (current) =>
         current?.map((conversation) => conversation.id === updated.id ? updated : conversation),
       );
       toast.success("Chat renamed.");
@@ -187,7 +288,7 @@ export function MatterDefinitionPanel({ matterId }: { matterId: string }) {
     onSuccess: (created) => {
       queryClient.setQueryData<AgentMessageRead[]>(["agent-messages", effectiveConversationId], (current) => [...(current ?? []).filter((item) => item.id !== created.message.id), created.message]);
       queryClient.setQueryData<AgentRunRead[]>(["agent-runs", effectiveConversationId], (current) => [...(current ?? []).filter((item) => item.id !== created.run.id), created.run]);
-      void queryClient.invalidateQueries({ queryKey: ["agent-conversations", matterId] });
+      void queryClient.invalidateQueries({ queryKey: ["agent-conversations", matterId, effectiveGuidanceId] });
     },
     onError: (error) => toast.error(error instanceof Error ? error.message : "The message could not be sent."),
   });
@@ -204,13 +305,54 @@ export function MatterDefinitionPanel({ matterId }: { matterId: string }) {
       if (result.resumed_run) {
         queryClient.setQueryData<AgentRunRead[]>(["agent-runs", effectiveConversationId], (current) => [...(current ?? []).filter((item) => item.id !== result.resumed_run!.id), result.resumed_run!]);
       }
-      void queryClient.invalidateQueries({ queryKey: ["agent-conversations", matterId] });
+      void queryClient.invalidateQueries({ queryKey: ["agent-conversations", matterId, effectiveGuidanceId] });
       toast.success(result.decision.decision === "APPROVE" ? "Change approved. The agent is applying it." : "Change rejected. The agent will continue without it.");
     },
     onError: (error) => toast.error(error instanceof Error ? error.message : "The decision could not be recorded."),
   });
 
   const newerRevisionAvailable = dirty && currentRevision !== null && loadedRevision !== currentRevision;
+
+  function resetSelectedGuidanceState() {
+    setDraftEdit(null);
+    setSelectedConversationId("");
+    setSelectedRevisionNumber(null);
+    setHistoryOpen(false);
+    setCompareOpen(false);
+  }
+
+  function selectGuidance(id: string) {
+    if (id === effectiveGuidanceId) return;
+    if (dirty) toast.info("Unsaved changes were discarded when you changed guidance profiles.");
+    resetSelectedGuidanceState();
+    setSelectedGuidanceId(id);
+  }
+
+  function suggestedKey(value: string) {
+    return value
+      .trim()
+      .toLowerCase()
+      .replace(/[^a-z0-9]+/g, "_")
+      .replace(/^_+|_+$/g, "")
+      .replace(/^[^a-z]+/, "")
+      .slice(0, 100);
+  }
+
+  function openGuidanceDialog(mode: "create" | "clone" | "edit") {
+    setGuidanceDialog(mode);
+    if (mode === "edit" && definition.data) {
+      setGuidanceKey(definition.data.key);
+      setGuidanceName(definition.data.name);
+      setGuidanceDescription(definition.data.description ?? "");
+      setGuidanceInitialContent("");
+      return;
+    }
+    const name = mode === "clone" && definition.data ? `${definition.data.name} copy` : "";
+    setGuidanceName(name);
+    setGuidanceKey(suggestedKey(name));
+    setGuidanceDescription(mode === "clone" ? definition.data?.description ?? "" : "");
+    setGuidanceInitialContent(mode === "create" ? "# Reviewer guidance\n\n" : "");
+  }
 
   async function importTextFile(file: File) {
     const extension = file.name.split(".").pop()?.toLowerCase();
@@ -227,13 +369,62 @@ export function MatterDefinitionPanel({ matterId }: { matterId: string }) {
     });
   }
 
-  if (definition.isPending || revisions.isPending || agents.isPending || conversations.isPending) return <TableLoading />;
+  if (definition.isPending || revisions.isLoading || agents.isPending || conversations.isPending) return <TableLoading />;
   const error = definition.error ?? revisions.error ?? agents.error ?? conversations.error;
   if (error) return <QueryError message={error.message} />;
 
   return (
     <div className="matter-definition-workspace grid min-w-0 gap-5" role="region" aria-label="Matter Definition workspace">
       <section className="matter-definition-guidance-frame min-h-0 min-w-0" aria-labelledby="matter-definition-heading">
+        <div className="grid h-full min-h-0 grid-cols-[13rem_minmax(0,1fr)] gap-3">
+        <Card className="flex min-h-0 flex-col overflow-hidden" aria-label="Review Guidance profiles">
+          <div className="flex min-h-14 items-center justify-between gap-2 border-b px-3">
+            <p className="text-xs font-bold uppercase tracking-[0.08em] text-muted-foreground">Guidance</p>
+            <Button type="button" size="icon" className="size-8" aria-label="Create Review Guidance" onClick={() => openGuidanceDialog("create")}>
+              <Plus />
+            </Button>
+          </div>
+          <div className="min-h-0 flex-1 space-y-1 overflow-y-auto p-2">
+            {(guidance.data ?? []).map((item) => (
+              <button
+                key={item.id}
+                type="button"
+                aria-pressed={item.id === effectiveGuidanceId}
+                onClick={() => selectGuidance(item.id)}
+                className={cn(
+                  "w-full rounded-md border px-3 py-2 text-left outline-none transition hover:bg-muted focus-visible:ring-2 focus-visible:ring-ring",
+                  item.id === effectiveGuidanceId && "border-primary/40 bg-primary/8",
+                  item.status === "ARCHIVED" && "opacity-65",
+                )}
+              >
+                <span className="block truncate text-sm font-semibold">{item.name}</span>
+                <span className="mt-1 flex items-center justify-between gap-2 text-[11px] text-muted-foreground">
+                  <span>r{item.current_revision}</span>
+                  <span>{item.status === "ARCHIVED" ? "archived" : item.published_revision ? `published r${item.published_revision}` : "draft"}</span>
+                </span>
+              </button>
+            ))}
+            {!guidance.data?.length ? (
+              <p className="p-2 text-xs leading-5 text-muted-foreground">Create guidance for a review stage or purpose.</p>
+            ) : null}
+          </div>
+          {definition.data ? (
+            <div className="grid grid-cols-3 gap-1 border-t p-2">
+              <Button type="button" size="icon" variant="ghost" aria-label="Edit Review Guidance details" onClick={() => openGuidanceDialog("edit")}><PencilLine /></Button>
+              <Button type="button" size="icon" variant="ghost" aria-label="Clone Review Guidance" onClick={() => openGuidanceDialog("clone")}><Copy /></Button>
+              <Button
+                type="button"
+                size="icon"
+                variant="ghost"
+                aria-label={definition.data.status === "ARCHIVED" ? "Restore Review Guidance" : "Archive Review Guidance"}
+                disabled={setGuidanceStatus.isPending}
+                onClick={() => setGuidanceStatus.mutate(definition.data?.status === "ARCHIVED" ? "ACTIVE" : "ARCHIVED")}
+              >
+                {definition.data.status === "ARCHIVED" ? <ArchiveRestore /> : <Archive />}
+              </Button>
+            </div>
+          ) : null}
+        </Card>
         <Card className="matter-definition-guidance-card flex min-h-0 flex-col overflow-hidden">
           <div className="flex min-h-14 shrink-0 flex-wrap items-center justify-between gap-3 border-b px-5 py-3">
             <div className="flex min-w-0 flex-wrap items-center gap-3">
@@ -265,10 +456,11 @@ export function MatterDefinitionPanel({ matterId }: { matterId: string }) {
                   aria-expanded={historyOpen}
                   onClick={() => {
                     setSelectedRevisionNumber(null);
+                    setCompareOpen(false);
                     setHistoryOpen(true);
                   }}
                 >
-                  <Badge variant="outline">Draft r{currentRevision}</Badge>
+                  <Badge variant="outline">{definition.data?.name} · Draft r{currentRevision}</Badge>
                 </button>
               ) : <Badge variant="outline">No saved draft</Badge>}
               {definition.data?.published_revision ? (
@@ -283,6 +475,7 @@ export function MatterDefinitionPanel({ matterId }: { matterId: string }) {
                         ? null
                         : definition.data?.published_revision ?? null,
                     );
+                    setCompareOpen(definition.data?.published_revision !== currentRevision);
                     setHistoryOpen(true);
                   }}
                 >
@@ -310,13 +503,28 @@ export function MatterDefinitionPanel({ matterId }: { matterId: string }) {
                     aria-controls="matter-definition-revision-history"
                     onClick={() => setHistoryOpen((open) => !open)}
                   >
-                    {selectedRevision ? `Revision ${selectedRevision.revision}` : "Current draft"}
+                    {selectedRevision && compareOpen
+                      ? `Revision ${selectedRevision.revision} → current draft`
+                      : selectedRevision
+                        ? `Revision ${selectedRevision.revision}`
+                        : "Current draft"}
                     <ChevronDown className={cn("size-3.5 transition-transform", historyOpen && "rotate-180")} />
                   </button>
                   {!selectedRevision && sourceFilename ? <span className="truncate text-xs text-muted-foreground">Imported from {sourceFilename}</span> : null}
                   {selectedRevision?.revision === definition.data?.published_revision ? <Badge variant="active">Published</Badge> : null}
                 </div>
                 <div className="flex flex-wrap gap-2">
+                  {selectedRevision ? (
+                    <Button
+                      type="button"
+                      size="sm"
+                      variant="outline"
+                      onClick={() => setCompareOpen((open) => !open)}
+                    >
+                      {compareOpen ? <FileText /> : <GitCompareArrows />}
+                      {compareOpen ? "View revision" : "Compare with current"}
+                    </Button>
+                  ) : null}
                   {newerRevisionAvailable ? (
                     <Button
                       type="button"
@@ -333,7 +541,7 @@ export function MatterDefinitionPanel({ matterId }: { matterId: string }) {
                     type="button"
                     size="sm"
                     variant="outline"
-                    disabled={Boolean(selectedRevision) || !definition.data || definition.data.published_revision === definition.data.current_revision || dirty}
+                    disabled={Boolean(selectedRevision) || !definition.data || definition.data.status === "ARCHIVED" || definition.data.published_revision === definition.data.current_revision || dirty}
                     onClick={() => setPublishOpen(true)}
                   >
                     <Sparkles />Publish current draft
@@ -341,7 +549,7 @@ export function MatterDefinitionPanel({ matterId }: { matterId: string }) {
                   <Button
                     type="button"
                     size="sm"
-                    disabled={Boolean(selectedRevision) || !dirty || !draft.trim() || newerRevisionAvailable || saveDraft.isPending}
+                    disabled={Boolean(selectedRevision) || !definition.data || definition.data.status === "ARCHIVED" || !dirty || !draft.trim() || newerRevisionAvailable || saveDraft.isPending}
                     onClick={() => saveDraft.mutate()}
                   >
                     {saveDraft.isPending ? <LoaderCircle className="animate-spin" /> : <Save />}
@@ -361,7 +569,10 @@ export function MatterDefinitionPanel({ matterId }: { matterId: string }) {
                         size="sm"
                         variant={selectedRevisionNumber === null ? "default" : "outline"}
                         aria-pressed={selectedRevisionNumber === null}
-                        onClick={() => setSelectedRevisionNumber(null)}
+                        onClick={() => {
+                          setSelectedRevisionNumber(null);
+                          setCompareOpen(false);
+                        }}
                       >
                         Current draft · r{currentRevision}
                       </Button>
@@ -376,7 +587,10 @@ export function MatterDefinitionPanel({ matterId }: { matterId: string }) {
                           size="sm"
                           variant={selectedRevisionNumber === revision.revision ? "default" : "outline"}
                           aria-pressed={selectedRevisionNumber === revision.revision}
-                          onClick={() => setSelectedRevisionNumber(revision.revision)}
+                          onClick={() => {
+                            setSelectedRevisionNumber(revision.revision);
+                            setCompareOpen(true);
+                          }}
                         >
                           Revision {revision.revision} · {formatDate(revision.created_at)}
                           {revision.revision === definition.data?.published_revision ? " · published" : ""}
@@ -385,28 +599,38 @@ export function MatterDefinitionPanel({ matterId }: { matterId: string }) {
                   </div>
                 </div>
               ) : null}
-              <Textarea
-                aria-label="Matter Definition Markdown"
-                value={displayedContent}
-                readOnly={Boolean(selectedRevision)}
-                onChange={(event) => {
-                  if (selectedRevision) return;
-                  setDraftEdit((current) => ({
-                    content: event.target.value,
-                    source: current?.source ?? (definition.data ? "USER_EDIT" : "PASTE"),
-                    sourceFilename: current?.sourceFilename ?? null,
-                    basedOnRevision: current?.basedOnRevision ?? definition.data?.current_revision ?? null,
-                  }));
-                }}
-                placeholder="# Review guidance\n\nDescribe the coding fields, definitions, examples, and decision rules."
-                className={cn(
-                  "matter-definition-guidance-text min-h-[34rem] flex-1 resize-none overflow-y-auto font-mono text-[13px] leading-6",
-                  selectedRevision && "bg-muted/35",
-                )}
-              />
+              {selectedRevision && compareOpen ? (
+                <MatterDefinitionDiff
+                  previous={selectedRevision}
+                  currentContent={draft}
+                  currentRevision={currentRevision}
+                  currentIsUnsaved={dirty}
+                />
+              ) : (
+                <Textarea
+                  aria-label="Matter Definition Markdown"
+                  value={displayedContent}
+                  readOnly={Boolean(selectedRevision) || !definition.data || definition.data.status === "ARCHIVED"}
+                  onChange={(event) => {
+                    if (selectedRevision) return;
+                    setDraftEdit((current) => ({
+                      content: event.target.value,
+                      source: current?.source ?? (definition.data ? "USER_EDIT" : "PASTE"),
+                      sourceFilename: current?.sourceFilename ?? null,
+                      basedOnRevision: current?.basedOnRevision ?? definition.data?.current_revision ?? null,
+                    }));
+                  }}
+                  placeholder="# Review guidance\n\nDescribe the coding fields, definitions, examples, and decision rules."
+                  className={cn(
+                    "matter-definition-guidance-text min-h-[34rem] flex-1 resize-none overflow-y-auto font-mono text-[13px] leading-6",
+                    selectedRevision && "bg-muted/35",
+                  )}
+                />
+              )}
             </div>
           </div>
         </Card>
+        </div>
       </section>
 
       <aside className="matter-definition-tools-frame min-h-[46rem] min-w-0" aria-label="Matter Definition chat and assessment">
@@ -436,7 +660,7 @@ export function MatterDefinitionPanel({ matterId }: { matterId: string }) {
                 <ClipboardCheck className="size-4" />Assessment
               </button>
             </div>
-            <div ref={setToolHeaderElement} className="ml-auto flex min-w-0 flex-1 items-center justify-end gap-2 py-1.5" aria-label={`${sidePanel === "agent" ? "Chat" : "Assessment"} controls`} />
+            {sidePanel === "agent" ? <div ref={setToolHeaderElement} className="ml-auto flex min-w-0 flex-1 items-center justify-end gap-2 py-1.5" aria-label="Chat controls" /> : null}
           </div>
           <div
             id={`${sidePanelId}-panel`}
@@ -473,8 +697,10 @@ export function MatterDefinitionPanel({ matterId }: { matterId: string }) {
               <div className="min-h-0 flex-1 overflow-hidden">
                 <MatterDefinitionAssessmentPanel
                   embedded
-                  toolbarElement={toolHeaderElement}
                   matterId={matterId}
+                  guidanceId={effectiveGuidanceId}
+                  guidanceName={definition.data?.name ?? "Review Guidance"}
+                  guidanceArchived={definition.data?.status === "ARCHIVED"}
                   revisions={revisions.data ?? []}
                   publishedRevision={definition.data?.published_revision ?? null}
                 />
@@ -483,6 +709,81 @@ export function MatterDefinitionPanel({ matterId }: { matterId: string }) {
           </div>
         </Card>
       </aside>
+
+      <Dialog open={guidanceDialog !== null} onOpenChange={(open) => { if (!open) setGuidanceDialog(null); }}>
+        <DialogContent>
+          <DialogHeader>
+            <DialogTitle>
+              {guidanceDialog === "create" ? "Create Review Guidance" : guidanceDialog === "clone" ? "Clone Review Guidance" : "Edit Review Guidance"}
+            </DialogTitle>
+            <DialogDescription>
+              {guidanceDialog === "clone"
+                ? `Create an independent copy of ${definition.data?.name ?? "this guidance"} revision ${selectedRevisionNumber ?? definition.data?.current_revision ?? ""}. Later edits will not be shared.`
+                : guidanceDialog === "edit"
+                  ? "Update the profile name and purpose. Its stable key and revision history do not change."
+                  : "Create independently versioned guidance for a review stage or purpose."}
+            </DialogDescription>
+          </DialogHeader>
+          <div className="space-y-4">
+            <div>
+              <label className="text-sm font-medium" htmlFor="guidance-name">Name</label>
+              <Input
+                id="guidance-name"
+                className="mt-1"
+                value={guidanceName}
+                placeholder="Privilege Review"
+                onChange={(event) => {
+                  setGuidanceName(event.target.value);
+                  if (guidanceDialog !== "edit") setGuidanceKey(suggestedKey(event.target.value));
+                }}
+              />
+            </div>
+            <div>
+              <label className="text-sm font-medium" htmlFor="guidance-key">Stable key</label>
+              <Input
+                id="guidance-key"
+                className="mt-1 font-mono"
+                value={guidanceKey}
+                disabled={guidanceDialog === "edit"}
+                placeholder="privilege_review"
+                onChange={(event) => setGuidanceKey(event.target.value.toLowerCase())}
+              />
+              <p className="mt-1 text-xs text-muted-foreground">Lowercase letters, numbers, and underscores. The key cannot change after creation.</p>
+            </div>
+            <div>
+              <label className="text-sm font-medium" htmlFor="guidance-description">Purpose</label>
+              <Textarea id="guidance-description" className="mt-1 min-h-20" value={guidanceDescription} onChange={(event) => setGuidanceDescription(event.target.value)} />
+            </div>
+            {guidanceDialog === "create" ? (
+              <div>
+                <label className="text-sm font-medium" htmlFor="guidance-initial-content">Initial guidance</label>
+                <Textarea id="guidance-initial-content" className="mt-1 min-h-36 font-mono text-xs" value={guidanceInitialContent} onChange={(event) => setGuidanceInitialContent(event.target.value)} />
+              </div>
+            ) : null}
+          </div>
+          <DialogFooter>
+            <Button type="button" variant="outline" onClick={() => setGuidanceDialog(null)}>Cancel</Button>
+            <Button
+              type="button"
+              disabled={
+                !guidanceName.trim()
+                || (guidanceDialog !== "edit" && (!/^[a-z][a-z0-9_]{0,99}$/.test(guidanceKey.trim()) || (guidanceDialog === "create" && !guidanceInitialContent.trim())))
+                || createGuidance.isPending
+                || cloneGuidance.isPending
+                || updateGuidance.isPending
+              }
+              onClick={() => {
+                if (guidanceDialog === "create") createGuidance.mutate();
+                else if (guidanceDialog === "clone") cloneGuidance.mutate();
+                else updateGuidance.mutate();
+              }}
+            >
+              {createGuidance.isPending || cloneGuidance.isPending || updateGuidance.isPending ? <LoaderCircle className="animate-spin" /> : guidanceDialog === "clone" ? <Copy /> : guidanceDialog === "edit" ? <Save /> : <Plus />}
+              {guidanceDialog === "create" ? "Create guidance" : guidanceDialog === "clone" ? "Create clone" : "Save details"}
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
 
       <Dialog open={publishOpen} onOpenChange={setPublishOpen}>
         <DialogContent>
@@ -500,6 +801,62 @@ export function MatterDefinitionPanel({ matterId }: { matterId: string }) {
         </DialogContent>
       </Dialog>
     </div>
+  );
+}
+
+function MatterDefinitionDiff({
+  previous,
+  currentContent,
+  currentRevision,
+  currentIsUnsaved,
+}: {
+  previous: MatterDefinitionRevisionRead;
+  currentContent: string;
+  currentRevision: number | null;
+  currentIsUnsaved: boolean;
+}) {
+  const currentLabel = currentIsUnsaved
+    ? `Unsaved current draft${currentRevision ? ` based on r${currentRevision}` : ""}`
+    : `Current draft${currentRevision ? ` r${currentRevision}` : ""}`;
+  const identical = previous.content_markdown === currentContent;
+  const differences = useMemo(() => {
+    const matcher = new DiffMatchPatch();
+    const result = matcher.diff_main(previous.content_markdown, currentContent, true);
+    matcher.diff_cleanupSemantic(result);
+    return result;
+  }, [currentContent, previous.content_markdown]);
+
+  return (
+    <section
+      role="region"
+      aria-label={`Revision ${previous.revision} to ${currentLabel} diff`}
+      className="flex min-h-[34rem] flex-1 flex-col overflow-hidden rounded-md border bg-background"
+    >
+      <div className="flex flex-wrap items-center justify-between gap-3 border-b bg-muted/25 px-4 py-2 text-xs">
+        <p className="font-semibold">Revision {previous.revision} → {currentLabel}</p>
+        <div className="flex items-center gap-3 text-muted-foreground" aria-label="Diff legend">
+          <span><span className="font-bold text-destructive">−</span> Removed</span>
+          <span><span className="font-bold text-success">+</span> Added</span>
+        </div>
+      </div>
+      {identical ? (
+        <div className="flex flex-1 items-center justify-center p-6 text-sm text-muted-foreground">
+          No differences between these revisions.
+        </div>
+      ) : (
+        <pre className="flex-1 overflow-auto whitespace-pre-wrap p-4 font-mono text-[12px] leading-5 [overflow-wrap:anywhere]" tabIndex={0}>
+          {differences.map(([operation, text], index) => {
+            if (operation === DiffMatchPatch.DIFF_DELETE) {
+              return <del key={index} data-diff="delete" className="bg-destructive/15 text-destructive decoration-destructive/60">{text}</del>;
+            }
+            if (operation === DiffMatchPatch.DIFF_INSERT) {
+              return <ins key={index} data-diff="insert" className="bg-success/15 text-success decoration-success/60">{text}</ins>;
+            }
+            return <span key={index}>{text}</span>;
+          })}
+        </pre>
+      )}
+    </section>
   );
 }
 

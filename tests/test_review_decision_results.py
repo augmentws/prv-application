@@ -16,10 +16,15 @@ from app.models import (
     MatterAnalysisTaskVersion,
     MatterDocument,
     MatterDocumentImportJob,
+    MetadataDefinition,
     ModelInvocation,
     ReviewBatch,
+    ReviewBatchCodingField,
+    ReviewBatchCodingGroup,
+    ReviewBatchDocument,
     ReviewBatchRun,
     ReviewBatchRunDocument,
+    ReviewBatchRunValue,
     SkillDefinition,
     SkillDefinitionVersion,
     SkillRun,
@@ -96,8 +101,8 @@ def _provenance(db: Session, root_admin) -> dict[str, uuid.UUID]:
         matter_id=matter.id,
         key="privilege_review",
         name="Privilege review",
-        task_type="PRIVILEGE_REVIEW",
-        workflow_key="privilege_review_v1",
+        task_type="QUESTION_ANSWERING",
+        workflow_key="question_answering_v1",
         current_version=1,
         published_version=1,
         status="ACTIVE",
@@ -146,6 +151,51 @@ def _provenance(db: Session, root_admin) -> dict[str, uuid.UUID]:
     )
     db.add(batch)
     db.flush()
+    definition = MetadataDefinition(
+        matter_id=matter.id,
+        key="privilege",
+        display_name="Privilege",
+        type="BOOLEAN",
+        cardinality="SINGLE",
+        value_source="ASSERTED",
+        assertion_policy="IMMEDIATE",
+        resolution_policy="HUMAN_PRECEDENCE",
+        searchable=True,
+        facetable=True,
+        reviewable=True,
+        ai_assignable=True,
+        status="ACTIVE",
+    )
+    db.add(definition)
+    db.flush()
+    coding_group = ReviewBatchCodingGroup(
+        review_batch_id=batch.id,
+        display_name="Privilege coding",
+        sort_order=0,
+    )
+    db.add(coding_group)
+    db.flush()
+    db.add_all(
+        [
+            ReviewBatchDocument(
+                review_batch_id=batch.id,
+                matter_document_id=document.id,
+                sequence_number=1,
+            ),
+            ReviewBatchCodingField(
+                review_batch_coding_group_id=coding_group.id,
+                metadata_definition_id=definition.id,
+                sort_order=0,
+                definition_snapshot={
+                    "key": definition.key,
+                    "display_name": definition.display_name,
+                    "type": definition.type,
+                    "cardinality": definition.cardinality,
+                    "allowed_values": None,
+                },
+            ),
+        ]
+    )
     batch_run = ReviewBatchRun(
         review_batch_id=batch.id,
         run_type="WORKFLOW",
@@ -240,6 +290,7 @@ def _provenance(db: Session, root_admin) -> dict[str, uuid.UUID]:
         "task_version": task_version.id,
         "skill_run": skill_run.id,
         "invocation": invocation.id,
+        "definition": definition.id,
     }
 
 
@@ -303,6 +354,20 @@ def test_decision_result_is_complete_auditable_and_idempotent(
     assert result.model_invocation_id == ids["invocation"]
     assert record_review_decision_result(db, **kwargs).id == result.id
 
+    db.add(
+        ReviewBatchRunValue(
+            review_batch_run_id=ids["batch_run"],
+            matter_document_id=ids["document"],
+            metadata_definition_id=ids["definition"],
+            value_ordinal=0,
+            value_boolean=True,
+            confidence=0.91,
+            confidence_kind="DERIVED_PROBABILITY",
+            review_decision_result_id=result.id,
+            question_key="privilege.legal_advice",
+        )
+    )
+
     db.commit()
     response = client.get(
         f"/v1/matters/{db.get(WorkflowRun, ids['workflow']).matter_id}/review-batches/"
@@ -313,6 +378,30 @@ def test_decision_result_is_complete_auditable_and_idempotent(
     assert response.status_code == 200, response.text
     assert response.json()["id"] == str(result.id)
     assert response.json()["answers"]["privilege.legal_advice"] == {"type": "noul", "noul": 0.91}
+    history = client.get(
+        f"/v1/matters/{db.get(WorkflowRun, ids['workflow']).matter_id}/review-batches/"
+        f"{db.get(ReviewBatchRun, ids['batch_run']).review_batch_id}/documents/{ids['document']}/coding-history",
+        headers={"Authorization": f"Bearer {root_token}"},
+    )
+    assert history.status_code == 200, history.text
+    assert history.json()[0] == {
+        "review_batch_run_id": str(ids["batch_run"]),
+        "run_type": "WORKFLOW",
+        "purpose": "REVIEW",
+        "metadata_definition_id": str(ids["definition"]),
+        "field_key": "privilege",
+        "field_display_name": "Privilege",
+        "value": True,
+        "value_label": "Yes",
+        "recorded_at": history.json()[0]["recorded_at"],
+        "source_kind": "JEV",
+        "source_label": "Jev",
+        "source_detail": "jev-2026-09-01",
+        "score": 0.91,
+        "score_kind": "DERIVED_PROBABILITY",
+        "question_key": "privilege.legal_advice",
+        "review_decision_result_id": str(result.id),
+    }
 
     with pytest.raises(ReviewDecisionResultConflict):
         record_review_decision_result(db, **{**kwargs, "routes": {"review": True}})

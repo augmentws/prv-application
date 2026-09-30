@@ -38,6 +38,17 @@ DOCUMENT_QUEUE = Queue(
 PROVIDER_BATCH_QUEUE = Queue("definition-assessment-provider-batches", global_concurrency=2)
 
 
+def step_failure_message(error: BaseException) -> str:
+    errors = getattr(error, "errors", None)
+    if isinstance(errors, list) and errors:
+        return str(errors[-1])
+    return str(error)
+
+
+def guidance_refinement_failure_message(error: BaseException) -> str:
+    return step_failure_message(error)
+
+
 @DBOS.step(name="plan_definition_assessment_retrieval", retries_allowed=True, max_attempts=3)
 def plan(assessment_id: str) -> dict:
     with SessionLocal() as db:
@@ -138,7 +149,7 @@ def guidance_refinement_workflow(assessment_id: str) -> str | None:
         return create_refined_guidance(assessment_id)
     except Exception as exc:
         logger.exception("Matter Definition guidance refinement failed assessment_id=%s", assessment_id)
-        mark_guidance_refinement_failed(assessment_id, str(exc))
+        mark_guidance_refinement_failed(assessment_id, guidance_refinement_failure_message(exc))
         return None
 
 
@@ -154,7 +165,7 @@ def provider_batch_workflow(batch_id: str, poll_seconds: float) -> dict[str, int
         return finalize_batch(batch_id)
     except Exception as exc:
         logger.exception("Matter Definition provider batch failed batch_id=%s", batch_id)
-        mark_batch_failed(batch_id, str(exc))
+        mark_batch_failed(batch_id, step_failure_message(exc))
         return {"completed": 0, "failed": 0}
 
 

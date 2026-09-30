@@ -155,10 +155,19 @@ async def execute_skill_call(
     return envelope.output
 
 
-def complete_skill_run(db: Session, skill_run: SkillRun) -> None:
+def complete_skill_run(
+    db: Session,
+    skill_run: SkillRun,
+    *,
+    refresh_workflow_usage: bool = True,
+) -> None:
     skill_run.status = "COMPLETED"
     skill_run.completed_at = datetime.now(timezone.utc)
-    refresh_skill_run_usage(db, skill_run)
+    refresh_skill_run_usage(
+        db,
+        skill_run,
+        refresh_workflow_usage=refresh_workflow_usage,
+    )
 
 
 def fail_skill_run(skill_run: SkillRun, exc: Exception) -> None:

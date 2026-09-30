@@ -29,7 +29,11 @@ from app.execution_accounting import (
     refresh_agent_run_usage,
 )
 from app.matter_definition_assessments import start_assessment
-from app.matter_definitions import append_matter_definition_revision
+from app.matter_definitions import (
+    append_matter_definition_revision,
+    get_guidance,
+    resolve_legacy_guidance,
+)
 from app.metadata_definitions import (
     add_metadata_enum_value as add_metadata_enum_value_command,
 )
@@ -57,7 +61,6 @@ from app.models import (
     AgentTurn,
     AgentVersionTool,
     Matter,
-    MatterDefinition,
     MatterDefinitionAssessmentRun,
     MatterDefinitionRevision,
     MatterMembership,
@@ -132,6 +135,7 @@ class AgentRuntimeDeps:
     conversation_id: uuid.UUID
     matter_id: uuid.UUID
     review_batch_id: uuid.UUID | None
+    guidance_id: uuid.UUID | None
     actor_user_id: uuid.UUID
     allowed_tool_keys: frozenset[str]
 
@@ -295,9 +299,17 @@ def _record_tool(
             raise
 
 
-def read_matter_definition(ctx: RunContext[AgentRuntimeDeps]) -> dict[str, Any]:
+def read_matter_definition(
+    ctx: RunContext[AgentRuntimeDeps],
+    guidance_id: uuid.UUID | None = None,
+) -> dict[str, Any]:
     def operation(db, matter: Matter, _user: User, _run: AgentRun) -> dict[str, Any]:
-        definition = db.scalar(select(MatterDefinition).where(MatterDefinition.matter_id == matter.id))
+        effective_guidance_id = guidance_id or ctx.deps.guidance_id
+        definition = (
+            get_guidance(db, matter_id=matter.id, guidance_id=effective_guidance_id)
+            if effective_guidance_id is not None
+            else resolve_legacy_guidance(db, matter_id=matter.id)
+        )
         if definition is None:
             return {"exists": False, "current_revision": None, "published_revision": None, "content_markdown": ""}
         revision = db.scalar(
@@ -310,12 +322,20 @@ def read_matter_definition(ctx: RunContext[AgentRuntimeDeps]) -> dict[str, Any]:
             raise ValueError("Matter Definition has no current revision")
         return {
             "exists": True,
+            "guidance_id": str(definition.id),
+            "guidance_key": definition.key,
+            "guidance_name": definition.name,
             "current_revision": definition.current_revision,
             "published_revision": definition.published_revision,
             "content_markdown": revision.content_markdown,
         }
 
-    return _record_tool(ctx, tool_key="matter_definition.read", arguments={}, operation=operation)
+    return _record_tool(
+        ctx,
+        tool_key="matter_definition.read",
+        arguments={"guidance_id": str(guidance_id or ctx.deps.guidance_id) if (guidance_id or ctx.deps.guidance_id) else None},
+        operation=operation,
+    )
 
 
 def list_editable_metadata(ctx: RunContext[AgentRuntimeDeps]) -> dict[str, Any]:
@@ -675,6 +695,7 @@ def apply_matter_definition_draft_edit(
     content_markdown: MatterDefinitionContent,
     based_on_revision: MatterDefinitionRevisionNumber,
     reason: MatterDefinitionEditReason,
+    guidance_id: uuid.UUID | None = None,
 ) -> dict[str, Any]:
     if not ctx.tool_call_approved:
         raise PermissionError("Matter Definition edits require explicit user approval")
@@ -682,12 +703,14 @@ def apply_matter_definition_draft_edit(
         "content_markdown": content_markdown,
         "based_on_revision": based_on_revision,
         "reason": reason,
+        "guidance_id": str(guidance_id or ctx.deps.guidance_id) if (guidance_id or ctx.deps.guidance_id) else None,
     }
 
     def operation(db, matter: Matter, user: User, run: AgentRun) -> dict[str, Any]:
         definition, revision = append_matter_definition_revision(
             db,
             matter=matter,
+            matter_definition_id=guidance_id or ctx.deps.guidance_id,
             actor_user_id=user.id,
             content_markdown=content_markdown,
             source_kind="AGENT_EDIT",
@@ -713,6 +736,7 @@ def start_matter_definition_assessment(
     maximum_document_count: AssessmentMaximumDocumentCount = 500,
     control_sample_size: AssessmentControlSampleSize = 0,
     revision: MatterDefinitionRevisionNumber | None = None,
+    guidance_id: uuid.UUID | None = None,
 ) -> dict[str, Any]:
     if not ctx.tool_call_approved:
         raise PermissionError("Matter Definition assessments require explicit user approval")
@@ -720,12 +744,14 @@ def start_matter_definition_assessment(
         "maximum_document_count": maximum_document_count,
         "control_sample_size": control_sample_size,
         "revision": revision,
+        "guidance_id": str(guidance_id or ctx.deps.guidance_id) if (guidance_id or ctx.deps.guidance_id) else None,
     }
 
     def operation(db, matter: Matter, user: User, _run: AgentRun) -> dict[str, Any]:
         assessment = start_assessment(
             db,
             matter=matter,
+            matter_definition_id=guidance_id or ctx.deps.guidance_id,
             initiated_by_user_id=user.id,
             settings=get_settings(),
             revision_number=revision,
@@ -1081,6 +1107,7 @@ def prepare_agent_run(run_id: uuid.UUID) -> PreparedAgentRun:
                 conversation_id=conversation.id,
                 matter_id=conversation.matter_id,
                 review_batch_id=conversation.review_batch_id,
+                guidance_id=conversation.matter_definition_id,
                 actor_user_id=run.actor_user_id,
                 allowed_tool_keys=allowed_tool_keys,
             ),

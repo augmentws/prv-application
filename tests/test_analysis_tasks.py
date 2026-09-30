@@ -61,7 +61,7 @@ def _create_task(client: TestClient, token: str, matter_id: str) -> dict:
             "key": "first_pass_review",
             "name": "First-pass issue review",
             "description": "Apply the reviewed issue guidance.",
-            "task_type": "ISSUE_REVIEW",
+            "task_type": "QUESTION_ANSWERING",
             "definition_markdown": "# Issue One\nReview documents about coverage cancellation.",
         },
     )
@@ -76,7 +76,7 @@ def test_analysis_task_definition_and_specification_publish_atomically(
 ) -> None:
     _, token, matter_id = create_tenant_context(client, root_token)
     task = _create_task(client, token, matter_id)
-    assert task["workflow_key"] == "issue_review_v1"
+    assert task["workflow_key"] == "question_answering_v1"
     assert task["published_version"] is None
     assert task["version"]["compilation_status"] == "NOT_GENERATED"
     assert db.scalar(select(MatterDefinition).where(MatterDefinition.matter_id == uuid.UUID(matter_id))) is None
@@ -191,7 +191,7 @@ def test_analysis_task_keys_are_unique_within_a_matter(
         json={
             "key": "first_pass_review",
             "name": "Duplicate",
-            "task_type": "PRIVILEGE_REVIEW",
+            "task_type": "QUESTION_ANSWERING",
             "definition_markdown": "# Privilege",
         },
     )
@@ -235,4 +235,36 @@ def test_analysis_task_row_uses_code_owned_workflow_key(
     task = _create_task(client, token, matter_id)
     row = db.get(MatterAnalysisTask, uuid.UUID(task["id"]))
     assert row is not None
-    assert row.workflow_key == "issue_review_v1"
+    assert row.workflow_key == "question_answering_v1"
+
+
+def test_matter_definition_remains_separate_from_question_answering_tasks(
+    client: TestClient,
+    root_token: str,
+) -> None:
+    _, token, matter_id = create_tenant_context(client, root_token)
+    first = client.post(
+        f"/v1/matters/{matter_id}/definition/revisions",
+        headers=auth(token),
+        json={
+            "content_markdown": "# Responsiveness\n\nReview documents against the matter-wide issues.",
+            "source_kind": "PASTE",
+        },
+    )
+    assert first.status_code == 201, first.text
+
+    tasks = client.get(f"/v1/matters/{matter_id}/analysis-tasks", headers=auth(token))
+    assert tasks.status_code == 200, tasks.text
+    assert tasks.json() == []
+
+    unsupported = client.post(
+        f"/v1/matters/{matter_id}/analysis-tasks",
+        headers=auth(token),
+        json={
+            "key": "matter_definition",
+            "name": "Matter Definition",
+            "task_type": "MATTER_DEFINITION",
+            "definition_markdown": "# Responsiveness\n\nReview the matter-wide issues.",
+        },
+    )
+    assert unsupported.status_code == 422

@@ -5,7 +5,7 @@ import type { ColumnDef } from "@tanstack/react-table";
 import { Ban, BriefcaseBusiness, CheckCircle2, ChevronRight, Database, FileSearch, FileText, ListChecks, Play, RotateCcw, Search, Sparkles, Tags, UsersRound } from "lucide-react";
 import Link from "next/link";
 import { useRouter } from "next/navigation";
-import { useCallback, useMemo, useSyncExternalStore } from "react";
+import { useCallback, useMemo, useState, useSyncExternalStore } from "react";
 import { toast } from "sonner";
 
 import { DataTable } from "@/components/data-table";
@@ -21,6 +21,7 @@ import { SaveMatterTemplateDialog, type SaveMatterTemplateValues } from "@/compo
 import { CreateTopicJobDialog } from "@/components/forms/create-topic-job-dialog";
 import { HelpLink } from "@/components/help-link";
 import { MatterDefinitionPanel } from "@/components/matter-definition-panel";
+import { MatterTokenUsagePanel } from "@/components/matter-token-usage-panel";
 import { MetadataGroupsPanel } from "@/components/metadata-groups-panel";
 import { QueryError, TableLoading } from "@/components/query-state";
 import { SearchIndexPanel } from "@/components/search-index-panel";
@@ -30,12 +31,13 @@ import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Label } from "@/components/ui/label";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
-import type { ClientRead, MatterBulkTagJobRead, MatterDocumentImportRead, MatterEmbeddingJobRead, MatterOverviewCounts, MatterRead, MatterSavedSearchRead, MatterTemplateRead, MatterTopicJobCreate, MatterTopicJobRead, MetadataDefinitionCreate, MetadataDefinitionRead, MetadataGroupRead, ReviewBatchCreate, ReviewBatchRead, SearchIndexGenerationRead, SearchProjectionOperationRead, SearchProjectionRetryResponse, UserRead } from "@/generated/models";
+import type { ClientRead, MatterBulkTagJobRead, MatterDocumentImportRead, MatterEmbeddingJobRead, MatterOverviewCounts, MatterProviderUsageReportRead, MatterRead, MatterSavedSearchRead, MatterTemplateRead, MatterTopicJobCreate, MatterTopicJobRead, MetadataDefinitionCreate, MetadataDefinitionRead, MetadataGroupRead, ReviewBatchCreate, ReviewBatchRead, SearchIndexGenerationRead, SearchProjectionOperationRead, SearchProjectionRetryResponse, UserRead } from "@/generated/models";
 import { coreApi } from "@/lib/api-client";
 import { bulkTagDisplayStatus, bulkTagIsWaiting } from "@/lib/bulk-tag-jobs";
 import { formatDate } from "@/lib/format";
 
-type MatterTab = "overview" | "metadata" | "groups" | "definition" | "analysis" | "batches" | "jobs" | "search";
+type MatterTab = "overview" | "metadata" | "definition" | "analysis" | "batches" | "jobs" | "usage" | "search";
+type MetadataTab = "definitions" | "groups";
 type MatterJobType = "BULK_TAGGING" | "DOCUMENT_EMBEDDINGS" | "TOPIC_CLUSTERING" | "DOCUMENT_IMPORTS";
 
 const MATTER_JOB_TYPE_STORAGE_KEY = "priv-view:matter-jobs:selected-type";
@@ -56,17 +58,20 @@ function subscribeToMatterJobType(callback: () => void) {
   };
 }
 
-export function MatterView({ clientId, matterId, requestedTab, selectedJobId }: {
+export function MatterView({ clientId, matterId, requestedTab, requestedMetadataTab, selectedJobId }: {
   clientId: string;
   matterId: string;
   requestedTab?: string;
+  requestedMetadataTab?: string;
   selectedJobId?: string;
 }) {
-  const tab: MatterTab = requestedTab === "overview" || requestedTab === "groups" || requestedTab === "definition" || requestedTab === "analysis" || requestedTab === "batches" || requestedTab === "jobs" || requestedTab === "search" ? requestedTab : "metadata";
+  const tab: MatterTab = requestedTab === "overview" || requestedTab === "definition" || requestedTab === "analysis" || requestedTab === "batches" || requestedTab === "jobs" || requestedTab === "usage" || requestedTab === "search" ? requestedTab : "metadata";
+  const metadataTab: MetadataTab = requestedTab === "groups" || requestedMetadataTab === "groups" ? "groups" : "definitions";
   const router = useRouter();
   const queryClient = useQueryClient();
   const storedJobType = useSyncExternalStore(subscribeToMatterJobType, readStoredMatterJobType, () => "BULK_TAGGING");
   const jobType = selectedJobId ? "DOCUMENT_IMPORTS" : storedJobType;
+  const [usageOffset, setUsageOffset] = useState(0);
 
   const changeJobType = useCallback((value: string) => {
     const next = value as MatterJobType;
@@ -116,6 +121,12 @@ export function MatterView({ clientId, matterId, requestedTab, selectedJobId }: 
     queryFn: () => coreApi<ReviewBatchRead[]>(`/v1/matters/${matterId}/review-batches`),
     enabled: tab === "batches",
     refetchInterval: (query) => query.state.data?.some((batch) => ["QUEUED", "BUILDING"].includes(batch.status)) ? 2000 : false,
+  });
+  const providerUsage = useQuery({
+    queryKey: ["matter-provider-usage", matterId, usageOffset],
+    queryFn: () => coreApi<MatterProviderUsageReportRead>(`/v1/matters/${matterId}/provider-usage?offset=${usageOffset}&limit=100`),
+    enabled: tab === "usage",
+    placeholderData: (previous) => previous,
   });
   const tenantUsers = useQuery({
     queryKey: ["tenant-users", client.data?.tenant_id],
@@ -289,6 +300,11 @@ export function MatterView({ clientId, matterId, requestedTab, selectedJobId }: 
     router.replace(`/app/clients/${clientId}/matters/${matterId}?${params}`);
   }, [clientId, matterId, router]);
 
+  const openMetadataTab = useCallback((nextTab: MetadataTab) => {
+    const params = new URLSearchParams({ tab: "metadata", metadata: nextTab });
+    router.replace(`/app/clients/${clientId}/matters/${matterId}?${params}`);
+  }, [clientId, matterId, router]);
+
   const jobColumns = useMemo<ColumnDef<MatterDocumentImportRead>[]>(() => [
     { accessorKey: "selection_summary", header: "Selection", cell: ({ row }) => <button type="button" className="max-w-md text-left font-semibold hover:text-primary" onClick={() => openTab("jobs", row.original.id)}>{row.original.selection_summary}</button> },
     { accessorKey: "status", header: "Status", cell: ({ row }) => <StatusBadge status={row.original.status} /> },
@@ -372,27 +388,31 @@ export function MatterView({ clientId, matterId, requestedTab, selectedJobId }: 
         <div className="mb-6 flex min-w-0 flex-wrap items-end justify-between gap-x-4 border-b" aria-label="Matter navigation and actions">
           <div className="flex min-w-0 flex-1 gap-1 overflow-x-auto" role="tablist" aria-label="Matter sections">
             <button role="tab" aria-selected={tab === "overview"} onClick={() => openTab("overview")} className={tabClass(tab === "overview")}>Overview</button>
-            <button role="tab" aria-selected={tab === "metadata"} onClick={() => openTab("metadata")} className={tabClass(tab === "metadata")}>Metadata definitions</button>
-            <button role="tab" aria-selected={tab === "groups"} onClick={() => openTab("groups")} className={tabClass(tab === "groups")}>Metadata groups</button>
+            <button role="tab" aria-selected={tab === "metadata"} onClick={() => openTab("metadata")} className={tabClass(tab === "metadata")}>Metadata</button>
             <button role="tab" aria-selected={tab === "definition"} onClick={() => openTab("definition")} className={tabClass(tab === "definition")}>Matter definition</button>
             <button role="tab" aria-selected={tab === "analysis"} onClick={() => openTab("analysis")} className={tabClass(tab === "analysis")}>Analysis tasks</button>
             <button role="tab" aria-selected={tab === "batches"} onClick={() => openTab("batches")} className={tabClass(tab === "batches")}>Batches</button>
             <button role="tab" aria-selected={tab === "jobs"} onClick={() => openTab("jobs")} className={tabClass(tab === "jobs")}>Jobs</button>
+            <button role="tab" aria-selected={tab === "usage"} onClick={() => openTab("usage")} className={tabClass(tab === "usage")}>Token usage</button>
             <button role="tab" aria-selected={tab === "search"} onClick={() => openTab("search")} className={tabClass(tab === "search")}>Search index</button>
           </div>
           <div className="flex shrink-0 flex-wrap items-center gap-2 pb-2">
             <Button asChild><Link href={`/review/matters/${matterId}`}><FileSearch />Search & Review</Link></Button>
-            <HelpLink topic={tab === "jobs" ? "matterJobs" : tab === "search" ? "matterSearch" : tab === "definition" ? "matterDefinition" : "metadata"} />
+            <HelpLink topic={tab === "jobs" ? "matterJobs" : tab === "usage" ? "tokenUsage" : tab === "search" ? "matterSearch" : tab === "definition" ? "matterDefinition" : "metadata"} />
             <CloneMatterDialog sourceName={matter.data.name} onClone={cloneMatter} />
             <SaveMatterTemplateDialog onCreate={saveTemplate} />
-            {tab === "metadata" ? <CreateMetadataDialog onCreate={createDefinition} /> : null}
+            {tab === "metadata" && metadataTab === "definitions" ? <CreateMetadataDialog onCreate={createDefinition} /> : null}
           </div>
         </div>
       </div>
       <div className={tab === "definition" ? "matter-definition-page-content" : undefined}>
+        {tab === "metadata" ? <div className="mb-5 flex border-b" role="tablist" aria-label="Metadata sections">
+          <button type="button" role="tab" aria-selected={metadataTab === "definitions"} onClick={() => openMetadataTab("definitions")} className={subtabClass(metadataTab === "definitions")}>Definitions</button>
+          <button type="button" role="tab" aria-selected={metadataTab === "groups"} onClick={() => openMetadataTab("groups")} className={subtabClass(metadataTab === "groups")}>Groups</button>
+        </div> : null}
         {tab === "overview" ? overviewCounts.error ? <QueryError message={overviewCounts.error.message} /> : <div className="grid gap-4 sm:grid-cols-2 xl:grid-cols-5"><Summary icon={FileText} label="Documents" value={overviewCounts.data?.document_count ?? "—"} /><Summary icon={UsersRound} label="Custodians" value={overviewCounts.data?.custodian_count ?? "—"} /><Summary icon={Database} label="Metadata fields" value={definitions.data?.length ?? 0} /><Summary icon={Search} label="Searchable fields" value={definitions.data?.filter((item) => item.searchable).length ?? 0} /><Summary icon={Sparkles} label="Agent assignable" value={definitions.data?.filter((item) => item.ai_assignable).length ?? 0} /></div>
-        : tab === "metadata" ? definitions.isPending ? <TableLoading /> : definitions.error ? <QueryError message={definitions.error.message} /> : <DataTable columns={columns} data={definitions.data} emptyMessage="No metadata fields yet. Add the first field definition for this matter." />
-        : tab === "groups" ? definitions.isPending || groups.isPending ? <TableLoading /> : definitions.error || groups.error ? <QueryError message={definitions.error?.message ?? groups.error?.message} /> : <MetadataGroupsPanel definitions={definitions.data} groups={groups.data} onCreate={createGroup} onVisibilityChange={changeVisibility} />
+        : tab === "metadata" && metadataTab === "definitions" ? definitions.isPending ? <TableLoading /> : definitions.error ? <QueryError message={definitions.error.message} /> : <DataTable columns={columns} data={definitions.data} emptyMessage="No metadata fields yet. Add the first field definition for this matter." />
+        : tab === "metadata" ? definitions.isPending || groups.isPending ? <TableLoading /> : definitions.error || groups.error ? <QueryError message={definitions.error?.message ?? groups.error?.message} /> : <MetadataGroupsPanel definitions={definitions.data} groups={groups.data} onCreate={createGroup} onVisibilityChange={changeVisibility} />
         : tab === "definition" ? <MatterDefinitionPanel matterId={matterId} />
         : tab === "analysis" ? <AnalysisTasksPanel matterId={matterId} />
         : tab === "batches" ? reviewBatches.isPending || groups.isPending || tenantUsers.isPending || savedSearches.isPending ? <TableLoading /> : reviewBatches.error || groups.error || tenantUsers.error || savedSearches.error ? <QueryError message={reviewBatches.error?.message ?? groups.error?.message ?? tenantUsers.error?.message ?? savedSearches.error?.message} /> : <div className="space-y-4"><div className="flex flex-wrap items-start justify-between gap-3"><div><h2 className="text-lg font-semibold">Review batches</h2><p className="text-sm text-muted-foreground">Freeze document sets for assignment, repeatable agent runs, and coding comparisons.</p></div><CreateReviewBatchDialog groups={groups.data} batches={reviewBatches.data} savedSearches={savedSearches.data} onCreate={createReviewBatch} /></div><DataTable columns={reviewBatchColumns} data={reviewBatches.data} emptyMessage="No review batches have been created for this matter." /></div>
@@ -419,6 +439,7 @@ export function MatterView({ clientId, matterId, requestedTab, selectedJobId }: 
             <DataTable columns={jobColumns} data={jobs.data} emptyMessage="No document import jobs have been started for this matter." />
           </section> : null}
         </div>
+          : tab === "usage" ? providerUsage.isPending ? <TableLoading /> : providerUsage.error ? <QueryError message={providerUsage.error.message} /> : <MatterTokenUsagePanel report={providerUsage.data} loading={providerUsage.isFetching} onPageChange={setUsageOffset} />
           : searchIndexes.isPending || searchOperations.isPending || retryableSearchOperations.isPending || overviewCounts.isPending ? <TableLoading /> : searchIndexes.error || searchOperations.error || retryableSearchOperations.error || overviewCounts.error ? <QueryError message={searchIndexes.error?.message ?? searchOperations.error?.message ?? retryableSearchOperations.error?.message ?? overviewCounts.error?.message} /> : <SearchIndexPanel coreDocumentCount={overviewCounts.data.document_count} indexes={searchIndexes.data} operations={searchOperations.data} onRebuild={() => rebuildSearchMutation.mutateAsync().then(() => undefined)} rebuilding={rebuildSearchMutation.isPending} onConfirmReindex={(operationId) => confirmReindexMutation.mutateAsync(operationId).then(() => undefined)} confirmingReindex={confirmReindexMutation.isPending} onRetryFailed={() => retryFailedSearchMutation.mutateAsync().then(() => undefined)} retryingFailed={retryFailedSearchMutation.isPending} retryableOperationCount={retryableSearchOperations.data.requeued_operation_count} retryableDocumentCount={retryableSearchOperations.data.requeued_document_count} />}
       </div>
     </div>
@@ -429,10 +450,21 @@ function tabClass(active: boolean) {
   return `relative px-4 py-3 text-sm font-semibold outline-none transition focus-visible:ring-2 focus-visible:ring-ring ${active ? "text-primary after:absolute after:inset-x-1 after:bottom-0 after:h-0.5 after:bg-accent" : "text-muted-foreground hover:text-foreground"}`;
 }
 
+function subtabClass(active: boolean) {
+  return `relative px-4 py-2.5 text-sm font-semibold outline-none transition focus-visible:ring-2 focus-visible:ring-ring ${active ? "text-primary after:absolute after:inset-x-2 after:bottom-0 after:h-0.5 after:bg-primary" : "text-muted-foreground hover:text-foreground"}`;
+}
+
 function batchSelectionLabel(batch: ReviewBatchRead) {
   if (batch.selection_type === "RANDOM_SAVED_SEARCH") {
     const name = batch.selection_definition.saved_search_name;
     return typeof name === "string" ? `${name} sample` : "Random saved-search sample";
+  }
+  if (batch.selection_type === "DEFINITION_ASSESSMENT") {
+    const name = batch.selection_definition.guidance_name;
+    const revision = batch.selection_definition.guidance_revision;
+    return typeof name === "string"
+      ? `${name}${typeof revision === "number" ? ` · r${revision}` : ""}`
+      : "Review Guidance assessment";
   }
   return { ALL_MATTER: "All matter documents", SEARCH_QUERY: "Keyword search", RANDOM_MATTER: "Random matter sample", RANDOM_BATCH: "Random batch sample", DEFINITION_ASSESSMENT: "Matter Definition assessment" }[batch.selection_type];
 }

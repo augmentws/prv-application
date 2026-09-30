@@ -94,6 +94,7 @@ def start_agent_conversation(
             title=payload.title,
             workflow_type=payload.workflow_type,
             review_batch_id=payload.review_batch_id,
+            matter_definition_id=payload.matter_definition_id,
             actor_user_id=principal.user.id,
         )
     except AgentConversationError as exc:
@@ -112,6 +113,7 @@ def start_agent_conversation(
             "title": conversation.title,
             "workflow_type": payload.workflow_type,
             "review_batch_id": str(payload.review_batch_id) if payload.review_batch_id else None,
+            "guidance_id": str(payload.matter_definition_id) if payload.matter_definition_id else None,
         },
     )
     db.commit()
@@ -123,6 +125,7 @@ def list_agent_conversations(
     matter_id: uuid.UUID,
     workflow_type: AgentConversationWorkflow | None = Query(default=None),
     review_batch_id: uuid.UUID | None = Query(default=None),
+    guidance_id: uuid.UUID | None = Query(default=None),
     principal: Principal = Depends(get_principal),
     db: Session = Depends(get_db),
 ) -> list[AgentConversation]:
@@ -132,6 +135,8 @@ def list_agent_conversations(
         query = query.where(AgentConversation.workflow_type == workflow_type)
     if review_batch_id is not None:
         query = query.where(AgentConversation.review_batch_id == review_batch_id)
+    if guidance_id is not None:
+        query = query.where(AgentConversation.matter_definition_id == guidance_id)
     return list(db.scalars(query.order_by(AgentConversation.created_at.desc())))
 
 

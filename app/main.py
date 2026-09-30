@@ -12,6 +12,7 @@ from app.routers import (
     auth,
     bulk_tags,
     clients,
+    coding_history,
     collection_deletions,
     document_metadata,
     managed_skills,
@@ -78,16 +79,19 @@ app.include_router(matter_definitions.router)
 app.include_router(matter_imports.router)
 app.include_router(matter_embeddings.router)
 app.include_router(matter_topics.router)
+app.include_router(coding_history.router)
 app.include_router(document_metadata.router)
 app.include_router(metadata.router)
 app.include_router(metadata_groups.router)
 app.include_router(provider_usage.router)
+app.include_router(provider_usage.matter_router)
 app.include_router(matter_templates.router)
 app.include_router(saved_searches.router)
 app.include_router(review_batches.router)
 app.include_router(search.router)
 app.include_router(managed_skills.router)
 app.include_router(matter_definition_assessments.router)
+app.include_router(matter_definition_assessments.guidance_router)
 if get_settings().artifact_mode == "embedded":
     app.include_router(build_artifact_router(get_embedded_artifact_principal))
 elif get_settings().artifact_mode == "remote":

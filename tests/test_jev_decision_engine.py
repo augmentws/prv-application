@@ -1,7 +1,9 @@
 from __future__ import annotations
 
 import asyncio
+import threading
 from collections.abc import Mapping
+from concurrent.futures import ThreadPoolExecutor
 from contextlib import AbstractAsyncContextManager
 from datetime import UTC, datetime
 from types import SimpleNamespace
@@ -14,7 +16,11 @@ from typesafe_sdk import Choice, Noul, Score, TypeSafeRateLimitError
 from app.config import Settings
 from app.decision_engine import DecisionEngineProviderError, DecisionRequest
 from app.decision_specifications import DecisionSpecification
-from app.jev_decision_engine import TypeSafeJevDecisionEngine, build_decision_engine_registry
+from app.jev_decision_engine import (
+    TypeSafeJevDecisionEngine,
+    build_decision_engine_registry,
+    get_shared_decision_engine_registry,
+)
 
 
 def _request() -> DecisionRequest:
@@ -68,7 +74,14 @@ def _request() -> DecisionRequest:
         }
     )
     return DecisionRequest(
-        state={"document": {"paragraphs": [{"number": 1, "text": "Counsel advised the client."}]}},
+        state={
+            "matter": {
+                "decision_context": {
+                    "summary": "Review documents concerning legal advice and the defined investigation issues."
+                }
+            },
+            "document": {"paragraphs": [{"number": 1, "text": "Counsel advised the client."}]},
+        },
         questions=specification.questions,
         model_key="jev-latest",
     )
@@ -114,6 +127,24 @@ class _FakeClient:
         if isinstance(outcome, BaseException):
             raise outcome
         return outcome
+
+
+class _ConcurrentFakeClient:
+    def __init__(self) -> None:
+        self._lock = threading.Lock()
+        self.active = 0
+        self.maximum_active = 0
+
+    async def system_one(self, **_: Any) -> Any:
+        with self._lock:
+            self.active += 1
+            self.maximum_active = max(self.maximum_active, self.active)
+        try:
+            await asyncio.sleep(0.03)
+            return _response()
+        finally:
+            with self._lock:
+                self.active -= 1
 
 
 def _response() -> SimpleNamespace:
@@ -163,6 +194,9 @@ def test_jev_adapter_translates_questions_and_preserves_provider_semantics() -> 
     assert isinstance(fake_client.calls[0]["questions"]["issue.strength"], Score)
     assert isinstance(fake_client.calls[0]["questions"]["privilege.legal_advice"], Noul)
     assert not hasattr(fake_client.calls[0]["questions"]["issue.responsiveness"], "source_refs")
+    assert fake_client.calls[0]["state"]["matter"]["decision_context"]["summary"].startswith(
+        "Review documents"
+    )
     assert envelope.provider == "typesafe"
     assert envelope.model == "jev-2026-09-01"
     assert envelope.provider_request_id == "req_123"
@@ -235,3 +269,28 @@ def test_jev_is_registered_in_a_code_owned_adapter_allowlist() -> None:
     registry = build_decision_engine_registry(Settings(typesafe_api_key="secret"))
     assert registry.keys() == ("jev",)
     assert isinstance(registry.get("jev"), TypeSafeJevDecisionEngine)
+
+
+def test_shared_jev_registry_reuses_one_engine_for_matching_configuration() -> None:
+    settings = Settings(typesafe_api_key="shared-secret", typesafe_concurrency=2)
+
+    first = get_shared_decision_engine_registry(settings)
+    second = get_shared_decision_engine_registry(settings)
+
+    assert first is second
+    assert first.get("jev") is second.get("jev")
+
+
+def test_shared_jev_engine_caps_concurrency_across_threads_and_event_loops() -> None:
+    fake_client = _ConcurrentFakeClient()
+    engine = TypeSafeJevDecisionEngine(
+        Settings(typesafe_api_key="secret", typesafe_concurrency=2),
+        client_factory=lambda **_: _FakeClientContext(fake_client),
+        limiter=_FakeLimiter(),  # type: ignore[arg-type]
+    )
+
+    with ThreadPoolExecutor(max_workers=6) as executor:
+        envelopes = list(executor.map(lambda _: asyncio.run(engine.evaluate(_request())), range(6)))
+
+    assert len(envelopes) == 6
+    assert fake_client.maximum_active == 2

@@ -3,7 +3,11 @@ from sqlalchemy.orm import Session
 
 from app.decision_engine import DecisionEnvelope
 from app.models import SkillDefinition, SkillDefinitionVersion, Tenant, User, WorkflowSkillBinding, utcnow
-from app.workflow_specs import MATTER_ANALYSIS_TASK_COMPILATION_SPEC, MATTER_ANALYSIS_TASK_PLAYGROUND_SPEC
+from app.workflow_specs import (
+    MATTER_ANALYSIS_TASK_BATCH_SPEC,
+    MATTER_ANALYSIS_TASK_COMPILATION_SPEC,
+    MATTER_ANALYSIS_TASK_PLAYGROUND_SPEC,
+)
 
 ANALYSIS_TASK_COMPILER_INSTRUCTIONS = r"""Compile one reviewed Matter Analysis Task Definition into a complete,
 provider-neutral Decision Specification. Treat the Task Definition, source-reference catalog, metadata definitions,
@@ -22,10 +26,24 @@ Do not create open-ended generation questions, executable expressions, Python, J
 configuration. Put deterministic facts in state paths or call them out as warnings instead of asking the model to
 infer them.
 
+Create decision_context as the concise, self-contained matter guidance Jev needs while evaluating every document.
+Derive it only from the reviewed Task Definition. Preserve the controlling meaning, but do not copy the entire
+definition verbatim. Populate summary and the applicable structured sections for controlling guidance,
+responsiveness scope, inclusion and exclusion criteria, issue definitions, key entities, date scope, terminology,
+and labeled examples. Do not invent missing facts or examples. For responsiveness work, include enough issue and
+scope detail for a reviewer who has only decision_context and the document to apply the definition consistently.
+When the Task Definition is unchanged, preserve the prior decision_context unless repairing an omission or
+contradiction. This context is frozen into the published specification and sent with every document decision, so
+keep it decision-relevant and bounded. Leave decision_context.source_material empty; the application attaches every
+exact reviewed Task Definition excerpt and its content hash after generation so the provider receives the controlling
+source text even if the generated summary omits detail.
+
 The state_contract describes input supplied to every question, not question names, outputs, metadata fields, or
 answers. Set builder_version to document-review-state-v1. required_paths may contain only paths actually needed from
-this list: matter.id, runtime.today, document.id, document.collection_item_id, document.source_content_hash,
-document.text, document.metadata, document.paragraphs. Never place a question key or metadata key in required_paths.
+this list: matter.id, matter.decision_context, runtime.today, document.id, document.collection_item_id,
+document.source_content_hash, document.text, document.metadata, document.paragraphs. Include matter.decision_context
+whenever a question depends on substantive matter guidance, including responsiveness, privilege, or issue coding.
+Never place a question key or metadata key in required_paths.
 
 Every question must cite one or more entries from source_reference_catalog. Copy task_version_id, heading, and
 excerpt_hash exactly; never calculate, alter, or invent a hash. Instructions must state what evidence qualifies and
@@ -33,22 +51,43 @@ what does not. Use only the supplied aggregation operators. Require evidence for
 that are not exhaustive must include an explicit other, unclear, or insufficient_evidence option.
 
 Field mappings may reference only active, AI-assignable metadata definitions supplied in metadata_definitions. Match
-the mapped value to the field type and allowed enum values. Choice and score mappings may use provider confidence or
-selected-option probability. Noul has no separate provider confidence: map it only as derived boolean probability or
-do not project scalar uncertainty. Leave field_mapping null when no valid destination exists.
+the mapped value to the field type and allowed enum values. Use value_source STATIC with value for a fixed assertion.
+For a Choice question whose selected option should become the coding value, use value_source SELECTED_OPTION, set
+value to null, and provide an explicit option_value_map from assignable Choice options to valid destination values.
+Omit fallback options such as other, unclear, insufficient_evidence, and needs_review from option_value_map so they
+fail closed. Such a mapping must use
+SELECTED_PROBABILITY uncertainty. Choice and score static mappings may use provider confidence or selected-option
+probability. Noul has no separate provider confidence: map it only as derived boolean probability or do not project
+scalar uncertainty. Leave field_mapping null when no valid destination exists.
 
 Create bounded decision-policy predicates only from declared questions and measures supported by their primitive.
 For a noul question use measure noul, a threshold from 0 to 1, and no option. For a choice question use measure
 probability with an option that exactly matches one criteria key, or use confidence with no option. For a score
 question use measure score with a numeric threshold and no option, or confidence with no option. The option field is
-invalid for noul, score, and confidence predicates. Omit a recommendation or route when no valid predicate is useful.
+invalid for noul, score, and confidence predicates. Probability, noul, and confidence measures are continuous: never
+compare them with EQ at an interior threshold such as 0.7. Use GTE for a positive threshold or LTE for an inverse
+threshold. For a multi-class Choice question that uses a SELECTED_OPTION field mapping, create a recommendation with
+operator SELECTED_OPTION, that question_key, and a minimum_probability. This recommendation emits the mapped selected
+value only when the selected option is mapped and meets the threshold; otherwise it fails closed for human review.
+Key that recommendation exactly by the destination metadata_definition_key. Every SELECTED_OPTION field mapping must
+have this corresponding recommendation; do not leave any mapped Choice question without one. SELECTED_OPTION is
+valid only in recommendations, never routes. A boolean recommendation such as is_responsive is not an assignment:
+keep it as a PREDICATE over the responsive option and use GTE for its positive probability threshold. When the Task
+Definition is unchanged, preserve every prior recommendation's purpose, key, predicate question, measure, option,
+and threshold. Repair a prior continuous EQ interior-threshold comparator to GTE; do not replace that predicate with
+SELECTED_OPTION. Omit a recommendation or route when no valid rule is useful and no prior rule or selected mapping
+requires it.
 Use task runtime state paths, never a hard-coded current date. For topic generation, compile only bounded evaluation
 or assignment questions; candidate taxonomy creation remains a generative stage. For data exploration, compile typed
 questions whose collected answers can later be synthesized rather than attempting open-ended synthesis here.
 
-Compile only questions supported by the reviewed Task Definition. Metadata definitions are possible output
-destinations, not instructions to create a question, so do not add privilege, responsiveness, topic, or other
-questions merely because a matching metadata field exists.
+Compile only questions supported by the reviewed Task Definition. Only create questions, field mappings,
+recommendations, or routes for metadata fields explicitly identified as included, enabled, YES, or assignable in
+the reviewed Task Definition. If the Task Definition marks a field NO, false, disabled, excluded, or out of scope,
+do not create a question, field mapping, recommendation, or route for it. Treat fields not explicitly referenced by
+the Task Definition as unavailable, even when they appear in metadata_definitions. metadata_definitions provides
+validation information for explicitly referenced destinations; it is not an allowlist by itself. Do not add
+privilege, responsiveness, topic, or other questions merely because a matching metadata field exists.
 
 Provide one non-empty rationale for every question key. List deliberate omissions and ambiguities explicitly. Surface
 warnings when the definition is internally ambiguous, asks for unavailable state, cannot map to metadata, or requires
@@ -270,35 +309,36 @@ def ensure_standard_analysis_task_skills(db: Session, root: Tenant, actor: User)
                 spec=decision_spec,
             )
             changed = True
-    decision_binding = db.scalar(
-        select(WorkflowSkillBinding).where(
-            WorkflowSkillBinding.workflow_key == MATTER_ANALYSIS_TASK_PLAYGROUND_SPEC.key,
-            WorkflowSkillBinding.role_key == "decision_evaluation",
-            WorkflowSkillBinding.scope == "SYSTEM",
-            WorkflowSkillBinding.owner_tenant_id == root.id,
-        )
-    )
-    if decision_binding is None:
-        db.add(
-            WorkflowSkillBinding(
-                workflow_key=MATTER_ANALYSIS_TASK_PLAYGROUND_SPEC.key,
-                role_key="decision_evaluation",
-                scope="SYSTEM",
-                owner_tenant_id=root.id,
-                skill_definition_id=decision_skill.id,
-                skill_definition_version_id=decision_version.id,
-                configuration={"engine_key": "jev"},
-                status="ACTIVE",
-                created_by_user_id=actor.id,
+    for workflow_spec in (MATTER_ANALYSIS_TASK_PLAYGROUND_SPEC, MATTER_ANALYSIS_TASK_BATCH_SPEC):
+        decision_binding = db.scalar(
+            select(WorkflowSkillBinding).where(
+                WorkflowSkillBinding.workflow_key == workflow_spec.key,
+                WorkflowSkillBinding.role_key == "decision_evaluation",
+                WorkflowSkillBinding.scope == "SYSTEM",
+                WorkflowSkillBinding.owner_tenant_id == root.id,
             )
         )
-        changed = True
-    elif (
-        decision_binding.skill_definition_id == decision_skill.id
-        and decision_binding.skill_definition_version_id != decision_version.id
-    ):
-        decision_binding.skill_definition_version_id = decision_version.id
-        changed = True
+        if decision_binding is None:
+            db.add(
+                WorkflowSkillBinding(
+                    workflow_key=workflow_spec.key,
+                    role_key="decision_evaluation",
+                    scope="SYSTEM",
+                    owner_tenant_id=root.id,
+                    skill_definition_id=decision_skill.id,
+                    skill_definition_version_id=decision_version.id,
+                    configuration={"engine_key": "jev"},
+                    status="ACTIVE",
+                    created_by_user_id=actor.id,
+                )
+            )
+            changed = True
+        elif (
+            decision_binding.skill_definition_id == decision_skill.id
+            and decision_binding.skill_definition_version_id != decision_version.id
+        ):
+            decision_binding.skill_definition_version_id = decision_version.id
+            changed = True
     return changed
 
 

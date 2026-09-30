@@ -1,18 +1,24 @@
 import json
 import uuid
 
+import pytest
 from fastapi.testclient import TestClient
 from pydantic_ai.models.test import TestModel
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from app.analysis_task_compilation import (
+    _validate_preserved_recommendations,
     build_source_reference_catalog,
     compile_analysis_task_version,
     parse_compiler_wire_output,
 )
 from app.analysis_task_skills import ensure_standard_analysis_task_skills
-from app.decision_specifications import DecisionSpecificationCompilationOutput
+from app.decision_specifications import (
+    DecisionSelectedOptionRecommendation,
+    DecisionSpecification,
+    DecisionSpecificationCompilationOutput,
+)
 from app.models import (
     ExternalProviderUsage,
     MatterAnalysisTaskVersion,
@@ -39,7 +45,7 @@ def _create_task(client: TestClient, token: str, matter_id: str) -> dict:
         json={
             "key": "privilege_review",
             "name": "Privilege review",
-            "task_type": "PRIVILEGE_REVIEW",
+            "task_type": "QUESTION_ANSWERING",
             "definition_markdown": (
                 "# Legal advice\n\n"
                 "A document is potentially privileged when it requests or provides confidential legal advice.\n\n"
@@ -55,6 +61,14 @@ def _compiler_output(task_version_id: str, excerpt_hash: str) -> dict:
     return {
         "decision_specification": {
             "schema_version": "review-decision-specification-v1",
+            "decision_context": {
+                "summary": "Determine whether the document requests or provides confidential legal advice.",
+                "controlling_guidance": [
+                    "Legal advice must be confidential and requested or provided for a legal purpose."
+                ],
+                "inclusion_criteria": ["Requests for or communications of legal advice."],
+                "exclusion_criteria": ["Purely business advice with no legal purpose."],
+            },
             "questions": {
                 "privilege.legal_advice": {
                     "type": "noul",
@@ -86,7 +100,7 @@ def _compiler_output(task_version_id: str, excerpt_hash: str) -> dict:
             },
             "state_contract": {
                 "builder_version": "document-review-state-v1",
-                "required_paths": ["document.id", "document.paragraphs"],
+                "required_paths": ["matter.decision_context", "document.id", "document.paragraphs"],
             },
         },
         "question_rationales": {
@@ -186,6 +200,15 @@ def test_compiler_persists_validated_specification_and_provenance(
         ),
     )
     assert set(result["questions"]) == {"privilege.legal_advice"}
+    assert result["decision_context"]["summary"].startswith("Determine whether")
+    assert result["decision_context"]["source_material"] == [
+        {
+            "heading": reference["heading"],
+            "excerpt": reference["excerpt"],
+            "excerpt_hash": reference["excerpt_hash"],
+        }
+        for reference in references
+    ]
     version = db.get(MatterAnalysisTaskVersion, version_id)
     assert version is not None
     assert version.compilation_status == "READY"
@@ -238,6 +261,59 @@ def test_compiler_wire_output_rejects_invalid_embedded_json() -> None:
         raise AssertionError("invalid embedded JSON should fail validation")
 
 
+def test_unchanged_definition_preserves_predicate_and_repairs_interior_eq_to_gte() -> None:
+    specification = DecisionSpecification.model_validate(
+        {
+            "questions": {
+                "responsiveness.overall": {
+                    "type": "choice",
+                    "instructions": "Determine responsiveness.",
+                    "criteria": {"responsive": "Responsive", "not_responsive": "Not responsive"},
+                    "source_refs": [
+                        {
+                            "task_version_id": "56d6dd2c-41ad-4854-b696-a7b34c31becb",
+                            "heading": "Responsiveness",
+                            "excerpt_hash": "a" * 64,
+                        }
+                    ],
+                    "aggregation": {"operator": "MAX_PROBABILITY"},
+                }
+            },
+            "decision_policy": {
+                "recommendations": {
+                    "is_responsive": {
+                        "operator": "PREDICATE",
+                        "predicate": {
+                            "question_key": "responsiveness.overall",
+                            "measure": "probability",
+                            "option": "responsive",
+                            "comparator": "GTE",
+                            "threshold": 0.7,
+                        },
+                    }
+                }
+            },
+            "state_contract": {
+                "builder_version": "document-review-state-v1",
+                "required_paths": ["document.text"],
+            },
+        }
+    )
+    prior = specification.model_dump(mode="json")
+    prior["decision_policy"]["recommendations"]["is_responsive"]["predicate"]["comparator"] = "EQ"
+
+    _validate_preserved_recommendations(specification, prior)
+
+    replaced = specification.model_copy(deep=True)
+    replaced.decision_policy.recommendations["is_responsive"] = DecisionSelectedOptionRecommendation(
+        operator="SELECTED_OPTION",
+        question_key="responsiveness.overall",
+        minimum_probability=0.7,
+    )
+    with pytest.raises(ValueError, match="must preserve its predicate form"):
+        _validate_preserved_recommendations(replaced, prior)
+
+
 def test_compiler_schema_exposes_dotted_question_and_state_path_patterns() -> None:
     schema = DecisionSpecificationCompilationOutput.model_json_schema(mode="validation")
     definitions = schema["$defs"]
@@ -246,3 +322,6 @@ def test_compiler_schema_exposes_dotted_question_and_state_path_patterns() -> No
     pattern = r"^[a-z][a-z0-9_]*(?:\.[a-z][a-z0-9_]*)+$"
     assert set(questions["patternProperties"]) == {pattern}
     assert state_paths["items"]["pattern"] == pattern
+    assert "matter.decision_context" in DecisionSpecification.model_validate(
+        _compiler_output(str(uuid.uuid4()), "a" * 64)["decision_specification"]
+    ).state_contract.required_paths

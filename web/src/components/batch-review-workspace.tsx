@@ -1,10 +1,10 @@
 "use client";
 
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { ArrowLeft, Check, ChevronDown, ChevronLeft, ChevronRight, FileText, MessageSquareText, Save, Search, SkipForward, Sparkles, X } from "lucide-react";
+import { ArrowLeft, Check, ChevronDown, ChevronLeft, ChevronRight, Clock3, FileText, LoaderCircle, MessageSquareText, Play, RotateCcw, Save, Search, SkipForward, Sparkles, X } from "lucide-react";
 import Link from "next/link";
 import { useRouter } from "next/navigation";
-import { type FormEvent, useEffect, useMemo, useState } from "react";
+import { type FormEvent, useEffect, useMemo, useRef, useState } from "react";
 import { toast } from "sonner";
 
 import { BrandMark } from "@/components/brand-mark";
@@ -19,6 +19,7 @@ import { parseMinimumSimilarity, SemanticThresholdControl } from "@/components/s
 import { ThemeToggle } from "@/components/theme-toggle";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
+import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle } from "@/components/ui/dialog";
 import { Input } from "@/components/ui/input";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Skeleton } from "@/components/ui/skeleton";
@@ -29,6 +30,7 @@ import type {
   CollectionItemRead,
   CustodianRead,
   MatterRead,
+  MatterAnalysisTaskRead,
   MatterFacetValuesResponse,
   MatterSearchFilter,
   MatterSearchHit,
@@ -38,6 +40,7 @@ import type {
   MetadataDefinitionRead,
   MetadataGroupRead,
   ReviewBatchCodingFieldRead,
+  ReviewBatchCodingHistoryEntryRead,
   ReviewBatchDocumentCodingRead,
   ReviewBatchDocumentAnalysisRead,
   ReviewBatchDocumentRead,
@@ -45,6 +48,9 @@ import type {
   ReviewBatchRunDocumentValues,
   ReviewBatchRunProgressRead,
   ReviewBatchRunRead,
+  ReviewBatchSearchCodingFieldRead,
+  ReviewBatchSearchRequest,
+  ReviewDecisionResultRead,
 } from "@/generated/models";
 import { coreApi } from "@/lib/api-client";
 import type { BatchDocumentReference } from "@/lib/document-references";
@@ -92,6 +98,12 @@ function facetToken(value: unknown) {
 function typedFacetValue(token: string, definition: MetadataDefinitionRead): unknown {
   if (definition.type === "BOOLEAN") return token === "true";
   if (definition.type === "INTEGER" || definition.type === "DECIMAL") return Number(token);
+  return token;
+}
+
+function typedBatchCodingValue(token: string, field: ReviewBatchSearchCodingFieldRead): unknown {
+  if (field.type === "BOOLEAN") return token === "true";
+  if (field.type === "INTEGER" || field.type === "DECIMAL") return Number(token);
   return token;
 }
 
@@ -164,12 +176,13 @@ function statusLabel(status: ReviewBatchDocumentRead["review_status"]) {
   return status.toLowerCase().replace("_", " ");
 }
 
-export function BatchReviewWorkspace({ matterId, batchId, initialDocumentId, initialParagraphReference, initialPage = 1 }: {
+export function BatchReviewWorkspace({ matterId, batchId, initialDocumentId, initialParagraphReference, initialPage = 1, initialAnalysisDialogOpen = false }: {
   matterId: string;
   batchId: string;
   initialDocumentId?: string;
   initialParagraphReference?: string;
   initialPage?: number;
+  initialAnalysisDialogOpen?: boolean;
 }) {
   const router = useRouter();
   const queryClient = useQueryClient();
@@ -179,11 +192,16 @@ export function BatchReviewWorkspace({ matterId, batchId, initialDocumentId, ini
   const [draftMinimumSimilarity, setDraftMinimumSimilarity] = useState("");
   const [minimumSimilarity, setMinimumSimilarity] = useState<number | null>(null);
   const [filters, setFilters] = useState<SelectedFilters>({});
+  const [codingFilters, setCodingFilters] = useState<SelectedFilters>({});
   const [offset, setOffset] = useState(Math.max(0, initialPage - 1) * PAGE_SIZE);
   const [selectedDocumentId, setSelectedDocumentId] = useState(initialDocumentId ?? "");
   const [paragraphReference, setParagraphReference] = useState(() => normalizeParagraphReference(initialParagraphReference));
   const [selectedTopicKeys, setSelectedTopicKeys] = useState<string[]>([]);
-  const [sidePanel, setSidePanel] = useState<"analysis" | "coding" | "chat">("analysis");
+  const [sidePanel, setSidePanel] = useState<"analysis" | "coding" | "history" | "chat">("analysis");
+  const [analysisDialogOpen, setAnalysisDialogOpen] = useState(initialAnalysisDialogOpen);
+  const [analysisTaskId, setAnalysisTaskId] = useState("");
+  const [selectedAnalysisRunId, setSelectedAnalysisRunId] = useState("");
+  const searchableCodingFieldsRef = useRef<HTMLElement>(null);
 
   const matter = useQuery({ queryKey: ["matter", matterId], queryFn: () => coreApi<MatterRead>(`/v1/matters/${matterId}`) });
   const client = useQuery({
@@ -204,12 +222,41 @@ export function BatchReviewWorkspace({ matterId, batchId, initialDocumentId, ini
     queryKey: ["metadata-groups", matterId],
     queryFn: () => coreApi<MetadataGroupRead[]>(`/v1/matters/${matterId}/metadata-groups`),
   });
-  const batch = useQuery({ queryKey: ["review-batch", matterId, batchId], queryFn: () => coreApi<ReviewBatchRead>(`/v1/matters/${matterId}/review-batches/${batchId}`) });
+  const batch = useQuery({
+    queryKey: ["review-batch", matterId, batchId],
+    queryFn: () => coreApi<ReviewBatchRead>(`/v1/matters/${matterId}/review-batches/${batchId}`),
+    refetchInterval: (query) => ["QUEUED", "SYNCING"].includes(query.state.data?.searchable_coding_status ?? "") ? 1000 : false,
+  });
+  const analysisTasks = useQuery({
+    queryKey: ["analysis-tasks", matterId],
+    queryFn: () => coreApi<MatterAnalysisTaskRead[]>(`/v1/matters/${matterId}/analysis-tasks`),
+    enabled: analysisDialogOpen,
+  });
+  const batchRuns = useQuery({
+    queryKey: ["review-batch-runs", matterId, batchId],
+    queryFn: () => coreApi<ReviewBatchRunRead[]>(`/v1/matters/${matterId}/review-batches/${batchId}/runs`),
+    enabled: batch.data?.status === "READY",
+    refetchInterval: (query) => query.state.data?.some((item) => item.configuration_snapshot.mode === "BATCH" && ["QUEUED", "RUNNING"].includes(item.status)) ? 1000 : false,
+  });
+  const analysisRuns = useMemo(() => (batchRuns.data ?? []).filter((item) => item.run_type === "WORKFLOW" && item.configuration_snapshot.mode === "BATCH"), [batchRuns.data]);
   const taxonomy = useQuery({
     queryKey: ["review-batch-topic-taxonomy", matterId, batchId],
     queryFn: () => coreApi<BatchTopicTaxonomyRead | null>(`/v1/matters/${matterId}/review-batches/${batchId}/topic-taxonomy`),
     enabled: batch.data?.status === "READY",
   });
+  const matterDefinitionAssessment = taxonomy.data?.review_batch_run_id ? {
+    runId: taxonomy.data.review_batch_run_id,
+    version: taxonomy.data.version,
+    createdAt: taxonomy.data.created_at,
+  } : undefined;
+  const viewingMatterDefinition = Boolean(
+    matterDefinitionAssessment
+    && (selectedAnalysisRunId === matterDefinitionAssessment.runId || analysisRuns.length === 0),
+  );
+  const selectedAnalysisRun = viewingMatterDefinition
+    ? undefined
+    : analysisRuns.find((item) => item.id === selectedAnalysisRunId) ?? analysisRuns[0];
+  const selectedAnalysisViewId = selectedAnalysisRun?.id ?? matterDefinitionAssessment?.runId ?? "";
   const run = useQuery({
     queryKey: ["review-batch-run", matterId, batchId],
     queryFn: () => coreApi<ReviewBatchRunRead>(`/v1/matters/${matterId}/review-batches/${batchId}/review-run`, { method: "POST" }),
@@ -229,7 +276,7 @@ export function BatchReviewWorkspace({ matterId, batchId, initialDocumentId, ini
       const rightRank = PREFERRED_FACETS.indexOf(right.key);
       return (leftRank < 0 ? 1000 : leftRank) - (rightRank < 0 ? 1000 : rightRank) || left.display_name.localeCompare(right.display_name);
     }), [definitions.data]);
-  const searchRequest = useMemo<MatterSearchRequest>(() => {
+  const searchRequest = useMemo<ReviewBatchSearchRequest>(() => {
     const definitionByKey = new Map(facetDefinitions.map((definition) => [definition.key, definition]));
     const searchFilters = Object.entries(filters).flatMap<MatterSearchFilter>(([key, values]) => {
       const definition = definitionByKey.get(key);
@@ -245,12 +292,17 @@ export function BatchReviewWorkspace({ matterId, batchId, initialDocumentId, ini
       search_mode: effectiveMode,
       minimum_similarity: effectiveMode === "SEMANTIC" ? minimumSimilarity : null,
       filters: searchFilters,
+      coding_filters: Object.entries(codingFilters).flatMap(([key, values]) => {
+        const field = batch.data?.searchable_coding_fields.find((item) => item.key === key);
+        if (!field || !values.length) return [];
+        return [{ field: key, values: values.map((value) => typedBatchCodingValue(value, field)) }];
+      }),
       facets: [],
       sort: query.trim() ? [{ field: "_score", direction: "DESC" }] : [{ field: "created_at", direction: "DESC" }],
       offset,
       size: PAGE_SIZE,
     };
-  }, [facetDefinitions, filters, minimumSimilarity, offset, query, searchMode]);
+  }, [batch.data?.searchable_coding_fields, codingFilters, facetDefinitions, filters, minimumSimilarity, offset, query, searchMode]);
   const searchResults = useQuery({
     queryKey: ["review-batch-search", matterId, batchId, searchRequest, selectedTopicKeys],
     queryFn: () => {
@@ -310,7 +362,34 @@ export function BatchReviewWorkspace({ matterId, batchId, initialDocumentId, ini
   const analysis = useQuery({
     queryKey: ["review-batch-document-analysis", matterId, batchId, taxonomy.data?.review_batch_run_id, effectiveDocumentId],
     queryFn: () => coreApi<ReviewBatchDocumentAnalysisRead>(`/v1/matters/${matterId}/review-batches/${batchId}/runs/${taxonomy.data!.review_batch_run_id}/documents/${effectiveDocumentId}/analysis`),
-    enabled: Boolean(taxonomy.data?.review_batch_run_id && effectiveDocumentId),
+    enabled: sidePanel === "analysis" && viewingMatterDefinition && Boolean(taxonomy.data?.review_batch_run_id && effectiveDocumentId),
+    retry: false,
+  });
+  const codingHistory = useQuery({
+    queryKey: ["review-batch-coding-history", matterId, batchId, effectiveDocumentId],
+    queryFn: () => coreApi<ReviewBatchCodingHistoryEntryRead[]>(`/v1/matters/${matterId}/review-batches/${batchId}/documents/${effectiveDocumentId}/coding-history`),
+    enabled: sidePanel === "history" && Boolean(effectiveDocumentId),
+  });
+  const analysisRunProgress = useQuery({
+    queryKey: ["review-batch-progress", matterId, batchId, selectedAnalysisRun?.id],
+    queryFn: () => coreApi<ReviewBatchRunProgressRead>(`/v1/matters/${matterId}/review-batches/${batchId}/runs/${selectedAnalysisRun!.id}/progress`),
+    enabled: Boolean(selectedAnalysisRun?.id),
+    refetchInterval: ["QUEUED", "RUNNING"].includes(selectedAnalysisRun?.status ?? "") ? 1000 : false,
+  });
+  const analysisDocumentStatus = useQuery({
+    queryKey: ["review-batch-analysis-document", matterId, batchId, selectedAnalysisRun?.id, effectiveDocumentId],
+    queryFn: async () => {
+      const params = new URLSearchParams({ run_id: selectedAnalysisRun!.id, document_id: effectiveDocumentId, offset: "0", limit: "1" });
+      const documents = await coreApi<ReviewBatchDocumentRead[]>(`/v1/matters/${matterId}/review-batches/${batchId}/documents?${params}`);
+      return documents[0] ?? null;
+    },
+    enabled: Boolean(selectedAnalysisRun?.id && effectiveDocumentId),
+    refetchInterval: ["QUEUED", "RUNNING"].includes(selectedAnalysisRun?.status ?? "") ? 1000 : false,
+  });
+  const decisionResult = useQuery({
+    queryKey: ["review-decision-result", matterId, batchId, selectedAnalysisRun?.id, effectiveDocumentId],
+    queryFn: () => coreApi<ReviewDecisionResultRead>(`/v1/matters/${matterId}/review-batches/${batchId}/runs/${selectedAnalysisRun!.id}/documents/${effectiveDocumentId}/decision-result`),
+    enabled: sidePanel === "analysis" && analysisDocumentStatus.data?.review_status === "COMPLETED",
     retry: false,
   });
 
@@ -379,6 +458,18 @@ export function BatchReviewWorkspace({ matterId, batchId, initialDocumentId, ini
     setSelectedDocumentId("");
     setParagraphReference(undefined);
   };
+  const toggleCodingFilter = (key: string, value: string) => {
+    setCodingFilters((current) => {
+      const next = { ...current };
+      const selected = next[key] ?? [];
+      next[key] = selected.includes(value) ? selected.filter((item) => item !== value) : [...selected, value];
+      if (!next[key].length) delete next[key];
+      return next;
+    });
+    setOffset(0);
+    setSelectedDocumentId("");
+    setParagraphReference(undefined);
+  };
   const toggleTopic = (topicKey: string) => {
     setSelectedTopicKeys((current) => current.includes(topicKey) ? current.filter((item) => item !== topicKey) : [...current, topicKey]);
     setOffset(0);
@@ -391,6 +482,7 @@ export function BatchReviewWorkspace({ matterId, batchId, initialDocumentId, ini
       queryClient.invalidateQueries({ queryKey: ["review-batch-document-statuses", matterId, batchId] }),
       queryClient.invalidateQueries({ queryKey: ["review-batch-progress", matterId, batchId] }),
       queryClient.invalidateQueries({ queryKey: ["review-batch-document-coding", matterId, batchId] }),
+      queryClient.invalidateQueries({ queryKey: ["review-batch-coding-history", matterId, batchId] }),
       queryClient.invalidateQueries({ queryKey: ["review-batch-run", matterId, batchId] }),
       queryClient.invalidateQueries({ queryKey: ["review-batches", matterId] }),
     ]);
@@ -433,6 +525,43 @@ export function BatchReviewWorkspace({ matterId, batchId, initialDocumentId, ini
     },
     onError: (error) => toast.error(error instanceof Error ? error.message : "The coding groups could not be updated."),
   });
+  const publishedAnalysisTasks = (analysisTasks.data ?? []).filter((task) => task.status === "ACTIVE" && task.published_version !== null);
+  const effectiveAnalysisTask = publishedAnalysisTasks.find((task) => task.id === analysisTaskId) ?? publishedAnalysisTasks[0];
+  const effectiveAnalysisTaskId = effectiveAnalysisTask?.id ?? "";
+  const hasUnpublishedAnalysisDraft = Boolean(
+    effectiveAnalysisTask?.published_version
+    && effectiveAnalysisTask.current_version > effectiveAnalysisTask.published_version,
+  );
+  const openAnalysisDialog = (taskId?: string) => {
+    setAnalysisTaskId(taskId ?? "");
+    setAnalysisDialogOpen(true);
+  };
+  const viewSearchableCodingFields = () => {
+    searchableCodingFieldsRef.current?.scrollIntoView({ behavior: "smooth", block: "start" });
+    searchableCodingFieldsRef.current?.focus({ preventScroll: true });
+  };
+  const launchAnalysis = useMutation({
+    mutationFn: () => coreApi<ReviewBatchRunRead>(`/v1/matters/${matterId}/review-batches/${batchId}/analysis-runs`, {
+      method: "POST",
+      body: JSON.stringify({ matter_analysis_task_id: effectiveAnalysisTaskId }),
+    }),
+    onSuccess: (created) => {
+      queryClient.setQueryData<ReviewBatchRunRead[]>(["review-batch-runs", matterId, batchId], (current) => current ? [created, ...current] : [created]);
+      setSelectedAnalysisRunId(created.id);
+      setSidePanel("analysis");
+      setAnalysisDialogOpen(false);
+      toast.success("Batch analysis was queued.");
+    },
+    onError: (error) => toast.error(error instanceof Error ? error.message : "The batch analysis could not be started."),
+  });
+  const makeAnalysisSearchable = useMutation({
+    mutationFn: (runId: string) => coreApi(`/v1/matters/${matterId}/review-batches/${batchId}/runs/${runId}/coding-search`, { method: "POST" }),
+    onSuccess: async () => {
+      await queryClient.invalidateQueries({ queryKey: ["review-batch", matterId, batchId] });
+      toast.success("Batch Coding is being published to this batch's search index.");
+    },
+    onError: (error) => toast.error(error instanceof Error ? error.message : "The coding run could not be made searchable."),
+  });
 
   const currentIndex = searchResults.data?.hits.findIndex((hit) => hit.document_id === effectiveDocumentId) ?? -1;
   const processed = (progress.data?.completed_count ?? 0) + (progress.data?.skipped_count ?? 0);
@@ -453,6 +582,7 @@ export function BatchReviewWorkspace({ matterId, batchId, initialDocumentId, ini
           </div>
           {batch.data?.search_status && batch.data.search_status !== "READY" ? <Badge variant="outline">Search {batch.data.search_status.toLowerCase().replace("_", " ")}</Badge> : null}
           {run.data?.status === "COMPLETED" ? <Badge variant="accent"><Check />Review complete</Badge> : null}
+          <Button type="button" variant="outline" size="sm" disabled={batch.data?.status !== "READY"} onClick={() => openAnalysisDialog()}><Play />Run analysis</Button>
           {batch.data ? <AssignBatchCodingGroupsDialog batch={batch.data} groups={groups.data ?? []} onSave={(targetBatchId, codingGroupIds) => assignCodingGroups.mutateAsync({ targetBatchId, codingGroupIds }).then(() => undefined)} /> : null}
           <HelpLink topic="reviewBatches" />
           <ThemeToggle />
@@ -475,7 +605,7 @@ export function BatchReviewWorkspace({ matterId, batchId, initialDocumentId, ini
       <div
         className="grid min-h-0 flex-1 overflow-hidden"
         style={{
-          gridTemplateColumns: sidePanel === "chat" ? "24rem minmax(0, 1fr) 30rem" : "24rem minmax(0, 1fr) 25rem",
+          gridTemplateColumns: "24rem minmax(0, 1fr) 30rem",
           gridTemplateRows: "minmax(0, 1fr)",
         }}
         aria-label="Batch review layout"
@@ -483,10 +613,11 @@ export function BatchReviewWorkspace({ matterId, batchId, initialDocumentId, ini
         <aside className="flex min-h-0 min-w-0 flex-col overflow-hidden border-r bg-card" aria-label="Batch documents">
           <div className="flex h-11 shrink-0 items-center justify-between border-b px-3">
             <h2 className="text-sm font-semibold">Batch results</h2>
-            <span className="text-xs text-muted-foreground">{searchResults.data ? query.trim() && searchMode === "SEMANTIC" && minimumSimilarity === null ? `Top ${searchResults.data.total.toLocaleString()} candidates` : `${searchResults.data.total.toLocaleString()} matches` : ""}</span>
+            <div className="flex items-center gap-2">{batch.data?.searchable_coding_status === "READY" && batch.data.searchable_coding_fields.length ? <Button type="button" size="sm" variant="outline" className="h-7 px-2 text-xs" onClick={viewSearchableCodingFields}><Sparkles />Batch Coding ({batch.data.searchable_coding_fields.length})</Button> : null}<span className="text-xs text-muted-foreground">{searchResults.data ? query.trim() && searchMode === "SEMANTIC" && minimumSimilarity === null ? `Top ${searchResults.data.total.toLocaleString()} candidates` : `${searchResults.data.total.toLocaleString()} matches` : ""}</span></div>
           </div>
           <div className="max-h-[40%] shrink-0 divide-y overflow-y-auto border-b">
             {taxonomy.data ? <BatchTopicFacet taxonomy={taxonomy.data} values={topicFacets.data} selected={selectedTopicKeys} onToggle={toggleTopic} /> : null}
+            {batch.data?.searchable_coding_status === "READY" && batch.data.searchable_coding_fields.length ? <section ref={searchableCodingFieldsRef} tabIndex={-1} aria-label="Batch Coding fields" className="scroll-mt-2 border-b bg-accent/5 outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-ring"><div className="px-3 pb-1 pt-3"><h3 className="flex items-center gap-1.5 text-sm font-semibold"><Sparkles className="size-3.5 text-accent" />Batch Coding</h3><p className="mt-0.5 text-xs text-muted-foreground">Selected run only · open a field to filter this batch</p></div>{batch.data.searchable_coding_fields.map((field) => <BatchCodingFacetSection key={field.metadata_definition_id} matterId={matterId} batchId={batchId} searchRequest={searchRequest} field={field} selected={codingFilters[field.key] ?? []} onToggle={toggleCodingFilter} />)}</section> : null}
             {facetDefinitions.map((definition) => <BatchFacetSection key={definition.id} matterId={matterId} batchId={batchId} searchRequest={searchRequest} definition={definition} selected={filters[definition.key] ?? []} custodianNames={new Map((custodians.data ?? []).map((custodian) => [custodian.id, custodian.display_name]))} onToggle={toggleFilter} />)}
             {!facetDefinitions.length ? <p className="p-3 text-xs text-muted-foreground">No batch filters are configured.</p> : null}
           </div>
@@ -511,12 +642,14 @@ export function BatchReviewWorkspace({ matterId, batchId, initialDocumentId, ini
                 : <div className="grid h-full w-full place-items-center p-8 text-center"><div><FileText className="mx-auto text-muted-foreground" /><p className="mt-3 font-semibold">Select a document</p></div></div>}
         </section>
 
-        <aside className="flex min-h-0 min-w-0 flex-col overflow-hidden border-l bg-card" aria-label="Batch analysis, coding, and chat">
-          <div className="flex h-11 shrink-0 items-center gap-1 border-b px-2"><Button type="button" size="sm" variant={sidePanel === "analysis" ? "outline" : "ghost"} onClick={() => setSidePanel("analysis")}><Sparkles />Analysis</Button><Button type="button" size="sm" variant={sidePanel === "coding" ? "outline" : "ghost"} onClick={() => setSidePanel("coding")}>Coding</Button><Button type="button" size="sm" variant={sidePanel === "chat" ? "outline" : "ghost"} onClick={() => setSidePanel("chat")}><MessageSquareText />Chat</Button><span className="ml-auto">{sidePanel !== "chat" && coding.data ? <Badge variant="outline">{statusLabel(coding.data.review_status)}</Badge> : null}</span></div>
+        <aside className="flex min-h-0 min-w-0 flex-col overflow-hidden border-l bg-card" aria-label="Batch analysis, coding, history, and chat">
+          <div className="flex h-11 shrink-0 items-center gap-1 border-b px-2"><Button type="button" size="sm" variant={sidePanel === "analysis" ? "outline" : "ghost"} onClick={() => setSidePanel("analysis")}><Sparkles />Analysis</Button><Button type="button" size="sm" variant={sidePanel === "coding" ? "outline" : "ghost"} onClick={() => setSidePanel("coding")}>Coding</Button><Button type="button" size="sm" variant={sidePanel === "history" ? "outline" : "ghost"} onClick={() => setSidePanel("history")}><Clock3 />History</Button><Button type="button" size="sm" variant={sidePanel === "chat" ? "outline" : "ghost"} onClick={() => setSidePanel("chat")}><MessageSquareText />Chat</Button><span className="ml-auto">{sidePanel !== "chat" && coding.data ? <Badge variant="outline">{statusLabel(coding.data.review_status)}</Badge> : null}</span></div>
           {sidePanel === "chat" ? <BatchChatPanel matterId={matterId} batchId={batchId} searchReady={batch.data?.search_status === "READY"} onOpenDocument={openDocumentReference} />
-            : sidePanel === "analysis" ? taxonomy.data
-            ? <DocumentAnalysisPanel analysis={analysis.data} loading={analysis.isPending} error={analysis.error?.message} />
-            : <div className="grid flex-1 place-items-center p-5 text-center"><div><Sparkles className="mx-auto text-muted-foreground" /><p className="mt-3 font-semibold">Analysis is not available yet</p><p className="mt-1 text-sm text-muted-foreground">The assessment has not produced document summaries or a topic taxonomy.</p>{matter.data ? <Button asChild className="mt-4" size="sm" variant="outline"><Link href={`/app/clients/${matter.data.client_id}/matters/${matterId}?tab=definition`}>Open assessment</Link></Button> : null}</div></div>
+            : sidePanel === "analysis" ? selectedAnalysisRun
+            ? <BatchDecisionAnalysisPanel runs={analysisRuns} matterDefinitionAssessment={matterDefinitionAssessment} selectedRun={selectedAnalysisRun} onSelectRun={setSelectedAnalysisRunId} progress={analysisRunProgress.data} documentStatus={analysisDocumentStatus.data?.review_status} result={decisionResult.data} resultLoading={decisionResult.isPending && decisionResult.isFetching} resultError={decisionResult.error?.message} searchableRunId={batch.data?.searchable_coding_run_id} searchableStatus={batch.data?.searchable_coding_status} publishing={makeAnalysisSearchable.isPending} onMakeSearchable={(runId) => makeAnalysisSearchable.mutate(runId)} onViewSearchableFields={viewSearchableCodingFields} onRunAgain={(taskId) => openAnalysisDialog(taskId)} />
+            : taxonomy.data && matterDefinitionAssessment ? <MatterDefinitionAnalysisPanel runs={analysisRuns} assessment={matterDefinitionAssessment} selectedRunId={selectedAnalysisViewId} onSelectRun={setSelectedAnalysisRunId} analysis={analysis.data} loading={analysis.isPending} error={analysis.error?.message} onRunAnalysis={() => openAnalysisDialog()} />
+            : <div className="grid flex-1 place-items-center p-5 text-center"><div><Sparkles className="mx-auto text-muted-foreground" /><p className="mt-3 font-semibold">No batch analysis yet</p><p className="mt-1 text-sm text-muted-foreground">Run a published Analysis Task against this frozen batch.</p><Button className="mt-4" size="sm" variant="outline" onClick={() => openAnalysisDialog()}><Play />Run analysis</Button></div></div>
+            : sidePanel === "history" ? <BatchCodingHistoryPanel entries={codingHistory.data} loading={codingHistory.isPending} error={codingHistory.error?.message} hasDocument={Boolean(effectiveDocumentId)} />
             : coding.isPending && effectiveDocumentId ? <div className="space-y-3 p-4">{Array.from({ length: 6 }, (_, index) => <Skeleton key={index} className="h-16" />)}</div>
             : coding.error ? <div className="p-4"><QueryError message={coding.error.message} /></div>
               : coding.data && batch.data && run.data ? <BatchCodingForm
@@ -531,6 +664,16 @@ export function BatchReviewWorkspace({ matterId, batchId, initialDocumentId, ini
                 : <div className="grid flex-1 place-items-center p-5 text-center text-sm text-muted-foreground">Select a document to begin coding.</div>}
         </aside>
       </div>
+      <Dialog open={analysisDialogOpen} onOpenChange={setAnalysisDialogOpen}>
+        <DialogContent>
+          <DialogHeader><DialogTitle>Run analysis against this batch</DialogTitle><DialogDescription>Select a published Analysis Task. The exact published version and every document in this batch will be frozen into an isolated Jev run.</DialogDescription></DialogHeader>
+          {analysisTasks.isPending ? <div className="space-y-2 py-3"><Skeleton className="h-10" /><Skeleton className="h-16" /></div>
+            : analysisTasks.error ? <QueryError message={analysisTasks.error.message} />
+            : publishedAnalysisTasks.length ? <div className="space-y-3 py-2"><label className="space-y-1.5 text-sm font-medium" htmlFor="batch-analysis-task"><span>Published task</span><Select value={effectiveAnalysisTaskId} onValueChange={setAnalysisTaskId}><SelectTrigger id="batch-analysis-task"><SelectValue placeholder="Select an analysis task" /></SelectTrigger><SelectContent>{publishedAnalysisTasks.map((task) => <SelectItem key={task.id} value={task.id}>{task.name} · published v{task.published_version}</SelectItem>)}</SelectContent></Select></label>{hasUnpublishedAnalysisDraft ? <div className="rounded-lg border border-amber-500/40 bg-amber-500/10 p-3 text-xs leading-5"><p className="font-semibold">A newer draft is not published</p><p className="mt-1 text-muted-foreground">This run will use published v{effectiveAnalysisTask?.published_version}, not draft v{effectiveAnalysisTask?.current_version}. Publish the draft from Analysis tasks first if it contains the corrected guidance.</p>{matter.data ? <Button asChild className="mt-2" size="sm" variant="outline"><Link href={`/app/clients/${matter.data.client_id}/matters/${matterId}?tab=analysis`}>Open Analysis tasks</Link></Button> : null}</div> : null}<p className="rounded-lg bg-muted p-3 text-xs leading-5 text-muted-foreground">Each rerun creates a new isolated result set and keeps the prior run available for comparison. It does not update final matter tags.</p></div>
+              : <div className="rounded-lg border border-dashed p-4 text-sm"><p className="font-semibold">No published Analysis Tasks</p><p className="mt-1 text-muted-foreground">Generate, validate, and publish a task version before launching a batch run.</p>{matter.data ? <Button asChild className="mt-3" size="sm" variant="outline"><Link href={`/app/clients/${matter.data.client_id}/matters/${matterId}?tab=analysis`}>Open Analysis tasks</Link></Button> : null}</div>}
+          <DialogFooter><Button type="button" variant="outline" onClick={() => setAnalysisDialogOpen(false)} disabled={launchAnalysis.isPending}>Cancel</Button><Button type="button" onClick={() => launchAnalysis.mutate()} disabled={!effectiveAnalysisTaskId || launchAnalysis.isPending}>{launchAnalysis.isPending ? <LoaderCircle className="animate-spin" /> : <Play />}{launchAnalysis.isPending ? "Queueing…" : `Run on ${batch.data?.document_count.toLocaleString() ?? 0} documents`}</Button></DialogFooter>
+        </DialogContent>
+      </Dialog>
       <div className="flex h-11 shrink-0 items-center justify-center gap-2 border-t bg-card px-3">
         <Button variant="ghost" size="sm" disabled={currentIndex <= 0} onClick={() => searchResults.data?.hits[currentIndex - 1] && selectDocument(searchResults.data.hits[currentIndex - 1].document_id)}><ChevronLeft />Previous document</Button>
         <Button variant="ghost" size="sm" disabled={currentIndex < 0 || currentIndex >= (searchResults.data?.hits.length ?? 0) - 1} onClick={() => searchResults.data?.hits[currentIndex + 1] && selectDocument(searchResults.data.hits[currentIndex + 1].document_id)}>Next document<ChevronRight /></Button>
@@ -539,9 +682,140 @@ export function BatchReviewWorkspace({ matterId, batchId, initialDocumentId, ini
   );
 }
 
+function formatHistoryDate(value: string) {
+  const date = new Date(value);
+  if (Number.isNaN(date.valueOf())) return value;
+  return new Intl.DateTimeFormat(undefined, {
+    dateStyle: "medium",
+    timeStyle: "short",
+  }).format(date);
+}
+
+function historyScore(entry: ReviewBatchCodingHistoryEntryRead) {
+  if (entry.score === null || entry.score === undefined) return null;
+  const kind = entry.score_kind?.toLowerCase().replaceAll("_", " ");
+  return `${Math.round(entry.score * 1000) / 10}%${kind ? ` ${kind}` : " score"}`;
+}
+
+function BatchCodingHistoryPanel({ entries, loading, error, hasDocument }: {
+  entries?: ReviewBatchCodingHistoryEntryRead[];
+  loading: boolean;
+  error?: string;
+  hasDocument: boolean;
+}) {
+  if (!hasDocument) return <div className="grid flex-1 place-items-center p-5 text-center text-sm text-muted-foreground">Select a document to view its batch coding history.</div>;
+  if (loading) return <div className="space-y-3 p-4">{Array.from({ length: 5 }, (_, index) => <Skeleton key={index} className="h-28" />)}</div>;
+  if (error) return <div className="p-4"><QueryError message={error} /></div>;
+  if (!entries?.length) return <div className="grid flex-1 place-items-center p-5 text-center"><div><Clock3 className="mx-auto text-muted-foreground" /><p className="mt-3 font-semibold">No batch coding history</p><p className="mt-1 text-sm text-muted-foreground">Coding from human, Jev, agent, and workflow runs will appear here.</p></div></div>;
+  return <div className="min-h-0 flex-1 overflow-y-auto p-4"><ol className="space-y-3">{entries.map((entry) => {
+    const rawCode = displayValue(entry.value);
+    const showRawCode = entry.value_label !== rawCode;
+    const score = historyScore(entry);
+    return <li key={`${entry.review_batch_run_id}:${entry.metadata_definition_id}:${entry.recorded_at}:${rawCode}`} className="rounded-lg border bg-background p-3 shadow-xs">
+      <div className="flex items-start justify-between gap-3"><div className="min-w-0"><p className="text-xs font-medium uppercase tracking-wide text-muted-foreground">{entry.field_display_name}</p><p className="mt-1 break-words text-sm font-semibold">{entry.value_label}</p>{showRawCode ? <p className="mt-0.5 break-all font-mono text-[11px] text-muted-foreground">{rawCode}</p> : null}</div><Badge variant={entry.source_kind === "HUMAN" ? "accent" : "outline"}>{entry.source_kind === "JEV" ? "Jev" : entry.source_kind.toLowerCase()}</Badge></div>
+      <dl className="mt-3 grid grid-cols-[auto_1fr] gap-x-3 gap-y-1 text-xs"><dt className="text-muted-foreground">Date</dt><dd>{formatHistoryDate(entry.recorded_at)}</dd><dt className="text-muted-foreground">Source</dt><dd className="min-w-0 break-words">{entry.source_label}{entry.source_detail ? <span className="text-muted-foreground"> · {entry.source_detail}</span> : null}</dd><dt className="text-muted-foreground">Score</dt><dd>{score ?? "—"}</dd></dl>
+    </li>;
+  })}</ol></div>;
+}
+
 function BatchTopicFacet({ taxonomy, values, selected, onToggle }: { taxonomy: BatchTopicTaxonomyRead; values?: MatterFacetValuesResponse; selected: string[]; onToggle: (topicKey: string) => void }) {
   const counts = new Map((values?.values ?? []).map((item) => [String(item.value), item.count]));
   return <section className="border-b bg-primary/5 p-3"><div className="mb-2 flex items-center justify-between gap-2"><h3 className="flex items-center gap-1.5 text-sm font-semibold"><Sparkles className="size-3.5 text-primary" />Batch topics</h3><Badge variant="outline">v{taxonomy.version}</Badge></div><div className="space-y-1">{taxonomy.topics.map((topic) => <label key={topic.id} className="flex cursor-pointer items-center gap-2 rounded-md px-1.5 py-1 text-sm hover:bg-muted"><input type="checkbox" className="size-4 accent-primary" checked={selected.includes(topic.topic_key)} onChange={() => onToggle(topic.topic_key)} /><span className="min-w-0 flex-1 truncate" title={topic.description ?? topic.label}>{topic.label}</span><span className="font-mono text-xs text-muted-foreground">{(counts.get(topic.topic_key) ?? topic.assignment_count).toLocaleString()}</span></label>)}</div></section>;
+}
+
+type MatterDefinitionAssessmentOption = {
+  runId: string;
+  version: number;
+  createdAt: string;
+};
+
+function BatchDecisionAnalysisPanel({ runs, matterDefinitionAssessment, selectedRun, onSelectRun, progress, documentStatus, result, resultLoading, resultError, searchableRunId, searchableStatus, publishing, onMakeSearchable, onViewSearchableFields, onRunAgain }: {
+  runs: ReviewBatchRunRead[];
+  matterDefinitionAssessment?: MatterDefinitionAssessmentOption;
+  selectedRun: ReviewBatchRunRead;
+  onSelectRun: (runId: string) => void;
+  progress?: ReviewBatchRunProgressRead;
+  documentStatus?: ReviewBatchDocumentRead["review_status"];
+  result?: ReviewDecisionResultRead;
+  resultLoading: boolean;
+  resultError?: string;
+  searchableRunId?: string | null;
+  searchableStatus?: string | null;
+  publishing: boolean;
+  onMakeSearchable: (runId: string) => void;
+  onViewSearchableFields: () => void;
+  onRunAgain: (taskId: string) => void;
+}) {
+  const taskName = typeof selectedRun.configuration_snapshot.task_name === "string" ? selectedRun.configuration_snapshot.task_name : "Analysis task";
+  const taskId = typeof selectedRun.configuration_snapshot.task_id === "string" ? selectedRun.configuration_snapshot.task_id : null;
+  const taskVersion = selectedRun.configuration_snapshot.task_version;
+  const processed = (progress?.completed_count ?? 0) + (progress?.skipped_count ?? 0) + (progress?.failed_count ?? 0);
+  const percent = progress?.document_count ? Math.round((processed / progress.document_count) * 100) : 0;
+  const canRunAgain = ["COMPLETED", "COMPLETED_WITH_ERRORS", "FAILED"].includes(selectedRun.status);
+  const searchReady = searchableRunId === selectedRun.id && searchableStatus === "READY";
+  return <div className="flex min-h-0 flex-1 flex-col overflow-hidden">
+    <div className="shrink-0 space-y-3 border-b p-3">
+      <div className="flex items-center justify-between gap-2"><div className="min-w-0"><p className="truncate text-sm font-semibold">{taskName}</p><p className="text-xs text-muted-foreground">Published v{String(taskVersion ?? "—")} · isolated results</p></div><div className="flex shrink-0 items-center gap-2"><StatusBadge status={selectedRun.status} />{canRunAgain ? <Button type="button" size="sm" variant="outline" disabled={!taskId} onClick={() => taskId && onRunAgain(taskId)}><RotateCcw />Run again</Button> : null}</div></div>
+      <AnalysisRunSelect runs={runs} matterDefinitionAssessment={matterDefinitionAssessment} selectedRunId={selectedRun.id} onSelectRun={onSelectRun} />
+      {progress ? <div><div className="h-1.5 overflow-hidden rounded-full bg-muted"><div className="h-full bg-primary transition-[width]" style={{ width: `${percent}%` }} /></div><p className="mt-1 text-xs tabular-nums text-muted-foreground">{processed.toLocaleString()} of {progress.document_count.toLocaleString()} processed · {(progress.failed_count ?? 0).toLocaleString()} failed</p></div> : null}
+      {["COMPLETED", "COMPLETED_WITH_ERRORS"].includes(selectedRun.status) ? <div className="rounded-lg border bg-background p-3"><div className="flex items-center justify-between gap-3"><div><p className="text-sm font-medium">Batch Coding</p><p className="mt-0.5 text-xs text-muted-foreground">Expose the policy-approved codes from this run as batch-only filters and facets.</p></div><Button type="button" size="sm" variant={searchReady ? "outline" : "default"} disabled={publishing || searchableRunId === selectedRun.id && ["QUEUED", "SYNCING"].includes(searchableStatus ?? "")} onClick={() => searchReady ? onViewSearchableFields() : onMakeSearchable(selectedRun.id)}>{publishing || searchableRunId === selectedRun.id && ["QUEUED", "SYNCING"].includes(searchableStatus ?? "") ? <LoaderCircle className="animate-spin" /> : <Search />}{searchReady ? "View filters" : searchableRunId === selectedRun.id ? "Publishing…" : "Make searchable"}</Button></div>{searchReady ? <p className="mt-2 text-xs text-muted-foreground">The fields are available under Batch Coding in the batch search filters.</p> : null}{searchableRunId === selectedRun.id && searchableStatus === "FAILED" ? <p className="mt-2 text-xs text-destructive">Projection failed. Retry this run to rebuild the Batch Coding projection.</p> : null}</div> : null}
+    </div>
+    {!documentStatus ? <div className="grid flex-1 place-items-center p-5 text-sm text-muted-foreground">Select a document to inspect its decision result.</div>
+      : documentStatus === "FAILED" ? <div className="grid flex-1 place-items-center p-5 text-center"><div><StatusBadge status="FAILED" /><p className="mt-3 text-sm text-muted-foreground">Jev could not complete this document. The run remains isolated and the failure is included in batch progress.</p></div></div>
+        : documentStatus !== "COMPLETED" ? <div className="grid flex-1 place-items-center p-5 text-center"><div><LoaderCircle className="mx-auto size-5 animate-spin text-primary" /><p className="mt-3 text-sm font-semibold">Document analysis {documentStatus.toLowerCase().replaceAll("_", " ")}</p><p className="mt-1 text-xs text-muted-foreground">The result will appear here when evaluation completes.</p></div></div>
+          : resultLoading ? <div className="space-y-3 p-4">{Array.from({ length: 5 }, (_, index) => <Skeleton key={index} className="h-20" />)}</div>
+            : resultError ? <div className="p-4"><QueryError message={resultError} /></div>
+              : result ? <div className="min-h-0 flex-1 space-y-4 overflow-y-auto p-4">
+                <div className="flex flex-wrap items-center gap-2"><StatusBadge status={result.status} /><Badge variant="outline">{result.provider ?? "provider"} · {result.model ?? "model"}</Badge>{result.coverage.complete === false ? <Badge variant="outline">partial coverage</Badge> : null}</div>
+                <DecisionResultSection title="Answers" value={result.answers} />
+                <DecisionResultSection title="Recommendations" value={result.recommendations} />
+                <DecisionResultSection title="Routes" value={result.routes} />
+                <DecisionResultSection title="Coverage" value={result.coverage} />
+                <p className="text-xs tabular-nums text-muted-foreground">{result.request_count.toLocaleString()} requests · {result.input_tokens.toLocaleString()} input tokens · {result.output_tokens.toLocaleString()} output tokens · {result.latency_ms.toLocaleString()} ms</p>
+              </div> : <div className="grid flex-1 place-items-center p-5 text-sm text-muted-foreground">The completed document has no stored Decision Result.</div>}
+  </div>;
+}
+
+function MatterDefinitionAnalysisPanel({ runs, assessment, selectedRunId, onSelectRun, analysis, loading, error, onRunAnalysis }: {
+  runs: ReviewBatchRunRead[];
+  assessment: MatterDefinitionAssessmentOption;
+  selectedRunId: string;
+  onSelectRun: (runId: string) => void;
+  analysis?: ReviewBatchDocumentAnalysisRead;
+  loading: boolean;
+  error?: string;
+  onRunAnalysis: () => void;
+}) {
+  return <div className="flex min-h-0 flex-1 flex-col overflow-hidden">
+    <div className="shrink-0 space-y-3 border-b bg-primary/5 p-3">
+      <div className="flex items-center justify-between gap-3"><div className="min-w-0"><p className="text-sm font-semibold">Matter Definition assessment</p><p className="mt-0.5 text-xs text-muted-foreground">This is the original assessment output, not a JEV Analysis Task run.</p></div><Button type="button" size="sm" className="shrink-0" onClick={onRunAnalysis}><Play />Run analysis</Button></div>
+      <AnalysisRunSelect runs={runs} matterDefinitionAssessment={assessment} selectedRunId={selectedRunId} onSelectRun={onSelectRun} />
+    </div>
+    <DocumentAnalysisPanel analysis={analysis} loading={loading} error={error} />
+  </div>;
+}
+
+export function AnalysisRunSelect({ runs, matterDefinitionAssessment, selectedRunId, onSelectRun }: {
+  runs: ReviewBatchRunRead[];
+  matterDefinitionAssessment?: MatterDefinitionAssessmentOption;
+  selectedRunId: string;
+  onSelectRun: (runId: string) => void;
+}) {
+  const optionCount = runs.length + (matterDefinitionAssessment ? 1 : 0);
+  return <label className="block space-y-1.5 text-xs font-medium" htmlFor="batch-analysis-run">
+    <span>Analysis run</span>
+    <Select value={selectedRunId} onValueChange={onSelectRun} disabled={optionCount < 2}>
+      <SelectTrigger id="batch-analysis-run" aria-label="Analysis run"><SelectValue /></SelectTrigger>
+      <SelectContent>
+        {runs.map((run) => <SelectItem key={run.id} value={run.id}>{String(run.configuration_snapshot.task_name ?? "Analysis task")} · published v{String(run.configuration_snapshot.task_version ?? "—")} · {formatHistoryDate(run.created_at)} · {run.status.toLowerCase().replaceAll("_", " ")}</SelectItem>)}
+        {matterDefinitionAssessment ? <SelectItem value={matterDefinitionAssessment.runId}>Matter Definition assessment · v{matterDefinitionAssessment.version} · {formatHistoryDate(matterDefinitionAssessment.createdAt)}</SelectItem> : null}
+      </SelectContent>
+    </Select>
+  </label>;
+}
+
+function DecisionResultSection({ title, value }: { title: string; value: unknown }) {
+  return <section><h3 className="mb-2 text-xs font-bold uppercase tracking-[0.08em] text-muted-foreground">{title}</h3><pre className="max-h-72 overflow-auto whitespace-pre-wrap break-words rounded-lg bg-background p-3 text-xs leading-5 [overflow-wrap:anywhere]">{JSON.stringify(value, null, 2)}</pre></section>;
 }
 
 function DocumentAnalysisPanel({ analysis, loading, error }: { analysis?: ReviewBatchDocumentAnalysisRead; loading: boolean; error?: string }) {
@@ -570,6 +844,38 @@ function useDebouncedValue(value: string, delay: number) {
     return () => window.clearTimeout(timer);
   }, [delay, value]);
   return debounced;
+}
+
+function BatchCodingFacetSection({ matterId, batchId, searchRequest, field, selected, onToggle }: {
+  matterId: string;
+  batchId: string;
+  searchRequest: ReviewBatchSearchRequest;
+  field: ReviewBatchSearchCodingFieldRead;
+  selected: string[];
+  onToggle: (key: string, value: string) => void;
+}) {
+  const [open, setOpen] = useState(false);
+  const values = useQuery({
+    queryKey: ["review-batch-coding-facet-values", matterId, batchId, field.key, searchRequest],
+    queryFn: () => coreApi<MatterFacetValuesResponse>(`/v1/matters/${matterId}/review-batches/${batchId}/coding-facets/${field.key}/values`, {
+      method: "POST",
+      body: JSON.stringify(searchRequest),
+    }),
+    enabled: open,
+    placeholderData: (previous) => previous,
+  });
+  const options = useMemo(() => {
+    const available = new Map((values.data?.values ?? []).map((option) => [facetToken(option.value), option]));
+    for (const token of selected) if (!available.has(token)) available.set(token, { value: token, count: 0 });
+    return [...available.values()];
+  }, [selected, values.data?.values]);
+  const labelFor = (token: string) => field.type === "BOOLEAN" ? token === "true" ? "Yes" : "No" : token;
+  return <div>
+    <button type="button" aria-expanded={open} onClick={() => setOpen((current) => !current)} className="flex min-h-10 w-full items-center gap-2 px-3 py-2 text-left text-sm font-semibold hover:bg-muted/60">
+      {open ? <ChevronDown className="size-4 shrink-0 text-muted-foreground" /> : <ChevronRight className="size-4 shrink-0 text-muted-foreground" />}<span className="min-w-0 flex-1 truncate">{field.display_name}</span>{selected.length ? <Badge variant="accent">{selected.length}</Badge> : null}
+    </button>
+    {open ? <div className="space-y-1 px-3 pb-3">{values.isPending ? <p className="text-xs text-muted-foreground">Loading values…</p> : values.error ? <p className="text-xs text-destructive">Values could not be loaded.</p> : options.length ? options.map((option) => { const token = facetToken(option.value); return <label key={token} className="flex min-h-8 cursor-pointer items-center gap-2 overflow-hidden rounded-md px-1.5 py-1 text-sm hover:bg-muted"><input type="checkbox" checked={selected.includes(token)} onChange={() => onToggle(field.key, token)} className="size-4 shrink-0 accent-primary" /><span className="min-w-0 flex-1 truncate" title={labelFor(token)}>{labelFor(token)}</span><span className="font-mono text-xs tabular-nums text-muted-foreground">{option.count.toLocaleString()}</span></label>; }) : <p className="text-xs text-muted-foreground">No coding values.</p>}</div> : null}
+  </div>;
 }
 
 function BatchFacetSection({ matterId, batchId, searchRequest, definition, selected, custodianNames, onToggle }: {

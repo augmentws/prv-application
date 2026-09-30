@@ -5,7 +5,6 @@
  * Phase-one Core API for authentication, hierarchical tenants, clients, matters, and matter metadata definitions.
  * OpenAPI spec version: 0.1.0
  */
-import type { MatterAnalysisTaskCreateTaskType } from './matterAnalysisTaskCreateTaskType';
 
 export interface MatterAnalysisTaskCreate {
   /** @pattern ^[a-z][a-z0-9_]{0,99}$ */
@@ -16,7 +15,7 @@ export interface MatterAnalysisTaskCreate {
      */
   name: string;
   description?: string | null;
-  task_type: MatterAnalysisTaskCreateTaskType;
+  task_type: 'QUESTION_ANSWERING';
   /**
      * @minLength 1
      * @maxLength 2000000

@@ -5,11 +5,15 @@
  * Phase-one Core API for authentication, hierarchical tenants, clients, matters, and matter metadata definitions.
  * OpenAPI spec version: 0.1.0
  */
+import type { DecisionFieldMappingOptionValueMap } from './decisionFieldMappingOptionValueMap';
+import type { DecisionFieldMappingValueSource } from './decisionFieldMappingValueSource';
 import type { DecisionUncertaintyMapping } from './decisionUncertaintyMapping';
 
 export interface DecisionFieldMapping {
   /** @pattern ^[a-z][a-z0-9_]{0,99}$ */
   metadata_definition_key: string;
-  value: unknown;
+  value_source?: DecisionFieldMappingValueSource;
+  value?: unknown | null;
+  option_value_map?: DecisionFieldMappingOptionValueMap;
   uncertainty?: DecisionUncertaintyMapping;
 }

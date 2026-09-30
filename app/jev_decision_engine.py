@@ -4,6 +4,7 @@ import asyncio
 import json
 import math
 import random
+import threading
 import time
 from collections.abc import Awaitable, Callable, Mapping
 from contextlib import AbstractAsyncContextManager
@@ -207,7 +208,11 @@ class TypeSafeJevDecisionEngine:
         self._jitter = jitter
         self._monotonic = monotonic
         self._now = now
-        self._semaphore = asyncio.Semaphore(settings.typesafe_concurrency)
+        # Batch documents execute in separate DBOS threads, each with its own asyncio event
+        # loop. asyncio.Semaphore is bound to one loop once contended, so it cannot enforce a
+        # process-wide cap across those document workflows. This gate uses a thread-safe
+        # semaphore with non-blocking async polling and is safe to share across event loops.
+        self._concurrency_gate = _CrossLoopConcurrencyGate(settings.typesafe_concurrency)
 
     async def evaluate(self, request: DecisionRequest) -> DecisionEnvelope:
         if not self._settings.typesafe_api_key:
@@ -231,7 +236,7 @@ class TypeSafeJevDecisionEngine:
         started_monotonic = self._monotonic()
         response: Any = None
         attempts = 0
-        async with self._semaphore:
+        async with self._concurrency_gate:
             for attempt in range(max_retries + 1):
                 attempts = attempt + 1
                 await self._limiter.acquire(
@@ -322,3 +327,50 @@ def build_decision_engine_registry(settings: Settings) -> DecisionEngineRegistry
     registry = DecisionEngineRegistry()
     registry.register("jev", TypeSafeJevDecisionEngine(settings))
     return registry
+
+
+class _CrossLoopConcurrencyGate:
+    """Async context manager backed by a process-wide, thread-safe semaphore."""
+
+    def __init__(self, limit: int, *, poll_seconds: float = 0.01) -> None:
+        self._semaphore = threading.BoundedSemaphore(limit)
+        self._poll_seconds = poll_seconds
+
+    async def __aenter__(self) -> None:
+        while not self._semaphore.acquire(blocking=False):
+            await asyncio.sleep(self._poll_seconds)
+
+    async def __aexit__(self, *_: object) -> None:
+        self._semaphore.release()
+
+
+_SHARED_REGISTRY_LOCK = threading.Lock()
+_SHARED_REGISTRIES: dict[tuple[object, ...], DecisionEngineRegistry] = {}
+
+
+def _shared_registry_key(settings: Settings) -> tuple[object, ...]:
+    return (
+        settings.typesafe_api_key,
+        settings.typesafe_base_url,
+        settings.typesafe_default_model,
+        settings.typesafe_timeout_seconds,
+        settings.typesafe_concurrency,
+        settings.typesafe_requests_per_minute,
+        settings.typesafe_input_tokens_per_minute,
+        settings.typesafe_max_retries,
+        settings.typesafe_retry_base_seconds,
+        settings.typesafe_retry_max_seconds,
+        settings.model_rate_limit_characters_per_token,
+    )
+
+
+def get_shared_decision_engine_registry(settings: Settings) -> DecisionEngineRegistry:
+    """Return one code-owned decision-engine registry per process and Jev configuration."""
+
+    key = _shared_registry_key(settings)
+    with _SHARED_REGISTRY_LOCK:
+        registry = _SHARED_REGISTRIES.get(key)
+        if registry is None:
+            registry = build_decision_engine_registry(settings)
+            _SHARED_REGISTRIES[key] = registry
+        return registry

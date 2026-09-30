@@ -60,10 +60,12 @@ import type {
   CustodianCreate,
   CustodianRead,
   DerivedArtifactUploadResponse,
+  DocumentCodingHistoryRead,
   DocumentMetadataFieldRead,
   ExternalProviderUsageRead,
   FacetValue,
   GetAssessmentExecutionV1MattersMatterIdDefinitionAssessmentsAssessmentIdExecutionGetParams,
+  GetMatterProviderUsageV1MattersMatterIdProviderUsageGetParams,
   GetSelectionItemsV1CollectionSelectionsSelectionIdItemsGetParams,
   HTTPValidationError,
   HealthHealthGet200,
@@ -75,6 +77,7 @@ import type {
   ListDocumentImportsV1MattersMatterIdDocumentImportsGetParams,
   ListEmbeddingJobsV1MattersMatterIdEmbeddingJobsGetParams,
   ListExternalProviderUsageV1TenantsTenantIdProviderUsageGetParams,
+  ListGuidanceV1MattersMatterIdGuidanceGetParams,
   ListMatterDocumentsV1MattersMatterIdDocumentsGetParams,
   ListReviewBatchDocumentsV1MattersMatterIdReviewBatchesBatchIdDocumentsGetParams,
   ListSearchOperationsV1MattersMatterIdSearchOperationsGetParams,
@@ -100,9 +103,12 @@ import type {
   MatterDefinitionAssessmentQuestionUpdate,
   MatterDefinitionAssessmentRead,
   MatterDefinitionAssessmentUpdate,
+  MatterDefinitionCloneCreate,
+  MatterDefinitionCreate,
   MatterDefinitionRead,
   MatterDefinitionRevisionCreate,
   MatterDefinitionRevisionRead,
+  MatterDefinitionUpdate,
   MatterDocumentImportCreate,
   MatterDocumentImportRead,
   MatterDocumentRead,
@@ -111,6 +117,7 @@ import type {
   MatterFacetValuesRequest,
   MatterFacetValuesResponse,
   MatterOverviewCounts,
+  MatterProviderUsageReportRead,
   MatterRead,
   MatterSavedSearchCreate,
   MatterSavedSearchExecute,
@@ -135,14 +142,17 @@ import type {
   MetadataGroupVisibilityUpdate,
   MetadataMutationRead,
   RefreshRequest,
+  ReviewBatchAnalysisRunCreate,
   ReviewBatchAssignmentUpdate,
   ReviewBatchCodingGroupsAdd,
   ReviewBatchCodingGroupsUpdate,
+  ReviewBatchCodingHistoryEntryRead,
   ReviewBatchComparisonRead,
   ReviewBatchCreate,
   ReviewBatchDocumentAnalysisRead,
   ReviewBatchDocumentCodingRead,
   ReviewBatchDocumentRead,
+  ReviewBatchFacetValuesRequest,
   ReviewBatchNoteCreate,
   ReviewBatchNoteRead,
   ReviewBatchRead,
@@ -151,6 +161,8 @@ import type {
   ReviewBatchRunProgressRead,
   ReviewBatchRunRead,
   ReviewBatchRunValueRead,
+  ReviewBatchSearchCodingSelectionRead,
+  ReviewBatchSearchRequest,
   ReviewDecisionResultRead,
   SearchCollectionItemsV1CollectionsCollectionIdSearchGetParams,
   SearchIndexGenerationRead,
@@ -3675,6 +3687,593 @@ export const publishAnalysisTaskV1MattersMatterIdAnalysisTasksTaskIdVersionsVers
 
 
 
+export type listGuidanceV1MattersMatterIdGuidanceGetResponse200 = {
+  data: MatterDefinitionRead[]
+  status: 200
+}
+
+export type listGuidanceV1MattersMatterIdGuidanceGetResponse422 = {
+  data: HTTPValidationError
+  status: 422
+}
+
+export type listGuidanceV1MattersMatterIdGuidanceGetResponseSuccess = (listGuidanceV1MattersMatterIdGuidanceGetResponse200) & {
+  headers: Headers;
+};
+export type listGuidanceV1MattersMatterIdGuidanceGetResponseError = (listGuidanceV1MattersMatterIdGuidanceGetResponse422) & {
+  headers: Headers;
+};
+
+export type listGuidanceV1MattersMatterIdGuidanceGetResponse = (listGuidanceV1MattersMatterIdGuidanceGetResponseSuccess | listGuidanceV1MattersMatterIdGuidanceGetResponseError)
+
+export const getListGuidanceV1MattersMatterIdGuidanceGetUrl = (matterId: string,
+    params?: ListGuidanceV1MattersMatterIdGuidanceGetParams,) => {
+  const normalizedParams = new URLSearchParams();
+
+  Object.entries(params || {}).forEach(([key, value]) => {
+
+    if (value !== undefined) {
+      normalizedParams.append(key, value === null ? 'null' : String(value))
+    }
+  });
+
+  const stringifiedParams = normalizedParams.toString();
+
+  return stringifiedParams.length > 0 ? `/api/core/v1/matters/${matterId}/guidance?${stringifiedParams}` : `/api/core/v1/matters/${matterId}/guidance`
+}
+
+/**
+ * @summary List Guidance
+ */
+export const listGuidanceV1MattersMatterIdGuidanceGet = async (matterId: string,
+    params?: ListGuidanceV1MattersMatterIdGuidanceGetParams, options?: RequestInit): Promise<listGuidanceV1MattersMatterIdGuidanceGetResponse> => {
+
+  const res = await fetch(getListGuidanceV1MattersMatterIdGuidanceGetUrl(matterId,params),
+  {
+    ...options,
+    method: 'GET'
+
+
+  }
+)
+
+
+  const body = [204, 205, 304].includes(res.status) ? null : await res.text();
+
+  const data: listGuidanceV1MattersMatterIdGuidanceGetResponse['data'] = body ? JSON.parse(body) : {}
+  return { data, status: res.status, headers: res.headers } as listGuidanceV1MattersMatterIdGuidanceGetResponse
+}
+
+
+
+export type createReviewGuidanceV1MattersMatterIdGuidancePostResponse201 = {
+  data: MatterDefinitionRead
+  status: 201
+}
+
+export type createReviewGuidanceV1MattersMatterIdGuidancePostResponse422 = {
+  data: HTTPValidationError
+  status: 422
+}
+
+export type createReviewGuidanceV1MattersMatterIdGuidancePostResponseSuccess = (createReviewGuidanceV1MattersMatterIdGuidancePostResponse201) & {
+  headers: Headers;
+};
+export type createReviewGuidanceV1MattersMatterIdGuidancePostResponseError = (createReviewGuidanceV1MattersMatterIdGuidancePostResponse422) & {
+  headers: Headers;
+};
+
+export type createReviewGuidanceV1MattersMatterIdGuidancePostResponse = (createReviewGuidanceV1MattersMatterIdGuidancePostResponseSuccess | createReviewGuidanceV1MattersMatterIdGuidancePostResponseError)
+
+export const getCreateReviewGuidanceV1MattersMatterIdGuidancePostUrl = (matterId: string,) => {
+
+
+
+
+  return `/api/core/v1/matters/${matterId}/guidance`
+}
+
+/**
+ * @summary Create Review Guidance
+ */
+export const createReviewGuidanceV1MattersMatterIdGuidancePost = async (matterId: string,
+    matterDefinitionCreate: MatterDefinitionCreate, options?: RequestInit): Promise<createReviewGuidanceV1MattersMatterIdGuidancePostResponse> => {
+
+    const getHeaders = (h?: NonNullable<RequestInit['headers']>): Record<string, string | readonly string[]> => {
+    if (!h) return {};
+    if (h instanceof Headers) return Object.fromEntries(h.entries());
+    if (Symbol.iterator in h) {
+      return Object.fromEntries(
+        Array.from(h as Iterable<Iterable<string>>, (entry) => Array.from(entry) as [string, string]),
+      );
+    }
+    const headers: Record<string, string | readonly string[]> = {};
+    for (const [name, value] of Object.entries<string | readonly string[] | undefined>(h)) {
+      if (value !== undefined) headers[name] = value;
+    }
+    return headers;
+  };
+const res = await fetch(getCreateReviewGuidanceV1MattersMatterIdGuidancePostUrl(matterId),
+  {
+    ...options,
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json', ...getHeaders(options?.headers) },
+    body: JSON.stringify(matterDefinitionCreate)
+  }
+)
+
+
+  const body = [204, 205, 304].includes(res.status) ? null : await res.text();
+
+  const data: createReviewGuidanceV1MattersMatterIdGuidancePostResponse['data'] = body ? JSON.parse(body) : {}
+  return { data, status: res.status, headers: res.headers } as createReviewGuidanceV1MattersMatterIdGuidancePostResponse
+}
+
+
+
+export type getReviewGuidanceV1MattersMatterIdGuidanceGuidanceIdGetResponse200 = {
+  data: MatterDefinitionRead
+  status: 200
+}
+
+export type getReviewGuidanceV1MattersMatterIdGuidanceGuidanceIdGetResponse422 = {
+  data: HTTPValidationError
+  status: 422
+}
+
+export type getReviewGuidanceV1MattersMatterIdGuidanceGuidanceIdGetResponseSuccess = (getReviewGuidanceV1MattersMatterIdGuidanceGuidanceIdGetResponse200) & {
+  headers: Headers;
+};
+export type getReviewGuidanceV1MattersMatterIdGuidanceGuidanceIdGetResponseError = (getReviewGuidanceV1MattersMatterIdGuidanceGuidanceIdGetResponse422) & {
+  headers: Headers;
+};
+
+export type getReviewGuidanceV1MattersMatterIdGuidanceGuidanceIdGetResponse = (getReviewGuidanceV1MattersMatterIdGuidanceGuidanceIdGetResponseSuccess | getReviewGuidanceV1MattersMatterIdGuidanceGuidanceIdGetResponseError)
+
+export const getGetReviewGuidanceV1MattersMatterIdGuidanceGuidanceIdGetUrl = (matterId: string,
+    guidanceId: string,) => {
+
+
+
+
+  return `/api/core/v1/matters/${matterId}/guidance/${guidanceId}`
+}
+
+/**
+ * @summary Get Review Guidance
+ */
+export const getReviewGuidanceV1MattersMatterIdGuidanceGuidanceIdGet = async (matterId: string,
+    guidanceId: string, options?: RequestInit): Promise<getReviewGuidanceV1MattersMatterIdGuidanceGuidanceIdGetResponse> => {
+
+  const res = await fetch(getGetReviewGuidanceV1MattersMatterIdGuidanceGuidanceIdGetUrl(matterId,guidanceId),
+  {
+    ...options,
+    method: 'GET'
+
+
+  }
+)
+
+
+  const body = [204, 205, 304].includes(res.status) ? null : await res.text();
+
+  const data: getReviewGuidanceV1MattersMatterIdGuidanceGuidanceIdGetResponse['data'] = body ? JSON.parse(body) : {}
+  return { data, status: res.status, headers: res.headers } as getReviewGuidanceV1MattersMatterIdGuidanceGuidanceIdGetResponse
+}
+
+
+
+export type updateReviewGuidanceV1MattersMatterIdGuidanceGuidanceIdPatchResponse200 = {
+  data: MatterDefinitionRead
+  status: 200
+}
+
+export type updateReviewGuidanceV1MattersMatterIdGuidanceGuidanceIdPatchResponse422 = {
+  data: HTTPValidationError
+  status: 422
+}
+
+export type updateReviewGuidanceV1MattersMatterIdGuidanceGuidanceIdPatchResponseSuccess = (updateReviewGuidanceV1MattersMatterIdGuidanceGuidanceIdPatchResponse200) & {
+  headers: Headers;
+};
+export type updateReviewGuidanceV1MattersMatterIdGuidanceGuidanceIdPatchResponseError = (updateReviewGuidanceV1MattersMatterIdGuidanceGuidanceIdPatchResponse422) & {
+  headers: Headers;
+};
+
+export type updateReviewGuidanceV1MattersMatterIdGuidanceGuidanceIdPatchResponse = (updateReviewGuidanceV1MattersMatterIdGuidanceGuidanceIdPatchResponseSuccess | updateReviewGuidanceV1MattersMatterIdGuidanceGuidanceIdPatchResponseError)
+
+export const getUpdateReviewGuidanceV1MattersMatterIdGuidanceGuidanceIdPatchUrl = (matterId: string,
+    guidanceId: string,) => {
+
+
+
+
+  return `/api/core/v1/matters/${matterId}/guidance/${guidanceId}`
+}
+
+/**
+ * @summary Update Review Guidance
+ */
+export const updateReviewGuidanceV1MattersMatterIdGuidanceGuidanceIdPatch = async (matterId: string,
+    guidanceId: string,
+    matterDefinitionUpdate: MatterDefinitionUpdate, options?: RequestInit): Promise<updateReviewGuidanceV1MattersMatterIdGuidanceGuidanceIdPatchResponse> => {
+
+    const getHeaders = (h?: NonNullable<RequestInit['headers']>): Record<string, string | readonly string[]> => {
+    if (!h) return {};
+    if (h instanceof Headers) return Object.fromEntries(h.entries());
+    if (Symbol.iterator in h) {
+      return Object.fromEntries(
+        Array.from(h as Iterable<Iterable<string>>, (entry) => Array.from(entry) as [string, string]),
+      );
+    }
+    const headers: Record<string, string | readonly string[]> = {};
+    for (const [name, value] of Object.entries<string | readonly string[] | undefined>(h)) {
+      if (value !== undefined) headers[name] = value;
+    }
+    return headers;
+  };
+const res = await fetch(getUpdateReviewGuidanceV1MattersMatterIdGuidanceGuidanceIdPatchUrl(matterId,guidanceId),
+  {
+    ...options,
+    method: 'PATCH',
+    headers: { 'Content-Type': 'application/json', ...getHeaders(options?.headers) },
+    body: JSON.stringify(matterDefinitionUpdate)
+  }
+)
+
+
+  const body = [204, 205, 304].includes(res.status) ? null : await res.text();
+
+  const data: updateReviewGuidanceV1MattersMatterIdGuidanceGuidanceIdPatchResponse['data'] = body ? JSON.parse(body) : {}
+  return { data, status: res.status, headers: res.headers } as updateReviewGuidanceV1MattersMatterIdGuidanceGuidanceIdPatchResponse
+}
+
+
+
+export type archiveReviewGuidanceV1MattersMatterIdGuidanceGuidanceIdArchivePostResponse200 = {
+  data: MatterDefinitionRead
+  status: 200
+}
+
+export type archiveReviewGuidanceV1MattersMatterIdGuidanceGuidanceIdArchivePostResponse422 = {
+  data: HTTPValidationError
+  status: 422
+}
+
+export type archiveReviewGuidanceV1MattersMatterIdGuidanceGuidanceIdArchivePostResponseSuccess = (archiveReviewGuidanceV1MattersMatterIdGuidanceGuidanceIdArchivePostResponse200) & {
+  headers: Headers;
+};
+export type archiveReviewGuidanceV1MattersMatterIdGuidanceGuidanceIdArchivePostResponseError = (archiveReviewGuidanceV1MattersMatterIdGuidanceGuidanceIdArchivePostResponse422) & {
+  headers: Headers;
+};
+
+export type archiveReviewGuidanceV1MattersMatterIdGuidanceGuidanceIdArchivePostResponse = (archiveReviewGuidanceV1MattersMatterIdGuidanceGuidanceIdArchivePostResponseSuccess | archiveReviewGuidanceV1MattersMatterIdGuidanceGuidanceIdArchivePostResponseError)
+
+export const getArchiveReviewGuidanceV1MattersMatterIdGuidanceGuidanceIdArchivePostUrl = (matterId: string,
+    guidanceId: string,) => {
+
+
+
+
+  return `/api/core/v1/matters/${matterId}/guidance/${guidanceId}/archive`
+}
+
+/**
+ * @summary Archive Review Guidance
+ */
+export const archiveReviewGuidanceV1MattersMatterIdGuidanceGuidanceIdArchivePost = async (matterId: string,
+    guidanceId: string, options?: RequestInit): Promise<archiveReviewGuidanceV1MattersMatterIdGuidanceGuidanceIdArchivePostResponse> => {
+
+  const res = await fetch(getArchiveReviewGuidanceV1MattersMatterIdGuidanceGuidanceIdArchivePostUrl(matterId,guidanceId),
+  {
+    ...options,
+    method: 'POST'
+
+
+  }
+)
+
+
+  const body = [204, 205, 304].includes(res.status) ? null : await res.text();
+
+  const data: archiveReviewGuidanceV1MattersMatterIdGuidanceGuidanceIdArchivePostResponse['data'] = body ? JSON.parse(body) : {}
+  return { data, status: res.status, headers: res.headers } as archiveReviewGuidanceV1MattersMatterIdGuidanceGuidanceIdArchivePostResponse
+}
+
+
+
+export type restoreReviewGuidanceV1MattersMatterIdGuidanceGuidanceIdRestorePostResponse200 = {
+  data: MatterDefinitionRead
+  status: 200
+}
+
+export type restoreReviewGuidanceV1MattersMatterIdGuidanceGuidanceIdRestorePostResponse422 = {
+  data: HTTPValidationError
+  status: 422
+}
+
+export type restoreReviewGuidanceV1MattersMatterIdGuidanceGuidanceIdRestorePostResponseSuccess = (restoreReviewGuidanceV1MattersMatterIdGuidanceGuidanceIdRestorePostResponse200) & {
+  headers: Headers;
+};
+export type restoreReviewGuidanceV1MattersMatterIdGuidanceGuidanceIdRestorePostResponseError = (restoreReviewGuidanceV1MattersMatterIdGuidanceGuidanceIdRestorePostResponse422) & {
+  headers: Headers;
+};
+
+export type restoreReviewGuidanceV1MattersMatterIdGuidanceGuidanceIdRestorePostResponse = (restoreReviewGuidanceV1MattersMatterIdGuidanceGuidanceIdRestorePostResponseSuccess | restoreReviewGuidanceV1MattersMatterIdGuidanceGuidanceIdRestorePostResponseError)
+
+export const getRestoreReviewGuidanceV1MattersMatterIdGuidanceGuidanceIdRestorePostUrl = (matterId: string,
+    guidanceId: string,) => {
+
+
+
+
+  return `/api/core/v1/matters/${matterId}/guidance/${guidanceId}/restore`
+}
+
+/**
+ * @summary Restore Review Guidance
+ */
+export const restoreReviewGuidanceV1MattersMatterIdGuidanceGuidanceIdRestorePost = async (matterId: string,
+    guidanceId: string, options?: RequestInit): Promise<restoreReviewGuidanceV1MattersMatterIdGuidanceGuidanceIdRestorePostResponse> => {
+
+  const res = await fetch(getRestoreReviewGuidanceV1MattersMatterIdGuidanceGuidanceIdRestorePostUrl(matterId,guidanceId),
+  {
+    ...options,
+    method: 'POST'
+
+
+  }
+)
+
+
+  const body = [204, 205, 304].includes(res.status) ? null : await res.text();
+
+  const data: restoreReviewGuidanceV1MattersMatterIdGuidanceGuidanceIdRestorePostResponse['data'] = body ? JSON.parse(body) : {}
+  return { data, status: res.status, headers: res.headers } as restoreReviewGuidanceV1MattersMatterIdGuidanceGuidanceIdRestorePostResponse
+}
+
+
+
+export type cloneReviewGuidanceV1MattersMatterIdGuidanceGuidanceIdClonePostResponse201 = {
+  data: MatterDefinitionRead
+  status: 201
+}
+
+export type cloneReviewGuidanceV1MattersMatterIdGuidanceGuidanceIdClonePostResponse422 = {
+  data: HTTPValidationError
+  status: 422
+}
+
+export type cloneReviewGuidanceV1MattersMatterIdGuidanceGuidanceIdClonePostResponseSuccess = (cloneReviewGuidanceV1MattersMatterIdGuidanceGuidanceIdClonePostResponse201) & {
+  headers: Headers;
+};
+export type cloneReviewGuidanceV1MattersMatterIdGuidanceGuidanceIdClonePostResponseError = (cloneReviewGuidanceV1MattersMatterIdGuidanceGuidanceIdClonePostResponse422) & {
+  headers: Headers;
+};
+
+export type cloneReviewGuidanceV1MattersMatterIdGuidanceGuidanceIdClonePostResponse = (cloneReviewGuidanceV1MattersMatterIdGuidanceGuidanceIdClonePostResponseSuccess | cloneReviewGuidanceV1MattersMatterIdGuidanceGuidanceIdClonePostResponseError)
+
+export const getCloneReviewGuidanceV1MattersMatterIdGuidanceGuidanceIdClonePostUrl = (matterId: string,
+    guidanceId: string,) => {
+
+
+
+
+  return `/api/core/v1/matters/${matterId}/guidance/${guidanceId}/clone`
+}
+
+/**
+ * @summary Clone Review Guidance
+ */
+export const cloneReviewGuidanceV1MattersMatterIdGuidanceGuidanceIdClonePost = async (matterId: string,
+    guidanceId: string,
+    matterDefinitionCloneCreate: MatterDefinitionCloneCreate, options?: RequestInit): Promise<cloneReviewGuidanceV1MattersMatterIdGuidanceGuidanceIdClonePostResponse> => {
+
+    const getHeaders = (h?: NonNullable<RequestInit['headers']>): Record<string, string | readonly string[]> => {
+    if (!h) return {};
+    if (h instanceof Headers) return Object.fromEntries(h.entries());
+    if (Symbol.iterator in h) {
+      return Object.fromEntries(
+        Array.from(h as Iterable<Iterable<string>>, (entry) => Array.from(entry) as [string, string]),
+      );
+    }
+    const headers: Record<string, string | readonly string[]> = {};
+    for (const [name, value] of Object.entries<string | readonly string[] | undefined>(h)) {
+      if (value !== undefined) headers[name] = value;
+    }
+    return headers;
+  };
+const res = await fetch(getCloneReviewGuidanceV1MattersMatterIdGuidanceGuidanceIdClonePostUrl(matterId,guidanceId),
+  {
+    ...options,
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json', ...getHeaders(options?.headers) },
+    body: JSON.stringify(matterDefinitionCloneCreate)
+  }
+)
+
+
+  const body = [204, 205, 304].includes(res.status) ? null : await res.text();
+
+  const data: cloneReviewGuidanceV1MattersMatterIdGuidanceGuidanceIdClonePostResponse['data'] = body ? JSON.parse(body) : {}
+  return { data, status: res.status, headers: res.headers } as cloneReviewGuidanceV1MattersMatterIdGuidanceGuidanceIdClonePostResponse
+}
+
+
+
+export type listReviewGuidanceRevisionsV1MattersMatterIdGuidanceGuidanceIdRevisionsGetResponse200 = {
+  data: MatterDefinitionRevisionRead[]
+  status: 200
+}
+
+export type listReviewGuidanceRevisionsV1MattersMatterIdGuidanceGuidanceIdRevisionsGetResponse422 = {
+  data: HTTPValidationError
+  status: 422
+}
+
+export type listReviewGuidanceRevisionsV1MattersMatterIdGuidanceGuidanceIdRevisionsGetResponseSuccess = (listReviewGuidanceRevisionsV1MattersMatterIdGuidanceGuidanceIdRevisionsGetResponse200) & {
+  headers: Headers;
+};
+export type listReviewGuidanceRevisionsV1MattersMatterIdGuidanceGuidanceIdRevisionsGetResponseError = (listReviewGuidanceRevisionsV1MattersMatterIdGuidanceGuidanceIdRevisionsGetResponse422) & {
+  headers: Headers;
+};
+
+export type listReviewGuidanceRevisionsV1MattersMatterIdGuidanceGuidanceIdRevisionsGetResponse = (listReviewGuidanceRevisionsV1MattersMatterIdGuidanceGuidanceIdRevisionsGetResponseSuccess | listReviewGuidanceRevisionsV1MattersMatterIdGuidanceGuidanceIdRevisionsGetResponseError)
+
+export const getListReviewGuidanceRevisionsV1MattersMatterIdGuidanceGuidanceIdRevisionsGetUrl = (matterId: string,
+    guidanceId: string,) => {
+
+
+
+
+  return `/api/core/v1/matters/${matterId}/guidance/${guidanceId}/revisions`
+}
+
+/**
+ * @summary List Review Guidance Revisions
+ */
+export const listReviewGuidanceRevisionsV1MattersMatterIdGuidanceGuidanceIdRevisionsGet = async (matterId: string,
+    guidanceId: string, options?: RequestInit): Promise<listReviewGuidanceRevisionsV1MattersMatterIdGuidanceGuidanceIdRevisionsGetResponse> => {
+
+  const res = await fetch(getListReviewGuidanceRevisionsV1MattersMatterIdGuidanceGuidanceIdRevisionsGetUrl(matterId,guidanceId),
+  {
+    ...options,
+    method: 'GET'
+
+
+  }
+)
+
+
+  const body = [204, 205, 304].includes(res.status) ? null : await res.text();
+
+  const data: listReviewGuidanceRevisionsV1MattersMatterIdGuidanceGuidanceIdRevisionsGetResponse['data'] = body ? JSON.parse(body) : {}
+  return { data, status: res.status, headers: res.headers } as listReviewGuidanceRevisionsV1MattersMatterIdGuidanceGuidanceIdRevisionsGetResponse
+}
+
+
+
+export type createReviewGuidanceRevisionV1MattersMatterIdGuidanceGuidanceIdRevisionsPostResponse201 = {
+  data: MatterDefinitionRead
+  status: 201
+}
+
+export type createReviewGuidanceRevisionV1MattersMatterIdGuidanceGuidanceIdRevisionsPostResponse422 = {
+  data: HTTPValidationError
+  status: 422
+}
+
+export type createReviewGuidanceRevisionV1MattersMatterIdGuidanceGuidanceIdRevisionsPostResponseSuccess = (createReviewGuidanceRevisionV1MattersMatterIdGuidanceGuidanceIdRevisionsPostResponse201) & {
+  headers: Headers;
+};
+export type createReviewGuidanceRevisionV1MattersMatterIdGuidanceGuidanceIdRevisionsPostResponseError = (createReviewGuidanceRevisionV1MattersMatterIdGuidanceGuidanceIdRevisionsPostResponse422) & {
+  headers: Headers;
+};
+
+export type createReviewGuidanceRevisionV1MattersMatterIdGuidanceGuidanceIdRevisionsPostResponse = (createReviewGuidanceRevisionV1MattersMatterIdGuidanceGuidanceIdRevisionsPostResponseSuccess | createReviewGuidanceRevisionV1MattersMatterIdGuidanceGuidanceIdRevisionsPostResponseError)
+
+export const getCreateReviewGuidanceRevisionV1MattersMatterIdGuidanceGuidanceIdRevisionsPostUrl = (matterId: string,
+    guidanceId: string,) => {
+
+
+
+
+  return `/api/core/v1/matters/${matterId}/guidance/${guidanceId}/revisions`
+}
+
+/**
+ * @summary Create Review Guidance Revision
+ */
+export const createReviewGuidanceRevisionV1MattersMatterIdGuidanceGuidanceIdRevisionsPost = async (matterId: string,
+    guidanceId: string,
+    matterDefinitionRevisionCreate: MatterDefinitionRevisionCreate, options?: RequestInit): Promise<createReviewGuidanceRevisionV1MattersMatterIdGuidanceGuidanceIdRevisionsPostResponse> => {
+
+    const getHeaders = (h?: NonNullable<RequestInit['headers']>): Record<string, string | readonly string[]> => {
+    if (!h) return {};
+    if (h instanceof Headers) return Object.fromEntries(h.entries());
+    if (Symbol.iterator in h) {
+      return Object.fromEntries(
+        Array.from(h as Iterable<Iterable<string>>, (entry) => Array.from(entry) as [string, string]),
+      );
+    }
+    const headers: Record<string, string | readonly string[]> = {};
+    for (const [name, value] of Object.entries<string | readonly string[] | undefined>(h)) {
+      if (value !== undefined) headers[name] = value;
+    }
+    return headers;
+  };
+const res = await fetch(getCreateReviewGuidanceRevisionV1MattersMatterIdGuidanceGuidanceIdRevisionsPostUrl(matterId,guidanceId),
+  {
+    ...options,
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json', ...getHeaders(options?.headers) },
+    body: JSON.stringify(matterDefinitionRevisionCreate)
+  }
+)
+
+
+  const body = [204, 205, 304].includes(res.status) ? null : await res.text();
+
+  const data: createReviewGuidanceRevisionV1MattersMatterIdGuidanceGuidanceIdRevisionsPostResponse['data'] = body ? JSON.parse(body) : {}
+  return { data, status: res.status, headers: res.headers } as createReviewGuidanceRevisionV1MattersMatterIdGuidanceGuidanceIdRevisionsPostResponse
+}
+
+
+
+export type publishReviewGuidanceRevisionV1MattersMatterIdGuidanceGuidanceIdRevisionsRevisionNumberPublishPostResponse200 = {
+  data: MatterDefinitionRead
+  status: 200
+}
+
+export type publishReviewGuidanceRevisionV1MattersMatterIdGuidanceGuidanceIdRevisionsRevisionNumberPublishPostResponse422 = {
+  data: HTTPValidationError
+  status: 422
+}
+
+export type publishReviewGuidanceRevisionV1MattersMatterIdGuidanceGuidanceIdRevisionsRevisionNumberPublishPostResponseSuccess = (publishReviewGuidanceRevisionV1MattersMatterIdGuidanceGuidanceIdRevisionsRevisionNumberPublishPostResponse200) & {
+  headers: Headers;
+};
+export type publishReviewGuidanceRevisionV1MattersMatterIdGuidanceGuidanceIdRevisionsRevisionNumberPublishPostResponseError = (publishReviewGuidanceRevisionV1MattersMatterIdGuidanceGuidanceIdRevisionsRevisionNumberPublishPostResponse422) & {
+  headers: Headers;
+};
+
+export type publishReviewGuidanceRevisionV1MattersMatterIdGuidanceGuidanceIdRevisionsRevisionNumberPublishPostResponse = (publishReviewGuidanceRevisionV1MattersMatterIdGuidanceGuidanceIdRevisionsRevisionNumberPublishPostResponseSuccess | publishReviewGuidanceRevisionV1MattersMatterIdGuidanceGuidanceIdRevisionsRevisionNumberPublishPostResponseError)
+
+export const getPublishReviewGuidanceRevisionV1MattersMatterIdGuidanceGuidanceIdRevisionsRevisionNumberPublishPostUrl = (matterId: string,
+    guidanceId: string,
+    revisionNumber: number,) => {
+
+
+
+
+  return `/api/core/v1/matters/${matterId}/guidance/${guidanceId}/revisions/${revisionNumber}/publish`
+}
+
+/**
+ * @summary Publish Review Guidance Revision
+ */
+export const publishReviewGuidanceRevisionV1MattersMatterIdGuidanceGuidanceIdRevisionsRevisionNumberPublishPost = async (matterId: string,
+    guidanceId: string,
+    revisionNumber: number, options?: RequestInit): Promise<publishReviewGuidanceRevisionV1MattersMatterIdGuidanceGuidanceIdRevisionsRevisionNumberPublishPostResponse> => {
+
+  const res = await fetch(getPublishReviewGuidanceRevisionV1MattersMatterIdGuidanceGuidanceIdRevisionsRevisionNumberPublishPostUrl(matterId,guidanceId,revisionNumber),
+  {
+    ...options,
+    method: 'POST'
+
+
+  }
+)
+
+
+  const body = [204, 205, 304].includes(res.status) ? null : await res.text();
+
+  const data: publishReviewGuidanceRevisionV1MattersMatterIdGuidanceGuidanceIdRevisionsRevisionNumberPublishPostResponse['data'] = body ? JSON.parse(body) : {}
+  return { data, status: res.status, headers: res.headers } as publishReviewGuidanceRevisionV1MattersMatterIdGuidanceGuidanceIdRevisionsRevisionNumberPublishPostResponse
+}
+
+
+
 export type getMatterDefinitionV1MattersMatterIdDefinitionGetResponse200 = {
   data: MatterDefinitionRead | null
   status: 200
@@ -4891,6 +5490,59 @@ export const cancelTopicJobV1MattersMatterIdTopicJobsJobIdCancelPost = async (ma
 
 
 
+export type getDocumentCodingHistoryV1MattersMatterIdDocumentsDocumentIdCodingHistoryGetResponse200 = {
+  data: DocumentCodingHistoryRead
+  status: 200
+}
+
+export type getDocumentCodingHistoryV1MattersMatterIdDocumentsDocumentIdCodingHistoryGetResponse422 = {
+  data: HTTPValidationError
+  status: 422
+}
+
+export type getDocumentCodingHistoryV1MattersMatterIdDocumentsDocumentIdCodingHistoryGetResponseSuccess = (getDocumentCodingHistoryV1MattersMatterIdDocumentsDocumentIdCodingHistoryGetResponse200) & {
+  headers: Headers;
+};
+export type getDocumentCodingHistoryV1MattersMatterIdDocumentsDocumentIdCodingHistoryGetResponseError = (getDocumentCodingHistoryV1MattersMatterIdDocumentsDocumentIdCodingHistoryGetResponse422) & {
+  headers: Headers;
+};
+
+export type getDocumentCodingHistoryV1MattersMatterIdDocumentsDocumentIdCodingHistoryGetResponse = (getDocumentCodingHistoryV1MattersMatterIdDocumentsDocumentIdCodingHistoryGetResponseSuccess | getDocumentCodingHistoryV1MattersMatterIdDocumentsDocumentIdCodingHistoryGetResponseError)
+
+export const getGetDocumentCodingHistoryV1MattersMatterIdDocumentsDocumentIdCodingHistoryGetUrl = (matterId: string,
+    documentId: string,) => {
+
+
+
+
+  return `/api/core/v1/matters/${matterId}/documents/${documentId}/coding-history`
+}
+
+/**
+ * Return authoritative direct coding first, then isolated history grouped by batch.
+ * @summary Get Document Coding History
+ */
+export const getDocumentCodingHistoryV1MattersMatterIdDocumentsDocumentIdCodingHistoryGet = async (matterId: string,
+    documentId: string, options?: RequestInit): Promise<getDocumentCodingHistoryV1MattersMatterIdDocumentsDocumentIdCodingHistoryGetResponse> => {
+
+  const res = await fetch(getGetDocumentCodingHistoryV1MattersMatterIdDocumentsDocumentIdCodingHistoryGetUrl(matterId,documentId),
+  {
+    ...options,
+    method: 'GET'
+
+
+  }
+)
+
+
+  const body = [204, 205, 304].includes(res.status) ? null : await res.text();
+
+  const data: getDocumentCodingHistoryV1MattersMatterIdDocumentsDocumentIdCodingHistoryGetResponse['data'] = body ? JSON.parse(body) : {}
+  return { data, status: res.status, headers: res.headers } as getDocumentCodingHistoryV1MattersMatterIdDocumentsDocumentIdCodingHistoryGetResponse
+}
+
+
+
 export type listDocumentMetadataValuesV1MattersMatterIdDocumentsDocumentIdMetadataValuesGetResponse200 = {
   data: DocumentMetadataFieldRead[]
   status: 200
@@ -5781,6 +6433,65 @@ export const listExternalProviderUsageV1TenantsTenantIdProviderUsageGet = async 
 
   const data: listExternalProviderUsageV1TenantsTenantIdProviderUsageGetResponse['data'] = body ? JSON.parse(body) : {}
   return { data, status: res.status, headers: res.headers } as listExternalProviderUsageV1TenantsTenantIdProviderUsageGetResponse
+}
+
+
+
+export type getMatterProviderUsageV1MattersMatterIdProviderUsageGetResponse200 = {
+  data: MatterProviderUsageReportRead
+  status: 200
+}
+
+export type getMatterProviderUsageV1MattersMatterIdProviderUsageGetResponse422 = {
+  data: HTTPValidationError
+  status: 422
+}
+
+export type getMatterProviderUsageV1MattersMatterIdProviderUsageGetResponseSuccess = (getMatterProviderUsageV1MattersMatterIdProviderUsageGetResponse200) & {
+  headers: Headers;
+};
+export type getMatterProviderUsageV1MattersMatterIdProviderUsageGetResponseError = (getMatterProviderUsageV1MattersMatterIdProviderUsageGetResponse422) & {
+  headers: Headers;
+};
+
+export type getMatterProviderUsageV1MattersMatterIdProviderUsageGetResponse = (getMatterProviderUsageV1MattersMatterIdProviderUsageGetResponseSuccess | getMatterProviderUsageV1MattersMatterIdProviderUsageGetResponseError)
+
+export const getGetMatterProviderUsageV1MattersMatterIdProviderUsageGetUrl = (matterId: string,
+    params?: GetMatterProviderUsageV1MattersMatterIdProviderUsageGetParams,) => {
+  const normalizedParams = new URLSearchParams();
+
+  Object.entries(params || {}).forEach(([key, value]) => {
+
+    if (value !== undefined) {
+      normalizedParams.append(key, value === null ? 'null' : String(value))
+    }
+  });
+
+  const stringifiedParams = normalizedParams.toString();
+
+  return stringifiedParams.length > 0 ? `/api/core/v1/matters/${matterId}/provider-usage?${stringifiedParams}` : `/api/core/v1/matters/${matterId}/provider-usage`
+}
+
+/**
+ * @summary Get Matter Provider Usage
+ */
+export const getMatterProviderUsageV1MattersMatterIdProviderUsageGet = async (matterId: string,
+    params?: GetMatterProviderUsageV1MattersMatterIdProviderUsageGetParams, options?: RequestInit): Promise<getMatterProviderUsageV1MattersMatterIdProviderUsageGetResponse> => {
+
+  const res = await fetch(getGetMatterProviderUsageV1MattersMatterIdProviderUsageGetUrl(matterId,params),
+  {
+    ...options,
+    method: 'GET'
+
+
+  }
+)
+
+
+  const body = [204, 205, 304].includes(res.status) ? null : await res.text();
+
+  const data: getMatterProviderUsageV1MattersMatterIdProviderUsageGetResponse['data'] = body ? JSON.parse(body) : {}
+  return { data, status: res.status, headers: res.headers } as getMatterProviderUsageV1MattersMatterIdProviderUsageGetResponse
 }
 
 
@@ -6720,7 +7431,7 @@ export const getSearchReviewBatchV1MattersMatterIdReviewBatchesBatchIdSearchPost
  */
 export const searchReviewBatchV1MattersMatterIdReviewBatchesBatchIdSearchPost = async (matterId: string,
     batchId: string,
-    matterSearchRequest: MatterSearchRequest,
+    reviewBatchSearchRequest: ReviewBatchSearchRequest,
     params?: SearchReviewBatchV1MattersMatterIdReviewBatchesBatchIdSearchPostParams, options?: RequestInit): Promise<searchReviewBatchV1MattersMatterIdReviewBatchesBatchIdSearchPostResponse> => {
 
     const getHeaders = (h?: NonNullable<RequestInit['headers']>): Record<string, string | readonly string[]> => {
@@ -6742,7 +7453,7 @@ const res = await fetch(getSearchReviewBatchV1MattersMatterIdReviewBatchesBatchI
     ...options,
     method: 'POST',
     headers: { 'Content-Type': 'application/json', ...getHeaders(options?.headers) },
-    body: JSON.stringify(matterSearchRequest)
+    body: JSON.stringify(reviewBatchSearchRequest)
   }
 )
 
@@ -6751,6 +7462,75 @@ const res = await fetch(getSearchReviewBatchV1MattersMatterIdReviewBatchesBatchI
 
   const data: searchReviewBatchV1MattersMatterIdReviewBatchesBatchIdSearchPostResponse['data'] = body ? JSON.parse(body) : {}
   return { data, status: res.status, headers: res.headers } as searchReviewBatchV1MattersMatterIdReviewBatchesBatchIdSearchPostResponse
+}
+
+
+
+export type searchReviewBatchCodingFacetValuesV1MattersMatterIdReviewBatchesBatchIdCodingFacetsFieldValuesPostResponse200 = {
+  data: MatterFacetValuesResponse
+  status: 200
+}
+
+export type searchReviewBatchCodingFacetValuesV1MattersMatterIdReviewBatchesBatchIdCodingFacetsFieldValuesPostResponse422 = {
+  data: HTTPValidationError
+  status: 422
+}
+
+export type searchReviewBatchCodingFacetValuesV1MattersMatterIdReviewBatchesBatchIdCodingFacetsFieldValuesPostResponseSuccess = (searchReviewBatchCodingFacetValuesV1MattersMatterIdReviewBatchesBatchIdCodingFacetsFieldValuesPostResponse200) & {
+  headers: Headers;
+};
+export type searchReviewBatchCodingFacetValuesV1MattersMatterIdReviewBatchesBatchIdCodingFacetsFieldValuesPostResponseError = (searchReviewBatchCodingFacetValuesV1MattersMatterIdReviewBatchesBatchIdCodingFacetsFieldValuesPostResponse422) & {
+  headers: Headers;
+};
+
+export type searchReviewBatchCodingFacetValuesV1MattersMatterIdReviewBatchesBatchIdCodingFacetsFieldValuesPostResponse = (searchReviewBatchCodingFacetValuesV1MattersMatterIdReviewBatchesBatchIdCodingFacetsFieldValuesPostResponseSuccess | searchReviewBatchCodingFacetValuesV1MattersMatterIdReviewBatchesBatchIdCodingFacetsFieldValuesPostResponseError)
+
+export const getSearchReviewBatchCodingFacetValuesV1MattersMatterIdReviewBatchesBatchIdCodingFacetsFieldValuesPostUrl = (matterId: string,
+    batchId: string,
+    field: string,) => {
+
+
+
+
+  return `/api/core/v1/matters/${matterId}/review-batches/${batchId}/coding-facets/${field}/values`
+}
+
+/**
+ * @summary Search Review Batch Coding Facet Values
+ */
+export const searchReviewBatchCodingFacetValuesV1MattersMatterIdReviewBatchesBatchIdCodingFacetsFieldValuesPost = async (matterId: string,
+    batchId: string,
+    field: string,
+    reviewBatchSearchRequest: ReviewBatchSearchRequest, options?: RequestInit): Promise<searchReviewBatchCodingFacetValuesV1MattersMatterIdReviewBatchesBatchIdCodingFacetsFieldValuesPostResponse> => {
+
+    const getHeaders = (h?: NonNullable<RequestInit['headers']>): Record<string, string | readonly string[]> => {
+    if (!h) return {};
+    if (h instanceof Headers) return Object.fromEntries(h.entries());
+    if (Symbol.iterator in h) {
+      return Object.fromEntries(
+        Array.from(h as Iterable<Iterable<string>>, (entry) => Array.from(entry) as [string, string]),
+      );
+    }
+    const headers: Record<string, string | readonly string[]> = {};
+    for (const [name, value] of Object.entries<string | readonly string[] | undefined>(h)) {
+      if (value !== undefined) headers[name] = value;
+    }
+    return headers;
+  };
+const res = await fetch(getSearchReviewBatchCodingFacetValuesV1MattersMatterIdReviewBatchesBatchIdCodingFacetsFieldValuesPostUrl(matterId,batchId,field),
+  {
+    ...options,
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json', ...getHeaders(options?.headers) },
+    body: JSON.stringify(reviewBatchSearchRequest)
+  }
+)
+
+
+  const body = [204, 205, 304].includes(res.status) ? null : await res.text();
+
+  const data: searchReviewBatchCodingFacetValuesV1MattersMatterIdReviewBatchesBatchIdCodingFacetsFieldValuesPostResponse['data'] = body ? JSON.parse(body) : {}
+  return { data, status: res.status, headers: res.headers } as searchReviewBatchCodingFacetValuesV1MattersMatterIdReviewBatchesBatchIdCodingFacetsFieldValuesPostResponse
 }
 
 
@@ -6788,7 +7568,7 @@ export const getSearchReviewBatchTopicFacetsV1MattersMatterIdReviewBatchesBatchI
  */
 export const searchReviewBatchTopicFacetsV1MattersMatterIdReviewBatchesBatchIdTopicFacetsPost = async (matterId: string,
     batchId: string,
-    matterSearchRequest: MatterSearchRequest, options?: RequestInit): Promise<searchReviewBatchTopicFacetsV1MattersMatterIdReviewBatchesBatchIdTopicFacetsPostResponse> => {
+    reviewBatchSearchRequest: ReviewBatchSearchRequest, options?: RequestInit): Promise<searchReviewBatchTopicFacetsV1MattersMatterIdReviewBatchesBatchIdTopicFacetsPostResponse> => {
 
     const getHeaders = (h?: NonNullable<RequestInit['headers']>): Record<string, string | readonly string[]> => {
     if (!h) return {};
@@ -6809,7 +7589,7 @@ const res = await fetch(getSearchReviewBatchTopicFacetsV1MattersMatterIdReviewBa
     ...options,
     method: 'POST',
     headers: { 'Content-Type': 'application/json', ...getHeaders(options?.headers) },
-    body: JSON.stringify(matterSearchRequest)
+    body: JSON.stringify(reviewBatchSearchRequest)
   }
 )
 
@@ -6857,7 +7637,7 @@ export const getSearchReviewBatchFacetValuesV1MattersMatterIdReviewBatchesBatchI
 export const searchReviewBatchFacetValuesV1MattersMatterIdReviewBatchesBatchIdFacetsFieldValuesPost = async (matterId: string,
     batchId: string,
     field: string,
-    matterFacetValuesRequest: MatterFacetValuesRequest, options?: RequestInit): Promise<searchReviewBatchFacetValuesV1MattersMatterIdReviewBatchesBatchIdFacetsFieldValuesPostResponse> => {
+    reviewBatchFacetValuesRequest: ReviewBatchFacetValuesRequest, options?: RequestInit): Promise<searchReviewBatchFacetValuesV1MattersMatterIdReviewBatchesBatchIdFacetsFieldValuesPostResponse> => {
 
     const getHeaders = (h?: NonNullable<RequestInit['headers']>): Record<string, string | readonly string[]> => {
     if (!h) return {};
@@ -6878,7 +7658,7 @@ const res = await fetch(getSearchReviewBatchFacetValuesV1MattersMatterIdReviewBa
     ...options,
     method: 'POST',
     headers: { 'Content-Type': 'application/json', ...getHeaders(options?.headers) },
-    body: JSON.stringify(matterFacetValuesRequest)
+    body: JSON.stringify(reviewBatchFacetValuesRequest)
   }
 )
 
@@ -7198,6 +7978,179 @@ export const listReviewBatchRunsV1MattersMatterIdReviewBatchesBatchIdRunsGet = a
 
 
 
+export type getReviewBatchCodingSearchV1MattersMatterIdReviewBatchesBatchIdCodingSearchGetResponse200 = {
+  data: ReviewBatchSearchCodingSelectionRead | null
+  status: 200
+}
+
+export type getReviewBatchCodingSearchV1MattersMatterIdReviewBatchesBatchIdCodingSearchGetResponse422 = {
+  data: HTTPValidationError
+  status: 422
+}
+
+export type getReviewBatchCodingSearchV1MattersMatterIdReviewBatchesBatchIdCodingSearchGetResponseSuccess = (getReviewBatchCodingSearchV1MattersMatterIdReviewBatchesBatchIdCodingSearchGetResponse200) & {
+  headers: Headers;
+};
+export type getReviewBatchCodingSearchV1MattersMatterIdReviewBatchesBatchIdCodingSearchGetResponseError = (getReviewBatchCodingSearchV1MattersMatterIdReviewBatchesBatchIdCodingSearchGetResponse422) & {
+  headers: Headers;
+};
+
+export type getReviewBatchCodingSearchV1MattersMatterIdReviewBatchesBatchIdCodingSearchGetResponse = (getReviewBatchCodingSearchV1MattersMatterIdReviewBatchesBatchIdCodingSearchGetResponseSuccess | getReviewBatchCodingSearchV1MattersMatterIdReviewBatchesBatchIdCodingSearchGetResponseError)
+
+export const getGetReviewBatchCodingSearchV1MattersMatterIdReviewBatchesBatchIdCodingSearchGetUrl = (matterId: string,
+    batchId: string,) => {
+
+
+
+
+  return `/api/core/v1/matters/${matterId}/review-batches/${batchId}/coding-search`
+}
+
+/**
+ * @summary Get Review Batch Coding Search
+ */
+export const getReviewBatchCodingSearchV1MattersMatterIdReviewBatchesBatchIdCodingSearchGet = async (matterId: string,
+    batchId: string, options?: RequestInit): Promise<getReviewBatchCodingSearchV1MattersMatterIdReviewBatchesBatchIdCodingSearchGetResponse> => {
+
+  const res = await fetch(getGetReviewBatchCodingSearchV1MattersMatterIdReviewBatchesBatchIdCodingSearchGetUrl(matterId,batchId),
+  {
+    ...options,
+    method: 'GET'
+
+
+  }
+)
+
+
+  const body = [204, 205, 304].includes(res.status) ? null : await res.text();
+
+  const data: getReviewBatchCodingSearchV1MattersMatterIdReviewBatchesBatchIdCodingSearchGetResponse['data'] = body ? JSON.parse(body) : {}
+  return { data, status: res.status, headers: res.headers } as getReviewBatchCodingSearchV1MattersMatterIdReviewBatchesBatchIdCodingSearchGetResponse
+}
+
+
+
+export type selectReviewBatchCodingSearchRunV1MattersMatterIdReviewBatchesBatchIdRunsRunIdCodingSearchPostResponse202 = {
+  data: ReviewBatchSearchCodingSelectionRead
+  status: 202
+}
+
+export type selectReviewBatchCodingSearchRunV1MattersMatterIdReviewBatchesBatchIdRunsRunIdCodingSearchPostResponse422 = {
+  data: HTTPValidationError
+  status: 422
+}
+
+export type selectReviewBatchCodingSearchRunV1MattersMatterIdReviewBatchesBatchIdRunsRunIdCodingSearchPostResponseSuccess = (selectReviewBatchCodingSearchRunV1MattersMatterIdReviewBatchesBatchIdRunsRunIdCodingSearchPostResponse202) & {
+  headers: Headers;
+};
+export type selectReviewBatchCodingSearchRunV1MattersMatterIdReviewBatchesBatchIdRunsRunIdCodingSearchPostResponseError = (selectReviewBatchCodingSearchRunV1MattersMatterIdReviewBatchesBatchIdRunsRunIdCodingSearchPostResponse422) & {
+  headers: Headers;
+};
+
+export type selectReviewBatchCodingSearchRunV1MattersMatterIdReviewBatchesBatchIdRunsRunIdCodingSearchPostResponse = (selectReviewBatchCodingSearchRunV1MattersMatterIdReviewBatchesBatchIdRunsRunIdCodingSearchPostResponseSuccess | selectReviewBatchCodingSearchRunV1MattersMatterIdReviewBatchesBatchIdRunsRunIdCodingSearchPostResponseError)
+
+export const getSelectReviewBatchCodingSearchRunV1MattersMatterIdReviewBatchesBatchIdRunsRunIdCodingSearchPostUrl = (matterId: string,
+    batchId: string,
+    runId: string,) => {
+
+
+
+
+  return `/api/core/v1/matters/${matterId}/review-batches/${batchId}/runs/${runId}/coding-search`
+}
+
+/**
+ * @summary Select Review Batch Coding Search Run
+ */
+export const selectReviewBatchCodingSearchRunV1MattersMatterIdReviewBatchesBatchIdRunsRunIdCodingSearchPost = async (matterId: string,
+    batchId: string,
+    runId: string, options?: RequestInit): Promise<selectReviewBatchCodingSearchRunV1MattersMatterIdReviewBatchesBatchIdRunsRunIdCodingSearchPostResponse> => {
+
+  const res = await fetch(getSelectReviewBatchCodingSearchRunV1MattersMatterIdReviewBatchesBatchIdRunsRunIdCodingSearchPostUrl(matterId,batchId,runId),
+  {
+    ...options,
+    method: 'POST'
+
+
+  }
+)
+
+
+  const body = [204, 205, 304].includes(res.status) ? null : await res.text();
+
+  const data: selectReviewBatchCodingSearchRunV1MattersMatterIdReviewBatchesBatchIdRunsRunIdCodingSearchPostResponse['data'] = body ? JSON.parse(body) : {}
+  return { data, status: res.status, headers: res.headers } as selectReviewBatchCodingSearchRunV1MattersMatterIdReviewBatchesBatchIdRunsRunIdCodingSearchPostResponse
+}
+
+
+
+export type startReviewBatchAnalysisRunV1MattersMatterIdReviewBatchesBatchIdAnalysisRunsPostResponse202 = {
+  data: ReviewBatchRunRead
+  status: 202
+}
+
+export type startReviewBatchAnalysisRunV1MattersMatterIdReviewBatchesBatchIdAnalysisRunsPostResponse422 = {
+  data: HTTPValidationError
+  status: 422
+}
+
+export type startReviewBatchAnalysisRunV1MattersMatterIdReviewBatchesBatchIdAnalysisRunsPostResponseSuccess = (startReviewBatchAnalysisRunV1MattersMatterIdReviewBatchesBatchIdAnalysisRunsPostResponse202) & {
+  headers: Headers;
+};
+export type startReviewBatchAnalysisRunV1MattersMatterIdReviewBatchesBatchIdAnalysisRunsPostResponseError = (startReviewBatchAnalysisRunV1MattersMatterIdReviewBatchesBatchIdAnalysisRunsPostResponse422) & {
+  headers: Headers;
+};
+
+export type startReviewBatchAnalysisRunV1MattersMatterIdReviewBatchesBatchIdAnalysisRunsPostResponse = (startReviewBatchAnalysisRunV1MattersMatterIdReviewBatchesBatchIdAnalysisRunsPostResponseSuccess | startReviewBatchAnalysisRunV1MattersMatterIdReviewBatchesBatchIdAnalysisRunsPostResponseError)
+
+export const getStartReviewBatchAnalysisRunV1MattersMatterIdReviewBatchesBatchIdAnalysisRunsPostUrl = (matterId: string,
+    batchId: string,) => {
+
+
+
+
+  return `/api/core/v1/matters/${matterId}/review-batches/${batchId}/analysis-runs`
+}
+
+/**
+ * @summary Start Review Batch Analysis Run
+ */
+export const startReviewBatchAnalysisRunV1MattersMatterIdReviewBatchesBatchIdAnalysisRunsPost = async (matterId: string,
+    batchId: string,
+    reviewBatchAnalysisRunCreate: ReviewBatchAnalysisRunCreate, options?: RequestInit): Promise<startReviewBatchAnalysisRunV1MattersMatterIdReviewBatchesBatchIdAnalysisRunsPostResponse> => {
+
+    const getHeaders = (h?: NonNullable<RequestInit['headers']>): Record<string, string | readonly string[]> => {
+    if (!h) return {};
+    if (h instanceof Headers) return Object.fromEntries(h.entries());
+    if (Symbol.iterator in h) {
+      return Object.fromEntries(
+        Array.from(h as Iterable<Iterable<string>>, (entry) => Array.from(entry) as [string, string]),
+      );
+    }
+    const headers: Record<string, string | readonly string[]> = {};
+    for (const [name, value] of Object.entries<string | readonly string[] | undefined>(h)) {
+      if (value !== undefined) headers[name] = value;
+    }
+    return headers;
+  };
+const res = await fetch(getStartReviewBatchAnalysisRunV1MattersMatterIdReviewBatchesBatchIdAnalysisRunsPostUrl(matterId,batchId),
+  {
+    ...options,
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json', ...getHeaders(options?.headers) },
+    body: JSON.stringify(reviewBatchAnalysisRunCreate)
+  }
+)
+
+
+  const body = [204, 205, 304].includes(res.status) ? null : await res.text();
+
+  const data: startReviewBatchAnalysisRunV1MattersMatterIdReviewBatchesBatchIdAnalysisRunsPostResponse['data'] = body ? JSON.parse(body) : {}
+  return { data, status: res.status, headers: res.headers } as startReviewBatchAnalysisRunV1MattersMatterIdReviewBatchesBatchIdAnalysisRunsPostResponse
+}
+
+
+
 export type getReviewBatchDocumentAnalysisV1MattersMatterIdReviewBatchesBatchIdRunsRunIdDocumentsDocumentIdAnalysisGetResponse200 = {
   data: ReviewBatchDocumentAnalysisRead
   status: 200
@@ -7468,6 +8421,60 @@ export const getReviewBatchDocumentCodingV1MattersMatterIdReviewBatchesBatchIdRu
 
   const data: getReviewBatchDocumentCodingV1MattersMatterIdReviewBatchesBatchIdRunsRunIdDocumentsDocumentIdGetResponse['data'] = body ? JSON.parse(body) : {}
   return { data, status: res.status, headers: res.headers } as getReviewBatchDocumentCodingV1MattersMatterIdReviewBatchesBatchIdRunsRunIdDocumentsDocumentIdGetResponse
+}
+
+
+
+export type listReviewBatchDocumentCodingHistoryV1MattersMatterIdReviewBatchesBatchIdDocumentsDocumentIdCodingHistoryGetResponse200 = {
+  data: ReviewBatchCodingHistoryEntryRead[]
+  status: 200
+}
+
+export type listReviewBatchDocumentCodingHistoryV1MattersMatterIdReviewBatchesBatchIdDocumentsDocumentIdCodingHistoryGetResponse422 = {
+  data: HTTPValidationError
+  status: 422
+}
+
+export type listReviewBatchDocumentCodingHistoryV1MattersMatterIdReviewBatchesBatchIdDocumentsDocumentIdCodingHistoryGetResponseSuccess = (listReviewBatchDocumentCodingHistoryV1MattersMatterIdReviewBatchesBatchIdDocumentsDocumentIdCodingHistoryGetResponse200) & {
+  headers: Headers;
+};
+export type listReviewBatchDocumentCodingHistoryV1MattersMatterIdReviewBatchesBatchIdDocumentsDocumentIdCodingHistoryGetResponseError = (listReviewBatchDocumentCodingHistoryV1MattersMatterIdReviewBatchesBatchIdDocumentsDocumentIdCodingHistoryGetResponse422) & {
+  headers: Headers;
+};
+
+export type listReviewBatchDocumentCodingHistoryV1MattersMatterIdReviewBatchesBatchIdDocumentsDocumentIdCodingHistoryGetResponse = (listReviewBatchDocumentCodingHistoryV1MattersMatterIdReviewBatchesBatchIdDocumentsDocumentIdCodingHistoryGetResponseSuccess | listReviewBatchDocumentCodingHistoryV1MattersMatterIdReviewBatchesBatchIdDocumentsDocumentIdCodingHistoryGetResponseError)
+
+export const getListReviewBatchDocumentCodingHistoryV1MattersMatterIdReviewBatchesBatchIdDocumentsDocumentIdCodingHistoryGetUrl = (matterId: string,
+    batchId: string,
+    documentId: string,) => {
+
+
+
+
+  return `/api/core/v1/matters/${matterId}/review-batches/${batchId}/documents/${documentId}/coding-history`
+}
+
+/**
+ * @summary List Review Batch Document Coding History
+ */
+export const listReviewBatchDocumentCodingHistoryV1MattersMatterIdReviewBatchesBatchIdDocumentsDocumentIdCodingHistoryGet = async (matterId: string,
+    batchId: string,
+    documentId: string, options?: RequestInit): Promise<listReviewBatchDocumentCodingHistoryV1MattersMatterIdReviewBatchesBatchIdDocumentsDocumentIdCodingHistoryGetResponse> => {
+
+  const res = await fetch(getListReviewBatchDocumentCodingHistoryV1MattersMatterIdReviewBatchesBatchIdDocumentsDocumentIdCodingHistoryGetUrl(matterId,batchId,documentId),
+  {
+    ...options,
+    method: 'GET'
+
+
+  }
+)
+
+
+  const body = [204, 205, 304].includes(res.status) ? null : await res.text();
+
+  const data: listReviewBatchDocumentCodingHistoryV1MattersMatterIdReviewBatchesBatchIdDocumentsDocumentIdCodingHistoryGetResponse['data'] = body ? JSON.parse(body) : {}
+  return { data, status: res.status, headers: res.headers } as listReviewBatchDocumentCodingHistoryV1MattersMatterIdReviewBatchesBatchIdDocumentsDocumentIdCodingHistoryGetResponse
 }
 
 
@@ -9672,6 +10679,125 @@ const res = await fetch(getUpdateAssessmentQuestionV1MattersMatterIdDefinitionAs
 
   const data: updateAssessmentQuestionV1MattersMatterIdDefinitionAssessmentsAssessmentIdQuestionsQuestionIdPutResponse['data'] = body ? JSON.parse(body) : {}
   return { data, status: res.status, headers: res.headers } as updateAssessmentQuestionV1MattersMatterIdDefinitionAssessmentsAssessmentIdQuestionsQuestionIdPutResponse
+}
+
+
+
+export type createGuidanceAssessmentV1MattersMatterIdGuidanceGuidanceIdAssessmentsPostResponse202 = {
+  data: MatterDefinitionAssessmentRead
+  status: 202
+}
+
+export type createGuidanceAssessmentV1MattersMatterIdGuidanceGuidanceIdAssessmentsPostResponse422 = {
+  data: HTTPValidationError
+  status: 422
+}
+
+export type createGuidanceAssessmentV1MattersMatterIdGuidanceGuidanceIdAssessmentsPostResponseSuccess = (createGuidanceAssessmentV1MattersMatterIdGuidanceGuidanceIdAssessmentsPostResponse202) & {
+  headers: Headers;
+};
+export type createGuidanceAssessmentV1MattersMatterIdGuidanceGuidanceIdAssessmentsPostResponseError = (createGuidanceAssessmentV1MattersMatterIdGuidanceGuidanceIdAssessmentsPostResponse422) & {
+  headers: Headers;
+};
+
+export type createGuidanceAssessmentV1MattersMatterIdGuidanceGuidanceIdAssessmentsPostResponse = (createGuidanceAssessmentV1MattersMatterIdGuidanceGuidanceIdAssessmentsPostResponseSuccess | createGuidanceAssessmentV1MattersMatterIdGuidanceGuidanceIdAssessmentsPostResponseError)
+
+export const getCreateGuidanceAssessmentV1MattersMatterIdGuidanceGuidanceIdAssessmentsPostUrl = (matterId: string,
+    guidanceId: string,) => {
+
+
+
+
+  return `/api/core/v1/matters/${matterId}/guidance/${guidanceId}/assessments`
+}
+
+/**
+ * @summary Create Guidance Assessment
+ */
+export const createGuidanceAssessmentV1MattersMatterIdGuidanceGuidanceIdAssessmentsPost = async (matterId: string,
+    guidanceId: string,
+    matterDefinitionAssessmentCreate: MatterDefinitionAssessmentCreate, options?: RequestInit): Promise<createGuidanceAssessmentV1MattersMatterIdGuidanceGuidanceIdAssessmentsPostResponse> => {
+
+    const getHeaders = (h?: NonNullable<RequestInit['headers']>): Record<string, string | readonly string[]> => {
+    if (!h) return {};
+    if (h instanceof Headers) return Object.fromEntries(h.entries());
+    if (Symbol.iterator in h) {
+      return Object.fromEntries(
+        Array.from(h as Iterable<Iterable<string>>, (entry) => Array.from(entry) as [string, string]),
+      );
+    }
+    const headers: Record<string, string | readonly string[]> = {};
+    for (const [name, value] of Object.entries<string | readonly string[] | undefined>(h)) {
+      if (value !== undefined) headers[name] = value;
+    }
+    return headers;
+  };
+const res = await fetch(getCreateGuidanceAssessmentV1MattersMatterIdGuidanceGuidanceIdAssessmentsPostUrl(matterId,guidanceId),
+  {
+    ...options,
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json', ...getHeaders(options?.headers) },
+    body: JSON.stringify(matterDefinitionAssessmentCreate)
+  }
+)
+
+
+  const body = [204, 205, 304].includes(res.status) ? null : await res.text();
+
+  const data: createGuidanceAssessmentV1MattersMatterIdGuidanceGuidanceIdAssessmentsPostResponse['data'] = body ? JSON.parse(body) : {}
+  return { data, status: res.status, headers: res.headers } as createGuidanceAssessmentV1MattersMatterIdGuidanceGuidanceIdAssessmentsPostResponse
+}
+
+
+
+export type listGuidanceAssessmentsV1MattersMatterIdGuidanceGuidanceIdAssessmentsGetResponse200 = {
+  data: MatterDefinitionAssessmentRead[]
+  status: 200
+}
+
+export type listGuidanceAssessmentsV1MattersMatterIdGuidanceGuidanceIdAssessmentsGetResponse422 = {
+  data: HTTPValidationError
+  status: 422
+}
+
+export type listGuidanceAssessmentsV1MattersMatterIdGuidanceGuidanceIdAssessmentsGetResponseSuccess = (listGuidanceAssessmentsV1MattersMatterIdGuidanceGuidanceIdAssessmentsGetResponse200) & {
+  headers: Headers;
+};
+export type listGuidanceAssessmentsV1MattersMatterIdGuidanceGuidanceIdAssessmentsGetResponseError = (listGuidanceAssessmentsV1MattersMatterIdGuidanceGuidanceIdAssessmentsGetResponse422) & {
+  headers: Headers;
+};
+
+export type listGuidanceAssessmentsV1MattersMatterIdGuidanceGuidanceIdAssessmentsGetResponse = (listGuidanceAssessmentsV1MattersMatterIdGuidanceGuidanceIdAssessmentsGetResponseSuccess | listGuidanceAssessmentsV1MattersMatterIdGuidanceGuidanceIdAssessmentsGetResponseError)
+
+export const getListGuidanceAssessmentsV1MattersMatterIdGuidanceGuidanceIdAssessmentsGetUrl = (matterId: string,
+    guidanceId: string,) => {
+
+
+
+
+  return `/api/core/v1/matters/${matterId}/guidance/${guidanceId}/assessments`
+}
+
+/**
+ * @summary List Guidance Assessments
+ */
+export const listGuidanceAssessmentsV1MattersMatterIdGuidanceGuidanceIdAssessmentsGet = async (matterId: string,
+    guidanceId: string, options?: RequestInit): Promise<listGuidanceAssessmentsV1MattersMatterIdGuidanceGuidanceIdAssessmentsGetResponse> => {
+
+  const res = await fetch(getListGuidanceAssessmentsV1MattersMatterIdGuidanceGuidanceIdAssessmentsGetUrl(matterId,guidanceId),
+  {
+    ...options,
+    method: 'GET'
+
+
+  }
+)
+
+
+  const body = [204, 205, 304].includes(res.status) ? null : await res.text();
+
+  const data: listGuidanceAssessmentsV1MattersMatterIdGuidanceGuidanceIdAssessmentsGetResponse['data'] = body ? JSON.parse(body) : {}
+  return { data, status: res.status, headers: res.headers } as listGuidanceAssessmentsV1MattersMatterIdGuidanceGuidanceIdAssessmentsGetResponse
 }
 
 

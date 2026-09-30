@@ -211,6 +211,7 @@ def _structured_request(assessment, workflow, revision, version, document, sourc
     cache_identity = {
         "tenant_id": str(workflow.tenant_id),
         "matter_id": str(assessment.matter_id),
+        "guidance_id": str(revision.matter_definition_id),
         "revision_hash": assessment.definition_content_hash,
         "skill_version_id": str(version.id),
         "schema_version": version.output_schema_key,

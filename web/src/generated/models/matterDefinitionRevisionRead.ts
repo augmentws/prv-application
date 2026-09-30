@@ -19,5 +19,8 @@ export interface MatterDefinitionRevisionRead {
   created_by_user_id: string;
   agent_run_id: string | null;
   source_skill_run_id: string | null;
+  source_guidance_id: string | null;
+  source_revision_id: string | null;
+  source_content_hash: string | null;
   created_at: string;
 }

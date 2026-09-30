@@ -13,6 +13,7 @@ from sqlalchemy.orm import Session
 from app.agent_models import resolve_agent_model
 from app.analysis_tasks import (
     MatterAnalysisTaskConflict,
+    can_attach_analysis_task_specification,
     content_hash,
     json_content_hash,
     set_analysis_task_specification,
@@ -22,8 +23,13 @@ from app.decision_specifications import (
     DOCUMENT_REVIEW_STATE_BUILDER_VERSION,
     DOCUMENT_REVIEW_STATE_PATHS,
     ChoiceDecisionQuestion,
+    DecisionPolicyExpression,
+    DecisionSelectedOptionRecommendation,
     DecisionSpecification,
     DecisionSpecificationCompilationOutput,
+    MatterDecisionContext,
+    validate_decision_policy_semantics,
+    validate_selected_option_policy_semantics,
 )
 from app.models import (
     Matter,
@@ -92,6 +98,24 @@ def build_source_reference_catalog(
         }
         for block_heading, excerpt in blocks
     ]
+
+
+def attach_decision_context_source_material(
+    specification: DecisionSpecification,
+    references: list[dict[str, Any]],
+) -> DecisionSpecification:
+    context = specification.decision_context.model_dump(mode="json")
+    context["source_material"] = [
+        {
+            "heading": reference["heading"],
+            "excerpt": reference["excerpt"],
+            "excerpt_hash": reference["excerpt_hash"],
+        }
+        for reference in references
+    ]
+    return specification.model_copy(
+        update={"decision_context": MatterDecisionContext.model_validate(context)}
+    )
 
 
 def metadata_definition_snapshot(db: Session, matter_id: uuid.UUID) -> list[dict[str, Any]]:
@@ -182,8 +206,10 @@ def queue_analysis_task_compilation(
         )
         .with_for_update()
     )
-    if task_version is None or task_version.status != "DRAFT":
-        raise MatterAnalysisTaskConflict("Only a draft task version can be compiled")
+    if task_version is None or not can_attach_analysis_task_specification(locked_task, task_version):
+        raise MatterAnalysisTaskConflict(
+            "Only a draft task version or an uncompiled published Matter Definition can be compiled"
+        )
     if task_version.compilation_status == "GENERATING":
         raise MatterAnalysisTaskConflict("Decision Specification compilation is already running")
 
@@ -258,7 +284,7 @@ def compile_analysis_task_version(
         raise MatterAnalysisTaskConflict("Analysis task compilation references are incomplete")
     if (
         task.current_version != task_version.version
-        or task_version.status != "DRAFT"
+        or not can_attach_analysis_task_specification(task, task_version)
         or task_version.compilation_status != "GENERATING"
     ):
         raise MatterAnalysisTaskConflict("Analysis task compilation is stale")
@@ -279,11 +305,13 @@ def compile_analysis_task_version(
     metadata_definitions = metadata_definition_snapshot(db, matter.id)
     dependencies = dependency_snapshot(db, task_version.id)
     prior = _prior_published_specification(db, task)
+    preserve_prior_policy = _definition_matches_published_version(db, task, task_version)
     compiled_output_schema = DecisionSpecificationCompilationOutput.model_json_schema(mode="validation")
     validator = _compiler_wire_output_validator(
         task_version_id=task_version.id,
         references=references,
         metadata_definitions=metadata_definitions,
+        prior_published_specification=prior if preserve_prior_policy else None,
     )
     now = utcnow()
     workflow.status = "RUNNING"
@@ -337,7 +365,11 @@ def compile_analysis_task_version(
         )
     )
     compiled = parse_compiler_wire_output(output)
-    deterministic_warnings = _deterministic_warnings(compiled.decision_specification)
+    specification = attach_decision_context_source_material(
+        compiled.decision_specification,
+        references,
+    )
+    deterministic_warnings = _deterministic_warnings(specification)
     validation_report = {
         "status": "VALID",
         "errors": [],
@@ -348,7 +380,6 @@ def compile_analysis_task_version(
         "question_rationales": compiled.question_rationales,
         "omissions": [omission.model_dump(mode="json") for omission in compiled.omissions],
     }
-    specification = compiled.decision_specification
     task_version.compiler_workflow_run_id = workflow.id
     set_analysis_task_specification(
         db,
@@ -422,7 +453,12 @@ def fail_analysis_task_compilation(
             step.failed_count = 1
             step.error_message = message[:4000]
             step.completed_at = utcnow()
-    if task_version.status == "DRAFT" and task_version.compilation_status == "GENERATING":
+    task = db.get(MatterAnalysisTask, task_version.matter_analysis_task_id)
+    if (
+        task is not None
+        and can_attach_analysis_task_specification(task, task_version)
+        and task_version.compilation_status == "GENERATING"
+    ):
         task_version.compilation_status = "FAILED"
         task_version.validation_report = {
             "status": "INVALID",
@@ -447,11 +483,28 @@ def _prior_published_specification(
     return prior.decision_specification if prior is not None else None
 
 
+def _definition_matches_published_version(
+    db: Session,
+    task: MatterAnalysisTask,
+    task_version: MatterAnalysisTaskVersion,
+) -> bool:
+    if task.published_version is None:
+        return False
+    prior = db.scalar(
+        select(MatterAnalysisTaskVersion).where(
+            MatterAnalysisTaskVersion.matter_analysis_task_id == task.id,
+            MatterAnalysisTaskVersion.version == task.published_version,
+        )
+    )
+    return prior is not None and prior.definition_content_hash == task_version.definition_content_hash
+
+
 def _compiler_output_validator(
     *,
     task_version_id: uuid.UUID,
     references: list[dict[str, Any]],
     metadata_definitions: list[dict[str, Any]],
+    prior_published_specification: dict[str, Any] | None = None,
 ):
     valid_references = {(reference["heading"], reference["excerpt_hash"]) for reference in references}
     definitions = {definition["key"]: definition for definition in metadata_definitions}
@@ -459,6 +512,22 @@ def _compiler_output_validator(
     def validate(output: dict[str, Any]) -> None:
         compiled = DecisionSpecificationCompilationOutput.model_validate(output)
         specification = compiled.decision_specification
+        policy_errors: list[str] = []
+        for check in (
+            lambda: validate_decision_policy_semantics(specification.decision_policy),
+            lambda: validate_selected_option_policy_semantics(specification),
+            lambda: (
+                _validate_preserved_recommendations(specification, prior_published_specification)
+                if prior_published_specification is not None
+                else None
+            ),
+        ):
+            try:
+                check()
+            except ValueError as exc:
+                policy_errors.append(str(exc))
+        if policy_errors:
+            raise ValueError("; ".join(policy_errors))
         if specification.state_contract.builder_version != DOCUMENT_REVIEW_STATE_BUILDER_VERSION:
             raise ValueError(
                 f"state_contract.builder_version must be {DOCUMENT_REVIEW_STATE_BUILDER_VERSION}"
@@ -471,6 +540,10 @@ def _compiler_output_validator(
                 "state_contract requires paths unavailable from the document state builder: "
                 + ", ".join(unavailable_paths)
             )
+        if not specification.decision_context.summary or not specification.decision_context.summary.strip():
+            raise ValueError("decision_context.summary must contain concise matter guidance")
+        if "matter.decision_context" not in specification.state_contract.required_paths:
+            raise ValueError("state_contract.required_paths must include matter.decision_context")
         for key, question in specification.questions.items():
             for reference in question.source_refs:
                 if reference.task_version_id != task_version_id:
@@ -481,7 +554,11 @@ def _compiler_output_validator(
                 definition = definitions.get(question.field_mapping.metadata_definition_key)
                 if definition is None:
                     raise ValueError(f"{key} maps to an unavailable metadata definition")
-                _validate_mapped_value(key, question.field_mapping.value, definition)
+                if question.field_mapping.value_source == "SELECTED_OPTION":
+                    for option_key, mapped_value in question.field_mapping.option_value_map.items():
+                        _validate_mapped_value(f"{key}.{option_key}", mapped_value, definition)
+                else:
+                    _validate_mapped_value(key, question.field_mapping.value, definition)
         for omission in compiled.omissions:
             for reference in omission.source_refs:
                 if reference.task_version_id != task_version_id:
@@ -510,7 +587,8 @@ def parse_compiler_wire_output(output: dict[str, Any]) -> DecisionSpecificationC
         raise ValueError(
             f"{exc}; compiler repair rules: question keys require at least one dotted namespace "
             "(for example responsiveness.overall); state_contract.required_paths may contain only document builder "
-            "input paths, never question or metadata keys; predicate option is permitted only with measure "
+            "input paths, never question or metadata keys; decision_context must contain concise matter guidance "
+            "and matter.decision_context must be required; predicate option is permitted only with measure "
             "probability and must match a Choice criteria key"
         ) from exc
 
@@ -520,11 +598,13 @@ def _compiler_wire_output_validator(
     task_version_id: uuid.UUID,
     references: list[dict[str, Any]],
     metadata_definitions: list[dict[str, Any]],
+    prior_published_specification: dict[str, Any] | None = None,
 ):
     validate_compiled = _compiler_output_validator(
         task_version_id=task_version_id,
         references=references,
         metadata_definitions=metadata_definitions,
+        prior_published_specification=prior_published_specification,
     )
 
     def validate(output: dict[str, Any]) -> None:
@@ -532,6 +612,49 @@ def _compiler_wire_output_validator(
         validate_compiled(compiled.model_dump(mode="json"))
 
     return validate
+
+
+def _validate_preserved_recommendations(
+    specification: DecisionSpecification,
+    prior_published_specification: dict[str, Any],
+) -> None:
+    prior_policy = prior_published_specification.get("decision_policy")
+    if not isinstance(prior_policy, dict):
+        return
+    prior_recommendations = prior_policy.get("recommendations")
+    if not isinstance(prior_recommendations, dict):
+        return
+    current = specification.decision_policy.recommendations
+    for key, prior_rule in prior_recommendations.items():
+        if not isinstance(prior_rule, dict):
+            continue
+        current_rule = current.get(key)
+        if current_rule is None:
+            raise ValueError(f"decision_policy must preserve prior recommendation {key}")
+        prior_operator = prior_rule.get("operator")
+        if prior_operator != "SELECTED_OPTION" and isinstance(
+            current_rule,
+            DecisionSelectedOptionRecommendation,
+        ):
+            raise ValueError(f"decision_policy.recommendations.{key} must preserve its predicate form")
+        prior_predicate = prior_rule.get("predicate")
+        if not isinstance(prior_predicate, dict) or not isinstance(current_rule, DecisionPolicyExpression):
+            continue
+        current_predicate = current_rule.predicate
+        if current_predicate is None:
+            raise ValueError(f"decision_policy.recommendations.{key} must preserve its predicate")
+        for field in ("question_key", "measure", "option", "threshold"):
+            if getattr(current_predicate, field) != prior_predicate.get(field):
+                raise ValueError(f"decision_policy.recommendations.{key} must preserve predicate {field}")
+        if (
+            prior_predicate.get("comparator") == "EQ"
+            and prior_predicate.get("measure") in {"noul", "confidence", "probability"}
+            and prior_predicate.get("threshold") not in {0, 1}
+            and current_predicate.comparator != "GTE"
+        ):
+            raise ValueError(
+                f"decision_policy.recommendations.{key} must repair the prior interior EQ comparator to GTE"
+            )
 
 
 def _validate_mapped_value(question_key: str, value: Any, definition: dict[str, Any]) -> None:

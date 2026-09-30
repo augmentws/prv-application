@@ -28,14 +28,10 @@ import { ApiError, coreApi } from "@/lib/api-client";
 import { formatDate } from "@/lib/format";
 
 const TASK_TYPE_LABELS = {
-  ISSUE_REVIEW: "Issue review",
-  PRIVILEGE_REVIEW: "Privilege review",
-  TOPIC_GENERATION: "Topic generation",
-  DATA_EXPLORATION: "Data exploration",
-  CUSTOM_DECISION: "Custom decision",
+  QUESTION_ANSWERING: "Question answering",
 } as const;
 
-type TaskType = keyof typeof TASK_TYPE_LABELS;
+type CreatableTaskType = keyof typeof TASK_TYPE_LABELS;
 
 export function AnalysisTasksPanel({ matterId }: { matterId: string }) {
   const queryClient = useQueryClient();
@@ -74,7 +70,7 @@ export function AnalysisTasksPanel({ matterId }: { matterId: string }) {
         <Card className="p-8 text-center">
           <Sparkles className="mx-auto mb-3 size-7 text-primary" />
           <h3 className="font-semibold">No analysis tasks yet</h3>
-          <p className="mx-auto mt-2 max-w-xl text-sm text-muted-foreground">Create an issue-review, privilege-review, topic, exploration, or custom decision task. Its definition and generated specification will be governed as one version.</p>
+          <p className="mx-auto mt-2 max-w-xl text-sm text-muted-foreground">Create a question-answering task. Its definition and generated Decision Specification will be governed as one version and evaluated through Jev.</p>
         </Card>
       ) : (
         <div className="grid min-h-[40rem] gap-4 xl:grid-cols-[18rem_minmax(0,1fr)]">
@@ -111,7 +107,7 @@ function CreateAnalysisTaskDialog({ matterId, onCreated }: { matterId: string; o
   const [name, setName] = useState("");
   const [key, setKey] = useState("");
   const [description, setDescription] = useState("");
-  const [taskType, setTaskType] = useState<TaskType>("ISSUE_REVIEW");
+  const [taskType, setTaskType] = useState<CreatableTaskType>("QUESTION_ANSWERING");
   const [definition, setDefinition] = useState("");
   const mutation = useMutation({
     mutationFn: (payload: MatterAnalysisTaskCreate) => coreApi<MatterAnalysisTaskRead>(`/v1/matters/${matterId}/analysis-tasks`, { method: "POST", body: JSON.stringify(payload) }),
@@ -147,9 +143,9 @@ function CreateAnalysisTaskDialog({ matterId, onCreated }: { matterId: string; o
       <DialogContent className="max-w-3xl">
         <DialogHeader><DialogTitle>Create an analysis task</DialogTitle><DialogDescription>The task definition and generated Decision Specification will be versioned and published together.</DialogDescription></DialogHeader>
         <div className="grid gap-4 sm:grid-cols-2">
-          <Field label="Name" htmlFor="analysis-task-name"><Input id="analysis-task-name" value={name} onChange={(event) => changeName(event.target.value)} placeholder="Privilege review" /></Field>
-          <Field label="Stable key" htmlFor="analysis-task-key"><Input id="analysis-task-key" value={key} onChange={(event) => setKey(taskKey(event.target.value))} placeholder="privilege_review" /></Field>
-          <Field label="Task type" htmlFor="analysis-task-type"><Select value={taskType} onValueChange={(value) => setTaskType(value as TaskType)}><SelectTrigger id="analysis-task-type"><SelectValue /></SelectTrigger><SelectContent>{Object.entries(TASK_TYPE_LABELS).map(([value, label]) => <SelectItem key={value} value={value}>{label}</SelectItem>)}</SelectContent></Select></Field>
+          <Field label="Name" htmlFor="analysis-task-name"><Input id="analysis-task-name" value={name} onChange={(event) => changeName(event.target.value)} placeholder="Contract relevance" /></Field>
+          <Field label="Stable key" htmlFor="analysis-task-key"><Input id="analysis-task-key" value={key} onChange={(event) => setKey(taskKey(event.target.value))} placeholder="contract_relevance" /></Field>
+          <Field label="Task type" htmlFor="analysis-task-type"><Select value={taskType} onValueChange={(value) => setTaskType(value as CreatableTaskType)}><SelectTrigger id="analysis-task-type"><SelectValue /></SelectTrigger><SelectContent>{Object.entries(TASK_TYPE_LABELS).map(([value, label]) => <SelectItem key={value} value={value}>{label}</SelectItem>)}</SelectContent></Select></Field>
           <Field label="Description" htmlFor="analysis-task-description"><Input id="analysis-task-description" value={description} onChange={(event) => setDescription(event.target.value)} placeholder="What this task decides" /></Field>
         </div>
         <Field label="Task definition" htmlFor="analysis-task-definition"><Textarea id="analysis-task-definition" className="min-h-64 font-mono text-sm" value={definition} onChange={(event) => setDefinition(event.target.value)} placeholder="# Purpose&#10;&#10;Describe the decision criteria, inclusions, exclusions, and ambiguity rules…" /></Field>
@@ -206,7 +202,9 @@ function VersionWorkspace({ matterId, task, version, onTaskUpdated }: { matterId
   const [specification, setSpecification] = useState(version.decision_specification ? JSON.stringify(version.decision_specification, null, 2) : "");
   const canCreateDraft = version.version === task.current_version && task.status === "ACTIVE";
   const editable = canCreateDraft && version.status === "DRAFT";
+  const definitionEditable = canCreateDraft;
   const definitionChanged = definition.trim() !== version.definition_markdown.trim();
+  const canClonePublishedVersion = definitionEditable && version.status === "PUBLISHED";
   const saveDefinition = useMutation({
     mutationFn: () => coreApi<MatterAnalysisTaskRead>(`/v1/matters/${matterId}/analysis-tasks/${task.id}/versions`, { method: "POST", body: JSON.stringify({ definition_markdown: definition.trim(), based_on_version: task.current_version }) }),
     onSuccess: (updated) => { void queryClient.invalidateQueries({ queryKey: ["analysis-task-versions", matterId, task.id] }); onTaskUpdated(updated); toast.success("A new draft task version was created."); },
@@ -251,8 +249,8 @@ function VersionWorkspace({ matterId, task, version, onTaskUpdated }: { matterId
         <Card className="min-w-0">
           <CardHeader className="border-b"><div className="flex flex-wrap items-start justify-between gap-3"><div><CardTitle className="flex items-center gap-2"><FileJson className="size-4 text-primary" />Task definition</CardTitle><p className="mt-1 text-sm text-muted-foreground">Human-reviewed instructions. Editing creates a new atomic version.</p></div><Badge variant="outline">{shortHash(version.definition_content_hash)}</Badge></div></CardHeader>
           <CardContent className="space-y-3 p-4">
-            <Textarea aria-label="Task definition" className="min-h-[28rem] resize-y font-mono text-sm leading-6" value={definition} onChange={(event) => setDefinition(event.target.value)} readOnly={!canCreateDraft} />
-            {canCreateDraft ? <div className="flex justify-end"><Button variant="outline" onClick={() => saveDefinition.mutate()} disabled={!definitionChanged || !definition.trim() || saveDefinition.isPending}>{saveDefinition.isPending ? <LoaderCircle className="animate-spin" /> : <Save />}{saveDefinition.isPending ? "Saving…" : "Save as new draft"}</Button></div> : null}
+            <Textarea aria-label="Task definition" className="min-h-[28rem] resize-y font-mono text-sm leading-6" value={definition} onChange={(event) => setDefinition(event.target.value)} readOnly={!definitionEditable} />
+            {definitionEditable ? <div className="flex justify-end"><Button variant="outline" onClick={() => saveDefinition.mutate()} disabled={(!definitionChanged && !canClonePublishedVersion) || !definition.trim() || saveDefinition.isPending}>{saveDefinition.isPending ? <LoaderCircle className="animate-spin" /> : canClonePublishedVersion && !definitionChanged ? <Plus /> : <Save />}{saveDefinition.isPending ? "Saving…" : canClonePublishedVersion && !definitionChanged ? "Create draft revision" : "Save as new draft"}</Button></div> : null}
           </CardContent>
         </Card>
 
@@ -267,7 +265,7 @@ function VersionWorkspace({ matterId, task, version, onTaskUpdated }: { matterId
         </Card>
       </div>
       <VersionMetadata version={version} />
-      {version.status === "PUBLISHED" ? <PlaygroundPanel matterId={matterId} task={task} version={version} /> : <Card className="p-4 text-sm text-muted-foreground">Publish a ready task version to enable the single-document playground.</Card>}
+      {version.status === "PUBLISHED" && version.compilation_status === "READY" ? <PlaygroundPanel matterId={matterId} task={task} version={version} /> : <Card className="p-4 text-sm text-muted-foreground">Publish a ready task version to enable the single-document playground.</Card>}
     </>
   );
 }

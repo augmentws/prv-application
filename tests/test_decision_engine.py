@@ -13,7 +13,7 @@ from app.decision_engine import (
     NoulDecisionAnswer,
 )
 from app.decision_execution import execute_decision_request
-from app.decision_specifications import DecisionSpecification
+from app.decision_specifications import DecisionSpecification, validate_selected_option_policy_semantics
 
 
 def test_decision_specification_enforces_primitive_uncertainty_semantics() -> None:
@@ -56,6 +56,70 @@ def test_decision_specification_enforces_primitive_uncertainty_semantics() -> No
         "source": "PROVIDER_CONFIDENCE",
     }
     with pytest.raises(ValidationError, match="Noul field mappings cannot claim provider confidence"):
+        DecisionSpecification.model_validate(invalid)
+
+
+def test_selected_option_mapping_requires_choice_probability_and_known_options() -> None:
+    base = {
+        "questions": {
+            "topic.primary_issue": {
+                "type": "choice",
+                "instructions": "Select the primary issue.",
+                "criteria": {"issue_one": "Issue one", "unclear": "Unclear"},
+                "source_refs": [
+                    {
+                        "task_version_id": "56d6dd2c-41ad-4854-b696-a7b34c31becb",
+                        "heading": "Issues",
+                        "excerpt_hash": "a" * 64,
+                    }
+                ],
+                "aggregation": {"operator": "MAX_PROBABILITY"},
+                "field_mapping": {
+                    "metadata_definition_key": "issue_tag",
+                    "value_source": "SELECTED_OPTION",
+                    "option_value_map": {"issue_one": "issue_one"},
+                    "uncertainty": {
+                        "kind": "SELECTED_PROBABILITY",
+                        "source": "SELECTED_OPTION_PROBABILITY",
+                    },
+                },
+            }
+        },
+        "decision_policy": {
+            "recommendations": {
+                "issue_tag": {
+                    "operator": "SELECTED_OPTION",
+                    "question_key": "topic.primary_issue",
+                    "minimum_probability": 0.7,
+                }
+            }
+        },
+        "state_contract": {
+            "builder_version": "document-review-state-v1",
+            "required_paths": ["document.text"],
+        },
+    }
+    specification = DecisionSpecification.model_validate(base)
+    assert specification.questions["topic.primary_issue"].field_mapping is not None
+    validate_selected_option_policy_semantics(specification)
+
+    missing_recommendation = specification.model_copy(deep=True)
+    missing_recommendation.decision_policy.recommendations = {}
+    with pytest.raises(ValueError, match="requires decision_policy.recommendations.issue_tag"):
+        validate_selected_option_policy_semantics(missing_recommendation)
+
+    mapped_fallback = specification.model_copy(deep=True)
+    mapping = mapped_fallback.questions["topic.primary_issue"].field_mapping
+    assert mapping is not None
+    mapping.option_value_map["unclear"] = "unclear"
+    with pytest.raises(ValueError, match="must not assign fallback options: unclear"):
+        validate_selected_option_policy_semantics(mapped_fallback)
+
+    invalid = specification.model_dump(mode="json")
+    invalid["questions"]["topic.primary_issue"]["field_mapping"]["option_value_map"] = {
+        "missing_option": "issue_one"
+    }
+    with pytest.raises(ValidationError, match="unknown Choice options"):
         DecisionSpecification.model_validate(invalid)
 
 
