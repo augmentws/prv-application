@@ -612,3 +612,54 @@ The following remain proposed work:
 - explicit batch-result acceptance and publication into matter metadata;
 - final-tag provenance from Decision Result through publication;
 - manager-facing workflow and quality dashboards.
+
+## Open review issues
+
+The following issues were identified during review of this first draft. They remain open design questions and should
+be resolved before the affected workflow is implemented.
+
+### Publication preview freshness and execution-time authorization
+
+**Priority:** P1
+
+Publication approval must be bound to the metadata and field configuration shown in the impact preview. Matter
+metadata, enum options, definition status, or the approving user's authorization may change between preview and
+execution. The design should preserve the preview's relevant source-event IDs or projection and schema hashes,
+reauthorize the approver at execution time, and return stale items for a new preview rather than overwriting or
+clearing changes the approver did not see.
+
+### Idempotent and resumable publication
+
+**Priority:** P1
+
+The durable publication workflow needs explicit retry semantics. A retry after an ambiguous commit must not append
+duplicate `SET` events or repeat `CLEAR` and `ADD` replacement sequences. The design should define deterministic,
+uniqueness-enforced publication-item keys, such as publication, document, field, operation, and value ordinal, and
+persist per-item progress so a partially completed publication can resume safely.
+
+### Jev value acceptance policy
+
+**Priority:** P1
+
+The meaning of an "accepted Jev value" must be defined before resolved candidate runs are implemented. The program
+should freeze an explicit eligibility predicate covering result status, mandatory-review routes, confidence,
+evidence and coverage requirements, applicable thresholds, field-schema validity, and the production-QA gate. The
+workflow and metrics should distinguish values accepted by program policy from values confirmed by a human.
+
+### Repeated validation and confidence control
+
+**Priority:** P2
+
+When a failed validation sample is examined and used for refinement, later candidates become adaptive. Repeatedly
+applying the same nominal confidence gate until a candidate passes would inflate the false-promotion probability.
+The validation design should predefine an appropriate sequential-testing or alpha-spending policy, limit promotion
+attempts, or reserve an untouched final confirmation sample.
+
+### Design-weighted random-audit estimates
+
+**Priority:** P2
+
+Random-audit metrics must account for their sampling design. When strata or unequal inclusion probabilities are
+used, raw sample proportions may bias precision, recall, false-negative, and remaining-relevant-population estimates.
+The design should specify weighted estimators and confidence intervals that account for inclusion probability,
+finite-population sampling, and unresolved or missing judgments.
