@@ -11,6 +11,7 @@ from app.routers import (
     analysis_tasks,
     auth,
     bulk_tags,
+    classification_models,
     clients,
     coding_history,
     collection_deletions,
@@ -100,3 +101,4 @@ elif get_settings().artifact_mode == "remote":
     app.include_router(artifact_proxy.router)
 else:
     raise RuntimeError("ARTIFACT_MODE must be 'embedded' or 'remote'")
+app.include_router(classification_models.router)

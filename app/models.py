@@ -1,6 +1,6 @@
 import uuid
 from datetime import date, datetime, timezone
-from typing import Any
+from typing import Any, ClassVar
 
 from sqlalchemy import (
     JSON,
@@ -11,6 +11,7 @@ from sqlalchemy import (
     DateTime,
     Float,
     ForeignKey,
+    ForeignKeyConstraint,
     Index,
     Integer,
     String,
@@ -19,9 +20,12 @@ from sqlalchemy import (
     Uuid,
     text,
 )
+from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from app.database import Base
+
+JSON_DOCUMENT = JSON().with_variant(JSONB(), "postgresql")
 
 
 def utcnow() -> datetime:
@@ -1339,6 +1343,126 @@ class MetadataDefinition(TimestampMixin, Base):
     status: Mapped[str] = mapped_column(String(20), default="ACTIVE")
 
     matter: Mapped[Matter] = relationship()
+
+
+class ClassificationModel(TimestampMixin, Base):
+    __tablename__ = "classification_model"
+    __table_args__ = (
+        CheckConstraint(
+            "status IN ('ACTIVE', 'SUSPENDED', 'ARCHIVED')",
+            name="ck_classification_model_status",
+        ),
+        CheckConstraint("row_version > 0", name="ck_classification_model_row_version"),
+        ForeignKeyConstraint(
+            ["current_configuration_id", "id"],
+            [
+                "classification_model_configuration.id",
+                "classification_model_configuration.classification_model_id",
+            ],
+            name="fk_classification_model_current_configuration",
+            use_alter=True,
+        ),
+        Index("ix_classification_model_matter_created", "matter_id", "created_at"),
+    )
+
+    id: Mapped[uuid.UUID] = mapped_column(Uuid, primary_key=True, default=uuid.uuid4)
+    tenant_id: Mapped[uuid.UUID] = mapped_column(Uuid, ForeignKey("tenant.id", ondelete="RESTRICT"), index=True)
+    matter_id: Mapped[uuid.UUID] = mapped_column(Uuid, ForeignKey("matter.id", ondelete="RESTRICT"), index=True)
+    target_metadata_definition_id: Mapped[uuid.UUID] = mapped_column(
+        Uuid,
+        ForeignKey("metadata_definition.id", ondelete="RESTRICT"),
+        index=True,
+    )
+    name: Mapped[str] = mapped_column(String(200))
+    description: Mapped[str | None] = mapped_column(Text)
+    status: Mapped[str] = mapped_column(String(20), default="ACTIVE", index=True)
+    current_configuration_id: Mapped[uuid.UUID | None] = mapped_column(
+        Uuid,
+        nullable=True,
+        index=True,
+    )
+    created_by_user_id: Mapped[uuid.UUID] = mapped_column(
+        Uuid,
+        ForeignKey("app_user.id", ondelete="RESTRICT"),
+        index=True,
+    )
+    updated_by_user_id: Mapped[uuid.UUID] = mapped_column(
+        Uuid,
+        ForeignKey("app_user.id", ondelete="RESTRICT"),
+        index=True,
+    )
+    row_version: Mapped[int] = mapped_column(Integer, default=1, nullable=False)
+
+    tenant: Mapped[Tenant] = relationship()
+    matter: Mapped[Matter] = relationship()
+    target_metadata_definition: Mapped[MetadataDefinition] = relationship()
+    current_configuration: Mapped["ClassificationModelConfiguration | None"] = relationship(
+        foreign_keys=[current_configuration_id],
+        post_update=True,
+    )
+    created_by: Mapped[User] = relationship(foreign_keys=[created_by_user_id])
+    updated_by: Mapped[User] = relationship(foreign_keys=[updated_by_user_id])
+
+    __mapper_args__: ClassVar[dict[str, Any]] = {"version_id_col": row_version}
+
+
+class ClassificationModelConfiguration(Base):
+    __tablename__ = "classification_model_configuration"
+    __table_args__ = (
+        UniqueConstraint(
+            "classification_model_id",
+            "revision",
+            name="uq_classification_model_configuration_revision",
+        ),
+        UniqueConstraint(
+            "classification_model_id",
+            "configuration_hash",
+            name="uq_classification_model_configuration_hash",
+        ),
+        UniqueConstraint(
+            "id",
+            "classification_model_id",
+            name="uq_classification_model_configuration_identity",
+        ),
+        CheckConstraint("revision > 0", name="ck_classification_model_configuration_revision"),
+        CheckConstraint(
+            "classification_strategy IN ('BINARY', 'MULTICLASS', 'ONE_VS_REST')",
+            name="ck_classification_model_configuration_strategy",
+        ),
+        Index(
+            "ix_classification_model_configuration_model_created",
+            "classification_model_id",
+            "created_at",
+        ),
+    )
+
+    id: Mapped[uuid.UUID] = mapped_column(Uuid, primary_key=True, default=uuid.uuid4)
+    classification_model_id: Mapped[uuid.UUID] = mapped_column(
+        Uuid,
+        ForeignKey("classification_model.id", ondelete="CASCADE"),
+        index=True,
+    )
+    revision: Mapped[int] = mapped_column(Integer)
+    target_field_snapshot: Mapped[dict[str, Any]] = mapped_column(JSON_DOCUMENT)
+    classification_strategy: Mapped[str] = mapped_column(String(30))
+    ordered_class_keys: Mapped[list[str]] = mapped_column(JSON_DOCUMENT)
+    binary_mapping: Mapped[dict[str, Any] | None] = mapped_column(JSON_DOCUMENT)
+    label_policy: Mapped[dict[str, Any]] = mapped_column(JSON_DOCUMENT)
+    feature_contract: Mapped[dict[str, Any]] = mapped_column(JSON_DOCUMENT)
+    prediction_resolution_policy: Mapped[dict[str, Any]] = mapped_column(JSON_DOCUMENT)
+    trainer_specification: Mapped[dict[str, Any]] = mapped_column(JSON_DOCUMENT)
+    configuration_hash: Mapped[str] = mapped_column(String(64))
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+    created_by_user_id: Mapped[uuid.UUID] = mapped_column(
+        Uuid,
+        ForeignKey("app_user.id", ondelete="RESTRICT"),
+        index=True,
+    )
+
+    classification_model: Mapped[ClassificationModel] = relationship(
+        foreign_keys=[classification_model_id],
+    )
+    created_by: Mapped[User] = relationship()
 
 
 class MetadataEvent(Base):

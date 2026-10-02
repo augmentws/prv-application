@@ -15,6 +15,18 @@ from pydantic import (
 
 from app.decision_engine import DecisionAnswer
 from app.decision_specifications import DecisionSpecification
+from classification_service.schemas import (
+    BinaryClassMapping,
+    ClassificationStrategy,
+    FeatureContract,
+    LabelPolicy,
+    PredictionResolutionPolicy,
+    StableKey,
+    TargetCardinality,
+    TargetFieldSnapshot,
+    TargetMetadataType,
+    TrainerSpecification,
+)
 
 ResourceStatus = Literal["ACTIVE", "SUSPENDED", "ARCHIVED"]
 AdminRole = Literal["ADMIN"]
@@ -2357,6 +2369,91 @@ class WorkflowExecutionRead(BaseModel):
     completed_at: datetime | None
     steps: list[WorkflowStepExecutionRead]
     skill_runs: list[SkillRunExecutionRead]
+
+
+class ClassificationModelCreate(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    target_metadata_definition_id: uuid.UUID
+    name: str = Field(min_length=1, max_length=200)
+    description: str | None = Field(default=None, max_length=5000)
+
+    @field_validator("name")
+    @classmethod
+    def normalize_name(cls, value: str) -> str:
+        normalized = " ".join(value.split())
+        if not normalized:
+            raise ValueError("Classification model name is required")
+        return normalized
+
+
+class ClassificationModelConfigurationCreate(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    classification_strategy: ClassificationStrategy
+    ordered_class_keys: list[StableKey] = Field(min_length=2, max_length=1000)
+    binary_mapping: BinaryClassMapping | None = None
+    label_policy: LabelPolicy
+    feature_contract: FeatureContract
+    prediction_resolution_policy: PredictionResolutionPolicy
+    trainer_specification: TrainerSpecification
+
+
+class ClassificationTargetFieldRead(BaseModel):
+    metadata_definition_id: uuid.UUID
+    stable_key: str
+    display_name: str
+    metadata_type: TargetMetadataType
+    cardinality: TargetCardinality
+    status: ResourceStatus
+    reviewable: bool
+    active_value_keys: list[str]
+    schema_fingerprint: str
+
+
+class ClassificationModelConfigurationRead(BaseModel):
+    id: uuid.UUID
+    classification_model_id: uuid.UUID
+    revision: int
+    target_field_snapshot: TargetFieldSnapshot
+    classification_strategy: ClassificationStrategy
+    ordered_class_keys: list[StableKey]
+    binary_mapping: BinaryClassMapping | None
+    label_policy: LabelPolicy
+    feature_contract: FeatureContract
+    prediction_resolution_policy: PredictionResolutionPolicy
+    trainer_specification: TrainerSpecification
+    configuration_hash: str
+    created_at: datetime
+    created_by_user_id: uuid.UUID
+
+
+class ClassificationModelRead(BaseModel):
+    id: uuid.UUID
+    tenant_id: uuid.UUID
+    matter_id: uuid.UUID
+    target_metadata_definition_id: uuid.UUID
+    name: str
+    description: str | None
+    status: ResourceStatus
+    current_configuration_id: uuid.UUID | None
+    target_field: ClassificationTargetFieldRead
+    current_configuration: ClassificationModelConfigurationRead | None
+    created_at: datetime
+    created_by_user_id: uuid.UUID
+    updated_at: datetime
+    updated_by_user_id: uuid.UUID
+    row_version: int
+
+
+class ClassificationModelCompatibilityRead(BaseModel):
+    classification_model_id: uuid.UUID
+    configuration_id: uuid.UUID | None
+    compatible: bool
+    schema_fingerprint_matches: bool | None
+    current_target_field: ClassificationTargetFieldRead
+    configured_target_field_snapshot: TargetFieldSnapshot | None
+    reasons: list[str]
 
 
 class ErrorDetail(BaseModel):

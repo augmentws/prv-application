@@ -12951,6 +12951,416 @@
           }
         }
       }
+    },
+    "/v1/matters/{matter_id}/classification-models": {
+      "post": {
+        "tags": [
+          "classification models"
+        ],
+        "summary": "Create Classification Model",
+        "operationId": "create_classification_model_v1_matters__matter_id__classification_models_post",
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "matter_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid",
+              "title": "Matter Id"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ClassificationModelCreate"
+              }
+            }
+          }
+        },
+        "responses": {
+          "201": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ClassificationModelRead"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      },
+      "get": {
+        "tags": [
+          "classification models"
+        ],
+        "summary": "List Classification Models",
+        "operationId": "list_classification_models_v1_matters__matter_id__classification_models_get",
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "matter_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid",
+              "title": "Matter Id"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "array",
+                  "items": {
+                    "$ref": "#/components/schemas/ClassificationModelRead"
+                  },
+                  "title": "Response List Classification Models V1 Matters  Matter Id  Classification Models Get"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v1/matters/{matter_id}/classification-models/{classification_model_id}": {
+      "get": {
+        "tags": [
+          "classification models"
+        ],
+        "summary": "Get Classification Model",
+        "operationId": "get_classification_model_v1_matters__matter_id__classification_models__classification_model_id__get",
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "matter_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid",
+              "title": "Matter Id"
+            }
+          },
+          {
+            "name": "classification_model_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid",
+              "title": "Classification Model Id"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ClassificationModelRead"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v1/matters/{matter_id}/classification-models/{classification_model_id}/configurations": {
+      "post": {
+        "tags": [
+          "classification models"
+        ],
+        "summary": "Create Classification Model Configuration",
+        "operationId": "create_classification_model_configuration_v1_matters__matter_id__classification_models__classification_model_id__configurations_post",
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "matter_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid",
+              "title": "Matter Id"
+            }
+          },
+          {
+            "name": "classification_model_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid",
+              "title": "Classification Model Id"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ClassificationModelConfigurationCreate"
+              }
+            }
+          }
+        },
+        "responses": {
+          "201": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ClassificationModelConfigurationRead"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      },
+      "get": {
+        "tags": [
+          "classification models"
+        ],
+        "summary": "List Classification Model Configurations",
+        "operationId": "list_classification_model_configurations_v1_matters__matter_id__classification_models__classification_model_id__configurations_get",
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "matter_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid",
+              "title": "Matter Id"
+            }
+          },
+          {
+            "name": "classification_model_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid",
+              "title": "Classification Model Id"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "array",
+                  "items": {
+                    "$ref": "#/components/schemas/ClassificationModelConfigurationRead"
+                  },
+                  "title": "Response List Classification Model Configurations V1 Matters  Matter Id  Classification Models  Classification Model Id  Configurations Get"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v1/matters/{matter_id}/classification-models/{classification_model_id}/compatibility": {
+      "get": {
+        "tags": [
+          "classification models"
+        ],
+        "summary": "Get Classification Model Compatibility",
+        "operationId": "get_classification_model_compatibility_v1_matters__matter_id__classification_models__classification_model_id__compatibility_get",
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "matter_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid",
+              "title": "Matter Id"
+            }
+          },
+          {
+            "name": "classification_model_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid",
+              "title": "Classification Model Id"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ClassificationModelCompatibilityRead"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v1/matters/{matter_id}/classification-models/{classification_model_id}/archive": {
+      "post": {
+        "tags": [
+          "classification models"
+        ],
+        "summary": "Archive Classification Model",
+        "operationId": "archive_classification_model_v1_matters__matter_id__classification_models__classification_model_id__archive_post",
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "matter_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid",
+              "title": "Matter Id"
+            }
+          },
+          {
+            "name": "classification_model_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid",
+              "title": "Classification Model Id"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ClassificationModelRead"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
     }
   },
   "components": {
@@ -14681,6 +15091,49 @@
         ],
         "title": "BatchTopicTaxonomyRead"
       },
+      "BinaryClassMapping": {
+        "properties": {
+          "negative_class_key": {
+            "type": "string",
+            "pattern": "^[A-Za-z][A-Za-z0-9_-]{0,127}$",
+            "title": "Negative Class Key"
+          },
+          "positive_class_key": {
+            "type": "string",
+            "pattern": "^[A-Za-z][A-Za-z0-9_-]{0,127}$",
+            "title": "Positive Class Key"
+          },
+          "negative_value_keys": {
+            "items": {
+              "type": "string",
+              "pattern": "^[A-Za-z][A-Za-z0-9_-]{0,127}$"
+            },
+            "type": "array",
+            "maxItems": 1000,
+            "minItems": 1,
+            "title": "Negative Value Keys"
+          },
+          "positive_value_keys": {
+            "items": {
+              "type": "string",
+              "pattern": "^[A-Za-z][A-Za-z0-9_-]{0,127}$"
+            },
+            "type": "array",
+            "maxItems": 1000,
+            "minItems": 1,
+            "title": "Positive Value Keys"
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "negative_class_key",
+          "positive_class_key",
+          "negative_value_keys",
+          "positive_value_keys"
+        ],
+        "title": "BinaryClassMapping"
+      },
       "Body_upload_collection_item_v1_collections__collection_id__items_upload_post": {
         "properties": {
           "metadata": {
@@ -14864,6 +15317,428 @@
           "criteria"
         ],
         "title": "ChoiceDecisionQuestion"
+      },
+      "ClassificationModelCompatibilityRead": {
+        "properties": {
+          "classification_model_id": {
+            "type": "string",
+            "format": "uuid",
+            "title": "Classification Model Id"
+          },
+          "configuration_id": {
+            "anyOf": [
+              {
+                "type": "string",
+                "format": "uuid"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Configuration Id"
+          },
+          "compatible": {
+            "type": "boolean",
+            "title": "Compatible"
+          },
+          "schema_fingerprint_matches": {
+            "anyOf": [
+              {
+                "type": "boolean"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Schema Fingerprint Matches"
+          },
+          "current_target_field": {
+            "$ref": "#/components/schemas/ClassificationTargetFieldRead"
+          },
+          "configured_target_field_snapshot": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/TargetFieldSnapshot"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "reasons": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array",
+            "title": "Reasons"
+          }
+        },
+        "type": "object",
+        "required": [
+          "classification_model_id",
+          "configuration_id",
+          "compatible",
+          "schema_fingerprint_matches",
+          "current_target_field",
+          "configured_target_field_snapshot",
+          "reasons"
+        ],
+        "title": "ClassificationModelCompatibilityRead"
+      },
+      "ClassificationModelConfigurationCreate": {
+        "properties": {
+          "classification_strategy": {
+            "$ref": "#/components/schemas/ClassificationStrategy"
+          },
+          "ordered_class_keys": {
+            "items": {
+              "type": "string",
+              "pattern": "^[A-Za-z][A-Za-z0-9_-]{0,127}$"
+            },
+            "type": "array",
+            "maxItems": 1000,
+            "minItems": 2,
+            "title": "Ordered Class Keys"
+          },
+          "binary_mapping": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/BinaryClassMapping"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "label_policy": {
+            "$ref": "#/components/schemas/LabelPolicy"
+          },
+          "feature_contract": {
+            "$ref": "#/components/schemas/FeatureContract"
+          },
+          "prediction_resolution_policy": {
+            "$ref": "#/components/schemas/PredictionResolutionPolicy"
+          },
+          "trainer_specification": {
+            "$ref": "#/components/schemas/TrainerSpecification"
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "classification_strategy",
+          "ordered_class_keys",
+          "label_policy",
+          "feature_contract",
+          "prediction_resolution_policy",
+          "trainer_specification"
+        ],
+        "title": "ClassificationModelConfigurationCreate"
+      },
+      "ClassificationModelConfigurationRead": {
+        "properties": {
+          "id": {
+            "type": "string",
+            "format": "uuid",
+            "title": "Id"
+          },
+          "classification_model_id": {
+            "type": "string",
+            "format": "uuid",
+            "title": "Classification Model Id"
+          },
+          "revision": {
+            "type": "integer",
+            "title": "Revision"
+          },
+          "target_field_snapshot": {
+            "$ref": "#/components/schemas/TargetFieldSnapshot"
+          },
+          "classification_strategy": {
+            "$ref": "#/components/schemas/ClassificationStrategy"
+          },
+          "ordered_class_keys": {
+            "items": {
+              "type": "string",
+              "pattern": "^[A-Za-z][A-Za-z0-9_-]{0,127}$"
+            },
+            "type": "array",
+            "title": "Ordered Class Keys"
+          },
+          "binary_mapping": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/BinaryClassMapping"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "label_policy": {
+            "$ref": "#/components/schemas/LabelPolicy"
+          },
+          "feature_contract": {
+            "$ref": "#/components/schemas/FeatureContract"
+          },
+          "prediction_resolution_policy": {
+            "$ref": "#/components/schemas/PredictionResolutionPolicy"
+          },
+          "trainer_specification": {
+            "$ref": "#/components/schemas/TrainerSpecification"
+          },
+          "configuration_hash": {
+            "type": "string",
+            "title": "Configuration Hash"
+          },
+          "created_at": {
+            "type": "string",
+            "format": "date-time",
+            "title": "Created At"
+          },
+          "created_by_user_id": {
+            "type": "string",
+            "format": "uuid",
+            "title": "Created By User Id"
+          }
+        },
+        "type": "object",
+        "required": [
+          "id",
+          "classification_model_id",
+          "revision",
+          "target_field_snapshot",
+          "classification_strategy",
+          "ordered_class_keys",
+          "binary_mapping",
+          "label_policy",
+          "feature_contract",
+          "prediction_resolution_policy",
+          "trainer_specification",
+          "configuration_hash",
+          "created_at",
+          "created_by_user_id"
+        ],
+        "title": "ClassificationModelConfigurationRead"
+      },
+      "ClassificationModelCreate": {
+        "properties": {
+          "target_metadata_definition_id": {
+            "type": "string",
+            "format": "uuid",
+            "title": "Target Metadata Definition Id"
+          },
+          "name": {
+            "type": "string",
+            "maxLength": 200,
+            "minLength": 1,
+            "title": "Name"
+          },
+          "description": {
+            "anyOf": [
+              {
+                "type": "string",
+                "maxLength": 5000
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Description"
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "target_metadata_definition_id",
+          "name"
+        ],
+        "title": "ClassificationModelCreate"
+      },
+      "ClassificationModelRead": {
+        "properties": {
+          "id": {
+            "type": "string",
+            "format": "uuid",
+            "title": "Id"
+          },
+          "tenant_id": {
+            "type": "string",
+            "format": "uuid",
+            "title": "Tenant Id"
+          },
+          "matter_id": {
+            "type": "string",
+            "format": "uuid",
+            "title": "Matter Id"
+          },
+          "target_metadata_definition_id": {
+            "type": "string",
+            "format": "uuid",
+            "title": "Target Metadata Definition Id"
+          },
+          "name": {
+            "type": "string",
+            "title": "Name"
+          },
+          "description": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Description"
+          },
+          "status": {
+            "type": "string",
+            "enum": [
+              "ACTIVE",
+              "SUSPENDED",
+              "ARCHIVED"
+            ],
+            "title": "Status"
+          },
+          "current_configuration_id": {
+            "anyOf": [
+              {
+                "type": "string",
+                "format": "uuid"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Current Configuration Id"
+          },
+          "target_field": {
+            "$ref": "#/components/schemas/ClassificationTargetFieldRead"
+          },
+          "current_configuration": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/ClassificationModelConfigurationRead"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "created_at": {
+            "type": "string",
+            "format": "date-time",
+            "title": "Created At"
+          },
+          "created_by_user_id": {
+            "type": "string",
+            "format": "uuid",
+            "title": "Created By User Id"
+          },
+          "updated_at": {
+            "type": "string",
+            "format": "date-time",
+            "title": "Updated At"
+          },
+          "updated_by_user_id": {
+            "type": "string",
+            "format": "uuid",
+            "title": "Updated By User Id"
+          },
+          "row_version": {
+            "type": "integer",
+            "title": "Row Version"
+          }
+        },
+        "type": "object",
+        "required": [
+          "id",
+          "tenant_id",
+          "matter_id",
+          "target_metadata_definition_id",
+          "name",
+          "description",
+          "status",
+          "current_configuration_id",
+          "target_field",
+          "current_configuration",
+          "created_at",
+          "created_by_user_id",
+          "updated_at",
+          "updated_by_user_id",
+          "row_version"
+        ],
+        "title": "ClassificationModelRead"
+      },
+      "ClassificationStrategy": {
+        "type": "string",
+        "enum": [
+          "BINARY",
+          "MULTICLASS",
+          "ONE_VS_REST"
+        ],
+        "title": "ClassificationStrategy"
+      },
+      "ClassificationTargetFieldRead": {
+        "properties": {
+          "metadata_definition_id": {
+            "type": "string",
+            "format": "uuid",
+            "title": "Metadata Definition Id"
+          },
+          "stable_key": {
+            "type": "string",
+            "title": "Stable Key"
+          },
+          "display_name": {
+            "type": "string",
+            "title": "Display Name"
+          },
+          "metadata_type": {
+            "$ref": "#/components/schemas/TargetMetadataType"
+          },
+          "cardinality": {
+            "$ref": "#/components/schemas/TargetCardinality"
+          },
+          "status": {
+            "type": "string",
+            "enum": [
+              "ACTIVE",
+              "SUSPENDED",
+              "ARCHIVED"
+            ],
+            "title": "Status"
+          },
+          "reviewable": {
+            "type": "boolean",
+            "title": "Reviewable"
+          },
+          "active_value_keys": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array",
+            "title": "Active Value Keys"
+          },
+          "schema_fingerprint": {
+            "type": "string",
+            "title": "Schema Fingerprint"
+          }
+        },
+        "type": "object",
+        "required": [
+          "metadata_definition_id",
+          "stable_key",
+          "display_name",
+          "metadata_type",
+          "cardinality",
+          "status",
+          "reviewable",
+          "active_value_keys",
+          "schema_fingerprint"
+        ],
+        "title": "ClassificationTargetFieldRead"
       },
       "ClientCreate": {
         "properties": {
@@ -17392,6 +18267,94 @@
         ],
         "title": "FacetValue"
       },
+      "FeatureContract": {
+        "properties": {
+          "family_key": {
+            "type": "string",
+            "const": "DOCUMENT_EMBEDDING_POOLED_V1",
+            "title": "Family Key",
+            "default": "DOCUMENT_EMBEDDING_POOLED_V1"
+          },
+          "contract_version": {
+            "type": "integer",
+            "const": 1,
+            "title": "Contract Version",
+            "default": 1
+          },
+          "dimensions": {
+            "type": "integer",
+            "maximum": 16384.0,
+            "minimum": 32.0,
+            "title": "Dimensions"
+          },
+          "data_type": {
+            "$ref": "#/components/schemas/FeatureDataType",
+            "default": "FLOAT32"
+          },
+          "normalization": {
+            "$ref": "#/components/schemas/FeatureNormalization",
+            "default": "L2"
+          },
+          "pooling": {
+            "$ref": "#/components/schemas/FeaturePooling",
+            "default": "MEAN"
+          },
+          "embedding_model": {
+            "type": "string",
+            "maxLength": 500,
+            "minLength": 1,
+            "title": "Embedding Model"
+          },
+          "embedding_model_revision": {
+            "anyOf": [
+              {
+                "type": "string",
+                "maxLength": 255
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Embedding Model Revision"
+          },
+          "text_source_policy": {
+            "type": "string",
+            "pattern": "^[A-Za-z][A-Za-z0-9_-]{0,127}$",
+            "title": "Text Source Policy"
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "dimensions",
+          "embedding_model",
+          "text_source_policy"
+        ],
+        "title": "FeatureContract"
+      },
+      "FeatureDataType": {
+        "type": "string",
+        "enum": [
+          "FLOAT32",
+          "FLOAT64"
+        ],
+        "title": "FeatureDataType"
+      },
+      "FeatureNormalization": {
+        "type": "string",
+        "enum": [
+          "NONE",
+          "L2"
+        ],
+        "title": "FeatureNormalization"
+      },
+      "FeaturePooling": {
+        "type": "string",
+        "enum": [
+          "MEAN"
+        ],
+        "title": "FeaturePooling"
+      },
       "HTTPValidationError": {
         "properties": {
           "detail": {
@@ -17404,6 +18367,107 @@
         },
         "type": "object",
         "title": "HTTPValidationError"
+      },
+      "LabelAuthority": {
+        "type": "string",
+        "enum": [
+          "GOLD",
+          "ADJUDICATED",
+          "SILVER"
+        ],
+        "title": "LabelAuthority"
+      },
+      "LabelConflictAction": {
+        "type": "string",
+        "enum": [
+          "REQUIRE_ADJUDICATION",
+          "EXCLUDE",
+          "FAIL_SNAPSHOT"
+        ],
+        "title": "LabelConflictAction"
+      },
+      "LabelPolicy": {
+        "properties": {
+          "contract_version": {
+            "type": "integer",
+            "const": 1,
+            "title": "Contract Version",
+            "default": 1
+          },
+          "allowed_sources": {
+            "items": {
+              "$ref": "#/components/schemas/LabelSourceSpecification"
+            },
+            "type": "array",
+            "maxItems": 20,
+            "minItems": 1,
+            "title": "Allowed Sources"
+          },
+          "missing_label_action": {
+            "$ref": "#/components/schemas/MissingLabelAction",
+            "default": "EXCLUDE"
+          },
+          "source_conflict_action": {
+            "$ref": "#/components/schemas/LabelConflictAction",
+            "default": "REQUIRE_ADJUDICATION"
+          },
+          "target_value_conflict_action": {
+            "$ref": "#/components/schemas/LabelConflictAction",
+            "default": "EXCLUDE"
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "allowed_sources"
+        ],
+        "title": "LabelPolicy"
+      },
+      "LabelSourceKind": {
+        "type": "string",
+        "enum": [
+          "ADJUDICATED_REVIEW",
+          "HUMAN_REVIEW",
+          "ACCEPTED_JEV",
+          "MATTER_ASSERTED"
+        ],
+        "title": "LabelSourceKind"
+      },
+      "LabelSourceSpecification": {
+        "properties": {
+          "kind": {
+            "$ref": "#/components/schemas/LabelSourceKind"
+          },
+          "authority": {
+            "$ref": "#/components/schemas/LabelAuthority"
+          },
+          "source_weight": {
+            "type": "number",
+            "maximum": 1.0,
+            "exclusiveMinimum": 0.0,
+            "title": "Source Weight"
+          },
+          "source_reference_id": {
+            "anyOf": [
+              {
+                "type": "string",
+                "format": "uuid"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Source Reference Id"
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "kind",
+          "authority",
+          "source_weight"
+        ],
+        "title": "LabelSourceSpecification"
       },
       "LoginRequest": {
         "properties": {
@@ -17426,6 +18490,37 @@
           "password"
         ],
         "title": "LoginRequest"
+      },
+      "LogisticRegressionParameters": {
+        "properties": {
+          "regularization": {
+            "type": "string",
+            "const": "l2",
+            "title": "Regularization",
+            "default": "l2"
+          },
+          "c_values": {
+            "items": {
+              "type": "number",
+              "maximum": 1000000.0,
+              "exclusiveMinimum": 0.0
+            },
+            "type": "array",
+            "maxItems": 50,
+            "minItems": 1,
+            "title": "C Values"
+          },
+          "maximum_iterations": {
+            "type": "integer",
+            "maximum": 100000.0,
+            "minimum": 1.0,
+            "title": "Maximum Iterations",
+            "default": 1000
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "title": "LogisticRegressionParameters"
       },
       "MatterAnalysisTaskCreate": {
         "properties": {
@@ -22910,6 +24005,14 @@
         ],
         "title": "MetadataMutationRead"
       },
+      "MissingLabelAction": {
+        "type": "string",
+        "enum": [
+          "EXCLUDE",
+          "FAIL_SNAPSHOT"
+        ],
+        "title": "MissingLabelAction"
+      },
       "NoulCriteria": {
         "properties": {
           "true": {
@@ -23049,6 +24152,92 @@
           "type"
         ],
         "title": "NoulDecisionQuestion"
+      },
+      "PredictionConflictAction": {
+        "type": "string",
+        "enum": [
+          "ABSTAIN",
+          "HIGHEST_PROBABILITY",
+          "FAIL"
+        ],
+        "title": "PredictionConflictAction"
+      },
+      "PredictionResolutionPolicy": {
+        "properties": {
+          "contract_version": {
+            "type": "integer",
+            "const": 1,
+            "title": "Contract Version",
+            "default": 1
+          },
+          "binary_positive_threshold": {
+            "anyOf": [
+              {
+                "type": "number",
+                "maximum": 1.0,
+                "minimum": 0.0
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Binary Positive Threshold"
+          },
+          "multiclass_minimum_confidence": {
+            "anyOf": [
+              {
+                "type": "number",
+                "maximum": 1.0,
+                "minimum": 0.0
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Multiclass Minimum Confidence"
+          },
+          "one_vs_rest_thresholds": {
+            "anyOf": [
+              {
+                "patternProperties": {
+                  "^[A-Za-z][A-Za-z0-9_-]{0,127}$": {
+                    "type": "number",
+                    "maximum": 1.0,
+                    "minimum": 0.0
+                  }
+                },
+                "type": "object"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "One Vs Rest Thresholds"
+          },
+          "zero_match_action": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/PredictionConflictAction"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "multiple_match_action": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/PredictionConflictAction"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "title": "PredictionResolutionPolicy"
       },
       "ProviderUsageJobBreakdownRead": {
         "properties": {
@@ -26385,6 +27574,85 @@
         ],
         "title": "SystemTextProcessingRule"
       },
+      "TargetCardinality": {
+        "type": "string",
+        "enum": [
+          "SINGLE",
+          "MULTIPLE"
+        ],
+        "title": "TargetCardinality"
+      },
+      "TargetFieldSnapshot": {
+        "properties": {
+          "tenant_id": {
+            "type": "string",
+            "format": "uuid",
+            "title": "Tenant Id"
+          },
+          "matter_id": {
+            "type": "string",
+            "format": "uuid",
+            "title": "Matter Id"
+          },
+          "metadata_definition_id": {
+            "type": "string",
+            "format": "uuid",
+            "title": "Metadata Definition Id"
+          },
+          "stable_key": {
+            "type": "string",
+            "pattern": "^[A-Za-z][A-Za-z0-9_-]{0,127}$",
+            "title": "Stable Key"
+          },
+          "display_name": {
+            "type": "string",
+            "maxLength": 200,
+            "minLength": 1,
+            "title": "Display Name"
+          },
+          "metadata_type": {
+            "$ref": "#/components/schemas/TargetMetadataType"
+          },
+          "cardinality": {
+            "$ref": "#/components/schemas/TargetCardinality"
+          },
+          "schema_fingerprint": {
+            "type": "string",
+            "pattern": "^[0-9a-f]{64}$",
+            "title": "Schema Fingerprint"
+          },
+          "active_value_keys": {
+            "items": {
+              "type": "string",
+              "pattern": "^[A-Za-z][A-Za-z0-9_-]{0,127}$"
+            },
+            "type": "array",
+            "maxItems": 1000,
+            "title": "Active Value Keys"
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "tenant_id",
+          "matter_id",
+          "metadata_definition_id",
+          "stable_key",
+          "display_name",
+          "metadata_type",
+          "cardinality",
+          "schema_fingerprint"
+        ],
+        "title": "TargetFieldSnapshot"
+      },
+      "TargetMetadataType": {
+        "type": "string",
+        "enum": [
+          "BOOLEAN",
+          "ENUM"
+        ],
+        "title": "TargetMetadataType"
+      },
       "TenantAdminCreate": {
         "properties": {
           "email": {
@@ -26708,6 +27976,28 @@
           "refresh_expires_in"
         ],
         "title": "TokenPair"
+      },
+      "TrainerSpecification": {
+        "properties": {
+          "kind": {
+            "type": "string",
+            "const": "sklearn_logistic_regression",
+            "title": "Kind",
+            "default": "sklearn_logistic_regression"
+          },
+          "contract_version": {
+            "type": "integer",
+            "const": 1,
+            "title": "Contract Version",
+            "default": 1
+          },
+          "parameters": {
+            "$ref": "#/components/schemas/LogisticRegressionParameters"
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "title": "TrainerSpecification"
       },
       "UserCreate": {
         "properties": {

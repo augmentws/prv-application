@@ -6,7 +6,7 @@ from pydantic import BaseModel, ConfigDict, Field, StringConstraints, field_vali
 
 StableKey = Annotated[
     str,
-    StringConstraints(strip_whitespace=True, pattern=r"^[a-z][a-z0-9_-]{0,127}$"),
+    StringConstraints(strip_whitespace=True, pattern=r"^[A-Za-z][A-Za-z0-9_-]{0,127}$"),
 ]
 Sha256 = Annotated[str, StringConstraints(to_lower=True, pattern=r"^[0-9a-f]{64}$")]
 
@@ -219,6 +219,113 @@ class TrainerSpecification(StrictModel):
     parameters: LogisticRegressionParameters = Field(default_factory=LogisticRegressionParameters)
 
 
+def _validate_configuration_shape(
+    *,
+    target: TargetFieldSnapshot,
+    strategy: ClassificationStrategy,
+    ordered_class_keys: list[str],
+    binary_mapping: BinaryClassMapping | None,
+    prediction_policy: PredictionResolutionPolicy,
+) -> None:
+    if len(ordered_class_keys) != len(set(ordered_class_keys)):
+        raise ValueError("Ordered class keys must be unique")
+    if target.metadata_type == TargetMetadataType.BOOLEAN and strategy != ClassificationStrategy.BINARY:
+        raise ValueError("Boolean targets support only binary classification")
+    if target.cardinality == TargetCardinality.MULTIPLE and strategy == ClassificationStrategy.MULTICLASS:
+        raise ValueError("Multiple-cardinality targets do not support native multiclass classification")
+
+    available_values = (
+        set(target.active_value_keys)
+        if target.metadata_type == TargetMetadataType.ENUM
+        else {"false", "true"}
+    )
+    if strategy == ClassificationStrategy.BINARY:
+        if binary_mapping is None:
+            raise ValueError("Binary classification requires binary_mapping")
+        if len(ordered_class_keys) != 2:
+            raise ValueError("Binary classification requires exactly two ordered class keys")
+        expected_order = [binary_mapping.negative_class_key, binary_mapping.positive_class_key]
+        if ordered_class_keys != expected_order:
+            raise ValueError("Binary class order must be [negative_class_key, positive_class_key]")
+        mapped_values = set(binary_mapping.negative_value_keys + binary_mapping.positive_value_keys)
+        if not mapped_values.issubset(available_values):
+            raise ValueError("Binary mappings must reference target field values")
+        if any(
+            value is not None
+            for value in (
+                prediction_policy.multiclass_minimum_confidence,
+                prediction_policy.one_vs_rest_thresholds,
+                prediction_policy.zero_match_action,
+                prediction_policy.multiple_match_action,
+            )
+        ):
+            raise ValueError("Binary prediction policy contains fields for another strategy")
+        if prediction_policy.binary_positive_threshold is None:
+            raise ValueError("Binary classification requires binary_positive_threshold")
+        return
+
+    if binary_mapping is not None:
+        raise ValueError("binary_mapping is valid only for binary classification")
+    if strategy == ClassificationStrategy.MULTICLASS:
+        if target.cardinality != TargetCardinality.SINGLE:
+            raise ValueError("Native multiclass requires a single-cardinality target")
+        if not set(ordered_class_keys).issubset(available_values):
+            raise ValueError("Multiclass keys must exist in the target field schema")
+        if any(
+            value is not None
+            for value in (
+                prediction_policy.binary_positive_threshold,
+                prediction_policy.one_vs_rest_thresholds,
+                prediction_policy.zero_match_action,
+                prediction_policy.multiple_match_action,
+            )
+        ):
+            raise ValueError("Multiclass prediction policy contains fields for another strategy")
+        return
+
+    if not set(ordered_class_keys).issubset(available_values):
+        raise ValueError("One-vs-rest class keys must exist in the target field schema")
+    thresholds = prediction_policy.one_vs_rest_thresholds
+    if thresholds is None or set(thresholds) != set(ordered_class_keys):
+        raise ValueError("One-vs-rest thresholds must match ordered class keys")
+    if target.cardinality == TargetCardinality.SINGLE and (
+        prediction_policy.zero_match_action is None or prediction_policy.multiple_match_action is None
+    ):
+        raise ValueError("Single-cardinality one-vs-rest requires zero/multiple match actions")
+    if target.cardinality == TargetCardinality.MULTIPLE and (
+        prediction_policy.zero_match_action is not None or prediction_policy.multiple_match_action is not None
+    ):
+        raise ValueError("Multiple-cardinality one-vs-rest does not use match-resolution actions")
+    if (
+        prediction_policy.binary_positive_threshold is not None
+        or prediction_policy.multiclass_minimum_confidence is not None
+    ):
+        raise ValueError("One-vs-rest prediction policy contains fields for another strategy")
+
+
+class ClassificationModelConfigurationSpecification(StrictModel):
+    configuration_schema_version: Literal[1] = 1
+    target_field_snapshot: TargetFieldSnapshot
+    classification_strategy: ClassificationStrategy
+    ordered_class_keys: list[StableKey] = Field(min_length=2, max_length=1000)
+    binary_mapping: BinaryClassMapping | None = None
+    label_policy: LabelPolicy
+    feature_contract: FeatureContract
+    prediction_resolution_policy: PredictionResolutionPolicy
+    trainer_specification: TrainerSpecification
+
+    @model_validator(mode="after")
+    def validate_configuration(self) -> "ClassificationModelConfigurationSpecification":
+        _validate_configuration_shape(
+            target=self.target_field_snapshot,
+            strategy=self.classification_strategy,
+            ordered_class_keys=self.ordered_class_keys,
+            binary_mapping=self.binary_mapping,
+            prediction_policy=self.prediction_resolution_policy,
+        )
+        return self
+
+
 class ArtifactReference(StrictModel):
     artifact_id: uuid.UUID
     artifact_type: ArtifactType
@@ -282,93 +389,14 @@ class ClassificationTrainingRequest(StrictModel):
             if getattr(self, field_name).artifact_type != artifact_type:
                 raise ValueError(f"{field_name} must reference {artifact_type.value}")
 
-        if target.metadata_type == TargetMetadataType.BOOLEAN and self.classification_strategy != ClassificationStrategy.BINARY:
-            raise ValueError("Boolean targets support only binary classification")
-        if target.cardinality == TargetCardinality.MULTIPLE and self.classification_strategy == ClassificationStrategy.MULTICLASS:
-            raise ValueError("Multiple-cardinality targets do not support native multiclass classification")
-
-        available_values = (
-            set(target.active_value_keys)
-            if target.metadata_type == TargetMetadataType.ENUM
-            else {"false", "true"}
+        _validate_configuration_shape(
+            target=target,
+            strategy=self.classification_strategy,
+            ordered_class_keys=self.ordered_class_keys,
+            binary_mapping=self.binary_mapping,
+            prediction_policy=self.prediction_resolution_policy,
         )
-
-        if self.classification_strategy == ClassificationStrategy.BINARY:
-            if self.binary_mapping is None:
-                raise ValueError("Binary classification requires binary_mapping")
-            if len(self.ordered_class_keys) != 2:
-                raise ValueError("Binary classification requires exactly two ordered class keys")
-            expected_order = [self.binary_mapping.negative_class_key, self.binary_mapping.positive_class_key]
-            if self.ordered_class_keys != expected_order:
-                raise ValueError("Binary class order must be [negative_class_key, positive_class_key]")
-            mapped_values = set(self.binary_mapping.negative_value_keys + self.binary_mapping.positive_value_keys)
-            if not mapped_values.issubset(available_values):
-                raise ValueError("Binary mappings must reference target field values")
-            if self.prediction_policy_has_non_binary_fields:
-                raise ValueError("Binary prediction policy contains fields for another strategy")
-            if self.prediction_resolution_policy.binary_positive_threshold is None:
-                raise ValueError("Binary classification requires binary_positive_threshold")
-        elif self.binary_mapping is not None:
-            raise ValueError("binary_mapping is valid only for binary classification")
-
-        if self.classification_strategy == ClassificationStrategy.MULTICLASS:
-            if target.cardinality != TargetCardinality.SINGLE:
-                raise ValueError("Native multiclass requires a single-cardinality target")
-            if not set(self.ordered_class_keys).issubset(available_values):
-                raise ValueError("Multiclass keys must exist in the target field schema")
-            if self.prediction_policy_has_non_multiclass_fields:
-                raise ValueError("Multiclass prediction policy contains fields for another strategy")
-
-        if self.classification_strategy == ClassificationStrategy.ONE_VS_REST:
-            if not set(self.ordered_class_keys).issubset(available_values):
-                raise ValueError("One-vs-rest class keys must exist in the target field schema")
-            thresholds = self.prediction_resolution_policy.one_vs_rest_thresholds
-            if thresholds is None or set(thresholds) != set(self.ordered_class_keys):
-                raise ValueError("One-vs-rest thresholds must match ordered class keys")
-            if target.cardinality == TargetCardinality.SINGLE and (
-                self.prediction_resolution_policy.zero_match_action is None
-                or self.prediction_resolution_policy.multiple_match_action is None
-            ):
-                raise ValueError("Single-cardinality one-vs-rest requires zero/multiple match actions")
-            if target.cardinality == TargetCardinality.MULTIPLE and (
-                self.prediction_resolution_policy.zero_match_action is not None
-                or self.prediction_resolution_policy.multiple_match_action is not None
-            ):
-                raise ValueError("Multiple-cardinality one-vs-rest does not use match-resolution actions")
-            if self.prediction_policy_has_non_one_vs_rest_fields:
-                raise ValueError("One-vs-rest prediction policy contains fields for another strategy")
         return self
-
-    @property
-    def prediction_policy_has_non_binary_fields(self) -> bool:
-        policy = self.prediction_resolution_policy
-        return any(
-            value is not None
-            for value in (
-                policy.multiclass_minimum_confidence,
-                policy.one_vs_rest_thresholds,
-                policy.zero_match_action,
-                policy.multiple_match_action,
-            )
-        )
-
-    @property
-    def prediction_policy_has_non_multiclass_fields(self) -> bool:
-        policy = self.prediction_resolution_policy
-        return any(
-            value is not None
-            for value in (
-                policy.binary_positive_threshold,
-                policy.one_vs_rest_thresholds,
-                policy.zero_match_action,
-                policy.multiple_match_action,
-            )
-        )
-
-    @property
-    def prediction_policy_has_non_one_vs_rest_fields(self) -> bool:
-        policy = self.prediction_resolution_policy
-        return policy.binary_positive_threshold is not None or policy.multiclass_minimum_confidence is not None
 
 
 class ModelPackageFile(StrictModel):
