@@ -21,11 +21,13 @@ from classification_service.schemas import (
     FeatureContract,
     LabelPolicy,
     PredictionResolutionPolicy,
+    Sha256,
     StableKey,
     TargetCardinality,
     TargetFieldSnapshot,
     TargetMetadataType,
     TrainerSpecification,
+    TrainingScopeSpecification,
 )
 
 ResourceStatus = Literal["ACTIVE", "SUSPENDED", "ARCHIVED"]
@@ -2454,6 +2456,100 @@ class ClassificationModelCompatibilityRead(BaseModel):
     current_target_field: ClassificationTargetFieldRead
     configured_target_field_snapshot: TargetFieldSnapshot | None
     reasons: list[str]
+
+
+class ClassificationDatasetSnapshotRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    configuration_id: uuid.UUID
+    purpose: Literal["TRAINING"] = "TRAINING"
+    training_scope: TrainingScopeSpecification
+
+
+class ClassificationDatasetIssue(BaseModel):
+    code: str
+    message: str
+    count: int | None = None
+
+
+class ClassificationLabelSourceSummary(BaseModel):
+    kind: str
+    source_reference_id: uuid.UUID | None
+    authority: str
+    source_weight: float
+    claim_count: int
+    selected_count: int
+    selected_weight_total: float
+    excluded_blinded: bool = False
+
+
+class ClassificationDatasetSnapshotPreview(BaseModel):
+    classification_model_id: uuid.UUID
+    configuration_id: uuid.UUID
+    configuration_hash: Sha256
+    purpose: Literal["TRAINING"]
+    training_scope: TrainingScopeSpecification
+    target_field_snapshot: TargetFieldSnapshot
+    population_count: int
+    labeled_count: int
+    unlabeled_count: int
+    excluded_count: int
+    conflicting_count: int
+    family_grouped_count: int
+    exact_duplicate_grouped_count: int
+    missing_grouping_count: int
+    class_support: dict[str, int]
+    source_summary: list[ClassificationLabelSourceSummary]
+    population_content_hash: Sha256
+    label_content_hash: Sha256
+    aggregate_hash: Sha256
+    blocking_errors: list[ClassificationDatasetIssue]
+    warnings: list[ClassificationDatasetIssue]
+    can_materialize: bool
+
+
+class ClassificationDatasetSnapshotRead(BaseModel):
+    id: uuid.UUID
+    tenant_id: uuid.UUID
+    matter_id: uuid.UUID
+    classification_model_id: uuid.UUID
+    configuration_id: uuid.UUID
+    purpose: Literal["TRAINING"]
+    training_scope: TrainingScopeSpecification
+    target_field_snapshot: TargetFieldSnapshot
+    label_policy_snapshot: LabelPolicy
+    population_artifact_id: uuid.UUID | None
+    population_content_hash: Sha256 | None
+    label_artifact_id: uuid.UUID | None
+    label_content_hash: Sha256 | None
+    feature_artifact_id: uuid.UUID | None
+    feature_content_hash: Sha256 | None
+    feature_specification_hash: Sha256 | None
+    split_artifact_id: uuid.UUID | None
+    split_content_hash: Sha256 | None
+    aggregate_hash: Sha256
+    status: Literal["BUILDING", "READY_FOR_FEATURES", "READY_FOR_TRAINING", "FAILED"]
+    population_count: int
+    labeled_count: int
+    unlabeled_count: int
+    excluded_count: int
+    conflicting_count: int
+    family_grouped_count: int
+    exact_duplicate_grouped_count: int
+    missing_grouping_count: int
+    class_support: dict[str, int]
+    source_summary: list[ClassificationLabelSourceSummary]
+    warnings: list[ClassificationDatasetIssue]
+    failure_code: str | None
+    failure_summary: str | None
+    created_by_user_id: uuid.UUID
+    created_at: datetime
+    completed_at: datetime | None
+
+
+class ClassificationDatasetSnapshotCreateResponse(BaseModel):
+    snapshot: ClassificationDatasetSnapshotRead
+    created: bool
 
 
 class ErrorDetail(BaseModel):

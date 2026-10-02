@@ -9,7 +9,7 @@ from urllib.parse import quote
 from fastapi import APIRouter, Depends, File, Form, HTTPException, Query, Response, UploadFile, status
 from fastapi.responses import StreamingResponse
 from pydantic import ValidationError
-from sqlalchemy import case, func, select
+from sqlalchemy import and_, case, func, select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
@@ -46,6 +46,8 @@ from artifact_service.schemas import (
     CollectionDeletionFailure,
     CollectionDeletionJobRead,
     CollectionFacetKey,
+    CollectionItemGroupingSnapshot,
+    CollectionItemGroupingSnapshotsRequest,
     CollectionItemRead,
     CollectionItemSearchResponse,
     CollectionItemUploadMetadata,
@@ -1364,6 +1366,54 @@ def build_router(
             raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Collection item not found")
         require_client(principal, item.tenant_id, item.client_id)
         return _item_read(db, item)
+
+    @router.post(
+        "/collection-items/grouping-snapshots",
+        response_model=list[CollectionItemGroupingSnapshot],
+    )
+    def get_collection_item_grouping_snapshots(
+        payload: CollectionItemGroupingSnapshotsRequest,
+        principal: ArtifactPrincipal = Depends(principal_dependency),
+        db: Session = Depends(get_artifact_db),
+    ) -> list[CollectionItemGroupingSnapshot]:
+        require_client(principal, payload.tenant_id, payload.client_id)
+        rows = db.execute(
+            select(
+                CollectionItem.id,
+                CollectionItem.family_id,
+                CollectionItem.record_type,
+                Artifact.content_hash,
+            )
+            .outerjoin(
+                CollectionItemArtifact,
+                and_(
+                    CollectionItemArtifact.collection_item_id == CollectionItem.id,
+                    CollectionItemArtifact.artifact_role == "NATIVE",
+                ),
+            )
+            .outerjoin(
+                Artifact,
+                and_(
+                    Artifact.id == CollectionItemArtifact.artifact_id,
+                    Artifact.status == "FINALIZED",
+                ),
+            )
+            .where(
+                CollectionItem.tenant_id == payload.tenant_id,
+                CollectionItem.client_id == payload.client_id,
+                CollectionItem.id.in_(payload.item_ids),
+            )
+        )
+        by_id = {
+            item_id: CollectionItemGroupingSnapshot(
+                item_id=item_id,
+                family_id=family_id,
+                record_type=record_type,
+                native_content_hash=content_hash,
+            )
+            for item_id, family_id, record_type, content_hash in rows
+        }
+        return [by_id[item_id] for item_id in payload.item_ids if item_id in by_id]
 
     @router.get("/collection-items/{collection_item_id}/artifacts", response_model=list[ArtifactRead])
     def list_collection_item_artifacts(

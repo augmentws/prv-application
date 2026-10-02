@@ -5,7 +5,7 @@ from datetime import datetime
 from typing import Any, BinaryIO
 
 import httpx
-from sqlalchemy import case, select
+from sqlalchemy import and_, case, select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
@@ -37,6 +37,7 @@ from artifact_service.models import (
 )
 from artifact_service.schemas import (
     CollectionDeletionJobRead,
+    CollectionItemGroupingSnapshotsRequest,
     CollectionSelectionCreate,
     WorkflowArtifactLineageInput,
     WorkflowArtifactUploadMetadata,
@@ -94,6 +95,14 @@ class SearchItemSnapshot:
     raw_metadata: dict[str, Any]
     unmapped_metadata: dict[str, Any]
     body_text: str | None
+
+
+@dataclass(frozen=True)
+class CollectionItemGroupingSnapshot:
+    item_id: uuid.UUID
+    family_id: uuid.UUID | None
+    record_type: str
+    native_content_hash: str | None
 
 
 @dataclass(frozen=True)
@@ -295,6 +304,82 @@ def _headers(actor_user_id: uuid.UUID, tenant_id: uuid.UUID, client_id: uuid.UUI
 def _delegated_headers(principal: ArtifactPrincipal) -> dict[str, str]:
     token = mint_artifact_delegation(principal, get_artifact_settings())
     return {"authorization": f"Bearer {token}"}
+
+
+def get_collection_item_grouping_snapshots(
+    *,
+    item_ids: list[uuid.UUID],
+    actor_user_id: uuid.UUID,
+    tenant_id: uuid.UUID,
+    client_id: uuid.UUID,
+) -> dict[uuid.UUID, CollectionItemGroupingSnapshot]:
+    if not item_ids:
+        return {}
+    unique_item_ids = list(dict.fromkeys(item_ids))
+    settings = get_settings()
+    snapshots: dict[uuid.UUID, CollectionItemGroupingSnapshot] = {}
+    if settings.artifact_mode == "embedded":
+        with ArtifactSessionLocal() as db:
+            rows = db.execute(
+                select(
+                    CollectionItem.id,
+                    CollectionItem.family_id,
+                    CollectionItem.record_type,
+                    Artifact.content_hash,
+                )
+                .outerjoin(
+                    CollectionItemArtifact,
+                    and_(
+                        CollectionItemArtifact.collection_item_id == CollectionItem.id,
+                        CollectionItemArtifact.artifact_role == "NATIVE",
+                    ),
+                )
+                .outerjoin(
+                    Artifact,
+                    and_(
+                        Artifact.id == CollectionItemArtifact.artifact_id,
+                        Artifact.status == "FINALIZED",
+                    ),
+                )
+                .where(
+                    CollectionItem.tenant_id == tenant_id,
+                    CollectionItem.client_id == client_id,
+                    CollectionItem.id.in_(unique_item_ids),
+                )
+            )
+            for item_id, family_id, record_type, content_hash in rows:
+                snapshots[item_id] = CollectionItemGroupingSnapshot(
+                    item_id=item_id,
+                    family_id=family_id,
+                    record_type=record_type,
+                    native_content_hash=content_hash,
+                )
+        return snapshots
+
+    with httpx.Client(base_url=settings.artifact_base_url, timeout=120) as client:
+        for offset in range(0, len(unique_item_ids), 5000):
+            payload = CollectionItemGroupingSnapshotsRequest(
+                tenant_id=tenant_id,
+                client_id=client_id,
+                item_ids=unique_item_ids[offset : offset + 5000],
+            )
+            response = client.post(
+                "/v1/collection-items/grouping-snapshots",
+                json=payload.model_dump(mode="json"),
+                headers=_headers(actor_user_id, tenant_id, client_id),
+            )
+            if response.status_code == 403:
+                raise PermissionError("Collection items are not available to this matter")
+            response.raise_for_status()
+            for value in response.json():
+                item_id = uuid.UUID(value["item_id"])
+                snapshots[item_id] = CollectionItemGroupingSnapshot(
+                    item_id=item_id,
+                    family_id=uuid.UUID(value["family_id"]) if value.get("family_id") else None,
+                    record_type=value["record_type"],
+                    native_content_hash=value.get("native_content_hash"),
+                )
+    return snapshots
 
 
 def get_collection_snapshot(

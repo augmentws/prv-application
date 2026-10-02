@@ -35,6 +35,10 @@ import type {
   BodyUploadDerivedArtifactV1CollectionItemsCollectionItemIdDerivedArtifactsUploadPost,
   BodyUploadSourceContainerV1CollectionsCollectionIdSourceContainersUploadPost,
   BodyUploadWorkflowArtifactV1WorkflowArtifactsUploadPost,
+  ClassificationDatasetSnapshotCreateResponse,
+  ClassificationDatasetSnapshotPreview,
+  ClassificationDatasetSnapshotRead,
+  ClassificationDatasetSnapshotRequest,
   ClassificationModelCompatibilityRead,
   ClassificationModelConfigurationCreate,
   ClassificationModelConfigurationRead,
@@ -47,6 +51,8 @@ import type {
   CollectionDateHistogramResponse,
   CollectionDateHistogramV1CollectionsCollectionIdDateHistogramGetParams,
   CollectionDeletionJobRead,
+  CollectionItemGroupingSnapshot,
+  CollectionItemGroupingSnapshotsRequest,
   CollectionItemRead,
   CollectionItemSearchResponse,
   CollectionItemUploadResponse,
@@ -12189,6 +12195,70 @@ export const getCollectionItemV1CollectionItemsCollectionItemIdGet = async (coll
 
 
 
+export type getCollectionItemGroupingSnapshotsV1CollectionItemsGroupingSnapshotsPostResponse200 = {
+  data: CollectionItemGroupingSnapshot[]
+  status: 200
+}
+
+export type getCollectionItemGroupingSnapshotsV1CollectionItemsGroupingSnapshotsPostResponse422 = {
+  data: HTTPValidationError
+  status: 422
+}
+
+export type getCollectionItemGroupingSnapshotsV1CollectionItemsGroupingSnapshotsPostResponseSuccess = (getCollectionItemGroupingSnapshotsV1CollectionItemsGroupingSnapshotsPostResponse200) & {
+  headers: Headers;
+};
+export type getCollectionItemGroupingSnapshotsV1CollectionItemsGroupingSnapshotsPostResponseError = (getCollectionItemGroupingSnapshotsV1CollectionItemsGroupingSnapshotsPostResponse422) & {
+  headers: Headers;
+};
+
+export type getCollectionItemGroupingSnapshotsV1CollectionItemsGroupingSnapshotsPostResponse = (getCollectionItemGroupingSnapshotsV1CollectionItemsGroupingSnapshotsPostResponseSuccess | getCollectionItemGroupingSnapshotsV1CollectionItemsGroupingSnapshotsPostResponseError)
+
+export const getGetCollectionItemGroupingSnapshotsV1CollectionItemsGroupingSnapshotsPostUrl = () => {
+
+
+
+
+  return `/api/core/v1/collection-items/grouping-snapshots`
+}
+
+/**
+ * @summary Get Collection Item Grouping Snapshots
+ */
+export const getCollectionItemGroupingSnapshotsV1CollectionItemsGroupingSnapshotsPost = async (collectionItemGroupingSnapshotsRequest: CollectionItemGroupingSnapshotsRequest, options?: RequestInit): Promise<getCollectionItemGroupingSnapshotsV1CollectionItemsGroupingSnapshotsPostResponse> => {
+
+    const getHeaders = (h?: NonNullable<RequestInit['headers']>): Record<string, string | readonly string[]> => {
+    if (!h) return {};
+    if (h instanceof Headers) return Object.fromEntries(h.entries());
+    if (Symbol.iterator in h) {
+      return Object.fromEntries(
+        Array.from(h as Iterable<Iterable<string>>, (entry) => Array.from(entry) as [string, string]),
+      );
+    }
+    const headers: Record<string, string | readonly string[]> = {};
+    for (const [name, value] of Object.entries<string | readonly string[] | undefined>(h)) {
+      if (value !== undefined) headers[name] = value;
+    }
+    return headers;
+  };
+const res = await fetch(getGetCollectionItemGroupingSnapshotsV1CollectionItemsGroupingSnapshotsPostUrl(),
+  {
+    ...options,
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json', ...getHeaders(options?.headers) },
+    body: JSON.stringify(collectionItemGroupingSnapshotsRequest)
+  }
+)
+
+
+  const body = [204, 205, 304].includes(res.status) ? null : await res.text();
+
+  const data: getCollectionItemGroupingSnapshotsV1CollectionItemsGroupingSnapshotsPostResponse['data'] = body ? JSON.parse(body) : {}
+  return { data, status: res.status, headers: res.headers } as getCollectionItemGroupingSnapshotsV1CollectionItemsGroupingSnapshotsPostResponse
+}
+
+
+
 export type listCollectionItemArtifactsV1CollectionItemsCollectionItemIdArtifactsGetResponse200 = {
   data: ArtifactRead[]
   status: 200
@@ -12725,6 +12795,246 @@ export const listClassificationModelConfigurationsV1MattersMatterIdClassificatio
 
   const data: listClassificationModelConfigurationsV1MattersMatterIdClassificationModelsClassificationModelIdConfigurationsGetResponse['data'] = body ? JSON.parse(body) : {}
   return { data, status: res.status, headers: res.headers } as listClassificationModelConfigurationsV1MattersMatterIdClassificationModelsClassificationModelIdConfigurationsGetResponse
+}
+
+
+
+export type previewClassificationDatasetSnapshotV1MattersMatterIdClassificationModelsClassificationModelIdDatasetSnapshotsPreviewPostResponse200 = {
+  data: ClassificationDatasetSnapshotPreview
+  status: 200
+}
+
+export type previewClassificationDatasetSnapshotV1MattersMatterIdClassificationModelsClassificationModelIdDatasetSnapshotsPreviewPostResponse422 = {
+  data: HTTPValidationError
+  status: 422
+}
+
+export type previewClassificationDatasetSnapshotV1MattersMatterIdClassificationModelsClassificationModelIdDatasetSnapshotsPreviewPostResponseSuccess = (previewClassificationDatasetSnapshotV1MattersMatterIdClassificationModelsClassificationModelIdDatasetSnapshotsPreviewPostResponse200) & {
+  headers: Headers;
+};
+export type previewClassificationDatasetSnapshotV1MattersMatterIdClassificationModelsClassificationModelIdDatasetSnapshotsPreviewPostResponseError = (previewClassificationDatasetSnapshotV1MattersMatterIdClassificationModelsClassificationModelIdDatasetSnapshotsPreviewPostResponse422) & {
+  headers: Headers;
+};
+
+export type previewClassificationDatasetSnapshotV1MattersMatterIdClassificationModelsClassificationModelIdDatasetSnapshotsPreviewPostResponse = (previewClassificationDatasetSnapshotV1MattersMatterIdClassificationModelsClassificationModelIdDatasetSnapshotsPreviewPostResponseSuccess | previewClassificationDatasetSnapshotV1MattersMatterIdClassificationModelsClassificationModelIdDatasetSnapshotsPreviewPostResponseError)
+
+export const getPreviewClassificationDatasetSnapshotV1MattersMatterIdClassificationModelsClassificationModelIdDatasetSnapshotsPreviewPostUrl = (matterId: string,
+    classificationModelId: string,) => {
+
+
+
+
+  return `/api/core/v1/matters/${matterId}/classification-models/${classificationModelId}/dataset-snapshots/preview`
+}
+
+/**
+ * @summary Preview Classification Dataset Snapshot
+ */
+export const previewClassificationDatasetSnapshotV1MattersMatterIdClassificationModelsClassificationModelIdDatasetSnapshotsPreviewPost = async (matterId: string,
+    classificationModelId: string,
+    classificationDatasetSnapshotRequest: ClassificationDatasetSnapshotRequest, options?: RequestInit): Promise<previewClassificationDatasetSnapshotV1MattersMatterIdClassificationModelsClassificationModelIdDatasetSnapshotsPreviewPostResponse> => {
+
+    const getHeaders = (h?: NonNullable<RequestInit['headers']>): Record<string, string | readonly string[]> => {
+    if (!h) return {};
+    if (h instanceof Headers) return Object.fromEntries(h.entries());
+    if (Symbol.iterator in h) {
+      return Object.fromEntries(
+        Array.from(h as Iterable<Iterable<string>>, (entry) => Array.from(entry) as [string, string]),
+      );
+    }
+    const headers: Record<string, string | readonly string[]> = {};
+    for (const [name, value] of Object.entries<string | readonly string[] | undefined>(h)) {
+      if (value !== undefined) headers[name] = value;
+    }
+    return headers;
+  };
+const res = await fetch(getPreviewClassificationDatasetSnapshotV1MattersMatterIdClassificationModelsClassificationModelIdDatasetSnapshotsPreviewPostUrl(matterId,classificationModelId),
+  {
+    ...options,
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json', ...getHeaders(options?.headers) },
+    body: JSON.stringify(classificationDatasetSnapshotRequest)
+  }
+)
+
+
+  const body = [204, 205, 304].includes(res.status) ? null : await res.text();
+
+  const data: previewClassificationDatasetSnapshotV1MattersMatterIdClassificationModelsClassificationModelIdDatasetSnapshotsPreviewPostResponse['data'] = body ? JSON.parse(body) : {}
+  return { data, status: res.status, headers: res.headers } as previewClassificationDatasetSnapshotV1MattersMatterIdClassificationModelsClassificationModelIdDatasetSnapshotsPreviewPostResponse
+}
+
+
+
+export type createClassificationDatasetSnapshotV1MattersMatterIdClassificationModelsClassificationModelIdDatasetSnapshotsPostResponse201 = {
+  data: ClassificationDatasetSnapshotCreateResponse
+  status: 201
+}
+
+export type createClassificationDatasetSnapshotV1MattersMatterIdClassificationModelsClassificationModelIdDatasetSnapshotsPostResponse422 = {
+  data: HTTPValidationError
+  status: 422
+}
+
+export type createClassificationDatasetSnapshotV1MattersMatterIdClassificationModelsClassificationModelIdDatasetSnapshotsPostResponseSuccess = (createClassificationDatasetSnapshotV1MattersMatterIdClassificationModelsClassificationModelIdDatasetSnapshotsPostResponse201) & {
+  headers: Headers;
+};
+export type createClassificationDatasetSnapshotV1MattersMatterIdClassificationModelsClassificationModelIdDatasetSnapshotsPostResponseError = (createClassificationDatasetSnapshotV1MattersMatterIdClassificationModelsClassificationModelIdDatasetSnapshotsPostResponse422) & {
+  headers: Headers;
+};
+
+export type createClassificationDatasetSnapshotV1MattersMatterIdClassificationModelsClassificationModelIdDatasetSnapshotsPostResponse = (createClassificationDatasetSnapshotV1MattersMatterIdClassificationModelsClassificationModelIdDatasetSnapshotsPostResponseSuccess | createClassificationDatasetSnapshotV1MattersMatterIdClassificationModelsClassificationModelIdDatasetSnapshotsPostResponseError)
+
+export const getCreateClassificationDatasetSnapshotV1MattersMatterIdClassificationModelsClassificationModelIdDatasetSnapshotsPostUrl = (matterId: string,
+    classificationModelId: string,) => {
+
+
+
+
+  return `/api/core/v1/matters/${matterId}/classification-models/${classificationModelId}/dataset-snapshots`
+}
+
+/**
+ * @summary Create Classification Dataset Snapshot
+ */
+export const createClassificationDatasetSnapshotV1MattersMatterIdClassificationModelsClassificationModelIdDatasetSnapshotsPost = async (matterId: string,
+    classificationModelId: string,
+    classificationDatasetSnapshotRequest: ClassificationDatasetSnapshotRequest, options?: RequestInit): Promise<createClassificationDatasetSnapshotV1MattersMatterIdClassificationModelsClassificationModelIdDatasetSnapshotsPostResponse> => {
+
+    const getHeaders = (h?: NonNullable<RequestInit['headers']>): Record<string, string | readonly string[]> => {
+    if (!h) return {};
+    if (h instanceof Headers) return Object.fromEntries(h.entries());
+    if (Symbol.iterator in h) {
+      return Object.fromEntries(
+        Array.from(h as Iterable<Iterable<string>>, (entry) => Array.from(entry) as [string, string]),
+      );
+    }
+    const headers: Record<string, string | readonly string[]> = {};
+    for (const [name, value] of Object.entries<string | readonly string[] | undefined>(h)) {
+      if (value !== undefined) headers[name] = value;
+    }
+    return headers;
+  };
+const res = await fetch(getCreateClassificationDatasetSnapshotV1MattersMatterIdClassificationModelsClassificationModelIdDatasetSnapshotsPostUrl(matterId,classificationModelId),
+  {
+    ...options,
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json', ...getHeaders(options?.headers) },
+    body: JSON.stringify(classificationDatasetSnapshotRequest)
+  }
+)
+
+
+  const body = [204, 205, 304].includes(res.status) ? null : await res.text();
+
+  const data: createClassificationDatasetSnapshotV1MattersMatterIdClassificationModelsClassificationModelIdDatasetSnapshotsPostResponse['data'] = body ? JSON.parse(body) : {}
+  return { data, status: res.status, headers: res.headers } as createClassificationDatasetSnapshotV1MattersMatterIdClassificationModelsClassificationModelIdDatasetSnapshotsPostResponse
+}
+
+
+
+export type listClassificationDatasetSnapshotsV1MattersMatterIdClassificationModelsClassificationModelIdDatasetSnapshotsGetResponse200 = {
+  data: ClassificationDatasetSnapshotRead[]
+  status: 200
+}
+
+export type listClassificationDatasetSnapshotsV1MattersMatterIdClassificationModelsClassificationModelIdDatasetSnapshotsGetResponse422 = {
+  data: HTTPValidationError
+  status: 422
+}
+
+export type listClassificationDatasetSnapshotsV1MattersMatterIdClassificationModelsClassificationModelIdDatasetSnapshotsGetResponseSuccess = (listClassificationDatasetSnapshotsV1MattersMatterIdClassificationModelsClassificationModelIdDatasetSnapshotsGetResponse200) & {
+  headers: Headers;
+};
+export type listClassificationDatasetSnapshotsV1MattersMatterIdClassificationModelsClassificationModelIdDatasetSnapshotsGetResponseError = (listClassificationDatasetSnapshotsV1MattersMatterIdClassificationModelsClassificationModelIdDatasetSnapshotsGetResponse422) & {
+  headers: Headers;
+};
+
+export type listClassificationDatasetSnapshotsV1MattersMatterIdClassificationModelsClassificationModelIdDatasetSnapshotsGetResponse = (listClassificationDatasetSnapshotsV1MattersMatterIdClassificationModelsClassificationModelIdDatasetSnapshotsGetResponseSuccess | listClassificationDatasetSnapshotsV1MattersMatterIdClassificationModelsClassificationModelIdDatasetSnapshotsGetResponseError)
+
+export const getListClassificationDatasetSnapshotsV1MattersMatterIdClassificationModelsClassificationModelIdDatasetSnapshotsGetUrl = (matterId: string,
+    classificationModelId: string,) => {
+
+
+
+
+  return `/api/core/v1/matters/${matterId}/classification-models/${classificationModelId}/dataset-snapshots`
+}
+
+/**
+ * @summary List Classification Dataset Snapshots
+ */
+export const listClassificationDatasetSnapshotsV1MattersMatterIdClassificationModelsClassificationModelIdDatasetSnapshotsGet = async (matterId: string,
+    classificationModelId: string, options?: RequestInit): Promise<listClassificationDatasetSnapshotsV1MattersMatterIdClassificationModelsClassificationModelIdDatasetSnapshotsGetResponse> => {
+
+  const res = await fetch(getListClassificationDatasetSnapshotsV1MattersMatterIdClassificationModelsClassificationModelIdDatasetSnapshotsGetUrl(matterId,classificationModelId),
+  {
+    ...options,
+    method: 'GET'
+
+
+  }
+)
+
+
+  const body = [204, 205, 304].includes(res.status) ? null : await res.text();
+
+  const data: listClassificationDatasetSnapshotsV1MattersMatterIdClassificationModelsClassificationModelIdDatasetSnapshotsGetResponse['data'] = body ? JSON.parse(body) : {}
+  return { data, status: res.status, headers: res.headers } as listClassificationDatasetSnapshotsV1MattersMatterIdClassificationModelsClassificationModelIdDatasetSnapshotsGetResponse
+}
+
+
+
+export type readClassificationDatasetSnapshotV1MattersMatterIdClassificationModelsClassificationModelIdDatasetSnapshotsSnapshotIdGetResponse200 = {
+  data: ClassificationDatasetSnapshotRead
+  status: 200
+}
+
+export type readClassificationDatasetSnapshotV1MattersMatterIdClassificationModelsClassificationModelIdDatasetSnapshotsSnapshotIdGetResponse422 = {
+  data: HTTPValidationError
+  status: 422
+}
+
+export type readClassificationDatasetSnapshotV1MattersMatterIdClassificationModelsClassificationModelIdDatasetSnapshotsSnapshotIdGetResponseSuccess = (readClassificationDatasetSnapshotV1MattersMatterIdClassificationModelsClassificationModelIdDatasetSnapshotsSnapshotIdGetResponse200) & {
+  headers: Headers;
+};
+export type readClassificationDatasetSnapshotV1MattersMatterIdClassificationModelsClassificationModelIdDatasetSnapshotsSnapshotIdGetResponseError = (readClassificationDatasetSnapshotV1MattersMatterIdClassificationModelsClassificationModelIdDatasetSnapshotsSnapshotIdGetResponse422) & {
+  headers: Headers;
+};
+
+export type readClassificationDatasetSnapshotV1MattersMatterIdClassificationModelsClassificationModelIdDatasetSnapshotsSnapshotIdGetResponse = (readClassificationDatasetSnapshotV1MattersMatterIdClassificationModelsClassificationModelIdDatasetSnapshotsSnapshotIdGetResponseSuccess | readClassificationDatasetSnapshotV1MattersMatterIdClassificationModelsClassificationModelIdDatasetSnapshotsSnapshotIdGetResponseError)
+
+export const getReadClassificationDatasetSnapshotV1MattersMatterIdClassificationModelsClassificationModelIdDatasetSnapshotsSnapshotIdGetUrl = (matterId: string,
+    classificationModelId: string,
+    snapshotId: string,) => {
+
+
+
+
+  return `/api/core/v1/matters/${matterId}/classification-models/${classificationModelId}/dataset-snapshots/${snapshotId}`
+}
+
+/**
+ * @summary Read Classification Dataset Snapshot
+ */
+export const readClassificationDatasetSnapshotV1MattersMatterIdClassificationModelsClassificationModelIdDatasetSnapshotsSnapshotIdGet = async (matterId: string,
+    classificationModelId: string,
+    snapshotId: string, options?: RequestInit): Promise<readClassificationDatasetSnapshotV1MattersMatterIdClassificationModelsClassificationModelIdDatasetSnapshotsSnapshotIdGetResponse> => {
+
+  const res = await fetch(getReadClassificationDatasetSnapshotV1MattersMatterIdClassificationModelsClassificationModelIdDatasetSnapshotsSnapshotIdGetUrl(matterId,classificationModelId,snapshotId),
+  {
+    ...options,
+    method: 'GET'
+
+
+  }
+)
+
+
+  const body = [204, 205, 304].includes(res.status) ? null : await res.text();
+
+  const data: readClassificationDatasetSnapshotV1MattersMatterIdClassificationModelsClassificationModelIdDatasetSnapshotsSnapshotIdGetResponse['data'] = body ? JSON.parse(body) : {}
+  return { data, status: res.status, headers: res.headers } as readClassificationDatasetSnapshotV1MattersMatterIdClassificationModelsClassificationModelIdDatasetSnapshotsSnapshotIdGetResponse
 }
 
 

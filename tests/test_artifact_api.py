@@ -184,6 +184,25 @@ def test_individual_email_upload_with_source_container(client: TestClient, root_
     artifact_id = payload["item"]["native_artifact"]["id"]
     sha256 = payload["item"]["native_artifact"]["sha256"]
 
+    grouping_response = client.post(
+        "/v1/collection-items/grouping-snapshots",
+        headers=auth(root_token),
+        json={
+            "tenant_id": tenant_id,
+            "client_id": client_id,
+            "item_ids": [payload["item"]["id"], str(uuid.uuid4())],
+        },
+    )
+    assert grouping_response.status_code == 200, grouping_response.text
+    assert grouping_response.json() == [
+        {
+            "item_id": payload["item"]["id"],
+            "family_id": None,
+            "record_type": "EMAIL",
+            "native_content_hash": sha256,
+        }
+    ]
+
     artifacts_response = client.get(
         f"/v1/collection-items/{payload['item']['id']}/artifacts",
         headers=auth(root_token),

@@ -1,6 +1,6 @@
 # Statistical Classification Backend Implementation Plan
 
-Status: Phase 0, Phase 1, and Phase 3 implemented; Phase 2 remains deferred
+Status: Phase 0, Phase 1, Phase 3, and Phase 4 implemented; Phase 2 remains deferred and Phase 5 is next
 
 Related documents:
 

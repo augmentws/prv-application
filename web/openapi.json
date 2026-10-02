@@ -12964,6 +12964,56 @@
         }
       }
     },
+    "/v1/collection-items/grouping-snapshots": {
+      "post": {
+        "tags": [
+          "artifacts"
+        ],
+        "summary": "Get Collection Item Grouping Snapshots",
+        "operationId": "get_collection_item_grouping_snapshots_v1_collection_items_grouping_snapshots_post",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/CollectionItemGroupingSnapshotsRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "items": {
+                    "$ref": "#/components/schemas/CollectionItemGroupingSnapshot"
+                  },
+                  "type": "array",
+                  "title": "Response Get Collection Item Grouping Snapshots V1 Collection Items Grouping Snapshots Post"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ]
+      }
+    },
     "/v1/collection-items/{collection_item_id}/artifacts": {
       "get": {
         "tags": [
@@ -13497,6 +13547,270 @@
                     "$ref": "#/components/schemas/ClassificationModelConfigurationRead"
                   },
                   "title": "Response List Classification Model Configurations V1 Matters  Matter Id  Classification Models  Classification Model Id  Configurations Get"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v1/matters/{matter_id}/classification-models/{classification_model_id}/dataset-snapshots/preview": {
+      "post": {
+        "tags": [
+          "classification models"
+        ],
+        "summary": "Preview Classification Dataset Snapshot",
+        "operationId": "preview_classification_dataset_snapshot_v1_matters__matter_id__classification_models__classification_model_id__dataset_snapshots_preview_post",
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "matter_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid",
+              "title": "Matter Id"
+            }
+          },
+          {
+            "name": "classification_model_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid",
+              "title": "Classification Model Id"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ClassificationDatasetSnapshotRequest"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ClassificationDatasetSnapshotPreview"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v1/matters/{matter_id}/classification-models/{classification_model_id}/dataset-snapshots": {
+      "post": {
+        "tags": [
+          "classification models"
+        ],
+        "summary": "Create Classification Dataset Snapshot",
+        "operationId": "create_classification_dataset_snapshot_v1_matters__matter_id__classification_models__classification_model_id__dataset_snapshots_post",
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "matter_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid",
+              "title": "Matter Id"
+            }
+          },
+          {
+            "name": "classification_model_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid",
+              "title": "Classification Model Id"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ClassificationDatasetSnapshotRequest"
+              }
+            }
+          }
+        },
+        "responses": {
+          "201": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ClassificationDatasetSnapshotCreateResponse"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      },
+      "get": {
+        "tags": [
+          "classification models"
+        ],
+        "summary": "List Classification Dataset Snapshots",
+        "operationId": "list_classification_dataset_snapshots_v1_matters__matter_id__classification_models__classification_model_id__dataset_snapshots_get",
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "matter_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid",
+              "title": "Matter Id"
+            }
+          },
+          {
+            "name": "classification_model_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid",
+              "title": "Classification Model Id"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "array",
+                  "items": {
+                    "$ref": "#/components/schemas/ClassificationDatasetSnapshotRead"
+                  },
+                  "title": "Response List Classification Dataset Snapshots V1 Matters  Matter Id  Classification Models  Classification Model Id  Dataset Snapshots Get"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v1/matters/{matter_id}/classification-models/{classification_model_id}/dataset-snapshots/{snapshot_id}": {
+      "get": {
+        "tags": [
+          "classification models"
+        ],
+        "summary": "Read Classification Dataset Snapshot",
+        "operationId": "read_classification_dataset_snapshot_v1_matters__matter_id__classification_models__classification_model_id__dataset_snapshots__snapshot_id__get",
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "matter_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid",
+              "title": "Matter Id"
+            }
+          },
+          {
+            "name": "classification_model_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid",
+              "title": "Classification Model Id"
+            }
+          },
+          {
+            "name": "snapshot_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid",
+              "title": "Snapshot Id"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ClassificationDatasetSnapshotRead"
                 }
               }
             }
@@ -15619,6 +15933,571 @@
         ],
         "title": "ChoiceDecisionQuestion"
       },
+      "ClassificationDatasetIssue": {
+        "properties": {
+          "code": {
+            "type": "string",
+            "title": "Code"
+          },
+          "message": {
+            "type": "string",
+            "title": "Message"
+          },
+          "count": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Count"
+          }
+        },
+        "type": "object",
+        "required": [
+          "code",
+          "message"
+        ],
+        "title": "ClassificationDatasetIssue"
+      },
+      "ClassificationDatasetSnapshotCreateResponse": {
+        "properties": {
+          "snapshot": {
+            "$ref": "#/components/schemas/ClassificationDatasetSnapshotRead"
+          },
+          "created": {
+            "type": "boolean",
+            "title": "Created"
+          }
+        },
+        "type": "object",
+        "required": [
+          "snapshot",
+          "created"
+        ],
+        "title": "ClassificationDatasetSnapshotCreateResponse"
+      },
+      "ClassificationDatasetSnapshotPreview": {
+        "properties": {
+          "classification_model_id": {
+            "type": "string",
+            "format": "uuid",
+            "title": "Classification Model Id"
+          },
+          "configuration_id": {
+            "type": "string",
+            "format": "uuid",
+            "title": "Configuration Id"
+          },
+          "configuration_hash": {
+            "type": "string",
+            "pattern": "^[0-9a-f]{64}$",
+            "title": "Configuration Hash"
+          },
+          "purpose": {
+            "type": "string",
+            "const": "TRAINING",
+            "title": "Purpose"
+          },
+          "training_scope": {
+            "$ref": "#/components/schemas/TrainingScopeSpecification"
+          },
+          "target_field_snapshot": {
+            "$ref": "#/components/schemas/TargetFieldSnapshot"
+          },
+          "population_count": {
+            "type": "integer",
+            "title": "Population Count"
+          },
+          "labeled_count": {
+            "type": "integer",
+            "title": "Labeled Count"
+          },
+          "unlabeled_count": {
+            "type": "integer",
+            "title": "Unlabeled Count"
+          },
+          "excluded_count": {
+            "type": "integer",
+            "title": "Excluded Count"
+          },
+          "conflicting_count": {
+            "type": "integer",
+            "title": "Conflicting Count"
+          },
+          "family_grouped_count": {
+            "type": "integer",
+            "title": "Family Grouped Count"
+          },
+          "exact_duplicate_grouped_count": {
+            "type": "integer",
+            "title": "Exact Duplicate Grouped Count"
+          },
+          "missing_grouping_count": {
+            "type": "integer",
+            "title": "Missing Grouping Count"
+          },
+          "class_support": {
+            "additionalProperties": {
+              "type": "integer"
+            },
+            "type": "object",
+            "title": "Class Support"
+          },
+          "source_summary": {
+            "items": {
+              "$ref": "#/components/schemas/ClassificationLabelSourceSummary"
+            },
+            "type": "array",
+            "title": "Source Summary"
+          },
+          "population_content_hash": {
+            "type": "string",
+            "pattern": "^[0-9a-f]{64}$",
+            "title": "Population Content Hash"
+          },
+          "label_content_hash": {
+            "type": "string",
+            "pattern": "^[0-9a-f]{64}$",
+            "title": "Label Content Hash"
+          },
+          "aggregate_hash": {
+            "type": "string",
+            "pattern": "^[0-9a-f]{64}$",
+            "title": "Aggregate Hash"
+          },
+          "blocking_errors": {
+            "items": {
+              "$ref": "#/components/schemas/ClassificationDatasetIssue"
+            },
+            "type": "array",
+            "title": "Blocking Errors"
+          },
+          "warnings": {
+            "items": {
+              "$ref": "#/components/schemas/ClassificationDatasetIssue"
+            },
+            "type": "array",
+            "title": "Warnings"
+          },
+          "can_materialize": {
+            "type": "boolean",
+            "title": "Can Materialize"
+          }
+        },
+        "type": "object",
+        "required": [
+          "classification_model_id",
+          "configuration_id",
+          "configuration_hash",
+          "purpose",
+          "training_scope",
+          "target_field_snapshot",
+          "population_count",
+          "labeled_count",
+          "unlabeled_count",
+          "excluded_count",
+          "conflicting_count",
+          "family_grouped_count",
+          "exact_duplicate_grouped_count",
+          "missing_grouping_count",
+          "class_support",
+          "source_summary",
+          "population_content_hash",
+          "label_content_hash",
+          "aggregate_hash",
+          "blocking_errors",
+          "warnings",
+          "can_materialize"
+        ],
+        "title": "ClassificationDatasetSnapshotPreview"
+      },
+      "ClassificationDatasetSnapshotRead": {
+        "properties": {
+          "id": {
+            "type": "string",
+            "format": "uuid",
+            "title": "Id"
+          },
+          "tenant_id": {
+            "type": "string",
+            "format": "uuid",
+            "title": "Tenant Id"
+          },
+          "matter_id": {
+            "type": "string",
+            "format": "uuid",
+            "title": "Matter Id"
+          },
+          "classification_model_id": {
+            "type": "string",
+            "format": "uuid",
+            "title": "Classification Model Id"
+          },
+          "configuration_id": {
+            "type": "string",
+            "format": "uuid",
+            "title": "Configuration Id"
+          },
+          "purpose": {
+            "type": "string",
+            "const": "TRAINING",
+            "title": "Purpose"
+          },
+          "training_scope": {
+            "$ref": "#/components/schemas/TrainingScopeSpecification"
+          },
+          "target_field_snapshot": {
+            "$ref": "#/components/schemas/TargetFieldSnapshot"
+          },
+          "label_policy_snapshot": {
+            "$ref": "#/components/schemas/LabelPolicy"
+          },
+          "population_artifact_id": {
+            "anyOf": [
+              {
+                "type": "string",
+                "format": "uuid"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Population Artifact Id"
+          },
+          "population_content_hash": {
+            "anyOf": [
+              {
+                "type": "string",
+                "pattern": "^[0-9a-f]{64}$"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Population Content Hash"
+          },
+          "label_artifact_id": {
+            "anyOf": [
+              {
+                "type": "string",
+                "format": "uuid"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Label Artifact Id"
+          },
+          "label_content_hash": {
+            "anyOf": [
+              {
+                "type": "string",
+                "pattern": "^[0-9a-f]{64}$"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Label Content Hash"
+          },
+          "feature_artifact_id": {
+            "anyOf": [
+              {
+                "type": "string",
+                "format": "uuid"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Feature Artifact Id"
+          },
+          "feature_content_hash": {
+            "anyOf": [
+              {
+                "type": "string",
+                "pattern": "^[0-9a-f]{64}$"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Feature Content Hash"
+          },
+          "feature_specification_hash": {
+            "anyOf": [
+              {
+                "type": "string",
+                "pattern": "^[0-9a-f]{64}$"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Feature Specification Hash"
+          },
+          "split_artifact_id": {
+            "anyOf": [
+              {
+                "type": "string",
+                "format": "uuid"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Split Artifact Id"
+          },
+          "split_content_hash": {
+            "anyOf": [
+              {
+                "type": "string",
+                "pattern": "^[0-9a-f]{64}$"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Split Content Hash"
+          },
+          "aggregate_hash": {
+            "type": "string",
+            "pattern": "^[0-9a-f]{64}$",
+            "title": "Aggregate Hash"
+          },
+          "status": {
+            "type": "string",
+            "enum": [
+              "BUILDING",
+              "READY_FOR_FEATURES",
+              "READY_FOR_TRAINING",
+              "FAILED"
+            ],
+            "title": "Status"
+          },
+          "population_count": {
+            "type": "integer",
+            "title": "Population Count"
+          },
+          "labeled_count": {
+            "type": "integer",
+            "title": "Labeled Count"
+          },
+          "unlabeled_count": {
+            "type": "integer",
+            "title": "Unlabeled Count"
+          },
+          "excluded_count": {
+            "type": "integer",
+            "title": "Excluded Count"
+          },
+          "conflicting_count": {
+            "type": "integer",
+            "title": "Conflicting Count"
+          },
+          "family_grouped_count": {
+            "type": "integer",
+            "title": "Family Grouped Count"
+          },
+          "exact_duplicate_grouped_count": {
+            "type": "integer",
+            "title": "Exact Duplicate Grouped Count"
+          },
+          "missing_grouping_count": {
+            "type": "integer",
+            "title": "Missing Grouping Count"
+          },
+          "class_support": {
+            "additionalProperties": {
+              "type": "integer"
+            },
+            "type": "object",
+            "title": "Class Support"
+          },
+          "source_summary": {
+            "items": {
+              "$ref": "#/components/schemas/ClassificationLabelSourceSummary"
+            },
+            "type": "array",
+            "title": "Source Summary"
+          },
+          "warnings": {
+            "items": {
+              "$ref": "#/components/schemas/ClassificationDatasetIssue"
+            },
+            "type": "array",
+            "title": "Warnings"
+          },
+          "failure_code": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Failure Code"
+          },
+          "failure_summary": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Failure Summary"
+          },
+          "created_by_user_id": {
+            "type": "string",
+            "format": "uuid",
+            "title": "Created By User Id"
+          },
+          "created_at": {
+            "type": "string",
+            "format": "date-time",
+            "title": "Created At"
+          },
+          "completed_at": {
+            "anyOf": [
+              {
+                "type": "string",
+                "format": "date-time"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Completed At"
+          }
+        },
+        "type": "object",
+        "required": [
+          "id",
+          "tenant_id",
+          "matter_id",
+          "classification_model_id",
+          "configuration_id",
+          "purpose",
+          "training_scope",
+          "target_field_snapshot",
+          "label_policy_snapshot",
+          "population_artifact_id",
+          "population_content_hash",
+          "label_artifact_id",
+          "label_content_hash",
+          "feature_artifact_id",
+          "feature_content_hash",
+          "feature_specification_hash",
+          "split_artifact_id",
+          "split_content_hash",
+          "aggregate_hash",
+          "status",
+          "population_count",
+          "labeled_count",
+          "unlabeled_count",
+          "excluded_count",
+          "conflicting_count",
+          "family_grouped_count",
+          "exact_duplicate_grouped_count",
+          "missing_grouping_count",
+          "class_support",
+          "source_summary",
+          "warnings",
+          "failure_code",
+          "failure_summary",
+          "created_by_user_id",
+          "created_at",
+          "completed_at"
+        ],
+        "title": "ClassificationDatasetSnapshotRead"
+      },
+      "ClassificationDatasetSnapshotRequest": {
+        "properties": {
+          "configuration_id": {
+            "type": "string",
+            "format": "uuid",
+            "title": "Configuration Id"
+          },
+          "purpose": {
+            "type": "string",
+            "const": "TRAINING",
+            "title": "Purpose",
+            "default": "TRAINING"
+          },
+          "training_scope": {
+            "$ref": "#/components/schemas/TrainingScopeSpecification"
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "configuration_id",
+          "training_scope"
+        ],
+        "title": "ClassificationDatasetSnapshotRequest"
+      },
+      "ClassificationLabelSourceSummary": {
+        "properties": {
+          "kind": {
+            "type": "string",
+            "title": "Kind"
+          },
+          "source_reference_id": {
+            "anyOf": [
+              {
+                "type": "string",
+                "format": "uuid"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Source Reference Id"
+          },
+          "authority": {
+            "type": "string",
+            "title": "Authority"
+          },
+          "source_weight": {
+            "type": "number",
+            "title": "Source Weight"
+          },
+          "claim_count": {
+            "type": "integer",
+            "title": "Claim Count"
+          },
+          "selected_count": {
+            "type": "integer",
+            "title": "Selected Count"
+          },
+          "selected_weight_total": {
+            "type": "number",
+            "title": "Selected Weight Total"
+          },
+          "excluded_blinded": {
+            "type": "boolean",
+            "title": "Excluded Blinded",
+            "default": false
+          }
+        },
+        "type": "object",
+        "required": [
+          "kind",
+          "source_reference_id",
+          "authority",
+          "source_weight",
+          "claim_count",
+          "selected_count",
+          "selected_weight_total"
+        ],
+        "title": "ClassificationLabelSourceSummary"
+      },
       "ClassificationModelCompatibilityRead": {
         "properties": {
           "classification_model_id": {
@@ -16321,6 +17200,90 @@
           "updated_at"
         ],
         "title": "CollectionDeletionJobRead"
+      },
+      "CollectionItemGroupingSnapshot": {
+        "properties": {
+          "item_id": {
+            "type": "string",
+            "format": "uuid",
+            "title": "Item Id"
+          },
+          "family_id": {
+            "anyOf": [
+              {
+                "type": "string",
+                "format": "uuid"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Family Id"
+          },
+          "record_type": {
+            "type": "string",
+            "enum": [
+              "EMAIL",
+              "FILE",
+              "CHAT",
+              "TRANSCRIPT",
+              "OTHER"
+            ],
+            "title": "Record Type"
+          },
+          "native_content_hash": {
+            "anyOf": [
+              {
+                "type": "string",
+                "pattern": "^[0-9a-f]{64}$"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Native Content Hash"
+          }
+        },
+        "type": "object",
+        "required": [
+          "item_id",
+          "family_id",
+          "record_type",
+          "native_content_hash"
+        ],
+        "title": "CollectionItemGroupingSnapshot"
+      },
+      "CollectionItemGroupingSnapshotsRequest": {
+        "properties": {
+          "tenant_id": {
+            "type": "string",
+            "format": "uuid",
+            "title": "Tenant Id"
+          },
+          "client_id": {
+            "type": "string",
+            "format": "uuid",
+            "title": "Client Id"
+          },
+          "item_ids": {
+            "items": {
+              "type": "string",
+              "format": "uuid"
+            },
+            "type": "array",
+            "maxItems": 5000,
+            "minItems": 1,
+            "title": "Item Ids"
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "tenant_id",
+          "client_id",
+          "item_ids"
+        ],
+        "title": "CollectionItemGroupingSnapshotsRequest"
       },
       "CollectionItemRead": {
         "properties": {
@@ -28299,6 +29262,33 @@
         "additionalProperties": false,
         "type": "object",
         "title": "TrainerSpecification"
+      },
+      "TrainingScopeSpecification": {
+        "properties": {
+          "scope_type": {
+            "$ref": "#/components/schemas/TrainingScopeType"
+          },
+          "scope_id": {
+            "type": "string",
+            "format": "uuid",
+            "title": "Scope Id"
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "scope_type",
+          "scope_id"
+        ],
+        "title": "TrainingScopeSpecification"
+      },
+      "TrainingScopeType": {
+        "type": "string",
+        "enum": [
+          "MATTER",
+          "REVIEW_BATCH"
+        ],
+        "title": "TrainingScopeType"
       },
       "UserCreate": {
         "properties": {

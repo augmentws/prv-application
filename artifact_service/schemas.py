@@ -366,6 +366,28 @@ class CollectionItemRead(BaseModel):
     created_at: datetime
 
 
+class CollectionItemGroupingSnapshotsRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    tenant_id: uuid.UUID
+    client_id: uuid.UUID
+    item_ids: list[uuid.UUID] = Field(min_length=1, max_length=5000)
+
+    @field_validator("item_ids")
+    @classmethod
+    def validate_unique_item_ids(cls, values: list[uuid.UUID]) -> list[uuid.UUID]:
+        if len(values) != len(set(values)):
+            raise ValueError("Collection item IDs must be unique")
+        return values
+
+
+class CollectionItemGroupingSnapshot(BaseModel):
+    item_id: uuid.UUID
+    family_id: uuid.UUID | None
+    record_type: RecordType
+    native_content_hash: Sha256 | None
+
+
 class FacetValue(BaseModel):
     value: str
     count: int = Field(ge=1)

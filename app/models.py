@@ -1465,6 +1465,131 @@ class ClassificationModelConfiguration(Base):
     created_by: Mapped[User] = relationship()
 
 
+class ClassificationDatasetSnapshot(Base):
+    __tablename__ = "classification_dataset_snapshot"
+    __table_args__ = (
+        UniqueConstraint(
+            "classification_model_id",
+            "aggregate_hash",
+            name="uq_classification_dataset_snapshot_aggregate",
+        ),
+        CheckConstraint("purpose = 'TRAINING'", name="ck_classification_dataset_snapshot_purpose"),
+        CheckConstraint(
+            "scope_type IN ('MATTER', 'REVIEW_BATCH')",
+            name="ck_classification_dataset_snapshot_scope_type",
+        ),
+        CheckConstraint(
+            "status IN ('BUILDING', 'READY_FOR_FEATURES', 'READY_FOR_TRAINING', 'FAILED')",
+            name="ck_classification_dataset_snapshot_status",
+        ),
+        CheckConstraint(
+            "population_count >= 0 AND labeled_count >= 0 AND unlabeled_count >= 0 "
+            "AND excluded_count >= 0 AND conflicting_count >= 0 "
+            "AND family_grouped_count >= 0 AND exact_duplicate_grouped_count >= 0 "
+            "AND missing_grouping_count >= 0",
+            name="ck_classification_dataset_snapshot_counts",
+        ),
+        CheckConstraint(
+            "(feature_artifact_id IS NULL AND feature_content_hash IS NULL "
+            "AND feature_specification_hash IS NULL) OR "
+            "(feature_artifact_id IS NOT NULL AND feature_content_hash IS NOT NULL "
+            "AND feature_specification_hash IS NOT NULL)",
+            name="ck_classification_dataset_snapshot_feature_artifact",
+        ),
+        CheckConstraint(
+            "(split_artifact_id IS NULL AND split_content_hash IS NULL) OR "
+            "(split_artifact_id IS NOT NULL AND split_content_hash IS NOT NULL)",
+            name="ck_classification_dataset_snapshot_split_artifact",
+        ),
+        CheckConstraint(
+            "status NOT IN ('READY_FOR_FEATURES', 'READY_FOR_TRAINING') OR "
+            "(population_artifact_id IS NOT NULL AND population_content_hash IS NOT NULL "
+            "AND label_artifact_id IS NOT NULL AND label_content_hash IS NOT NULL)",
+            name="ck_classification_dataset_snapshot_base_artifacts",
+        ),
+        CheckConstraint(
+            "status != 'READY_FOR_TRAINING' OR "
+            "(feature_artifact_id IS NOT NULL AND split_artifact_id IS NOT NULL)",
+            name="ck_classification_dataset_snapshot_training_artifacts",
+        ),
+        ForeignKeyConstraint(
+            ["configuration_id", "classification_model_id"],
+            [
+                "classification_model_configuration.id",
+                "classification_model_configuration.classification_model_id",
+            ],
+            name="fk_classification_dataset_snapshot_configuration",
+        ),
+        Index(
+            "ix_classification_dataset_snapshot_model_created",
+            "classification_model_id",
+            "created_at",
+        ),
+        Index(
+            "ix_classification_dataset_snapshot_scope",
+            "matter_id",
+            "scope_type",
+            "scope_id",
+        ),
+    )
+
+    id: Mapped[uuid.UUID] = mapped_column(Uuid, primary_key=True)
+    tenant_id: Mapped[uuid.UUID] = mapped_column(
+        Uuid,
+        ForeignKey("tenant.id", ondelete="RESTRICT"),
+        index=True,
+    )
+    matter_id: Mapped[uuid.UUID] = mapped_column(
+        Uuid,
+        ForeignKey("matter.id", ondelete="RESTRICT"),
+        index=True,
+    )
+    classification_model_id: Mapped[uuid.UUID] = mapped_column(
+        Uuid,
+        ForeignKey("classification_model.id", ondelete="CASCADE"),
+        index=True,
+    )
+    configuration_id: Mapped[uuid.UUID] = mapped_column(Uuid, index=True)
+    purpose: Mapped[str] = mapped_column(String(30), default="TRAINING")
+    scope_type: Mapped[str] = mapped_column(String(30))
+    scope_id: Mapped[uuid.UUID] = mapped_column(Uuid, index=True)
+    target_field_snapshot: Mapped[dict[str, Any]] = mapped_column(JSON_DOCUMENT)
+    label_policy_snapshot: Mapped[dict[str, Any]] = mapped_column(JSON_DOCUMENT)
+    population_artifact_id: Mapped[uuid.UUID | None] = mapped_column(Uuid, nullable=True)
+    population_content_hash: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    label_artifact_id: Mapped[uuid.UUID | None] = mapped_column(Uuid, nullable=True)
+    label_content_hash: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    feature_artifact_id: Mapped[uuid.UUID | None] = mapped_column(Uuid, nullable=True)
+    feature_content_hash: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    feature_specification_hash: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    split_artifact_id: Mapped[uuid.UUID | None] = mapped_column(Uuid, nullable=True)
+    split_content_hash: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    aggregate_hash: Mapped[str] = mapped_column(String(64), index=True)
+    status: Mapped[str] = mapped_column(String(30), default="BUILDING", index=True)
+    population_count: Mapped[int] = mapped_column(Integer, default=0)
+    labeled_count: Mapped[int] = mapped_column(Integer, default=0)
+    unlabeled_count: Mapped[int] = mapped_column(Integer, default=0)
+    excluded_count: Mapped[int] = mapped_column(Integer, default=0)
+    conflicting_count: Mapped[int] = mapped_column(Integer, default=0)
+    family_grouped_count: Mapped[int] = mapped_column(Integer, default=0)
+    exact_duplicate_grouped_count: Mapped[int] = mapped_column(Integer, default=0)
+    missing_grouping_count: Mapped[int] = mapped_column(Integer, default=0)
+    class_support: Mapped[dict[str, Any]] = mapped_column(JSON_DOCUMENT, default=dict)
+    source_summary: Mapped[list[dict[str, Any]]] = mapped_column(JSON_DOCUMENT, default=list)
+    warnings: Mapped[list[dict[str, Any]]] = mapped_column(JSON_DOCUMENT, default=list)
+    failure_code: Mapped[str | None] = mapped_column(String(100), nullable=True)
+    failure_summary: Mapped[str | None] = mapped_column(Text, nullable=True)
+    created_by_user_id: Mapped[uuid.UUID] = mapped_column(
+        Uuid,
+        ForeignKey("app_user.id", ondelete="RESTRICT"),
+        index=True,
+    )
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+    completed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+
+    created_by: Mapped[User] = relationship()
+
+
 class MetadataEvent(Base):
     __tablename__ = "metadata_event"
     __table_args__ = (
