@@ -20,6 +20,7 @@ from app.assessment_execution import (
     _validate_synthesis_refinement,
     collect_retrieval_hits,
     fail_assessment,
+    retrieval_plan_feedback,
 )
 from app.assessment_guidance_refinement import create_guidance_revision
 from app.document_evidence import build_document_map_plan, segment_paragraphs
@@ -49,7 +50,12 @@ from app.models import (
     WorkflowStepRun,
 )
 from app.routers.matter_definition_assessments import _assessment_reads
-from app.schemas import MatterDefinitionSourceKind, MatterSearchHit, MatterSearchResponse
+from app.schemas import (
+    MatterDefinitionAssessmentCreate,
+    MatterDefinitionSourceKind,
+    MatterSearchHit,
+    MatterSearchResponse,
+)
 from app.standard_skills import ensure_standard_assessment_skills
 from app.workflows.matter_definition_assessments import guidance_refinement_failure_message
 
@@ -62,6 +68,12 @@ def test_matter_definition_source_kind_column_fits_every_supported_value() -> No
     source_kind_column = MatterDefinitionRevision.__table__.c.source_kind
 
     assert source_kind_column.type.length >= max(map(len, get_args(MatterDefinitionSourceKind)))
+
+
+def test_assessment_target_accepts_legacy_maximum_name() -> None:
+    payload = MatterDefinitionAssessmentCreate.model_validate({"maximum_document_count": 42})
+
+    assert payload.target_document_count == 42
 
 
 def test_guidance_refinement_failure_message_uses_last_step_error() -> None:
@@ -144,7 +156,7 @@ def test_assessment_launch_pins_inputs_and_requires_large_run_acknowledgment(
     warned = client.post(
         base,
         headers=auth(root_token),
-        json={"maximum_document_count": 1001},
+        json={"target_document_count": 1001},
     )
     assert warned.status_code == 409
     assert "acknowledgment" in warned.json()["error"]["message"]
@@ -152,7 +164,7 @@ def test_assessment_launch_pins_inputs_and_requires_large_run_acknowledgment(
     acknowledged = client.post(
         base,
         headers=auth(root_token),
-        json={"maximum_document_count": 1001, "acknowledge_large_run_warning": True},
+        json={"target_document_count": 1001, "acknowledge_large_run_warning": True},
     )
     assert acknowledged.status_code == 202, acknowledged.text
     assert acknowledged.json()["large_run_warning_acknowledged"] is True
@@ -190,7 +202,7 @@ def test_answering_all_refinement_questions_queues_and_creates_guidance_draft(
     launched = client.post(
         f"/v1/matters/{matter_id}/definition-assessments",
         headers=auth(root_token),
-        json={"maximum_document_count": 1},
+        json={"target_document_count": 1},
     )
     assert launched.status_code == 202, launched.text
     assessment_id = uuid.UUID(launched.json()["id"])
@@ -285,7 +297,7 @@ def test_assessment_reads_use_live_document_counts(
     created = client.post(
         f"/v1/matters/{matter_id}/definition-assessments",
         headers=auth(root_token),
-        json={"maximum_document_count": 10},
+        json={"target_document_count": 10},
     )
     assert created.status_code == 202, created.text
     assessment = SimpleNamespace(**created.json())
@@ -316,7 +328,7 @@ def test_execution_can_omit_document_skill_runs(
     launched = client.post(
         f"/v1/matters/{matter_id}/definition-assessments",
         headers=auth(root_token),
-        json={"maximum_document_count": 1},
+        json={"target_document_count": 1},
     )
     assert launched.status_code == 202, launched.text
     assessment_id = uuid.UUID(launched.json()["id"])
@@ -452,6 +464,13 @@ def test_retrieval_backfills_after_deduplication_before_freezing_batch() -> None
 def test_retrieval_plan_validator_requires_controlled_nested_search() -> None:
     _validate_retrieval_plan(
         {
+            "criteria": [
+                {
+                    "criterion_key": "issue_1",
+                    "criterion_label": "Issue 1",
+                    "description": "Hurricane insurance disruption.",
+                }
+            ],
             "queries": [
                 {
                     "criterion_key": "issue_1",
@@ -467,6 +486,13 @@ def test_retrieval_plan_validator_requires_controlled_nested_search() -> None:
     with pytest.raises(AssessmentError, match="controlled search request"):
         _validate_retrieval_plan(
             {
+                "criteria": [
+                    {
+                        "criterion_key": "issue_1",
+                        "criterion_label": "Issue 1",
+                        "description": "Hurricane insurance disruption.",
+                    }
+                ],
                 "queries": [
                     {
                         "criterion_key": "issue_1",
@@ -481,6 +507,65 @@ def test_retrieval_plan_validator_requires_controlled_nested_search() -> None:
         )
 
 
+def test_retrieval_feedback_requires_every_topic_and_exact_target() -> None:
+    plan = {
+        "criteria": [
+            {"criterion_key": "marketing", "criterion_label": "Marketing"},
+            {"criterion_key": "space", "criterion_label": "Space"},
+        ]
+    }
+    rows = [
+        SimpleNamespace(
+            criterion_key="marketing",
+            search_request={"query": '"Visit Florida" | advertising', "search_mode": "KEYWORD"},
+            quota=50,
+            result_count=0,
+        ),
+        SimpleNamespace(
+            criterion_key="space",
+            search_request={"query": "moon mission", "search_mode": "HYBRID"},
+            quota=50,
+            result_count=638,
+        ),
+    ]
+
+    feedback = retrieval_plan_feedback(
+        plan,
+        rows,  # type: ignore[arg-type]
+        unique_retrieved_count=171,
+        selected_count=271,
+        target_document_count=1000,
+        retrieval_target_count=900,
+        control_sample_size=100,
+        attempt=1,
+    )
+
+    assert feedback["zero_result_topics"] == ["Marketing"]
+    assert feedback["target_filled"] is False
+    assert feedback["topics"][1]["result_count"] == 638
+
+
+def test_candidate_merge_fills_target_with_reserved_controls() -> None:
+    retrieved = [uuid.uuid4() for _ in range(4)]
+    controls = [uuid.uuid4() for _ in range(2)]
+    hits = [
+        RetrievalHit(document_id, 1, "issue_1", rank, 1.0)
+        for rank, document_id in enumerate(retrieved, start=1)
+    ]
+
+    selected, _ = merge_retrieval_candidates(
+        hits,
+        maximum_document_count=6,
+        query_quotas={1: 4},
+        control_document_ids=[*retrieved, *controls],
+        control_sample_size=2,
+        seed="stable-seed",
+    )
+
+    assert len(selected) == 6
+    assert sum(item.reason == "CONTROL_SAMPLE" for item in selected) == 2
+
+
 def test_failed_assessment_marks_running_step_failed_with_skill_error(
     client: TestClient,
     root_token: str,
@@ -490,7 +575,7 @@ def test_failed_assessment_marks_running_step_failed_with_skill_error(
     launched = client.post(
         f"/v1/matters/{matter_id}/definition-assessments",
         headers=auth(root_token),
-        json={"maximum_document_count": 1},
+        json={"target_document_count": 1},
     )
     assert launched.status_code == 202, launched.text
 
@@ -562,6 +647,38 @@ def test_failed_assessment_marks_running_step_failed_with_skill_error(
     assert repeated_retry.status_code == 409
 
 
+def test_retrieval_clarification_failure_requires_new_assessment(
+    client: TestClient,
+    root_token: str,
+    root_admin,
+) -> None:
+    matter_id = create_assessment_matter(client, root_token, root_admin)
+    launched = client.post(
+        f"/v1/matters/{matter_id}/definition-assessments",
+        headers=auth(root_token),
+        json={"target_document_count": 10},
+    )
+    assert launched.status_code == 202, launched.text
+    with TestingSessionLocal() as db:
+        assessment = db.get(MatterDefinitionAssessmentRun, uuid.UUID(launched.json()["id"]))
+        assert assessment is not None
+        assessment.status = "FAILED"
+        assessment.error_message = "Retrieval needs clarification."
+        assessment.configuration_snapshot = {
+            **assessment.configuration_snapshot,
+            "failure_kind": "RETRIEVAL_NEEDS_CLARIFICATION",
+        }
+        db.commit()
+
+    retried = client.post(
+        f"/v1/matters/{matter_id}/definition-assessments/{launched.json()['id']}/retry",
+        headers=auth(root_token),
+    )
+
+    assert retried.status_code == 409
+    assert "clarified Review Guidance" in retried.json()["error"]["message"]
+
+
 def test_completed_with_errors_can_retry_failed_documents(
     client: TestClient,
     root_token: str,
@@ -571,7 +688,7 @@ def test_completed_with_errors_can_retry_failed_documents(
     launched = client.post(
         f"/v1/matters/{matter_id}/definition-assessments",
         headers=auth(root_token),
-        json={"maximum_document_count": 5},
+        json={"target_document_count": 5},
     )
     assert launched.status_code == 202, launched.text
 
@@ -651,7 +768,7 @@ def test_completed_assessment_can_regenerate_only_synthesis(
     launched = client.post(
         f"/v1/matters/{matter_id}/definition-assessments",
         headers=auth(root_token),
-        json={"maximum_document_count": 5},
+        json={"target_document_count": 5},
     )
     assert launched.status_code == 202, launched.text
     assessment_id = uuid.UUID(launched.json()["id"])
@@ -684,7 +801,7 @@ def test_completed_assessment_can_regenerate_only_synthesis(
         workflow = db.get(WorkflowRun, assessment.workflow_run_id)
         assert workflow is not None
         assert ":synthesis:" in workflow.dbos_workflow_id
-        assert workflow.code_version == "8"
+        assert workflow.code_version == "9"
         assert (
             assessment.binding_snapshot["assessment_synthesis"]["output_schema_key"]
             == "matter_definition_assessment_synthesis_output_v4"
@@ -708,7 +825,7 @@ def test_completed_assessment_can_reanalyze_same_frozen_batch(
     launched = client.post(
         f"/v1/matters/{matter_id}/definition-assessments",
         headers=auth(root_token),
-        json={"maximum_document_count": 2},
+        json={"target_document_count": 2},
     )
     assert launched.status_code == 202, launched.text
     assessment_id = uuid.UUID(launched.json()["id"])
@@ -803,7 +920,7 @@ def test_completed_assessment_can_reanalyze_same_frozen_batch(
             )
         ) == {"COMPLETED"}
         assert ":analysis:" in workflow.dbos_workflow_id
-        assert workflow.code_version == "8"
+        assert workflow.code_version == "9"
         history = assessment.configuration_snapshot["document_analysis_regeneration_history"]
         assert history[-1]["previous_review_batch_run_id"] == str(previous_review_run_id)
         steps = list(
@@ -830,7 +947,7 @@ def test_synthesis_loads_only_latest_completed_analysis_per_document(
     launched = client.post(
         f"/v1/matters/{matter_id}/definition-assessments",
         headers=auth(root_token),
-        json={"maximum_document_count": 1},
+        json={"target_document_count": 1},
     )
     assert launched.status_code == 202, launched.text
     assessment_id = uuid.UUID(launched.json()["id"])
@@ -1152,7 +1269,7 @@ def test_long_document_map_reduce_uses_one_skill_run(
     launched = client.post(
         f"/v1/matters/{matter_id}/definition-assessments",
         headers=auth(root_token),
-        json={"maximum_document_count": 1},
+        json={"target_document_count": 1},
     )
     assert launched.status_code == 202, launched.text
     assessment_id = uuid.UUID(launched.json()["id"])

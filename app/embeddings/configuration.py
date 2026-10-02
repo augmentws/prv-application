@@ -9,10 +9,19 @@ CHUNKER_NAME = "sentence-aware"
 CHUNKER_VERSION = 1
 CHUNK_SET_SCHEMA_VERSION = 1
 CHUNK_VECTOR_SET_SCHEMA_VERSION = 1
+EMBEDDING_INPUT_NAME = "subject-filename-body"
+EMBEDDING_INPUT_VERSION = 1
+EMBEDDING_HEADER_MAX_CHARACTERS = 512
 
 
 def processing_configuration(settings: Settings, embeddings: EmbeddingSettings) -> dict[str, Any]:
     return {
+        "input": {
+            "name": EMBEDDING_INPUT_NAME,
+            "version": EMBEDDING_INPUT_VERSION,
+            "fields": ["email_subject", "original_filename", "body_text"],
+            "header_max_characters": EMBEDDING_HEADER_MAX_CHARACTERS,
+        },
         "chunking": {
             "name": CHUNKER_NAME,
             "version": CHUNKER_VERSION,

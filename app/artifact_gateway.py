@@ -97,6 +97,8 @@ class EmbeddingTextSource:
     artifact_id: uuid.UUID
     content_hash: str
     text: str
+    original_filename: str | None = None
+    email_subject: str | None = None
 
 
 @dataclass(frozen=True)
@@ -106,6 +108,8 @@ class PreferredTextSource:
     artifact_role: str
     media_type: str
     text: str
+    original_filename: str | None = None
+    email_subject: str | None = None
 
 
 @dataclass(frozen=True)
@@ -787,6 +791,7 @@ def get_preferred_text_source(
                 filename=candidate.original_filename,
                 record_type=item.record_type,
             )
+            email = db.get(CollectionItemEmail, item.id)
             return (
                 PreferredTextSource(
                     candidate.id,
@@ -794,6 +799,8 @@ def get_preferred_text_source(
                     candidate.role,
                     candidate.media_type,
                     text,
+                    item.original_filename,
+                    email.subject if email else None,
                 )
                 if text and text.strip()
                 else None
@@ -857,6 +864,8 @@ def get_preferred_text_source(
                 candidate.role,
                 candidate.media_type,
                 text,
+                item.get("original_filename"),
+                (item.get("email") or {}).get("subject"),
             )
             if text and text.strip()
             else None
@@ -880,7 +889,13 @@ def get_embedding_text_source(
     )
     if source is None:
         return None
-    return EmbeddingTextSource(source.artifact_id, source.content_hash, source.text)
+    return EmbeddingTextSource(
+        source.artifact_id,
+        source.content_hash,
+        source.text,
+        source.original_filename,
+        source.email_subject,
+    )
 
 
 def find_derived_artifact_reference(

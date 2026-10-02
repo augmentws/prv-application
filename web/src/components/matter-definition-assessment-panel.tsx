@@ -68,7 +68,7 @@ export function MatterDefinitionAssessmentPanel({
   const [selectedId, setSelectedId] = useState("");
   const [revision, setRevision] = useState(String(revisions[0]?.revision ?? 1));
   const [name, setName] = useState("");
-  const [maximum, setMaximum] = useState("500");
+  const [target, setTarget] = useState("500");
   const [controlSize, setControlSize] = useState("0");
   const [useBatching, setUseBatching] = useState(true);
   const [warningAcknowledged, setWarningAcknowledged] = useState(false);
@@ -173,9 +173,13 @@ export function MatterDefinitionAssessmentPanel({
     onError: (error) => toast.error(error instanceof Error ? error.message : "The clarification could not be updated."),
   });
 
-  const requested = Math.max(1, Number(maximum) || 500);
+  const requested = Math.max(1, Number(target) || 500);
   const report = objectValue(selected?.synthesis_result);
   const refinement = objectValue(report.refinement_assessment);
+  const configuration = objectValue(selected?.configuration_snapshot);
+  const retrievalValidation = objectValue(configuration.retrieval_validation);
+  const retrievalNeedsClarification = configuration.failure_kind === "RETRIEVAL_NEEDS_CLARIFICATION";
+  const zeroResultTopics = Array.isArray(retrievalValidation.zero_result_topics) ? retrievalValidation.zero_result_topics.map(String) : [];
   const findings = Array.isArray(report.findings) ? report.findings : [];
   const stageIndex = assessmentStageIndex(selected?.status);
   const effectiveRevision = revisions.some((item) => String(item.revision) === revision)
@@ -184,7 +188,7 @@ export function MatterDefinitionAssessmentPanel({
   const definitionState = publishedRevision === Number(effectiveRevision) ? "Published" : "Draft";
   const usage = execution.data;
   const cacheRatio = usage?.input_tokens ? Math.round((usage.cached_input_tokens / usage.input_tokens) * 100) : 0;
-  const canRetry = assessmentCanRetry(selected?.status, selected?.failed_count);
+  const canRetry = assessmentCanRetry(selected?.status, selected?.failed_count) && !retrievalNeedsClarification;
   const statusInCoverage = Boolean(
     selected?.coverage_snapshot && ["COMPLETED", "COMPLETED_WITH_ERRORS"].includes(selected.status),
   );
@@ -201,7 +205,7 @@ export function MatterDefinitionAssessmentPanel({
     launch.mutate({
       name: name.trim(),
       revision: Number(effectiveRevision),
-      maximum_document_count: requested,
+      target_document_count: requested,
       control_sample_size: Math.max(0, Number(controlSize) || 0),
       use_batching: useBatching,
       acknowledge_large_run_warning: requested > 1000 && warningAcknowledged,
@@ -238,7 +242,7 @@ export function MatterDefinitionAssessmentPanel({
       {runs.error ? <div className="p-4"><QueryError message={runs.error.message} /></div> : runs.isPending ? <p className="p-4 text-sm text-muted-foreground">Loading assessment history…</p> : !runs.data?.length ? <p className="p-4 text-sm text-muted-foreground">No corpus assessments have been run for this Matter Definition.</p> : <div className="space-y-4 p-4">
       {selected ? <>
         <div className="grid gap-2 sm:grid-cols-3 xl:grid-cols-6">{STAGES.map((stage, index) => <div key={stage} className={`rounded-md border px-2.5 py-2 text-center text-[11px] font-semibold ${stageIndex >= 0 && index <= stageIndex ? "border-primary/40 bg-primary/8 text-primary" : "text-muted-foreground"}`}>{stage.toLowerCase().replaceAll("_", " ")}</div>)}</div>
-        {canRetry ? <div className={`flex flex-wrap items-center justify-between gap-3 rounded-lg border p-3 text-sm ${selected.status === "FAILED" ? "border-destructive/40 bg-destructive/5 text-destructive" : "border-warning/40 bg-warning/8"}`}><div><p className="font-semibold">{selected.status === "FAILED" ? "Assessment failed" : "Assessment completed with document errors"}</p><p className="mt-1 text-xs">{selected.status === "FAILED" ? selected.error_message || "The workflow did not provide an error message." : `${selected.failed_count} failed documents can be retried without reprocessing the ${selected.summarized_count} completed summaries.`}</p></div><Button type="button" size="sm" variant="outline" disabled={retry.isPending} onClick={() => retry.mutate(selected.id)}>{retry.isPending ? <LoaderCircle className="animate-spin" /> : <RotateCcw />}{selected.status === "FAILED" ? "Retry assessment" : "Retry failed documents"}</Button></div> : null}
+        {retrievalNeedsClarification ? <div className="rounded-lg border border-warning/40 bg-warning/8 p-3 text-sm"><p className="font-semibold">Retrieval needs clarification</p><p className="mt-1 text-xs text-muted-foreground">{selected.error_message}</p>{zeroResultTopics.length ? <p className="mt-2 text-xs"><strong>Topics with no results:</strong> {zeroResultTopics.join(", ")}</p> : null}<p className="mt-2 text-xs">Clarify the affected terminology or scope in Review Guidance, then start a new assessment.</p></div> : canRetry ? <div className={`flex flex-wrap items-center justify-between gap-3 rounded-lg border p-3 text-sm ${selected.status === "FAILED" ? "border-destructive/40 bg-destructive/5 text-destructive" : "border-warning/40 bg-warning/8"}`}><div><p className="font-semibold">{selected.status === "FAILED" ? "Assessment failed" : "Assessment completed with document errors"}</p><p className="mt-1 text-xs">{selected.status === "FAILED" ? selected.error_message || "The workflow did not provide an error message." : `${selected.failed_count} failed documents can be retried without reprocessing the ${selected.summarized_count} completed summaries.`}</p></div><Button type="button" size="sm" variant="outline" disabled={retry.isPending} onClick={() => retry.mutate(selected.id)}>{retry.isPending ? <LoaderCircle className="animate-spin" /> : <RotateCcw />}{selected.status === "FAILED" ? "Retry assessment" : "Retry failed documents"}</Button></div> : null}
         <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-5">
           <Metric label="Selected" value={selected.selected_count} />
           <Metric label="Summarized" value={selected.summarized_count} />
@@ -264,7 +268,7 @@ export function MatterDefinitionAssessmentPanel({
     <Dialog open={launchOpen} onOpenChange={setLaunchOpen}><DialogContent><DialogHeader><DialogTitle>Assess {guidanceName} against corpus</DialogTitle><DialogDescription>The selected guidance profile, revision, and workflow bindings are pinned for the full run. The resulting batch and analyses remain isolated from matter-wide metadata.</DialogDescription></DialogHeader><div className="space-y-4">
       <div><label className="text-sm font-medium" htmlFor="assessment-name">Assessment name</label><Input id="assessment-name" className="mt-1" value={name} maxLength={200} placeholder="Example: Initial hurricane coverage review" onChange={(event) => setName(event.target.value)} /><p className="mt-1 text-xs text-muted-foreground">This name is also used for the generated review batch.</p></div>
       <div><label className="text-sm font-medium" htmlFor="assessment-revision">Definition revision</label><Select value={effectiveRevision} onValueChange={setRevision}><SelectTrigger id="assessment-revision" className="mt-1"><SelectValue /></SelectTrigger><SelectContent>{revisions.map((item) => <SelectItem key={item.id} value={String(item.revision)}>Revision {item.revision}{publishedRevision === item.revision ? " · published" : " · draft"}</SelectItem>)}</SelectContent></Select><p className="mt-1 text-xs text-muted-foreground">{definitionState} revision</p></div>
-      <div className="grid grid-cols-2 gap-3"><div><label className="text-sm font-medium" htmlFor="assessment-maximum">Maximum documents</label><Input id="assessment-maximum" className="mt-1" type="number" min={1} value={maximum} onChange={(event) => { setMaximum(event.target.value); setWarningAcknowledged(false); }} /></div><div><label className="text-sm font-medium" htmlFor="assessment-control">Control sample</label><Input id="assessment-control" className="mt-1" type="number" min={0} value={controlSize} onChange={(event) => setControlSize(event.target.value)} /></div></div>
+      <div className="grid grid-cols-2 gap-3"><div><label className="text-sm font-medium" htmlFor="assessment-target">Target documents</label><Input id="assessment-target" className="mt-1" type="number" min={1} value={target} onChange={(event) => { setTarget(event.target.value); setWarningAcknowledged(false); }} /><p className="mt-1 text-xs text-muted-foreground">The assessment starts only after retrieval can fill this target.</p></div><div><label className="text-sm font-medium" htmlFor="assessment-control">Control sample</label><Input id="assessment-control" className="mt-1" type="number" min={0} value={controlSize} onChange={(event) => setControlSize(event.target.value)} /></div></div>
       <label className="flex cursor-pointer items-start gap-2 rounded-lg border p-3 text-sm"><input className="mt-1 size-4 accent-primary" type="checkbox" checked={useBatching} onChange={(event) => setUseBatching(event.target.checked)} /><span><strong>Use Batch API</strong><span className="mt-0.5 block text-xs text-muted-foreground">Submit eligible document summaries asynchronously through the model provider&apos;s lower-cost Batch API. Oversized map/reduce documents continue through real-time processing.</span></span></label>
       {requested > 1000 ? <label className="flex cursor-pointer items-start gap-2 rounded-lg border border-conflict/40 bg-conflict/8 p-3 text-sm"><input className="mt-1 size-4 accent-primary" type="checkbox" checked={warningAcknowledged} onChange={(event) => setWarningAcknowledged(event.target.checked)} /><span><strong className="flex items-center gap-1"><AlertTriangle className="size-4" />Large analysis</strong>Continue with {requested.toLocaleString()} documents. This can use substantial model capacity.</span></label> : null}
     </div><DialogFooter><Button type="button" variant="outline" onClick={() => setLaunchOpen(false)}>Cancel</Button><Button type="button" disabled={launch.isPending || !name.trim() || (requested > 1000 && !warningAcknowledged)} onClick={submitLaunch}>{launch.isPending ? <LoaderCircle className="animate-spin" /> : <Play />}Start assessment</Button></DialogFooter></DialogContent></Dialog>

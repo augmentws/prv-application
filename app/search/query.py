@@ -412,6 +412,9 @@ def compile_facet_values_request(
         terms = body["aggs"][field]["aggs"]["scope"]["aggs"]["values"]["terms"]
         if include_values is not None:
             terms["include"] = include_values
+        elif value_query:
+            normalized_query = value_query.lower() if definition.normalize_to_lowercase else value_query
+            terms["include"] = f".*{re.escape(normalized_query)}.*"
         return body
     if parent is not None:
         raise _bad_request(f"Field '{field}' is not hierarchical")

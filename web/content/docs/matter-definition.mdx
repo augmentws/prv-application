@@ -48,7 +48,7 @@ Review and save the current draft, then select **Publish current draft**. Publis
 
 ## Assess the guidance against the corpus
 
-Select **Assessment** in the right panel, then select **New** to test one immutable definition revision against documents already in the matter. The compact header contains the assessment selector and actions. A matter search index and the assessment workflow worker must be available. Choose a maximum document count and, optionally, a random control sample. The default maximum is 500.
+Select **Assessment** in the right panel, then select **New** to test one immutable definition revision against documents already in the matter. The compact header contains the assessment selector and actions. A matter search index and the assessment workflow worker must be available. Choose a target document count and, optionally, a random control sample. The default target is 500, including the control sample.
 
 Use **Rename assessment** beside the assessment selector to give an active or historical assessment a clearer name. Renaming changes only its display name; the pinned definition revision, frozen document set, workflow history, and results remain unchanged. If its generated review batch still has the original assessment name, Priv-View updates that batch name as well.
 
@@ -61,9 +61,16 @@ Gemini is the first registered Batch API adapter. Changing the configured model 
 The workflow:
 
 1. converts the selected revision into controlled keyword, semantic, or hybrid retrieval requests;
-2. freezes the merged results as a permanent assessment batch;
-3. creates a cited structured analysis for each document with available text;
-4. synthesizes recurring fit findings, diagnostic batch topics, and consolidated clarification questions.
+2. tests every request against the matter index and revises zero- or low-yield topics, using multiple requests when useful;
+3. verifies that every topic has results and that the merged candidates plus the reserved control sample fill the target;
+4. freezes the merged results as a permanent assessment batch;
+5. creates a cited structured analysis for each document with available text;
+6. synthesizes recurring fit findings, diagnostic batch topics, and consolidated clarification questions.
+
+The target is not a maximum. If bounded query refinement still leaves a topic with no results, or the corpus cannot
+provide enough unique documents to fill the target, the workflow stops before creating or analyzing a batch. The
+assessment reports the affected topics and measured counts so the matter administrator can clarify terminology or
+adjust the guidance and start a new assessment. It never silently proceeds with a smaller batch.
 
 Each refinement question includes one to three model-suggested policy answers. Select a suggestion to copy it into
 the answer field, or enter a custom answer. Suggestions are conveniences rather than additional model decisions;

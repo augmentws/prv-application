@@ -235,6 +235,12 @@ decisions,” even when those exact words are absent. Hybrid search combines bot
 approaches. When semantic retrieval contributes to a result, its best matching
 passage appears beneath the result title.
 
+### What semantic search embeds
+
+Semantic search operates on document chunks rather than every field stored in the search index. Priv-View builds the embedding input from the preferred document body text and prepends a non-empty email subject and original filename using labeled `Subject:` and `Filename:` lines. The body comes from the active normalized text when available, then extracted text, OCR text, or a supported text-based native file. Subject and filename values are whitespace-normalized and limited to 512 characters before embedding.
+
+Email sender and recipient fields—`email_from`, `email_to`, `email_cc`, and `email_bcc`—are not embedded because addresses and distribution lists usually add noise to semantic similarity. They remain searchable through Keyword mode and the keyword branch of Hybrid mode. Source paths, custodians, and searchable metadata values are likewise not part of the embedding unless their text also appears in the subject, filename, or body.
+
 When **Semantic** is selected, **Min similarity** appears beside the query. Leave it empty to retrieve and rank the top semantic candidates. Enter a value from `0` to `1` to count and return only documents meeting that threshold. Thresholds are retained in the URL and in saved searches.
 
 The results footer supports previous and next navigation, direct entry of a page number, and a **Last** action. Changing pages clears the selected document and preserves the active query, filters, search mode, threshold, and page in the address.

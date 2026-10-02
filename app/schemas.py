@@ -3,6 +3,7 @@ from datetime import datetime
 from typing import Annotated, Any, Literal
 
 from pydantic import (
+    AliasChoices,
     BaseModel,
     ConfigDict,
     EmailStr,
@@ -2167,7 +2168,12 @@ MatterDefinitionAssessmentStatus = Literal[
 class MatterDefinitionAssessmentCreate(BaseModel):
     name: str | None = Field(default=None, max_length=200)
     revision: int | None = Field(default=None, ge=1)
-    maximum_document_count: int = Field(default=500, ge=1, le=10_000_000)
+    target_document_count: int = Field(
+        default=500,
+        ge=1,
+        le=10_000_000,
+        validation_alias=AliasChoices("target_document_count", "maximum_document_count"),
+    )
     control_sample_size: int = Field(default=0, ge=0, le=1_000_000)
     use_batching: bool = True
     acknowledge_large_run_warning: bool = False

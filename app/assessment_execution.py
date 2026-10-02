@@ -32,6 +32,7 @@ from app.matter_definition_assessments import (
     assessment_control_population,
     materialize_assessment_batch,
     merge_retrieval_candidates,
+    select_control_documents,
 )
 from app.model_execution import content_hash
 from app.models import (
@@ -79,6 +80,7 @@ REFINEMENT_DIMENSIONS = {
     "ACTOR_ENTITY_SCOPE",
 }
 MAX_RETRIEVAL_OFFSET = 10_000
+MAX_RETRIEVAL_PLAN_ATTEMPTS = 3
 
 
 def utcnow() -> datetime:
@@ -164,13 +166,127 @@ def _normalized_query(item: dict[str, Any], *, ordinal: int) -> tuple[dict[str, 
 
 
 def _validate_retrieval_plan(output: dict[str, Any]) -> None:
+    raw_criteria = output.get("criteria")
+    if not isinstance(raw_criteria, list) or not raw_criteria:
+        raise AssessmentError("Retrieval planner must return at least one criterion")
+    criterion_keys: set[str] = set()
+    for index, item in enumerate(raw_criteria, start=1):
+        if not isinstance(item, dict) or not str(item.get("criterion_key") or "").strip():
+            raise AssessmentError(f"Retrieval criterion {index} must have a criterion_key")
+        criterion_key = str(item["criterion_key"])
+        if criterion_key in criterion_keys:
+            raise AssessmentError(f"Retrieval criterion key {criterion_key!r} is duplicated")
+        criterion_keys.add(criterion_key)
     raw_queries = output.get("queries")
     if not isinstance(raw_queries, list) or not raw_queries:
         raise AssessmentError("Retrieval planner must return at least one query")
+    query_criterion_keys: set[str] = set()
     for index, item in enumerate(raw_queries, start=1):
         if not isinstance(item, dict):
             raise AssessmentError(f"Retrieval query {index} must be an object")
-        _normalized_query(item, ordinal=index)
+        normalized, _ = _normalized_query(item, ordinal=index)
+        query_criterion_keys.add(normalized["criterion_key"])
+    missing = sorted(criterion_keys - query_criterion_keys)
+    unknown = sorted(query_criterion_keys - criterion_keys)
+    if missing:
+        raise AssessmentError(f"Retrieval plan has no query for criteria: {', '.join(missing)}")
+    if unknown:
+        raise AssessmentError(f"Retrieval queries reference unknown criteria: {', '.join(unknown)}")
+
+
+def _normalized_retrieval_plan(output: dict[str, Any]) -> dict[str, Any]:
+    _validate_retrieval_plan(output)
+    return {
+        "criteria": output["criteria"],
+        "queries": [
+            _normalized_query(item, ordinal=index)[0]
+            for index, item in enumerate(output["queries"], start=1)
+        ],
+        "sampling_guidance": output.get("sampling_guidance") or {},
+    }
+
+
+def _replace_retrieval_plan(
+    db: Session,
+    assessment: MatterDefinitionAssessmentRun,
+    workflow: WorkflowRun,
+    plan: dict[str, Any],
+) -> list[MatterDefinitionAssessmentQuery]:
+    assessment.configuration_snapshot = {**assessment.configuration_snapshot, "retrieval_plan": plan}
+    workflow.configuration_snapshot = {**workflow.configuration_snapshot, "retrieval_plan": plan}
+    db.execute(
+        delete(MatterDefinitionAssessmentQuery).where(
+            MatterDefinitionAssessmentQuery.assessment_run_id == assessment.id
+        )
+    )
+    rows = [
+        MatterDefinitionAssessmentQuery(
+            assessment_run_id=assessment.id,
+            ordinal=index,
+            criterion_key=item["criterion_key"],
+            criterion_label=item["criterion_label"],
+            rationale=item["rationale"],
+            search_request=item["search"],
+            quota=item["quota"],
+        )
+        for index, item in enumerate(plan["queries"], start=1)
+    ]
+    db.add_all(rows)
+    db.flush()
+    return rows
+
+
+def retrieval_plan_feedback(
+    plan: dict[str, Any],
+    query_rows: list[MatterDefinitionAssessmentQuery],
+    *,
+    unique_retrieved_count: int,
+    selected_count: int,
+    target_document_count: int,
+    retrieval_target_count: int,
+    control_sample_size: int,
+    attempt: int,
+) -> dict[str, Any]:
+    """Build auditable search feedback and decide whether a plan can freeze a batch."""
+
+    rows_by_criterion: dict[str, list[MatterDefinitionAssessmentQuery]] = defaultdict(list)
+    for row in query_rows:
+        rows_by_criterion[row.criterion_key].append(row)
+    topics: list[dict[str, Any]] = []
+    zero_result_topics: list[str] = []
+    for criterion in plan.get("criteria") or []:
+        criterion_key = str(criterion.get("criterion_key") or "")
+        rows = rows_by_criterion.get(criterion_key, [])
+        result_count = sum(row.result_count for row in rows)
+        if result_count == 0:
+            zero_result_topics.append(str(criterion.get("criterion_label") or criterion_key))
+        topics.append(
+            {
+                "criterion_key": criterion_key,
+                "criterion_label": str(criterion.get("criterion_label") or criterion_key),
+                "result_count": result_count,
+                "queries": [
+                    {
+                        "query": row.search_request.get("query"),
+                        "search_mode": row.search_request.get("search_mode"),
+                        "quota": row.quota,
+                        "result_count": row.result_count,
+                    }
+                    for row in rows
+                ],
+            }
+        )
+    return {
+        "attempt": attempt,
+        "target_document_count": target_document_count,
+        "retrieval_target_count": retrieval_target_count,
+        "control_sample_size": control_sample_size,
+        "unique_retrieved_count": unique_retrieved_count,
+        "selected_count": selected_count,
+        "zero_result_topics": zero_result_topics,
+        "target_filled": selected_count == target_document_count,
+        "topics": topics,
+    }
 
 
 @dataclass
@@ -186,6 +302,7 @@ def collect_retrieval_hits(
     *,
     maximum_document_count: int,
     execute_page: Callable[[MatterDefinitionAssessmentQuery, MatterSearchRequest], MatterSearchResponse],
+    excluded_document_ids: set[uuid.UUID] | None = None,
 ) -> list[RetrievalHit]:
     """Retrieve balanced rounds until deduplication leaves enough unique documents."""
 
@@ -196,6 +313,7 @@ def collect_retrieval_hits(
         )
         for row in query_rows
     ]
+    excluded_document_ids = excluded_document_ids or set()
     hits: list[RetrievalHit] = []
     unique_document_ids: set[uuid.UUID] = set()
     while len(unique_document_ids) < maximum_document_count:
@@ -213,6 +331,8 @@ def collect_retrieval_hits(
             cursor.row.result_count = response.total
             page_hits = list(response.hits)
             for rank, hit in enumerate(page_hits, start=cursor.offset + 1):
+                if hit.document_id in excluded_document_ids:
+                    continue
                 hits.append(
                     RetrievalHit(
                         document_id=hit.document_id,
@@ -259,7 +379,8 @@ def plan_retrieval(db: Session, assessment_id: uuid.UUID, *, model: Any | None =
             stable_context={"matter_definition": revision.content_markdown},
             dynamic_input={
                 "matter_id": str(matter.id),
-                "requested_document_count": assessment.requested_document_count,
+                "target_document_count": assessment.requested_document_count,
+                "control_sample_size": assessment.control_sample_size,
             },
             cache_identity={
                 "tenant_id": str(workflow.tenant_id),
@@ -272,39 +393,115 @@ def plan_retrieval(db: Session, assessment_id: uuid.UUID, *, model: Any | None =
             model=model,
         )
     )
-    raw_queries = output.get("queries")
-    if not isinstance(raw_queries, list) or not raw_queries:
-        raise AssessmentError("Retrieval planner returned no queries")
-    queries = [_normalized_query(item, ordinal=index)[0] for index, item in enumerate(raw_queries, start=1)]
-    plan = {
-        "criteria": output.get("criteria") or [],
-        "queries": queries,
-        "sampling_guidance": output.get("sampling_guidance") or {},
-    }
-    assessment.configuration_snapshot = {**assessment.configuration_snapshot, "retrieval_plan": plan}
-    workflow.configuration_snapshot = {**workflow.configuration_snapshot, "retrieval_plan": plan}
+    plan = _normalized_retrieval_plan(output)
+    _replace_retrieval_plan(db, assessment, workflow, plan)
     step.status = "COMPLETED"
     step.completed_count = 1
     step.completed_at = utcnow()
-    db.execute(
-        delete(MatterDefinitionAssessmentQuery).where(
-            MatterDefinitionAssessmentQuery.assessment_run_id == assessment.id
-        )
-    )
-    db.add_all(
-        MatterDefinitionAssessmentQuery(
-            assessment_run_id=assessment.id,
-            ordinal=index,
-            criterion_key=item["criterion_key"],
-            criterion_label=item["criterion_label"],
-            rationale=item["rationale"],
-            search_request=item["search"],
-            quota=item["quota"],
-        )
-        for index, item in enumerate(queries, start=1)
-    )
     db.commit()
     return plan
+
+
+def refine_retrieval_plan(
+    db: Session,
+    assessment: MatterDefinitionAssessmentRun,
+    workflow: WorkflowRun,
+    revision: MatterDefinitionRevision,
+    matter: Matter,
+    *,
+    previous_plan: dict[str, Any],
+    feedback: dict[str, Any],
+    model: Any | None = None,
+) -> tuple[dict[str, Any], list[MatterDefinitionAssessmentQuery]]:
+    """Ask the pinned planner for a complete replacement plan using measured search results."""
+
+    step = _step(db, workflow, ordinal=1, role_key="retrieval_planner")
+    step.status = "RUNNING"
+    step.completed_at = None
+    step.total_count += 1
+    version = _skill_version(db, assessment, "retrieval_planner")
+    model = model if model is not None else _pinned_model(assessment, "retrieval_planner")
+    required_criterion_keys = {
+        str(item.get("criterion_key"))
+        for item in previous_plan.get("criteria") or []
+        if isinstance(item, dict) and item.get("criterion_key")
+    }
+
+    def validate_refinement(output: dict[str, Any]) -> None:
+        _validate_retrieval_plan(output)
+        returned_keys = {
+            str(item.get("criterion_key"))
+            for item in output.get("criteria") or []
+            if isinstance(item, dict) and item.get("criterion_key")
+        }
+        if returned_keys != required_criterion_keys:
+            missing = sorted(required_criterion_keys - returned_keys)
+            added = sorted(returned_keys - required_criterion_keys)
+            details = []
+            if missing:
+                details.append(f"missing: {', '.join(missing)}")
+            if added:
+                details.append(f"added: {', '.join(added)}")
+            raise AssessmentError(
+                "A refined retrieval plan must preserve the original criterion keys ("
+                + "; ".join(details)
+                + ")"
+            )
+
+    output, _ = asyncio.run(
+        execute_skill_run(
+            db,
+            workflow=workflow,
+            step=step,
+            skill_version=version,
+            scope_type="MATTER_DEFINITION_REVISION",
+            scope_id=revision.id,
+            stable_context={"matter_definition": revision.content_markdown},
+            dynamic_input={
+                "matter_id": str(matter.id),
+                "target_document_count": assessment.requested_document_count,
+                "control_sample_size": assessment.control_sample_size,
+                "previous_plan": previous_plan,
+                "retrieval_feedback": feedback,
+                "required_action": (
+                    "Return a complete revised plan. Repair every zero-result topic and add focused queries "
+                    "or broader HYBRID retrieval until the target can be filled."
+                ),
+            },
+            cache_identity={
+                "tenant_id": str(workflow.tenant_id),
+                "matter_id": str(matter.id),
+                "guidance_id": str(revision.matter_definition_id),
+                "revision_hash": assessment.definition_content_hash,
+                "skill_version_id": str(version.id),
+                "retrieval_attempt": feedback["attempt"] + 1,
+            },
+            output_validators=(validate_refinement,),
+            model=model,
+        )
+    )
+    plan = _normalized_retrieval_plan(output)
+    rows = _replace_retrieval_plan(db, assessment, workflow, plan)
+    step.status = "COMPLETED"
+    step.completed_count += 1
+    step.completed_at = utcnow()
+    return plan, rows
+
+
+def _retrieval_clarification_message(feedback: dict[str, Any]) -> str:
+    zero_topics = feedback["zero_result_topics"]
+    topic_message = (
+        f" Topics with no results: {', '.join(zero_topics)}."
+        if zero_topics
+        else ""
+    )
+    return (
+        "Retrieval needs clarification before this assessment can start. "
+        f"After {feedback['attempt']} planning attempts, retrieval could select "
+        f"{feedback['selected_count']} of the {feedback['target_document_count']} target documents."
+        f"{topic_message} Clarify the affected topic terminology or scope in Review Guidance, then start a new "
+        "assessment. No partial review batch was created."
+    )
 
 
 def retrieve_and_materialize(db: Session, assessment_id: uuid.UUID, settings: Settings) -> list[str]:
@@ -341,48 +538,107 @@ def retrieve_and_materialize(db: Session, assessment_id: uuid.UUID, settings: Se
             .order_by(MatterDefinitionAssessmentQuery.ordinal)
         )
     )
+    control_population = assessment_control_population(db, assessment)
+    reserved_control_documents = select_control_documents(
+        control_population,
+        sample_size=assessment.control_sample_size,
+        target_document_count=assessment.requested_document_count,
+        seed=str(assessment.id),
+    )
+    reserved_control_count = len(reserved_control_documents)
+    retrieval_target_count = assessment.requested_document_count - reserved_control_count
+    validation_history = assessment.configuration_snapshot.get("retrieval_validation_attempts")
+    if not isinstance(validation_history, list):
+        validation_history = []
     client = OpenSearchClient(settings)
     try:
-        query_vectors: dict[int, list[float] | None] = {}
+        for attempt in range(1, MAX_RETRIEVAL_PLAN_ATTEMPTS + 1):
+            query_vectors: dict[int, list[float] | None] = {}
 
-        def execute_page(
-            row: MatterDefinitionAssessmentQuery,
-            request: MatterSearchRequest,
-        ) -> MatterSearchResponse:
-            if row.ordinal not in query_vectors:
-                query_vectors[row.ordinal] = (
-                    get_query_embedding_gateway().embed([request.query or ""], "query").embeddings[0]
-                    if request.search_mode != "KEYWORD"
-                    else None
+            def execute_page(
+                row: MatterDefinitionAssessmentQuery,
+                request: MatterSearchRequest,
+                _query_vectors: dict[int, list[float] | None] = query_vectors,
+            ) -> MatterSearchResponse:
+                if row.ordinal not in _query_vectors:
+                    _query_vectors[row.ordinal] = (
+                        get_query_embedding_gateway().embed([request.query or ""], "query").embeddings[0]
+                        if request.search_mode != "KEYWORD"
+                        else None
+                    )
+                return execute_search(
+                    client,
+                    generation.index_name,
+                    request,
+                    definitions,
+                    tenant_id=str(matter.client.tenant_id),
+                    matter_id=str(matter.id),
+                    query_vector=_query_vectors[row.ordinal],
                 )
-            return execute_search(
-                client,
-                generation.index_name,
-                request,
-                definitions,
-                tenant_id=str(matter.client.tenant_id),
-                matter_id=str(matter.id),
-                query_vector=query_vectors[row.ordinal],
-            )
 
-        hits = collect_retrieval_hits(
-            query_rows,
-            maximum_document_count=assessment.requested_document_count,
-            execute_page=execute_page,
-        )
-        for _ in query_rows:
-            step.completed_count += 1
+            hits = collect_retrieval_hits(
+                query_rows,
+                maximum_document_count=max(1, retrieval_target_count),
+                execute_page=execute_page,
+                excluded_document_ids=set(reserved_control_documents),
+            )
+            step.completed_count += len(query_rows)
+            selected, candidates = merge_retrieval_candidates(
+                hits,
+                maximum_document_count=assessment.requested_document_count,
+                query_quotas={row.ordinal: row.quota for row in query_rows},
+                control_document_ids=reserved_control_documents,
+                control_sample_size=reserved_control_count,
+                seed=str(assessment.id),
+            )
+            feedback = retrieval_plan_feedback(
+                plan,
+                query_rows,
+                unique_retrieved_count=len({hit.document_id for hit in hits}),
+                selected_count=len(selected),
+                target_document_count=assessment.requested_document_count,
+                retrieval_target_count=retrieval_target_count,
+                control_sample_size=reserved_control_count,
+                attempt=attempt,
+            )
+            validation_history = [*validation_history, feedback]
+            assessment.configuration_snapshot = {
+                **assessment.configuration_snapshot,
+                "retrieval_validation_attempts": validation_history,
+                "retrieval_validation": feedback,
+            }
+            workflow.configuration_snapshot = assessment.configuration_snapshot
+            if not feedback["zero_result_topics"] and feedback["target_filled"]:
+                break
+            if attempt == MAX_RETRIEVAL_PLAN_ATTEMPTS:
+                message = _retrieval_clarification_message(feedback)
+                assessment.configuration_snapshot = {
+                    **assessment.configuration_snapshot,
+                    "failure_kind": "RETRIEVAL_NEEDS_CLARIFICATION",
+                }
+                workflow.configuration_snapshot = assessment.configuration_snapshot
+                assessment.status = "FAILED"
+                assessment.error_message = message
+                assessment.completed_at = utcnow()
+                step.status = "FAILED"
+                step.failed_count = max(1, step.failed_count)
+                step.error_message = message
+                step.completed_at = assessment.completed_at
+                db.commit()
+                return []
+            plan, query_rows = refine_retrieval_plan(
+                db,
+                assessment,
+                workflow,
+                revision,
+                matter,
+                previous_plan=plan,
+                feedback=feedback,
+            )
+            step.total_count += len(query_rows)
     finally:
         client.close()
     assessment.status = "BUILDING_BATCH"
-    selected, candidates = merge_retrieval_candidates(
-        hits,
-        maximum_document_count=assessment.requested_document_count,
-        query_quotas={row.ordinal: row.quota for row in query_rows},
-        control_document_ids=assessment_control_population(db, assessment),
-        control_sample_size=assessment.control_sample_size,
-        seed=str(assessment.id),
-    )
     materialize_assessment_batch(
         db,
         assessment,
@@ -1356,6 +1612,8 @@ def fail_assessment(db: Session, assessment_id: uuid.UUID, message: str) -> None
     assessment = db.get(MatterDefinitionAssessmentRun, assessment_id)
     if assessment is None or assessment.status == "CANCELED":
         return
+    if assessment.status == "FAILED" and assessment.error_message:
+        message = assessment.error_message
     assessment.status = "FAILED"
     assessment.error_message = message[:4000]
     assessment.completed_at = utcnow()

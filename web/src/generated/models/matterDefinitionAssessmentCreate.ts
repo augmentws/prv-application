@@ -13,7 +13,7 @@ export interface MatterDefinitionAssessmentCreate {
      * @minimum 1
      * @maximum 10000000
      */
-  maximum_document_count?: number;
+  target_document_count?: number;
   /**
      * @minimum 0
      * @maximum 1000000

@@ -72,6 +72,19 @@ class SelectedCandidate:
     reason: str
 
 
+def select_control_documents(
+    document_ids: list[uuid.UUID],
+    *,
+    sample_size: int,
+    target_document_count: int,
+    seed: str,
+) -> list[uuid.UUID]:
+    candidates = sorted(set(document_ids), key=str)
+    rng = random.Random(seed)
+    rng.shuffle(candidates)
+    return candidates[: min(sample_size, target_document_count)]
+
+
 def merge_retrieval_candidates(
     hits: list[RetrievalHit],
     *,
@@ -123,14 +136,18 @@ def merge_retrieval_candidates(
             selected_set.add(document_id)
             reasons[document_id] = "RANK_FUSION"
 
-    available_controls = sorted(set(control_document_ids) - set(provenance), key=str)
-    rng = random.Random(seed)
-    rng.shuffle(available_controls)
-    reserved_controls = min(control_sample_size, maximum_document_count)
-    controls = available_controls[:reserved_controls]
+    controls = select_control_documents(
+        list(set(control_document_ids) - set(provenance)),
+        sample_size=control_sample_size,
+        target_document_count=maximum_document_count,
+        seed=seed,
+    )
     if controls:
         keep_retrieved = max(0, maximum_document_count - len(controls))
-        selected_ids = selected_ids[:keep_retrieved]
+        control_set = set(controls)
+        selected_ids = [document_id for document_id in selected_ids if document_id not in control_set][
+            :keep_retrieved
+        ]
         selected_set = set(selected_ids)
         for document_id in controls:
             selected_ids.append(document_id)
@@ -169,18 +186,18 @@ def start_assessment(
     matter_definition_id: uuid.UUID | None = None,
     name: str | None = None,
     revision_number: int | None = None,
-    maximum_document_count: int = 500,
+    target_document_count: int = 500,
     control_sample_size: int = 0,
     use_batching: bool = True,
     acknowledge_large_run_warning: bool = False,
 ) -> MatterDefinitionAssessmentRun:
     if matter.status != "ACTIVE":
         raise AssessmentError("Matter is not active")
-    if maximum_document_count <= 0:
-        raise AssessmentError("Maximum document count must be positive")
-    if control_sample_size < 0 or control_sample_size > maximum_document_count:
-        raise AssessmentError("Control sample size must not exceed the maximum document count")
-    warning_required = maximum_document_count > settings.definition_assessment_warning_document_count
+    if target_document_count <= 0:
+        raise AssessmentError("Target document count must be positive")
+    if control_sample_size < 0 or control_sample_size > target_document_count:
+        raise AssessmentError("Control sample size must not exceed the target document count")
+    warning_required = target_document_count > settings.definition_assessment_warning_document_count
     if warning_required and not acknowledge_large_run_warning:
         raise AssessmentError(
             f"Assessments over {settings.definition_assessment_warning_document_count} documents require "
@@ -229,7 +246,7 @@ def start_assessment(
     assessment_id = uuid.uuid4()
     workflow_id = f"definition-assessment:{assessment_id}"
     configuration = {
-        "maximum_document_count": maximum_document_count,
+        "target_document_count": target_document_count,
         "control_sample_size": control_sample_size,
         "use_batching": use_batching,
         "resolved_models": resolved_models,
@@ -280,7 +297,7 @@ def start_assessment(
         search_index_generation_id=generation.id,
         configuration_snapshot=configuration,
         binding_snapshot=bindings,
-        requested_document_count=maximum_document_count,
+        requested_document_count=target_document_count,
         control_sample_size=control_sample_size,
         large_run_warning_acknowledged=acknowledge_large_run_warning,
         warning_acknowledged_by_user_id=initiated_by_user_id if warning_required else None,
@@ -302,7 +319,7 @@ def start_assessment(
             "guidance_key": definition.key,
             "revision": selected_revision,
             "matter_definition_revision_id": str(revision.id),
-            "maximum_document_count": maximum_document_count,
+            "target_document_count": target_document_count,
             "control_sample_size": control_sample_size,
             "use_batching": use_batching,
         },
@@ -321,6 +338,10 @@ def retry_assessment(
     previous_status = assessment.status
     if previous_status not in {"FAILED", "COMPLETED_WITH_ERRORS"}:
         raise AssessmentError("Only failed assessments or assessments with failed documents can be retried")
+    if assessment.configuration_snapshot.get("failure_kind") == "RETRIEVAL_NEEDS_CLARIFICATION":
+        raise AssessmentError(
+            "Retrieval needs clarified Review Guidance; update the guidance and start a new assessment"
+        )
     if previous_status == "COMPLETED_WITH_ERRORS" and assessment.failed_count == 0:
         raise AssessmentError("This assessment has no failed documents to retry")
     workflow = db.get(WorkflowRun, assessment.workflow_run_id)

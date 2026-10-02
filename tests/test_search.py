@@ -175,6 +175,29 @@ def test_adding_or_changing_a_path_hierarchy_separator_requires_reindex() -> Non
     assert "mapping behavior" in " ".join(plan.reasons).casefold()
 
 
+def test_mapping_omits_hierarchy_storage_when_no_searchable_field_is_hierarchical() -> None:
+    status = definition("status", "ENUM", facetable=True)
+    status.allowed_values = [{"key": "open", "label": "Open", "active": True}]
+
+    mapping = compile_document_index([status, definition("notes", "TEXT")])
+
+    assert "hierarchy_facets" not in mapping["mappings"]["properties"]
+    assert "_meta" not in mapping["mappings"]
+
+
+def test_adding_the_first_enum_hierarchy_requires_reindex() -> None:
+    category = definition("category", "ENUM", facetable=True)
+    category.allowed_values = [{"key": "legal", "label": "Legal", "active": True}]
+    current = compile_document_index([category])
+    category.allowed_values.append({"key": "contracts", "label": "Contracts", "active": True, "parent_key": "legal"})
+    desired = compile_document_index([category])
+
+    plan = plan_schema_change(current, desired)
+
+    assert plan.action == "REINDEX_REQUIRED"
+    assert "hierarchy_facets" in " ".join(plan.reasons)
+
+
 def test_query_compiler_injects_scope_and_validates_matter_fields() -> None:
     definitions = [
         definition("issue", "TEXT", facetable=True),
@@ -396,9 +419,7 @@ def test_hierarchical_enum_filters_and_facets_use_ancestor_projection() -> None:
     ]
     flat = definition("status", "ENUM", facetable=True)
     flat.allowed_values = [{"key": "open", "label": "Open", "active": True}]
-    assert hierarchy_entries([flat], {"status": "open"}) == [
-        {"field": "status", "node_id": "open", "parent_id": "__root__", "depth": 0, "has_children": False}
-    ]
+    assert hierarchy_entries([flat], {"status": "open"}) == []
 
 
 def test_delimited_text_values_are_projected_and_queried_as_hierarchy_paths() -> None:
@@ -464,12 +485,32 @@ def test_delimited_text_values_are_projected_and_queried_as_hierarchy_paths() ->
         field="initiative",
         tenant_id="tenant-1",
         matter_id="matter-1",
-        value_query=None,
+        value_query="Work.stream",
         size=20,
         parent=" Initiatives / 344 ",
     )
     child_scope = facet_body["aggs"]["initiative"]["aggs"]["scope"]
     assert {"term": {"hierarchy_facets.parent_id": "Initiatives/344"}} in child_scope["filter"]["bool"]["filter"]
+    assert child_scope["aggs"]["values"]["terms"]["include"] == r".*Work\.stream.*"
+
+    lowercase_initiative = definition(
+        "initiative",
+        "TEXT",
+        facetable=True,
+        normalize_to_lowercase=True,
+        hierarchy_separator="/",
+    )
+    lowercase_facet_body = compile_facet_values_request(
+        MatterSearchRequest(),
+        [lowercase_initiative],
+        field="initiative",
+        tenant_id="tenant-1",
+        matter_id="matter-1",
+        value_query="Marketing",
+        size=20,
+    )
+    lowercase_terms = lowercase_facet_body["aggs"]["initiative"]["aggs"]["scope"]["aggs"]["values"]["terms"]
+    assert lowercase_terms["include"] == ".*marketing.*"
 
 
 def test_batch_topic_filter_and_facet_keep_batch_taxonomy_and_topic_in_one_nested_scope() -> None:
@@ -1035,6 +1076,9 @@ def test_document_projection_includes_artifact_body_text(monkeypatch: pytest.Mon
             "has_children": False,
         },
     ]
+
+    flat_projection = build_document_projection(db, document, definitions[:2], batch_ids=batch_ids)
+    assert "hierarchy_facets" not in flat_projection
 
 
 def test_document_projection_attaches_nested_chunk_vectors(monkeypatch: pytest.MonkeyPatch) -> None:

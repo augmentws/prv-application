@@ -513,3 +513,67 @@ def test_matter_definition_conversations_can_be_named_and_renamed(
     assert ahead_cursor.status_code == 200
     assert "event: snapshot.required" in ahead_cursor.text
     assert '"reason":"cursor_ahead"' in ahead_cursor.text
+
+
+def test_first_guidance_claims_pre_guidance_setup_chat(
+    client: TestClient,
+    root_token: str,
+) -> None:
+    _, tenant_token, matter_id = create_tenant_context(client, root_token)
+    agent_response = client.post(
+        "/v1/admin/agents",
+        headers=auth(root_token),
+        json=agent_payload(),
+    )
+    assert agent_response.status_code == 201, agent_response.text
+    agent_id = agent_response.json()["agent"]["id"]
+    publish_response = client.post(
+        f"/v1/agents/{agent_id}/versions/1/publish",
+        headers=auth(root_token),
+    )
+    assert publish_response.status_code == 200, publish_response.text
+
+    conversation_response = client.post(
+        f"/v1/matters/{matter_id}/agent-conversations",
+        headers=auth(tenant_token),
+        json={
+            "agent_definition_id": agent_id,
+            "workflow_type": "MATTER_DEFINITION_SETUP",
+            "title": "Matter Definition Setup",
+        },
+    )
+    assert conversation_response.status_code == 201, conversation_response.text
+    conversation = conversation_response.json()
+    assert conversation["matter_definition_id"] is None
+
+    guidance_response = client.post(
+        f"/v1/matters/{matter_id}/guidance",
+        headers=auth(tenant_token),
+        json={
+            "key": "trec_matter_definition",
+            "name": "TREC Matter Definition",
+            "content_markdown": "# Imported guidance\n\nReview the document.",
+            "source_kind": "MARKDOWN",
+            "source_filename": "MatterDefinition.md",
+        },
+    )
+    assert guidance_response.status_code == 201, guidance_response.text
+    guidance_id = guidance_response.json()["id"]
+
+    refreshed_conversation = client.get(
+        f"/v1/agent-conversations/{conversation['id']}",
+        headers=auth(tenant_token),
+    )
+    assert refreshed_conversation.status_code == 200, refreshed_conversation.text
+    assert refreshed_conversation.json()["matter_definition_id"] == guidance_id
+
+    scoped_conversations = client.get(
+        f"/v1/matters/{matter_id}/agent-conversations",
+        headers=auth(tenant_token),
+        params={
+            "workflow_type": "MATTER_DEFINITION_SETUP",
+            "guidance_id": guidance_id,
+        },
+    )
+    assert scoped_conversations.status_code == 200, scoped_conversations.text
+    assert [item["id"] for item in scoped_conversations.json()] == [conversation["id"]]

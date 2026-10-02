@@ -46,6 +46,17 @@ const definitions: MetadataDefinitionRead[] = [
   },
   {
     ...baseDefinitions[1],
+    id: "definition-tr2016",
+    key: "tr2016_facets",
+    display_name: "Trec2016",
+    type: "TEXT",
+    cardinality: "MULTIPLE",
+    allowed_values: null,
+    hierarchy_separator: "/",
+    reviewable: true,
+  },
+  {
+    ...baseDefinitions[1],
     id: "definition-category",
     key: "category",
     display_name: "Initiative",
@@ -99,7 +110,7 @@ const searchResponse: MatterSearchResponse = {
       source_path: "/mail/inbox/budget-update.eml",
       custodian_names: ["Alice Adams"],
       record_type: "EMAIL",
-      metadata: { custodian: ["custodian-1"], responsiveness: null, file_extension: "eml" },
+      metadata: { custodian: ["custodian-1"], responsiveness: null, tr2016_facets: ["space/253"], file_extension: "eml" },
     },
     highlights: { body_text: ["The <mark>budget</mark> discussion was moved to a private communications channel."] },
     best_passage: {
@@ -138,6 +149,8 @@ function renderWorkspace({ initialPage = 1 }: { initialPage?: number } = {}) {
 
 describe("ReviewWorkspace", () => {
   it("searches, facets, opens a document, and keeps coding available", async () => {
+    let tr2016Values: string[] = [];
+    let tr2016EventSequence = 0;
     vi.mocked(coreApi).mockImplementation(async (path, init) => {
       if (path === "/v1/auth/me") return { id: "user-1", tenant_id: "tenant-1", email: "reviewer@example.com", display_name: "Review User", status: "ACTIVE", tenant_role: "ADMIN", is_superuser: false, created_at: "2026-09-14T12:00:00Z" } as never;
       if (path === "/v1/matters/matter-1") return { id: "matter-1", client_id: "client-1", name: "Acme Investigation", status: "ACTIVE", created_at: "2026-09-14T12:00:00Z" } as never;
@@ -174,7 +187,22 @@ describe("ReviewWorkspace", () => {
           }],
         }],
       } as never;
-      if (path.endsWith("/documents/document-1/metadata-values")) return [{ matter_document_id: "document-1", metadata_definition_id: "definition-responsive", key: "responsiveness", display_name: "Responsiveness", type: "ENUM", cardinality: "SINGLE", resolution_state: "EMPTY", values: [], pending_event_ids: [], conflicting_event_ids: [], updated_at: null }] as never;
+      if (path.endsWith("/documents/document-1/metadata-values")) return [
+        { matter_document_id: "document-1", metadata_definition_id: "definition-responsive", key: "responsiveness", display_name: "Responsiveness", type: "ENUM", cardinality: "SINGLE", resolution_state: "EMPTY", values: [], pending_event_ids: [], conflicting_event_ids: [], updated_at: null },
+        { matter_document_id: "document-1", metadata_definition_id: "definition-tr2016", key: "tr2016_facets", display_name: "Trec2016", type: "TEXT", cardinality: "MULTIPLE", resolution_state: "EMPTY", values: [], pending_event_ids: [], conflicting_event_ids: [], updated_at: null },
+      ] as never;
+      if (path.endsWith("/metadata-values/definition-tr2016/events") && init?.method === "POST") {
+        const payload = JSON.parse(String(init.body)) as { operation: "CLEAR" | "ADD"; value?: string };
+        tr2016EventSequence += 1;
+        if (payload.operation === "CLEAR") tr2016Values = [];
+        if (payload.operation === "ADD" && payload.value) tr2016Values.push(payload.value);
+        const eventId = `event-tr2016-${tr2016EventSequence}`;
+        return {
+          event: { id: eventId, matter_id: "matter-1", matter_document_id: "document-1", metadata_definition_id: "definition-tr2016", operation: payload.operation, value: payload.value ?? null, source_type: "HUMAN", source_id: null, actor_id: "user-1", agent_run_id: null, confidence: null, target_event_id: null, supersedes_id: null, effective_status: "ACTIVE", confirmation_state: "UNREVIEWED", created_at: "2026-09-14T12:01:00Z" },
+          current: { matter_document_id: "document-1", metadata_definition_id: "definition-tr2016", key: "tr2016_facets", display_name: "Trec2016", type: "TEXT", cardinality: "MULTIPLE", resolution_state: tr2016Values.length ? "VALUE" : "EMPTY", values: tr2016Values.map((value, index) => ({ value, source_event_id: `event-tr2016-${index + 1}`, supporting_event_ids: [`event-tr2016-${index + 1}`] })), pending_event_ids: [], conflicting_event_ids: [], updated_at: "2026-09-14T12:01:00Z" },
+          search_operation_id: null,
+        } as never;
+      }
       if (path.endsWith("/metadata-values/definition-responsive/events") && init?.method === "POST") return {
         event: { id: "event-1", matter_id: "matter-1", matter_document_id: "document-1", metadata_definition_id: "definition-responsive", operation: "SET", value: "responsive", source_type: "HUMAN", source_id: null, actor_id: "user-1", agent_run_id: null, confidence: null, target_event_id: null, supersedes_id: null, effective_status: "ACTIVE", confirmation_state: "UNREVIEWED", created_at: "2026-09-14T12:01:00Z" },
         current: { matter_document_id: "document-1", metadata_definition_id: "definition-responsive", key: "responsiveness", display_name: "Responsiveness", type: "ENUM", cardinality: "SINGLE", resolution_state: "VALUE", values: [{ value: "responsive", source_event_id: "event-1", supporting_event_ids: ["event-1"] }], pending_event_ids: [], conflicting_event_ids: [], updated_at: "2026-09-14T12:01:00Z" },
@@ -219,6 +247,21 @@ describe("ReviewWorkspace", () => {
     expect(within(details).queryByText("Custodian")).not.toBeInTheDocument();
     expect(within(details).getByRole("button", { name: "Save changes" })).toBeDisabled();
     expect(within(details).queryByRole("button", { name: "Bulk tag results" })).not.toBeInTheDocument();
+    expect(within(details).getByText("space/253")).toBeInTheDocument();
+
+    const tr2016Input = within(details).getByLabelText("Trec2016");
+    await user.type(tr2016Input, "space/999");
+    await user.click(within(tr2016Input.parentElement!).getByRole("button", { name: "Add" }));
+    await user.click(within(details).getByRole("button", { name: "Save changes" }));
+
+    await waitFor(() => {
+      const tr2016Calls = vi.mocked(coreApi).mock.calls.filter(([path]) => path.endsWith("/metadata-values/definition-tr2016/events"));
+      expect(tr2016Calls.map(([, init]) => JSON.parse(String(init?.body)))).toEqual([
+        { operation: "CLEAR" },
+        { operation: "ADD", value: "space/253" },
+        { operation: "ADD", value: "space/999" },
+      ]);
+    });
 
     await user.click(within(details).getByRole("tab", { name: "Metadata" }));
     expect(within(details).getByText("Custodian")).toBeInTheDocument();

@@ -37,7 +37,7 @@ class WorkflowSpec:
 
 MATTER_DEFINITION_ASSESSMENT_SPEC = WorkflowSpec(
     key="matter_definition_assessment_v1",
-    code_version="8",
+    code_version="9",
     name="Matter Definition assessment",
     description="Builds a diagnostic batch, analyzes its documents, and synthesizes clarification questions.",
     roles=(

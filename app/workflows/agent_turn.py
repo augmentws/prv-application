@@ -14,7 +14,7 @@ from app.agent_runtime import (
     AgentRunOutcome,
     AgentRuntimeDeps,
     AssessmentControlSampleSize,
-    AssessmentMaximumDocumentCount,
+    AssessmentTargetDocumentCount,
     BatchChatQuery,
     BatchChatResultLimit,
     MatterDefinitionContent,
@@ -215,13 +215,13 @@ def durable_apply_matter_definition_draft_edit(
 @DBOS.step(name="agent_tool_matter_definition_start_assessment")
 def durable_start_matter_definition_assessment(
     ctx: RunContext[AgentRuntimeDeps],
-    maximum_document_count: AssessmentMaximumDocumentCount = 500,
+    target_document_count: AssessmentTargetDocumentCount = 500,
     control_sample_size: AssessmentControlSampleSize = 0,
     revision: MatterDefinitionRevisionNumber | None = None,
 ) -> dict:
     return start_matter_definition_assessment(
         ctx,
-        maximum_document_count,
+        target_document_count,
         control_sample_size,
         revision,
     )

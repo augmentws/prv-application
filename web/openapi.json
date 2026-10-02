@@ -18478,11 +18478,11 @@
             ],
             "title": "Revision"
           },
-          "maximum_document_count": {
+          "target_document_count": {
             "type": "integer",
             "maximum": 10000000.0,
             "minimum": 1.0,
-            "title": "Maximum Document Count",
+            "title": "Target Document Count",
             "default": 500
           },
           "control_sample_size": {

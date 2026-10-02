@@ -66,6 +66,66 @@ function renderPanel() {
 }
 
 describe("MatterDefinitionPanel", () => {
+  it("creates first guidance from an imported file without showing a false published state", async () => {
+    const imported = {
+      ...definition,
+      id: "definition-imported",
+      key: "matterdefinition",
+      name: "MatterDefinition",
+      revision: {
+        ...definition.revision,
+        id: "revision-imported",
+        matter_definition_id: "definition-imported",
+        content_markdown: "# Imported guidance\n\nReview the document.",
+        source_kind: "MARKDOWN",
+        source_filename: "MatterDefinition.md",
+      },
+    };
+    vi.mocked(coreApi).mockImplementation(async (path, init) => {
+      if (path === "/v1/matters/matter-1/guidance" && init?.method === "POST") return imported as never;
+      if (path === "/v1/matters/matter-1/guidance") return [] as never;
+      if (path === "/v1/matters/matter-1/guidance/definition-imported/revisions") return [imported.revision] as never;
+      if (path === "/v1/matters/matter-1/agents") return [] as never;
+      if (path === "/v1/matters/matter-1/agent-conversations?workflow_type=MATTER_DEFINITION_SETUP") return [] as never;
+      if (path === "/v1/matters/matter-1/agent-conversations?workflow_type=MATTER_DEFINITION_SETUP&guidance_id=definition-imported") return [] as never;
+      throw new Error(`Unexpected API request: ${path}`);
+    });
+
+    const user = userEvent.setup();
+    renderPanel();
+
+    expect(await screen.findByText("No saved draft")).toBeInTheDocument();
+    expect(screen.queryByText("Published")).not.toBeInTheDocument();
+
+    await user.upload(
+      screen.getByLabelText("Import .md or .txt"),
+      new File(["# Imported guidance\n\nReview the document."], "MatterDefinition.md", { type: "text/markdown" }),
+    );
+
+    const dialog = await screen.findByRole("dialog", { name: "Create Review Guidance" });
+    expect(within(dialog).getByLabelText("Name")).toHaveValue("MatterDefinition");
+    expect(within(dialog).getByLabelText("Stable key")).toHaveValue("matterdefinition");
+    expect(within(dialog).getByLabelText("Initial guidance")).toHaveValue("# Imported guidance\n\nReview the document.");
+    expect(within(dialog).getByText("Imported from MatterDefinition.md")).toBeInTheDocument();
+
+    await user.click(within(dialog).getByRole("button", { name: "Create guidance" }));
+
+    await waitFor(() => expect(coreApi).toHaveBeenCalledWith(
+      "/v1/matters/matter-1/guidance",
+      {
+        method: "POST",
+        body: JSON.stringify({
+          key: "matterdefinition",
+          name: "MatterDefinition",
+          description: null,
+          content_markdown: "# Imported guidance\n\nReview the document.",
+          source_kind: "MARKDOWN",
+          source_filename: "MatterDefinition.md",
+        }),
+      },
+    ));
+  });
+
   it("switches profiles without leaking an unsaved draft", async () => {
     const privilege = {
       ...definition,

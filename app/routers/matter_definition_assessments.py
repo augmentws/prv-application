@@ -172,7 +172,7 @@ def _create_assessment_for_guidance(
             settings=settings,
             name=payload.name,
             revision_number=payload.revision,
-            maximum_document_count=payload.maximum_document_count,
+            target_document_count=payload.target_document_count,
             control_sample_size=payload.control_sample_size,
             use_batching=payload.use_batching,
             acknowledge_large_run_warning=payload.acknowledge_large_run_warning,

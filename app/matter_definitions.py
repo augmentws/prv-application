@@ -1,11 +1,11 @@
 import hashlib
 import uuid
 
-from sqlalchemy import select
+from sqlalchemy import select, update
 from sqlalchemy.orm import Session
 
 from app.audit import record_audit
-from app.models import Matter, MatterDefinition, MatterDefinitionRevision
+from app.models import AgentConversation, Matter, MatterDefinition, MatterDefinitionRevision
 
 LEGACY_GUIDANCE_KEY = "general_review"
 LEGACY_GUIDANCE_NAME = "General Review Guidance"
@@ -101,6 +101,11 @@ def create_guidance(
     )
     if existing is not None:
         raise MatterDefinitionError(f"Review Guidance key '{key}' already exists")
+    is_first_guidance = db.scalar(
+        select(MatterDefinition.id)
+        .where(MatterDefinition.matter_id == matter.id)
+        .limit(1)
+    ) is None
     definition = MatterDefinition(
         matter_id=matter.id,
         key=key,
@@ -125,6 +130,18 @@ def create_guidance(
         source_content_hash=source_content_hash,
     )
     db.add(revision)
+    claimed_conversation_count = 0
+    if is_first_guidance:
+        result = db.execute(
+            update(AgentConversation)
+            .where(
+                AgentConversation.matter_id == matter.id,
+                AgentConversation.workflow_type == "MATTER_DEFINITION_SETUP",
+                AgentConversation.matter_definition_id.is_(None),
+            )
+            .values(matter_definition_id=definition.id)
+        )
+        claimed_conversation_count = result.rowcount
     record_audit(
         db,
         tenant_id=matter.client.tenant_id,
@@ -140,6 +157,7 @@ def create_guidance(
             "source_kind": source_kind,
             "source_guidance_id": str(source_guidance_id) if source_guidance_id else None,
             "source_revision_id": str(source_revision_id) if source_revision_id else None,
+            "claimed_conversation_count": claimed_conversation_count,
         },
     )
     db.flush()

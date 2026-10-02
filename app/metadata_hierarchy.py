@@ -123,11 +123,7 @@ def hierarchy_entries(
                     elif candidate["has_children"]:
                         existing["has_children"] = True
             continue
-        # Project every enum value so an existing flat enum can gain its first
-        # child without requiring a special backfill at that moment. The root
-        # hierarchy_facets mapping itself is introduced through a confirmed
-        # full reindex, and new searchable definitions already require one.
-        if definition.type != "ENUM":
+        if not is_hierarchical_enum(definition):
             continue
         raw_value = metadata_values.get(definition.key)
         values = raw_value if isinstance(raw_value, list) else [raw_value]

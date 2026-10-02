@@ -1104,7 +1104,7 @@ function DocumentDetailsPanel({ matterId, definitions, groups, hit, values, valu
       {!hit ? <div className="grid min-h-0 flex-1 place-items-center p-5 text-center text-sm text-muted-foreground">Select a document to view its metadata.</div>
         : tab !== "history" && loading ? <div className="space-y-3 p-4">{Array.from({ length: 8 }, (_, index) => <Skeleton key={index} className="h-16 w-full" />)}</div>
         : tab === "coding"
-          ? <CodingForm key={`${hit.document_id}:${valuesVersion}`} id={`${tabsId}-panel`} definitions={definitions} visibleGroups={visibleGroups} definitionById={definitionById} valueByDefinition={valueByDefinition} saving={saving} onSave={onSave} onBulkTag={onBulkTag} />
+          ? <CodingForm key={`${hit.document_id}:${valuesVersion}`} id={`${tabsId}-panel`} definitions={definitions} visibleGroups={visibleGroups} definitionById={definitionById} valueByDefinition={valueByDefinition} projectedMetadata={resultMetadata(hit)} saving={saving} onSave={onSave} onBulkTag={onBulkTag} />
           : tab === "metadata"
             ? <MetadataPanel id={`${tabsId}-panel`} definitions={definitions} visibleGroups={visibleGroups} definitionById={definitionById} valueByDefinition={valueByDefinition} hit={hit} />
             : <DocumentCodingHistoryPanel id={`${tabsId}-panel`} history={codingHistory.data} loading={codingHistory.isPending} error={codingHistory.error?.message} />}
@@ -1174,19 +1174,30 @@ function DocumentCodingHistoryPanel({ id, history, loading, error }: {
   </div>;
 }
 
-function CodingForm({ id, definitions, visibleGroups, definitionById, valueByDefinition, saving, onSave, onBulkTag }: {
+function CodingForm({ id, definitions, visibleGroups, definitionById, valueByDefinition, projectedMetadata, saving, onSave, onBulkTag }: {
   id: string;
   definitions: MetadataDefinitionRead[];
   visibleGroups: MetadataGroupRead[];
   definitionById: Map<string, MetadataDefinitionRead>;
   valueByDefinition: Map<string, DocumentMetadataFieldRead>;
+  projectedMetadata: Record<string, unknown>;
   saving: boolean;
   onSave: (actions: CodingAction[]) => Promise<void>;
   onBulkTag?: () => void;
 }) {
   const editableIds = new Set(visibleGroups.flatMap((group) => group.definition_ids));
   const editableDefinitions = definitions.filter((definition) => editableIds.has(definition.id) && definition.status === "ACTIVE" && definition.reviewable && definition.value_source === "ASSERTED");
-  const initialDrafts = Object.fromEntries(editableDefinitions.map((definition) => [definition.id, (valueByDefinition.get(definition.id)?.values ?? []).map((item) => editorValue(item.value, definition))]));
+  const initialDrafts = Object.fromEntries(editableDefinitions.map((definition) => {
+    const field = valueByDefinition.get(definition.id);
+    if (field?.updated_at) {
+      return [definition.id, field.values.map((item) => editorValue(item.value, definition))];
+    }
+    const projected = projectedMetadata[definition.key];
+    const values = definition.cardinality === "MULTIPLE"
+      ? Array.isArray(projected) ? projected : projected === null || projected === undefined ? [] : [projected]
+      : projected === null || projected === undefined ? [] : [Array.isArray(projected) ? projected[0] : projected];
+    return [definition.id, values.map((value) => editorValue(value, definition))];
+  }));
   const [drafts, setDrafts] = useState<Record<string, string[]>>(initialDrafts);
 
   const fieldChanged = (definition: MetadataDefinitionRead) => {
@@ -1200,15 +1211,23 @@ function CodingForm({ id, definitions, visibleGroups, definitionById, valueByDef
   const actions = () => editableDefinitions.flatMap((definition): CodingAction[] => {
     if (!fieldChanged(definition)) return [];
     const field = valueByDefinition.get(definition.id);
+    const initial = initialDrafts[definition.id] ?? [];
     const draft = drafts[definition.id] ?? [];
     if (definition.cardinality === "SINGLE") {
       const value = draft[0] ?? "";
       return value.trim()
         ? [{ definitionId: definition.id, payload: { operation: "SET", value: parseEditorValue(value, definition) } }]
-        : field?.values.length ? [{ definitionId: definition.id, payload: { operation: "CLEAR" } }] : [];
+        : initial.length ? [{ definitionId: definition.id, payload: { operation: "CLEAR" } }] : [];
     }
 
     const nextValues = [...new Set(draft.filter((value) => value.trim()))];
+    const usesImportedBaseline = !field?.updated_at && initial.length > 0;
+    if (usesImportedBaseline) {
+      return [
+        { definitionId: definition.id, payload: { operation: "CLEAR" as const } },
+        ...nextValues.map((value) => ({ definitionId: definition.id, payload: { operation: "ADD" as const, value: parseEditorValue(value, definition) } })),
+      ];
+    }
     const current = new Map((field?.values ?? []).map((item) => [editorValue(item.value, definition), item]));
     if (!nextValues.length && current.size) return [{ definitionId: definition.id, payload: { operation: "CLEAR" } }];
     return [
@@ -1403,8 +1422,8 @@ function MetadataPanel({ id, visibleGroups, definitionById, valueByDefinition, h
     if (!groupDefinitions.length) return null;
     return <section key={group.id} className="min-w-0 p-3"><h3 className="mb-3 truncate text-xs font-bold uppercase tracking-[0.08em] text-muted-foreground" title={group.display_name}>{group.display_name}</h3><dl className="min-w-0 space-y-3">{groupDefinitions.map((definition) => {
       const field = valueByDefinition.get(definition.id);
-      const asserted = field?.values.map((item) => item.value);
-      const value = definition.value_source === "ASSERTED" ? asserted : definition.key === "custodian" ? hit.fields.custodian_names : metadata[definition.key] ?? hit.fields[definition.key];
+      const asserted = field?.updated_at ? field.values.map((item) => item.value) : undefined;
+      const value = definition.value_source === "ASSERTED" ? asserted ?? metadata[definition.key] : definition.key === "custodian" ? hit.fields.custodian_names : metadata[definition.key] ?? hit.fields[definition.key];
       return <div key={definition.id} className="min-w-0"><dt className="flex items-center justify-between gap-2 text-xs font-medium text-muted-foreground"><span className="min-w-0 truncate" title={definition.display_name}>{definition.display_name}</span><Badge variant="outline" className="shrink-0">{definition.value_source.toLowerCase()}</Badge></dt><dd className="mt-1 break-words text-sm [overflow-wrap:anywhere]">{displayValue(value)}</dd></div>;
     })}</dl></section>;
   })}{!visibleGroups.length ? <p className="p-4 text-sm text-muted-foreground">No metadata groups are visible on the document surface.</p> : null}</div>;

@@ -62,11 +62,15 @@ describe("MatterDefinitionAssessmentPanel regeneration", () => {
     );
 
     await user.click(await screen.findByRole("button", { name: "New" }));
+    expect(screen.getByLabelText("Target documents")).toHaveValue(500);
     const batching = screen.getByRole("checkbox", { name: /Use Batch API/ });
     expect(batching).toBeChecked();
     await user.type(screen.getByLabelText("Assessment name"), "Batch assessment");
     await user.click(screen.getByRole("button", { name: "Start assessment" }));
-    await waitFor(() => expect(launchPayload?.use_batching).toBe(true));
+    await waitFor(() => {
+      expect(launchPayload?.use_batching).toBe(true);
+      expect(launchPayload?.target_document_count).toBe(500);
+    });
   });
 
   it("offers summary reuse or frozen-batch reanalysis", async () => {
@@ -146,6 +150,57 @@ describe("MatterDefinitionAssessmentPanel regeneration", () => {
       "/v1/matters/matter-1/definition-assessments/assessment-1/regenerate-document-analyses",
       { method: "POST" },
     ));
+  });
+
+  it("shows retrieval clarification without offering a blind retry", async () => {
+    const assessment = {
+      id: "assessment-1",
+      name: "Topic coverage assessment",
+      status: "FAILED",
+      error_message: "Retrieval needs clarification before this assessment can start.",
+      review_batch_id: null,
+      selected_count: 0,
+      summarized_count: 0,
+      skipped_count: 0,
+      failed_count: 0,
+      partial_coverage_count: 0,
+      invalid_result_count: 0,
+      estimated_input_tokens: null,
+      coverage_snapshot: null,
+      synthesis_result: null,
+      configuration_snapshot: {
+        failure_kind: "RETRIEVAL_NEEDS_CLARIFICATION",
+        retrieval_validation: { zero_result_topics: ["Marketing", "Bottled Water"] },
+      },
+    };
+    vi.mocked(coreApi).mockImplementation(async (path) => {
+      if (path === "/v1/matters/matter-1/definition-assessments") return [assessment] as never;
+      if (path.endsWith("/queries") || path.endsWith("/questions")) return [] as never;
+      if (path.includes("/execution?include_skill_runs=true")) return {
+        request_count: 0,
+        input_tokens: 0,
+        cached_input_tokens: 0,
+        cache_write_tokens: 0,
+        output_tokens: 0,
+        steps: [],
+        skill_runs: [],
+      } as never;
+      throw new Error(`Unexpected API request: ${path}`);
+    });
+    const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+    render(
+      <QueryClientProvider client={queryClient}>
+        <MatterDefinitionAssessmentPanel
+          matterId="matter-1"
+          revisions={[{ revision: 1 } as never]}
+          publishedRevision={1}
+        />
+      </QueryClientProvider>,
+    );
+
+    expect(await screen.findByText("Retrieval needs clarification")).toBeInTheDocument();
+    expect(screen.getByText(/Marketing, Bottled Water/)).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "Retry assessment" })).not.toBeInTheDocument();
   });
 
   it("lets a reviewer select a suggested refinement answer", async () => {

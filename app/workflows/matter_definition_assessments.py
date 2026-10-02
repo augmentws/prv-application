@@ -237,6 +237,8 @@ def matter_definition_assessment(assessment_id: str, attempt_id: str | None = No
     try:
         plan(assessment_id)
         document_ids = retrieve(assessment_id)
+        if not document_ids:
+            raise RuntimeError("Assessment retrieval stopped before creating a partial batch")
         sync_batch_search(assessment_id)
         handles = []
         for index, document_id in enumerate(document_ids):
@@ -262,6 +264,8 @@ def matter_definition_assessment_v2(assessment_id: str, attempt_id: str | None =
     try:
         plan(assessment_id)
         document_ids = retrieve(assessment_id)
+        if not document_ids:
+            raise RuntimeError("Assessment retrieval stopped before creating a partial batch")
         sync_batch_search(assessment_id)
         execution = plan_batches(assessment_id, document_ids)
         handles = []

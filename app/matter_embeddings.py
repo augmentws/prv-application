@@ -8,11 +8,13 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
+from typing import Any
 
 from sqlalchemy import func, select
 
 from app.artifact_gateway import (
     DerivedArtifactReference,
+    EmbeddingTextSource,
     find_derived_artifact_reference,
     get_embedding_text_source,
     read_artifact_bytes,
@@ -95,6 +97,43 @@ class EmbeddingProcessingMetrics:
 EmbeddingMetricsCallback = Callable[[EmbeddingProcessingMetrics], None]
 
 
+def _embedding_input(
+    source: EmbeddingTextSource,
+    configuration: dict[str, Any] | None,
+) -> tuple[str, str]:
+    """Build the configured text envelope and a stable hash for chunk derivation."""
+    if configuration is None:
+        return source.text, source.content_hash
+
+    if configuration.get("name") != "subject-filename-body":
+        raise RuntimeError(f"Unsupported embedding input configuration: {configuration.get('name')}")
+
+    max_characters = int(configuration["header_max_characters"])
+
+    def header_value(value: str | None) -> str | None:
+        normalized = " ".join((value or "").split())
+        return normalized[:max_characters] or None
+
+    headers: list[str] = []
+    subject = header_value(source.email_subject)
+    filename = header_value(source.original_filename)
+    if subject:
+        headers.append(f"Subject: {subject}")
+    if filename:
+        headers.append(f"Filename: {filename}")
+    header_text = "\n".join(headers)
+    text = f"{header_text}\n\n{source.text}" if headers else source.text
+    input_hash = canonical_hash(
+        {
+            "configuration": configuration,
+            "source_content_hash": source.content_hash,
+            "email_subject": subject,
+            "original_filename": filename,
+        }
+    )
+    return text, input_hash
+
+
 def _scope(job: MatterEmbeddingJob) -> tuple[uuid.UUID, uuid.UUID]:
     return job.matter.client.tenant_id, job.matter.client_id
 
@@ -146,8 +185,18 @@ def _prepare_document(
     if source is None:
         return DocumentEmbeddingResult("SKIPPED", 0)
 
+    input_configuration = job.configuration.get("input")
+    input_text, input_hash = _embedding_input(source, input_configuration)
     chunking = job.configuration["chunking"]
-    chunk_key = derivation_key(source_hash=source.content_hash, configuration=chunking)
+    chunk_derivation_configuration = (
+        chunking
+        if input_configuration is None
+        else {"input": input_configuration, "chunking": chunking}
+    )
+    chunk_key = derivation_key(
+        source_hash=input_hash,
+        configuration=chunk_derivation_configuration,
+    )
     chunk_ref = find_derived_artifact_reference(
         collection_item_id=collection_item_id,
         artifact_role="CHUNK_SET",
@@ -158,8 +207,8 @@ def _prepare_document(
     )
     if chunk_ref is None:
         chunks = semantic_chunks(
-            source.text,
-            source_hash=source.content_hash,
+            input_text,
+            source_hash=input_hash,
             target_characters=int(chunking["target_characters"]),
             max_characters=int(chunking["max_characters"]),
             overlap_characters=int(chunking["overlap_characters"]),
@@ -169,13 +218,21 @@ def _prepare_document(
         chunk_metadata = {
             "schema_version": 1,
             "chunking": chunking,
+            "input": input_configuration,
             "source_artifact_id": str(source.artifact_id),
             "source_content_hash": source.content_hash,
+            "embedding_input_hash": input_hash,
             "chunk_count": len(chunks),
         }
         chunk_ref, _ = store_derived_artifact(
             collection_item_id=collection_item_id,
-            content=write_chunk_set(chunks, {"source_content_hash": source.content_hash}),
+            content=write_chunk_set(
+                chunks,
+                {
+                    "source_content_hash": source.content_hash,
+                    "embedding_input_hash": input_hash,
+                },
+            ),
             artifact_type="CHUNK_SET",
             source_artifact_id=source.artifact_id,
             relationship="CHUNKED_FROM",

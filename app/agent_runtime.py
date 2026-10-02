@@ -76,9 +76,9 @@ from app.schemas import (
     AssertionPolicy,
     Cardinality,
     EnumValueKey,
+    HierarchySeparator,
     MatterSearchRequest,
     MatterSearchSort,
-    HierarchySeparator,
     MetadataDefinitionCreate,
     MetadataDefinitionUpdate,
     MetadataEnumValueCreate,
@@ -124,7 +124,7 @@ AgentMetadataDisplayName = Annotated[str, Field(min_length=1, max_length=200)]
 AgentMetadataDescription = Annotated[str, Field(min_length=1, max_length=4000)]
 AgentEnumLabel = Annotated[str, Field(min_length=1, max_length=200)]
 AgentEnumDescription = Annotated[str, Field(min_length=1, max_length=2000)]
-AssessmentMaximumDocumentCount = Annotated[int, Field(ge=1, le=10_000_000)]
+AssessmentTargetDocumentCount = Annotated[int, Field(ge=1, le=10_000_000)]
 AssessmentControlSampleSize = Annotated[int, Field(ge=0, le=1_000_000)]
 BatchChatQuery = Annotated[str, Field(min_length=1, max_length=2000)]
 BatchChatResultLimit = Annotated[int, Field(ge=1, le=20)]
@@ -740,7 +740,7 @@ def apply_matter_definition_draft_edit(
 
 def start_matter_definition_assessment(
     ctx: RunContext[AgentRuntimeDeps],
-    maximum_document_count: AssessmentMaximumDocumentCount = 500,
+    target_document_count: AssessmentTargetDocumentCount = 500,
     control_sample_size: AssessmentControlSampleSize = 0,
     revision: MatterDefinitionRevisionNumber | None = None,
     guidance_id: uuid.UUID | None = None,
@@ -748,7 +748,7 @@ def start_matter_definition_assessment(
     if not ctx.tool_call_approved:
         raise PermissionError("Matter Definition assessments require explicit user approval")
     arguments = {
-        "maximum_document_count": maximum_document_count,
+        "target_document_count": target_document_count,
         "control_sample_size": control_sample_size,
         "revision": revision,
         "guidance_id": str(guidance_id or ctx.deps.guidance_id) if (guidance_id or ctx.deps.guidance_id) else None,
@@ -762,14 +762,14 @@ def start_matter_definition_assessment(
             initiated_by_user_id=user.id,
             settings=get_settings(),
             revision_number=revision,
-            maximum_document_count=maximum_document_count,
+            target_document_count=target_document_count,
             control_sample_size=control_sample_size,
             acknowledge_large_run_warning=True,
         )
         return {
             "assessment_id": str(assessment.id),
             "status": assessment.status,
-            "maximum_document_count": assessment.requested_document_count,
+            "target_document_count": assessment.requested_document_count,
             "control_sample_size": assessment.control_sample_size,
         }
 

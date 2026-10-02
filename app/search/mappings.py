@@ -3,6 +3,7 @@ import json
 from collections.abc import Iterable
 from typing import Any
 
+from app.metadata_hierarchy import is_hierarchical_field
 from app.models import MetadataDefinition
 
 ANALYZER_VERSION = 1
@@ -64,7 +65,8 @@ def compile_document_index(
         for definition in searchable
         if definition.type == "TEXT" and definition.hierarchy_separator is not None
     }
-    return {
+    has_hierarchical_fields = any(is_hierarchical_field(definition) for definition in searchable)
+    index_body = {
         "settings": {
             "index": {"knn": True},
             "analysis": {
@@ -165,6 +167,11 @@ def compile_document_index(
             },
         },
     }
+    if not has_hierarchical_fields:
+        del index_body["mappings"]["properties"]["hierarchy_facets"]
+    if not path_hierarchies:
+        del index_body["mappings"]["_meta"]
+    return index_body
 
 
 def schema_hash(index_body: dict[str, Any]) -> str:

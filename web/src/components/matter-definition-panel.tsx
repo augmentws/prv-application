@@ -77,6 +77,8 @@ export function MatterDefinitionPanel({ matterId }: { matterId: string }) {
   const [guidanceName, setGuidanceName] = useState("");
   const [guidanceDescription, setGuidanceDescription] = useState("");
   const [guidanceInitialContent, setGuidanceInitialContent] = useState("");
+  const [guidanceInitialSource, setGuidanceInitialSource] = useState<DraftSourceKind>("PASTE");
+  const [guidanceInitialFilename, setGuidanceInitialFilename] = useState<string | null>(null);
   const [draftEdit, setDraftEdit] = useState<DraftEdit | null>(null);
   const [publishOpen, setPublishOpen] = useState(false);
   const [selectedConversationId, setSelectedConversationId] = useState<string>("");
@@ -193,7 +195,8 @@ export function MatterDefinitionPanel({ matterId }: { matterId: string }) {
         name: guidanceName.trim(),
         description: guidanceDescription.trim() || null,
         content_markdown: guidanceInitialContent.trim(),
-        source_kind: "PASTE",
+        source_kind: guidanceInitialSource,
+        source_filename: guidanceInitialFilename,
       }),
     }),
     onSuccess: (created) => {
@@ -345,6 +348,8 @@ export function MatterDefinitionPanel({ matterId }: { matterId: string }) {
       setGuidanceName(definition.data.name);
       setGuidanceDescription(definition.data.description ?? "");
       setGuidanceInitialContent("");
+      setGuidanceInitialSource("PASTE");
+      setGuidanceInitialFilename(null);
       return;
     }
     const name = mode === "clone" && definition.data ? `${definition.data.name} copy` : "";
@@ -352,6 +357,8 @@ export function MatterDefinitionPanel({ matterId }: { matterId: string }) {
     setGuidanceKey(suggestedKey(name));
     setGuidanceDescription(mode === "clone" ? definition.data?.description ?? "" : "");
     setGuidanceInitialContent(mode === "create" ? "# Reviewer guidance\n\n" : "");
+    setGuidanceInitialSource("PASTE");
+    setGuidanceInitialFilename(null);
   }
 
   async function importTextFile(file: File) {
@@ -361,9 +368,21 @@ export function MatterDefinitionPanel({ matterId }: { matterId: string }) {
       return;
     }
     const content = await file.text();
+    const source = extension === "txt" ? "TEXT" : "MARKDOWN";
+    if (!definition.data) {
+      const importedName = file.name.replace(/\.(?:md|markdown|txt)$/i, "");
+      setGuidanceName(importedName);
+      setGuidanceKey(suggestedKey(importedName));
+      setGuidanceDescription("");
+      setGuidanceInitialContent(content);
+      setGuidanceInitialSource(source);
+      setGuidanceInitialFilename(file.name);
+      setGuidanceDialog("create");
+      return;
+    }
     setDraftEdit({
       content,
-      source: extension === "txt" ? "TEXT" : "MARKDOWN",
+      source,
       sourceFilename: file.name,
       basedOnRevision: definition.data?.current_revision ?? null,
     });
@@ -511,7 +530,12 @@ export function MatterDefinitionPanel({ matterId }: { matterId: string }) {
                     <ChevronDown className={cn("size-3.5 transition-transform", historyOpen && "rotate-180")} />
                   </button>
                   {!selectedRevision && sourceFilename ? <span className="truncate text-xs text-muted-foreground">Imported from {sourceFilename}</span> : null}
-                  {selectedRevision?.revision === definition.data?.published_revision ? <Badge variant="active">Published</Badge> : null}
+                  {selectedRevision
+                    && definition.data?.published_revision !== null
+                    && definition.data?.published_revision !== undefined
+                    && selectedRevision.revision === definition.data.published_revision
+                    ? <Badge variant="active">Published</Badge>
+                    : null}
                 </div>
                 <div className="flex flex-wrap gap-2">
                   {selectedRevision ? (
@@ -757,6 +781,7 @@ export function MatterDefinitionPanel({ matterId }: { matterId: string }) {
             {guidanceDialog === "create" ? (
               <div>
                 <label className="text-sm font-medium" htmlFor="guidance-initial-content">Initial guidance</label>
+                {guidanceInitialFilename ? <p className="mt-1 text-xs text-muted-foreground">Imported from {guidanceInitialFilename}</p> : null}
                 <Textarea id="guidance-initial-content" className="mt-1 min-h-36 font-mono text-xs" value={guidanceInitialContent} onChange={(event) => setGuidanceInitialContent(event.target.value)} />
               </div>
             ) : null}

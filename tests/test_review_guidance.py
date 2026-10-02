@@ -165,7 +165,7 @@ def test_legacy_routes_resolve_general_review_and_nested_assessments_are_scoped(
     started = client.post(
         f"/v1/matters/{matter_id}/guidance/{general['id']}/assessments",
         headers=auth(root_token),
-        json={"name": "General guidance assessment", "maximum_document_count": 10},
+        json={"name": "General guidance assessment", "target_document_count": 10},
     )
     assert started.status_code == 202, started.text
     assert started.json()["guidance_id"] == general["id"]

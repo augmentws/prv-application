@@ -13,7 +13,7 @@ from app.database import SessionLocal
 from app.document_metadata import current_metadata_values, event_value
 from app.embeddings.configuration import canonical_hash, processing_configuration
 from app.embeddings.parquet import read_chunk_set, read_vector_set
-from app.metadata_hierarchy import hierarchy_entries
+from app.metadata_hierarchy import hierarchy_entries, is_hierarchical_field
 from app.models import (
     BatchTopic,
     BatchTopicAssignment,
@@ -277,7 +277,7 @@ def build_document_projection(
             for chunk in text_chunks
             if chunk.chunk_id in vectors
         ]
-    return {
+    projection: dict[str, Any] = {
         "document_id": str(document.id),
         "tenant_id": str(matter.client.tenant_id),
         "client_id": str(matter.client_id),
@@ -287,7 +287,6 @@ def build_document_projection(
         "batch_ids": [str(value) for value in (batch_ids or [])],
         "batch_topics": batch_topics or [],
         "batch_coding": batch_coding or [],
-        "hierarchy_facets": projected_hierarchy_facets,
         "created_at": document.created_at.isoformat(),
         "record_type": snapshot.record_type,
         "processing_status": snapshot.processing_status,
@@ -305,6 +304,13 @@ def build_document_projection(
         "chunks": chunks,
         "metadata": searchable_metadata,
     }
+    if any(
+        is_hierarchical_field(definition)
+        for definition in definitions
+        if definition.status == "ACTIVE" and definition.searchable
+    ):
+        projection["hierarchy_facets"] = projected_hierarchy_facets
+    return projection
 
 
 class SearchIndexManager:

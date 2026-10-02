@@ -155,6 +155,12 @@ def test_single_value_events_update_projection_and_preserve_history(
     assert cleared.status_code == 201, cleared.text
     assert cleared.json()["current"]["resolution_state"] == "EMPTY"
     assert cleared.json()["current"]["values"] == []
+    with TestingSessionLocal() as db:
+        definition = db.get(MetadataDefinition, uuid.UUID(responsiveness["id"]))
+        assert definition is not None
+        assert current_metadata_values(db, uuid.UUID(document_id), [definition]) == {
+            "responsiveness": None
+        }
 
     invalid_enum = client.post(url, headers=auth(root_token), json={"operation": "SET", "value": "other"})
     assert invalid_enum.status_code == 422

@@ -298,6 +298,12 @@ def test_document_processing_creates_chunk_and_vector_sets(monkeypatch) -> None:
     job_id = uuid.uuid4()
     document = SimpleNamespace(collection_item_id=uuid.uuid4())
     configuration = {
+        "input": {
+            "name": "subject-filename-body",
+            "version": 1,
+            "fields": ["email_subject", "original_filename", "body_text"],
+            "header_max_characters": 512,
+        },
         "chunking": {
             "name": "sentence-aware",
             "version": 1,
@@ -328,6 +334,8 @@ def test_document_processing_creates_chunk_and_vector_sets(monkeypatch) -> None:
         artifact_id=uuid.uuid4(),
         content_hash="a" * 64,
         text="First sentence has substance. Second sentence adds detail. Final sentence closes.",
+        original_filename="water-plan.pdf",
+        email_subject="Bottled Water Strategy",
     )
     monkeypatch.setattr("app.matter_embeddings.get_embedding_text_source", lambda **_: source)
     monkeypatch.setattr("app.matter_embeddings.find_derived_artifact_reference", lambda **_: None)
@@ -367,6 +375,10 @@ def test_document_processing_creates_chunk_and_vector_sets(monkeypatch) -> None:
     chunk_rows = read_chunk_set(stored[0]["content"])
     vector_rows = read_vector_set(stored[1]["content"], dimensions=32)
     assert len(chunk_rows) == len(vector_rows) == result.chunk_count
+    assert chunk_rows[0].text == "Subject: Bottled Water Strategy\nFilename: water-plan.pdf"
+    assert any("First sentence has substance" in chunk.text for chunk in chunk_rows)
+    assert stored[0]["artifact_metadata"]["input"] == configuration["input"]
+    assert stored[0]["artifact_metadata"]["embedding_input_hash"] != source.content_hash
     assert stored[1]["source_artifact_id"] == stored_refs[0].artifact_id
 
 

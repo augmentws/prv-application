@@ -555,7 +555,6 @@ def current_metadata_values(
         .where(
             DocumentMetadataCurrent.matter_document_id == document_id,
             DocumentMetadataCurrent.metadata_definition_id.in_(definitions_by_id),
-            DocumentMetadataCurrent.resolution_state == "VALUE",
         )
         .order_by(DocumentMetadataCurrent.metadata_definition_id, DocumentMetadataCurrent.value_ordinal)
     ):
@@ -563,6 +562,13 @@ def current_metadata_values(
     values = {}
     for definition_id, rows in rows_by_definition.items():
         definition = definitions_by_id[definition_id]
+        if rows[0].resolution_state == "EMPTY":
+            # An explicit CLEAR must mask any imported value that would
+            # otherwise be used as the search-projection fallback.
+            values[definition.key] = [] if definition.cardinality == "MULTIPLE" else None
+            continue
+        if rows[0].resolution_state != "VALUE":
+            continue
         resolved = [event_value(row) for row in rows]
         values[definition.key] = resolved if definition.cardinality == "MULTIPLE" else resolved[0]
     return values

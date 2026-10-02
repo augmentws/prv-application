@@ -19,7 +19,7 @@ export default function DocumentationLayout({ children }: { children: ReactNode 
         themeSwitch={{ enabled: false }}
         sidebar={{
           footer: (
-            <div className="space-y-2 border-t border-fd-border pt-3">
+            <div key="docs-sidebar-footer" className="space-y-2 border-t border-fd-border pt-3">
               <Link href="/app" className="flex h-10 items-center gap-2 rounded-lg border border-fd-border bg-fd-secondary/50 px-3 text-sm font-semibold text-fd-foreground transition-colors hover:bg-fd-accent focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-fd-ring">
                 <ArrowLeft className="size-4" />
                 Back to app
