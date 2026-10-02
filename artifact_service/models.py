@@ -410,3 +410,110 @@ class ArtifactLineage(ArtifactBase):
     )
     relationship: Mapped[str] = mapped_column(String(40))
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+
+
+class WorkflowArtifact(ArtifactBase):
+    __tablename__ = "workflow_artifact"
+    __table_args__ = (
+        UniqueConstraint(
+            "tenant_id",
+            "client_id",
+            "artifact_type",
+            "derivation_key",
+            name="uq_workflow_artifact_derivation",
+        ),
+        CheckConstraint(
+            "core_scope_kind IN ('MATTER', 'REVIEW_BATCH', 'CLASSIFICATION_MODEL', "
+            "'CLASSIFICATION_CONFIGURATION', 'CLASSIFICATION_DATASET_SNAPSHOT', "
+            "'CLASSIFICATION_TRAINING_RUN', 'CLASSIFICATION_SCORING_RUN')",
+            name="ck_workflow_artifact_scope_kind",
+        ),
+        CheckConstraint(
+            "artifact_type IN ('CLASSIFICATION_POPULATION', 'CLASSIFICATION_FEATURES', "
+            "'CLASSIFICATION_LABELS', 'CLASSIFICATION_SPLITS', 'CLASSIFICATION_MODEL_PACKAGE', "
+            "'CLASSIFICATION_PREDICTIONS', 'CLASSIFICATION_EVALUATION', "
+            "'CLASSIFICATION_RESULT_MANIFEST')",
+            name="ck_workflow_artifact_type",
+        ),
+        CheckConstraint("schema_version > 0", name="ck_workflow_artifact_schema_version"),
+        CheckConstraint("byte_length > 0", name="ck_workflow_artifact_byte_length"),
+        CheckConstraint(
+            "producer_kind IN ('CORE', 'CLASSIFICATION_WORKER', 'CLASSIFICATION_RUNTIME')",
+            name="ck_workflow_artifact_producer_kind",
+        ),
+        Index(
+            "ix_workflow_artifact_scope_created",
+            "tenant_id",
+            "client_id",
+            "core_scope_kind",
+            "core_scope_id",
+            "created_at",
+        ),
+    )
+
+    id: Mapped[uuid.UUID] = mapped_column(Uuid, primary_key=True, default=uuid.uuid4)
+    tenant_id: Mapped[uuid.UUID] = mapped_column(Uuid, index=True)
+    client_id: Mapped[uuid.UUID] = mapped_column(Uuid, index=True)
+    core_scope_kind: Mapped[str] = mapped_column(String(50))
+    core_scope_id: Mapped[uuid.UUID] = mapped_column(Uuid, index=True)
+    artifact_type: Mapped[str] = mapped_column(String(50), index=True)
+    schema_version: Mapped[int] = mapped_column(Integer)
+    derivation_key: Mapped[str] = mapped_column(String(64), index=True)
+    content_blob_id: Mapped[uuid.UUID] = mapped_column(
+        Uuid,
+        ForeignKey("content_blob.id", ondelete="RESTRICT"),
+        index=True,
+    )
+    content_hash: Mapped[str] = mapped_column(String(64), index=True)
+    media_type: Mapped[str] = mapped_column(String(255))
+    byte_length: Mapped[int] = mapped_column(BigInteger)
+    producer_kind: Mapped[str] = mapped_column(String(40))
+    producer_run_id: Mapped[uuid.UUID] = mapped_column(Uuid, index=True)
+    workflow_metadata: Mapped[dict[str, Any]] = mapped_column("metadata", JSON, default=dict)
+    created_by_user_id: Mapped[uuid.UUID] = mapped_column(Uuid, index=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+
+    content_blob: Mapped[ContentBlob] = relationship()
+
+
+class WorkflowArtifactLineage(ArtifactBase):
+    __tablename__ = "workflow_artifact_lineage"
+    __table_args__ = (
+        CheckConstraint(
+            "(source_workflow_artifact_id IS NOT NULL AND source_artifact_id IS NULL) OR "
+            "(source_workflow_artifact_id IS NULL AND source_artifact_id IS NOT NULL)",
+            name="ck_workflow_artifact_lineage_source",
+        ),
+        CheckConstraint("relationship = 'DERIVED_FROM'", name="ck_workflow_artifact_lineage_relationship"),
+        UniqueConstraint(
+            "workflow_artifact_id",
+            "source_workflow_artifact_id",
+            name="uq_workflow_artifact_lineage_workflow_source",
+        ),
+        UniqueConstraint(
+            "workflow_artifact_id",
+            "source_artifact_id",
+            name="uq_workflow_artifact_lineage_artifact_source",
+        ),
+    )
+
+    id: Mapped[uuid.UUID] = mapped_column(Uuid, primary_key=True, default=uuid.uuid4)
+    workflow_artifact_id: Mapped[uuid.UUID] = mapped_column(
+        Uuid,
+        ForeignKey("workflow_artifact.id", ondelete="CASCADE"),
+        index=True,
+    )
+    source_workflow_artifact_id: Mapped[uuid.UUID | None] = mapped_column(
+        Uuid,
+        ForeignKey("workflow_artifact.id", ondelete="RESTRICT"),
+        nullable=True,
+        index=True,
+    )
+    source_artifact_id: Mapped[uuid.UUID | None] = mapped_column(
+        Uuid,
+        ForeignKey("artifact.id", ondelete="RESTRICT"),
+        nullable=True,
+        index=True,
+    )
+    relationship: Mapped[str] = mapped_column(String(40), default="DERIVED_FROM")
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)

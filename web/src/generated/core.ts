@@ -34,6 +34,7 @@ import type {
   BodyUploadCollectionItemV1CollectionsCollectionIdItemsUploadPost,
   BodyUploadDerivedArtifactV1CollectionItemsCollectionItemIdDerivedArtifactsUploadPost,
   BodyUploadSourceContainerV1CollectionsCollectionIdSourceContainersUploadPost,
+  BodyUploadWorkflowArtifactV1WorkflowArtifactsUploadPost,
   ClassificationModelCompatibilityRead,
   ClassificationModelConfigurationCreate,
   ClassificationModelConfigurationRead,
@@ -147,6 +148,7 @@ import type {
   MetadataGroupVisibilityUpdate,
   MetadataMutationRead,
   RefreshRequest,
+  ResolveWorkflowArtifactDerivationV1WorkflowArtifactsByDerivationGetParams,
   ReviewBatchAnalysisRunCreate,
   ReviewBatchAssignmentUpdate,
   ReviewBatchCodingGroupsAdd,
@@ -190,6 +192,9 @@ import type {
   TokenPair,
   UserCreate,
   UserRead,
+  WorkflowArtifactLineageRead,
+  WorkflowArtifactRead,
+  WorkflowArtifactUploadResponse,
   WorkflowExecutionRead,
   WorkflowSkillBindingRead,
   WorkflowSkillBindingUpsert,
@@ -10868,6 +10873,266 @@ const res = await fetch(getEnsureStorageV1TenantsTenantIdArtifactStorageEnsurePo
 
   const data: ensureStorageV1TenantsTenantIdArtifactStorageEnsurePostResponse['data'] = body ? JSON.parse(body) : {}
   return { data, status: res.status, headers: res.headers } as ensureStorageV1TenantsTenantIdArtifactStorageEnsurePostResponse
+}
+
+
+
+export type uploadWorkflowArtifactV1WorkflowArtifactsUploadPostResponse201 = {
+  data: WorkflowArtifactUploadResponse
+  status: 201
+}
+
+export type uploadWorkflowArtifactV1WorkflowArtifactsUploadPostResponse422 = {
+  data: HTTPValidationError
+  status: 422
+}
+
+export type uploadWorkflowArtifactV1WorkflowArtifactsUploadPostResponseSuccess = (uploadWorkflowArtifactV1WorkflowArtifactsUploadPostResponse201) & {
+  headers: Headers;
+};
+export type uploadWorkflowArtifactV1WorkflowArtifactsUploadPostResponseError = (uploadWorkflowArtifactV1WorkflowArtifactsUploadPostResponse422) & {
+  headers: Headers;
+};
+
+export type uploadWorkflowArtifactV1WorkflowArtifactsUploadPostResponse = (uploadWorkflowArtifactV1WorkflowArtifactsUploadPostResponseSuccess | uploadWorkflowArtifactV1WorkflowArtifactsUploadPostResponseError)
+
+export const getUploadWorkflowArtifactV1WorkflowArtifactsUploadPostUrl = () => {
+
+
+
+
+  return `/api/core/v1/workflow-artifacts:upload`
+}
+
+/**
+ * @summary Upload Workflow Artifact
+ */
+export const uploadWorkflowArtifactV1WorkflowArtifactsUploadPost = async (bodyUploadWorkflowArtifactV1WorkflowArtifactsUploadPost: BodyUploadWorkflowArtifactV1WorkflowArtifactsUploadPost, options?: RequestInit): Promise<uploadWorkflowArtifactV1WorkflowArtifactsUploadPostResponse> => {
+    const formData = new FormData();
+formData.append(`metadata`, bodyUploadWorkflowArtifactV1WorkflowArtifactsUploadPost.metadata);
+formData.append(`file`, bodyUploadWorkflowArtifactV1WorkflowArtifactsUploadPost.file);
+
+  const res = await fetch(getUploadWorkflowArtifactV1WorkflowArtifactsUploadPostUrl(),
+  {
+    ...options,
+    method: 'POST'
+    ,
+    body: formData
+  }
+)
+
+
+  const body = [204, 205, 304].includes(res.status) ? null : await res.text();
+
+  const data: uploadWorkflowArtifactV1WorkflowArtifactsUploadPostResponse['data'] = body ? JSON.parse(body) : {}
+  return { data, status: res.status, headers: res.headers } as uploadWorkflowArtifactV1WorkflowArtifactsUploadPostResponse
+}
+
+
+
+export type resolveWorkflowArtifactDerivationV1WorkflowArtifactsByDerivationGetResponse200 = {
+  data: WorkflowArtifactRead
+  status: 200
+}
+
+export type resolveWorkflowArtifactDerivationV1WorkflowArtifactsByDerivationGetResponse422 = {
+  data: HTTPValidationError
+  status: 422
+}
+
+export type resolveWorkflowArtifactDerivationV1WorkflowArtifactsByDerivationGetResponseSuccess = (resolveWorkflowArtifactDerivationV1WorkflowArtifactsByDerivationGetResponse200) & {
+  headers: Headers;
+};
+export type resolveWorkflowArtifactDerivationV1WorkflowArtifactsByDerivationGetResponseError = (resolveWorkflowArtifactDerivationV1WorkflowArtifactsByDerivationGetResponse422) & {
+  headers: Headers;
+};
+
+export type resolveWorkflowArtifactDerivationV1WorkflowArtifactsByDerivationGetResponse = (resolveWorkflowArtifactDerivationV1WorkflowArtifactsByDerivationGetResponseSuccess | resolveWorkflowArtifactDerivationV1WorkflowArtifactsByDerivationGetResponseError)
+
+export const getResolveWorkflowArtifactDerivationV1WorkflowArtifactsByDerivationGetUrl = (params: ResolveWorkflowArtifactDerivationV1WorkflowArtifactsByDerivationGetParams,) => {
+  const normalizedParams = new URLSearchParams();
+
+  Object.entries(params || {}).forEach(([key, value]) => {
+
+    if (value !== undefined) {
+      normalizedParams.append(key, value === null ? 'null' : String(value))
+    }
+  });
+
+  const stringifiedParams = normalizedParams.toString();
+
+  return stringifiedParams.length > 0 ? `/api/core/v1/workflow-artifacts/by-derivation?${stringifiedParams}` : `/api/core/v1/workflow-artifacts/by-derivation`
+}
+
+/**
+ * @summary Resolve Workflow Artifact Derivation
+ */
+export const resolveWorkflowArtifactDerivationV1WorkflowArtifactsByDerivationGet = async (params: ResolveWorkflowArtifactDerivationV1WorkflowArtifactsByDerivationGetParams, options?: RequestInit): Promise<resolveWorkflowArtifactDerivationV1WorkflowArtifactsByDerivationGetResponse> => {
+
+  const res = await fetch(getResolveWorkflowArtifactDerivationV1WorkflowArtifactsByDerivationGetUrl(params),
+  {
+    ...options,
+    method: 'GET'
+
+
+  }
+)
+
+
+  const body = [204, 205, 304].includes(res.status) ? null : await res.text();
+
+  const data: resolveWorkflowArtifactDerivationV1WorkflowArtifactsByDerivationGetResponse['data'] = body ? JSON.parse(body) : {}
+  return { data, status: res.status, headers: res.headers } as resolveWorkflowArtifactDerivationV1WorkflowArtifactsByDerivationGetResponse
+}
+
+
+
+export type getWorkflowArtifactV1WorkflowArtifactsWorkflowArtifactIdGetResponse200 = {
+  data: WorkflowArtifactRead
+  status: 200
+}
+
+export type getWorkflowArtifactV1WorkflowArtifactsWorkflowArtifactIdGetResponse422 = {
+  data: HTTPValidationError
+  status: 422
+}
+
+export type getWorkflowArtifactV1WorkflowArtifactsWorkflowArtifactIdGetResponseSuccess = (getWorkflowArtifactV1WorkflowArtifactsWorkflowArtifactIdGetResponse200) & {
+  headers: Headers;
+};
+export type getWorkflowArtifactV1WorkflowArtifactsWorkflowArtifactIdGetResponseError = (getWorkflowArtifactV1WorkflowArtifactsWorkflowArtifactIdGetResponse422) & {
+  headers: Headers;
+};
+
+export type getWorkflowArtifactV1WorkflowArtifactsWorkflowArtifactIdGetResponse = (getWorkflowArtifactV1WorkflowArtifactsWorkflowArtifactIdGetResponseSuccess | getWorkflowArtifactV1WorkflowArtifactsWorkflowArtifactIdGetResponseError)
+
+export const getGetWorkflowArtifactV1WorkflowArtifactsWorkflowArtifactIdGetUrl = (workflowArtifactId: string,) => {
+
+
+
+
+  return `/api/core/v1/workflow-artifacts/${workflowArtifactId}`
+}
+
+/**
+ * @summary Get Workflow Artifact
+ */
+export const getWorkflowArtifactV1WorkflowArtifactsWorkflowArtifactIdGet = async (workflowArtifactId: string, options?: RequestInit): Promise<getWorkflowArtifactV1WorkflowArtifactsWorkflowArtifactIdGetResponse> => {
+
+  const res = await fetch(getGetWorkflowArtifactV1WorkflowArtifactsWorkflowArtifactIdGetUrl(workflowArtifactId),
+  {
+    ...options,
+    method: 'GET'
+
+
+  }
+)
+
+
+  const body = [204, 205, 304].includes(res.status) ? null : await res.text();
+
+  const data: getWorkflowArtifactV1WorkflowArtifactsWorkflowArtifactIdGetResponse['data'] = body ? JSON.parse(body) : {}
+  return { data, status: res.status, headers: res.headers } as getWorkflowArtifactV1WorkflowArtifactsWorkflowArtifactIdGetResponse
+}
+
+
+
+export type getWorkflowArtifactLineageV1WorkflowArtifactsWorkflowArtifactIdLineageGetResponse200 = {
+  data: WorkflowArtifactLineageRead[]
+  status: 200
+}
+
+export type getWorkflowArtifactLineageV1WorkflowArtifactsWorkflowArtifactIdLineageGetResponse422 = {
+  data: HTTPValidationError
+  status: 422
+}
+
+export type getWorkflowArtifactLineageV1WorkflowArtifactsWorkflowArtifactIdLineageGetResponseSuccess = (getWorkflowArtifactLineageV1WorkflowArtifactsWorkflowArtifactIdLineageGetResponse200) & {
+  headers: Headers;
+};
+export type getWorkflowArtifactLineageV1WorkflowArtifactsWorkflowArtifactIdLineageGetResponseError = (getWorkflowArtifactLineageV1WorkflowArtifactsWorkflowArtifactIdLineageGetResponse422) & {
+  headers: Headers;
+};
+
+export type getWorkflowArtifactLineageV1WorkflowArtifactsWorkflowArtifactIdLineageGetResponse = (getWorkflowArtifactLineageV1WorkflowArtifactsWorkflowArtifactIdLineageGetResponseSuccess | getWorkflowArtifactLineageV1WorkflowArtifactsWorkflowArtifactIdLineageGetResponseError)
+
+export const getGetWorkflowArtifactLineageV1WorkflowArtifactsWorkflowArtifactIdLineageGetUrl = (workflowArtifactId: string,) => {
+
+
+
+
+  return `/api/core/v1/workflow-artifacts/${workflowArtifactId}/lineage`
+}
+
+/**
+ * @summary Get Workflow Artifact Lineage
+ */
+export const getWorkflowArtifactLineageV1WorkflowArtifactsWorkflowArtifactIdLineageGet = async (workflowArtifactId: string, options?: RequestInit): Promise<getWorkflowArtifactLineageV1WorkflowArtifactsWorkflowArtifactIdLineageGetResponse> => {
+
+  const res = await fetch(getGetWorkflowArtifactLineageV1WorkflowArtifactsWorkflowArtifactIdLineageGetUrl(workflowArtifactId),
+  {
+    ...options,
+    method: 'GET'
+
+
+  }
+)
+
+
+  const body = [204, 205, 304].includes(res.status) ? null : await res.text();
+
+  const data: getWorkflowArtifactLineageV1WorkflowArtifactsWorkflowArtifactIdLineageGetResponse['data'] = body ? JSON.parse(body) : {}
+  return { data, status: res.status, headers: res.headers } as getWorkflowArtifactLineageV1WorkflowArtifactsWorkflowArtifactIdLineageGetResponse
+}
+
+
+
+export type getWorkflowArtifactContentV1WorkflowArtifactsWorkflowArtifactIdContentGetResponse200 = {
+  data: unknown
+  status: 200
+}
+
+export type getWorkflowArtifactContentV1WorkflowArtifactsWorkflowArtifactIdContentGetResponse422 = {
+  data: HTTPValidationError
+  status: 422
+}
+
+export type getWorkflowArtifactContentV1WorkflowArtifactsWorkflowArtifactIdContentGetResponseSuccess = (getWorkflowArtifactContentV1WorkflowArtifactsWorkflowArtifactIdContentGetResponse200) & {
+  headers: Headers;
+};
+export type getWorkflowArtifactContentV1WorkflowArtifactsWorkflowArtifactIdContentGetResponseError = (getWorkflowArtifactContentV1WorkflowArtifactsWorkflowArtifactIdContentGetResponse422) & {
+  headers: Headers;
+};
+
+export type getWorkflowArtifactContentV1WorkflowArtifactsWorkflowArtifactIdContentGetResponse = (getWorkflowArtifactContentV1WorkflowArtifactsWorkflowArtifactIdContentGetResponseSuccess | getWorkflowArtifactContentV1WorkflowArtifactsWorkflowArtifactIdContentGetResponseError)
+
+export const getGetWorkflowArtifactContentV1WorkflowArtifactsWorkflowArtifactIdContentGetUrl = (workflowArtifactId: string,) => {
+
+
+
+
+  return `/api/core/v1/workflow-artifacts/${workflowArtifactId}/content`
+}
+
+/**
+ * @summary Get Workflow Artifact Content
+ */
+export const getWorkflowArtifactContentV1WorkflowArtifactsWorkflowArtifactIdContentGet = async (workflowArtifactId: string, options?: RequestInit): Promise<getWorkflowArtifactContentV1WorkflowArtifactsWorkflowArtifactIdContentGetResponse> => {
+
+  const res = await fetch(getGetWorkflowArtifactContentV1WorkflowArtifactsWorkflowArtifactIdContentGetUrl(workflowArtifactId),
+  {
+    ...options,
+    method: 'GET'
+
+
+  }
+)
+
+
+  const body = [204, 205, 304].includes(res.status) ? null : await res.text();
+
+  const data: getWorkflowArtifactContentV1WorkflowArtifactsWorkflowArtifactIdContentGetResponse['data'] = body ? JSON.parse(body) : {}
+  return { data, status: res.status, headers: res.headers } as getWorkflowArtifactContentV1WorkflowArtifactsWorkflowArtifactIdContentGetResponse
 }
 
 

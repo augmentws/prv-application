@@ -34,6 +34,8 @@ from artifact_service.models import (
     CollectionTextProcessingRun,
     ContentBlob,
     TenantStorage,
+    WorkflowArtifact,
+    WorkflowArtifactLineage,
 )
 from artifact_service.schemas import (
     ArtifactLineageRead,
@@ -74,6 +76,10 @@ from artifact_service.schemas import (
     TenantStorageEnsure,
     TenantStorageRead,
     TextProcessingRule,
+    WorkflowArtifactLineageRead,
+    WorkflowArtifactRead,
+    WorkflowArtifactUploadMetadata,
+    WorkflowArtifactUploadResponse,
 )
 from artifact_service.search import collection_item_ids, normalize_extensions
 from artifact_service.selections import (
@@ -99,6 +105,16 @@ from artifact_service.text_processing import (
     process_text,
     validate_rules,
 )
+from artifact_service.workflow_artifacts import (
+    WorkflowArtifactConflictError,
+    WorkflowArtifactError,
+    find_matching_workflow_artifact,
+    find_workflow_artifact,
+    stage_workflow_upload,
+    store_workflow_artifact,
+    workflow_artifact_max_bytes,
+)
+from classification_service.schemas import ArtifactType
 
 
 def _date_bucket_start(value: datetime, interval: DateHistogramInterval) -> datetime:
@@ -162,6 +178,13 @@ def _parse_metadata(value: str) -> CollectionItemUploadMetadata:
 def _parse_derived_metadata(value: str) -> DerivedArtifactUploadMetadata:
     try:
         return DerivedArtifactUploadMetadata.model_validate_json(value)
+    except (ValidationError, json.JSONDecodeError) as exc:
+        raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_CONTENT, detail=str(exc)) from exc
+
+
+def _parse_workflow_artifact_metadata(value: str) -> WorkflowArtifactUploadMetadata:
+    try:
+        return WorkflowArtifactUploadMetadata.model_validate_json(value)
     except (ValidationError, json.JSONDecodeError) as exc:
         raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_CONTENT, detail=str(exc)) from exc
 
@@ -236,6 +259,41 @@ def _artifact_read(db: Session, artifact: Artifact) -> ArtifactRead:
         derivation_key=item_link.derivation_key if item_link else None,
         processing_run_id=item_link.processing_run_id if item_link else None,
         metadata=artifact.artifact_metadata or {},
+    )
+
+
+def _workflow_artifact_read(artifact: WorkflowArtifact) -> WorkflowArtifactRead:
+    return WorkflowArtifactRead(
+        id=artifact.id,
+        tenant_id=artifact.tenant_id,
+        client_id=artifact.client_id,
+        core_scope_kind=artifact.core_scope_kind,
+        core_scope_id=artifact.core_scope_id,
+        artifact_type=artifact.artifact_type,
+        schema_version=artifact.schema_version,
+        derivation_key=artifact.derivation_key,
+        content_hash=artifact.content_hash,
+        media_type=artifact.media_type,
+        byte_length=artifact.byte_length,
+        producer_kind=artifact.producer_kind,
+        producer_run_id=artifact.producer_run_id,
+        metadata=artifact.workflow_metadata or {},
+        created_by_user_id=artifact.created_by_user_id,
+        created_at=artifact.created_at,
+    )
+
+
+def _workflow_artifact_lineage_read(
+    lineage: WorkflowArtifactLineage,
+) -> WorkflowArtifactLineageRead:
+    return WorkflowArtifactLineageRead(
+        workflow_artifact_id=lineage.workflow_artifact_id,
+        source_kind=(
+            "WORKFLOW_ARTIFACT" if lineage.source_workflow_artifact_id is not None else "ARTIFACT"
+        ),
+        source_artifact_id=lineage.source_workflow_artifact_id or lineage.source_artifact_id,
+        relationship=lineage.relationship,
+        created_at=lineage.created_at,
     )
 
 
@@ -335,6 +393,162 @@ def build_router(
         if existing is not None and existing.tenant_slug_snapshot != payload.tenant_slug:
             return existing
         return result
+
+    @router.post(
+        "/workflow-artifacts:upload",
+        response_model=WorkflowArtifactUploadResponse,
+        status_code=status.HTTP_201_CREATED,
+    )
+    def upload_workflow_artifact(
+        metadata: Annotated[str, Form()],
+        file: Annotated[UploadFile, File()],
+        principal: ArtifactPrincipal = Depends(principal_dependency),
+        db: Session = Depends(get_artifact_db),
+        storage: BlobStorage = Depends(get_storage),
+    ) -> WorkflowArtifactUploadResponse:
+        payload = _parse_workflow_artifact_metadata(metadata)
+        require_client(principal, payload.tenant_id, payload.client_id)
+        uploaded_media_type = file.content_type or "application/octet-stream"
+        if uploaded_media_type != payload.media_type:
+            raise HTTPException(
+                status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
+                detail="Multipart file content type must match metadata.media_type",
+            )
+        staged = None
+        try:
+            staged, content_hash, byte_length = stage_workflow_upload(
+                file.file,
+                maximum_bytes=workflow_artifact_max_bytes(payload.artifact_type),
+            )
+            artifact, created = store_workflow_artifact(
+                db,
+                storage,
+                staged=staged,
+                payload=payload,
+                actual_content_hash=content_hash,
+                actual_byte_length=byte_length,
+                actor_user_id=principal.actor_user_id,
+            )
+            db.commit()
+            return WorkflowArtifactUploadResponse(
+                artifact=_workflow_artifact_read(artifact),
+                created=created,
+            )
+        except WorkflowArtifactConflictError as exc:
+            db.rollback()
+            raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=str(exc)) from exc
+        except WorkflowArtifactError as exc:
+            db.rollback()
+            raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_CONTENT, detail=str(exc)) from exc
+        except IntegrityError as exc:
+            db.rollback()
+            try:
+                existing = find_matching_workflow_artifact(db, payload=payload)
+            except WorkflowArtifactConflictError as conflict:
+                raise HTTPException(
+                    status_code=status.HTTP_409_CONFLICT,
+                    detail=str(conflict),
+                ) from conflict
+            if existing is not None:
+                return WorkflowArtifactUploadResponse(
+                    artifact=_workflow_artifact_read(existing),
+                    created=False,
+                )
+            raise HTTPException(
+                status_code=status.HTTP_409_CONFLICT,
+                detail="Workflow artifact derivation already exists",
+            ) from exc
+        finally:
+            if staged is not None:
+                staged.close()
+
+    @router.get("/workflow-artifacts/by-derivation", response_model=WorkflowArtifactRead)
+    def resolve_workflow_artifact_derivation(
+        tenant_id: uuid.UUID,
+        client_id: uuid.UUID,
+        artifact_type: ArtifactType,
+        derivation_key: Annotated[str, Query(pattern=r"^[0-9a-f]{64}$")],
+        principal: ArtifactPrincipal = Depends(principal_dependency),
+        db: Session = Depends(get_artifact_db),
+    ) -> WorkflowArtifactRead:
+        require_client(principal, tenant_id, client_id)
+        artifact = find_workflow_artifact(
+            db,
+            tenant_id=tenant_id,
+            client_id=client_id,
+            artifact_type=artifact_type,
+            derivation_key=derivation_key,
+        )
+        if artifact is None:
+            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Workflow artifact not found")
+        return _workflow_artifact_read(artifact)
+
+    @router.get("/workflow-artifacts/{workflow_artifact_id}", response_model=WorkflowArtifactRead)
+    def get_workflow_artifact(
+        workflow_artifact_id: uuid.UUID,
+        principal: ArtifactPrincipal = Depends(principal_dependency),
+        db: Session = Depends(get_artifact_db),
+    ) -> WorkflowArtifactRead:
+        artifact = db.get(WorkflowArtifact, workflow_artifact_id)
+        if artifact is None:
+            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Workflow artifact not found")
+        require_client(principal, artifact.tenant_id, artifact.client_id)
+        return _workflow_artifact_read(artifact)
+
+    @router.get(
+        "/workflow-artifacts/{workflow_artifact_id}/lineage",
+        response_model=list[WorkflowArtifactLineageRead],
+    )
+    def get_workflow_artifact_lineage(
+        workflow_artifact_id: uuid.UUID,
+        principal: ArtifactPrincipal = Depends(principal_dependency),
+        db: Session = Depends(get_artifact_db),
+    ) -> list[WorkflowArtifactLineageRead]:
+        artifact = db.get(WorkflowArtifact, workflow_artifact_id)
+        if artifact is None:
+            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Workflow artifact not found")
+        require_client(principal, artifact.tenant_id, artifact.client_id)
+        lineage = db.scalars(
+            select(WorkflowArtifactLineage)
+            .where(WorkflowArtifactLineage.workflow_artifact_id == artifact.id)
+            .order_by(WorkflowArtifactLineage.created_at, WorkflowArtifactLineage.id)
+        ).all()
+        return [_workflow_artifact_lineage_read(item) for item in lineage]
+
+    @router.get("/workflow-artifacts/{workflow_artifact_id}/content")
+    def get_workflow_artifact_content(
+        workflow_artifact_id: uuid.UUID,
+        principal: ArtifactPrincipal = Depends(principal_dependency),
+        db: Session = Depends(get_artifact_db),
+        storage: BlobStorage = Depends(get_storage),
+    ) -> StreamingResponse:
+        artifact = db.get(WorkflowArtifact, workflow_artifact_id)
+        if artifact is None:
+            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Workflow artifact not found")
+        require_client(principal, artifact.tenant_id, artifact.client_id)
+        blob = db.get(ContentBlob, artifact.content_blob_id)
+        if blob is None:
+            raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="Artifact content is unavailable")
+        try:
+            content = storage.open(blob.bucket_name, blob.storage_key)
+        except FileNotFoundError as exc:
+            raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="Artifact content is unavailable") from exc
+        extension = (
+            ".parquet"
+            if artifact.media_type == "application/vnd.apache.parquet"
+            else ".arrow"
+            if artifact.media_type.startswith("application/vnd.apache.arrow")
+            else ".zip"
+            if artifact.artifact_type == ArtifactType.CLASSIFICATION_MODEL_PACKAGE.value
+            else ".json"
+        )
+        filename = f"{artifact.artifact_type.lower().replace('_', '-')}{extension}"
+        headers = {
+            "Content-Length": str(blob.byte_length),
+            "Content-Disposition": f"attachment; filename*=UTF-8''{quote(filename)}",
+            "ETag": artifact.content_hash,
+        }
+        return StreamingResponse(iter_file(content), media_type=artifact.media_type, headers=headers)
 
     @router.post(
         "/tenants/{tenant_id}/clients/{client_id}/collections",

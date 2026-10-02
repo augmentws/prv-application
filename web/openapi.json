@@ -11111,6 +11111,274 @@
         }
       }
     },
+    "/v1/workflow-artifacts:upload": {
+      "post": {
+        "tags": [
+          "artifacts"
+        ],
+        "summary": "Upload Workflow Artifact",
+        "operationId": "upload_workflow_artifact_v1_workflow_artifacts_upload_post",
+        "requestBody": {
+          "content": {
+            "multipart/form-data": {
+              "schema": {
+                "$ref": "#/components/schemas/Body_upload_workflow_artifact_v1_workflow_artifacts_upload_post"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "201": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/WorkflowArtifactUploadResponse"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ]
+      }
+    },
+    "/v1/workflow-artifacts/by-derivation": {
+      "get": {
+        "tags": [
+          "artifacts"
+        ],
+        "summary": "Resolve Workflow Artifact Derivation",
+        "operationId": "resolve_workflow_artifact_derivation_v1_workflow_artifacts_by_derivation_get",
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "tenant_id",
+            "in": "query",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid",
+              "title": "Tenant Id"
+            }
+          },
+          {
+            "name": "client_id",
+            "in": "query",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid",
+              "title": "Client Id"
+            }
+          },
+          {
+            "name": "artifact_type",
+            "in": "query",
+            "required": true,
+            "schema": {
+              "$ref": "#/components/schemas/ArtifactType"
+            }
+          },
+          {
+            "name": "derivation_key",
+            "in": "query",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "pattern": "^[0-9a-f]{64}$",
+              "title": "Derivation Key"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/WorkflowArtifactRead"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v1/workflow-artifacts/{workflow_artifact_id}": {
+      "get": {
+        "tags": [
+          "artifacts"
+        ],
+        "summary": "Get Workflow Artifact",
+        "operationId": "get_workflow_artifact_v1_workflow_artifacts__workflow_artifact_id__get",
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "workflow_artifact_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid",
+              "title": "Workflow Artifact Id"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/WorkflowArtifactRead"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v1/workflow-artifacts/{workflow_artifact_id}/lineage": {
+      "get": {
+        "tags": [
+          "artifacts"
+        ],
+        "summary": "Get Workflow Artifact Lineage",
+        "operationId": "get_workflow_artifact_lineage_v1_workflow_artifacts__workflow_artifact_id__lineage_get",
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "workflow_artifact_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid",
+              "title": "Workflow Artifact Id"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "array",
+                  "items": {
+                    "$ref": "#/components/schemas/WorkflowArtifactLineageRead"
+                  },
+                  "title": "Response Get Workflow Artifact Lineage V1 Workflow Artifacts  Workflow Artifact Id  Lineage Get"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v1/workflow-artifacts/{workflow_artifact_id}/content": {
+      "get": {
+        "tags": [
+          "artifacts"
+        ],
+        "summary": "Get Workflow Artifact Content",
+        "operationId": "get_workflow_artifact_content_v1_workflow_artifacts__workflow_artifact_id__content_get",
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "workflow_artifact_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid",
+              "title": "Workflow Artifact Id"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/v1/tenants/{tenant_id}/clients/{client_id}/collections": {
       "post": {
         "tags": [
@@ -14978,6 +15246,20 @@
         ],
         "title": "ArtifactRead"
       },
+      "ArtifactType": {
+        "type": "string",
+        "enum": [
+          "CLASSIFICATION_POPULATION",
+          "CLASSIFICATION_FEATURES",
+          "CLASSIFICATION_LABELS",
+          "CLASSIFICATION_SPLITS",
+          "CLASSIFICATION_MODEL_PACKAGE",
+          "CLASSIFICATION_PREDICTIONS",
+          "CLASSIFICATION_EVALUATION",
+          "CLASSIFICATION_RESULT_MANIFEST"
+        ],
+        "title": "ArtifactType"
+      },
       "BatchTopicRead": {
         "properties": {
           "id": {
@@ -15196,6 +15478,25 @@
           "file"
         ],
         "title": "Body_upload_source_container_v1_collections__collection_id__source_containers_upload_post"
+      },
+      "Body_upload_workflow_artifact_v1_workflow_artifacts_upload_post": {
+        "properties": {
+          "metadata": {
+            "type": "string",
+            "title": "Metadata"
+          },
+          "file": {
+            "type": "string",
+            "contentMediaType": "application/octet-stream",
+            "title": "File"
+          }
+        },
+        "type": "object",
+        "required": [
+          "metadata",
+          "file"
+        ],
+        "title": "Body_upload_workflow_artifact_v1_workflow_artifacts_upload_post"
       },
       "ChoiceDecisionAnswer": {
         "properties": {
@@ -28130,6 +28431,175 @@
           "type"
         ],
         "title": "ValidationError"
+      },
+      "WorkflowArtifactLineageRead": {
+        "properties": {
+          "workflow_artifact_id": {
+            "type": "string",
+            "format": "uuid",
+            "title": "Workflow Artifact Id"
+          },
+          "source_kind": {
+            "type": "string",
+            "enum": [
+              "WORKFLOW_ARTIFACT",
+              "ARTIFACT"
+            ],
+            "title": "Source Kind"
+          },
+          "source_artifact_id": {
+            "type": "string",
+            "format": "uuid",
+            "title": "Source Artifact Id"
+          },
+          "relationship": {
+            "type": "string",
+            "const": "DERIVED_FROM",
+            "title": "Relationship"
+          },
+          "created_at": {
+            "type": "string",
+            "format": "date-time",
+            "title": "Created At"
+          }
+        },
+        "type": "object",
+        "required": [
+          "workflow_artifact_id",
+          "source_kind",
+          "source_artifact_id",
+          "relationship",
+          "created_at"
+        ],
+        "title": "WorkflowArtifactLineageRead"
+      },
+      "WorkflowArtifactRead": {
+        "properties": {
+          "id": {
+            "type": "string",
+            "format": "uuid",
+            "title": "Id"
+          },
+          "tenant_id": {
+            "type": "string",
+            "format": "uuid",
+            "title": "Tenant Id"
+          },
+          "client_id": {
+            "type": "string",
+            "format": "uuid",
+            "title": "Client Id"
+          },
+          "core_scope_kind": {
+            "type": "string",
+            "enum": [
+              "MATTER",
+              "REVIEW_BATCH",
+              "CLASSIFICATION_MODEL",
+              "CLASSIFICATION_CONFIGURATION",
+              "CLASSIFICATION_DATASET_SNAPSHOT",
+              "CLASSIFICATION_TRAINING_RUN",
+              "CLASSIFICATION_SCORING_RUN"
+            ],
+            "title": "Core Scope Kind"
+          },
+          "core_scope_id": {
+            "type": "string",
+            "format": "uuid",
+            "title": "Core Scope Id"
+          },
+          "artifact_type": {
+            "$ref": "#/components/schemas/ArtifactType"
+          },
+          "schema_version": {
+            "type": "integer",
+            "title": "Schema Version"
+          },
+          "derivation_key": {
+            "type": "string",
+            "pattern": "^[0-9a-f]{64}$",
+            "title": "Derivation Key"
+          },
+          "content_hash": {
+            "type": "string",
+            "pattern": "^[0-9a-f]{64}$",
+            "title": "Content Hash"
+          },
+          "media_type": {
+            "type": "string",
+            "title": "Media Type"
+          },
+          "byte_length": {
+            "type": "integer",
+            "title": "Byte Length"
+          },
+          "producer_kind": {
+            "type": "string",
+            "enum": [
+              "CORE",
+              "CLASSIFICATION_WORKER",
+              "CLASSIFICATION_RUNTIME"
+            ],
+            "title": "Producer Kind"
+          },
+          "producer_run_id": {
+            "type": "string",
+            "format": "uuid",
+            "title": "Producer Run Id"
+          },
+          "metadata": {
+            "additionalProperties": true,
+            "type": "object",
+            "title": "Metadata"
+          },
+          "created_by_user_id": {
+            "type": "string",
+            "format": "uuid",
+            "title": "Created By User Id"
+          },
+          "created_at": {
+            "type": "string",
+            "format": "date-time",
+            "title": "Created At"
+          }
+        },
+        "type": "object",
+        "required": [
+          "id",
+          "tenant_id",
+          "client_id",
+          "core_scope_kind",
+          "core_scope_id",
+          "artifact_type",
+          "schema_version",
+          "derivation_key",
+          "content_hash",
+          "media_type",
+          "byte_length",
+          "producer_kind",
+          "producer_run_id",
+          "metadata",
+          "created_by_user_id",
+          "created_at"
+        ],
+        "title": "WorkflowArtifactRead"
+      },
+      "WorkflowArtifactUploadResponse": {
+        "properties": {
+          "artifact": {
+            "$ref": "#/components/schemas/WorkflowArtifactRead"
+          },
+          "created": {
+            "type": "boolean",
+            "title": "Created"
+          }
+        },
+        "type": "object",
+        "required": [
+          "artifact",
+          "created"
+        ],
+        "title": "WorkflowArtifactUploadResponse"
       },
       "WorkflowExecutionRead": {
         "properties": {

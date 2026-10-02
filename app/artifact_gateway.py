@@ -2,10 +2,11 @@ import json
 import uuid
 from dataclasses import dataclass
 from datetime import datetime
-from typing import Any
+from typing import Any, BinaryIO
 
 import httpx
 from sqlalchemy import case, select
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
 from app.config import get_settings
@@ -32,8 +33,14 @@ from artifact_service.models import (
     CollectionItemEmailRecipient,
     CollectionSelection,
     ContentBlob,
+    WorkflowArtifact,
 )
-from artifact_service.schemas import CollectionDeletionJobRead, CollectionSelectionCreate
+from artifact_service.schemas import (
+    CollectionDeletionJobRead,
+    CollectionSelectionCreate,
+    WorkflowArtifactLineageInput,
+    WorkflowArtifactUploadMetadata,
+)
 from artifact_service.selections import (
     create_collection_selection,
     delete_collection_selection,
@@ -41,6 +48,14 @@ from artifact_service.selections import (
     get_collection_selection_batch_custodians,
 )
 from artifact_service.storage import get_storage
+from artifact_service.workflow_artifacts import (
+    find_matching_workflow_artifact,
+    find_workflow_artifact,
+    stage_workflow_upload,
+    workflow_artifact_max_bytes,
+)
+from artifact_service.workflow_artifacts import store_workflow_artifact as persist_workflow_artifact
+from classification_service.schemas import ArtifactType
 
 
 @dataclass(frozen=True)
@@ -117,6 +132,24 @@ class DerivedArtifactReference:
     artifact_id: uuid.UUID
     content_hash: str
     derivation_key: str
+    metadata: dict[str, Any]
+
+
+@dataclass(frozen=True)
+class WorkflowArtifactReference:
+    artifact_id: uuid.UUID
+    tenant_id: uuid.UUID
+    client_id: uuid.UUID
+    core_scope_kind: str
+    core_scope_id: uuid.UUID
+    artifact_type: ArtifactType
+    schema_version: int
+    derivation_key: str
+    content_hash: str
+    media_type: str
+    byte_length: int
+    producer_kind: str
+    producer_run_id: uuid.UUID
     metadata: dict[str, Any]
 
 
@@ -1052,6 +1085,214 @@ def store_derived_artifact(
         ),
         bool(data["created"]),
     )
+
+
+def _workflow_artifact_reference_from_record(
+    artifact: WorkflowArtifact,
+) -> WorkflowArtifactReference:
+    return WorkflowArtifactReference(
+        artifact_id=artifact.id,
+        tenant_id=artifact.tenant_id,
+        client_id=artifact.client_id,
+        core_scope_kind=artifact.core_scope_kind,
+        core_scope_id=artifact.core_scope_id,
+        artifact_type=ArtifactType(artifact.artifact_type),
+        schema_version=artifact.schema_version,
+        derivation_key=artifact.derivation_key,
+        content_hash=artifact.content_hash,
+        media_type=artifact.media_type,
+        byte_length=artifact.byte_length,
+        producer_kind=artifact.producer_kind,
+        producer_run_id=artifact.producer_run_id,
+        metadata=artifact.workflow_metadata or {},
+    )
+
+
+def _workflow_artifact_reference_from_data(data: dict[str, Any]) -> WorkflowArtifactReference:
+    return WorkflowArtifactReference(
+        artifact_id=uuid.UUID(data["id"]),
+        tenant_id=uuid.UUID(data["tenant_id"]),
+        client_id=uuid.UUID(data["client_id"]),
+        core_scope_kind=data["core_scope_kind"],
+        core_scope_id=uuid.UUID(data["core_scope_id"]),
+        artifact_type=ArtifactType(data["artifact_type"]),
+        schema_version=data["schema_version"],
+        derivation_key=data["derivation_key"],
+        content_hash=data["content_hash"],
+        media_type=data["media_type"],
+        byte_length=data["byte_length"],
+        producer_kind=data["producer_kind"],
+        producer_run_id=uuid.UUID(data["producer_run_id"]),
+        metadata=data.get("metadata") or {},
+    )
+
+
+def find_workflow_artifact_reference(
+    *,
+    artifact_type: ArtifactType,
+    derivation_key: str,
+    actor_user_id: uuid.UUID,
+    tenant_id: uuid.UUID,
+    client_id: uuid.UUID,
+) -> WorkflowArtifactReference | None:
+    settings = get_settings()
+    if settings.artifact_mode == "embedded":
+        with ArtifactSessionLocal() as db:
+            artifact = find_workflow_artifact(
+                db,
+                tenant_id=tenant_id,
+                client_id=client_id,
+                artifact_type=artifact_type,
+                derivation_key=derivation_key,
+            )
+            return _workflow_artifact_reference_from_record(artifact) if artifact is not None else None
+
+    with httpx.Client(base_url=settings.artifact_base_url, timeout=120) as client:
+        response = client.get(
+            "/v1/workflow-artifacts/by-derivation",
+            params={
+                "tenant_id": str(tenant_id),
+                "client_id": str(client_id),
+                "artifact_type": artifact_type.value,
+                "derivation_key": derivation_key,
+            },
+            headers=_headers(actor_user_id, tenant_id, client_id),
+        )
+    if response.status_code == 404:
+        return None
+    if response.status_code == 403:
+        raise PermissionError("Workflow artifact is not available to this matter")
+    response.raise_for_status()
+    return _workflow_artifact_reference_from_data(response.json())
+
+
+def store_classification_workflow_artifact(
+    *,
+    content: BinaryIO,
+    artifact_type: ArtifactType,
+    core_scope_kind: str,
+    core_scope_id: uuid.UUID,
+    schema_version: int,
+    derivation_key: str,
+    content_hash: str,
+    byte_length: int,
+    media_type: str,
+    producer_kind: str,
+    producer_run_id: uuid.UUID,
+    artifact_metadata: dict[str, Any],
+    lineage: list[WorkflowArtifactLineageInput],
+    actor_user_id: uuid.UUID,
+    tenant_id: uuid.UUID,
+    client_id: uuid.UUID,
+    filename: str,
+) -> tuple[WorkflowArtifactReference, bool]:
+    payload = WorkflowArtifactUploadMetadata(
+        tenant_id=tenant_id,
+        client_id=client_id,
+        core_scope_kind=core_scope_kind,
+        core_scope_id=core_scope_id,
+        artifact_type=artifact_type,
+        schema_version=schema_version,
+        derivation_key=derivation_key,
+        content_hash=content_hash,
+        byte_length=byte_length,
+        media_type=media_type,
+        producer_kind=producer_kind,
+        producer_run_id=producer_run_id,
+        metadata=artifact_metadata,
+        lineage=lineage,
+    )
+    settings = get_settings()
+    if settings.artifact_mode == "embedded":
+        with ArtifactSessionLocal() as db:
+            if hasattr(content, "seek"):
+                content.seek(0)
+            staged, actual_hash, actual_length = stage_workflow_upload(
+                content,
+                maximum_bytes=workflow_artifact_max_bytes(artifact_type),
+            )
+            try:
+                try:
+                    artifact, created = persist_workflow_artifact(
+                        db,
+                        get_storage(),
+                        staged=staged,
+                        payload=payload,
+                        actual_content_hash=actual_hash,
+                        actual_byte_length=actual_length,
+                        actor_user_id=actor_user_id,
+                    )
+                    db.commit()
+                except IntegrityError:
+                    db.rollback()
+                    artifact = find_matching_workflow_artifact(db, payload=payload)
+                    if artifact is None:
+                        raise
+                    created = False
+                return _workflow_artifact_reference_from_record(artifact), created
+            finally:
+                staged.close()
+
+    if hasattr(content, "seek"):
+        content.seek(0)
+    with httpx.Client(base_url=settings.artifact_base_url, timeout=120) as client:
+        response = client.post(
+            "/v1/workflow-artifacts:upload",
+            headers=_headers(actor_user_id, tenant_id, client_id),
+            data={"metadata": payload.model_dump_json()},
+            files={"file": (filename, content, media_type)},
+        )
+    if response.status_code == 403:
+        raise PermissionError("Workflow artifact is not available to this matter")
+    if response.status_code in {409, 422}:
+        detail = response.json().get("error", {}).get("message", "Workflow artifact upload failed")
+        raise ValueError(detail)
+    response.raise_for_status()
+    data = response.json()
+    return _workflow_artifact_reference_from_data(data["artifact"]), bool(data["created"])
+
+
+def copy_workflow_artifact_content(
+    *,
+    artifact_id: uuid.UUID,
+    destination: BinaryIO,
+    actor_user_id: uuid.UUID,
+    tenant_id: uuid.UUID,
+    client_id: uuid.UUID,
+    chunk_size: int = 1024 * 1024,
+) -> int:
+    settings = get_settings()
+    copied = 0
+    if settings.artifact_mode == "embedded":
+        with ArtifactSessionLocal() as db:
+            artifact = db.get(WorkflowArtifact, artifact_id)
+            if artifact is None:
+                raise ValueError("Workflow artifact not found")
+            if artifact.tenant_id != tenant_id or artifact.client_id != client_id:
+                raise PermissionError("Workflow artifact is not available to this matter")
+            blob = db.get(ContentBlob, artifact.content_blob_id)
+            if blob is None:
+                raise ValueError("Workflow artifact content is unavailable")
+            with get_storage().open(blob.bucket_name, blob.storage_key) as stream:
+                while chunk := stream.read(chunk_size):
+                    destination.write(chunk)
+                    copied += len(chunk)
+        return copied
+
+    with httpx.Client(base_url=settings.artifact_base_url, timeout=120) as client, client.stream(
+        "GET",
+        f"/v1/workflow-artifacts/{artifact_id}/content",
+        headers=_headers(actor_user_id, tenant_id, client_id),
+    ) as response:
+        if response.status_code == 404:
+            raise ValueError("Workflow artifact not found")
+        if response.status_code == 403:
+            raise PermissionError("Workflow artifact is not available to this matter")
+        response.raise_for_status()
+        for chunk in response.iter_bytes(chunk_size=chunk_size):
+            destination.write(chunk)
+            copied += len(chunk)
+    return copied
 
 
 def load_current_chunk_artifacts(
