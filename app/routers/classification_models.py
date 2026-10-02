@@ -14,6 +14,13 @@ from app.classification_datasets import (
     materialize_dataset_snapshot,
     prepare_dataset_snapshot,
 )
+from app.classification_features import (
+    ClassificationFeatureSplitError,
+    begin_feature_split,
+    materialize_feature_split,
+    prepare_feature_split,
+    request_matches_materialized_snapshot,
+)
 from app.classification_models import (
     ClassificationModelCommandError,
     ClassificationModelNotFoundError,
@@ -39,6 +46,8 @@ from app.schemas import (
     ClassificationDatasetSnapshotPreview,
     ClassificationDatasetSnapshotRead,
     ClassificationDatasetSnapshotRequest,
+    ClassificationFeatureSplitCreateResponse,
+    ClassificationFeatureSplitRequest,
     ClassificationModelCompatibilityRead,
     ClassificationModelConfigurationCreate,
     ClassificationModelConfigurationRead,
@@ -133,9 +142,13 @@ def dataset_snapshot_read(
             "label_content_hash": snapshot.label_content_hash,
             "feature_artifact_id": snapshot.feature_artifact_id,
             "feature_content_hash": snapshot.feature_content_hash,
+            "feature_specification": snapshot.feature_specification,
             "feature_specification_hash": snapshot.feature_specification_hash,
             "split_artifact_id": snapshot.split_artifact_id,
             "split_content_hash": snapshot.split_content_hash,
+            "split_specification": snapshot.split_specification,
+            "split_specification_hash": snapshot.split_specification_hash,
+            "training_aggregate_hash": snapshot.training_aggregate_hash,
             "aggregate_hash": snapshot.aggregate_hash,
             "status": snapshot.status,
             "population_count": snapshot.population_count,
@@ -146,6 +159,10 @@ def dataset_snapshot_read(
             "family_grouped_count": snapshot.family_grouped_count,
             "exact_duplicate_grouped_count": snapshot.exact_duplicate_grouped_count,
             "missing_grouping_count": snapshot.missing_grouping_count,
+            "feature_ready_count": snapshot.feature_ready_count,
+            "feature_missing_count": snapshot.feature_missing_count,
+            "feature_failed_count": snapshot.feature_failed_count,
+            "training_eligible_count": snapshot.training_eligible_count,
             "class_support": snapshot.class_support or {},
             "source_summary": snapshot.source_summary or [],
             "warnings": snapshot.warnings or [],
@@ -427,6 +444,88 @@ def list_classification_dataset_snapshots(
         .order_by(ClassificationDatasetSnapshot.created_at, ClassificationDatasetSnapshot.id)
     ).all()
     return [dataset_snapshot_read(snapshot) for snapshot in snapshots]
+
+
+@router.post(
+    "/{classification_model_id}/dataset-snapshots/{snapshot_id}/features-and-splits",
+    response_model=ClassificationFeatureSplitCreateResponse,
+    status_code=status.HTTP_201_CREATED,
+)
+def materialize_classification_features_and_splits(
+    matter_id: uuid.UUID,
+    classification_model_id: uuid.UUID,
+    snapshot_id: uuid.UUID,
+    payload: ClassificationFeatureSplitRequest,
+    principal: Principal = Depends(get_principal),
+    db: Session = Depends(get_db),
+) -> ClassificationFeatureSplitCreateResponse:
+    get_authorized_matter(db, principal, matter_id)
+    try:
+        snapshot = get_dataset_snapshot(
+            db,
+            matter_id=matter_id,
+            classification_model_id=classification_model_id,
+            snapshot_id=snapshot_id,
+        )
+        if snapshot.status == "READY_FOR_TRAINING":
+            if request_matches_materialized_snapshot(snapshot, payload):
+                return ClassificationFeatureSplitCreateResponse(
+                    snapshot=dataset_snapshot_read(snapshot),
+                    materialized=False,
+                )
+            raise ClassificationFeatureSplitError(
+                "A ready dataset snapshot is immutable; create a new snapshot for different feature or split inputs",
+                code="DATASET_SNAPSHOT_IMMUTABLE",
+            )
+        begin_feature_split(snapshot)
+        db.commit()
+    except ClassificationDatasetError as exc:
+        db.rollback()
+        raise dataset_error(exc) from exc
+
+    try:
+        prepared = prepare_feature_split(
+            db,
+            snapshot=snapshot,
+            request=payload,
+            actor_user_id=principal.user.id,
+        )
+        materialize_feature_split(
+            db,
+            snapshot=snapshot,
+            prepared=prepared,
+            actor_user_id=principal.user.id,
+        )
+        db.commit()
+        return ClassificationFeatureSplitCreateResponse(
+            snapshot=dataset_snapshot_read(snapshot),
+            materialized=True,
+        )
+    except ClassificationFeatureSplitError as exc:
+        db.rollback()
+        persisted = db.get(ClassificationDatasetSnapshot, snapshot_id)
+        if persisted is not None:
+            fail_dataset_snapshot(
+                persisted,
+                failure_code=exc.code,
+                failure_summary=str(exc),
+            )
+            db.commit()
+        raise dataset_error(exc) from exc
+    except Exception as exc:
+        db.rollback()
+        persisted = db.get(ClassificationDatasetSnapshot, snapshot_id)
+        if persisted is not None:
+            fail_dataset_snapshot(
+                persisted,
+                failure_code="FEATURE_SPLIT_MATERIALIZATION_FAILED",
+                failure_summary=str(exc),
+            )
+            db.commit()
+        raise HTTPException(
+            status_code=status.HTTP_502_BAD_GATEWAY,
+            detail="Classification feature and split materialization failed",
+        ) from exc
 
 
 @router.get(

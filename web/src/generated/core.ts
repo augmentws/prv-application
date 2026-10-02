@@ -39,6 +39,8 @@ import type {
   ClassificationDatasetSnapshotPreview,
   ClassificationDatasetSnapshotRead,
   ClassificationDatasetSnapshotRequest,
+  ClassificationFeatureSplitCreateResponse,
+  ClassificationFeatureSplitRequest,
   ClassificationModelCompatibilityRead,
   ClassificationModelConfigurationCreate,
   ClassificationModelConfigurationRead,
@@ -12981,6 +12983,75 @@ export const listClassificationDatasetSnapshotsV1MattersMatterIdClassificationMo
 
   const data: listClassificationDatasetSnapshotsV1MattersMatterIdClassificationModelsClassificationModelIdDatasetSnapshotsGetResponse['data'] = body ? JSON.parse(body) : {}
   return { data, status: res.status, headers: res.headers } as listClassificationDatasetSnapshotsV1MattersMatterIdClassificationModelsClassificationModelIdDatasetSnapshotsGetResponse
+}
+
+
+
+export type materializeClassificationFeaturesAndSplitsV1MattersMatterIdClassificationModelsClassificationModelIdDatasetSnapshotsSnapshotIdFeaturesAndSplitsPostResponse201 = {
+  data: ClassificationFeatureSplitCreateResponse
+  status: 201
+}
+
+export type materializeClassificationFeaturesAndSplitsV1MattersMatterIdClassificationModelsClassificationModelIdDatasetSnapshotsSnapshotIdFeaturesAndSplitsPostResponse422 = {
+  data: HTTPValidationError
+  status: 422
+}
+
+export type materializeClassificationFeaturesAndSplitsV1MattersMatterIdClassificationModelsClassificationModelIdDatasetSnapshotsSnapshotIdFeaturesAndSplitsPostResponseSuccess = (materializeClassificationFeaturesAndSplitsV1MattersMatterIdClassificationModelsClassificationModelIdDatasetSnapshotsSnapshotIdFeaturesAndSplitsPostResponse201) & {
+  headers: Headers;
+};
+export type materializeClassificationFeaturesAndSplitsV1MattersMatterIdClassificationModelsClassificationModelIdDatasetSnapshotsSnapshotIdFeaturesAndSplitsPostResponseError = (materializeClassificationFeaturesAndSplitsV1MattersMatterIdClassificationModelsClassificationModelIdDatasetSnapshotsSnapshotIdFeaturesAndSplitsPostResponse422) & {
+  headers: Headers;
+};
+
+export type materializeClassificationFeaturesAndSplitsV1MattersMatterIdClassificationModelsClassificationModelIdDatasetSnapshotsSnapshotIdFeaturesAndSplitsPostResponse = (materializeClassificationFeaturesAndSplitsV1MattersMatterIdClassificationModelsClassificationModelIdDatasetSnapshotsSnapshotIdFeaturesAndSplitsPostResponseSuccess | materializeClassificationFeaturesAndSplitsV1MattersMatterIdClassificationModelsClassificationModelIdDatasetSnapshotsSnapshotIdFeaturesAndSplitsPostResponseError)
+
+export const getMaterializeClassificationFeaturesAndSplitsV1MattersMatterIdClassificationModelsClassificationModelIdDatasetSnapshotsSnapshotIdFeaturesAndSplitsPostUrl = (matterId: string,
+    classificationModelId: string,
+    snapshotId: string,) => {
+
+
+
+
+  return `/api/core/v1/matters/${matterId}/classification-models/${classificationModelId}/dataset-snapshots/${snapshotId}/features-and-splits`
+}
+
+/**
+ * @summary Materialize Classification Features And Splits
+ */
+export const materializeClassificationFeaturesAndSplitsV1MattersMatterIdClassificationModelsClassificationModelIdDatasetSnapshotsSnapshotIdFeaturesAndSplitsPost = async (matterId: string,
+    classificationModelId: string,
+    snapshotId: string,
+    classificationFeatureSplitRequest: ClassificationFeatureSplitRequest, options?: RequestInit): Promise<materializeClassificationFeaturesAndSplitsV1MattersMatterIdClassificationModelsClassificationModelIdDatasetSnapshotsSnapshotIdFeaturesAndSplitsPostResponse> => {
+
+    const getHeaders = (h?: NonNullable<RequestInit['headers']>): Record<string, string | readonly string[]> => {
+    if (!h) return {};
+    if (h instanceof Headers) return Object.fromEntries(h.entries());
+    if (Symbol.iterator in h) {
+      return Object.fromEntries(
+        Array.from(h as Iterable<Iterable<string>>, (entry) => Array.from(entry) as [string, string]),
+      );
+    }
+    const headers: Record<string, string | readonly string[]> = {};
+    for (const [name, value] of Object.entries<string | readonly string[] | undefined>(h)) {
+      if (value !== undefined) headers[name] = value;
+    }
+    return headers;
+  };
+const res = await fetch(getMaterializeClassificationFeaturesAndSplitsV1MattersMatterIdClassificationModelsClassificationModelIdDatasetSnapshotsSnapshotIdFeaturesAndSplitsPostUrl(matterId,classificationModelId,snapshotId),
+  {
+    ...options,
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json', ...getHeaders(options?.headers) },
+    body: JSON.stringify(classificationFeatureSplitRequest)
+  }
+)
+
+
+  const body = [204, 205, 304].includes(res.status) ? null : await res.text();
+
+  const data: materializeClassificationFeaturesAndSplitsV1MattersMatterIdClassificationModelsClassificationModelIdDatasetSnapshotsSnapshotIdFeaturesAndSplitsPostResponse['data'] = body ? JSON.parse(body) : {}
+  return { data, status: res.status, headers: res.headers } as materializeClassificationFeaturesAndSplitsV1MattersMatterIdClassificationModelsClassificationModelIdDatasetSnapshotsSnapshotIdFeaturesAndSplitsPostResponse
 }
 
 

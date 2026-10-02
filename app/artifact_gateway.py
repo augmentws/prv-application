@@ -106,6 +106,14 @@ class CollectionItemGroupingSnapshot:
 
 
 @dataclass(frozen=True)
+class ChunkVectorArtifactSnapshot:
+    artifact_id: uuid.UUID
+    content_hash: str
+    content: bytes
+    metadata: dict[str, Any]
+
+
+@dataclass(frozen=True)
 class SearchTextArtifact:
     id: uuid.UUID
     role: str
@@ -1442,4 +1450,75 @@ def load_current_chunk_artifacts(
         chunk_response.raise_for_status()
         vector_response = client.get(f"/v1/artifacts/{vector['id']}/content", headers=headers)
         vector_response.raise_for_status()
-        return chunk_response.content, vector_response.content
+    return chunk_response.content, vector_response.content
+
+
+def load_current_chunk_vector_artifact(
+    *,
+    collection_item_id: uuid.UUID,
+    configuration_hash: str,
+    actor_user_id: uuid.UUID,
+    tenant_id: uuid.UUID,
+    client_id: uuid.UUID,
+) -> ChunkVectorArtifactSnapshot | None:
+    """Load one finalized vector set for an exact frozen embedding configuration."""
+
+    settings = get_settings()
+    if settings.artifact_mode == "embedded":
+        with ArtifactSessionLocal() as db:
+            rows = db.execute(
+                select(Artifact, CollectionItemArtifact)
+                .join(CollectionItemArtifact, CollectionItemArtifact.artifact_id == Artifact.id)
+                .where(
+                    CollectionItemArtifact.collection_item_id == collection_item_id,
+                    CollectionItemArtifact.artifact_role == "CHUNK_VECTOR_SET",
+                    Artifact.status == "FINALIZED",
+                )
+                .order_by(Artifact.created_at.desc())
+            ).all()
+            artifact = next(
+                (
+                    candidate
+                    for candidate, _ in rows
+                    if (candidate.artifact_metadata or {}).get("configuration_hash")
+                    == configuration_hash
+                ),
+                None,
+            )
+            if artifact is None:
+                return None
+            if artifact.tenant_id != tenant_id or artifact.client_id != client_id:
+                raise PermissionError("Artifact is not available to this matter")
+            blob = db.get(ContentBlob, artifact.content_blob_id)
+            if blob is None:
+                raise ValueError("Chunk vector set content is unavailable")
+            with get_storage().open(blob.bucket_name, blob.storage_key) as stream:
+                content = stream.read()
+            return ChunkVectorArtifactSnapshot(
+                artifact_id=artifact.id,
+                content_hash=artifact.content_hash,
+                content=content,
+                metadata=artifact.artifact_metadata or {},
+            )
+
+    headers = _headers(actor_user_id, tenant_id, client_id)
+    with httpx.Client(base_url=settings.artifact_base_url, timeout=120) as client:
+        response = client.get(f"/v1/collection-items/{collection_item_id}/artifacts", headers=headers)
+        response.raise_for_status()
+        vectors = [
+            artifact
+            for artifact in response.json()
+            if artifact.get("role") == "CHUNK_VECTOR_SET"
+            and (artifact.get("metadata") or {}).get("configuration_hash") == configuration_hash
+        ]
+        if not vectors:
+            return None
+        vector = vectors[0]
+        vector_response = client.get(f"/v1/artifacts/{vector['id']}/content", headers=headers)
+        vector_response.raise_for_status()
+        return ChunkVectorArtifactSnapshot(
+            artifact_id=uuid.UUID(vector["id"]),
+            content_hash=vector["sha256"],
+            content=vector_response.content,
+            metadata=vector.get("metadata") or {},
+        )

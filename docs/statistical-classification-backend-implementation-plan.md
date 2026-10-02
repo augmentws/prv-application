@@ -1,6 +1,6 @@
 # Statistical Classification Backend Implementation Plan
 
-Status: Phase 0, Phase 1, Phase 3, and Phase 4 implemented; Phase 2 remains deferred and Phase 5 is next
+Status: Phase 0, Phase 1, Phase 3, Phase 4, and Phase 5 implemented; Phase 2 is next because Phase 6 depends on its runtime boundary
 
 Related documents:
 
@@ -387,6 +387,17 @@ including exact provenance and raw source weights.
 
 ## 9. Phase 5: Feature and split snapshotting
 
+Implementation status: complete. An authorized matter administrator selects an
+exact completed matter-embedding job and materializes both artifacts through:
+
+```text
+POST /v1/matters/{matter_id}/classification-models/{model_id}/dataset-snapshots/{snapshot_id}/features-and-splits
+```
+
+The request pins the embedding job, validation policy, fold count, minimum
+support, and random seed. Ready snapshots are immutable and identical retries
+return the already-materialized artifacts.
+
 ### Goal
 
 Produce the deterministic model input matrix and group-aware folds.
@@ -410,6 +421,12 @@ Produce the deterministic model input matrix and group-aware folds.
 - Write immutable split assignments.
 - Normalize source weights to mean `1.0` within each training fold while
   retaining raw values.
+
+The implemented split schema includes a reserved `near_duplicate_group_id`.
+The current platform has no authoritative near-duplicate grouping source, so
+Phase 5 uses transitive family and exact-content groups and records the stable
+`NEAR_DUPLICATE_GROUPING_UNAVAILABLE` warning. Near-duplicate identities can be
+added later without changing the family/exact grouping semantics.
 
 ### Tests and exit criteria
 

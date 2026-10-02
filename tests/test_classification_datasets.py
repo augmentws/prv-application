@@ -4,6 +4,7 @@ import json
 import uuid
 from datetime import datetime, timezone
 
+import pyarrow as pa
 import pyarrow.parquet as pq
 from conftest import (
     ArtifactTestingSessionLocal,
@@ -13,12 +14,15 @@ from conftest import (
 from fastapi.testclient import TestClient
 from sqlalchemy import select
 
-from app.artifact_gateway import CollectionItemGroupingSnapshot
+from app.artifact_gateway import ChunkVectorArtifactSnapshot, CollectionItemGroupingSnapshot
+from app.embeddings.chunking import TextChunk
+from app.embeddings.parquet import write_vector_set
 from app.models import (
     AuditRecord,
     ClassificationDatasetSnapshot,
     MatterDocument,
     MatterDocumentImportJob,
+    MatterEmbeddingJob,
     ReviewBatch,
     ReviewBatchDocument,
     ReviewBatchRun,
@@ -661,3 +665,338 @@ def test_snapshot_rows_are_listed_and_scoped_to_model(
         stored = db.scalar(select(ClassificationDatasetSnapshot))
         assert stored is not None
         assert stored.population_content_hash == created.json()["snapshot"]["population_content_hash"]
+
+
+def create_completed_embedding_job(
+    *,
+    matter_id: str,
+    user_id: uuid.UUID,
+) -> MatterEmbeddingJob:
+    configuration_hash = hashlib.sha256(b"phase-5-embedding-configuration").hexdigest()
+    with TestingSessionLocal() as db:
+        job = MatterEmbeddingJob(
+            matter_id=uuid.UUID(matter_id),
+            status="COMPLETED",
+            workflow_id=f"classification-features:{uuid.uuid4()}",
+            configuration_hash=configuration_hash,
+            configuration={
+                "input": {"name": "subject-filename-body", "version": 1},
+                "chunking": {"name": "sentence-aware", "version": 1},
+                "embedding": {
+                    "provider": "test",
+                    "model": "voyageai/voyage-4-nano",
+                    "model_revision": "revision-1",
+                    "dimensions": 1024,
+                    "normalized": True,
+                },
+            },
+            embedding_model="voyageai/voyage-4-nano",
+            embedding_model_revision="revision-1",
+            embedding_dimensions=1024,
+            embedding_normalized=True,
+            total_count=0,
+            processed_count=0,
+            embedded_count=0,
+            skipped_count=0,
+            failed_count=0,
+            chunk_count=0,
+            created_by_user_id=user_id,
+            completed_at=datetime.now(timezone.utc),
+        )
+        db.add(job)
+        db.commit()
+        db.refresh(job)
+        return job
+
+
+def chunk_vector_snapshot(
+    *,
+    document_index: int,
+    configuration_hash: str,
+    dimensions: int = 1024,
+) -> ChunkVectorArtifactSnapshot:
+    chunks = [
+        TextChunk(
+            chunk_id=f"chunk-{document_index}-{ordinal}",
+            ordinal=ordinal,
+            char_start=ordinal * 10,
+            char_end=(ordinal + 1) * 10,
+            text=f"test chunk {ordinal}",
+        )
+        for ordinal in range(2)
+    ]
+    vectors = [[0.0] * dimensions for _ in chunks]
+    vectors[0][document_index % dimensions] = 1.0
+    vectors[1][(document_index + 1) % dimensions] = 1.0
+    content = write_vector_set(
+        chunks,
+        vectors,
+        dimensions=dimensions,
+        metadata={
+            "model": "voyageai/voyage-4-nano",
+            "configuration_hash": configuration_hash,
+        },
+    )
+    return ChunkVectorArtifactSnapshot(
+        artifact_id=uuid.uuid4(),
+        content_hash=hashlib.sha256(content).hexdigest(),
+        content=content,
+        metadata={"configuration_hash": configuration_hash},
+    )
+
+
+def test_feature_and_split_materialization_is_deterministic_and_group_aware(
+    client: TestClient,
+    root_token: str,
+    root_admin,
+    monkeypatch,
+) -> None:
+    matter = create_matter(client, root_token, root_admin.tenant_id, "Features")
+    definition = create_field(client, root_token, matter["id"], key="dataset_feature_target")
+    documents = add_documents(matter["id"], root_admin.id, 10)
+    configure_artifact_gateway(monkeypatch, documents)
+    for index, document in enumerate(documents):
+        set_matter_value(
+            client,
+            root_token,
+            matter_id=matter["id"],
+            document_id=document.id,
+            definition_id=definition["id"],
+            value="responsive" if index % 2 == 0 else "not_responsive",
+        )
+    _, human_run_id = create_review_source(
+        matter_id=matter["id"],
+        definition_id=definition["id"],
+        documents=documents,
+        user_id=root_admin.id,
+        values={
+            document.id: ["responsive" if index % 2 == 0 else "not_responsive"]
+            for index, document in enumerate(documents[:4])
+        },
+    )
+    model = create_model(client, root_token, matter["id"], definition["id"])
+    configuration = create_configuration(
+        client,
+        root_token,
+        matter["id"],
+        model["id"],
+        sources=[
+            {
+                "kind": "HUMAN_REVIEW",
+                "authority": "GOLD",
+                "source_weight": 1.0,
+                "source_reference_id": str(human_run_id),
+            },
+            {
+                "kind": "MATTER_ASSERTED",
+                "authority": "SILVER",
+                "source_weight": 0.5,
+            }
+        ],
+    )
+    base = f"/v1/matters/{matter['id']}/classification-models/{model['id']}/dataset-snapshots"
+    snapshot_response = client.post(
+        base,
+        headers=auth(root_token),
+        json=snapshot_request(configuration["id"], "MATTER", matter["id"]),
+    )
+    assert snapshot_response.status_code == 201, snapshot_response.text
+    snapshot = snapshot_response.json()["snapshot"]
+    job = create_completed_embedding_job(matter_id=matter["id"], user_id=root_admin.id)
+    vector_artifacts = {
+        document.collection_item_id: chunk_vector_snapshot(
+            document_index=index,
+            configuration_hash=job.configuration_hash,
+            dimensions=32 if index == 8 else 1024,
+        )
+        for index, document in enumerate(documents[:-1])
+    }
+    monkeypatch.setattr(
+        "app.classification_features.load_current_chunk_vector_artifact",
+        lambda collection_item_id, **_: vector_artifacts.get(collection_item_id),
+    )
+    endpoint = f"{base}/{snapshot['id']}/features-and-splits"
+    payload = {
+        "embedding_job_id": str(job.id),
+        "validation_policy": {
+            "fold_count": 2,
+            "minimum_labeled_count": 6,
+            "minimum_labeled_count_per_class": 1,
+        },
+        "random_seed": 1729,
+    }
+    materialized = client.post(endpoint, headers=auth(root_token), json=payload)
+    assert materialized.status_code == 201, materialized.text
+    result = materialized.json()
+    assert result["materialized"] is True
+    ready = result["snapshot"]
+    assert ready["status"] == "READY_FOR_TRAINING"
+    assert ready["feature_ready_count"] == 8
+    assert ready["feature_missing_count"] == 1
+    assert ready["feature_failed_count"] == 1
+    assert ready["training_eligible_count"] == 8
+    assert ready["feature_specification"]["embedding_job_id"] == str(job.id)
+    assert ready["split_specification"]["algorithm"]["version"] == 1
+    assert ready["training_aggregate_hash"]
+    assert {
+        warning["code"] for warning in ready["warnings"]
+    } >= {
+        "MISSING_FEATURES_EXCLUDED",
+        "FAILED_FEATURES_EXCLUDED",
+        "NEAR_DUPLICATE_GROUPING_UNAVAILABLE",
+    }
+
+    feature_rows = read_workflow_parquet(
+        client,
+        root_token,
+        ready["feature_artifact_id"],
+    )
+    assert [row["matter_document_id"] for row in feature_rows] == sorted(
+        row["matter_document_id"] for row in feature_rows
+    )
+    assert len(feature_rows[0]["embedding"]) == 1024
+    assert abs(sum(value * value for value in feature_rows[0]["embedding"]) - 1.0) < 1e-6
+    feature_content = client.get(
+        f"/v1/workflow-artifacts/{ready['feature_artifact_id']}/content",
+        headers=auth(root_token),
+    )
+    feature_table = pq.read_table(io.BytesIO(feature_content.content))
+    assert pa.types.is_float32(feature_table.schema.field("embedding").type.value_type)
+    assert {row["chunk_count"] for row in feature_rows if row["feature_status"] == "READY"} == {2}
+    features_by_document = {row["matter_document_id"]: row for row in feature_rows}
+    assert features_by_document[str(documents[8].id)]["feature_status"] == "FAILED"
+    assert features_by_document[str(documents[9].id)]["feature_status"] == "MISSING"
+
+    split_rows = read_workflow_parquet(
+        client,
+        root_token,
+        ready["split_artifact_id"],
+    )
+    splits_by_document = {row["matter_document_id"]: row for row in split_rows}
+    assert (
+        splits_by_document[str(documents[0].id)]["group_id"]
+        == splits_by_document[str(documents[1].id)]["group_id"]
+    )
+    assert (
+        splits_by_document[str(documents[0].id)]["fold_index"]
+        == splits_by_document[str(documents[1].id)]["fold_index"]
+    )
+    for fold in range(2):
+        training_rows = [
+            row
+            for row in split_rows
+            if row["normalized_training_weights"][fold] is not None
+        ]
+        training_weights = [row["normalized_training_weights"][fold] for row in training_rows]
+        assert abs(sum(training_weights) / len(training_weights) - 1.0) < 1e-12
+        normalization_ratios = {
+            round(row["normalized_training_weights"][fold] / row["source_weight"], 12)
+            for row in training_rows
+        }
+        assert len(normalization_ratios) == 1
+    assert {row["source_weight"] for row in split_rows if row["training_eligible"]} == {0.5, 1.0}
+    assert splits_by_document[str(documents[8].id)]["training_eligible"] is False
+    assert splits_by_document[str(documents[9].id)]["training_eligible"] is False
+
+    repeated = client.post(endpoint, headers=auth(root_token), json=payload)
+    assert repeated.status_code == 201, repeated.text
+    assert repeated.json()["materialized"] is False
+    assert repeated.json()["snapshot"]["feature_content_hash"] == ready["feature_content_hash"]
+    assert repeated.json()["snapshot"]["split_content_hash"] == ready["split_content_hash"]
+
+    with TestingSessionLocal() as db:
+        audit = db.scalar(
+            select(AuditRecord).where(
+                AuditRecord.action == "classification_dataset_snapshot.ready_for_training"
+            )
+        )
+        assert audit is not None
+        assert audit.details["training_aggregate_hash"] == ready["training_aggregate_hash"]
+
+
+def test_feature_split_rejects_class_confined_to_one_connected_group(
+    client: TestClient,
+    root_token: str,
+    root_admin,
+    monkeypatch,
+) -> None:
+    matter = create_matter(client, root_token, root_admin.tenant_id, "Split support")
+    definition = create_field(client, root_token, matter["id"], key="dataset_split_support")
+    documents = add_documents(matter["id"], root_admin.id, 6)
+    positive_family = uuid.uuid4()
+    grouping = {
+        document.collection_item_id: CollectionItemGroupingSnapshot(
+            item_id=document.collection_item_id,
+            family_id=positive_family if index < 3 else None,
+            record_type="EMAIL",
+            native_content_hash=hashlib.sha256(document.collection_item_id.bytes).hexdigest(),
+        )
+        for index, document in enumerate(documents)
+    }
+    monkeypatch.setattr("app.artifact_gateway.ArtifactSessionLocal", ArtifactTestingSessionLocal)
+    monkeypatch.setattr("app.artifact_gateway.get_storage", lambda: memory_storage)
+    monkeypatch.setattr(
+        "app.classification_datasets.get_collection_item_grouping_snapshots",
+        lambda **_: grouping,
+    )
+    for index, document in enumerate(documents):
+        set_matter_value(
+            client,
+            root_token,
+            matter_id=matter["id"],
+            document_id=document.id,
+            definition_id=definition["id"],
+            value="responsive" if index < 3 else "not_responsive",
+        )
+    model = create_model(client, root_token, matter["id"], definition["id"])
+    configuration = create_configuration(
+        client,
+        root_token,
+        matter["id"],
+        model["id"],
+        sources=[
+            {
+                "kind": "MATTER_ASSERTED",
+                "authority": "GOLD",
+                "source_weight": 1.0,
+            }
+        ],
+    )
+    base = f"/v1/matters/{matter['id']}/classification-models/{model['id']}/dataset-snapshots"
+    snapshot_response = client.post(
+        base,
+        headers=auth(root_token),
+        json=snapshot_request(configuration["id"], "MATTER", matter["id"]),
+    )
+    assert snapshot_response.status_code == 201, snapshot_response.text
+    snapshot = snapshot_response.json()["snapshot"]
+    job = create_completed_embedding_job(matter_id=matter["id"], user_id=root_admin.id)
+    vectors = {
+        document.collection_item_id: chunk_vector_snapshot(
+            document_index=index,
+            configuration_hash=job.configuration_hash,
+        )
+        for index, document in enumerate(documents)
+    }
+    monkeypatch.setattr(
+        "app.classification_features.load_current_chunk_vector_artifact",
+        lambda collection_item_id, **_: vectors[collection_item_id],
+    )
+    response = client.post(
+        f"{base}/{snapshot['id']}/features-and-splits",
+        headers=auth(root_token),
+        json={
+            "embedding_job_id": str(job.id),
+            "validation_policy": {
+                "fold_count": 2,
+                "minimum_labeled_count": 6,
+                "minimum_labeled_count_per_class": 1,
+            },
+            "random_seed": 42,
+        },
+    )
+    assert response.status_code == 409, response.text
+    read = client.get(f"{base}/{snapshot['id']}", headers=auth(root_token))
+    assert read.status_code == 200
+    assert read.json()["status"] == "FAILED"
+    assert read.json()["failure_code"] == "INSUFFICIENT_CLASS_SUPPORT_PER_FOLD"

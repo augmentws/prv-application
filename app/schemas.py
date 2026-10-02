@@ -28,6 +28,7 @@ from classification_service.schemas import (
     TargetMetadataType,
     TrainerSpecification,
     TrainingScopeSpecification,
+    ValidationPolicy,
 )
 
 ResourceStatus = Literal["ACTIVE", "SUSPENDED", "ARCHIVED"]
@@ -2466,6 +2467,14 @@ class ClassificationDatasetSnapshotRequest(BaseModel):
     training_scope: TrainingScopeSpecification
 
 
+class ClassificationFeatureSplitRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    embedding_job_id: uuid.UUID
+    validation_policy: ValidationPolicy = Field(default_factory=ValidationPolicy)
+    random_seed: int = Field(default=42, ge=0, le=2**32 - 1)
+
+
 class ClassificationDatasetIssue(BaseModel):
     code: str
     message: str
@@ -2524,9 +2533,13 @@ class ClassificationDatasetSnapshotRead(BaseModel):
     label_content_hash: Sha256 | None
     feature_artifact_id: uuid.UUID | None
     feature_content_hash: Sha256 | None
+    feature_specification: dict[str, Any] | None
     feature_specification_hash: Sha256 | None
     split_artifact_id: uuid.UUID | None
     split_content_hash: Sha256 | None
+    split_specification: dict[str, Any] | None
+    split_specification_hash: Sha256 | None
+    training_aggregate_hash: Sha256 | None
     aggregate_hash: Sha256
     status: Literal["BUILDING", "READY_FOR_FEATURES", "READY_FOR_TRAINING", "FAILED"]
     population_count: int
@@ -2537,6 +2550,10 @@ class ClassificationDatasetSnapshotRead(BaseModel):
     family_grouped_count: int
     exact_duplicate_grouped_count: int
     missing_grouping_count: int
+    feature_ready_count: int
+    feature_missing_count: int
+    feature_failed_count: int
+    training_eligible_count: int
     class_support: dict[str, int]
     source_summary: list[ClassificationLabelSourceSummary]
     warnings: list[ClassificationDatasetIssue]
@@ -2550,6 +2567,11 @@ class ClassificationDatasetSnapshotRead(BaseModel):
 class ClassificationDatasetSnapshotCreateResponse(BaseModel):
     snapshot: ClassificationDatasetSnapshotRead
     created: bool
+
+
+class ClassificationFeatureSplitCreateResponse(BaseModel):
+    snapshot: ClassificationDatasetSnapshotRead
+    materialized: bool
 
 
 class ErrorDetail(BaseModel):

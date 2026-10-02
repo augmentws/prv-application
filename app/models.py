@@ -1486,19 +1486,25 @@ class ClassificationDatasetSnapshot(Base):
             "population_count >= 0 AND labeled_count >= 0 AND unlabeled_count >= 0 "
             "AND excluded_count >= 0 AND conflicting_count >= 0 "
             "AND family_grouped_count >= 0 AND exact_duplicate_grouped_count >= 0 "
-            "AND missing_grouping_count >= 0",
+            "AND missing_grouping_count >= 0 AND feature_ready_count >= 0 "
+            "AND feature_missing_count >= 0 AND feature_failed_count >= 0 "
+            "AND training_eligible_count >= 0",
             name="ck_classification_dataset_snapshot_counts",
         ),
         CheckConstraint(
             "(feature_artifact_id IS NULL AND feature_content_hash IS NULL "
-            "AND feature_specification_hash IS NULL) OR "
+            "AND feature_specification IS NULL AND feature_specification_hash IS NULL) OR "
             "(feature_artifact_id IS NOT NULL AND feature_content_hash IS NOT NULL "
-            "AND feature_specification_hash IS NOT NULL)",
+            "AND feature_specification IS NOT NULL AND feature_specification_hash IS NOT NULL)",
             name="ck_classification_dataset_snapshot_feature_artifact",
         ),
         CheckConstraint(
-            "(split_artifact_id IS NULL AND split_content_hash IS NULL) OR "
-            "(split_artifact_id IS NOT NULL AND split_content_hash IS NOT NULL)",
+            "(split_artifact_id IS NULL AND split_content_hash IS NULL "
+            "AND split_specification IS NULL AND split_specification_hash IS NULL "
+            "AND training_aggregate_hash IS NULL) OR "
+            "(split_artifact_id IS NOT NULL AND split_content_hash IS NOT NULL "
+            "AND split_specification IS NOT NULL AND split_specification_hash IS NOT NULL "
+            "AND training_aggregate_hash IS NOT NULL)",
             name="ck_classification_dataset_snapshot_split_artifact",
         ),
         CheckConstraint(
@@ -1561,9 +1567,13 @@ class ClassificationDatasetSnapshot(Base):
     label_content_hash: Mapped[str | None] = mapped_column(String(64), nullable=True)
     feature_artifact_id: Mapped[uuid.UUID | None] = mapped_column(Uuid, nullable=True)
     feature_content_hash: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    feature_specification: Mapped[dict[str, Any] | None] = mapped_column(JSON_DOCUMENT, nullable=True)
     feature_specification_hash: Mapped[str | None] = mapped_column(String(64), nullable=True)
     split_artifact_id: Mapped[uuid.UUID | None] = mapped_column(Uuid, nullable=True)
     split_content_hash: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    split_specification: Mapped[dict[str, Any] | None] = mapped_column(JSON_DOCUMENT, nullable=True)
+    split_specification_hash: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    training_aggregate_hash: Mapped[str | None] = mapped_column(String(64), nullable=True)
     aggregate_hash: Mapped[str] = mapped_column(String(64), index=True)
     status: Mapped[str] = mapped_column(String(30), default="BUILDING", index=True)
     population_count: Mapped[int] = mapped_column(Integer, default=0)
@@ -1574,6 +1584,10 @@ class ClassificationDatasetSnapshot(Base):
     family_grouped_count: Mapped[int] = mapped_column(Integer, default=0)
     exact_duplicate_grouped_count: Mapped[int] = mapped_column(Integer, default=0)
     missing_grouping_count: Mapped[int] = mapped_column(Integer, default=0)
+    feature_ready_count: Mapped[int] = mapped_column(Integer, default=0)
+    feature_missing_count: Mapped[int] = mapped_column(Integer, default=0)
+    feature_failed_count: Mapped[int] = mapped_column(Integer, default=0)
+    training_eligible_count: Mapped[int] = mapped_column(Integer, default=0)
     class_support: Mapped[dict[str, Any]] = mapped_column(JSON_DOCUMENT, default=dict)
     source_summary: Mapped[list[dict[str, Any]]] = mapped_column(JSON_DOCUMENT, default=list)
     warnings: Mapped[list[dict[str, Any]]] = mapped_column(JSON_DOCUMENT, default=list)

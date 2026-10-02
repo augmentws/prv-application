@@ -13760,6 +13760,84 @@
         }
       }
     },
+    "/v1/matters/{matter_id}/classification-models/{classification_model_id}/dataset-snapshots/{snapshot_id}/features-and-splits": {
+      "post": {
+        "tags": [
+          "classification models"
+        ],
+        "summary": "Materialize Classification Features And Splits",
+        "operationId": "materialize_classification_features_and_splits_v1_matters__matter_id__classification_models__classification_model_id__dataset_snapshots__snapshot_id__features_and_splits_post",
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "matter_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid",
+              "title": "Matter Id"
+            }
+          },
+          {
+            "name": "classification_model_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid",
+              "title": "Classification Model Id"
+            }
+          },
+          {
+            "name": "snapshot_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid",
+              "title": "Snapshot Id"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ClassificationFeatureSplitRequest"
+              }
+            }
+          }
+        },
+        "responses": {
+          "201": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ClassificationFeatureSplitCreateResponse"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/v1/matters/{matter_id}/classification-models/{classification_model_id}/dataset-snapshots/{snapshot_id}": {
       "get": {
         "tags": [
@@ -16227,6 +16305,18 @@
             ],
             "title": "Feature Content Hash"
           },
+          "feature_specification": {
+            "anyOf": [
+              {
+                "additionalProperties": true,
+                "type": "object"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Feature Specification"
+          },
           "feature_specification_hash": {
             "anyOf": [
               {
@@ -16262,6 +16352,42 @@
               }
             ],
             "title": "Split Content Hash"
+          },
+          "split_specification": {
+            "anyOf": [
+              {
+                "additionalProperties": true,
+                "type": "object"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Split Specification"
+          },
+          "split_specification_hash": {
+            "anyOf": [
+              {
+                "type": "string",
+                "pattern": "^[0-9a-f]{64}$"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Split Specification Hash"
+          },
+          "training_aggregate_hash": {
+            "anyOf": [
+              {
+                "type": "string",
+                "pattern": "^[0-9a-f]{64}$"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Training Aggregate Hash"
           },
           "aggregate_hash": {
             "type": "string",
@@ -16309,6 +16435,22 @@
           "missing_grouping_count": {
             "type": "integer",
             "title": "Missing Grouping Count"
+          },
+          "feature_ready_count": {
+            "type": "integer",
+            "title": "Feature Ready Count"
+          },
+          "feature_missing_count": {
+            "type": "integer",
+            "title": "Feature Missing Count"
+          },
+          "feature_failed_count": {
+            "type": "integer",
+            "title": "Feature Failed Count"
+          },
+          "training_eligible_count": {
+            "type": "integer",
+            "title": "Training Eligible Count"
           },
           "class_support": {
             "additionalProperties": {
@@ -16393,9 +16535,13 @@
           "label_content_hash",
           "feature_artifact_id",
           "feature_content_hash",
+          "feature_specification",
           "feature_specification_hash",
           "split_artifact_id",
           "split_content_hash",
+          "split_specification",
+          "split_specification_hash",
+          "training_aggregate_hash",
           "aggregate_hash",
           "status",
           "population_count",
@@ -16406,6 +16552,10 @@
           "family_grouped_count",
           "exact_duplicate_grouped_count",
           "missing_grouping_count",
+          "feature_ready_count",
+          "feature_missing_count",
+          "feature_failed_count",
+          "training_eligible_count",
           "class_support",
           "source_summary",
           "warnings",
@@ -16441,6 +16591,48 @@
           "training_scope"
         ],
         "title": "ClassificationDatasetSnapshotRequest"
+      },
+      "ClassificationFeatureSplitCreateResponse": {
+        "properties": {
+          "snapshot": {
+            "$ref": "#/components/schemas/ClassificationDatasetSnapshotRead"
+          },
+          "materialized": {
+            "type": "boolean",
+            "title": "Materialized"
+          }
+        },
+        "type": "object",
+        "required": [
+          "snapshot",
+          "materialized"
+        ],
+        "title": "ClassificationFeatureSplitCreateResponse"
+      },
+      "ClassificationFeatureSplitRequest": {
+        "properties": {
+          "embedding_job_id": {
+            "type": "string",
+            "format": "uuid",
+            "title": "Embedding Job Id"
+          },
+          "validation_policy": {
+            "$ref": "#/components/schemas/ValidationPolicy"
+          },
+          "random_seed": {
+            "type": "integer",
+            "maximum": 4294967295.0,
+            "minimum": 0.0,
+            "title": "Random Seed",
+            "default": 42
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "embedding_job_id"
+        ],
+        "title": "ClassificationFeatureSplitRequest"
       },
       "ClassificationLabelSourceSummary": {
         "properties": {
@@ -29421,6 +29613,38 @@
           "type"
         ],
         "title": "ValidationError"
+      },
+      "ValidationPolicy": {
+        "properties": {
+          "contract_version": {
+            "type": "integer",
+            "const": 1,
+            "title": "Contract Version",
+            "default": 1
+          },
+          "fold_count": {
+            "type": "integer",
+            "maximum": 20.0,
+            "minimum": 2.0,
+            "title": "Fold Count",
+            "default": 5
+          },
+          "minimum_labeled_count": {
+            "type": "integer",
+            "minimum": 2.0,
+            "title": "Minimum Labeled Count",
+            "default": 20
+          },
+          "minimum_labeled_count_per_class": {
+            "type": "integer",
+            "minimum": 1.0,
+            "title": "Minimum Labeled Count Per Class",
+            "default": 5
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "title": "ValidationPolicy"
       },
       "WorkflowArtifactLineageRead": {
         "properties": {

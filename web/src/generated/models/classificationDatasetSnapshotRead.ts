@@ -7,6 +7,8 @@
  */
 import type { ClassificationDatasetIssue } from './classificationDatasetIssue';
 import type { ClassificationDatasetSnapshotReadClassSupport } from './classificationDatasetSnapshotReadClassSupport';
+import type { ClassificationDatasetSnapshotReadFeatureSpecification } from './classificationDatasetSnapshotReadFeatureSpecification';
+import type { ClassificationDatasetSnapshotReadSplitSpecification } from './classificationDatasetSnapshotReadSplitSpecification';
 import type { ClassificationDatasetSnapshotReadStatus } from './classificationDatasetSnapshotReadStatus';
 import type { ClassificationLabelSourceSummary } from './classificationLabelSourceSummary';
 import type { LabelPolicy } from './labelPolicy';
@@ -29,9 +31,13 @@ export interface ClassificationDatasetSnapshotRead {
   label_content_hash: string | null;
   feature_artifact_id: string | null;
   feature_content_hash: string | null;
+  feature_specification: ClassificationDatasetSnapshotReadFeatureSpecification;
   feature_specification_hash: string | null;
   split_artifact_id: string | null;
   split_content_hash: string | null;
+  split_specification: ClassificationDatasetSnapshotReadSplitSpecification;
+  split_specification_hash: string | null;
+  training_aggregate_hash: string | null;
   /** @pattern ^[0-9a-f]{64}$ */
   aggregate_hash: string;
   status: ClassificationDatasetSnapshotReadStatus;
@@ -43,6 +49,10 @@ export interface ClassificationDatasetSnapshotRead {
   family_grouped_count: number;
   exact_duplicate_grouped_count: number;
   missing_grouping_count: number;
+  feature_ready_count: number;
+  feature_missing_count: number;
+  feature_failed_count: number;
+  training_eligible_count: number;
   class_support: ClassificationDatasetSnapshotReadClassSupport;
   source_summary: ClassificationLabelSourceSummary[];
   warnings: ClassificationDatasetIssue[];
