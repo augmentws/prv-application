@@ -33,6 +33,7 @@ def main() -> None:
         analysis_task_compilation,
         analysis_task_playground,
         bulk_tags,
+        classification_lifecycle,
         classification_models,
         collection_deletion,
         collection_text_processing,

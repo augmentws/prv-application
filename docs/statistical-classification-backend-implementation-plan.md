@@ -689,6 +689,7 @@ POST /v1/matters/{matter_id}/classification-models/{model_id}/activation
 POST /v1/matters/{matter_id}/classification-models/{model_id}/rollback/preview
 POST /v1/matters/{matter_id}/classification-models/{model_id}/rollback
 POST /v1/matters/{matter_id}/classification-models/{model_id}/versions/{version_id}/retire
+GET  /v1/matters/{matter_id}/classification-models/{model_id}/decisions
 ```
 
 ### Tests and exit criteria
@@ -699,6 +700,17 @@ field deactivation.
 
 Exit when Core can always identify the exact active version and reconstruct
 every activation interval from append-only decisions.
+
+Implementation status: complete. Candidate approval and rejection require an
+audited reason and persist immutable policy, evaluation, metric, and
+authorization snapshots. Signed activation and rollback previews bind the
+target version, current active pointer, classifier row version, compatibility
+results, and evidence snapshot. `classification_model_promote_v1` reauthorizes
+the requesting administrator and atomically appends the decision while moving
+the active pointer. The version remains `APPROVED`; active state exists only on
+the classifier. Rollback is limited to a previously active compatible version,
+and retirement rejects the active version. Until scoring references are added
+in Phase 9, the active pointer is the only implemented retention blocker.
 
 ## 13. Phase 9: Durable batch scoring
 

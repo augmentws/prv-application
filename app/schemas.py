@@ -2660,6 +2660,91 @@ class ClassificationModelVersionRead(BaseModel):
     created_by_user_id: uuid.UUID
 
 
+ClassificationModelDecisionType = Literal[
+    "APPROVAL",
+    "REJECTION",
+    "ACTIVATION",
+    "ROLLBACK",
+    "RETIREMENT",
+]
+ClassificationPromotionAction = Literal["ACTIVATION", "ROLLBACK"]
+
+
+class ClassificationModelDecisionCreate(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    reason: str = Field(min_length=1, max_length=4000)
+
+    @field_validator("reason")
+    @classmethod
+    def normalize_reason(cls, value: str) -> str:
+        normalized = " ".join(value.split())
+        if not normalized:
+            raise ValueError("Decision reason is required")
+        return normalized
+
+
+class ClassificationModelDecisionRead(BaseModel):
+    id: uuid.UUID
+    tenant_id: uuid.UUID
+    matter_id: uuid.UUID
+    classification_model_id: uuid.UUID
+    model_version_id: uuid.UUID
+    decision_type: ClassificationModelDecisionType
+    workflow_id: str | None
+    reason: str
+    policy_snapshot: dict[str, Any]
+    metric_snapshot: dict[str, Any]
+    before_active_model_version_id: uuid.UUID | None
+    after_active_model_version_id: uuid.UUID | None
+    authorization_context: dict[str, Any]
+    actor_user_id: uuid.UUID
+    created_at: datetime
+
+
+class ClassificationPromotionPreviewRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    model_version_id: uuid.UUID
+
+
+class ClassificationPromotionPreview(BaseModel):
+    action: ClassificationPromotionAction
+    classification_model_id: uuid.UUID
+    model_version: ClassificationModelVersionRead
+    current_active_model_version_id: uuid.UUID | None
+    expected_model_row_version: int
+    preview_token: str
+    can_promote: bool
+    blocking_reasons: list[str]
+    policy_snapshot: dict[str, Any]
+    metric_snapshot: dict[str, Any]
+
+
+class ClassificationPromotionCreate(ClassificationPromotionPreviewRequest):
+    expected_model_row_version: int = Field(ge=1)
+    preview_token: str = Field(min_length=64, max_length=64)
+    reason: str = Field(min_length=1, max_length=4000)
+
+    @field_validator("reason")
+    @classmethod
+    def normalize_reason(cls, value: str) -> str:
+        normalized = " ".join(value.split())
+        if not normalized:
+            raise ValueError("Promotion reason is required")
+        return normalized
+
+
+class ClassificationPromotionResponse(BaseModel):
+    action: ClassificationPromotionAction
+    workflow_id: str
+    status: Literal["QUEUED", "COMPLETED"]
+    classification_model_id: uuid.UUID
+    model_version_id: uuid.UUID
+    decision: ClassificationModelDecisionRead | None = None
+    model: ClassificationModelRead | None = None
+
+
 class ClassificationTrainingRunRead(BaseModel):
     id: uuid.UUID
     tenant_id: uuid.UUID

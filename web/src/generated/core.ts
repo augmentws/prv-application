@@ -49,7 +49,14 @@ import type {
   ClassificationModelConfigurationCreate,
   ClassificationModelConfigurationRead,
   ClassificationModelCreate,
+  ClassificationModelDecisionCreate,
+  ClassificationModelDecisionRead,
   ClassificationModelRead,
+  ClassificationModelVersionRead,
+  ClassificationPromotionCreate,
+  ClassificationPromotionPreview,
+  ClassificationPromotionPreviewRequest,
+  ClassificationPromotionResponse,
   ClassificationTrainingRunRead,
   ClientCreate,
   ClientRead,
@@ -13513,6 +13520,639 @@ export const reconcileClassificationModelBuildV1MattersMatterIdClassificationMod
 
   const data: reconcileClassificationModelBuildV1MattersMatterIdClassificationModelsClassificationModelIdBuildsTrainingRunIdReconcilePostResponse['data'] = body ? JSON.parse(body) : {}
   return { data, status: res.status, headers: res.headers } as reconcileClassificationModelBuildV1MattersMatterIdClassificationModelsClassificationModelIdBuildsTrainingRunIdReconcilePostResponse
+}
+
+
+
+export type listClassificationModelVersionsV1MattersMatterIdClassificationModelsClassificationModelIdVersionsGetResponse200 = {
+  data: ClassificationModelVersionRead[]
+  status: 200
+}
+
+export type listClassificationModelVersionsV1MattersMatterIdClassificationModelsClassificationModelIdVersionsGetResponse422 = {
+  data: HTTPValidationError
+  status: 422
+}
+
+export type listClassificationModelVersionsV1MattersMatterIdClassificationModelsClassificationModelIdVersionsGetResponseSuccess = (listClassificationModelVersionsV1MattersMatterIdClassificationModelsClassificationModelIdVersionsGetResponse200) & {
+  headers: Headers;
+};
+export type listClassificationModelVersionsV1MattersMatterIdClassificationModelsClassificationModelIdVersionsGetResponseError = (listClassificationModelVersionsV1MattersMatterIdClassificationModelsClassificationModelIdVersionsGetResponse422) & {
+  headers: Headers;
+};
+
+export type listClassificationModelVersionsV1MattersMatterIdClassificationModelsClassificationModelIdVersionsGetResponse = (listClassificationModelVersionsV1MattersMatterIdClassificationModelsClassificationModelIdVersionsGetResponseSuccess | listClassificationModelVersionsV1MattersMatterIdClassificationModelsClassificationModelIdVersionsGetResponseError)
+
+export const getListClassificationModelVersionsV1MattersMatterIdClassificationModelsClassificationModelIdVersionsGetUrl = (matterId: string,
+    classificationModelId: string,) => {
+
+
+
+
+  return `/api/core/v1/matters/${matterId}/classification-models/${classificationModelId}/versions`
+}
+
+/**
+ * @summary List Classification Model Versions
+ */
+export const listClassificationModelVersionsV1MattersMatterIdClassificationModelsClassificationModelIdVersionsGet = async (matterId: string,
+    classificationModelId: string, options?: RequestInit): Promise<listClassificationModelVersionsV1MattersMatterIdClassificationModelsClassificationModelIdVersionsGetResponse> => {
+
+  const res = await fetch(getListClassificationModelVersionsV1MattersMatterIdClassificationModelsClassificationModelIdVersionsGetUrl(matterId,classificationModelId),
+  {
+    ...options,
+    method: 'GET'
+
+
+  }
+)
+
+
+  const body = [204, 205, 304].includes(res.status) ? null : await res.text();
+
+  const data: listClassificationModelVersionsV1MattersMatterIdClassificationModelsClassificationModelIdVersionsGetResponse['data'] = body ? JSON.parse(body) : {}
+  return { data, status: res.status, headers: res.headers } as listClassificationModelVersionsV1MattersMatterIdClassificationModelsClassificationModelIdVersionsGetResponse
+}
+
+
+
+export type readClassificationModelVersionV1MattersMatterIdClassificationModelsClassificationModelIdVersionsModelVersionIdGetResponse200 = {
+  data: ClassificationModelVersionRead
+  status: 200
+}
+
+export type readClassificationModelVersionV1MattersMatterIdClassificationModelsClassificationModelIdVersionsModelVersionIdGetResponse422 = {
+  data: HTTPValidationError
+  status: 422
+}
+
+export type readClassificationModelVersionV1MattersMatterIdClassificationModelsClassificationModelIdVersionsModelVersionIdGetResponseSuccess = (readClassificationModelVersionV1MattersMatterIdClassificationModelsClassificationModelIdVersionsModelVersionIdGetResponse200) & {
+  headers: Headers;
+};
+export type readClassificationModelVersionV1MattersMatterIdClassificationModelsClassificationModelIdVersionsModelVersionIdGetResponseError = (readClassificationModelVersionV1MattersMatterIdClassificationModelsClassificationModelIdVersionsModelVersionIdGetResponse422) & {
+  headers: Headers;
+};
+
+export type readClassificationModelVersionV1MattersMatterIdClassificationModelsClassificationModelIdVersionsModelVersionIdGetResponse = (readClassificationModelVersionV1MattersMatterIdClassificationModelsClassificationModelIdVersionsModelVersionIdGetResponseSuccess | readClassificationModelVersionV1MattersMatterIdClassificationModelsClassificationModelIdVersionsModelVersionIdGetResponseError)
+
+export const getReadClassificationModelVersionV1MattersMatterIdClassificationModelsClassificationModelIdVersionsModelVersionIdGetUrl = (matterId: string,
+    classificationModelId: string,
+    modelVersionId: string,) => {
+
+
+
+
+  return `/api/core/v1/matters/${matterId}/classification-models/${classificationModelId}/versions/${modelVersionId}`
+}
+
+/**
+ * @summary Read Classification Model Version
+ */
+export const readClassificationModelVersionV1MattersMatterIdClassificationModelsClassificationModelIdVersionsModelVersionIdGet = async (matterId: string,
+    classificationModelId: string,
+    modelVersionId: string, options?: RequestInit): Promise<readClassificationModelVersionV1MattersMatterIdClassificationModelsClassificationModelIdVersionsModelVersionIdGetResponse> => {
+
+  const res = await fetch(getReadClassificationModelVersionV1MattersMatterIdClassificationModelsClassificationModelIdVersionsModelVersionIdGetUrl(matterId,classificationModelId,modelVersionId),
+  {
+    ...options,
+    method: 'GET'
+
+
+  }
+)
+
+
+  const body = [204, 205, 304].includes(res.status) ? null : await res.text();
+
+  const data: readClassificationModelVersionV1MattersMatterIdClassificationModelsClassificationModelIdVersionsModelVersionIdGetResponse['data'] = body ? JSON.parse(body) : {}
+  return { data, status: res.status, headers: res.headers } as readClassificationModelVersionV1MattersMatterIdClassificationModelsClassificationModelIdVersionsModelVersionIdGetResponse
+}
+
+
+
+export type approveClassificationModelVersionV1MattersMatterIdClassificationModelsClassificationModelIdVersionsModelVersionIdApprovePostResponse201 = {
+  data: ClassificationModelDecisionRead
+  status: 201
+}
+
+export type approveClassificationModelVersionV1MattersMatterIdClassificationModelsClassificationModelIdVersionsModelVersionIdApprovePostResponse422 = {
+  data: HTTPValidationError
+  status: 422
+}
+
+export type approveClassificationModelVersionV1MattersMatterIdClassificationModelsClassificationModelIdVersionsModelVersionIdApprovePostResponseSuccess = (approveClassificationModelVersionV1MattersMatterIdClassificationModelsClassificationModelIdVersionsModelVersionIdApprovePostResponse201) & {
+  headers: Headers;
+};
+export type approveClassificationModelVersionV1MattersMatterIdClassificationModelsClassificationModelIdVersionsModelVersionIdApprovePostResponseError = (approveClassificationModelVersionV1MattersMatterIdClassificationModelsClassificationModelIdVersionsModelVersionIdApprovePostResponse422) & {
+  headers: Headers;
+};
+
+export type approveClassificationModelVersionV1MattersMatterIdClassificationModelsClassificationModelIdVersionsModelVersionIdApprovePostResponse = (approveClassificationModelVersionV1MattersMatterIdClassificationModelsClassificationModelIdVersionsModelVersionIdApprovePostResponseSuccess | approveClassificationModelVersionV1MattersMatterIdClassificationModelsClassificationModelIdVersionsModelVersionIdApprovePostResponseError)
+
+export const getApproveClassificationModelVersionV1MattersMatterIdClassificationModelsClassificationModelIdVersionsModelVersionIdApprovePostUrl = (matterId: string,
+    classificationModelId: string,
+    modelVersionId: string,) => {
+
+
+
+
+  return `/api/core/v1/matters/${matterId}/classification-models/${classificationModelId}/versions/${modelVersionId}/approve`
+}
+
+/**
+ * @summary Approve Classification Model Version
+ */
+export const approveClassificationModelVersionV1MattersMatterIdClassificationModelsClassificationModelIdVersionsModelVersionIdApprovePost = async (matterId: string,
+    classificationModelId: string,
+    modelVersionId: string,
+    classificationModelDecisionCreate: ClassificationModelDecisionCreate, options?: RequestInit): Promise<approveClassificationModelVersionV1MattersMatterIdClassificationModelsClassificationModelIdVersionsModelVersionIdApprovePostResponse> => {
+
+    const getHeaders = (h?: NonNullable<RequestInit['headers']>): Record<string, string | readonly string[]> => {
+    if (!h) return {};
+    if (h instanceof Headers) return Object.fromEntries(h.entries());
+    if (Symbol.iterator in h) {
+      return Object.fromEntries(
+        Array.from(h as Iterable<Iterable<string>>, (entry) => Array.from(entry) as [string, string]),
+      );
+    }
+    const headers: Record<string, string | readonly string[]> = {};
+    for (const [name, value] of Object.entries<string | readonly string[] | undefined>(h)) {
+      if (value !== undefined) headers[name] = value;
+    }
+    return headers;
+  };
+const res = await fetch(getApproveClassificationModelVersionV1MattersMatterIdClassificationModelsClassificationModelIdVersionsModelVersionIdApprovePostUrl(matterId,classificationModelId,modelVersionId),
+  {
+    ...options,
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json', ...getHeaders(options?.headers) },
+    body: JSON.stringify(classificationModelDecisionCreate)
+  }
+)
+
+
+  const body = [204, 205, 304].includes(res.status) ? null : await res.text();
+
+  const data: approveClassificationModelVersionV1MattersMatterIdClassificationModelsClassificationModelIdVersionsModelVersionIdApprovePostResponse['data'] = body ? JSON.parse(body) : {}
+  return { data, status: res.status, headers: res.headers } as approveClassificationModelVersionV1MattersMatterIdClassificationModelsClassificationModelIdVersionsModelVersionIdApprovePostResponse
+}
+
+
+
+export type rejectClassificationModelVersionV1MattersMatterIdClassificationModelsClassificationModelIdVersionsModelVersionIdRejectPostResponse201 = {
+  data: ClassificationModelDecisionRead
+  status: 201
+}
+
+export type rejectClassificationModelVersionV1MattersMatterIdClassificationModelsClassificationModelIdVersionsModelVersionIdRejectPostResponse422 = {
+  data: HTTPValidationError
+  status: 422
+}
+
+export type rejectClassificationModelVersionV1MattersMatterIdClassificationModelsClassificationModelIdVersionsModelVersionIdRejectPostResponseSuccess = (rejectClassificationModelVersionV1MattersMatterIdClassificationModelsClassificationModelIdVersionsModelVersionIdRejectPostResponse201) & {
+  headers: Headers;
+};
+export type rejectClassificationModelVersionV1MattersMatterIdClassificationModelsClassificationModelIdVersionsModelVersionIdRejectPostResponseError = (rejectClassificationModelVersionV1MattersMatterIdClassificationModelsClassificationModelIdVersionsModelVersionIdRejectPostResponse422) & {
+  headers: Headers;
+};
+
+export type rejectClassificationModelVersionV1MattersMatterIdClassificationModelsClassificationModelIdVersionsModelVersionIdRejectPostResponse = (rejectClassificationModelVersionV1MattersMatterIdClassificationModelsClassificationModelIdVersionsModelVersionIdRejectPostResponseSuccess | rejectClassificationModelVersionV1MattersMatterIdClassificationModelsClassificationModelIdVersionsModelVersionIdRejectPostResponseError)
+
+export const getRejectClassificationModelVersionV1MattersMatterIdClassificationModelsClassificationModelIdVersionsModelVersionIdRejectPostUrl = (matterId: string,
+    classificationModelId: string,
+    modelVersionId: string,) => {
+
+
+
+
+  return `/api/core/v1/matters/${matterId}/classification-models/${classificationModelId}/versions/${modelVersionId}/reject`
+}
+
+/**
+ * @summary Reject Classification Model Version
+ */
+export const rejectClassificationModelVersionV1MattersMatterIdClassificationModelsClassificationModelIdVersionsModelVersionIdRejectPost = async (matterId: string,
+    classificationModelId: string,
+    modelVersionId: string,
+    classificationModelDecisionCreate: ClassificationModelDecisionCreate, options?: RequestInit): Promise<rejectClassificationModelVersionV1MattersMatterIdClassificationModelsClassificationModelIdVersionsModelVersionIdRejectPostResponse> => {
+
+    const getHeaders = (h?: NonNullable<RequestInit['headers']>): Record<string, string | readonly string[]> => {
+    if (!h) return {};
+    if (h instanceof Headers) return Object.fromEntries(h.entries());
+    if (Symbol.iterator in h) {
+      return Object.fromEntries(
+        Array.from(h as Iterable<Iterable<string>>, (entry) => Array.from(entry) as [string, string]),
+      );
+    }
+    const headers: Record<string, string | readonly string[]> = {};
+    for (const [name, value] of Object.entries<string | readonly string[] | undefined>(h)) {
+      if (value !== undefined) headers[name] = value;
+    }
+    return headers;
+  };
+const res = await fetch(getRejectClassificationModelVersionV1MattersMatterIdClassificationModelsClassificationModelIdVersionsModelVersionIdRejectPostUrl(matterId,classificationModelId,modelVersionId),
+  {
+    ...options,
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json', ...getHeaders(options?.headers) },
+    body: JSON.stringify(classificationModelDecisionCreate)
+  }
+)
+
+
+  const body = [204, 205, 304].includes(res.status) ? null : await res.text();
+
+  const data: rejectClassificationModelVersionV1MattersMatterIdClassificationModelsClassificationModelIdVersionsModelVersionIdRejectPostResponse['data'] = body ? JSON.parse(body) : {}
+  return { data, status: res.status, headers: res.headers } as rejectClassificationModelVersionV1MattersMatterIdClassificationModelsClassificationModelIdVersionsModelVersionIdRejectPostResponse
+}
+
+
+
+export type previewClassificationModelActivationV1MattersMatterIdClassificationModelsClassificationModelIdActivationPreviewPostResponse200 = {
+  data: ClassificationPromotionPreview
+  status: 200
+}
+
+export type previewClassificationModelActivationV1MattersMatterIdClassificationModelsClassificationModelIdActivationPreviewPostResponse422 = {
+  data: HTTPValidationError
+  status: 422
+}
+
+export type previewClassificationModelActivationV1MattersMatterIdClassificationModelsClassificationModelIdActivationPreviewPostResponseSuccess = (previewClassificationModelActivationV1MattersMatterIdClassificationModelsClassificationModelIdActivationPreviewPostResponse200) & {
+  headers: Headers;
+};
+export type previewClassificationModelActivationV1MattersMatterIdClassificationModelsClassificationModelIdActivationPreviewPostResponseError = (previewClassificationModelActivationV1MattersMatterIdClassificationModelsClassificationModelIdActivationPreviewPostResponse422) & {
+  headers: Headers;
+};
+
+export type previewClassificationModelActivationV1MattersMatterIdClassificationModelsClassificationModelIdActivationPreviewPostResponse = (previewClassificationModelActivationV1MattersMatterIdClassificationModelsClassificationModelIdActivationPreviewPostResponseSuccess | previewClassificationModelActivationV1MattersMatterIdClassificationModelsClassificationModelIdActivationPreviewPostResponseError)
+
+export const getPreviewClassificationModelActivationV1MattersMatterIdClassificationModelsClassificationModelIdActivationPreviewPostUrl = (matterId: string,
+    classificationModelId: string,) => {
+
+
+
+
+  return `/api/core/v1/matters/${matterId}/classification-models/${classificationModelId}/activation/preview`
+}
+
+/**
+ * @summary Preview Classification Model Activation
+ */
+export const previewClassificationModelActivationV1MattersMatterIdClassificationModelsClassificationModelIdActivationPreviewPost = async (matterId: string,
+    classificationModelId: string,
+    classificationPromotionPreviewRequest: ClassificationPromotionPreviewRequest, options?: RequestInit): Promise<previewClassificationModelActivationV1MattersMatterIdClassificationModelsClassificationModelIdActivationPreviewPostResponse> => {
+
+    const getHeaders = (h?: NonNullable<RequestInit['headers']>): Record<string, string | readonly string[]> => {
+    if (!h) return {};
+    if (h instanceof Headers) return Object.fromEntries(h.entries());
+    if (Symbol.iterator in h) {
+      return Object.fromEntries(
+        Array.from(h as Iterable<Iterable<string>>, (entry) => Array.from(entry) as [string, string]),
+      );
+    }
+    const headers: Record<string, string | readonly string[]> = {};
+    for (const [name, value] of Object.entries<string | readonly string[] | undefined>(h)) {
+      if (value !== undefined) headers[name] = value;
+    }
+    return headers;
+  };
+const res = await fetch(getPreviewClassificationModelActivationV1MattersMatterIdClassificationModelsClassificationModelIdActivationPreviewPostUrl(matterId,classificationModelId),
+  {
+    ...options,
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json', ...getHeaders(options?.headers) },
+    body: JSON.stringify(classificationPromotionPreviewRequest)
+  }
+)
+
+
+  const body = [204, 205, 304].includes(res.status) ? null : await res.text();
+
+  const data: previewClassificationModelActivationV1MattersMatterIdClassificationModelsClassificationModelIdActivationPreviewPostResponse['data'] = body ? JSON.parse(body) : {}
+  return { data, status: res.status, headers: res.headers } as previewClassificationModelActivationV1MattersMatterIdClassificationModelsClassificationModelIdActivationPreviewPostResponse
+}
+
+
+
+export type previewClassificationModelRollbackV1MattersMatterIdClassificationModelsClassificationModelIdRollbackPreviewPostResponse200 = {
+  data: ClassificationPromotionPreview
+  status: 200
+}
+
+export type previewClassificationModelRollbackV1MattersMatterIdClassificationModelsClassificationModelIdRollbackPreviewPostResponse422 = {
+  data: HTTPValidationError
+  status: 422
+}
+
+export type previewClassificationModelRollbackV1MattersMatterIdClassificationModelsClassificationModelIdRollbackPreviewPostResponseSuccess = (previewClassificationModelRollbackV1MattersMatterIdClassificationModelsClassificationModelIdRollbackPreviewPostResponse200) & {
+  headers: Headers;
+};
+export type previewClassificationModelRollbackV1MattersMatterIdClassificationModelsClassificationModelIdRollbackPreviewPostResponseError = (previewClassificationModelRollbackV1MattersMatterIdClassificationModelsClassificationModelIdRollbackPreviewPostResponse422) & {
+  headers: Headers;
+};
+
+export type previewClassificationModelRollbackV1MattersMatterIdClassificationModelsClassificationModelIdRollbackPreviewPostResponse = (previewClassificationModelRollbackV1MattersMatterIdClassificationModelsClassificationModelIdRollbackPreviewPostResponseSuccess | previewClassificationModelRollbackV1MattersMatterIdClassificationModelsClassificationModelIdRollbackPreviewPostResponseError)
+
+export const getPreviewClassificationModelRollbackV1MattersMatterIdClassificationModelsClassificationModelIdRollbackPreviewPostUrl = (matterId: string,
+    classificationModelId: string,) => {
+
+
+
+
+  return `/api/core/v1/matters/${matterId}/classification-models/${classificationModelId}/rollback/preview`
+}
+
+/**
+ * @summary Preview Classification Model Rollback
+ */
+export const previewClassificationModelRollbackV1MattersMatterIdClassificationModelsClassificationModelIdRollbackPreviewPost = async (matterId: string,
+    classificationModelId: string,
+    classificationPromotionPreviewRequest: ClassificationPromotionPreviewRequest, options?: RequestInit): Promise<previewClassificationModelRollbackV1MattersMatterIdClassificationModelsClassificationModelIdRollbackPreviewPostResponse> => {
+
+    const getHeaders = (h?: NonNullable<RequestInit['headers']>): Record<string, string | readonly string[]> => {
+    if (!h) return {};
+    if (h instanceof Headers) return Object.fromEntries(h.entries());
+    if (Symbol.iterator in h) {
+      return Object.fromEntries(
+        Array.from(h as Iterable<Iterable<string>>, (entry) => Array.from(entry) as [string, string]),
+      );
+    }
+    const headers: Record<string, string | readonly string[]> = {};
+    for (const [name, value] of Object.entries<string | readonly string[] | undefined>(h)) {
+      if (value !== undefined) headers[name] = value;
+    }
+    return headers;
+  };
+const res = await fetch(getPreviewClassificationModelRollbackV1MattersMatterIdClassificationModelsClassificationModelIdRollbackPreviewPostUrl(matterId,classificationModelId),
+  {
+    ...options,
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json', ...getHeaders(options?.headers) },
+    body: JSON.stringify(classificationPromotionPreviewRequest)
+  }
+)
+
+
+  const body = [204, 205, 304].includes(res.status) ? null : await res.text();
+
+  const data: previewClassificationModelRollbackV1MattersMatterIdClassificationModelsClassificationModelIdRollbackPreviewPostResponse['data'] = body ? JSON.parse(body) : {}
+  return { data, status: res.status, headers: res.headers } as previewClassificationModelRollbackV1MattersMatterIdClassificationModelsClassificationModelIdRollbackPreviewPostResponse
+}
+
+
+
+export type activateClassificationModelVersionV1MattersMatterIdClassificationModelsClassificationModelIdActivationPostResponse202 = {
+  data: ClassificationPromotionResponse
+  status: 202
+}
+
+export type activateClassificationModelVersionV1MattersMatterIdClassificationModelsClassificationModelIdActivationPostResponse422 = {
+  data: HTTPValidationError
+  status: 422
+}
+
+export type activateClassificationModelVersionV1MattersMatterIdClassificationModelsClassificationModelIdActivationPostResponseSuccess = (activateClassificationModelVersionV1MattersMatterIdClassificationModelsClassificationModelIdActivationPostResponse202) & {
+  headers: Headers;
+};
+export type activateClassificationModelVersionV1MattersMatterIdClassificationModelsClassificationModelIdActivationPostResponseError = (activateClassificationModelVersionV1MattersMatterIdClassificationModelsClassificationModelIdActivationPostResponse422) & {
+  headers: Headers;
+};
+
+export type activateClassificationModelVersionV1MattersMatterIdClassificationModelsClassificationModelIdActivationPostResponse = (activateClassificationModelVersionV1MattersMatterIdClassificationModelsClassificationModelIdActivationPostResponseSuccess | activateClassificationModelVersionV1MattersMatterIdClassificationModelsClassificationModelIdActivationPostResponseError)
+
+export const getActivateClassificationModelVersionV1MattersMatterIdClassificationModelsClassificationModelIdActivationPostUrl = (matterId: string,
+    classificationModelId: string,) => {
+
+
+
+
+  return `/api/core/v1/matters/${matterId}/classification-models/${classificationModelId}/activation`
+}
+
+/**
+ * @summary Activate Classification Model Version
+ */
+export const activateClassificationModelVersionV1MattersMatterIdClassificationModelsClassificationModelIdActivationPost = async (matterId: string,
+    classificationModelId: string,
+    classificationPromotionCreate: ClassificationPromotionCreate, options?: RequestInit): Promise<activateClassificationModelVersionV1MattersMatterIdClassificationModelsClassificationModelIdActivationPostResponse> => {
+
+    const getHeaders = (h?: NonNullable<RequestInit['headers']>): Record<string, string | readonly string[]> => {
+    if (!h) return {};
+    if (h instanceof Headers) return Object.fromEntries(h.entries());
+    if (Symbol.iterator in h) {
+      return Object.fromEntries(
+        Array.from(h as Iterable<Iterable<string>>, (entry) => Array.from(entry) as [string, string]),
+      );
+    }
+    const headers: Record<string, string | readonly string[]> = {};
+    for (const [name, value] of Object.entries<string | readonly string[] | undefined>(h)) {
+      if (value !== undefined) headers[name] = value;
+    }
+    return headers;
+  };
+const res = await fetch(getActivateClassificationModelVersionV1MattersMatterIdClassificationModelsClassificationModelIdActivationPostUrl(matterId,classificationModelId),
+  {
+    ...options,
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json', ...getHeaders(options?.headers) },
+    body: JSON.stringify(classificationPromotionCreate)
+  }
+)
+
+
+  const body = [204, 205, 304].includes(res.status) ? null : await res.text();
+
+  const data: activateClassificationModelVersionV1MattersMatterIdClassificationModelsClassificationModelIdActivationPostResponse['data'] = body ? JSON.parse(body) : {}
+  return { data, status: res.status, headers: res.headers } as activateClassificationModelVersionV1MattersMatterIdClassificationModelsClassificationModelIdActivationPostResponse
+}
+
+
+
+export type rollbackClassificationModelVersionV1MattersMatterIdClassificationModelsClassificationModelIdRollbackPostResponse202 = {
+  data: ClassificationPromotionResponse
+  status: 202
+}
+
+export type rollbackClassificationModelVersionV1MattersMatterIdClassificationModelsClassificationModelIdRollbackPostResponse422 = {
+  data: HTTPValidationError
+  status: 422
+}
+
+export type rollbackClassificationModelVersionV1MattersMatterIdClassificationModelsClassificationModelIdRollbackPostResponseSuccess = (rollbackClassificationModelVersionV1MattersMatterIdClassificationModelsClassificationModelIdRollbackPostResponse202) & {
+  headers: Headers;
+};
+export type rollbackClassificationModelVersionV1MattersMatterIdClassificationModelsClassificationModelIdRollbackPostResponseError = (rollbackClassificationModelVersionV1MattersMatterIdClassificationModelsClassificationModelIdRollbackPostResponse422) & {
+  headers: Headers;
+};
+
+export type rollbackClassificationModelVersionV1MattersMatterIdClassificationModelsClassificationModelIdRollbackPostResponse = (rollbackClassificationModelVersionV1MattersMatterIdClassificationModelsClassificationModelIdRollbackPostResponseSuccess | rollbackClassificationModelVersionV1MattersMatterIdClassificationModelsClassificationModelIdRollbackPostResponseError)
+
+export const getRollbackClassificationModelVersionV1MattersMatterIdClassificationModelsClassificationModelIdRollbackPostUrl = (matterId: string,
+    classificationModelId: string,) => {
+
+
+
+
+  return `/api/core/v1/matters/${matterId}/classification-models/${classificationModelId}/rollback`
+}
+
+/**
+ * @summary Rollback Classification Model Version
+ */
+export const rollbackClassificationModelVersionV1MattersMatterIdClassificationModelsClassificationModelIdRollbackPost = async (matterId: string,
+    classificationModelId: string,
+    classificationPromotionCreate: ClassificationPromotionCreate, options?: RequestInit): Promise<rollbackClassificationModelVersionV1MattersMatterIdClassificationModelsClassificationModelIdRollbackPostResponse> => {
+
+    const getHeaders = (h?: NonNullable<RequestInit['headers']>): Record<string, string | readonly string[]> => {
+    if (!h) return {};
+    if (h instanceof Headers) return Object.fromEntries(h.entries());
+    if (Symbol.iterator in h) {
+      return Object.fromEntries(
+        Array.from(h as Iterable<Iterable<string>>, (entry) => Array.from(entry) as [string, string]),
+      );
+    }
+    const headers: Record<string, string | readonly string[]> = {};
+    for (const [name, value] of Object.entries<string | readonly string[] | undefined>(h)) {
+      if (value !== undefined) headers[name] = value;
+    }
+    return headers;
+  };
+const res = await fetch(getRollbackClassificationModelVersionV1MattersMatterIdClassificationModelsClassificationModelIdRollbackPostUrl(matterId,classificationModelId),
+  {
+    ...options,
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json', ...getHeaders(options?.headers) },
+    body: JSON.stringify(classificationPromotionCreate)
+  }
+)
+
+
+  const body = [204, 205, 304].includes(res.status) ? null : await res.text();
+
+  const data: rollbackClassificationModelVersionV1MattersMatterIdClassificationModelsClassificationModelIdRollbackPostResponse['data'] = body ? JSON.parse(body) : {}
+  return { data, status: res.status, headers: res.headers } as rollbackClassificationModelVersionV1MattersMatterIdClassificationModelsClassificationModelIdRollbackPostResponse
+}
+
+
+
+export type retireClassificationModelVersionV1MattersMatterIdClassificationModelsClassificationModelIdVersionsModelVersionIdRetirePostResponse201 = {
+  data: ClassificationModelDecisionRead
+  status: 201
+}
+
+export type retireClassificationModelVersionV1MattersMatterIdClassificationModelsClassificationModelIdVersionsModelVersionIdRetirePostResponse422 = {
+  data: HTTPValidationError
+  status: 422
+}
+
+export type retireClassificationModelVersionV1MattersMatterIdClassificationModelsClassificationModelIdVersionsModelVersionIdRetirePostResponseSuccess = (retireClassificationModelVersionV1MattersMatterIdClassificationModelsClassificationModelIdVersionsModelVersionIdRetirePostResponse201) & {
+  headers: Headers;
+};
+export type retireClassificationModelVersionV1MattersMatterIdClassificationModelsClassificationModelIdVersionsModelVersionIdRetirePostResponseError = (retireClassificationModelVersionV1MattersMatterIdClassificationModelsClassificationModelIdVersionsModelVersionIdRetirePostResponse422) & {
+  headers: Headers;
+};
+
+export type retireClassificationModelVersionV1MattersMatterIdClassificationModelsClassificationModelIdVersionsModelVersionIdRetirePostResponse = (retireClassificationModelVersionV1MattersMatterIdClassificationModelsClassificationModelIdVersionsModelVersionIdRetirePostResponseSuccess | retireClassificationModelVersionV1MattersMatterIdClassificationModelsClassificationModelIdVersionsModelVersionIdRetirePostResponseError)
+
+export const getRetireClassificationModelVersionV1MattersMatterIdClassificationModelsClassificationModelIdVersionsModelVersionIdRetirePostUrl = (matterId: string,
+    classificationModelId: string,
+    modelVersionId: string,) => {
+
+
+
+
+  return `/api/core/v1/matters/${matterId}/classification-models/${classificationModelId}/versions/${modelVersionId}/retire`
+}
+
+/**
+ * @summary Retire Classification Model Version
+ */
+export const retireClassificationModelVersionV1MattersMatterIdClassificationModelsClassificationModelIdVersionsModelVersionIdRetirePost = async (matterId: string,
+    classificationModelId: string,
+    modelVersionId: string,
+    classificationModelDecisionCreate: ClassificationModelDecisionCreate, options?: RequestInit): Promise<retireClassificationModelVersionV1MattersMatterIdClassificationModelsClassificationModelIdVersionsModelVersionIdRetirePostResponse> => {
+
+    const getHeaders = (h?: NonNullable<RequestInit['headers']>): Record<string, string | readonly string[]> => {
+    if (!h) return {};
+    if (h instanceof Headers) return Object.fromEntries(h.entries());
+    if (Symbol.iterator in h) {
+      return Object.fromEntries(
+        Array.from(h as Iterable<Iterable<string>>, (entry) => Array.from(entry) as [string, string]),
+      );
+    }
+    const headers: Record<string, string | readonly string[]> = {};
+    for (const [name, value] of Object.entries<string | readonly string[] | undefined>(h)) {
+      if (value !== undefined) headers[name] = value;
+    }
+    return headers;
+  };
+const res = await fetch(getRetireClassificationModelVersionV1MattersMatterIdClassificationModelsClassificationModelIdVersionsModelVersionIdRetirePostUrl(matterId,classificationModelId,modelVersionId),
+  {
+    ...options,
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json', ...getHeaders(options?.headers) },
+    body: JSON.stringify(classificationModelDecisionCreate)
+  }
+)
+
+
+  const body = [204, 205, 304].includes(res.status) ? null : await res.text();
+
+  const data: retireClassificationModelVersionV1MattersMatterIdClassificationModelsClassificationModelIdVersionsModelVersionIdRetirePostResponse['data'] = body ? JSON.parse(body) : {}
+  return { data, status: res.status, headers: res.headers } as retireClassificationModelVersionV1MattersMatterIdClassificationModelsClassificationModelIdVersionsModelVersionIdRetirePostResponse
+}
+
+
+
+export type listClassificationModelDecisionsV1MattersMatterIdClassificationModelsClassificationModelIdDecisionsGetResponse200 = {
+  data: ClassificationModelDecisionRead[]
+  status: 200
+}
+
+export type listClassificationModelDecisionsV1MattersMatterIdClassificationModelsClassificationModelIdDecisionsGetResponse422 = {
+  data: HTTPValidationError
+  status: 422
+}
+
+export type listClassificationModelDecisionsV1MattersMatterIdClassificationModelsClassificationModelIdDecisionsGetResponseSuccess = (listClassificationModelDecisionsV1MattersMatterIdClassificationModelsClassificationModelIdDecisionsGetResponse200) & {
+  headers: Headers;
+};
+export type listClassificationModelDecisionsV1MattersMatterIdClassificationModelsClassificationModelIdDecisionsGetResponseError = (listClassificationModelDecisionsV1MattersMatterIdClassificationModelsClassificationModelIdDecisionsGetResponse422) & {
+  headers: Headers;
+};
+
+export type listClassificationModelDecisionsV1MattersMatterIdClassificationModelsClassificationModelIdDecisionsGetResponse = (listClassificationModelDecisionsV1MattersMatterIdClassificationModelsClassificationModelIdDecisionsGetResponseSuccess | listClassificationModelDecisionsV1MattersMatterIdClassificationModelsClassificationModelIdDecisionsGetResponseError)
+
+export const getListClassificationModelDecisionsV1MattersMatterIdClassificationModelsClassificationModelIdDecisionsGetUrl = (matterId: string,
+    classificationModelId: string,) => {
+
+
+
+
+  return `/api/core/v1/matters/${matterId}/classification-models/${classificationModelId}/decisions`
+}
+
+/**
+ * @summary List Classification Model Decisions
+ */
+export const listClassificationModelDecisionsV1MattersMatterIdClassificationModelsClassificationModelIdDecisionsGet = async (matterId: string,
+    classificationModelId: string, options?: RequestInit): Promise<listClassificationModelDecisionsV1MattersMatterIdClassificationModelsClassificationModelIdDecisionsGetResponse> => {
+
+  const res = await fetch(getListClassificationModelDecisionsV1MattersMatterIdClassificationModelsClassificationModelIdDecisionsGetUrl(matterId,classificationModelId),
+  {
+    ...options,
+    method: 'GET'
+
+
+  }
+)
+
+
+  const body = [204, 205, 304].includes(res.status) ? null : await res.text();
+
+  const data: listClassificationModelDecisionsV1MattersMatterIdClassificationModelsClassificationModelIdDecisionsGetResponse['data'] = body ? JSON.parse(body) : {}
+  return { data, status: res.status, headers: res.headers } as listClassificationModelDecisionsV1MattersMatterIdClassificationModelsClassificationModelIdDecisionsGetResponse
 }
 
 

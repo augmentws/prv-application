@@ -74,6 +74,43 @@ def cancel_classification_model_build(workflow_id: str) -> None:
         get_dbos_client().cancel_workflow(workflow_id, cancel_children=True)
 
 
+def enqueue_classification_model_promotion(
+    db: Session,
+    workflow_id: str,
+    *,
+    matter_id: str,
+    classification_model_id: str,
+    model_version_id: str,
+    action: str,
+    expected_model_row_version: int,
+    preview_token: str,
+    reason: str,
+    actor_user_id: str,
+) -> None:
+    settings = get_settings()
+    if not settings.dbos_enabled:
+        return
+    options: EnqueueOptions = {
+        "workflow_name": "classification_model_promote_v1",
+        "queue_name": "classification-model-promotions",
+        "workflow_id": workflow_id,
+        "application_name": settings.dbos_application_name,
+    }
+    get_dbos_client().enqueue_in_transaction(
+        db,
+        options,
+        workflow_id,
+        matter_id,
+        classification_model_id,
+        model_version_id,
+        action,
+        expected_model_row_version,
+        preview_token,
+        reason,
+        actor_user_id,
+    )
+
+
 def enqueue_matter_topics(db: Session, workflow_id: str, job_id: str) -> None:
     settings = get_settings()
     if not settings.dbos_enabled:

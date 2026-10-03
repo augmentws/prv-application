@@ -1,3 +1,4 @@
+import hmac
 import uuid
 
 from fastapi import APIRouter, Depends, HTTPException, status
@@ -34,6 +35,16 @@ from app.classification_features import (
     prepare_feature_split,
     request_matches_materialized_snapshot,
 )
+from app.classification_lifecycle import (
+    ClassificationLifecycleError,
+    ClassificationLifecycleNotFoundError,
+    PromotionAction,
+    decide_candidate,
+    get_model_version,
+    preview_promotion,
+    promote_model_version,
+    retire_model_version,
+)
 from app.classification_models import (
     ClassificationModelCommandError,
     ClassificationModelNotFoundError,
@@ -46,12 +57,14 @@ from app.classification_models import (
     create_classification_model_configuration as create_configuration_command,
 )
 from app.classification_models import get_classification_model as get_classification_model_record
+from app.config import get_settings
 from app.database import get_db
 from app.dependencies import Principal, can_admin_matter, get_principal
 from app.models import (
     ClassificationDatasetSnapshot,
     ClassificationModel,
     ClassificationModelConfiguration,
+    ClassificationModelDecision,
     ClassificationModelVersion,
     ClassificationTrainingRun,
     Matter,
@@ -71,13 +84,20 @@ from app.schemas import (
     ClassificationModelConfigurationCreate,
     ClassificationModelConfigurationRead,
     ClassificationModelCreate,
+    ClassificationModelDecisionCreate,
+    ClassificationModelDecisionRead,
     ClassificationModelRead,
     ClassificationModelVersionRead,
+    ClassificationPromotionCreate,
+    ClassificationPromotionPreview,
+    ClassificationPromotionPreviewRequest,
+    ClassificationPromotionResponse,
     ClassificationTrainingRunRead,
 )
 from app.workflows.dispatcher import (
     cancel_classification_model_build,
     enqueue_classification_model_build,
+    enqueue_classification_model_promotion,
 )
 
 router = APIRouter(
@@ -176,6 +196,43 @@ def model_version_read(version: ClassificationModelVersion) -> ClassificationMod
             "created_at": version.created_at,
             "created_by_user_id": version.created_by_user_id,
         }
+    )
+
+
+def model_decision_read(decision: ClassificationModelDecision) -> ClassificationModelDecisionRead:
+    return ClassificationModelDecisionRead.model_validate(
+        {
+            "id": decision.id,
+            "tenant_id": decision.tenant_id,
+            "matter_id": decision.matter_id,
+            "classification_model_id": decision.classification_model_id,
+            "model_version_id": decision.model_version_id,
+            "decision_type": decision.decision_type,
+            "workflow_id": decision.workflow_id,
+            "reason": decision.reason,
+            "policy_snapshot": decision.policy_snapshot,
+            "metric_snapshot": decision.metric_snapshot,
+            "before_active_model_version_id": decision.before_active_model_version_id,
+            "after_active_model_version_id": decision.after_active_model_version_id,
+            "authorization_context": decision.authorization_context,
+            "actor_user_id": decision.actor_user_id,
+            "created_at": decision.created_at,
+        }
+    )
+
+
+def promotion_preview_read(preview) -> ClassificationPromotionPreview:
+    return ClassificationPromotionPreview(
+        action=preview.action,
+        classification_model_id=preview.model.id,
+        model_version=model_version_read(preview.version),
+        current_active_model_version_id=preview.current_active_model_version_id,
+        expected_model_row_version=preview.expected_model_row_version,
+        preview_token=preview.preview_token,
+        can_promote=preview.can_promote,
+        blocking_reasons=preview.blocking_reasons,
+        policy_snapshot=preview.policy_snapshot,
+        metric_snapshot=preview.metric_snapshot,
     )
 
 
@@ -307,6 +364,15 @@ def build_error(exc: ClassificationBuildError) -> HTTPException:
     error_status = (
         status.HTTP_404_NOT_FOUND
         if isinstance(exc, ClassificationBuildNotFoundError)
+        else status.HTTP_409_CONFLICT
+    )
+    return HTTPException(status_code=error_status, detail=str(exc))
+
+
+def lifecycle_error(exc: ClassificationLifecycleError) -> HTTPException:
+    error_status = (
+        status.HTTP_404_NOT_FOUND
+        if isinstance(exc, ClassificationLifecycleNotFoundError)
         else status.HTTP_409_CONFLICT
     )
     return HTTPException(status_code=error_status, detail=str(exc))
@@ -922,6 +988,449 @@ def reconcile_classification_model_build(
             status_code=status.HTTP_502_BAD_GATEWAY,
             detail="Classification build reconciliation failed",
         ) from exc
+
+
+@router.get(
+    "/{classification_model_id}/versions",
+    response_model=list[ClassificationModelVersionRead],
+)
+def list_classification_model_versions(
+    matter_id: uuid.UUID,
+    classification_model_id: uuid.UUID,
+    principal: Principal = Depends(get_principal),
+    db: Session = Depends(get_db),
+) -> list[ClassificationModelVersionRead]:
+    get_authorized_matter(db, principal, matter_id)
+    try:
+        get_classification_model_record(
+            db,
+            matter_id=matter_id,
+            classification_model_id=classification_model_id,
+        )
+    except ClassificationModelCommandError as exc:
+        raise command_error(exc) from exc
+    versions = db.scalars(
+        select(ClassificationModelVersion)
+        .where(
+            ClassificationModelVersion.matter_id == matter_id,
+            ClassificationModelVersion.classification_model_id == classification_model_id,
+        )
+        .order_by(ClassificationModelVersion.version_number.desc())
+    ).all()
+    return [model_version_read(version) for version in versions]
+
+
+@router.get(
+    "/{classification_model_id}/versions/{model_version_id}",
+    response_model=ClassificationModelVersionRead,
+)
+def read_classification_model_version(
+    matter_id: uuid.UUID,
+    classification_model_id: uuid.UUID,
+    model_version_id: uuid.UUID,
+    principal: Principal = Depends(get_principal),
+    db: Session = Depends(get_db),
+) -> ClassificationModelVersionRead:
+    get_authorized_matter(db, principal, matter_id)
+    try:
+        return model_version_read(
+            get_model_version(
+                db,
+                matter_id=matter_id,
+                classification_model_id=classification_model_id,
+                model_version_id=model_version_id,
+            )
+        )
+    except ClassificationLifecycleError as exc:
+        raise lifecycle_error(exc) from exc
+
+
+def _decide_classification_model_candidate(
+    *,
+    matter_id: uuid.UUID,
+    classification_model_id: uuid.UUID,
+    model_version_id: uuid.UUID,
+    payload: ClassificationModelDecisionCreate,
+    decision_type: str,
+    principal: Principal,
+    db: Session,
+) -> ClassificationModelDecisionRead:
+    get_authorized_matter(db, principal, matter_id)
+    try:
+        decision = decide_candidate(
+            db,
+            matter_id=matter_id,
+            classification_model_id=classification_model_id,
+            model_version_id=model_version_id,
+            decision_type=decision_type,
+            reason=payload.reason,
+            actor_user_id=principal.user.id,
+        )
+        db.commit()
+        db.refresh(decision)
+        return model_decision_read(decision)
+    except ClassificationLifecycleError as exc:
+        db.rollback()
+        raise lifecycle_error(exc) from exc
+
+
+@router.post(
+    "/{classification_model_id}/versions/{model_version_id}/approve",
+    response_model=ClassificationModelDecisionRead,
+    status_code=status.HTTP_201_CREATED,
+)
+def approve_classification_model_version(
+    matter_id: uuid.UUID,
+    classification_model_id: uuid.UUID,
+    model_version_id: uuid.UUID,
+    payload: ClassificationModelDecisionCreate,
+    principal: Principal = Depends(get_principal),
+    db: Session = Depends(get_db),
+) -> ClassificationModelDecisionRead:
+    return _decide_classification_model_candidate(
+        matter_id=matter_id,
+        classification_model_id=classification_model_id,
+        model_version_id=model_version_id,
+        payload=payload,
+        decision_type="APPROVAL",
+        principal=principal,
+        db=db,
+    )
+
+
+@router.post(
+    "/{classification_model_id}/versions/{model_version_id}/reject",
+    response_model=ClassificationModelDecisionRead,
+    status_code=status.HTTP_201_CREATED,
+)
+def reject_classification_model_version(
+    matter_id: uuid.UUID,
+    classification_model_id: uuid.UUID,
+    model_version_id: uuid.UUID,
+    payload: ClassificationModelDecisionCreate,
+    principal: Principal = Depends(get_principal),
+    db: Session = Depends(get_db),
+) -> ClassificationModelDecisionRead:
+    return _decide_classification_model_candidate(
+        matter_id=matter_id,
+        classification_model_id=classification_model_id,
+        model_version_id=model_version_id,
+        payload=payload,
+        decision_type="REJECTION",
+        principal=principal,
+        db=db,
+    )
+
+
+def _preview_classification_model_promotion(
+    *,
+    matter_id: uuid.UUID,
+    classification_model_id: uuid.UUID,
+    payload: ClassificationPromotionPreviewRequest,
+    action: PromotionAction,
+    principal: Principal,
+    db: Session,
+) -> ClassificationPromotionPreview:
+    get_authorized_matter(db, principal, matter_id)
+    try:
+        return promotion_preview_read(
+            preview_promotion(
+                db,
+                matter_id=matter_id,
+                classification_model_id=classification_model_id,
+                model_version_id=payload.model_version_id,
+                action=action,
+            )
+        )
+    except ClassificationLifecycleError as exc:
+        raise lifecycle_error(exc) from exc
+
+
+@router.post(
+    "/{classification_model_id}/activation/preview",
+    response_model=ClassificationPromotionPreview,
+)
+def preview_classification_model_activation(
+    matter_id: uuid.UUID,
+    classification_model_id: uuid.UUID,
+    payload: ClassificationPromotionPreviewRequest,
+    principal: Principal = Depends(get_principal),
+    db: Session = Depends(get_db),
+) -> ClassificationPromotionPreview:
+    return _preview_classification_model_promotion(
+        matter_id=matter_id,
+        classification_model_id=classification_model_id,
+        payload=payload,
+        action="ACTIVATION",
+        principal=principal,
+        db=db,
+    )
+
+
+@router.post(
+    "/{classification_model_id}/rollback/preview",
+    response_model=ClassificationPromotionPreview,
+)
+def preview_classification_model_rollback(
+    matter_id: uuid.UUID,
+    classification_model_id: uuid.UUID,
+    payload: ClassificationPromotionPreviewRequest,
+    principal: Principal = Depends(get_principal),
+    db: Session = Depends(get_db),
+) -> ClassificationPromotionPreview:
+    return _preview_classification_model_promotion(
+        matter_id=matter_id,
+        classification_model_id=classification_model_id,
+        payload=payload,
+        action="ROLLBACK",
+        principal=principal,
+        db=db,
+    )
+
+
+def _promotion_workflow_id(
+    *,
+    classification_model_id: uuid.UUID,
+    action: PromotionAction,
+    payload: ClassificationPromotionCreate,
+    actor_user_id: uuid.UUID,
+) -> str:
+    operation_id = uuid.uuid5(
+        classification_model_id,
+        "|".join(
+            (
+                action,
+                str(payload.model_version_id),
+                str(payload.expected_model_row_version),
+                payload.preview_token,
+                payload.reason,
+                str(actor_user_id),
+            )
+        ),
+    )
+    return f"classification-model-promote:{operation_id}"
+
+
+def _promote_classification_model(
+    *,
+    matter_id: uuid.UUID,
+    classification_model_id: uuid.UUID,
+    payload: ClassificationPromotionCreate,
+    action: PromotionAction,
+    principal: Principal,
+    db: Session,
+) -> ClassificationPromotionResponse:
+    get_authorized_matter(db, principal, matter_id)
+    try:
+        workflow_id = _promotion_workflow_id(
+            classification_model_id=classification_model_id,
+            action=action,
+            payload=payload,
+            actor_user_id=principal.user.id,
+        )
+        existing = db.scalar(
+            select(ClassificationModelDecision).where(
+                ClassificationModelDecision.workflow_id == workflow_id,
+                ClassificationModelDecision.matter_id == matter_id,
+                ClassificationModelDecision.classification_model_id == classification_model_id,
+                ClassificationModelDecision.model_version_id == payload.model_version_id,
+                ClassificationModelDecision.decision_type == action,
+                ClassificationModelDecision.actor_user_id == principal.user.id,
+            )
+        )
+        if existing is not None:
+            model = get_classification_model_record(
+                db,
+                matter_id=matter_id,
+                classification_model_id=classification_model_id,
+            )
+            return ClassificationPromotionResponse(
+                action=action,
+                workflow_id=workflow_id,
+                status="COMPLETED",
+                classification_model_id=classification_model_id,
+                model_version_id=payload.model_version_id,
+                decision=model_decision_read(existing),
+                model=model_read(model),
+            )
+        current_preview = preview_promotion(
+            db,
+            matter_id=matter_id,
+            classification_model_id=classification_model_id,
+            model_version_id=payload.model_version_id,
+            action=action,
+        )
+        if (
+            current_preview.expected_model_row_version != payload.expected_model_row_version
+            or not hmac.compare_digest(current_preview.preview_token, payload.preview_token)
+        ):
+            raise ClassificationLifecycleError("Promotion preview is stale; request a new preview")
+        if current_preview.blocking_reasons:
+            raise ClassificationLifecycleError("; ".join(current_preview.blocking_reasons))
+        if not get_settings().dbos_enabled:
+            decision = promote_model_version(
+                db,
+                matter_id=matter_id,
+                classification_model_id=classification_model_id,
+                model_version_id=payload.model_version_id,
+                action=action,
+                expected_model_row_version=payload.expected_model_row_version,
+                preview_token=payload.preview_token,
+                reason=payload.reason,
+                actor_user_id=principal.user.id,
+                workflow_id=workflow_id,
+            )
+            db.commit()
+            db.refresh(decision)
+            db.refresh(current_preview.model)
+            return ClassificationPromotionResponse(
+                action=action,
+                workflow_id=workflow_id,
+                status="COMPLETED",
+                classification_model_id=classification_model_id,
+                model_version_id=payload.model_version_id,
+                decision=model_decision_read(decision),
+                model=model_read(current_preview.model),
+            )
+        record_audit(
+            db,
+            tenant_id=current_preview.model.tenant_id,
+            actor_user_id=principal.user.id,
+            action="classification_model.promotion_requested",
+            target_type="classification_model",
+            target_id=current_preview.model.id,
+            details={
+                "workflow_id": workflow_id,
+                "promotion_action": action,
+                "model_version_id": str(payload.model_version_id),
+                "expected_model_row_version": payload.expected_model_row_version,
+            },
+        )
+        enqueue_classification_model_promotion(
+            db,
+            workflow_id,
+            matter_id=str(matter_id),
+            classification_model_id=str(classification_model_id),
+            model_version_id=str(payload.model_version_id),
+            action=action,
+            expected_model_row_version=payload.expected_model_row_version,
+            preview_token=payload.preview_token,
+            reason=payload.reason,
+            actor_user_id=str(principal.user.id),
+        )
+        db.commit()
+        return ClassificationPromotionResponse(
+            action=action,
+            workflow_id=workflow_id,
+            status="QUEUED",
+            classification_model_id=classification_model_id,
+            model_version_id=payload.model_version_id,
+        )
+    except ClassificationLifecycleError as exc:
+        db.rollback()
+        raise lifecycle_error(exc) from exc
+
+
+@router.post(
+    "/{classification_model_id}/activation",
+    response_model=ClassificationPromotionResponse,
+    status_code=status.HTTP_202_ACCEPTED,
+)
+def activate_classification_model_version(
+    matter_id: uuid.UUID,
+    classification_model_id: uuid.UUID,
+    payload: ClassificationPromotionCreate,
+    principal: Principal = Depends(get_principal),
+    db: Session = Depends(get_db),
+) -> ClassificationPromotionResponse:
+    return _promote_classification_model(
+        matter_id=matter_id,
+        classification_model_id=classification_model_id,
+        payload=payload,
+        action="ACTIVATION",
+        principal=principal,
+        db=db,
+    )
+
+
+@router.post(
+    "/{classification_model_id}/rollback",
+    response_model=ClassificationPromotionResponse,
+    status_code=status.HTTP_202_ACCEPTED,
+)
+def rollback_classification_model_version(
+    matter_id: uuid.UUID,
+    classification_model_id: uuid.UUID,
+    payload: ClassificationPromotionCreate,
+    principal: Principal = Depends(get_principal),
+    db: Session = Depends(get_db),
+) -> ClassificationPromotionResponse:
+    return _promote_classification_model(
+        matter_id=matter_id,
+        classification_model_id=classification_model_id,
+        payload=payload,
+        action="ROLLBACK",
+        principal=principal,
+        db=db,
+    )
+
+
+@router.post(
+    "/{classification_model_id}/versions/{model_version_id}/retire",
+    response_model=ClassificationModelDecisionRead,
+    status_code=status.HTTP_201_CREATED,
+)
+def retire_classification_model_version(
+    matter_id: uuid.UUID,
+    classification_model_id: uuid.UUID,
+    model_version_id: uuid.UUID,
+    payload: ClassificationModelDecisionCreate,
+    principal: Principal = Depends(get_principal),
+    db: Session = Depends(get_db),
+) -> ClassificationModelDecisionRead:
+    get_authorized_matter(db, principal, matter_id)
+    try:
+        decision = retire_model_version(
+            db,
+            matter_id=matter_id,
+            classification_model_id=classification_model_id,
+            model_version_id=model_version_id,
+            reason=payload.reason,
+            actor_user_id=principal.user.id,
+        )
+        db.commit()
+        db.refresh(decision)
+        return model_decision_read(decision)
+    except ClassificationLifecycleError as exc:
+        db.rollback()
+        raise lifecycle_error(exc) from exc
+
+
+@router.get(
+    "/{classification_model_id}/decisions",
+    response_model=list[ClassificationModelDecisionRead],
+)
+def list_classification_model_decisions(
+    matter_id: uuid.UUID,
+    classification_model_id: uuid.UUID,
+    principal: Principal = Depends(get_principal),
+    db: Session = Depends(get_db),
+) -> list[ClassificationModelDecisionRead]:
+    get_authorized_matter(db, principal, matter_id)
+    try:
+        get_classification_model_record(
+            db,
+            matter_id=matter_id,
+            classification_model_id=classification_model_id,
+        )
+    except ClassificationModelCommandError as exc:
+        raise command_error(exc) from exc
+    decisions = db.scalars(
+        select(ClassificationModelDecision)
+        .where(ClassificationModelDecision.classification_model_id == classification_model_id)
+        .order_by(ClassificationModelDecision.created_at, ClassificationModelDecision.id)
+    ).all()
+    return [model_decision_read(decision) for decision in decisions]
 
 
 @router.get(

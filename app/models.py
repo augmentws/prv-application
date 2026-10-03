@@ -1887,6 +1887,86 @@ class ClassificationEvaluation(Base):
     dataset_snapshot: Mapped[ClassificationDatasetSnapshot] = relationship()
 
 
+class ClassificationModelDecision(Base):
+    __tablename__ = "classification_model_decision"
+    __table_args__ = (
+        UniqueConstraint("workflow_id", name="uq_classification_model_decision_workflow"),
+        CheckConstraint(
+            "decision_type IN ('APPROVAL', 'REJECTION', 'ACTIVATION', 'ROLLBACK', 'RETIREMENT')",
+            name="ck_classification_model_decision_type",
+        ),
+        CheckConstraint(
+            "length(trim(reason)) > 0",
+            name="ck_classification_model_decision_reason",
+        ),
+        ForeignKeyConstraint(
+            ["model_version_id", "classification_model_id"],
+            ["classification_model_version.id", "classification_model_version.classification_model_id"],
+            name="fk_classification_model_decision_version",
+            ondelete="RESTRICT",
+        ),
+        ForeignKeyConstraint(
+            ["before_active_model_version_id", "classification_model_id"],
+            ["classification_model_version.id", "classification_model_version.classification_model_id"],
+            name="fk_classification_model_decision_before_active",
+            ondelete="RESTRICT",
+        ),
+        ForeignKeyConstraint(
+            ["after_active_model_version_id", "classification_model_id"],
+            ["classification_model_version.id", "classification_model_version.classification_model_id"],
+            name="fk_classification_model_decision_after_active",
+            ondelete="RESTRICT",
+        ),
+        Index(
+            "ix_classification_model_decision_model_created",
+            "classification_model_id",
+            "created_at",
+        ),
+    )
+
+    id: Mapped[uuid.UUID] = mapped_column(Uuid, primary_key=True, default=uuid.uuid4)
+    tenant_id: Mapped[uuid.UUID] = mapped_column(
+        Uuid,
+        ForeignKey("tenant.id", ondelete="RESTRICT"),
+        index=True,
+    )
+    matter_id: Mapped[uuid.UUID] = mapped_column(
+        Uuid,
+        ForeignKey("matter.id", ondelete="RESTRICT"),
+        index=True,
+    )
+    classification_model_id: Mapped[uuid.UUID] = mapped_column(
+        Uuid,
+        ForeignKey("classification_model.id", ondelete="RESTRICT"),
+        index=True,
+    )
+    model_version_id: Mapped[uuid.UUID] = mapped_column(Uuid, index=True)
+    decision_type: Mapped[str] = mapped_column(String(30), index=True)
+    workflow_id: Mapped[str | None] = mapped_column(String(500), nullable=True)
+    reason: Mapped[str] = mapped_column(Text)
+    policy_snapshot: Mapped[dict[str, Any]] = mapped_column(JSON_DOCUMENT)
+    metric_snapshot: Mapped[dict[str, Any]] = mapped_column(JSON_DOCUMENT)
+    before_active_model_version_id: Mapped[uuid.UUID | None] = mapped_column(
+        Uuid,
+        nullable=True,
+        index=True,
+    )
+    after_active_model_version_id: Mapped[uuid.UUID | None] = mapped_column(
+        Uuid,
+        nullable=True,
+        index=True,
+    )
+    authorization_context: Mapped[dict[str, Any]] = mapped_column(JSON_DOCUMENT)
+    actor_user_id: Mapped[uuid.UUID] = mapped_column(
+        Uuid,
+        ForeignKey("app_user.id", ondelete="RESTRICT"),
+        index=True,
+    )
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+
+    actor: Mapped[User] = relationship()
+
+
 class MetadataEvent(Base):
     __tablename__ = "metadata_event"
     __table_args__ = (
