@@ -1,4 +1,5 @@
 from functools import lru_cache
+from typing import Literal
 
 from pydantic import Field, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
@@ -12,6 +13,21 @@ class Settings(BaseSettings):
     database_url: str = "postgresql+psycopg://postgres:postgres@localhost:5432/pvr-core"
     artifact_mode: str = "embedded"
     artifact_base_url: str = "http://localhost:8001"
+    classification_mode: Literal["embedded", "remote"] = "embedded"
+    classification_base_url: str = "http://localhost:8003"
+    classification_service_token: str = Field(
+        default="development-classification-service-token",
+        min_length=16,
+    )
+    classification_request_timeout_seconds: float = Field(default=120.0, gt=0, le=3600)
+    classification_max_concurrency: int = Field(default=2, ge=1, le=64)
+    classification_runtime_image_digest: str = Field(default="development-runtime", min_length=1, max_length=500)
+    classification_source_revision: str = Field(default="development", min_length=1, max_length=255)
+    classification_package_max_bytes: int = Field(
+        default=512 * 1024 * 1024,
+        ge=1024,
+        le=2 * 1024 * 1024 * 1024,
+    )
     dbos_enabled: bool = True
     dbos_system_database_url: str | None = None
     dbos_system_schema: str = "dbos"

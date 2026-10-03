@@ -1,6 +1,6 @@
 # Statistical Classification Backend Implementation Plan
 
-Status: Phase 0, Phase 1, Phase 3, Phase 4, and Phase 5 implemented; Phase 2 is next because Phase 6 depends on its runtime boundary
+Status: Phases 0 through 6 implemented; Phase 7 is next
 
 Related documents:
 
@@ -233,6 +233,14 @@ it cannot be attached to the wrong tenant, matter, field, or value keys.
 
 ## 6. Phase 2: Classification Runtime boundary
 
+Implementation status: complete. Core uses `ClassificationGateway` for both
+embedded and remote invocation. The private runtime exposes authenticated
+capabilities, package validation, training, and scoring endpoints. Remote
+requests carry a runtime service token plus a bounded-lifetime, tenant/client-
+scoped Artifact delegation token. The split Compose profile runs the stateless
+runtime as `classification-api` on port `8003`; it has no authoritative
+database.
+
 ### Goal
 
 Establish identical embedded and remote invocation before actual training.
@@ -438,6 +446,35 @@ Exit when a dataset is `READY_FOR_TRAINING` only after population, labels,
 features, and splits align exactly by document ID and content hashes.
 
 ## 10. Phase 6: Trainer, evaluation, and safe package
+
+Implementation status: complete. The runtime now:
+
+- Trains deterministic source-weighted L2 logistic regression for binary,
+  native multiclass, and atomic one-vs-rest configurations.
+- Selects `C` from the pinned candidate set using group-aware cross-fit
+  PR-AUC with a deterministic smaller-`C` tie break, then refits on all
+  eligible rows. Automatic class balancing remains unavailable by contract.
+- Revalidates artifact hashes, row alignment, unique document IDs, feature
+  contracts, group isolation, fold weights, and minimum per-fold class
+  support before fitting.
+- Emits out-of-fold predictions, binary/per-class and macro/micro metrics,
+  calibration bins, confusion data, fold-cohort metrics, coverage counts,
+  selected-candidate evidence, and explicit development-evidence warnings.
+- Builds the fixed nine-file package below with deterministic ZIP/NPZ bytes,
+  reloads it using `allow_pickle=False`, and verifies reproduced probabilities
+  within `1e-12` before publishing it.
+- Validates package allowlists, paths, expanded sizes, hashes, array names,
+  finite numeric arrays, feature/class/policy consistency, and complete target
+  field identity. Scoring loads coefficients directly; it never imports or
+  executes package-provided code.
+- Writes model package, cross-fit prediction, evaluation, and result-manifest
+  artifacts through Artifact Service. The authenticated `/v1/train`,
+  `/v1/score`, and `/v1/packages/validate` operations accept references rather
+  than inline matrices.
+
+Probability calibration is deliberately `IDENTITY_V1` in this phase. The
+evaluation report records that limitation; learned calibration can be added as
+a later trainer/package revision without changing the safe loader boundary.
 
 ### Goal
 

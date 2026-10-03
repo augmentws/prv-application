@@ -854,8 +854,9 @@ def test_feature_and_split_materialization_is_deterministic_and_group_aware(
     assert [row["matter_document_id"] for row in feature_rows] == sorted(
         row["matter_document_id"] for row in feature_rows
     )
-    assert len(feature_rows[0]["embedding"]) == 1024
-    assert abs(sum(value * value for value in feature_rows[0]["embedding"]) - 1.0) < 1e-6
+    first_ready_feature = next(row for row in feature_rows if row["feature_status"] == "READY")
+    assert len(first_ready_feature["embedding"]) == 1024
+    assert abs(sum(value * value for value in first_ready_feature["embedding"]) - 1.0) < 1e-6
     feature_content = client.get(
         f"/v1/workflow-artifacts/{ready['feature_artifact_id']}/content",
         headers=auth(root_token),

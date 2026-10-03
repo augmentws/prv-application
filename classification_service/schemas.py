@@ -1,6 +1,6 @@
 import uuid
 from enum import StrEnum
-from typing import Annotated, Literal
+from typing import Annotated, Any, Literal
 
 from pydantic import BaseModel, ConfigDict, Field, StringConstraints, field_validator, model_validator
 
@@ -429,6 +429,10 @@ class ModelPackageManifest(StrictModel):
     feature_specification_hash: Sha256
     runtime_image_digest: str = Field(min_length=1, max_length=500)
     source_revision: str = Field(min_length=1, max_length=255)
+    package_derivation_key: Sha256 | None = None
+    input_artifact_hashes: dict[str, Sha256] = Field(default_factory=dict)
+    prediction_resolution_policy: PredictionResolutionPolicy | None = None
+    selected_hyperparameters: dict[str, float | int | str] = Field(default_factory=dict)
     files: list[ModelPackageFile] = Field(min_length=1, max_length=100)
 
     @field_validator("files")
@@ -447,6 +451,10 @@ class ModelInferenceSignature(StrictModel):
     feature_contract_version: Literal[1] = 1
     feature_dimensions: int = Field(ge=32, le=16384)
     feature_data_type: FeatureDataType
+    feature_normalization: FeatureNormalization = FeatureNormalization.L2
+    feature_specification_hash: Sha256 | None = None
+    missing_feature_action: Literal["REJECT"] = "REJECT"
+    maximum_batch_size: int = Field(default=10_000, ge=1, le=1_000_000)
     classification_strategy: ClassificationStrategy
     ordered_class_keys: list[StableKey] = Field(min_length=2, max_length=1000)
 
@@ -467,6 +475,20 @@ class ModelInferenceSignature(StrictModel):
 MetricValue = float | int | None
 
 
+class CalibrationBin(StrictModel):
+    lower_bound: float = Field(ge=0, le=1)
+    upper_bound: float = Field(ge=0, le=1)
+    count: int = Field(ge=0)
+    mean_predicted_probability: float | None = Field(default=None, ge=0, le=1)
+    observed_rate: float | None = Field(default=None, ge=0, le=1)
+
+
+class CandidateMetric(StrictModel):
+    c_value: float = Field(gt=0)
+    primary_metric_name: str = Field(min_length=1, max_length=100)
+    primary_metric_value: float
+
+
 class ClassificationEvaluationReport(StrictModel):
     report_schema_version: Literal[1] = 1
     training_run_id: uuid.UUID
@@ -475,6 +497,10 @@ class ClassificationEvaluationReport(StrictModel):
     classification_model_id: uuid.UUID
     configuration_id: uuid.UUID
     configuration_hash: Sha256
+    evaluation_kind: Literal["CROSS_FIT_DEVELOPMENT", "FORMAL_VALIDATION", "RANDOM_AUDIT", "TARGETED_QA"] = (
+        "CROSS_FIT_DEVELOPMENT"
+    )
+    metric_schema_version: Literal[1] = 1
     classification_strategy: ClassificationStrategy
     ordered_class_keys: list[StableKey] = Field(min_length=2, max_length=1000)
     labeled_document_count: int = Field(ge=0)
@@ -483,16 +509,49 @@ class ClassificationEvaluationReport(StrictModel):
     metrics: dict[str, MetricValue]
     per_class_metrics: dict[StableKey, dict[str, MetricValue]] = Field(default_factory=dict)
     cohort_metrics: dict[str, dict[str, MetricValue]] = Field(default_factory=dict)
+    confusion_matrix: list[list[int]] = Field(default_factory=list)
+    calibration: dict[StableKey, list[CalibrationBin]] = Field(default_factory=dict)
+    coverage: dict[str, int] = Field(default_factory=dict)
+    candidate_metrics: list[CandidateMetric] = Field(default_factory=list)
+    selected_hyperparameters: dict[str, float | int | str] = Field(default_factory=dict)
     warnings: list[str] = Field(default_factory=list, max_length=100)
 
     @model_validator(mode="after")
     def validate_counts_and_classes(self) -> "ClassificationEvaluationReport":
-        if self.training_document_count + self.validation_document_count > self.labeled_document_count:
+        if (
+            self.evaluation_kind != "CROSS_FIT_DEVELOPMENT"
+            and self.training_document_count + self.validation_document_count > self.labeled_document_count
+        ):
             raise ValueError("Training and validation counts cannot exceed the labeled document count")
         unknown_classes = set(self.per_class_metrics) - set(self.ordered_class_keys)
         if unknown_classes:
             raise ValueError("Per-class metrics must reference ordered class keys")
         return self
+
+
+class ClassificationCapabilities(StrictModel):
+    contract_version: Literal[1] = 1
+    runtime_version: str = Field(min_length=1, max_length=100)
+    package_schema_versions: list[int]
+    trainers: list[dict[str, Any]]
+    supported_strategies: list[ClassificationStrategy]
+
+
+class PackageValidationRequest(StrictModel):
+    package_artifact: ArtifactReference
+
+    @model_validator(mode="after")
+    def validate_package_type(self) -> "PackageValidationRequest":
+        if self.package_artifact.artifact_type != ArtifactType.CLASSIFICATION_MODEL_PACKAGE:
+            raise ValueError("package_artifact must reference CLASSIFICATION_MODEL_PACKAGE")
+        return self
+
+
+class PackageValidationResult(StrictModel):
+    valid: bool
+    package_content_hash: Sha256
+    manifest: ModelPackageManifest
+    signature: ModelInferenceSignature
 
 
 class ClassificationTrainingResult(StrictModel):
