@@ -614,6 +614,7 @@ POST /v1/matters/{matter_id}/classification-models/{model_id}/builds
 GET  /v1/matters/{matter_id}/classification-models/{model_id}/builds
 GET  /v1/matters/{matter_id}/classification-models/{model_id}/builds/{run_id}
 POST /v1/matters/{matter_id}/classification-models/{model_id}/builds/{run_id}/cancel
+POST /v1/matters/{matter_id}/classification-models/{model_id}/builds/{run_id}/retry
 POST /v1/matters/{matter_id}/classification-models/{model_id}/builds/{run_id}/reconcile
 ```
 
@@ -634,9 +635,15 @@ reconcilable failure, never duplicate logical versions.
 Implementation status: complete. Core now owns idempotent training-run,
 candidate-version, and evaluation records; `classification_model_build_v1`
 reauthorizes and validates frozen inputs before runtime dispatch; returned
-packages are identity/hash checked before transactional finalization; and
-explicit reconciliation can recover outputs published before an ambiguous
-timeout. Candidate builds never change the active model pointer.
+packages and their authoritative result manifests are scope, identity,
+reference, and hash checked before transactional finalization; and explicit
+reconciliation uses the same verification path to recover outputs published
+before an ambiguous timeout. Concurrent duplicate launches resolve to the one
+logical run. A retriable failure may be requeued on that same run and
+derivation with an incremented attempt number, a fresh DBOS workflow ID, and
+execution-time authorization of the user who requested the retry. Workflow
+exceptions remain failed in DBOS after Core records the structured failure.
+Candidate builds never change the active model pointer.
 
 ## 12. Phase 8: Decisions, activation, and rollback
 

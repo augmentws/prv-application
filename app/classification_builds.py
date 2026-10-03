@@ -1,3 +1,4 @@
+import hashlib
 import io
 import json
 import uuid
@@ -15,6 +16,7 @@ from app.audit import record_audit
 from app.classification_gateway import (
     ClassificationArtifactAccess,
     ClassificationGateway,
+    ClassificationGatewayError,
 )
 from app.classification_models import active_value_keys, target_schema_fingerprint
 from app.config import Settings, get_settings
@@ -373,6 +375,7 @@ def create_training_run(
         progress_completed=0,
         progress_total=5,
         created_by_user_id=actor_user_id,
+        execution_actor_user_id=actor_user_id,
     )
     db.add(run)
     db.flush()
@@ -392,6 +395,95 @@ def create_training_run(
         },
     )
     return run, True
+
+
+def resolve_existing_training_run(
+    db: Session,
+    *,
+    classification_model_id: uuid.UUID,
+    idempotency_key: str,
+    derivation_key: str,
+) -> ClassificationTrainingRun:
+    existing = db.scalar(
+        select(ClassificationTrainingRun).where(
+            ClassificationTrainingRun.classification_model_id == classification_model_id,
+            ClassificationTrainingRun.idempotency_key == idempotency_key,
+        )
+    )
+    if existing is not None:
+        if existing.derivation_key != derivation_key:
+            raise ClassificationBuildConflictError(
+                "Idempotency key was already used for different build inputs",
+                code="IDEMPOTENCY_KEY_REUSED",
+            )
+        return existing
+    existing = db.scalar(
+        select(ClassificationTrainingRun).where(
+            ClassificationTrainingRun.classification_model_id == classification_model_id,
+            ClassificationTrainingRun.derivation_key == derivation_key,
+        )
+    )
+    if existing is None:
+        raise ClassificationBuildConflictError(
+            "Concurrent classification build could not be resolved",
+            code="IDEMPOTENCY_RACE_UNRESOLVED",
+        )
+    return existing
+
+
+def retry_training_run(
+    db: Session,
+    *,
+    run: ClassificationTrainingRun,
+    actor_user_id: uuid.UUID,
+) -> ClassificationTrainingRun:
+    if run.status != "FAILED":
+        raise ClassificationBuildConflictError(
+            "Only failed classification builds can be retried",
+            code="BUILD_NOT_FAILED",
+        )
+    if not run.failure_retriable:
+        raise ClassificationBuildConflictError(
+            "Classification build failure is not retriable",
+            code="BUILD_FAILURE_NOT_RETRIABLE",
+        )
+    version = db.scalar(
+        select(ClassificationModelVersion.id).where(
+            ClassificationModelVersion.training_run_id == run.id
+        )
+    )
+    if version is not None:
+        raise ClassificationBuildConflictError(
+            "Classification build already produced a model version",
+            code="BUILD_ALREADY_FINALIZED",
+        )
+    run.attempt_number += 1
+    run.workflow_id = f"classification-model-build:{run.id}:attempt:{run.attempt_number}"
+    run.execution_actor_user_id = actor_user_id
+    run.status = "QUEUED"
+    run.current_stage = "QUEUED"
+    run.progress_completed = 0
+    run.failure_code = None
+    run.failure_summary = None
+    run.failure_retriable = False
+    run.started_at = None
+    run.completed_at = None
+    run.canceled_at = None
+    record_audit(
+        db,
+        tenant_id=run.tenant_id,
+        actor_user_id=actor_user_id,
+        action="classification_training_run.retried",
+        target_type="classification_training_run",
+        target_id=run.id,
+        details={
+            "classification_model_id": str(run.classification_model_id),
+            "attempt_number": run.attempt_number,
+            "workflow_id": run.workflow_id,
+        },
+    )
+    db.flush()
+    return run
 
 
 def get_training_run(
@@ -416,7 +508,7 @@ def get_training_run(
 
 
 def _actor_is_authorized(db: Session, run: ClassificationTrainingRun) -> bool:
-    user = db.get(User, run.created_by_user_id)
+    user = db.get(User, run.execution_actor_user_id)
     matter = db.get(Matter, run.matter_id)
     if user is None or matter is None or user.status != "ACTIVE" or user.tenant.status != "ACTIVE":
         return False
@@ -547,7 +639,7 @@ def prepare_runtime_invocation(
             "access": {
                 "tenant_id": str(run.tenant_id),
                 "client_id": str(client_id),
-                "actor_user_id": str(run.created_by_user_id),
+                "actor_user_id": str(run.execution_actor_user_id),
             },
         }
 
@@ -556,6 +648,11 @@ def invoke_runtime(
     invocation: dict[str, Any],
     *,
     gateway: ClassificationGateway | None = None,
+    published_result_verifier: Callable[
+        [ClassificationTrainingResult, ClassificationArtifactAccess],
+        dict[str, Any],
+    ]
+    | None = None,
 ) -> dict[str, Any]:
     if invocation.get("completed"):
         return invocation
@@ -567,10 +664,12 @@ def invoke_runtime(
     )
     resolved_gateway = gateway or ClassificationGateway()
     result = resolved_gateway.train(request, access)
+    result_manifest = (published_result_verifier or verify_published_training_result)(result, access)
     package = resolved_gateway.validate_package(result.model_artifact, access)
     return {
         "completed": False,
         "result": result.model_dump(mode="json"),
+        "result_manifest": result_manifest,
         "package": package.model_dump(mode="json"),
     }
 
@@ -646,6 +745,12 @@ def finalize_training_run(
     if runtime_output.get("completed"):
         return None
     result = ClassificationTrainingResult.model_validate(runtime_output["result"])
+    result_manifest = runtime_output.get("result_manifest")
+    if not isinstance(result_manifest, dict):
+        raise ClassificationBuildConflictError(
+            "Verified runtime result manifest is missing",
+            code="RESULT_MANIFEST_MISSING",
+        )
     package = PackageValidationResult.model_validate(runtime_output["package"])
     with (nullcontext(db) if db is not None else session_factory()) as active_db:
         run = active_db.scalar(
@@ -668,6 +773,11 @@ def finalize_training_run(
             run.progress_completed = run.progress_total
             active_db.commit()
             return existing.id
+        _validate_training_result_manifest(
+            run,
+            result_manifest,
+            _result_artifact_references(result),
+        )
         _validate_runtime_result(run, result, package)
         model = active_db.scalar(
             select(ClassificationModel)
@@ -713,7 +823,7 @@ def finalize_training_run(
             source_revision=package.manifest.source_revision,
             metric_summary=result.metrics,
             warnings=result.warnings,
-            created_by_user_id=run.created_by_user_id,
+            created_by_user_id=run.execution_actor_user_id,
         )
         active_db.add(version)
         active_db.flush()
@@ -750,7 +860,7 @@ def finalize_training_run(
         record_audit(
             active_db,
             tenant_id=run.tenant_id,
-            actor_user_id=run.created_by_user_id,
+            actor_user_id=run.execution_actor_user_id,
             action="classification_training_run.completed",
             target_type="classification_training_run",
             target_id=run.id,
@@ -786,6 +896,15 @@ def fail_training_run(
         db.commit()
 
 
+def training_failure_details(exc: Exception) -> tuple[str, bool]:
+    if isinstance(exc, ClassificationBuildError):
+        retriable_codes = {"PUBLISHED_OUTPUT_NOT_VISIBLE"}
+        return exc.code, exc.code in retriable_codes
+    if isinstance(exc, ClassificationGatewayError):
+        return "CLASSIFICATION_RUNTIME_UNAVAILABLE", True
+    return "CLASSIFICATION_BUILD_FAILED", True
+
+
 def cancel_training_run(run: ClassificationTrainingRun) -> bool:
     if run.status in {"COMPLETED", "COMPLETED_WITH_ERRORS", "CANCELED"}:
         return False
@@ -809,18 +928,171 @@ def _workflow_reference(reference) -> ArtifactReference:
     )
 
 
-def _validate_reconciliation_manifest(
+def _result_artifact_references(
+    result: ClassificationTrainingResult,
+) -> dict[ArtifactType, ArtifactReference]:
+    return {
+        ArtifactType.CLASSIFICATION_MODEL_PACKAGE: result.model_artifact,
+        ArtifactType.CLASSIFICATION_PREDICTIONS: result.prediction_artifact,
+        ArtifactType.CLASSIFICATION_EVALUATION: result.evaluation_artifact,
+        ArtifactType.CLASSIFICATION_RESULT_MANIFEST: result.result_manifest_artifact,
+    }
+
+
+def _validate_published_manifest(
+    *,
+    training_run_id: uuid.UUID,
+    derivation_key: str,
+    manifest: dict[str, Any],
+    references: dict[ArtifactType, ArtifactReference],
+) -> None:
+    if (
+        manifest.get("status") != "COMPLETED"
+        or manifest.get("training_run_id") != str(training_run_id)
+        or manifest.get("output_derivation_key") != derivation_key
+    ):
+        raise ClassificationBuildConflictError(
+            "Published result manifest does not match the training run",
+            code="RESULT_MANIFEST_IDENTITY_MISMATCH",
+        )
+    expected_outputs = {
+        "model": references[ArtifactType.CLASSIFICATION_MODEL_PACKAGE],
+        "predictions": references[ArtifactType.CLASSIFICATION_PREDICTIONS],
+        "evaluation": references[ArtifactType.CLASSIFICATION_EVALUATION],
+    }
+    outputs = manifest.get("outputs")
+    if not isinstance(outputs, dict):
+        raise ClassificationBuildConflictError(
+            "Published result manifest is missing output references",
+            code="RESULT_MANIFEST_OUTPUTS_MISSING",
+        )
+    try:
+        output_matches = all(
+            ArtifactReference.model_validate(outputs.get(name)) == reference
+            for name, reference in expected_outputs.items()
+        )
+    except ValueError as exc:
+        raise ClassificationBuildConflictError(
+            "Published result manifest output references are invalid",
+            code="RESULT_MANIFEST_OUTPUTS_INVALID",
+        ) from exc
+    if not output_matches:
+        raise ClassificationBuildConflictError(
+            "Published result manifest output references do not match artifacts",
+            code="RESULT_MANIFEST_OUTPUT_MISMATCH",
+        )
+
+
+def _load_published_training_output(
+    *,
+    training_run_id: uuid.UUID,
+    derivation_key: str,
+    access: ClassificationArtifactAccess,
+) -> tuple[dict[ArtifactType, ArtifactReference], dict[str, Any]]:
+    references: dict[ArtifactType, ArtifactReference] = {}
+    for artifact_type in (
+        ArtifactType.CLASSIFICATION_MODEL_PACKAGE,
+        ArtifactType.CLASSIFICATION_PREDICTIONS,
+        ArtifactType.CLASSIFICATION_EVALUATION,
+        ArtifactType.CLASSIFICATION_RESULT_MANIFEST,
+    ):
+        expected_derivation_key = classification_output_artifact_derivation_key(
+            derivation_key,
+            artifact_type.value,
+        )
+        reference = find_workflow_artifact_reference(
+            artifact_type=artifact_type,
+            derivation_key=expected_derivation_key,
+            actor_user_id=access.actor_user_id,
+            tenant_id=access.tenant_id,
+            client_id=access.client_id,
+        )
+        if reference is None:
+            raise ClassificationBuildConflictError(
+                f"Published {artifact_type.value} was not found",
+                code="PUBLISHED_OUTPUT_NOT_VISIBLE",
+            )
+        if (
+            reference.tenant_id != access.tenant_id
+            or reference.client_id != access.client_id
+            or reference.core_scope_kind != "CLASSIFICATION_TRAINING_RUN"
+            or reference.core_scope_id != training_run_id
+            or reference.derivation_key != expected_derivation_key
+            or reference.producer_run_id != training_run_id
+        ):
+            raise ClassificationBuildConflictError(
+                f"Published {artifact_type.value} has invalid scope or producer identity",
+                code="PUBLISHED_OUTPUT_SCOPE_MISMATCH",
+            )
+        references[artifact_type] = _workflow_reference(reference)
+    destination = io.BytesIO()
+    manifest_reference = references[ArtifactType.CLASSIFICATION_RESULT_MANIFEST]
+    copy_workflow_artifact_content(
+        artifact_id=manifest_reference.artifact_id,
+        destination=destination,
+        actor_user_id=access.actor_user_id,
+        tenant_id=access.tenant_id,
+        client_id=access.client_id,
+    )
+    manifest_bytes = destination.getvalue()
+    if hashlib.sha256(manifest_bytes).hexdigest() != manifest_reference.content_hash:
+        raise ClassificationBuildConflictError(
+            "Published result manifest content hash is invalid",
+            code="RESULT_MANIFEST_HASH_MISMATCH",
+        )
+    try:
+        manifest = json.loads(manifest_bytes)
+    except (UnicodeDecodeError, json.JSONDecodeError) as exc:
+        raise ClassificationBuildConflictError(
+            "Published result manifest is invalid",
+            code="RESULT_MANIFEST_INVALID",
+        ) from exc
+    if not isinstance(manifest, dict):
+        raise ClassificationBuildConflictError(
+            "Published result manifest must be an object",
+            code="RESULT_MANIFEST_INVALID",
+        )
+    _validate_published_manifest(
+        training_run_id=training_run_id,
+        derivation_key=derivation_key,
+        manifest=manifest,
+        references=references,
+    )
+    return references, manifest
+
+
+def verify_published_training_result(
+    result: ClassificationTrainingResult,
+    access: ClassificationArtifactAccess,
+) -> dict[str, Any]:
+    references, manifest = _load_published_training_output(
+        training_run_id=result.training_run_id,
+        derivation_key=result.output_derivation_key,
+        access=access,
+    )
+    if references != _result_artifact_references(result):
+        raise ClassificationBuildConflictError(
+            "Runtime response references do not match published artifacts",
+            code="RUNTIME_OUTPUT_REFERENCE_MISMATCH",
+        )
+    return manifest
+
+
+def _validate_training_result_manifest(
     run: ClassificationTrainingRun,
     manifest: dict[str, Any],
     references: dict[ArtifactType, ArtifactReference],
 ) -> None:
+    _validate_published_manifest(
+        training_run_id=run.id,
+        derivation_key=run.derivation_key,
+        manifest=manifest,
+        references=references,
+    )
     snapshot = run.dataset_snapshot
     configuration = run.configuration
     if (
-        manifest.get("status") != "COMPLETED"
-        or manifest.get("training_run_id") != str(run.id)
-        or manifest.get("output_derivation_key") != run.derivation_key
-        or manifest.get("configuration_hash") != configuration.configuration_hash
+        manifest.get("configuration_hash") != configuration.configuration_hash
         or manifest.get("feature_specification_hash") != snapshot.feature_specification_hash
         or manifest.get("runtime_image_digest") != run.runtime_image_digest
         or manifest.get("source_revision") != run.source_revision
@@ -831,24 +1103,10 @@ def _validate_reconciliation_manifest(
             "splits": snapshot.split_content_hash,
         }
     ):
-        raise ClassificationBuildConflictError("Published result manifest does not match the training run")
-    expected_outputs = {
-        "model": references[ArtifactType.CLASSIFICATION_MODEL_PACKAGE],
-        "predictions": references[ArtifactType.CLASSIFICATION_PREDICTIONS],
-        "evaluation": references[ArtifactType.CLASSIFICATION_EVALUATION],
-    }
-    outputs = manifest.get("outputs")
-    if not isinstance(outputs, dict):
-        raise ClassificationBuildConflictError("Published result manifest is missing output references")
-    try:
-        output_matches = all(
-            ArtifactReference.model_validate(outputs.get(name)) == reference
-            for name, reference in expected_outputs.items()
+        raise ClassificationBuildConflictError(
+            "Published result manifest does not match frozen build inputs",
+            code="RESULT_MANIFEST_INPUT_MISMATCH",
         )
-    except ValueError as exc:
-        raise ClassificationBuildConflictError("Published result manifest output references are invalid") from exc
-    if not output_matches:
-        raise ClassificationBuildConflictError("Published result manifest output references do not match artifacts")
 
 
 def reconcile_training_run(
@@ -869,42 +1127,17 @@ def reconcile_training_run(
     matter = db.get(Matter, run.matter_id)
     if matter is None:
         raise ClassificationBuildConflictError("Training-run matter not found")
-    references = {}
-    for artifact_type in (
-        ArtifactType.CLASSIFICATION_MODEL_PACKAGE,
-        ArtifactType.CLASSIFICATION_PREDICTIONS,
-        ArtifactType.CLASSIFICATION_EVALUATION,
-        ArtifactType.CLASSIFICATION_RESULT_MANIFEST,
-    ):
-        reference = find_workflow_artifact_reference(
-            artifact_type=artifact_type,
-            derivation_key=classification_output_artifact_derivation_key(
-                run.derivation_key,
-                artifact_type.value,
-            ),
-            actor_user_id=run.created_by_user_id,
-            tenant_id=run.tenant_id,
-            client_id=matter.client_id,
-        )
-        if reference is None:
-            raise ClassificationBuildConflictError(
-                f"Published {artifact_type.value} was not found",
-                code="RECONCILIATION_OUTPUT_MISSING",
-            )
-        references[artifact_type] = _workflow_reference(reference)
-    destination = io.BytesIO()
-    copy_workflow_artifact_content(
-        artifact_id=references[ArtifactType.CLASSIFICATION_RESULT_MANIFEST].artifact_id,
-        destination=destination,
-        actor_user_id=run.created_by_user_id,
+    access = ClassificationArtifactAccess(
         tenant_id=run.tenant_id,
         client_id=matter.client_id,
+        actor_user_id=run.execution_actor_user_id,
     )
-    try:
-        manifest = json.loads(destination.getvalue())
-    except (UnicodeDecodeError, json.JSONDecodeError) as exc:
-        raise ClassificationBuildConflictError("Published result manifest is invalid") from exc
-    _validate_reconciliation_manifest(run, manifest, references)
+    references, manifest = _load_published_training_output(
+        training_run_id=run.id,
+        derivation_key=run.derivation_key,
+        access=access,
+    )
+    _validate_training_result_manifest(run, manifest, references)
     result = ClassificationTrainingResult(
         training_run_id=run.id,
         output_derivation_key=run.derivation_key,
@@ -918,11 +1151,6 @@ def reconcile_training_run(
         metrics=manifest.get("metrics", {}),
         warnings=manifest.get("warnings", []),
     )
-    access = ClassificationArtifactAccess(
-        tenant_id=run.tenant_id,
-        client_id=matter.client_id,
-        actor_user_id=run.created_by_user_id,
-    )
     package = (gateway or ClassificationGateway()).validate_package(result.model_artifact, access)
     run.status = "RECONCILING"
     run.current_stage = "FINALIZING_RECONCILED_OUTPUTS"
@@ -932,6 +1160,7 @@ def reconcile_training_run(
         {
             "completed": False,
             "result": result.model_dump(mode="json"),
+            "result_manifest": manifest,
             "package": package.model_dump(mode="json"),
         },
         db=db,
@@ -943,13 +1172,29 @@ def execute_training_run(
     *,
     session_factory: Callable[[], Session] = SessionLocal,
     gateway: ClassificationGateway | None = None,
+    published_result_verifier: Callable[
+        [ClassificationTrainingResult, ClassificationArtifactAccess],
+        dict[str, Any],
+    ]
+    | None = None,
 ) -> uuid.UUID | None:
-    invocation = prepare_runtime_invocation(training_run_id, session_factory=session_factory)
-    if invocation is None or invocation.get("completed"):
-        return None
     try:
-        output = invoke_runtime(invocation, gateway=gateway)
+        invocation = prepare_runtime_invocation(training_run_id, session_factory=session_factory)
+        if invocation is None or invocation.get("completed"):
+            return None
+        output = invoke_runtime(
+            invocation,
+            gateway=gateway,
+            published_result_verifier=published_result_verifier,
+        )
         return finalize_training_run(training_run_id, output, session_factory=session_factory)
     except Exception as exc:
-        fail_training_run(training_run_id, str(exc), session_factory=session_factory)
+        code, retriable = training_failure_details(exc)
+        fail_training_run(
+            training_run_id,
+            str(exc),
+            code=code,
+            retriable=retriable,
+            session_factory=session_factory,
+        )
         raise

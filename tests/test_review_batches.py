@@ -586,7 +586,15 @@ def test_batch_search_injects_authoritative_membership_filter(
         },
     )
     assert response.status_code == 200, response.text
-    assert response.json()["values"] == [{"value": True, "count": 1}]
+    assert response.json()["values"] == [
+        {
+            "value": True,
+            "count": 1,
+            "label": None,
+            "parent": None,
+            "has_children": False,
+        }
+    ]
     assert facet_capture["required_filters"][1]["nested"]["query"]["bool"]["filter"][:3] == [
         {"term": {"batch_coding.batch_id": batch_id}},
         {"term": {"batch_coding.run_id": run_id}},

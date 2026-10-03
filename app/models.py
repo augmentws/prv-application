@@ -1270,17 +1270,20 @@ class ReviewBatchSearchCodingRun(TimestampMixin, Base):
             name="ck_review_batch_search_coding_status",
         ),
         UniqueConstraint("review_batch_run_id", name="uq_review_batch_search_coding_run"),
+        Index("ix_review_batch_search_coding_run_id", "review_batch_run_id"),
+        Index("ix_review_batch_search_coding_status", "status"),
+        Index("ix_review_batch_search_coding_user", "selected_by_user_id"),
     )
 
     review_batch_id: Mapped[uuid.UUID] = mapped_column(
         Uuid, ForeignKey("review_batch.id", ondelete="CASCADE"), primary_key=True
     )
     review_batch_run_id: Mapped[uuid.UUID] = mapped_column(
-        Uuid, ForeignKey("review_batch_run.id", ondelete="CASCADE"), index=True
+        Uuid, ForeignKey("review_batch_run.id", ondelete="CASCADE")
     )
-    status: Mapped[str] = mapped_column(String(20), default="QUEUED", index=True)
+    status: Mapped[str] = mapped_column(String(20), default="QUEUED")
     selected_by_user_id: Mapped[uuid.UUID] = mapped_column(
-        Uuid, ForeignKey("app_user.id", ondelete="RESTRICT"), index=True
+        Uuid, ForeignKey("app_user.id", ondelete="RESTRICT")
     )
     selected_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
     projected_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
@@ -1665,6 +1668,7 @@ class ClassificationTrainingRun(TimestampMixin, Base):
             name="ck_classification_training_run_completed_outputs",
         ),
         CheckConstraint("row_version > 0", name="ck_classification_training_run_row_version"),
+        CheckConstraint("attempt_number > 0", name="ck_classification_training_run_attempt_number"),
         ForeignKeyConstraint(
             ["configuration_id", "classification_model_id"],
             [
@@ -1696,6 +1700,7 @@ class ClassificationTrainingRun(TimestampMixin, Base):
     )
     idempotency_key: Mapped[str] = mapped_column(String(200))
     workflow_id: Mapped[str] = mapped_column(String(500))
+    attempt_number: Mapped[int] = mapped_column(Integer, default=1)
     derivation_key: Mapped[str] = mapped_column(String(64), index=True)
     trainer_specification: Mapped[dict[str, Any]] = mapped_column(JSON_DOCUMENT)
     validation_specification: Mapped[dict[str, Any]] = mapped_column(JSON_DOCUMENT)
@@ -1723,6 +1728,11 @@ class ClassificationTrainingRun(TimestampMixin, Base):
         ForeignKey("app_user.id", ondelete="RESTRICT"),
         index=True,
     )
+    execution_actor_user_id: Mapped[uuid.UUID] = mapped_column(
+        Uuid,
+        ForeignKey("app_user.id", ondelete="RESTRICT"),
+        index=True,
+    )
     started_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     completed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     canceled_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
@@ -1733,7 +1743,8 @@ class ClassificationTrainingRun(TimestampMixin, Base):
         overlaps="classification_model",
     )
     dataset_snapshot: Mapped[ClassificationDatasetSnapshot] = relationship()
-    created_by: Mapped[User] = relationship()
+    created_by: Mapped[User] = relationship(foreign_keys=[created_by_user_id])
+    execution_actor: Mapped[User] = relationship(foreign_keys=[execution_actor_user_id])
 
     __mapper_args__: ClassVar[dict[str, Any]] = {"version_id_col": row_version}
 

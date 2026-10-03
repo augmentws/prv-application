@@ -19,6 +19,7 @@ export interface ClassificationTrainingRunRead {
   dataset_snapshot_id: string;
   idempotency_key: string;
   workflow_id: string;
+  attempt_number: number;
   /** @pattern ^[0-9a-f]{64}$ */
   derivation_key: string;
   trainer_specification: TrainerSpecification;
@@ -44,6 +45,7 @@ export interface ClassificationTrainingRunRead {
   failure_retriable: boolean;
   model_version?: ClassificationModelVersionRead | null;
   created_by_user_id: string;
+  execution_actor_user_id: string;
   started_at: string | null;
   completed_at: string | null;
   canceled_at: string | null;

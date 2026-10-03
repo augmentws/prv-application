@@ -14238,6 +14238,74 @@
         }
       }
     },
+    "/v1/matters/{matter_id}/classification-models/{classification_model_id}/builds/{training_run_id}/retry": {
+      "post": {
+        "tags": [
+          "classification models"
+        ],
+        "summary": "Retry Classification Model Build Run",
+        "operationId": "retry_classification_model_build_run_v1_matters__matter_id__classification_models__classification_model_id__builds__training_run_id__retry_post",
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "matter_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid",
+              "title": "Matter Id"
+            }
+          },
+          {
+            "name": "classification_model_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid",
+              "title": "Classification Model Id"
+            }
+          },
+          {
+            "name": "training_run_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid",
+              "title": "Training Run Id"
+            }
+          }
+        ],
+        "responses": {
+          "202": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ClassificationTrainingRunRead"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/v1/matters/{matter_id}/classification-models/{classification_model_id}/builds/{training_run_id}/reconcile": {
       "post": {
         "tags": [
@@ -17928,6 +17996,10 @@
             "type": "string",
             "title": "Workflow Id"
           },
+          "attempt_number": {
+            "type": "integer",
+            "title": "Attempt Number"
+          },
           "derivation_key": {
             "type": "string",
             "pattern": "^[0-9a-f]{64}$",
@@ -18123,6 +18195,11 @@
             "format": "uuid",
             "title": "Created By User Id"
           },
+          "execution_actor_user_id": {
+            "type": "string",
+            "format": "uuid",
+            "title": "Execution Actor User Id"
+          },
           "started_at": {
             "anyOf": [
               {
@@ -18184,6 +18261,7 @@
           "dataset_snapshot_id",
           "idempotency_key",
           "workflow_id",
+          "attempt_number",
           "derivation_key",
           "trainer_specification",
           "validation_specification",
@@ -18207,6 +18285,7 @@
           "failure_summary",
           "failure_retriable",
           "created_by_user_id",
+          "execution_actor_user_id",
           "started_at",
           "completed_at",
           "canceled_at",

@@ -2669,6 +2669,7 @@ class ClassificationTrainingRunRead(BaseModel):
     dataset_snapshot_id: uuid.UUID
     idempotency_key: str
     workflow_id: str
+    attempt_number: int
     derivation_key: Sha256
     trainer_specification: TrainerSpecification
     validation_specification: ValidationPolicy
@@ -2693,6 +2694,7 @@ class ClassificationTrainingRunRead(BaseModel):
     failure_retriable: bool
     model_version: ClassificationModelVersionRead | None = None
     created_by_user_id: uuid.UUID
+    execution_actor_user_id: uuid.UUID
     started_at: datetime | None
     completed_at: datetime | None
     canceled_at: datetime | None

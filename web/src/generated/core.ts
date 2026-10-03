@@ -13409,6 +13409,60 @@ export const cancelClassificationModelBuildRunV1MattersMatterIdClassificationMod
 
 
 
+export type retryClassificationModelBuildRunV1MattersMatterIdClassificationModelsClassificationModelIdBuildsTrainingRunIdRetryPostResponse202 = {
+  data: ClassificationTrainingRunRead
+  status: 202
+}
+
+export type retryClassificationModelBuildRunV1MattersMatterIdClassificationModelsClassificationModelIdBuildsTrainingRunIdRetryPostResponse422 = {
+  data: HTTPValidationError
+  status: 422
+}
+
+export type retryClassificationModelBuildRunV1MattersMatterIdClassificationModelsClassificationModelIdBuildsTrainingRunIdRetryPostResponseSuccess = (retryClassificationModelBuildRunV1MattersMatterIdClassificationModelsClassificationModelIdBuildsTrainingRunIdRetryPostResponse202) & {
+  headers: Headers;
+};
+export type retryClassificationModelBuildRunV1MattersMatterIdClassificationModelsClassificationModelIdBuildsTrainingRunIdRetryPostResponseError = (retryClassificationModelBuildRunV1MattersMatterIdClassificationModelsClassificationModelIdBuildsTrainingRunIdRetryPostResponse422) & {
+  headers: Headers;
+};
+
+export type retryClassificationModelBuildRunV1MattersMatterIdClassificationModelsClassificationModelIdBuildsTrainingRunIdRetryPostResponse = (retryClassificationModelBuildRunV1MattersMatterIdClassificationModelsClassificationModelIdBuildsTrainingRunIdRetryPostResponseSuccess | retryClassificationModelBuildRunV1MattersMatterIdClassificationModelsClassificationModelIdBuildsTrainingRunIdRetryPostResponseError)
+
+export const getRetryClassificationModelBuildRunV1MattersMatterIdClassificationModelsClassificationModelIdBuildsTrainingRunIdRetryPostUrl = (matterId: string,
+    classificationModelId: string,
+    trainingRunId: string,) => {
+
+
+
+
+  return `/api/core/v1/matters/${matterId}/classification-models/${classificationModelId}/builds/${trainingRunId}/retry`
+}
+
+/**
+ * @summary Retry Classification Model Build Run
+ */
+export const retryClassificationModelBuildRunV1MattersMatterIdClassificationModelsClassificationModelIdBuildsTrainingRunIdRetryPost = async (matterId: string,
+    classificationModelId: string,
+    trainingRunId: string, options?: RequestInit): Promise<retryClassificationModelBuildRunV1MattersMatterIdClassificationModelsClassificationModelIdBuildsTrainingRunIdRetryPostResponse> => {
+
+  const res = await fetch(getRetryClassificationModelBuildRunV1MattersMatterIdClassificationModelsClassificationModelIdBuildsTrainingRunIdRetryPostUrl(matterId,classificationModelId,trainingRunId),
+  {
+    ...options,
+    method: 'POST'
+
+
+  }
+)
+
+
+  const body = [204, 205, 304].includes(res.status) ? null : await res.text();
+
+  const data: retryClassificationModelBuildRunV1MattersMatterIdClassificationModelsClassificationModelIdBuildsTrainingRunIdRetryPostResponse['data'] = body ? JSON.parse(body) : {}
+  return { data, status: res.status, headers: res.headers } as retryClassificationModelBuildRunV1MattersMatterIdClassificationModelsClassificationModelIdBuildsTrainingRunIdRetryPostResponse
+}
+
+
+
 export type reconcileClassificationModelBuildV1MattersMatterIdClassificationModelsClassificationModelIdBuildsTrainingRunIdReconcilePostResponse200 = {
   data: ClassificationTrainingRunRead
   status: 200

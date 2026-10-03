@@ -15,6 +15,8 @@ from app.classification_builds import (
     get_training_run,
     prepare_build,
     reconcile_training_run,
+    resolve_existing_training_run,
+    retry_training_run,
 )
 from app.classification_datasets import (
     ClassificationDatasetError,
@@ -191,6 +193,7 @@ def training_run_read(db: Session, run: ClassificationTrainingRun) -> Classifica
             "dataset_snapshot_id": run.dataset_snapshot_id,
             "idempotency_key": run.idempotency_key,
             "workflow_id": run.workflow_id,
+            "attempt_number": run.attempt_number,
             "derivation_key": run.derivation_key,
             "trainer_specification": run.trainer_specification,
             "validation_specification": run.validation_specification,
@@ -215,6 +218,7 @@ def training_run_read(db: Session, run: ClassificationTrainingRun) -> Classifica
             "failure_retriable": run.failure_retriable,
             "model_version": model_version_read(version) if version is not None else None,
             "created_by_user_id": run.created_by_user_id,
+            "execution_actor_user_id": run.execution_actor_user_id,
             "started_at": run.started_at,
             "completed_at": run.completed_at,
             "canceled_at": run.canceled_at,
@@ -730,10 +734,19 @@ def create_classification_model_build(
         raise build_error(exc) from exc
     except IntegrityError as exc:
         db.rollback()
-        raise HTTPException(
-            status_code=status.HTTP_409_CONFLICT,
-            detail="A conflicting classification model build already exists",
-        ) from exc
+        try:
+            run = resolve_existing_training_run(
+                db,
+                classification_model_id=classification_model_id,
+                idempotency_key=payload.idempotency_key,
+                derivation_key=prepared.derivation_key,
+            )
+            return ClassificationModelBuildCreateResponse(
+                training_run=training_run_read(db, run),
+                created=False,
+            )
+        except ClassificationBuildError as conflict:
+            raise build_error(conflict) from exc
 
 
 @router.get(
@@ -824,6 +837,52 @@ def cancel_classification_model_build_run(
         db.commit()
         if canceled:
             cancel_classification_model_build(run.workflow_id)
+        db.refresh(run)
+        return training_run_read(db, run)
+    except ClassificationBuildError as exc:
+        db.rollback()
+        raise build_error(exc) from exc
+
+
+@router.post(
+    "/{classification_model_id}/builds/{training_run_id}/retry",
+    response_model=ClassificationTrainingRunRead,
+    status_code=status.HTTP_202_ACCEPTED,
+)
+def retry_classification_model_build_run(
+    matter_id: uuid.UUID,
+    classification_model_id: uuid.UUID,
+    training_run_id: uuid.UUID,
+    principal: Principal = Depends(get_principal),
+    db: Session = Depends(get_db),
+) -> ClassificationTrainingRunRead:
+    get_authorized_matter(db, principal, matter_id)
+    try:
+        run = get_training_run(
+            db,
+            matter_id=matter_id,
+            classification_model_id=classification_model_id,
+            training_run_id=training_run_id,
+            for_update=True,
+        )
+        prepared = prepare_build(
+            db,
+            matter_id=matter_id,
+            classification_model_id=classification_model_id,
+            dataset_snapshot_id=run.dataset_snapshot_id,
+        )
+        if prepared.blocking_errors or prepared.derivation_key != run.derivation_key:
+            raise ClassificationBuildError(
+                "Frozen build inputs are no longer valid",
+                code="FROZEN_BUILD_INPUT_INVALID",
+            )
+        retry_training_run(
+            db,
+            run=run,
+            actor_user_id=principal.user.id,
+        )
+        enqueue_classification_model_build(db, run.workflow_id, str(run.id))
+        db.commit()
         db.refresh(run)
         return training_run_read(db, run)
     except ClassificationBuildError as exc:

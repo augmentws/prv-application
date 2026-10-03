@@ -8,6 +8,7 @@ from app.classification_builds import (
     finalize_training_run,
     invoke_runtime,
     prepare_runtime_invocation,
+    training_failure_details,
 )
 from app.config import get_settings
 
@@ -42,8 +43,13 @@ def finalize(training_run_id: str, runtime_output: dict) -> str | None:
 
 
 @DBOS.step(name="fail_classification_model_build", retries_allowed=True, max_attempts=3)
-def fail(training_run_id: str, message: str) -> None:
-    fail_training_run(uuid.UUID(training_run_id), message)
+def fail(training_run_id: str, message: str, code: str, retriable: bool) -> None:
+    fail_training_run(
+        uuid.UUID(training_run_id),
+        message,
+        code=code,
+        retriable=retriable,
+    )
 
 
 @DBOS.workflow(name="classification_model_build_v1")
@@ -61,5 +67,6 @@ def classification_model_build(training_run_id: str) -> str | None:
             "Classification model build failed training_run_id=%s",
             training_run_id,
         )
-        fail(training_run_id, str(exc))
-        return None
+        code, retriable = training_failure_details(exc)
+        fail(training_run_id, str(exc), code, retriable)
+        raise

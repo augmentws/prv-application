@@ -1,10 +1,13 @@
+import hashlib
 import json
 import uuid
+from types import SimpleNamespace
 
 import pytest
 from conftest import TestingSessionLocal
 from fastapi.testclient import TestClient
 from sqlalchemy import func, select
+from sqlalchemy.exc import IntegrityError
 from test_classification_models import (
     auth,
     binary_configuration,
@@ -28,6 +31,7 @@ from app.models import (
     ClassificationModelVersion,
     ClassificationTrainingRun,
 )
+from classification_service.hashing import classification_output_artifact_derivation_key
 from classification_service.schemas import (
     ArtifactReference,
     ArtifactType,
@@ -48,7 +52,12 @@ def ready_build_fixture(
     suffix: str,
 ) -> tuple[dict, dict, ClassificationDatasetSnapshot]:
     matter = create_matter(client, token, tenant_id, suffix)
-    definition = create_enum_field(client, token, matter["id"], key=f"target_{suffix.casefold()}")
+    definition = create_enum_field(
+        client,
+        token,
+        matter["id"],
+        key=f"target_{suffix.casefold().replace(' ', '_')}",
+    )
     model = create_model(client, token, matter["id"], definition["id"])
     configuration_response = client.post(
         f"/v1/matters/{matter['id']}/classification-models/{model['id']}/configurations",
@@ -123,6 +132,9 @@ class FakeClassificationGateway:
         self.fail = fail
         self.calls = 0
         self.validation: PackageValidationResult | None = None
+        self.result: ClassificationTrainingResult | None = None
+        self.published_manifest: dict | None = None
+        self.published_manifest_bytes: bytes | None = None
 
     @staticmethod
     def reference(artifact_type: ArtifactType, digit: str) -> ArtifactReference:
@@ -147,7 +159,39 @@ class FakeClassificationGateway:
         model = self.reference(ArtifactType.CLASSIFICATION_MODEL_PACKAGE, "a")
         predictions = self.reference(ArtifactType.CLASSIFICATION_PREDICTIONS, "b")
         evaluation = self.reference(ArtifactType.CLASSIFICATION_EVALUATION, "c")
-        result_manifest = self.reference(ArtifactType.CLASSIFICATION_RESULT_MANIFEST, "d")
+        self.published_manifest = {
+            "status": "COMPLETED",
+            "training_run_id": str(request.training_run_id),
+            "output_derivation_key": request.output_derivation_key,
+            "configuration_hash": request.configuration_hash,
+            "feature_specification_hash": "4" * 64,
+            "runtime_image_digest": settings.classification_runtime_image_digest,
+            "source_revision": settings.classification_source_revision,
+            "input_artifact_hashes": {
+                "features": request.feature_artifact.content_hash,
+                "labels": request.label_artifact.content_hash,
+                "splits": request.split_artifact.content_hash,
+            },
+            "outputs": {
+                "model": model.model_dump(mode="json"),
+                "predictions": predictions.model_dump(mode="json"),
+                "evaluation": evaluation.model_dump(mode="json"),
+            },
+            "metrics": {"accuracy": 0.9},
+            "warnings": [],
+        }
+        self.published_manifest_bytes = json.dumps(
+            self.published_manifest,
+            separators=(",", ":"),
+            sort_keys=True,
+        ).encode()
+        result_manifest = ArtifactReference(
+            artifact_id=uuid.uuid4(),
+            artifact_type=ArtifactType.CLASSIFICATION_RESULT_MANIFEST,
+            schema_version=1,
+            content_hash=hashlib.sha256(self.published_manifest_bytes).hexdigest(),
+            media_type="application/json",
+        )
         manifest = ModelPackageManifest(
             package_id=uuid.uuid4(),
             training_run_id=request.training_run_id,
@@ -192,7 +236,7 @@ class FakeClassificationGateway:
             manifest=manifest,
             signature=signature,
         )
-        return ClassificationTrainingResult(
+        self.result = ClassificationTrainingResult(
             training_run_id=request.training_run_id,
             output_derivation_key=request.output_derivation_key,
             model_artifact=model,
@@ -203,11 +247,74 @@ class FakeClassificationGateway:
             runtime_image_digest=settings.classification_runtime_image_digest,
             metrics={"accuracy": 0.9},
         )
+        return self.result
 
     def validate_package(self, reference, access) -> PackageValidationResult:
         del reference, access
         assert self.validation is not None
         return self.validation
+
+    def verify_published_result(self, result, access) -> dict:
+        del result, access
+        assert self.published_manifest is not None
+        return self.published_manifest
+
+
+def patch_authoritative_published_outputs(
+    monkeypatch,
+    *,
+    gateway: FakeClassificationGateway,
+    training_run_id: uuid.UUID,
+) -> None:
+    with TestingSessionLocal() as db:
+        run = db.get(ClassificationTrainingRun, training_run_id)
+        assert run is not None
+        tenant_id = run.tenant_id
+        client_id = run.classification_model.matter.client_id
+        derivation_key = run.derivation_key
+
+    def find_reference(*, artifact_type, **kwargs):
+        assert gateway.result is not None
+        assert kwargs["derivation_key"] == classification_output_artifact_derivation_key(
+            derivation_key,
+            artifact_type.value,
+        )
+        references = {
+            reference.artifact_type: reference
+            for reference in (
+                gateway.result.model_artifact,
+                gateway.result.prediction_artifact,
+                gateway.result.evaluation_artifact,
+                gateway.result.result_manifest_artifact,
+            )
+        }
+        reference = references[artifact_type]
+        return SimpleNamespace(
+            artifact_id=reference.artifact_id,
+            tenant_id=tenant_id,
+            client_id=client_id,
+            core_scope_kind="CLASSIFICATION_TRAINING_RUN",
+            core_scope_id=training_run_id,
+            artifact_type=reference.artifact_type,
+            schema_version=reference.schema_version,
+            derivation_key=kwargs["derivation_key"],
+            content_hash=reference.content_hash,
+            media_type=reference.media_type,
+            byte_length=1,
+            producer_kind="CLASSIFICATION_RUNTIME",
+            producer_run_id=training_run_id,
+            metadata={},
+        )
+
+    def copy_manifest(*, artifact_id, destination, **kwargs):
+        del kwargs
+        assert gateway.result is not None
+        assert artifact_id == gateway.result.result_manifest_artifact.artifact_id
+        assert gateway.published_manifest_bytes is not None
+        destination.write(gateway.published_manifest_bytes)
+
+    monkeypatch.setattr("app.classification_builds.find_workflow_artifact_reference", find_reference)
+    monkeypatch.setattr("app.classification_builds.copy_workflow_artifact_content", copy_manifest)
 
 
 def launch_build(client: TestClient, token: str, matter: dict, model: dict, snapshot_id: uuid.UUID) -> dict:
@@ -276,10 +383,44 @@ def test_build_preview_launch_is_idempotent_and_scoped(
     assert wrong_scope.status_code == 404
 
 
+def test_launch_recovers_an_existing_run_after_a_uniqueness_race(
+    client: TestClient,
+    root_token: str,
+    root_admin,
+    monkeypatch,
+) -> None:
+    matter, model, snapshot = ready_build_fixture(
+        client,
+        root_token,
+        str(root_admin.tenant_id),
+        root_admin.id,
+        suffix="Launch Race",
+    )
+    launched = launch_build(client, root_token, matter, model, snapshot.id)
+
+    def simulate_race(*args, **kwargs):
+        del args, kwargs
+        raise IntegrityError("INSERT", {}, RuntimeError("unique violation"))
+
+    monkeypatch.setattr(
+        "app.routers.classification_models.create_training_run",
+        simulate_race,
+    )
+    response = client.post(
+        f"/v1/matters/{matter['id']}/classification-models/{model['id']}/builds",
+        headers=auth(root_token),
+        json={"dataset_snapshot_id": str(snapshot.id), "idempotency_key": "first-launch"},
+    )
+    assert response.status_code == 202, response.text
+    assert response.json()["created"] is False
+    assert response.json()["training_run"]["id"] == launched["training_run"]["id"]
+
+
 def test_runtime_finalization_creates_one_inactive_candidate(
     client: TestClient,
     root_token: str,
     root_admin,
+    monkeypatch,
 ) -> None:
     matter, model, snapshot = ready_build_fixture(
         client,
@@ -291,6 +432,11 @@ def test_runtime_finalization_creates_one_inactive_candidate(
     launched = launch_build(client, root_token, matter, model, snapshot.id)
     run_id = uuid.UUID(launched["training_run"]["id"])
     gateway = FakeClassificationGateway()
+    patch_authoritative_published_outputs(
+        monkeypatch,
+        gateway=gateway,
+        training_run_id=run_id,
+    )
 
     version_id = execute_training_run(
         run_id,
@@ -298,7 +444,14 @@ def test_runtime_finalization_creates_one_inactive_candidate(
         gateway=gateway,
     )
     assert version_id is not None
-    assert execute_training_run(run_id, session_factory=TestingSessionLocal, gateway=gateway) is None
+    assert (
+        execute_training_run(
+            run_id,
+            session_factory=TestingSessionLocal,
+            gateway=gateway,
+        )
+        is None
+    )
     assert gateway.calls == 1
 
     with TestingSessionLocal() as db:
@@ -348,17 +501,60 @@ def test_runtime_failure_is_persisted_without_a_candidate(
 
     expected = ClassificationBuildConflictError if wrong_tenant else RuntimeError
     with pytest.raises(expected):
-        execute_training_run(run_id, session_factory=TestingSessionLocal, gateway=gateway)
+        execute_training_run(
+            run_id,
+            session_factory=TestingSessionLocal,
+            gateway=gateway,
+            published_result_verifier=gateway.verify_published_result,
+        )
 
     with TestingSessionLocal() as db:
         run = db.get(ClassificationTrainingRun, run_id)
         assert run is not None and run.status == "FAILED"
         assert run.failure_summary
+        assert run.failure_retriable is (not wrong_tenant)
         assert db.scalar(
             select(func.count()).select_from(ClassificationModelVersion).where(
                 ClassificationModelVersion.training_run_id == run_id
             )
         ) == 0
+
+
+def test_worker_reauthorizes_the_execution_actor_before_runtime_dispatch(
+    client: TestClient,
+    root_token: str,
+    root_admin,
+) -> None:
+    matter, model, snapshot = ready_build_fixture(
+        client,
+        root_token,
+        str(root_admin.tenant_id),
+        root_admin.id,
+        suffix="Reauthorize",
+    )
+    launched = launch_build(client, root_token, matter, model, snapshot.id)
+    run_id = uuid.UUID(launched["training_run"]["id"])
+    with TestingSessionLocal() as db:
+        user = db.get(type(root_admin), root_admin.id)
+        assert user is not None
+        user.status = "SUSPENDED"
+        db.commit()
+
+    gateway = FakeClassificationGateway()
+    with pytest.raises(ClassificationBuildConflictError, match="no longer authorized"):
+        execute_training_run(
+            run_id,
+            session_factory=TestingSessionLocal,
+            gateway=gateway,
+            published_result_verifier=gateway.verify_published_result,
+        )
+    assert gateway.calls == 0
+    with TestingSessionLocal() as db:
+        run = db.get(ClassificationTrainingRun, run_id)
+        assert run is not None
+        assert run.status == "FAILED"
+        assert run.failure_code == "BUILD_AUTHORIZATION_REVOKED"
+        assert run.failure_retriable is False
 
 
 def test_canceled_build_is_not_dispatched_to_runtime(
@@ -387,6 +583,80 @@ def test_canceled_build_is_not_dispatched_to_runtime(
     assert gateway.calls == 0
 
 
+def test_retriable_failed_build_reuses_the_run_with_a_new_workflow_attempt(
+    client: TestClient,
+    root_token: str,
+    root_admin,
+) -> None:
+    matter, model, snapshot = ready_build_fixture(
+        client,
+        root_token,
+        str(root_admin.tenant_id),
+        root_admin.id,
+        suffix="Retry",
+    )
+    launched = launch_build(client, root_token, matter, model, snapshot.id)
+    run_id = uuid.UUID(launched["training_run"]["id"])
+    failed_gateway = FakeClassificationGateway(fail=True)
+    with pytest.raises(RuntimeError):
+        execute_training_run(
+            run_id,
+            session_factory=TestingSessionLocal,
+            gateway=failed_gateway,
+            published_result_verifier=failed_gateway.verify_published_result,
+        )
+
+    retry = client.post(
+        f"/v1/matters/{matter['id']}/classification-models/{model['id']}/builds/{run_id}/retry",
+        headers=auth(root_token),
+    )
+    assert retry.status_code == 202, retry.text
+    assert retry.json()["id"] == str(run_id)
+    assert retry.json()["attempt_number"] == 2
+    assert retry.json()["status"] == "QUEUED"
+    assert retry.json()["workflow_id"].endswith(":attempt:2")
+    assert retry.json()["failure_code"] is None
+
+    successful_gateway = FakeClassificationGateway()
+    version_id = execute_training_run(
+        run_id,
+        session_factory=TestingSessionLocal,
+        gateway=successful_gateway,
+        published_result_verifier=successful_gateway.verify_published_result,
+    )
+    assert version_id is not None
+
+
+def test_non_retriable_integrity_failure_cannot_be_requeued(
+    client: TestClient,
+    root_token: str,
+    root_admin,
+) -> None:
+    matter, model, snapshot = ready_build_fixture(
+        client,
+        root_token,
+        str(root_admin.tenant_id),
+        root_admin.id,
+        suffix="No Retry",
+    )
+    launched = launch_build(client, root_token, matter, model, snapshot.id)
+    run_id = uuid.UUID(launched["training_run"]["id"])
+    gateway = FakeClassificationGateway(wrong_tenant=True)
+    with pytest.raises(ClassificationBuildConflictError):
+        execute_training_run(
+            run_id,
+            session_factory=TestingSessionLocal,
+            gateway=gateway,
+            published_result_verifier=gateway.verify_published_result,
+        )
+
+    retry = client.post(
+        f"/v1/matters/{matter['id']}/classification-models/{model['id']}/builds/{run_id}/retry",
+        headers=auth(root_token),
+    )
+    assert retry.status_code == 409
+
+
 def test_reconciliation_recovers_outputs_published_before_a_timeout(
     client: TestClient,
     root_token: str,
@@ -410,7 +680,25 @@ def test_reconciliation_recovers_outputs_published_before_a_timeout(
         request = training_request(run)
         result = gateway.train(request, None)
         references = {
-            reference.artifact_type: reference
+            reference.artifact_type: SimpleNamespace(
+                artifact_id=reference.artifact_id,
+                tenant_id=run.tenant_id,
+                client_id=run.classification_model.matter.client_id,
+                core_scope_kind="CLASSIFICATION_TRAINING_RUN",
+                core_scope_id=run.id,
+                artifact_type=reference.artifact_type,
+                schema_version=reference.schema_version,
+                derivation_key=classification_output_artifact_derivation_key(
+                    request.output_derivation_key,
+                    reference.artifact_type.value,
+                ),
+                content_hash=reference.content_hash,
+                media_type=reference.media_type,
+                byte_length=1,
+                producer_kind="CLASSIFICATION_RUNTIME",
+                producer_run_id=run.id,
+                metadata={},
+            )
             for reference in (
                 result.model_artifact,
                 result.prediction_artifact,
@@ -429,31 +717,8 @@ def test_reconciliation_recovers_outputs_published_before_a_timeout(
 
     def copy_manifest(*, destination, **kwargs):
         del kwargs
-        destination.write(
-            json.dumps(
-                {
-                    "status": "COMPLETED",
-                    "training_run_id": str(run_id),
-                    "output_derivation_key": request.output_derivation_key,
-                    "configuration_hash": request.configuration_hash,
-                    "feature_specification_hash": "4" * 64,
-                    "runtime_image_digest": get_settings().classification_runtime_image_digest,
-                    "source_revision": get_settings().classification_source_revision,
-                    "input_artifact_hashes": {
-                        "features": request.feature_artifact.content_hash,
-                        "labels": request.label_artifact.content_hash,
-                        "splits": request.split_artifact.content_hash,
-                    },
-                    "outputs": {
-                        "model": result.model_artifact.model_dump(mode="json"),
-                        "predictions": result.prediction_artifact.model_dump(mode="json"),
-                        "evaluation": result.evaluation_artifact.model_dump(mode="json"),
-                    },
-                    "metrics": {"accuracy": 0.9},
-                    "warnings": [],
-                }
-            ).encode()
-        )
+        assert gateway.published_manifest_bytes is not None
+        destination.write(gateway.published_manifest_bytes)
 
     monkeypatch.setattr("app.classification_builds.find_workflow_artifact_reference", find_reference)
     monkeypatch.setattr("app.classification_builds.copy_workflow_artifact_content", copy_manifest)
