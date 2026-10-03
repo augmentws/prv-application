@@ -13906,6 +13906,406 @@
         }
       }
     },
+    "/v1/matters/{matter_id}/classification-models/{classification_model_id}/builds/preview": {
+      "post": {
+        "tags": [
+          "classification models"
+        ],
+        "summary": "Preview Classification Model Build",
+        "operationId": "preview_classification_model_build_v1_matters__matter_id__classification_models__classification_model_id__builds_preview_post",
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "matter_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid",
+              "title": "Matter Id"
+            }
+          },
+          {
+            "name": "classification_model_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid",
+              "title": "Classification Model Id"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ClassificationModelBuildPreviewRequest"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ClassificationModelBuildPreview"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v1/matters/{matter_id}/classification-models/{classification_model_id}/builds": {
+      "post": {
+        "tags": [
+          "classification models"
+        ],
+        "summary": "Create Classification Model Build",
+        "operationId": "create_classification_model_build_v1_matters__matter_id__classification_models__classification_model_id__builds_post",
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "matter_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid",
+              "title": "Matter Id"
+            }
+          },
+          {
+            "name": "classification_model_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid",
+              "title": "Classification Model Id"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ClassificationModelBuildCreate"
+              }
+            }
+          }
+        },
+        "responses": {
+          "202": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ClassificationModelBuildCreateResponse"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      },
+      "get": {
+        "tags": [
+          "classification models"
+        ],
+        "summary": "List Classification Model Builds",
+        "operationId": "list_classification_model_builds_v1_matters__matter_id__classification_models__classification_model_id__builds_get",
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "matter_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid",
+              "title": "Matter Id"
+            }
+          },
+          {
+            "name": "classification_model_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid",
+              "title": "Classification Model Id"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "array",
+                  "items": {
+                    "$ref": "#/components/schemas/ClassificationTrainingRunRead"
+                  },
+                  "title": "Response List Classification Model Builds V1 Matters  Matter Id  Classification Models  Classification Model Id  Builds Get"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v1/matters/{matter_id}/classification-models/{classification_model_id}/builds/{training_run_id}": {
+      "get": {
+        "tags": [
+          "classification models"
+        ],
+        "summary": "Read Classification Model Build",
+        "operationId": "read_classification_model_build_v1_matters__matter_id__classification_models__classification_model_id__builds__training_run_id__get",
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "matter_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid",
+              "title": "Matter Id"
+            }
+          },
+          {
+            "name": "classification_model_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid",
+              "title": "Classification Model Id"
+            }
+          },
+          {
+            "name": "training_run_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid",
+              "title": "Training Run Id"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ClassificationTrainingRunRead"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v1/matters/{matter_id}/classification-models/{classification_model_id}/builds/{training_run_id}/cancel": {
+      "post": {
+        "tags": [
+          "classification models"
+        ],
+        "summary": "Cancel Classification Model Build Run",
+        "operationId": "cancel_classification_model_build_run_v1_matters__matter_id__classification_models__classification_model_id__builds__training_run_id__cancel_post",
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "matter_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid",
+              "title": "Matter Id"
+            }
+          },
+          {
+            "name": "classification_model_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid",
+              "title": "Classification Model Id"
+            }
+          },
+          {
+            "name": "training_run_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid",
+              "title": "Training Run Id"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ClassificationTrainingRunRead"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v1/matters/{matter_id}/classification-models/{classification_model_id}/builds/{training_run_id}/reconcile": {
+      "post": {
+        "tags": [
+          "classification models"
+        ],
+        "summary": "Reconcile Classification Model Build",
+        "operationId": "reconcile_classification_model_build_v1_matters__matter_id__classification_models__classification_model_id__builds__training_run_id__reconcile_post",
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "matter_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid",
+              "title": "Matter Id"
+            }
+          },
+          {
+            "name": "classification_model_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid",
+              "title": "Classification Model Id"
+            }
+          },
+          {
+            "name": "training_run_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid",
+              "title": "Training Run Id"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ClassificationTrainingRunRead"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/v1/matters/{matter_id}/classification-models/{classification_model_id}/compatibility": {
       "get": {
         "tags": [
@@ -16690,6 +17090,186 @@
         ],
         "title": "ClassificationLabelSourceSummary"
       },
+      "ClassificationModelBuildCreate": {
+        "properties": {
+          "dataset_snapshot_id": {
+            "type": "string",
+            "format": "uuid",
+            "title": "Dataset Snapshot Id"
+          },
+          "idempotency_key": {
+            "type": "string",
+            "maxLength": 200,
+            "minLength": 1,
+            "title": "Idempotency Key"
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "dataset_snapshot_id",
+          "idempotency_key"
+        ],
+        "title": "ClassificationModelBuildCreate"
+      },
+      "ClassificationModelBuildCreateResponse": {
+        "properties": {
+          "training_run": {
+            "$ref": "#/components/schemas/ClassificationTrainingRunRead"
+          },
+          "created": {
+            "type": "boolean",
+            "title": "Created"
+          }
+        },
+        "type": "object",
+        "required": [
+          "training_run",
+          "created"
+        ],
+        "title": "ClassificationModelBuildCreateResponse"
+      },
+      "ClassificationModelBuildPreview": {
+        "properties": {
+          "classification_model_id": {
+            "type": "string",
+            "format": "uuid",
+            "title": "Classification Model Id"
+          },
+          "configuration_id": {
+            "type": "string",
+            "format": "uuid",
+            "title": "Configuration Id"
+          },
+          "dataset_snapshot_id": {
+            "type": "string",
+            "format": "uuid",
+            "title": "Dataset Snapshot Id"
+          },
+          "configuration_hash": {
+            "type": "string",
+            "pattern": "^[0-9a-f]{64}$",
+            "title": "Configuration Hash"
+          },
+          "training_aggregate_hash": {
+            "anyOf": [
+              {
+                "type": "string",
+                "pattern": "^[0-9a-f]{64}$"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Training Aggregate Hash"
+          },
+          "feature_specification_hash": {
+            "anyOf": [
+              {
+                "type": "string",
+                "pattern": "^[0-9a-f]{64}$"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Feature Specification Hash"
+          },
+          "validation_specification": {
+            "$ref": "#/components/schemas/ValidationPolicy"
+          },
+          "random_seed": {
+            "type": "integer",
+            "title": "Random Seed"
+          },
+          "runtime_image_digest": {
+            "type": "string",
+            "title": "Runtime Image Digest"
+          },
+          "source_revision": {
+            "type": "string",
+            "title": "Source Revision"
+          },
+          "package_schema_version": {
+            "type": "integer",
+            "title": "Package Schema Version"
+          },
+          "derivation_key": {
+            "type": "string",
+            "pattern": "^[0-9a-f]{64}$",
+            "title": "Derivation Key"
+          },
+          "training_eligible_count": {
+            "type": "integer",
+            "title": "Training Eligible Count"
+          },
+          "can_launch": {
+            "type": "boolean",
+            "title": "Can Launch"
+          },
+          "blocking_errors": {
+            "items": {
+              "$ref": "#/components/schemas/ClassificationDatasetIssue"
+            },
+            "type": "array",
+            "title": "Blocking Errors"
+          },
+          "warnings": {
+            "items": {
+              "$ref": "#/components/schemas/ClassificationDatasetIssue"
+            },
+            "type": "array",
+            "title": "Warnings"
+          },
+          "existing_training_run_id": {
+            "anyOf": [
+              {
+                "type": "string",
+                "format": "uuid"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Existing Training Run Id"
+          }
+        },
+        "type": "object",
+        "required": [
+          "classification_model_id",
+          "configuration_id",
+          "dataset_snapshot_id",
+          "configuration_hash",
+          "training_aggregate_hash",
+          "feature_specification_hash",
+          "validation_specification",
+          "random_seed",
+          "runtime_image_digest",
+          "source_revision",
+          "package_schema_version",
+          "derivation_key",
+          "training_eligible_count",
+          "can_launch",
+          "blocking_errors",
+          "warnings"
+        ],
+        "title": "ClassificationModelBuildPreview"
+      },
+      "ClassificationModelBuildPreviewRequest": {
+        "properties": {
+          "dataset_snapshot_id": {
+            "type": "string",
+            "format": "uuid",
+            "title": "Dataset Snapshot Id"
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "dataset_snapshot_id"
+        ],
+        "title": "ClassificationModelBuildPreviewRequest"
+      },
       "ClassificationModelCompatibilityRead": {
         "properties": {
           "classification_model_id": {
@@ -16985,6 +17565,18 @@
             ],
             "title": "Current Configuration Id"
           },
+          "active_model_version_id": {
+            "anyOf": [
+              {
+                "type": "string",
+                "format": "uuid"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Active Model Version Id"
+          },
           "target_field": {
             "$ref": "#/components/schemas/ClassificationTargetFieldRead"
           },
@@ -17033,6 +17625,7 @@
           "description",
           "status",
           "current_configuration_id",
+          "active_model_version_id",
           "target_field",
           "current_configuration",
           "created_at",
@@ -17042,6 +17635,189 @@
           "row_version"
         ],
         "title": "ClassificationModelRead"
+      },
+      "ClassificationModelVersionRead": {
+        "properties": {
+          "id": {
+            "type": "string",
+            "format": "uuid",
+            "title": "Id"
+          },
+          "tenant_id": {
+            "type": "string",
+            "format": "uuid",
+            "title": "Tenant Id"
+          },
+          "matter_id": {
+            "type": "string",
+            "format": "uuid",
+            "title": "Matter Id"
+          },
+          "classification_model_id": {
+            "type": "string",
+            "format": "uuid",
+            "title": "Classification Model Id"
+          },
+          "configuration_id": {
+            "type": "string",
+            "format": "uuid",
+            "title": "Configuration Id"
+          },
+          "training_run_id": {
+            "type": "string",
+            "format": "uuid",
+            "title": "Training Run Id"
+          },
+          "dataset_snapshot_id": {
+            "type": "string",
+            "format": "uuid",
+            "title": "Dataset Snapshot Id"
+          },
+          "version_number": {
+            "type": "integer",
+            "title": "Version Number"
+          },
+          "status": {
+            "type": "string",
+            "enum": [
+              "CANDIDATE",
+              "APPROVED",
+              "REJECTED",
+              "RETIRED"
+            ],
+            "title": "Status"
+          },
+          "target_field_snapshot": {
+            "$ref": "#/components/schemas/TargetFieldSnapshot"
+          },
+          "training_aggregate_hash": {
+            "type": "string",
+            "pattern": "^[0-9a-f]{64}$",
+            "title": "Training Aggregate Hash"
+          },
+          "feature_specification_hash": {
+            "type": "string",
+            "pattern": "^[0-9a-f]{64}$",
+            "title": "Feature Specification Hash"
+          },
+          "model_artifact_id": {
+            "type": "string",
+            "format": "uuid",
+            "title": "Model Artifact Id"
+          },
+          "model_content_hash": {
+            "type": "string",
+            "pattern": "^[0-9a-f]{64}$",
+            "title": "Model Content Hash"
+          },
+          "prediction_artifact_id": {
+            "type": "string",
+            "format": "uuid",
+            "title": "Prediction Artifact Id"
+          },
+          "prediction_content_hash": {
+            "type": "string",
+            "pattern": "^[0-9a-f]{64}$",
+            "title": "Prediction Content Hash"
+          },
+          "evaluation_artifact_id": {
+            "type": "string",
+            "format": "uuid",
+            "title": "Evaluation Artifact Id"
+          },
+          "evaluation_content_hash": {
+            "type": "string",
+            "pattern": "^[0-9a-f]{64}$",
+            "title": "Evaluation Content Hash"
+          },
+          "result_manifest_artifact_id": {
+            "type": "string",
+            "format": "uuid",
+            "title": "Result Manifest Artifact Id"
+          },
+          "result_manifest_content_hash": {
+            "type": "string",
+            "pattern": "^[0-9a-f]{64}$",
+            "title": "Result Manifest Content Hash"
+          },
+          "package_schema_version": {
+            "type": "integer",
+            "title": "Package Schema Version"
+          },
+          "runtime_image_digest": {
+            "type": "string",
+            "title": "Runtime Image Digest"
+          },
+          "source_revision": {
+            "type": "string",
+            "title": "Source Revision"
+          },
+          "metric_summary": {
+            "additionalProperties": {
+              "anyOf": [
+                {
+                  "type": "number"
+                },
+                {
+                  "type": "integer"
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            },
+            "type": "object",
+            "title": "Metric Summary"
+          },
+          "warnings": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array",
+            "title": "Warnings"
+          },
+          "created_at": {
+            "type": "string",
+            "format": "date-time",
+            "title": "Created At"
+          },
+          "created_by_user_id": {
+            "type": "string",
+            "format": "uuid",
+            "title": "Created By User Id"
+          }
+        },
+        "type": "object",
+        "required": [
+          "id",
+          "tenant_id",
+          "matter_id",
+          "classification_model_id",
+          "configuration_id",
+          "training_run_id",
+          "dataset_snapshot_id",
+          "version_number",
+          "status",
+          "target_field_snapshot",
+          "training_aggregate_hash",
+          "feature_specification_hash",
+          "model_artifact_id",
+          "model_content_hash",
+          "prediction_artifact_id",
+          "prediction_content_hash",
+          "evaluation_artifact_id",
+          "evaluation_content_hash",
+          "result_manifest_artifact_id",
+          "result_manifest_content_hash",
+          "package_schema_version",
+          "runtime_image_digest",
+          "source_revision",
+          "metric_summary",
+          "warnings",
+          "created_at",
+          "created_by_user_id"
+        ],
+        "title": "ClassificationModelVersionRead"
       },
       "ClassificationStrategy": {
         "type": "string",
@@ -17111,6 +17887,334 @@
           "schema_fingerprint"
         ],
         "title": "ClassificationTargetFieldRead"
+      },
+      "ClassificationTrainingRunRead": {
+        "properties": {
+          "id": {
+            "type": "string",
+            "format": "uuid",
+            "title": "Id"
+          },
+          "tenant_id": {
+            "type": "string",
+            "format": "uuid",
+            "title": "Tenant Id"
+          },
+          "matter_id": {
+            "type": "string",
+            "format": "uuid",
+            "title": "Matter Id"
+          },
+          "classification_model_id": {
+            "type": "string",
+            "format": "uuid",
+            "title": "Classification Model Id"
+          },
+          "configuration_id": {
+            "type": "string",
+            "format": "uuid",
+            "title": "Configuration Id"
+          },
+          "dataset_snapshot_id": {
+            "type": "string",
+            "format": "uuid",
+            "title": "Dataset Snapshot Id"
+          },
+          "idempotency_key": {
+            "type": "string",
+            "title": "Idempotency Key"
+          },
+          "workflow_id": {
+            "type": "string",
+            "title": "Workflow Id"
+          },
+          "derivation_key": {
+            "type": "string",
+            "pattern": "^[0-9a-f]{64}$",
+            "title": "Derivation Key"
+          },
+          "trainer_specification": {
+            "$ref": "#/components/schemas/TrainerSpecification"
+          },
+          "validation_specification": {
+            "$ref": "#/components/schemas/ValidationPolicy"
+          },
+          "random_seed": {
+            "type": "integer",
+            "title": "Random Seed"
+          },
+          "package_schema_version": {
+            "type": "integer",
+            "title": "Package Schema Version"
+          },
+          "runtime_image_digest": {
+            "type": "string",
+            "title": "Runtime Image Digest"
+          },
+          "source_revision": {
+            "type": "string",
+            "title": "Source Revision"
+          },
+          "status": {
+            "type": "string",
+            "enum": [
+              "QUEUED",
+              "SNAPSHOTTING",
+              "WAITING_FOR_RUNTIME",
+              "TRAINING",
+              "PACKAGING",
+              "EVALUATING",
+              "PUBLISHING",
+              "FINALIZING",
+              "RECONCILING",
+              "COMPLETED",
+              "COMPLETED_WITH_ERRORS",
+              "FAILED",
+              "CANCELED"
+            ],
+            "title": "Status"
+          },
+          "current_stage": {
+            "type": "string",
+            "title": "Current Stage"
+          },
+          "progress_completed": {
+            "type": "integer",
+            "title": "Progress Completed"
+          },
+          "progress_total": {
+            "type": "integer",
+            "title": "Progress Total"
+          },
+          "model_artifact_id": {
+            "anyOf": [
+              {
+                "type": "string",
+                "format": "uuid"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Model Artifact Id"
+          },
+          "model_content_hash": {
+            "anyOf": [
+              {
+                "type": "string",
+                "pattern": "^[0-9a-f]{64}$"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Model Content Hash"
+          },
+          "prediction_artifact_id": {
+            "anyOf": [
+              {
+                "type": "string",
+                "format": "uuid"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Prediction Artifact Id"
+          },
+          "prediction_content_hash": {
+            "anyOf": [
+              {
+                "type": "string",
+                "pattern": "^[0-9a-f]{64}$"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Prediction Content Hash"
+          },
+          "evaluation_artifact_id": {
+            "anyOf": [
+              {
+                "type": "string",
+                "format": "uuid"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Evaluation Artifact Id"
+          },
+          "evaluation_content_hash": {
+            "anyOf": [
+              {
+                "type": "string",
+                "pattern": "^[0-9a-f]{64}$"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Evaluation Content Hash"
+          },
+          "result_manifest_artifact_id": {
+            "anyOf": [
+              {
+                "type": "string",
+                "format": "uuid"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Result Manifest Artifact Id"
+          },
+          "result_manifest_content_hash": {
+            "anyOf": [
+              {
+                "type": "string",
+                "pattern": "^[0-9a-f]{64}$"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Result Manifest Content Hash"
+          },
+          "failure_code": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Failure Code"
+          },
+          "failure_summary": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Failure Summary"
+          },
+          "failure_retriable": {
+            "type": "boolean",
+            "title": "Failure Retriable"
+          },
+          "model_version": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/ClassificationModelVersionRead"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "created_by_user_id": {
+            "type": "string",
+            "format": "uuid",
+            "title": "Created By User Id"
+          },
+          "started_at": {
+            "anyOf": [
+              {
+                "type": "string",
+                "format": "date-time"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Started At"
+          },
+          "completed_at": {
+            "anyOf": [
+              {
+                "type": "string",
+                "format": "date-time"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Completed At"
+          },
+          "canceled_at": {
+            "anyOf": [
+              {
+                "type": "string",
+                "format": "date-time"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Canceled At"
+          },
+          "created_at": {
+            "type": "string",
+            "format": "date-time",
+            "title": "Created At"
+          },
+          "updated_at": {
+            "type": "string",
+            "format": "date-time",
+            "title": "Updated At"
+          },
+          "row_version": {
+            "type": "integer",
+            "title": "Row Version"
+          }
+        },
+        "type": "object",
+        "required": [
+          "id",
+          "tenant_id",
+          "matter_id",
+          "classification_model_id",
+          "configuration_id",
+          "dataset_snapshot_id",
+          "idempotency_key",
+          "workflow_id",
+          "derivation_key",
+          "trainer_specification",
+          "validation_specification",
+          "random_seed",
+          "package_schema_version",
+          "runtime_image_digest",
+          "source_revision",
+          "status",
+          "current_stage",
+          "progress_completed",
+          "progress_total",
+          "model_artifact_id",
+          "model_content_hash",
+          "prediction_artifact_id",
+          "prediction_content_hash",
+          "evaluation_artifact_id",
+          "evaluation_content_hash",
+          "result_manifest_artifact_id",
+          "result_manifest_content_hash",
+          "failure_code",
+          "failure_summary",
+          "failure_retriable",
+          "created_by_user_id",
+          "started_at",
+          "completed_at",
+          "canceled_at",
+          "created_at",
+          "updated_at",
+          "row_version"
+        ],
+        "title": "ClassificationTrainingRunRead"
       },
       "ClientCreate": {
         "properties": {

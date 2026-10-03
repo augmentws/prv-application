@@ -1362,6 +1362,16 @@ class ClassificationModel(TimestampMixin, Base):
             name="fk_classification_model_current_configuration",
             use_alter=True,
         ),
+        ForeignKeyConstraint(
+            ["active_model_version_id", "id"],
+            [
+                "classification_model_version.id",
+                "classification_model_version.classification_model_id",
+            ],
+            name="fk_classification_model_active_version",
+            use_alter=True,
+            ondelete="RESTRICT",
+        ),
         Index("ix_classification_model_matter_created", "matter_id", "created_at"),
     )
 
@@ -1377,6 +1387,11 @@ class ClassificationModel(TimestampMixin, Base):
     description: Mapped[str | None] = mapped_column(Text)
     status: Mapped[str] = mapped_column(String(20), default="ACTIVE", index=True)
     current_configuration_id: Mapped[uuid.UUID | None] = mapped_column(
+        Uuid,
+        nullable=True,
+        index=True,
+    )
+    active_model_version_id: Mapped[uuid.UUID | None] = mapped_column(
         Uuid,
         nullable=True,
         index=True,
@@ -1398,6 +1413,10 @@ class ClassificationModel(TimestampMixin, Base):
     target_metadata_definition: Mapped[MetadataDefinition] = relationship()
     current_configuration: Mapped["ClassificationModelConfiguration | None"] = relationship(
         foreign_keys=[current_configuration_id],
+        post_update=True,
+    )
+    active_model_version: Mapped["ClassificationModelVersion | None"] = relationship(
+        foreign_keys=[active_model_version_id],
         post_update=True,
     )
     created_by: Mapped[User] = relationship(foreign_keys=[created_by_user_id])
@@ -1602,6 +1621,259 @@ class ClassificationDatasetSnapshot(Base):
     completed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
 
     created_by: Mapped[User] = relationship()
+
+
+class ClassificationTrainingRun(TimestampMixin, Base):
+    __tablename__ = "classification_training_run"
+    __table_args__ = (
+        UniqueConstraint(
+            "classification_model_id",
+            "idempotency_key",
+            name="uq_classification_training_run_idempotency",
+        ),
+        UniqueConstraint(
+            "classification_model_id",
+            "derivation_key",
+            name="uq_classification_training_run_derivation",
+        ),
+        UniqueConstraint("workflow_id", name="uq_classification_training_run_workflow"),
+        CheckConstraint(
+            "status IN ('QUEUED', 'SNAPSHOTTING', 'WAITING_FOR_RUNTIME', 'TRAINING', "
+            "'PACKAGING', 'EVALUATING', 'PUBLISHING', 'FINALIZING', 'RECONCILING', "
+            "'COMPLETED', 'COMPLETED_WITH_ERRORS', 'FAILED', 'CANCELED')",
+            name="ck_classification_training_run_status",
+        ),
+        CheckConstraint(
+            "progress_completed >= 0 AND progress_total >= 0 AND progress_completed <= progress_total",
+            name="ck_classification_training_run_progress",
+        ),
+        CheckConstraint(
+            "((model_artifact_id IS NULL AND model_content_hash IS NULL) OR "
+            "(model_artifact_id IS NOT NULL AND model_content_hash IS NOT NULL)) AND "
+            "((prediction_artifact_id IS NULL AND prediction_content_hash IS NULL) OR "
+            "(prediction_artifact_id IS NOT NULL AND prediction_content_hash IS NOT NULL)) AND "
+            "((evaluation_artifact_id IS NULL AND evaluation_content_hash IS NULL) OR "
+            "(evaluation_artifact_id IS NOT NULL AND evaluation_content_hash IS NOT NULL)) AND "
+            "((result_manifest_artifact_id IS NULL AND result_manifest_content_hash IS NULL) OR "
+            "(result_manifest_artifact_id IS NOT NULL AND result_manifest_content_hash IS NOT NULL))",
+            name="ck_classification_training_run_artifact_pairs",
+        ),
+        CheckConstraint(
+            "status != 'COMPLETED' OR (model_artifact_id IS NOT NULL AND "
+            "prediction_artifact_id IS NOT NULL AND evaluation_artifact_id IS NOT NULL AND "
+            "result_manifest_artifact_id IS NOT NULL)",
+            name="ck_classification_training_run_completed_outputs",
+        ),
+        CheckConstraint("row_version > 0", name="ck_classification_training_run_row_version"),
+        ForeignKeyConstraint(
+            ["configuration_id", "classification_model_id"],
+            [
+                "classification_model_configuration.id",
+                "classification_model_configuration.classification_model_id",
+            ],
+            name="fk_classification_training_run_configuration",
+        ),
+        Index(
+            "ix_classification_training_run_model_created",
+            "classification_model_id",
+            "created_at",
+        ),
+    )
+
+    id: Mapped[uuid.UUID] = mapped_column(Uuid, primary_key=True, default=uuid.uuid4)
+    tenant_id: Mapped[uuid.UUID] = mapped_column(Uuid, ForeignKey("tenant.id", ondelete="RESTRICT"), index=True)
+    matter_id: Mapped[uuid.UUID] = mapped_column(Uuid, ForeignKey("matter.id", ondelete="RESTRICT"), index=True)
+    classification_model_id: Mapped[uuid.UUID] = mapped_column(
+        Uuid,
+        ForeignKey("classification_model.id", ondelete="CASCADE"),
+        index=True,
+    )
+    configuration_id: Mapped[uuid.UUID] = mapped_column(Uuid, index=True)
+    dataset_snapshot_id: Mapped[uuid.UUID] = mapped_column(
+        Uuid,
+        ForeignKey("classification_dataset_snapshot.id", ondelete="RESTRICT"),
+        index=True,
+    )
+    idempotency_key: Mapped[str] = mapped_column(String(200))
+    workflow_id: Mapped[str] = mapped_column(String(500))
+    derivation_key: Mapped[str] = mapped_column(String(64), index=True)
+    trainer_specification: Mapped[dict[str, Any]] = mapped_column(JSON_DOCUMENT)
+    validation_specification: Mapped[dict[str, Any]] = mapped_column(JSON_DOCUMENT)
+    random_seed: Mapped[int] = mapped_column(BigInteger)
+    package_schema_version: Mapped[int] = mapped_column(Integer, default=1)
+    runtime_image_digest: Mapped[str] = mapped_column(String(500))
+    source_revision: Mapped[str] = mapped_column(String(255))
+    status: Mapped[str] = mapped_column(String(40), default="QUEUED", index=True)
+    current_stage: Mapped[str] = mapped_column(String(100), default="QUEUED")
+    progress_completed: Mapped[int] = mapped_column(Integer, default=0)
+    progress_total: Mapped[int] = mapped_column(Integer, default=5)
+    model_artifact_id: Mapped[uuid.UUID | None] = mapped_column(Uuid, nullable=True)
+    model_content_hash: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    prediction_artifact_id: Mapped[uuid.UUID | None] = mapped_column(Uuid, nullable=True)
+    prediction_content_hash: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    evaluation_artifact_id: Mapped[uuid.UUID | None] = mapped_column(Uuid, nullable=True)
+    evaluation_content_hash: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    result_manifest_artifact_id: Mapped[uuid.UUID | None] = mapped_column(Uuid, nullable=True)
+    result_manifest_content_hash: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    failure_code: Mapped[str | None] = mapped_column(String(100), nullable=True)
+    failure_summary: Mapped[str | None] = mapped_column(Text, nullable=True)
+    failure_retriable: Mapped[bool] = mapped_column(Boolean, default=False)
+    created_by_user_id: Mapped[uuid.UUID] = mapped_column(
+        Uuid,
+        ForeignKey("app_user.id", ondelete="RESTRICT"),
+        index=True,
+    )
+    started_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    completed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    canceled_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    row_version: Mapped[int] = mapped_column(Integer, default=1, nullable=False)
+
+    classification_model: Mapped[ClassificationModel] = relationship(foreign_keys=[classification_model_id])
+    configuration: Mapped[ClassificationModelConfiguration] = relationship(
+        overlaps="classification_model",
+    )
+    dataset_snapshot: Mapped[ClassificationDatasetSnapshot] = relationship()
+    created_by: Mapped[User] = relationship()
+
+    __mapper_args__: ClassVar[dict[str, Any]] = {"version_id_col": row_version}
+
+
+class ClassificationModelVersion(Base):
+    __tablename__ = "classification_model_version"
+    __table_args__ = (
+        UniqueConstraint("training_run_id", name="uq_classification_model_version_run"),
+        UniqueConstraint(
+            "classification_model_id",
+            "version_number",
+            name="uq_classification_model_version_number",
+        ),
+        UniqueConstraint(
+            "id",
+            "classification_model_id",
+            name="uq_classification_model_version_identity",
+        ),
+        CheckConstraint(
+            "status IN ('CANDIDATE', 'APPROVED', 'REJECTED', 'RETIRED')",
+            name="ck_classification_model_version_status",
+        ),
+        CheckConstraint("version_number > 0", name="ck_classification_model_version_number"),
+        ForeignKeyConstraint(
+            ["configuration_id", "classification_model_id"],
+            [
+                "classification_model_configuration.id",
+                "classification_model_configuration.classification_model_id",
+            ],
+            name="fk_classification_model_version_configuration",
+        ),
+        Index(
+            "ix_classification_model_version_model_created",
+            "classification_model_id",
+            "created_at",
+        ),
+    )
+
+    id: Mapped[uuid.UUID] = mapped_column(Uuid, primary_key=True, default=uuid.uuid4)
+    tenant_id: Mapped[uuid.UUID] = mapped_column(Uuid, ForeignKey("tenant.id", ondelete="RESTRICT"), index=True)
+    matter_id: Mapped[uuid.UUID] = mapped_column(Uuid, ForeignKey("matter.id", ondelete="RESTRICT"), index=True)
+    classification_model_id: Mapped[uuid.UUID] = mapped_column(
+        Uuid,
+        ForeignKey("classification_model.id", ondelete="CASCADE"),
+        index=True,
+    )
+    configuration_id: Mapped[uuid.UUID] = mapped_column(Uuid, index=True)
+    training_run_id: Mapped[uuid.UUID] = mapped_column(
+        Uuid,
+        ForeignKey("classification_training_run.id", ondelete="RESTRICT"),
+        index=True,
+    )
+    dataset_snapshot_id: Mapped[uuid.UUID] = mapped_column(
+        Uuid,
+        ForeignKey("classification_dataset_snapshot.id", ondelete="RESTRICT"),
+        index=True,
+    )
+    version_number: Mapped[int] = mapped_column(Integer)
+    status: Mapped[str] = mapped_column(String(30), default="CANDIDATE", index=True)
+    target_field_snapshot: Mapped[dict[str, Any]] = mapped_column(JSON_DOCUMENT)
+    training_aggregate_hash: Mapped[str] = mapped_column(String(64))
+    feature_specification_hash: Mapped[str] = mapped_column(String(64))
+    model_artifact_id: Mapped[uuid.UUID] = mapped_column(Uuid)
+    model_content_hash: Mapped[str] = mapped_column(String(64))
+    prediction_artifact_id: Mapped[uuid.UUID] = mapped_column(Uuid)
+    prediction_content_hash: Mapped[str] = mapped_column(String(64))
+    evaluation_artifact_id: Mapped[uuid.UUID] = mapped_column(Uuid)
+    evaluation_content_hash: Mapped[str] = mapped_column(String(64))
+    result_manifest_artifact_id: Mapped[uuid.UUID] = mapped_column(Uuid)
+    result_manifest_content_hash: Mapped[str] = mapped_column(String(64))
+    package_schema_version: Mapped[int] = mapped_column(Integer)
+    runtime_image_digest: Mapped[str] = mapped_column(String(500))
+    source_revision: Mapped[str] = mapped_column(String(255))
+    metric_summary: Mapped[dict[str, Any]] = mapped_column(JSON_DOCUMENT)
+    warnings: Mapped[list[str]] = mapped_column(JSON_DOCUMENT, default=list)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+    created_by_user_id: Mapped[uuid.UUID] = mapped_column(
+        Uuid,
+        ForeignKey("app_user.id", ondelete="RESTRICT"),
+        index=True,
+    )
+
+    classification_model: Mapped[ClassificationModel] = relationship(
+        foreign_keys=[classification_model_id],
+        overlaps="active_model_version",
+    )
+    training_run: Mapped[ClassificationTrainingRun] = relationship()
+    dataset_snapshot: Mapped[ClassificationDatasetSnapshot] = relationship()
+    created_by: Mapped[User] = relationship()
+
+
+class ClassificationEvaluation(Base):
+    __tablename__ = "classification_evaluation"
+    __table_args__ = (
+        UniqueConstraint(
+            "model_version_id",
+            "evaluation_kind",
+            "dataset_snapshot_id",
+            "metric_policy_version",
+            name="uq_classification_evaluation_identity",
+        ),
+        CheckConstraint(
+            "evaluation_kind IN ('CROSS_FIT_DEVELOPMENT', 'FORMAL_VALIDATION', "
+            "'RANDOM_AUDIT', 'TARGETED_QA')",
+            name="ck_classification_evaluation_kind",
+        ),
+        Index(
+            "ix_classification_evaluation_model_created",
+            "classification_model_id",
+            "created_at",
+        ),
+    )
+
+    id: Mapped[uuid.UUID] = mapped_column(Uuid, primary_key=True, default=uuid.uuid4)
+    tenant_id: Mapped[uuid.UUID] = mapped_column(Uuid, ForeignKey("tenant.id", ondelete="RESTRICT"), index=True)
+    matter_id: Mapped[uuid.UUID] = mapped_column(Uuid, ForeignKey("matter.id", ondelete="RESTRICT"), index=True)
+    classification_model_id: Mapped[uuid.UUID] = mapped_column(
+        Uuid,
+        ForeignKey("classification_model.id", ondelete="CASCADE"),
+        index=True,
+    )
+    model_version_id: Mapped[uuid.UUID] = mapped_column(
+        Uuid,
+        ForeignKey("classification_model_version.id", ondelete="CASCADE"),
+        index=True,
+    )
+    dataset_snapshot_id: Mapped[uuid.UUID] = mapped_column(
+        Uuid,
+        ForeignKey("classification_dataset_snapshot.id", ondelete="RESTRICT"),
+        index=True,
+    )
+    evaluation_kind: Mapped[str] = mapped_column(String(40))
+    metric_policy_version: Mapped[int] = mapped_column(Integer, default=1)
+    evaluation_artifact_id: Mapped[uuid.UUID] = mapped_column(Uuid)
+    evaluation_content_hash: Mapped[str] = mapped_column(String(64))
+    metric_summary: Mapped[dict[str, Any]] = mapped_column(JSON_DOCUMENT)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+
+    model_version: Mapped[ClassificationModelVersion] = relationship()
+    dataset_snapshot: Mapped[ClassificationDatasetSnapshot] = relationship()
 
 
 class MetadataEvent(Base):

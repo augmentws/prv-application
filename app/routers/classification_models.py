@@ -5,6 +5,17 @@ from sqlalchemy import select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session, selectinload
 
+from app.audit import record_audit
+from app.classification_builds import (
+    ClassificationBuildError,
+    ClassificationBuildNotFoundError,
+    build_preview,
+    cancel_training_run,
+    create_training_run,
+    get_training_run,
+    prepare_build,
+    reconcile_training_run,
+)
 from app.classification_datasets import (
     ClassificationDatasetError,
     ClassificationDatasetNotFoundError,
@@ -39,6 +50,8 @@ from app.models import (
     ClassificationDatasetSnapshot,
     ClassificationModel,
     ClassificationModelConfiguration,
+    ClassificationModelVersion,
+    ClassificationTrainingRun,
     Matter,
 )
 from app.schemas import (
@@ -48,11 +61,21 @@ from app.schemas import (
     ClassificationDatasetSnapshotRequest,
     ClassificationFeatureSplitCreateResponse,
     ClassificationFeatureSplitRequest,
+    ClassificationModelBuildCreate,
+    ClassificationModelBuildCreateResponse,
+    ClassificationModelBuildPreview,
+    ClassificationModelBuildPreviewRequest,
     ClassificationModelCompatibilityRead,
     ClassificationModelConfigurationCreate,
     ClassificationModelConfigurationRead,
     ClassificationModelCreate,
     ClassificationModelRead,
+    ClassificationModelVersionRead,
+    ClassificationTrainingRunRead,
+)
+from app.workflows.dispatcher import (
+    cancel_classification_model_build,
+    enqueue_classification_model_build,
 )
 
 router = APIRouter(
@@ -106,6 +129,7 @@ def model_read(model: ClassificationModel) -> ClassificationModelRead:
             "description": model.description,
             "status": model.status,
             "current_configuration_id": model.current_configuration_id,
+            "active_model_version_id": model.active_model_version_id,
             "target_field": target_field_read_data(model.target_metadata_definition),
             "current_configuration": (
                 configuration_read(model.current_configuration) if model.current_configuration is not None else None
@@ -115,6 +139,88 @@ def model_read(model: ClassificationModel) -> ClassificationModelRead:
             "updated_at": model.updated_at,
             "updated_by_user_id": model.updated_by_user_id,
             "row_version": model.row_version,
+        }
+    )
+
+
+def model_version_read(version: ClassificationModelVersion) -> ClassificationModelVersionRead:
+    return ClassificationModelVersionRead.model_validate(
+        {
+            "id": version.id,
+            "tenant_id": version.tenant_id,
+            "matter_id": version.matter_id,
+            "classification_model_id": version.classification_model_id,
+            "configuration_id": version.configuration_id,
+            "training_run_id": version.training_run_id,
+            "dataset_snapshot_id": version.dataset_snapshot_id,
+            "version_number": version.version_number,
+            "status": version.status,
+            "target_field_snapshot": version.target_field_snapshot,
+            "training_aggregate_hash": version.training_aggregate_hash,
+            "feature_specification_hash": version.feature_specification_hash,
+            "model_artifact_id": version.model_artifact_id,
+            "model_content_hash": version.model_content_hash,
+            "prediction_artifact_id": version.prediction_artifact_id,
+            "prediction_content_hash": version.prediction_content_hash,
+            "evaluation_artifact_id": version.evaluation_artifact_id,
+            "evaluation_content_hash": version.evaluation_content_hash,
+            "result_manifest_artifact_id": version.result_manifest_artifact_id,
+            "result_manifest_content_hash": version.result_manifest_content_hash,
+            "package_schema_version": version.package_schema_version,
+            "runtime_image_digest": version.runtime_image_digest,
+            "source_revision": version.source_revision,
+            "metric_summary": version.metric_summary,
+            "warnings": version.warnings,
+            "created_at": version.created_at,
+            "created_by_user_id": version.created_by_user_id,
+        }
+    )
+
+
+def training_run_read(db: Session, run: ClassificationTrainingRun) -> ClassificationTrainingRunRead:
+    version = db.scalar(
+        select(ClassificationModelVersion).where(ClassificationModelVersion.training_run_id == run.id)
+    )
+    return ClassificationTrainingRunRead.model_validate(
+        {
+            "id": run.id,
+            "tenant_id": run.tenant_id,
+            "matter_id": run.matter_id,
+            "classification_model_id": run.classification_model_id,
+            "configuration_id": run.configuration_id,
+            "dataset_snapshot_id": run.dataset_snapshot_id,
+            "idempotency_key": run.idempotency_key,
+            "workflow_id": run.workflow_id,
+            "derivation_key": run.derivation_key,
+            "trainer_specification": run.trainer_specification,
+            "validation_specification": run.validation_specification,
+            "random_seed": run.random_seed,
+            "package_schema_version": run.package_schema_version,
+            "runtime_image_digest": run.runtime_image_digest,
+            "source_revision": run.source_revision,
+            "status": run.status,
+            "current_stage": run.current_stage,
+            "progress_completed": run.progress_completed,
+            "progress_total": run.progress_total,
+            "model_artifact_id": run.model_artifact_id,
+            "model_content_hash": run.model_content_hash,
+            "prediction_artifact_id": run.prediction_artifact_id,
+            "prediction_content_hash": run.prediction_content_hash,
+            "evaluation_artifact_id": run.evaluation_artifact_id,
+            "evaluation_content_hash": run.evaluation_content_hash,
+            "result_manifest_artifact_id": run.result_manifest_artifact_id,
+            "result_manifest_content_hash": run.result_manifest_content_hash,
+            "failure_code": run.failure_code,
+            "failure_summary": run.failure_summary,
+            "failure_retriable": run.failure_retriable,
+            "model_version": model_version_read(version) if version is not None else None,
+            "created_by_user_id": run.created_by_user_id,
+            "started_at": run.started_at,
+            "completed_at": run.completed_at,
+            "canceled_at": run.canceled_at,
+            "created_at": run.created_at,
+            "updated_at": run.updated_at,
+            "row_version": run.row_version,
         }
     )
 
@@ -188,6 +294,15 @@ def dataset_error(exc: ClassificationDatasetError) -> HTTPException:
     error_status = (
         status.HTTP_404_NOT_FOUND
         if isinstance(exc, ClassificationDatasetNotFoundError)
+        else status.HTTP_409_CONFLICT
+    )
+    return HTTPException(status_code=error_status, detail=str(exc))
+
+
+def build_error(exc: ClassificationBuildError) -> HTTPException:
+    error_status = (
+        status.HTTP_404_NOT_FOUND
+        if isinstance(exc, ClassificationBuildNotFoundError)
         else status.HTTP_409_CONFLICT
     )
     return HTTPException(status_code=error_status, detail=str(exc))
@@ -550,6 +665,204 @@ def read_classification_dataset_snapshot(
         return dataset_snapshot_read(snapshot)
     except ClassificationDatasetError as exc:
         raise dataset_error(exc) from exc
+
+
+@router.post(
+    "/{classification_model_id}/builds/preview",
+    response_model=ClassificationModelBuildPreview,
+)
+def preview_classification_model_build(
+    matter_id: uuid.UUID,
+    classification_model_id: uuid.UUID,
+    payload: ClassificationModelBuildPreviewRequest,
+    principal: Principal = Depends(get_principal),
+    db: Session = Depends(get_db),
+) -> ClassificationModelBuildPreview:
+    get_authorized_matter(db, principal, matter_id)
+    try:
+        prepared = prepare_build(
+            db,
+            matter_id=matter_id,
+            classification_model_id=classification_model_id,
+            dataset_snapshot_id=payload.dataset_snapshot_id,
+        )
+        return build_preview(prepared)
+    except ClassificationBuildError as exc:
+        raise build_error(exc) from exc
+
+
+@router.post(
+    "/{classification_model_id}/builds",
+    response_model=ClassificationModelBuildCreateResponse,
+    status_code=status.HTTP_202_ACCEPTED,
+)
+def create_classification_model_build(
+    matter_id: uuid.UUID,
+    classification_model_id: uuid.UUID,
+    payload: ClassificationModelBuildCreate,
+    principal: Principal = Depends(get_principal),
+    db: Session = Depends(get_db),
+) -> ClassificationModelBuildCreateResponse:
+    get_authorized_matter(db, principal, matter_id)
+    try:
+        prepared = prepare_build(
+            db,
+            matter_id=matter_id,
+            classification_model_id=classification_model_id,
+            dataset_snapshot_id=payload.dataset_snapshot_id,
+        )
+        run, created = create_training_run(
+            db,
+            prepared=prepared,
+            idempotency_key=payload.idempotency_key,
+            actor_user_id=principal.user.id,
+        )
+        if created:
+            enqueue_classification_model_build(db, run.workflow_id, str(run.id))
+        db.commit()
+        db.refresh(run)
+        return ClassificationModelBuildCreateResponse(
+            training_run=training_run_read(db, run),
+            created=created,
+        )
+    except ClassificationBuildError as exc:
+        db.rollback()
+        raise build_error(exc) from exc
+    except IntegrityError as exc:
+        db.rollback()
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail="A conflicting classification model build already exists",
+        ) from exc
+
+
+@router.get(
+    "/{classification_model_id}/builds",
+    response_model=list[ClassificationTrainingRunRead],
+)
+def list_classification_model_builds(
+    matter_id: uuid.UUID,
+    classification_model_id: uuid.UUID,
+    principal: Principal = Depends(get_principal),
+    db: Session = Depends(get_db),
+) -> list[ClassificationTrainingRunRead]:
+    get_authorized_matter(db, principal, matter_id)
+    try:
+        get_classification_model_record(
+            db,
+            matter_id=matter_id,
+            classification_model_id=classification_model_id,
+        )
+    except ClassificationModelCommandError as exc:
+        raise command_error(exc) from exc
+    runs = db.scalars(
+        select(ClassificationTrainingRun)
+        .where(
+            ClassificationTrainingRun.matter_id == matter_id,
+            ClassificationTrainingRun.classification_model_id == classification_model_id,
+        )
+        .order_by(ClassificationTrainingRun.created_at.desc(), ClassificationTrainingRun.id)
+    ).all()
+    return [training_run_read(db, run) for run in runs]
+
+
+@router.get(
+    "/{classification_model_id}/builds/{training_run_id}",
+    response_model=ClassificationTrainingRunRead,
+)
+def read_classification_model_build(
+    matter_id: uuid.UUID,
+    classification_model_id: uuid.UUID,
+    training_run_id: uuid.UUID,
+    principal: Principal = Depends(get_principal),
+    db: Session = Depends(get_db),
+) -> ClassificationTrainingRunRead:
+    get_authorized_matter(db, principal, matter_id)
+    try:
+        run = get_training_run(
+            db,
+            matter_id=matter_id,
+            classification_model_id=classification_model_id,
+            training_run_id=training_run_id,
+        )
+        return training_run_read(db, run)
+    except ClassificationBuildError as exc:
+        raise build_error(exc) from exc
+
+
+@router.post(
+    "/{classification_model_id}/builds/{training_run_id}/cancel",
+    response_model=ClassificationTrainingRunRead,
+)
+def cancel_classification_model_build_run(
+    matter_id: uuid.UUID,
+    classification_model_id: uuid.UUID,
+    training_run_id: uuid.UUID,
+    principal: Principal = Depends(get_principal),
+    db: Session = Depends(get_db),
+) -> ClassificationTrainingRunRead:
+    get_authorized_matter(db, principal, matter_id)
+    try:
+        run = get_training_run(
+            db,
+            matter_id=matter_id,
+            classification_model_id=classification_model_id,
+            training_run_id=training_run_id,
+            for_update=True,
+        )
+        canceled = cancel_training_run(run)
+        if canceled:
+            record_audit(
+                db,
+                tenant_id=run.tenant_id,
+                actor_user_id=principal.user.id,
+                action="classification_training_run.canceled",
+                target_type="classification_training_run",
+                target_id=run.id,
+                details={"classification_model_id": str(run.classification_model_id)},
+            )
+        db.commit()
+        if canceled:
+            cancel_classification_model_build(run.workflow_id)
+        db.refresh(run)
+        return training_run_read(db, run)
+    except ClassificationBuildError as exc:
+        db.rollback()
+        raise build_error(exc) from exc
+
+
+@router.post(
+    "/{classification_model_id}/builds/{training_run_id}/reconcile",
+    response_model=ClassificationTrainingRunRead,
+)
+def reconcile_classification_model_build(
+    matter_id: uuid.UUID,
+    classification_model_id: uuid.UUID,
+    training_run_id: uuid.UUID,
+    principal: Principal = Depends(get_principal),
+    db: Session = Depends(get_db),
+) -> ClassificationTrainingRunRead:
+    get_authorized_matter(db, principal, matter_id)
+    try:
+        run = get_training_run(
+            db,
+            matter_id=matter_id,
+            classification_model_id=classification_model_id,
+            training_run_id=training_run_id,
+            for_update=True,
+        )
+        reconcile_training_run(db, run=run)
+        db.refresh(run)
+        return training_run_read(db, run)
+    except ClassificationBuildError as exc:
+        db.rollback()
+        raise build_error(exc) from exc
+    except Exception as exc:
+        db.rollback()
+        raise HTTPException(
+            status_code=status.HTTP_502_BAD_GATEWAY,
+            detail="Classification build reconciliation failed",
+        ) from exc
 
 
 @router.get(

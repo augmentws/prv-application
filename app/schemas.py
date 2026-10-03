@@ -2440,6 +2440,7 @@ class ClassificationModelRead(BaseModel):
     description: str | None
     status: ResourceStatus
     current_configuration_id: uuid.UUID | None
+    active_model_version_id: uuid.UUID | None
     target_field: ClassificationTargetFieldRead
     current_configuration: ClassificationModelConfigurationRead | None
     created_at: datetime
@@ -2572,6 +2573,137 @@ class ClassificationDatasetSnapshotCreateResponse(BaseModel):
 class ClassificationFeatureSplitCreateResponse(BaseModel):
     snapshot: ClassificationDatasetSnapshotRead
     materialized: bool
+
+
+ClassificationTrainingRunStatus = Literal[
+    "QUEUED",
+    "SNAPSHOTTING",
+    "WAITING_FOR_RUNTIME",
+    "TRAINING",
+    "PACKAGING",
+    "EVALUATING",
+    "PUBLISHING",
+    "FINALIZING",
+    "RECONCILING",
+    "COMPLETED",
+    "COMPLETED_WITH_ERRORS",
+    "FAILED",
+    "CANCELED",
+]
+
+
+class ClassificationModelBuildPreviewRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    dataset_snapshot_id: uuid.UUID
+
+
+class ClassificationModelBuildCreate(ClassificationModelBuildPreviewRequest):
+    idempotency_key: str = Field(min_length=1, max_length=200)
+
+    @field_validator("idempotency_key")
+    @classmethod
+    def normalize_idempotency_key(cls, value: str) -> str:
+        normalized = value.strip()
+        if not normalized:
+            raise ValueError("Idempotency key is required")
+        return normalized
+
+
+class ClassificationModelBuildPreview(BaseModel):
+    classification_model_id: uuid.UUID
+    configuration_id: uuid.UUID
+    dataset_snapshot_id: uuid.UUID
+    configuration_hash: Sha256
+    training_aggregate_hash: Sha256 | None
+    feature_specification_hash: Sha256 | None
+    validation_specification: ValidationPolicy
+    random_seed: int
+    runtime_image_digest: str
+    source_revision: str
+    package_schema_version: int
+    derivation_key: Sha256
+    training_eligible_count: int
+    can_launch: bool
+    blocking_errors: list[ClassificationDatasetIssue]
+    warnings: list[ClassificationDatasetIssue]
+    existing_training_run_id: uuid.UUID | None = None
+
+
+class ClassificationModelVersionRead(BaseModel):
+    id: uuid.UUID
+    tenant_id: uuid.UUID
+    matter_id: uuid.UUID
+    classification_model_id: uuid.UUID
+    configuration_id: uuid.UUID
+    training_run_id: uuid.UUID
+    dataset_snapshot_id: uuid.UUID
+    version_number: int
+    status: Literal["CANDIDATE", "APPROVED", "REJECTED", "RETIRED"]
+    target_field_snapshot: TargetFieldSnapshot
+    training_aggregate_hash: Sha256
+    feature_specification_hash: Sha256
+    model_artifact_id: uuid.UUID
+    model_content_hash: Sha256
+    prediction_artifact_id: uuid.UUID
+    prediction_content_hash: Sha256
+    evaluation_artifact_id: uuid.UUID
+    evaluation_content_hash: Sha256
+    result_manifest_artifact_id: uuid.UUID
+    result_manifest_content_hash: Sha256
+    package_schema_version: int
+    runtime_image_digest: str
+    source_revision: str
+    metric_summary: dict[str, float | int | None]
+    warnings: list[str]
+    created_at: datetime
+    created_by_user_id: uuid.UUID
+
+
+class ClassificationTrainingRunRead(BaseModel):
+    id: uuid.UUID
+    tenant_id: uuid.UUID
+    matter_id: uuid.UUID
+    classification_model_id: uuid.UUID
+    configuration_id: uuid.UUID
+    dataset_snapshot_id: uuid.UUID
+    idempotency_key: str
+    workflow_id: str
+    derivation_key: Sha256
+    trainer_specification: TrainerSpecification
+    validation_specification: ValidationPolicy
+    random_seed: int
+    package_schema_version: int
+    runtime_image_digest: str
+    source_revision: str
+    status: ClassificationTrainingRunStatus
+    current_stage: str
+    progress_completed: int
+    progress_total: int
+    model_artifact_id: uuid.UUID | None
+    model_content_hash: Sha256 | None
+    prediction_artifact_id: uuid.UUID | None
+    prediction_content_hash: Sha256 | None
+    evaluation_artifact_id: uuid.UUID | None
+    evaluation_content_hash: Sha256 | None
+    result_manifest_artifact_id: uuid.UUID | None
+    result_manifest_content_hash: Sha256 | None
+    failure_code: str | None
+    failure_summary: str | None
+    failure_retriable: bool
+    model_version: ClassificationModelVersionRead | None = None
+    created_by_user_id: uuid.UUID
+    started_at: datetime | None
+    completed_at: datetime | None
+    canceled_at: datetime | None
+    created_at: datetime
+    updated_at: datetime
+    row_version: int
+
+
+class ClassificationModelBuildCreateResponse(BaseModel):
+    training_run: ClassificationTrainingRunRead
+    created: bool
 
 
 class ErrorDetail(BaseModel):

@@ -1,6 +1,6 @@
 # Statistical Classification Backend Implementation Plan
 
-Status: Phases 0 through 6 implemented; Phase 7 is next
+Status: Phases 0 through 7 implemented; Phase 8 is next
 
 Related documents:
 
@@ -630,6 +630,13 @@ cross-scope result rejection.
 
 Exit when one launch yields exactly one candidate or one explicit terminal or
 reconcilable failure, never duplicate logical versions.
+
+Implementation status: complete. Core now owns idempotent training-run,
+candidate-version, and evaluation records; `classification_model_build_v1`
+reauthorizes and validates frozen inputs before runtime dispatch; returned
+packages are identity/hash checked before transactional finalization; and
+explicit reconciliation can recover outputs published before an ambiguous
+timeout. Candidate builds never change the active model pointer.
 
 ## 12. Phase 8: Decisions, activation, and rollback
 

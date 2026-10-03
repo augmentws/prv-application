@@ -1,4 +1,3 @@
-import hashlib
 import io
 import json
 import warnings
@@ -14,6 +13,7 @@ from sklearn.linear_model import LogisticRegression
 
 from classification_service.artifacts import ClassificationArtifactStore, content_hash
 from classification_service.config import ClassificationSettings
+from classification_service.hashing import classification_output_artifact_derivation_key
 from classification_service.metrics import EvaluationMetrics, evaluate_probabilities
 from classification_service.packaging import (
     PACKAGE_MEDIA_TYPE,
@@ -55,10 +55,6 @@ class ClassificationRuntimeError(RuntimeError):
 
 def _canonical_json(value: Any) -> bytes:
     return json.dumps(value, ensure_ascii=False, separators=(",", ":"), sort_keys=True).encode()
-
-
-def _hash_json(value: Any) -> str:
-    return hashlib.sha256(_canonical_json(value)).hexdigest()
 
 
 def _metadata_text(table: pa.Table, key: str) -> str | None:
@@ -618,12 +614,9 @@ def _prediction_parquet(
 
 
 def _artifact_derivation(output_derivation_key: str, artifact_type: ArtifactType) -> str:
-    return _hash_json(
-        {
-            "contract_version": 1,
-            "output_derivation_key": output_derivation_key,
-            "artifact_type": artifact_type.value,
-        }
+    return classification_output_artifact_derivation_key(
+        output_derivation_key,
+        artifact_type.value,
     )
 
 

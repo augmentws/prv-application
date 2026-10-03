@@ -18,6 +18,7 @@ export interface ClassificationModelRead {
   description: string | null;
   status: ClassificationModelReadStatus;
   current_configuration_id: string | null;
+  active_model_version_id: string | null;
   target_field: ClassificationTargetFieldRead;
   current_configuration: ClassificationModelConfigurationRead | null;
   created_at: string;

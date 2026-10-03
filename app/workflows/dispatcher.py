@@ -52,6 +52,28 @@ def cancel_matter_embedding(workflow_id: str) -> None:
         get_dbos_client().cancel_workflow(workflow_id, cancel_children=True)
 
 
+def enqueue_classification_model_build(
+    db: Session,
+    workflow_id: str,
+    training_run_id: str,
+) -> None:
+    settings = get_settings()
+    if not settings.dbos_enabled:
+        return
+    options: EnqueueOptions = {
+        "workflow_name": "classification_model_build_v1",
+        "queue_name": "classification-model-builds",
+        "workflow_id": workflow_id,
+        "application_name": settings.dbos_application_name,
+    }
+    get_dbos_client().enqueue_in_transaction(db, options, training_run_id)
+
+
+def cancel_classification_model_build(workflow_id: str) -> None:
+    if get_settings().dbos_enabled:
+        get_dbos_client().cancel_workflow(workflow_id, cancel_children=True)
+
+
 def enqueue_matter_topics(db: Session, workflow_id: str, job_id: str) -> None:
     settings = get_settings()
     if not settings.dbos_enabled:
