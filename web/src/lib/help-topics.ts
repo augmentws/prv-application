@@ -24,6 +24,11 @@ export const helpTopics = {
     summary: "Learn how document selections are added to matters and how to follow background job progress.",
     href: "/docs/matter-jobs",
   },
+  classification: {
+    title: "Statistical classification help",
+    summary: "Learn how admins configure classifiers, freeze training sets, build governed versions, and inspect scoring previews.",
+    href: "/docs/statistical-classification",
+  },
   matterSearch: {
     title: "Matter search help",
     summary: "Learn how matter indexes, searches, filters, facets, and rebuilds work.",

@@ -14638,6 +14638,97 @@
         }
       }
     },
+    "/v1/matters/{matter_id}/classification-models/{classification_model_id}/scoring-runs/{scoring_run_id}/predictions": {
+      "get": {
+        "tags": [
+          "classification models"
+        ],
+        "summary": "Preview Classification Model Scoring Predictions",
+        "operationId": "preview_classification_model_scoring_predictions_v1_matters__matter_id__classification_models__classification_model_id__scoring_runs__scoring_run_id__predictions_get",
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "matter_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid",
+              "title": "Matter Id"
+            }
+          },
+          {
+            "name": "classification_model_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid",
+              "title": "Classification Model Id"
+            }
+          },
+          {
+            "name": "scoring_run_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid",
+              "title": "Scoring Run Id"
+            }
+          },
+          {
+            "name": "offset",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "integer",
+              "minimum": 0,
+              "default": 0,
+              "title": "Offset"
+            }
+          },
+          {
+            "name": "limit",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "integer",
+              "maximum": 200,
+              "minimum": 1,
+              "default": 50,
+              "title": "Limit"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ClassificationPredictionPreviewRead"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/v1/matters/{matter_id}/classification-models/{classification_model_id}/scoring-runs/{scoring_run_id}/cancel": {
       "post": {
         "tags": [
@@ -19123,6 +19214,176 @@
           "created_by_user_id"
         ],
         "title": "ClassificationModelVersionRead"
+      },
+      "ClassificationPredictionPreviewRead": {
+        "properties": {
+          "scoring_run_id": {
+            "type": "string",
+            "format": "uuid",
+            "title": "Scoring Run Id"
+          },
+          "model_version_id": {
+            "type": "string",
+            "format": "uuid",
+            "title": "Model Version Id"
+          },
+          "ordered_class_keys": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array",
+            "title": "Ordered Class Keys"
+          },
+          "total": {
+            "type": "integer",
+            "title": "Total"
+          },
+          "offset": {
+            "type": "integer",
+            "title": "Offset"
+          },
+          "limit": {
+            "type": "integer",
+            "title": "Limit"
+          },
+          "items": {
+            "items": {
+              "$ref": "#/components/schemas/ClassificationPredictionRowRead"
+            },
+            "type": "array",
+            "title": "Items"
+          }
+        },
+        "type": "object",
+        "required": [
+          "scoring_run_id",
+          "model_version_id",
+          "ordered_class_keys",
+          "total",
+          "offset",
+          "limit",
+          "items"
+        ],
+        "title": "ClassificationPredictionPreviewRead"
+      },
+      "ClassificationPredictionRowRead": {
+        "properties": {
+          "matter_document_id": {
+            "type": "string",
+            "format": "uuid",
+            "title": "Matter Document Id"
+          },
+          "collection_item_id": {
+            "anyOf": [
+              {
+                "type": "string",
+                "format": "uuid"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Collection Item Id"
+          },
+          "scope_ordinal": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Scope Ordinal"
+          },
+          "source_vector_content_hash": {
+            "anyOf": [
+              {
+                "type": "string",
+                "pattern": "^[0-9a-f]{64}$"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Source Vector Content Hash"
+          },
+          "result_status": {
+            "type": "string",
+            "enum": [
+              "SUCCESS",
+              "EXCLUDED",
+              "FAILED"
+            ],
+            "title": "Result Status"
+          },
+          "failure_reason": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Failure Reason"
+          },
+          "probabilities": {
+            "items": {
+              "type": "number"
+            },
+            "type": "array",
+            "title": "Probabilities"
+          },
+          "predicted_class_keys": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array",
+            "title": "Predicted Class Keys"
+          },
+          "abstained": {
+            "type": "boolean",
+            "title": "Abstained"
+          },
+          "probability_margin": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Probability Margin"
+          },
+          "uncertainty": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Uncertainty"
+          }
+        },
+        "type": "object",
+        "required": [
+          "matter_document_id",
+          "collection_item_id",
+          "scope_ordinal",
+          "source_vector_content_hash",
+          "result_status",
+          "failure_reason",
+          "probabilities",
+          "predicted_class_keys",
+          "abstained",
+          "probability_margin",
+          "uncertainty"
+        ],
+        "title": "ClassificationPredictionRowRead"
       },
       "ClassificationPromotionCreate": {
         "properties": {

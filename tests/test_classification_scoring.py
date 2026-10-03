@@ -1,5 +1,11 @@
+import hashlib
+import io
+import json
 import uuid
+from datetime import datetime, timezone
 
+import pyarrow as pa
+import pyarrow.parquet as pq
 from conftest import TestingSessionLocal
 from fastapi.testclient import TestClient
 from test_classification_builds import FakeClassificationGateway, launch_build, ready_build_fixture
@@ -261,3 +267,112 @@ def test_scoring_preview_blocks_incompatible_feature_contract(
     assert {issue["code"] for issue in response.json()["blocking_errors"]} == {
         "FEATURE_CONTRACT_MISMATCH"
     }
+
+
+def test_completed_scoring_run_exposes_bounded_verified_prediction_preview(
+    client: TestClient,
+    root_token: str,
+    root_admin,
+    monkeypatch,
+) -> None:
+    matter, model, snapshot, version_id, _ = approved_version_fixture(client, root_token, root_admin)
+    base = f"/v1/matters/{matter['id']}/classification-models/{model['id']}/scoring-runs"
+    launched = client.post(
+        base,
+        headers=auth(root_token),
+        json={
+            "dataset_snapshot_id": str(snapshot.id),
+            "model_version_id": str(version_id),
+            "idempotency_key": "prediction-preview",
+        },
+    )
+    assert launched.status_code == 202, launched.text
+    run_id = uuid.UUID(launched.json()["scoring_run"]["id"])
+    first_document_id = uuid.uuid4()
+    second_document_id = uuid.uuid4()
+    table = pa.Table.from_pylist(
+        [
+            {
+                "matter_document_id": str(first_document_id),
+                "collection_item_id": str(uuid.uuid4()),
+                "scope_ordinal": 1,
+                "source_vector_content_hash": "a" * 64,
+                "result_status": "SUCCESS",
+                "failure_reason": None,
+                "probabilities": [0.2, 0.8],
+                "predicted_class_keys": ["true"],
+                "abstained": False,
+                "probability_margin": 0.6,
+                "uncertainty": 0.2,
+            },
+            {
+                "matter_document_id": str(second_document_id),
+                "collection_item_id": None,
+                "scope_ordinal": 2,
+                "source_vector_content_hash": None,
+                "result_status": "EXCLUDED",
+                "failure_reason": "FEATURE_MISSING",
+                "probabilities": [],
+                "predicted_class_keys": [],
+                "abstained": False,
+                "probability_margin": None,
+                "uncertainty": None,
+            },
+        ]
+    ).replace_schema_metadata(
+        {
+            b"pvr.schema": b"classification-scoring-predictions",
+            b"pvr.scoring_run_id": str(run_id).encode(),
+            b"pvr.model_version_id": str(version_id).encode(),
+            b"pvr.ordered_class_keys": json.dumps(["false", "true"]).encode(),
+        }
+    )
+    prediction_file = io.BytesIO()
+    pq.write_table(table, prediction_file, row_group_size=1)
+    prediction_content = prediction_file.getvalue()
+    with TestingSessionLocal() as db:
+        run = db.get(ClassificationScoringRun, run_id)
+        assert run is not None
+        run.status = "COMPLETED_WITH_ERRORS"
+        run.current_stage = "COMPLETED"
+        run.progress_completed = run.progress_total
+        run.population_document_count = 2
+        run.scored_document_count = 1
+        run.abstained_document_count = 0
+        run.excluded_document_count = 1
+        run.failed_document_count = 0
+        run.prediction_artifact_id = uuid.uuid4()
+        run.prediction_content_hash = hashlib.sha256(prediction_content).hexdigest()
+        run.result_manifest_artifact_id = uuid.uuid4()
+        run.result_manifest_content_hash = "f" * 64
+        run.completed_at = datetime.now(timezone.utc)
+        db.commit()
+
+    def copy_prediction(**kwargs) -> int:
+        kwargs["destination"].write(prediction_content)
+        return len(prediction_content)
+
+    monkeypatch.setattr("app.classification_scoring.copy_workflow_artifact_content", copy_prediction)
+    response = client.get(f"{base}/{run_id}/predictions?offset=1&limit=1", headers=auth(root_token))
+    assert response.status_code == 200, response.text
+    payload = response.json()
+    assert payload["scoring_run_id"] == str(run_id)
+    assert payload["ordered_class_keys"] == ["false", "true"]
+    assert payload["total"] == 2
+    assert payload["offset"] == 1
+    assert payload["limit"] == 1
+    assert payload["items"] == [
+        {
+            "matter_document_id": str(second_document_id),
+            "collection_item_id": None,
+            "scope_ordinal": 2,
+            "source_vector_content_hash": None,
+            "result_status": "EXCLUDED",
+            "failure_reason": "FEATURE_MISSING",
+            "probabilities": [],
+            "predicted_class_keys": [],
+            "abstained": False,
+            "probability_margin": None,
+            "uncertainty": None,
+        }
+    ]

@@ -2892,6 +2892,30 @@ class ClassificationScoringCreateResponse(BaseModel):
     created: bool
 
 
+class ClassificationPredictionRowRead(BaseModel):
+    matter_document_id: uuid.UUID
+    collection_item_id: uuid.UUID | None
+    scope_ordinal: int | None
+    source_vector_content_hash: Sha256 | None
+    result_status: Literal["SUCCESS", "EXCLUDED", "FAILED"]
+    failure_reason: str | None
+    probabilities: list[float]
+    predicted_class_keys: list[str]
+    abstained: bool
+    probability_margin: float | None
+    uncertainty: float | None
+
+
+class ClassificationPredictionPreviewRead(BaseModel):
+    scoring_run_id: uuid.UUID
+    model_version_id: uuid.UUID
+    ordered_class_keys: list[str]
+    total: int
+    offset: int
+    limit: int
+    items: list[ClassificationPredictionRowRead]
+
+
 class ErrorDetail(BaseModel):
     code: str
     message: str

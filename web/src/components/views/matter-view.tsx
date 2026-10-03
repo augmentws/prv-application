@@ -10,6 +10,7 @@ import { toast } from "sonner";
 
 import { DataTable } from "@/components/data-table";
 import { AnalysisTasksPanel } from "@/components/analysis-tasks-panel";
+import { ClassificationPanel } from "@/components/classification-panel";
 import { ResourcePageHeader } from "@/components/resource-page-header";
 import { EnumMetadataEditor } from "@/components/enum-metadata-editor";
 import { CloneMatterDialog, type CloneMatterValues } from "@/components/forms/clone-matter-dialog";
@@ -36,7 +37,7 @@ import { coreApi } from "@/lib/api-client";
 import { bulkTagDisplayStatus, bulkTagIsWaiting } from "@/lib/bulk-tag-jobs";
 import { formatDate } from "@/lib/format";
 
-type MatterTab = "overview" | "metadata" | "definition" | "analysis" | "batches" | "jobs" | "usage" | "search";
+type MatterTab = "overview" | "metadata" | "definition" | "analysis" | "batches" | "classification" | "jobs" | "usage" | "search";
 type MetadataTab = "definitions" | "groups";
 type MatterJobType = "BULK_TAGGING" | "DOCUMENT_EMBEDDINGS" | "TOPIC_CLUSTERING" | "DOCUMENT_IMPORTS";
 
@@ -65,7 +66,7 @@ export function MatterView({ clientId, matterId, requestedTab, requestedMetadata
   requestedMetadataTab?: string;
   selectedJobId?: string;
 }) {
-  const tab: MatterTab = requestedTab === "overview" || requestedTab === "definition" || requestedTab === "analysis" || requestedTab === "batches" || requestedTab === "jobs" || requestedTab === "usage" || requestedTab === "search" ? requestedTab : "metadata";
+  const tab: MatterTab = requestedTab === "overview" || requestedTab === "definition" || requestedTab === "analysis" || requestedTab === "batches" || requestedTab === "classification" || requestedTab === "jobs" || requestedTab === "usage" || requestedTab === "search" ? requestedTab : "metadata";
   const metadataTab: MetadataTab = requestedTab === "groups" || requestedMetadataTab === "groups" ? "groups" : "definitions";
   const router = useRouter();
   const queryClient = useQueryClient();
@@ -96,7 +97,7 @@ export function MatterView({ clientId, matterId, requestedTab, requestedMetadata
   const embeddingJobs = useQuery({
     queryKey: ["matter-embedding-jobs", matterId],
     queryFn: () => coreApi<MatterEmbeddingJobRead[]>(`/v1/matters/${matterId}/embedding-jobs`),
-    enabled: tab === "jobs",
+    enabled: tab === "jobs" || tab === "classification",
     refetchInterval: (query) => query.state.data?.some((job) => ["QUEUED", "PLANNING", "RUNNING"].includes(job.status)) ? 2000 : false,
   });
   const topicJobs = useQuery({
@@ -119,7 +120,7 @@ export function MatterView({ clientId, matterId, requestedTab, requestedMetadata
   const reviewBatches = useQuery({
     queryKey: ["review-batches", matterId],
     queryFn: () => coreApi<ReviewBatchRead[]>(`/v1/matters/${matterId}/review-batches`),
-    enabled: tab === "batches",
+    enabled: tab === "batches" || tab === "classification",
     refetchInterval: (query) => query.state.data?.some((batch) => ["QUEUED", "BUILDING"].includes(batch.status)) ? 2000 : false,
   });
   const providerUsage = useQuery({
@@ -392,13 +393,14 @@ export function MatterView({ clientId, matterId, requestedTab, requestedMetadata
             <button role="tab" aria-selected={tab === "definition"} onClick={() => openTab("definition")} className={tabClass(tab === "definition")}>Matter definition</button>
             <button role="tab" aria-selected={tab === "analysis"} onClick={() => openTab("analysis")} className={tabClass(tab === "analysis")}>Analysis tasks</button>
             <button role="tab" aria-selected={tab === "batches"} onClick={() => openTab("batches")} className={tabClass(tab === "batches")}>Batches</button>
+            <button role="tab" aria-selected={tab === "classification"} onClick={() => openTab("classification")} className={tabClass(tab === "classification")}>Classification</button>
             <button role="tab" aria-selected={tab === "jobs"} onClick={() => openTab("jobs")} className={tabClass(tab === "jobs")}>Jobs</button>
             <button role="tab" aria-selected={tab === "usage"} onClick={() => openTab("usage")} className={tabClass(tab === "usage")}>Token usage</button>
             <button role="tab" aria-selected={tab === "search"} onClick={() => openTab("search")} className={tabClass(tab === "search")}>Search index</button>
           </div>
           <div className="flex shrink-0 flex-wrap items-center gap-2 pb-2">
             <Button asChild><Link href={`/review/matters/${matterId}`}><FileSearch />Search & Review</Link></Button>
-            <HelpLink topic={tab === "jobs" ? "matterJobs" : tab === "usage" ? "tokenUsage" : tab === "search" ? "matterSearch" : tab === "definition" ? "matterDefinition" : "metadata"} />
+            <HelpLink topic={tab === "classification" ? "classification" : tab === "jobs" ? "matterJobs" : tab === "usage" ? "tokenUsage" : tab === "search" ? "matterSearch" : tab === "definition" ? "matterDefinition" : "metadata"} />
             <CloneMatterDialog sourceName={matter.data.name} onClone={cloneMatter} />
             <SaveMatterTemplateDialog onCreate={saveTemplate} />
             {tab === "metadata" && metadataTab === "definitions" ? <CreateMetadataDialog onCreate={createDefinition} /> : null}
@@ -416,6 +418,7 @@ export function MatterView({ clientId, matterId, requestedTab, requestedMetadata
         : tab === "definition" ? <MatterDefinitionPanel matterId={matterId} />
         : tab === "analysis" ? <AnalysisTasksPanel matterId={matterId} />
         : tab === "batches" ? reviewBatches.isPending || groups.isPending || tenantUsers.isPending || savedSearches.isPending ? <TableLoading /> : reviewBatches.error || groups.error || tenantUsers.error || savedSearches.error ? <QueryError message={reviewBatches.error?.message ?? groups.error?.message ?? tenantUsers.error?.message ?? savedSearches.error?.message} /> : <div className="space-y-4"><div className="flex flex-wrap items-start justify-between gap-3"><div><h2 className="text-lg font-semibold">Review batches</h2><p className="text-sm text-muted-foreground">Freeze document sets for assignment, repeatable agent runs, and coding comparisons.</p></div><CreateReviewBatchDialog groups={groups.data} batches={reviewBatches.data} savedSearches={savedSearches.data} onCreate={createReviewBatch} /></div><DataTable columns={reviewBatchColumns} data={reviewBatches.data} emptyMessage="No review batches have been created for this matter." /></div>
+        : tab === "classification" ? reviewBatches.isPending || embeddingJobs.isPending || definitions.isPending ? <TableLoading /> : reviewBatches.error || embeddingJobs.error || definitions.error ? <QueryError message={reviewBatches.error?.message ?? embeddingJobs.error?.message ?? definitions.error?.message} /> : <ClassificationPanel matterId={matterId} definitions={definitions.data} reviewBatches={reviewBatches.data} embeddingJobs={embeddingJobs.data} />
         : tab === "jobs" ? jobs.isPending || embeddingJobs.isPending || topicJobs.isPending || bulkTagJobs.isPending || savedSearches.isPending ? <TableLoading /> : jobs.error || embeddingJobs.error || topicJobs.error || bulkTagJobs.error || savedSearches.error ? <QueryError message={jobs.error?.message ?? embeddingJobs.error?.message ?? topicJobs.error?.message ?? bulkTagJobs.error?.message ?? savedSearches.error?.message} /> : <div className="space-y-6">
           <div className="flex flex-wrap items-end justify-between gap-4 rounded-xl border bg-card p-4">
             <div><h2 className="text-lg font-semibold">Matter jobs</h2><p className="text-sm text-muted-foreground">Choose which type of background work to view.</p></div>

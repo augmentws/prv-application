@@ -1,6 +1,7 @@
 import hashlib
 import io
 import json
+import tempfile
 import uuid
 from collections.abc import Callable
 from contextlib import nullcontext
@@ -8,6 +9,7 @@ from dataclasses import dataclass
 from datetime import datetime, timezone
 from typing import Any
 
+import pyarrow.parquet as pq
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
@@ -25,7 +27,12 @@ from app.models import (
     ClassificationScoringRun,
     Matter,
 )
-from app.schemas import ClassificationDatasetIssue, ClassificationScoringPreview
+from app.schemas import (
+    ClassificationDatasetIssue,
+    ClassificationPredictionPreviewRead,
+    ClassificationPredictionRowRead,
+    ClassificationScoringPreview,
+)
 from classification_service.hashing import canonical_value_hash, classification_output_artifact_derivation_key
 from classification_service.schemas import (
     ArtifactReference,
@@ -404,6 +411,118 @@ def get_scoring_run(
     if run is None:
         raise ClassificationScoringNotFoundError("Classification scoring run not found")
     return run
+
+
+def prediction_preview(
+    run: ClassificationScoringRun,
+    *,
+    matter: Matter,
+    actor_user_id: uuid.UUID,
+    offset: int,
+    limit: int,
+) -> ClassificationPredictionPreviewRead:
+    if run.status not in {"COMPLETED", "COMPLETED_WITH_ERRORS"}:
+        raise ClassificationScoringConflictError(
+            "Predictions are available only after scoring completes",
+            code="SCORING_OUTPUT_NOT_READY",
+        )
+    if run.prediction_artifact_id is None or run.prediction_content_hash is None:
+        raise ClassificationScoringConflictError(
+            "Completed scoring run is missing its prediction artifact",
+            code="SCORING_OUTPUT_MISSING",
+        )
+    with tempfile.SpooledTemporaryFile(max_size=8 * 1024 * 1024) as artifact_file:
+        copy_workflow_artifact_content(
+            artifact_id=run.prediction_artifact_id,
+            destination=artifact_file,
+            actor_user_id=actor_user_id,
+            tenant_id=run.tenant_id,
+            client_id=matter.client_id,
+        )
+        artifact_file.seek(0)
+        digest = hashlib.sha256()
+        while chunk := artifact_file.read(1024 * 1024):
+            digest.update(chunk)
+        if digest.hexdigest() != run.prediction_content_hash:
+            raise ClassificationScoringConflictError(
+                "Prediction artifact content hash does not match the scoring run",
+                code="PREDICTION_ARTIFACT_HASH_MISMATCH",
+            )
+        artifact_file.seek(0)
+        try:
+            parquet = pq.ParquetFile(artifact_file)
+        except Exception as exc:
+            raise ClassificationScoringConflictError(
+                "Prediction artifact is not readable Parquet",
+                code="PREDICTION_ARTIFACT_INVALID",
+            ) from exc
+        metadata = parquet.schema_arrow.metadata or {}
+        if (
+            metadata.get(b"pvr.schema") != b"classification-scoring-predictions"
+            or metadata.get(b"pvr.scoring_run_id") != str(run.id).encode()
+            or metadata.get(b"pvr.model_version_id") != str(run.model_version_id).encode()
+        ):
+            raise ClassificationScoringConflictError(
+                "Prediction artifact identity does not match the scoring run",
+                code="PREDICTION_ARTIFACT_IDENTITY_MISMATCH",
+            )
+        try:
+            ordered_class_keys = json.loads(metadata[b"pvr.ordered_class_keys"])
+        except (KeyError, UnicodeDecodeError, json.JSONDecodeError) as exc:
+            raise ClassificationScoringConflictError(
+                "Prediction artifact class metadata is invalid",
+                code="PREDICTION_ARTIFACT_INVALID",
+            ) from exc
+        if not isinstance(ordered_class_keys, list) or not all(
+            isinstance(value, str) for value in ordered_class_keys
+        ):
+            raise ClassificationScoringConflictError(
+                "Prediction artifact class metadata is invalid",
+                code="PREDICTION_ARTIFACT_INVALID",
+            )
+        required_columns = {
+            "matter_document_id",
+            "collection_item_id",
+            "scope_ordinal",
+            "source_vector_content_hash",
+            "result_status",
+            "failure_reason",
+            "probabilities",
+            "predicted_class_keys",
+            "abstained",
+            "probability_margin",
+            "uncertainty",
+        }
+        if not required_columns.issubset(parquet.schema_arrow.names):
+            raise ClassificationScoringConflictError(
+                "Prediction artifact is missing required columns",
+                code="PREDICTION_ARTIFACT_INVALID",
+            )
+        total = parquet.metadata.num_rows
+        remaining_offset = offset
+        remaining_limit = limit
+        rows: list[dict[str, Any]] = []
+        for row_group_index in range(parquet.num_row_groups):
+            row_group_count = parquet.metadata.row_group(row_group_index).num_rows
+            if remaining_offset >= row_group_count:
+                remaining_offset -= row_group_count
+                continue
+            table = parquet.read_row_group(row_group_index, columns=sorted(required_columns))
+            selected = table.slice(remaining_offset, remaining_limit)
+            rows.extend(selected.to_pylist())
+            remaining_limit -= selected.num_rows
+            remaining_offset = 0
+            if remaining_limit == 0:
+                break
+    return ClassificationPredictionPreviewRead(
+        scoring_run_id=run.id,
+        model_version_id=run.model_version_id,
+        ordered_class_keys=ordered_class_keys,
+        total=total,
+        offset=offset,
+        limit=limit,
+        items=[ClassificationPredictionRowRead.model_validate(row) for row in rows],
+    )
 
 
 def scoring_request(run: ClassificationScoringRun) -> ClassificationScoringRequest:

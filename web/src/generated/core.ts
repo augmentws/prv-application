@@ -53,6 +53,7 @@ import type {
   ClassificationModelDecisionRead,
   ClassificationModelRead,
   ClassificationModelVersionRead,
+  ClassificationPredictionPreviewRead,
   ClassificationPromotionCreate,
   ClassificationPromotionPreview,
   ClassificationPromotionPreviewRequest,
@@ -172,6 +173,7 @@ import type {
   MetadataGroupRead,
   MetadataGroupVisibilityUpdate,
   MetadataMutationRead,
+  PreviewClassificationModelScoringPredictionsV1MattersMatterIdClassificationModelsClassificationModelIdScoringRunsScoringRunIdPredictionsGetParams,
   RefreshRequest,
   ResolveWorkflowArtifactDerivationV1WorkflowArtifactsByDerivationGetParams,
   ReviewBatchAnalysisRunCreate,
@@ -13765,6 +13767,69 @@ export const readClassificationModelScoringRunV1MattersMatterIdClassificationMod
 
   const data: readClassificationModelScoringRunV1MattersMatterIdClassificationModelsClassificationModelIdScoringRunsScoringRunIdGetResponse['data'] = body ? JSON.parse(body) : {}
   return { data, status: res.status, headers: res.headers } as readClassificationModelScoringRunV1MattersMatterIdClassificationModelsClassificationModelIdScoringRunsScoringRunIdGetResponse
+}
+
+
+
+export type previewClassificationModelScoringPredictionsV1MattersMatterIdClassificationModelsClassificationModelIdScoringRunsScoringRunIdPredictionsGetResponse200 = {
+  data: ClassificationPredictionPreviewRead
+  status: 200
+}
+
+export type previewClassificationModelScoringPredictionsV1MattersMatterIdClassificationModelsClassificationModelIdScoringRunsScoringRunIdPredictionsGetResponse422 = {
+  data: HTTPValidationError
+  status: 422
+}
+
+export type previewClassificationModelScoringPredictionsV1MattersMatterIdClassificationModelsClassificationModelIdScoringRunsScoringRunIdPredictionsGetResponseSuccess = (previewClassificationModelScoringPredictionsV1MattersMatterIdClassificationModelsClassificationModelIdScoringRunsScoringRunIdPredictionsGetResponse200) & {
+  headers: Headers;
+};
+export type previewClassificationModelScoringPredictionsV1MattersMatterIdClassificationModelsClassificationModelIdScoringRunsScoringRunIdPredictionsGetResponseError = (previewClassificationModelScoringPredictionsV1MattersMatterIdClassificationModelsClassificationModelIdScoringRunsScoringRunIdPredictionsGetResponse422) & {
+  headers: Headers;
+};
+
+export type previewClassificationModelScoringPredictionsV1MattersMatterIdClassificationModelsClassificationModelIdScoringRunsScoringRunIdPredictionsGetResponse = (previewClassificationModelScoringPredictionsV1MattersMatterIdClassificationModelsClassificationModelIdScoringRunsScoringRunIdPredictionsGetResponseSuccess | previewClassificationModelScoringPredictionsV1MattersMatterIdClassificationModelsClassificationModelIdScoringRunsScoringRunIdPredictionsGetResponseError)
+
+export const getPreviewClassificationModelScoringPredictionsV1MattersMatterIdClassificationModelsClassificationModelIdScoringRunsScoringRunIdPredictionsGetUrl = (matterId: string,
+    classificationModelId: string,
+    scoringRunId: string,
+    params?: PreviewClassificationModelScoringPredictionsV1MattersMatterIdClassificationModelsClassificationModelIdScoringRunsScoringRunIdPredictionsGetParams,) => {
+  const normalizedParams = new URLSearchParams();
+
+  Object.entries(params || {}).forEach(([key, value]) => {
+
+    if (value !== undefined) {
+      normalizedParams.append(key, value === null ? 'null' : String(value))
+    }
+  });
+
+  const stringifiedParams = normalizedParams.toString();
+
+  return stringifiedParams.length > 0 ? `/api/core/v1/matters/${matterId}/classification-models/${classificationModelId}/scoring-runs/${scoringRunId}/predictions?${stringifiedParams}` : `/api/core/v1/matters/${matterId}/classification-models/${classificationModelId}/scoring-runs/${scoringRunId}/predictions`
+}
+
+/**
+ * @summary Preview Classification Model Scoring Predictions
+ */
+export const previewClassificationModelScoringPredictionsV1MattersMatterIdClassificationModelsClassificationModelIdScoringRunsScoringRunIdPredictionsGet = async (matterId: string,
+    classificationModelId: string,
+    scoringRunId: string,
+    params?: PreviewClassificationModelScoringPredictionsV1MattersMatterIdClassificationModelsClassificationModelIdScoringRunsScoringRunIdPredictionsGetParams, options?: RequestInit): Promise<previewClassificationModelScoringPredictionsV1MattersMatterIdClassificationModelsClassificationModelIdScoringRunsScoringRunIdPredictionsGetResponse> => {
+
+  const res = await fetch(getPreviewClassificationModelScoringPredictionsV1MattersMatterIdClassificationModelsClassificationModelIdScoringRunsScoringRunIdPredictionsGetUrl(matterId,classificationModelId,scoringRunId,params),
+  {
+    ...options,
+    method: 'GET'
+
+
+  }
+)
+
+
+  const body = [204, 205, 304].includes(res.status) ? null : await res.text();
+
+  const data: previewClassificationModelScoringPredictionsV1MattersMatterIdClassificationModelsClassificationModelIdScoringRunsScoringRunIdPredictionsGetResponse['data'] = body ? JSON.parse(body) : {}
+  return { data, status: res.status, headers: res.headers } as previewClassificationModelScoringPredictionsV1MattersMatterIdClassificationModelsClassificationModelIdScoringRunsScoringRunIdPredictionsGetResponse
 }
 
 

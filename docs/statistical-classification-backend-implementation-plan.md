@@ -79,6 +79,7 @@ an API request handler.
 | 7 | Durable model-build workflow | 1-6 |
 | 8 | Candidate decisions, activation, and rollback | 7 |
 | 9 | Durable batch scoring | 6-8 |
+| 9.5 | Admin validation workspace and bounded prediction preview | 9 |
 | 10 | CAL scoring/queue integration | 9 |
 | 11 | Operational hardening | 1-10 |
 
@@ -772,7 +773,33 @@ row failure, and idempotent output reuse.
 Exit when a run is reproducible from its pinned model, features, policy, and
 prediction artifact without consulting mutable active state.
 
-## 14. Phase 10: CAL integration
+## 14. Phase 9.5: Admin validation workspace
+
+Implementation status: complete. The existing admin-only matter workspace now
+has a Classification tab that exercises the classifier registry,
+configuration revisions, matter/review-batch dataset snapshots, feature and
+split materialization, durable builds, candidate decisions, activation,
+scoring, and prediction inspection. It deliberately does not publish
+predictions to metadata or expose classification controls to reviewers.
+
+Core provides a bounded prediction-preview API over the Artifact-owned Parquet
+output. Each request reauthorizes matter administration, requires a completed
+run, streams the artifact, verifies its SHA-256 hash and embedded run/version
+identity, validates required columns, and reads only the row groups needed for
+the requested page. The UI uses this endpoint rather than downloading or
+parsing the complete artifact in the browser.
+
+### Added API
+
+```text
+GET /v1/matters/{matter_id}/classification-models/{model_id}/scoring-runs/{run_id}/predictions
+```
+
+Exit when a matter administrator can validate the complete backend lifecycle
+and inspect representative scoring output without direct database, artifact,
+or runtime access.
+
+## 15. Phase 10: CAL integration
 
 ### Goal
 
@@ -811,7 +838,7 @@ label precedence.
 Exit when an active model can produce an explainable CAL queue whose reviewed
 results can deliberately feed a later snapshot.
 
-## 15. Phase 11: Operational hardening
+## 16. Phase 11: Operational hardening
 
 ### Security
 
@@ -854,7 +881,7 @@ pipenv run alembic check
 Exit when operators can diagnose, reconcile, retry, cancel, activate, roll
 back, and clean up supported workflows without direct DB/object-store edits.
 
-## 16. Recommended pull-request sequence
+## 17. Recommended pull-request sequence
 
 1. Shared contracts, fixtures, and safe-package schemas.
 2. Core classifier/configuration migration, services, router, and tests.
@@ -868,13 +895,14 @@ back, and clean up supported workflows without direct DB/object-store edits.
 10. Candidate/evaluation/decision tables and approval APIs.
 11. Activation/rollback workflow and concurrency tests.
 12. Batch scoring workflow and prediction artifacts.
-13. CAL queue integration.
-14. Security, observability, retention, scale, and release hardening.
+13. Admin validation workspace and bounded prediction preview.
+14. CAL queue integration.
+15. Security, observability, retention, scale, and release hardening.
 
 Each PR includes its migration, domain/service tests, API tests, and contract
 documentation. Avoid landing orphan tables without a command service or tests.
 
-## 17. Deferred work
+## 18. Deferred work
 
 - Automatic class balancing.
 - Automatic retraining or activation.
@@ -888,7 +916,7 @@ documentation. Avoid landing orphan tables without a command service or tests.
 - Saved-search scope; create a frozen review batch instead.
 - Cross-matter or cross-tenant model reuse.
 
-## 18. Backend MVP completion criteria
+## 19. Backend MVP completion criteria
 
 An authorized matter administrator can:
 

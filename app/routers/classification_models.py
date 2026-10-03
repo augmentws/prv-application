@@ -1,7 +1,7 @@
 import hmac
 import uuid
 
-from fastapi import APIRouter, Depends, HTTPException, status
+from fastapi import APIRouter, Depends, HTTPException, Query, status
 from sqlalchemy import select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session, selectinload
@@ -63,6 +63,7 @@ from app.classification_scoring import (
     cancel_scoring_run,
     create_scoring_run,
     get_scoring_run,
+    prediction_preview,
     prepare_scoring,
     reconcile_scoring_run,
     resolve_existing_scoring_run,
@@ -100,6 +101,7 @@ from app.schemas import (
     ClassificationModelDecisionRead,
     ClassificationModelRead,
     ClassificationModelVersionRead,
+    ClassificationPredictionPreviewRead,
     ClassificationPromotionCreate,
     ClassificationPromotionPreview,
     ClassificationPromotionPreviewRequest,
@@ -1194,6 +1196,43 @@ def read_classification_model_scoring_run(
         )
     except ClassificationScoringError as exc:
         raise scoring_error(exc) from exc
+
+
+@router.get(
+    "/{classification_model_id}/scoring-runs/{scoring_run_id}/predictions",
+    response_model=ClassificationPredictionPreviewRead,
+)
+def preview_classification_model_scoring_predictions(
+    matter_id: uuid.UUID,
+    classification_model_id: uuid.UUID,
+    scoring_run_id: uuid.UUID,
+    offset: int = Query(default=0, ge=0),
+    limit: int = Query(default=50, ge=1, le=200),
+    principal: Principal = Depends(get_principal),
+    db: Session = Depends(get_db),
+) -> ClassificationPredictionPreviewRead:
+    matter = get_authorized_matter(db, principal, matter_id)
+    try:
+        run = get_scoring_run(
+            db,
+            matter_id=matter_id,
+            classification_model_id=classification_model_id,
+            scoring_run_id=scoring_run_id,
+        )
+        return prediction_preview(
+            run,
+            matter=matter,
+            actor_user_id=principal.user.id,
+            offset=offset,
+            limit=limit,
+        )
+    except ClassificationScoringError as exc:
+        raise scoring_error(exc) from exc
+    except (PermissionError, ValueError) as exc:
+        raise HTTPException(
+            status_code=status.HTTP_502_BAD_GATEWAY,
+            detail="Classification prediction artifact could not be read",
+        ) from exc
 
 
 @router.post(

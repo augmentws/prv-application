@@ -3,7 +3,7 @@ title: Statistical classification
 description: Understand the available backend workflow for model configuration, training, governance, and reproducible batch scoring.
 ---
 
-Priv-View has a backend workflow for training and batch-scoring statistical classification models against a matter field. The browser interface for this workflow is not implemented yet; matter administrators currently use the versioned Core API or its interactive API documentation.
+Priv-View has an admin-only validation workspace for training and batch-scoring statistical classification models against a matter field. It is available from a matter's **Classification** tab and exercises the same versioned Core APIs used by automation.
 
 ## What the workflow is for
 
@@ -27,13 +27,15 @@ A classification model belongs to one tenant, matter, and metadata field. Its co
 6. Preview and perform activation when the version should become the classifier default.
 7. Preview a scoring run against an immutable dataset snapshot. The preview resolves and returns the exact model version.
 8. Launch using that returned version ID. The scoring run remains pinned even if another version is activated while it executes.
-9. Read the run status and use the prediction artifact for downstream processing.
+9. Read the run status and inspect a bounded, read-only prediction sample. The workspace verifies the immutable prediction artifact before showing rows.
 
 ## Scoring states and results
 
 Scoring moves through queued, validation, runtime, publishing, and finalization stages. It finishes as `COMPLETED`, `COMPLETED_WITH_ERRORS`, `FAILED`, or `CANCELED`. A completed run reports population, scored, abstained, excluded, and failed counts. Those counts reconcile to the immutable population.
 
 Predictions are stored as one Artifact-owned Parquet file rather than one Core database record per document. Every population document receives a row. Successful rows include ordered probabilities, resolved class keys or abstention, probability margin, and uncertainty. Documents without usable features remain present as explicit exclusions or failures with a reason code.
+
+The browser preview reads at most 200 rows per request and never writes predictions into document coding. Use it to validate class order, thresholds, abstentions, exclusions, and failures before building a CAL workflow or another publication path.
 
 ## Reproducibility and version selection
 
@@ -43,7 +45,7 @@ Duplicate launches with the same logical inputs reuse the existing scoring run a
 
 ## Current limitations
 
-- There is no browser UI for model or scoring administration yet.
+- The browser workspace is an MVP validation surface for matter administrators, not a reviewer-facing CAL interface.
 - Batch scoring consumes a ready classification dataset snapshot; a scoring-only population snapshot is not yet a separate resource type.
 - Scoring results are not published into matter metadata automatically.
 - Continuous active learning queues and rounds are planned separately.
