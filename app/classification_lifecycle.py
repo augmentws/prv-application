@@ -17,6 +17,7 @@ from app.models import (
     ClassificationModelConfiguration,
     ClassificationModelDecision,
     ClassificationModelVersion,
+    ClassificationScoringRun,
     ClientMembership,
     Matter,
     MatterMembership,
@@ -625,11 +626,26 @@ def retire_model_version(
             "Model version is already retired",
             code="VERSION_ALREADY_RETIRED",
         )
+    blocking_reference_count = len(
+        db.scalars(
+            select(ClassificationScoringRun.id).where(
+                ClassificationScoringRun.model_version_id == version.id,
+                ClassificationScoringRun.status.not_in(
+                    ("COMPLETED", "COMPLETED_WITH_ERRORS", "FAILED", "CANCELED")
+                ),
+            )
+        ).all()
+    )
+    if blocking_reference_count:
+        raise ClassificationLifecycleConflictError(
+            "Model version has active scoring runs and cannot be retired",
+            code="SCORING_REFERENCE_RETIREMENT_BLOCKED",
+        )
     metric_snapshot, _ = _evaluation_snapshot(db, version)
     policy_snapshot = {
         **_policy_snapshot(version),
-        "retention_check": "NO_ACTIVE_OR_SCORING_REFERENCES_V1",
-        "blocking_reference_count": 0,
+        "retention_check": "NO_ACTIVE_OR_NONTERMINAL_SCORING_REFERENCES_V1",
+        "blocking_reference_count": blocking_reference_count,
     }
     version.status = "RETIRED"
     decision = _append_decision(

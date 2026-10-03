@@ -613,6 +613,53 @@ def _prediction_parquet(
     return output.getvalue()
 
 
+def _scoring_prediction_parquet(
+    rows: list[dict[str, Any]],
+    *,
+    request: ClassificationScoringRequest,
+    feature_specification_hash: str,
+) -> bytes:
+    schema = pa.schema(
+        [
+            ("matter_document_id", pa.string()),
+            ("collection_item_id", pa.string()),
+            ("scope_ordinal", pa.int64()),
+            ("source_vector_content_hash", pa.string()),
+            ("scoring_run_id", pa.string()),
+            ("model_version_id", pa.string()),
+            ("result_status", pa.string()),
+            ("failure_reason", pa.string()),
+            ("probabilities", pa.list_(pa.float64())),
+            ("predicted_class_keys", pa.list_(pa.string())),
+            ("abstained", pa.bool_()),
+            ("probability_margin", pa.float64()),
+            ("uncertainty", pa.float64()),
+            ("evaluation_kind", pa.string()),
+            ("selected_c", pa.float64()),
+        ],
+        metadata={
+            b"pvr.schema": b"classification-scoring-predictions",
+            b"pvr.schema_version": b"1",
+            b"pvr.feature_specification_hash": feature_specification_hash.encode(),
+            b"pvr.classification_strategy": request.classification_strategy.value.encode(),
+            b"pvr.ordered_class_keys": _canonical_json(request.ordered_class_keys),
+            b"pvr.scoring_run_id": str(request.scoring_run_id).encode(),
+            b"pvr.model_version_id": str(request.model_version_id).encode(),
+        },
+    )
+    table = pa.Table.from_pylist(rows, schema=schema)
+    output = io.BytesIO()
+    pq.write_table(
+        table,
+        output,
+        compression="zstd",
+        use_dictionary=False,
+        write_statistics=True,
+        data_page_version="2.0",
+    )
+    return output.getvalue()
+
+
 def _artifact_derivation(output_derivation_key: str, artifact_type: ArtifactType) -> str:
     return classification_output_artifact_derivation_key(
         output_derivation_key,
@@ -933,7 +980,8 @@ class ClassificationBackend:
                 "Scoring features are incompatible with the model package",
                 code="FEATURE_CONTRACT_MISMATCH",
             )
-        ready = [row for row in feature_table.to_pylist() if row["feature_status"] == "READY"]
+        feature_rows = feature_table.to_pylist()
+        ready = [row for row in feature_rows if row["feature_status"] == "READY"]
         if len(ready) > package.signature.maximum_batch_size:
             raise ClassificationRuntimeError("Scoring batch exceeds the package maximum batch size")
         if ready:
@@ -948,21 +996,62 @@ class ClassificationBackend:
             probabilities = np.empty((0, output_columns), dtype=np.float64)
         # Reuse the training-row serializer with a narrow runtime view.
         selected_c = float(package.manifest.selected_hyperparameters.get("C", 0.0))
-        rows = []
+        scored_by_document: dict[str, dict[str, Any]] = {}
         for source, values in zip(ready, probabilities, strict=True):
-            predicted, abstained = self._resolve_scoring_prediction(request, values)
+            sorted_probabilities = np.sort(values)
+            margin = float(sorted_probabilities[-1] - sorted_probabilities[-2])
+            try:
+                predicted, abstained = self._resolve_scoring_prediction(request, values)
+                result_status = "SUCCESS"
+                failure_reason = None
+            except ClassificationRuntimeError as exc:
+                predicted, abstained = [], False
+                result_status = "FAILED"
+                failure_reason = exc.code
+            scored_by_document[source["matter_document_id"]] = {
+                "probabilities": values.astype(float).tolist(),
+                "predicted_class_keys": predicted,
+                "abstained": abstained,
+                "probability_margin": margin,
+                "uncertainty": float(1.0 - np.max(values)),
+                "result_status": result_status,
+                "failure_reason": failure_reason,
+            }
+        rows = []
+        for source in feature_rows:
+            outcome = scored_by_document.get(source["matter_document_id"])
+            if outcome is None:
+                feature_status = source.get("feature_status")
+                outcome = {
+                    "probabilities": [],
+                    "predicted_class_keys": [],
+                    "abstained": False,
+                    "probability_margin": None,
+                    "uncertainty": None,
+                    "result_status": "FAILED" if feature_status == "FAILED" else "EXCLUDED",
+                    "failure_reason": source.get("failure_reason") or f"FEATURE_{feature_status}",
+                }
             rows.append(
                 {
                     "matter_document_id": source["matter_document_id"],
+                    "collection_item_id": source.get("collection_item_id"),
+                    "scope_ordinal": source.get("scope_ordinal"),
+                    "source_vector_content_hash": source.get("source_vector_content_hash"),
+                    "scoring_run_id": str(request.scoring_run_id),
+                    "model_version_id": str(request.model_version_id),
+                    **outcome,
                     "fold_index": None,
-                    "probabilities": values.astype(float).tolist(),
-                    "predicted_class_keys": predicted,
-                    "abstained": abstained,
                     "evaluation_kind": "SCORING",
                     "selected_c": selected_c,
                 }
             )
-        prediction_bytes = _prediction_parquet(
+        scored_count = sum(row["result_status"] == "SUCCESS" for row in rows)
+        excluded_count = sum(row["result_status"] == "EXCLUDED" for row in rows)
+        failed_count = sum(row["result_status"] == "FAILED" for row in rows)
+        abstained_count = sum(
+            row["result_status"] == "SUCCESS" and row["abstained"] for row in rows
+        )
+        prediction_bytes = _scoring_prediction_parquet(
             rows,
             request=request,
             feature_specification_hash=feature_hash,
@@ -979,19 +1068,29 @@ class ClassificationBackend:
             content=prediction_bytes,
             media_type=PARQUET_MEDIA_TYPE,
             producer_run_id=request.scoring_run_id,
-            metadata={"row_count": len(rows), "scoring_failure_count": 0},
+            metadata={"row_count": len(rows), "scoring_failure_count": failed_count},
             lineage=[request.model_artifact, request.feature_artifact],
             filename="classification-scoring-predictions.parquet",
         )
         manifest_bytes = _canonical_json(
             {
                 "result_manifest_schema_version": 1,
-                "status": "COMPLETED",
+                "status": "COMPLETED_WITH_ERRORS" if failed_count else "COMPLETED",
                 "scoring_run_id": str(request.scoring_run_id),
                 "output_derivation_key": request.output_derivation_key,
+                "model_version_id": str(request.model_version_id),
+                "configuration_hash": request.configuration_hash,
+                "feature_specification_hash": feature_hash,
+                "input_artifact_hashes": {
+                    "model": request.model_artifact.content_hash,
+                    "features": request.feature_artifact.content_hash,
+                },
                 "prediction_artifact": prediction_reference.model_dump(mode="json"),
-                "scored_document_count": len(rows),
-                "abstained_document_count": sum(row["abstained"] for row in rows),
+                "population_document_count": len(rows),
+                "scored_document_count": scored_count,
+                "abstained_document_count": abstained_count,
+                "excluded_document_count": excluded_count,
+                "failed_document_count": failed_count,
             }
         )
         manifest_reference = store.write(
@@ -1006,7 +1105,10 @@ class ClassificationBackend:
             content=manifest_bytes,
             media_type=JSON_MEDIA_TYPE,
             producer_run_id=request.scoring_run_id,
-            metadata={"status": "COMPLETED", "row_count": len(rows)},
+            metadata={
+                "status": "COMPLETED_WITH_ERRORS" if failed_count else "COMPLETED",
+                "row_count": len(rows),
+            },
             lineage=[prediction_reference],
             filename="classification-scoring-result.json",
         )
@@ -1015,8 +1117,11 @@ class ClassificationBackend:
             output_derivation_key=request.output_derivation_key,
             prediction_artifact=prediction_reference,
             result_manifest_artifact=manifest_reference,
-            scored_document_count=len(rows),
-            abstained_document_count=sum(row["abstained"] for row in rows),
+            population_document_count=len(rows),
+            scored_document_count=scored_count,
+            abstained_document_count=abstained_count,
+            excluded_document_count=excluded_count,
+            failed_document_count=failed_count,
         )
 
     @staticmethod

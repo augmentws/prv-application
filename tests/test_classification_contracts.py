@@ -192,6 +192,7 @@ def test_scoring_result_enforces_artifact_types_and_counts() -> None:
             output_derivation_key=HASH,
             prediction_artifact=artifact(ArtifactType.CLASSIFICATION_FEATURES),
             result_manifest_artifact=artifact(ArtifactType.CLASSIFICATION_RESULT_MANIFEST),
+            population_document_count=10,
             scored_document_count=10,
         )
 
@@ -201,6 +202,7 @@ def test_scoring_result_enforces_artifact_types_and_counts() -> None:
             output_derivation_key=HASH,
             prediction_artifact=artifact(ArtifactType.CLASSIFICATION_PREDICTIONS),
             result_manifest_artifact=artifact(ArtifactType.CLASSIFICATION_RESULT_MANIFEST),
+            population_document_count=10,
             scored_document_count=10,
             abstained_document_count=11,
         )

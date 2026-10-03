@@ -14374,6 +14374,406 @@
         }
       }
     },
+    "/v1/matters/{matter_id}/classification-models/{classification_model_id}/scoring-runs/preview": {
+      "post": {
+        "tags": [
+          "classification models"
+        ],
+        "summary": "Preview Classification Model Scoring",
+        "operationId": "preview_classification_model_scoring_v1_matters__matter_id__classification_models__classification_model_id__scoring_runs_preview_post",
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "matter_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid",
+              "title": "Matter Id"
+            }
+          },
+          {
+            "name": "classification_model_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid",
+              "title": "Classification Model Id"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ClassificationScoringPreviewRequest"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ClassificationScoringPreview"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v1/matters/{matter_id}/classification-models/{classification_model_id}/scoring-runs": {
+      "post": {
+        "tags": [
+          "classification models"
+        ],
+        "summary": "Create Classification Model Scoring",
+        "operationId": "create_classification_model_scoring_v1_matters__matter_id__classification_models__classification_model_id__scoring_runs_post",
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "matter_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid",
+              "title": "Matter Id"
+            }
+          },
+          {
+            "name": "classification_model_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid",
+              "title": "Classification Model Id"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ClassificationScoringCreate"
+              }
+            }
+          }
+        },
+        "responses": {
+          "202": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ClassificationScoringCreateResponse"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      },
+      "get": {
+        "tags": [
+          "classification models"
+        ],
+        "summary": "List Classification Model Scoring Runs",
+        "operationId": "list_classification_model_scoring_runs_v1_matters__matter_id__classification_models__classification_model_id__scoring_runs_get",
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "matter_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid",
+              "title": "Matter Id"
+            }
+          },
+          {
+            "name": "classification_model_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid",
+              "title": "Classification Model Id"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "array",
+                  "items": {
+                    "$ref": "#/components/schemas/ClassificationScoringRunRead"
+                  },
+                  "title": "Response List Classification Model Scoring Runs V1 Matters  Matter Id  Classification Models  Classification Model Id  Scoring Runs Get"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v1/matters/{matter_id}/classification-models/{classification_model_id}/scoring-runs/{scoring_run_id}": {
+      "get": {
+        "tags": [
+          "classification models"
+        ],
+        "summary": "Read Classification Model Scoring Run",
+        "operationId": "read_classification_model_scoring_run_v1_matters__matter_id__classification_models__classification_model_id__scoring_runs__scoring_run_id__get",
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "matter_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid",
+              "title": "Matter Id"
+            }
+          },
+          {
+            "name": "classification_model_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid",
+              "title": "Classification Model Id"
+            }
+          },
+          {
+            "name": "scoring_run_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid",
+              "title": "Scoring Run Id"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ClassificationScoringRunRead"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v1/matters/{matter_id}/classification-models/{classification_model_id}/scoring-runs/{scoring_run_id}/cancel": {
+      "post": {
+        "tags": [
+          "classification models"
+        ],
+        "summary": "Cancel Classification Model Scoring Run",
+        "operationId": "cancel_classification_model_scoring_run_v1_matters__matter_id__classification_models__classification_model_id__scoring_runs__scoring_run_id__cancel_post",
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "matter_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid",
+              "title": "Matter Id"
+            }
+          },
+          {
+            "name": "classification_model_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid",
+              "title": "Classification Model Id"
+            }
+          },
+          {
+            "name": "scoring_run_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid",
+              "title": "Scoring Run Id"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ClassificationScoringRunRead"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v1/matters/{matter_id}/classification-models/{classification_model_id}/scoring-runs/{scoring_run_id}/reconcile": {
+      "post": {
+        "tags": [
+          "classification models"
+        ],
+        "summary": "Reconcile Classification Model Scoring Run",
+        "operationId": "reconcile_classification_model_scoring_run_v1_matters__matter_id__classification_models__classification_model_id__scoring_runs__scoring_run_id__reconcile_post",
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "matter_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid",
+              "title": "Matter Id"
+            }
+          },
+          {
+            "name": "classification_model_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid",
+              "title": "Classification Model Id"
+            }
+          },
+          {
+            "name": "scoring_run_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid",
+              "title": "Scoring Run Id"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ClassificationScoringRunRead"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/v1/matters/{matter_id}/classification-models/{classification_model_id}/versions": {
       "get": {
         "tags": [
@@ -18911,6 +19311,545 @@
           "model_version_id"
         ],
         "title": "ClassificationPromotionResponse"
+      },
+      "ClassificationScoringCreate": {
+        "properties": {
+          "dataset_snapshot_id": {
+            "type": "string",
+            "format": "uuid",
+            "title": "Dataset Snapshot Id"
+          },
+          "model_version_id": {
+            "anyOf": [
+              {
+                "type": "string",
+                "format": "uuid"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Model Version Id"
+          },
+          "idempotency_key": {
+            "type": "string",
+            "maxLength": 200,
+            "minLength": 1,
+            "title": "Idempotency Key"
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "dataset_snapshot_id",
+          "idempotency_key"
+        ],
+        "title": "ClassificationScoringCreate"
+      },
+      "ClassificationScoringCreateResponse": {
+        "properties": {
+          "scoring_run": {
+            "$ref": "#/components/schemas/ClassificationScoringRunRead"
+          },
+          "created": {
+            "type": "boolean",
+            "title": "Created"
+          }
+        },
+        "type": "object",
+        "required": [
+          "scoring_run",
+          "created"
+        ],
+        "title": "ClassificationScoringCreateResponse"
+      },
+      "ClassificationScoringPreview": {
+        "properties": {
+          "classification_model_id": {
+            "type": "string",
+            "format": "uuid",
+            "title": "Classification Model Id"
+          },
+          "model_version_id": {
+            "anyOf": [
+              {
+                "type": "string",
+                "format": "uuid"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Model Version Id"
+          },
+          "dataset_snapshot_id": {
+            "type": "string",
+            "format": "uuid",
+            "title": "Dataset Snapshot Id"
+          },
+          "configuration_hash": {
+            "anyOf": [
+              {
+                "type": "string",
+                "pattern": "^[0-9a-f]{64}$"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Configuration Hash"
+          },
+          "model_content_hash": {
+            "anyOf": [
+              {
+                "type": "string",
+                "pattern": "^[0-9a-f]{64}$"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Model Content Hash"
+          },
+          "feature_content_hash": {
+            "anyOf": [
+              {
+                "type": "string",
+                "pattern": "^[0-9a-f]{64}$"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Feature Content Hash"
+          },
+          "feature_specification_hash": {
+            "anyOf": [
+              {
+                "type": "string",
+                "pattern": "^[0-9a-f]{64}$"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Feature Specification Hash"
+          },
+          "scoring_policy": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/PredictionResolutionPolicy"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "scoring_policy_hash": {
+            "anyOf": [
+              {
+                "type": "string",
+                "pattern": "^[0-9a-f]{64}$"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Scoring Policy Hash"
+          },
+          "derivation_key": {
+            "anyOf": [
+              {
+                "type": "string",
+                "pattern": "^[0-9a-f]{64}$"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Derivation Key"
+          },
+          "population_document_count": {
+            "type": "integer",
+            "title": "Population Document Count"
+          },
+          "can_launch": {
+            "type": "boolean",
+            "title": "Can Launch"
+          },
+          "blocking_errors": {
+            "items": {
+              "$ref": "#/components/schemas/ClassificationDatasetIssue"
+            },
+            "type": "array",
+            "title": "Blocking Errors"
+          },
+          "warnings": {
+            "items": {
+              "$ref": "#/components/schemas/ClassificationDatasetIssue"
+            },
+            "type": "array",
+            "title": "Warnings"
+          },
+          "existing_scoring_run_id": {
+            "anyOf": [
+              {
+                "type": "string",
+                "format": "uuid"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Existing Scoring Run Id"
+          }
+        },
+        "type": "object",
+        "required": [
+          "classification_model_id",
+          "model_version_id",
+          "dataset_snapshot_id",
+          "configuration_hash",
+          "model_content_hash",
+          "feature_content_hash",
+          "feature_specification_hash",
+          "scoring_policy",
+          "scoring_policy_hash",
+          "derivation_key",
+          "population_document_count",
+          "can_launch",
+          "blocking_errors",
+          "warnings"
+        ],
+        "title": "ClassificationScoringPreview"
+      },
+      "ClassificationScoringPreviewRequest": {
+        "properties": {
+          "dataset_snapshot_id": {
+            "type": "string",
+            "format": "uuid",
+            "title": "Dataset Snapshot Id"
+          },
+          "model_version_id": {
+            "anyOf": [
+              {
+                "type": "string",
+                "format": "uuid"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Model Version Id"
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "dataset_snapshot_id"
+        ],
+        "title": "ClassificationScoringPreviewRequest"
+      },
+      "ClassificationScoringRunRead": {
+        "properties": {
+          "id": {
+            "type": "string",
+            "format": "uuid",
+            "title": "Id"
+          },
+          "tenant_id": {
+            "type": "string",
+            "format": "uuid",
+            "title": "Tenant Id"
+          },
+          "matter_id": {
+            "type": "string",
+            "format": "uuid",
+            "title": "Matter Id"
+          },
+          "classification_model_id": {
+            "type": "string",
+            "format": "uuid",
+            "title": "Classification Model Id"
+          },
+          "model_version_id": {
+            "type": "string",
+            "format": "uuid",
+            "title": "Model Version Id"
+          },
+          "dataset_snapshot_id": {
+            "type": "string",
+            "format": "uuid",
+            "title": "Dataset Snapshot Id"
+          },
+          "idempotency_key": {
+            "type": "string",
+            "title": "Idempotency Key"
+          },
+          "workflow_id": {
+            "type": "string",
+            "title": "Workflow Id"
+          },
+          "derivation_key": {
+            "type": "string",
+            "pattern": "^[0-9a-f]{64}$",
+            "title": "Derivation Key"
+          },
+          "configuration_hash": {
+            "type": "string",
+            "pattern": "^[0-9a-f]{64}$",
+            "title": "Configuration Hash"
+          },
+          "model_content_hash": {
+            "type": "string",
+            "pattern": "^[0-9a-f]{64}$",
+            "title": "Model Content Hash"
+          },
+          "feature_content_hash": {
+            "type": "string",
+            "pattern": "^[0-9a-f]{64}$",
+            "title": "Feature Content Hash"
+          },
+          "feature_specification_hash": {
+            "type": "string",
+            "pattern": "^[0-9a-f]{64}$",
+            "title": "Feature Specification Hash"
+          },
+          "scoring_policy": {
+            "$ref": "#/components/schemas/PredictionResolutionPolicy"
+          },
+          "scoring_policy_hash": {
+            "type": "string",
+            "pattern": "^[0-9a-f]{64}$",
+            "title": "Scoring Policy Hash"
+          },
+          "status": {
+            "type": "string",
+            "enum": [
+              "QUEUED",
+              "VALIDATING",
+              "WAITING_FOR_RUNTIME",
+              "SCORING",
+              "PUBLISHING",
+              "FINALIZING",
+              "RECONCILING",
+              "COMPLETED",
+              "COMPLETED_WITH_ERRORS",
+              "FAILED",
+              "CANCELED"
+            ],
+            "title": "Status"
+          },
+          "current_stage": {
+            "type": "string",
+            "title": "Current Stage"
+          },
+          "progress_completed": {
+            "type": "integer",
+            "title": "Progress Completed"
+          },
+          "progress_total": {
+            "type": "integer",
+            "title": "Progress Total"
+          },
+          "population_document_count": {
+            "type": "integer",
+            "title": "Population Document Count"
+          },
+          "scored_document_count": {
+            "type": "integer",
+            "title": "Scored Document Count"
+          },
+          "abstained_document_count": {
+            "type": "integer",
+            "title": "Abstained Document Count"
+          },
+          "excluded_document_count": {
+            "type": "integer",
+            "title": "Excluded Document Count"
+          },
+          "failed_document_count": {
+            "type": "integer",
+            "title": "Failed Document Count"
+          },
+          "prediction_artifact_id": {
+            "anyOf": [
+              {
+                "type": "string",
+                "format": "uuid"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Prediction Artifact Id"
+          },
+          "prediction_content_hash": {
+            "anyOf": [
+              {
+                "type": "string",
+                "pattern": "^[0-9a-f]{64}$"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Prediction Content Hash"
+          },
+          "result_manifest_artifact_id": {
+            "anyOf": [
+              {
+                "type": "string",
+                "format": "uuid"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Result Manifest Artifact Id"
+          },
+          "result_manifest_content_hash": {
+            "anyOf": [
+              {
+                "type": "string",
+                "pattern": "^[0-9a-f]{64}$"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Result Manifest Content Hash"
+          },
+          "failure_code": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Failure Code"
+          },
+          "failure_summary": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Failure Summary"
+          },
+          "failure_retriable": {
+            "type": "boolean",
+            "title": "Failure Retriable"
+          },
+          "created_by_user_id": {
+            "type": "string",
+            "format": "uuid",
+            "title": "Created By User Id"
+          },
+          "execution_actor_user_id": {
+            "type": "string",
+            "format": "uuid",
+            "title": "Execution Actor User Id"
+          },
+          "started_at": {
+            "anyOf": [
+              {
+                "type": "string",
+                "format": "date-time"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Started At"
+          },
+          "completed_at": {
+            "anyOf": [
+              {
+                "type": "string",
+                "format": "date-time"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Completed At"
+          },
+          "canceled_at": {
+            "anyOf": [
+              {
+                "type": "string",
+                "format": "date-time"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Canceled At"
+          },
+          "created_at": {
+            "type": "string",
+            "format": "date-time",
+            "title": "Created At"
+          },
+          "updated_at": {
+            "type": "string",
+            "format": "date-time",
+            "title": "Updated At"
+          },
+          "row_version": {
+            "type": "integer",
+            "title": "Row Version"
+          }
+        },
+        "type": "object",
+        "required": [
+          "id",
+          "tenant_id",
+          "matter_id",
+          "classification_model_id",
+          "model_version_id",
+          "dataset_snapshot_id",
+          "idempotency_key",
+          "workflow_id",
+          "derivation_key",
+          "configuration_hash",
+          "model_content_hash",
+          "feature_content_hash",
+          "feature_specification_hash",
+          "scoring_policy",
+          "scoring_policy_hash",
+          "status",
+          "current_stage",
+          "progress_completed",
+          "progress_total",
+          "population_document_count",
+          "scored_document_count",
+          "abstained_document_count",
+          "excluded_document_count",
+          "failed_document_count",
+          "prediction_artifact_id",
+          "prediction_content_hash",
+          "result_manifest_artifact_id",
+          "result_manifest_content_hash",
+          "failure_code",
+          "failure_summary",
+          "failure_retriable",
+          "created_by_user_id",
+          "execution_actor_user_id",
+          "started_at",
+          "completed_at",
+          "canceled_at",
+          "created_at",
+          "updated_at",
+          "row_version"
+        ],
+        "title": "ClassificationScoringRunRead"
       },
       "ClassificationStrategy": {
         "type": "string",

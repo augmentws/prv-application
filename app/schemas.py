@@ -2793,6 +2793,105 @@ class ClassificationModelBuildCreateResponse(BaseModel):
     created: bool
 
 
+ClassificationScoringRunStatus = Literal[
+    "QUEUED",
+    "VALIDATING",
+    "WAITING_FOR_RUNTIME",
+    "SCORING",
+    "PUBLISHING",
+    "FINALIZING",
+    "RECONCILING",
+    "COMPLETED",
+    "COMPLETED_WITH_ERRORS",
+    "FAILED",
+    "CANCELED",
+]
+
+
+class ClassificationScoringPreviewRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    dataset_snapshot_id: uuid.UUID
+    model_version_id: uuid.UUID | None = None
+
+
+class ClassificationScoringCreate(ClassificationScoringPreviewRequest):
+    idempotency_key: str = Field(min_length=1, max_length=200)
+
+    @field_validator("idempotency_key")
+    @classmethod
+    def normalize_idempotency_key(cls, value: str) -> str:
+        normalized = value.strip()
+        if not normalized:
+            raise ValueError("Idempotency key is required")
+        return normalized
+
+
+class ClassificationScoringPreview(BaseModel):
+    classification_model_id: uuid.UUID
+    model_version_id: uuid.UUID | None
+    dataset_snapshot_id: uuid.UUID
+    configuration_hash: Sha256 | None
+    model_content_hash: Sha256 | None
+    feature_content_hash: Sha256 | None
+    feature_specification_hash: Sha256 | None
+    scoring_policy: PredictionResolutionPolicy | None
+    scoring_policy_hash: Sha256 | None
+    derivation_key: Sha256 | None
+    population_document_count: int
+    can_launch: bool
+    blocking_errors: list[ClassificationDatasetIssue]
+    warnings: list[ClassificationDatasetIssue]
+    existing_scoring_run_id: uuid.UUID | None = None
+
+
+class ClassificationScoringRunRead(BaseModel):
+    id: uuid.UUID
+    tenant_id: uuid.UUID
+    matter_id: uuid.UUID
+    classification_model_id: uuid.UUID
+    model_version_id: uuid.UUID
+    dataset_snapshot_id: uuid.UUID
+    idempotency_key: str
+    workflow_id: str
+    derivation_key: Sha256
+    configuration_hash: Sha256
+    model_content_hash: Sha256
+    feature_content_hash: Sha256
+    feature_specification_hash: Sha256
+    scoring_policy: PredictionResolutionPolicy
+    scoring_policy_hash: Sha256
+    status: ClassificationScoringRunStatus
+    current_stage: str
+    progress_completed: int
+    progress_total: int
+    population_document_count: int
+    scored_document_count: int
+    abstained_document_count: int
+    excluded_document_count: int
+    failed_document_count: int
+    prediction_artifact_id: uuid.UUID | None
+    prediction_content_hash: Sha256 | None
+    result_manifest_artifact_id: uuid.UUID | None
+    result_manifest_content_hash: Sha256 | None
+    failure_code: str | None
+    failure_summary: str | None
+    failure_retriable: bool
+    created_by_user_id: uuid.UUID
+    execution_actor_user_id: uuid.UUID
+    started_at: datetime | None
+    completed_at: datetime | None
+    canceled_at: datetime | None
+    created_at: datetime
+    updated_at: datetime
+    row_version: int
+
+
+class ClassificationScoringCreateResponse(BaseModel):
+    scoring_run: ClassificationScoringRunRead
+    created: bool
+
+
 class ErrorDetail(BaseModel):
     code: str
     message: str

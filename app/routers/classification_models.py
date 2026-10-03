@@ -57,6 +57,17 @@ from app.classification_models import (
     create_classification_model_configuration as create_configuration_command,
 )
 from app.classification_models import get_classification_model as get_classification_model_record
+from app.classification_scoring import (
+    ClassificationScoringError,
+    ClassificationScoringNotFoundError,
+    cancel_scoring_run,
+    create_scoring_run,
+    get_scoring_run,
+    prepare_scoring,
+    reconcile_scoring_run,
+    resolve_existing_scoring_run,
+    scoring_preview,
+)
 from app.config import get_settings
 from app.database import get_db
 from app.dependencies import Principal, can_admin_matter, get_principal
@@ -66,6 +77,7 @@ from app.models import (
     ClassificationModelConfiguration,
     ClassificationModelDecision,
     ClassificationModelVersion,
+    ClassificationScoringRun,
     ClassificationTrainingRun,
     Matter,
 )
@@ -92,12 +104,19 @@ from app.schemas import (
     ClassificationPromotionPreview,
     ClassificationPromotionPreviewRequest,
     ClassificationPromotionResponse,
+    ClassificationScoringCreate,
+    ClassificationScoringCreateResponse,
+    ClassificationScoringPreview,
+    ClassificationScoringPreviewRequest,
+    ClassificationScoringRunRead,
     ClassificationTrainingRunRead,
 )
 from app.workflows.dispatcher import (
     cancel_classification_model_build,
+    cancel_classification_model_scoring,
     enqueue_classification_model_build,
     enqueue_classification_model_promotion,
+    enqueue_classification_model_scoring,
 )
 
 router = APIRouter(
@@ -286,6 +305,52 @@ def training_run_read(db: Session, run: ClassificationTrainingRun) -> Classifica
     )
 
 
+def scoring_run_read(run: ClassificationScoringRun) -> ClassificationScoringRunRead:
+    return ClassificationScoringRunRead.model_validate(
+        {
+            "id": run.id,
+            "tenant_id": run.tenant_id,
+            "matter_id": run.matter_id,
+            "classification_model_id": run.classification_model_id,
+            "model_version_id": run.model_version_id,
+            "dataset_snapshot_id": run.dataset_snapshot_id,
+            "idempotency_key": run.idempotency_key,
+            "workflow_id": run.workflow_id,
+            "derivation_key": run.derivation_key,
+            "configuration_hash": run.configuration_hash,
+            "model_content_hash": run.model_content_hash,
+            "feature_content_hash": run.feature_content_hash,
+            "feature_specification_hash": run.feature_specification_hash,
+            "scoring_policy": run.scoring_policy,
+            "scoring_policy_hash": run.scoring_policy_hash,
+            "status": run.status,
+            "current_stage": run.current_stage,
+            "progress_completed": run.progress_completed,
+            "progress_total": run.progress_total,
+            "population_document_count": run.population_document_count,
+            "scored_document_count": run.scored_document_count,
+            "abstained_document_count": run.abstained_document_count,
+            "excluded_document_count": run.excluded_document_count,
+            "failed_document_count": run.failed_document_count,
+            "prediction_artifact_id": run.prediction_artifact_id,
+            "prediction_content_hash": run.prediction_content_hash,
+            "result_manifest_artifact_id": run.result_manifest_artifact_id,
+            "result_manifest_content_hash": run.result_manifest_content_hash,
+            "failure_code": run.failure_code,
+            "failure_summary": run.failure_summary,
+            "failure_retriable": run.failure_retriable,
+            "created_by_user_id": run.created_by_user_id,
+            "execution_actor_user_id": run.execution_actor_user_id,
+            "started_at": run.started_at,
+            "completed_at": run.completed_at,
+            "canceled_at": run.canceled_at,
+            "created_at": run.created_at,
+            "updated_at": run.updated_at,
+            "row_version": run.row_version,
+        }
+    )
+
+
 def dataset_snapshot_read(
     snapshot: ClassificationDatasetSnapshot,
 ) -> ClassificationDatasetSnapshotRead:
@@ -373,6 +438,15 @@ def lifecycle_error(exc: ClassificationLifecycleError) -> HTTPException:
     error_status = (
         status.HTTP_404_NOT_FOUND
         if isinstance(exc, ClassificationLifecycleNotFoundError)
+        else status.HTTP_409_CONFLICT
+    )
+    return HTTPException(status_code=error_status, detail=str(exc))
+
+
+def scoring_error(exc: ClassificationScoringError) -> HTTPException:
+    error_status = (
+        status.HTTP_404_NOT_FOUND
+        if isinstance(exc, ClassificationScoringNotFoundError)
         else status.HTTP_409_CONFLICT
     )
     return HTTPException(status_code=error_status, detail=str(exc))
@@ -987,6 +1061,213 @@ def reconcile_classification_model_build(
         raise HTTPException(
             status_code=status.HTTP_502_BAD_GATEWAY,
             detail="Classification build reconciliation failed",
+        ) from exc
+
+
+@router.post(
+    "/{classification_model_id}/scoring-runs/preview",
+    response_model=ClassificationScoringPreview,
+)
+def preview_classification_model_scoring(
+    matter_id: uuid.UUID,
+    classification_model_id: uuid.UUID,
+    payload: ClassificationScoringPreviewRequest,
+    principal: Principal = Depends(get_principal),
+    db: Session = Depends(get_db),
+) -> ClassificationScoringPreview:
+    get_authorized_matter(db, principal, matter_id)
+    try:
+        return scoring_preview(
+            prepare_scoring(
+                db,
+                matter_id=matter_id,
+                classification_model_id=classification_model_id,
+                dataset_snapshot_id=payload.dataset_snapshot_id,
+                model_version_id=payload.model_version_id,
+            )
+        )
+    except ClassificationScoringError as exc:
+        raise scoring_error(exc) from exc
+
+
+@router.post(
+    "/{classification_model_id}/scoring-runs",
+    response_model=ClassificationScoringCreateResponse,
+    status_code=status.HTTP_202_ACCEPTED,
+)
+def create_classification_model_scoring(
+    matter_id: uuid.UUID,
+    classification_model_id: uuid.UUID,
+    payload: ClassificationScoringCreate,
+    principal: Principal = Depends(get_principal),
+    db: Session = Depends(get_db),
+) -> ClassificationScoringCreateResponse:
+    get_authorized_matter(db, principal, matter_id)
+    try:
+        prepared = prepare_scoring(
+            db,
+            matter_id=matter_id,
+            classification_model_id=classification_model_id,
+            dataset_snapshot_id=payload.dataset_snapshot_id,
+            model_version_id=payload.model_version_id,
+        )
+        run, created = create_scoring_run(
+            db,
+            prepared=prepared,
+            idempotency_key=payload.idempotency_key,
+            actor_user_id=principal.user.id,
+        )
+        if created:
+            enqueue_classification_model_scoring(db, run.workflow_id, str(run.id))
+        db.commit()
+        db.refresh(run)
+        return ClassificationScoringCreateResponse(scoring_run=scoring_run_read(run), created=created)
+    except ClassificationScoringError as exc:
+        db.rollback()
+        raise scoring_error(exc) from exc
+    except IntegrityError as exc:
+        db.rollback()
+        try:
+            if prepared.derivation_key is None:
+                raise ClassificationScoringError("Scoring derivation is unavailable")
+            run = resolve_existing_scoring_run(
+                db,
+                classification_model_id=classification_model_id,
+                idempotency_key=payload.idempotency_key,
+                derivation_key=prepared.derivation_key,
+            )
+            return ClassificationScoringCreateResponse(scoring_run=scoring_run_read(run), created=False)
+        except ClassificationScoringError as conflict:
+            raise scoring_error(conflict) from exc
+
+
+@router.get(
+    "/{classification_model_id}/scoring-runs",
+    response_model=list[ClassificationScoringRunRead],
+)
+def list_classification_model_scoring_runs(
+    matter_id: uuid.UUID,
+    classification_model_id: uuid.UUID,
+    principal: Principal = Depends(get_principal),
+    db: Session = Depends(get_db),
+) -> list[ClassificationScoringRunRead]:
+    get_authorized_matter(db, principal, matter_id)
+    try:
+        get_classification_model_record(
+            db,
+            matter_id=matter_id,
+            classification_model_id=classification_model_id,
+        )
+    except ClassificationModelCommandError as exc:
+        raise command_error(exc) from exc
+    runs = db.scalars(
+        select(ClassificationScoringRun)
+        .where(
+            ClassificationScoringRun.matter_id == matter_id,
+            ClassificationScoringRun.classification_model_id == classification_model_id,
+        )
+        .order_by(ClassificationScoringRun.created_at.desc(), ClassificationScoringRun.id)
+    ).all()
+    return [scoring_run_read(run) for run in runs]
+
+
+@router.get(
+    "/{classification_model_id}/scoring-runs/{scoring_run_id}",
+    response_model=ClassificationScoringRunRead,
+)
+def read_classification_model_scoring_run(
+    matter_id: uuid.UUID,
+    classification_model_id: uuid.UUID,
+    scoring_run_id: uuid.UUID,
+    principal: Principal = Depends(get_principal),
+    db: Session = Depends(get_db),
+) -> ClassificationScoringRunRead:
+    get_authorized_matter(db, principal, matter_id)
+    try:
+        return scoring_run_read(
+            get_scoring_run(
+                db,
+                matter_id=matter_id,
+                classification_model_id=classification_model_id,
+                scoring_run_id=scoring_run_id,
+            )
+        )
+    except ClassificationScoringError as exc:
+        raise scoring_error(exc) from exc
+
+
+@router.post(
+    "/{classification_model_id}/scoring-runs/{scoring_run_id}/cancel",
+    response_model=ClassificationScoringRunRead,
+)
+def cancel_classification_model_scoring_run(
+    matter_id: uuid.UUID,
+    classification_model_id: uuid.UUID,
+    scoring_run_id: uuid.UUID,
+    principal: Principal = Depends(get_principal),
+    db: Session = Depends(get_db),
+) -> ClassificationScoringRunRead:
+    get_authorized_matter(db, principal, matter_id)
+    try:
+        run = get_scoring_run(
+            db,
+            matter_id=matter_id,
+            classification_model_id=classification_model_id,
+            scoring_run_id=scoring_run_id,
+            for_update=True,
+        )
+        canceled = cancel_scoring_run(run)
+        if canceled:
+            record_audit(
+                db,
+                tenant_id=run.tenant_id,
+                actor_user_id=principal.user.id,
+                action="classification_scoring_run.canceled",
+                target_type="classification_scoring_run",
+                target_id=run.id,
+                details={"classification_model_id": str(run.classification_model_id)},
+            )
+        db.commit()
+        if canceled:
+            cancel_classification_model_scoring(run.workflow_id)
+        db.refresh(run)
+        return scoring_run_read(run)
+    except ClassificationScoringError as exc:
+        db.rollback()
+        raise scoring_error(exc) from exc
+
+
+@router.post(
+    "/{classification_model_id}/scoring-runs/{scoring_run_id}/reconcile",
+    response_model=ClassificationScoringRunRead,
+)
+def reconcile_classification_model_scoring_run(
+    matter_id: uuid.UUID,
+    classification_model_id: uuid.UUID,
+    scoring_run_id: uuid.UUID,
+    principal: Principal = Depends(get_principal),
+    db: Session = Depends(get_db),
+) -> ClassificationScoringRunRead:
+    get_authorized_matter(db, principal, matter_id)
+    try:
+        run = get_scoring_run(
+            db,
+            matter_id=matter_id,
+            classification_model_id=classification_model_id,
+            scoring_run_id=scoring_run_id,
+            for_update=True,
+        )
+        reconcile_scoring_run(db, run=run)
+        db.refresh(run)
+        return scoring_run_read(run)
+    except ClassificationScoringError as exc:
+        db.rollback()
+        raise scoring_error(exc) from exc
+    except Exception as exc:
+        db.rollback()
+        raise HTTPException(
+            status_code=status.HTTP_502_BAD_GATEWAY,
+            detail="Classification scoring reconciliation failed",
         ) from exc
 
 

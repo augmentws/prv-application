@@ -1836,6 +1836,130 @@ class ClassificationModelVersion(Base):
     created_by: Mapped[User] = relationship()
 
 
+class ClassificationScoringRun(TimestampMixin, Base):
+    __tablename__ = "classification_scoring_run"
+    __table_args__ = (
+        UniqueConstraint(
+            "classification_model_id",
+            "idempotency_key",
+            name="uq_classification_scoring_run_idempotency",
+        ),
+        UniqueConstraint(
+            "classification_model_id",
+            "derivation_key",
+            name="uq_classification_scoring_run_derivation",
+        ),
+        UniqueConstraint("workflow_id", name="uq_classification_scoring_run_workflow"),
+        CheckConstraint(
+            "status IN ('QUEUED', 'VALIDATING', 'WAITING_FOR_RUNTIME', 'SCORING', "
+            "'PUBLISHING', 'FINALIZING', 'RECONCILING', 'COMPLETED', "
+            "'COMPLETED_WITH_ERRORS', 'FAILED', 'CANCELED')",
+            name="ck_classification_scoring_run_status",
+        ),
+        CheckConstraint(
+            "progress_completed >= 0 AND progress_total >= 0 AND progress_completed <= progress_total",
+            name="ck_classification_scoring_run_progress",
+        ),
+        CheckConstraint(
+            "population_document_count >= 0 AND scored_document_count >= 0 "
+            "AND abstained_document_count >= 0 AND excluded_document_count >= 0 "
+            "AND failed_document_count >= 0 AND abstained_document_count <= scored_document_count",
+            name="ck_classification_scoring_run_counts",
+        ),
+        CheckConstraint(
+            "(prediction_artifact_id IS NULL AND prediction_content_hash IS NULL) OR "
+            "(prediction_artifact_id IS NOT NULL AND prediction_content_hash IS NOT NULL)",
+            name="ck_classification_scoring_run_prediction_artifact",
+        ),
+        CheckConstraint(
+            "(result_manifest_artifact_id IS NULL AND result_manifest_content_hash IS NULL) OR "
+            "(result_manifest_artifact_id IS NOT NULL AND result_manifest_content_hash IS NOT NULL)",
+            name="ck_classification_scoring_run_manifest_artifact",
+        ),
+        CheckConstraint(
+            "status NOT IN ('COMPLETED', 'COMPLETED_WITH_ERRORS') OR "
+            "(prediction_artifact_id IS NOT NULL AND result_manifest_artifact_id IS NOT NULL "
+            "AND population_document_count = scored_document_count + excluded_document_count "
+            "+ failed_document_count)",
+            name="ck_classification_scoring_run_completed",
+        ),
+        CheckConstraint("row_version > 0", name="ck_classification_scoring_run_row_version"),
+        ForeignKeyConstraint(
+            ["model_version_id", "classification_model_id"],
+            ["classification_model_version.id", "classification_model_version.classification_model_id"],
+            name="fk_classification_scoring_run_version",
+            ondelete="RESTRICT",
+        ),
+        Index(
+            "ix_classification_scoring_run_model_created",
+            "classification_model_id",
+            "created_at",
+        ),
+    )
+
+    id: Mapped[uuid.UUID] = mapped_column(Uuid, primary_key=True)
+    tenant_id: Mapped[uuid.UUID] = mapped_column(Uuid, ForeignKey("tenant.id", ondelete="RESTRICT"), index=True)
+    matter_id: Mapped[uuid.UUID] = mapped_column(Uuid, ForeignKey("matter.id", ondelete="RESTRICT"), index=True)
+    classification_model_id: Mapped[uuid.UUID] = mapped_column(
+        Uuid,
+        ForeignKey("classification_model.id", ondelete="RESTRICT"),
+        index=True,
+    )
+    model_version_id: Mapped[uuid.UUID] = mapped_column(Uuid, index=True)
+    dataset_snapshot_id: Mapped[uuid.UUID] = mapped_column(
+        Uuid,
+        ForeignKey("classification_dataset_snapshot.id", ondelete="RESTRICT"),
+        index=True,
+    )
+    idempotency_key: Mapped[str] = mapped_column(String(200))
+    workflow_id: Mapped[str] = mapped_column(String(500))
+    derivation_key: Mapped[str] = mapped_column(String(64), index=True)
+    configuration_hash: Mapped[str] = mapped_column(String(64))
+    model_content_hash: Mapped[str] = mapped_column(String(64))
+    feature_content_hash: Mapped[str] = mapped_column(String(64))
+    feature_specification_hash: Mapped[str] = mapped_column(String(64))
+    scoring_policy: Mapped[dict[str, Any]] = mapped_column(JSON_DOCUMENT)
+    scoring_policy_hash: Mapped[str] = mapped_column(String(64))
+    status: Mapped[str] = mapped_column(String(40), default="QUEUED", index=True)
+    current_stage: Mapped[str] = mapped_column(String(100), default="QUEUED")
+    progress_completed: Mapped[int] = mapped_column(Integer, default=0)
+    progress_total: Mapped[int] = mapped_column(Integer, default=4)
+    population_document_count: Mapped[int] = mapped_column(Integer, default=0)
+    scored_document_count: Mapped[int] = mapped_column(Integer, default=0)
+    abstained_document_count: Mapped[int] = mapped_column(Integer, default=0)
+    excluded_document_count: Mapped[int] = mapped_column(Integer, default=0)
+    failed_document_count: Mapped[int] = mapped_column(Integer, default=0)
+    prediction_artifact_id: Mapped[uuid.UUID | None] = mapped_column(Uuid, nullable=True)
+    prediction_content_hash: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    result_manifest_artifact_id: Mapped[uuid.UUID | None] = mapped_column(Uuid, nullable=True)
+    result_manifest_content_hash: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    failure_code: Mapped[str | None] = mapped_column(String(100), nullable=True)
+    failure_summary: Mapped[str | None] = mapped_column(Text, nullable=True)
+    failure_retriable: Mapped[bool] = mapped_column(Boolean, default=False)
+    created_by_user_id: Mapped[uuid.UUID] = mapped_column(
+        Uuid,
+        ForeignKey("app_user.id", ondelete="RESTRICT"),
+        index=True,
+    )
+    execution_actor_user_id: Mapped[uuid.UUID] = mapped_column(
+        Uuid,
+        ForeignKey("app_user.id", ondelete="RESTRICT"),
+        index=True,
+    )
+    started_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    completed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    canceled_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    row_version: Mapped[int] = mapped_column(Integer, default=1, nullable=False)
+
+    classification_model: Mapped[ClassificationModel] = relationship(foreign_keys=[classification_model_id])
+    model_version: Mapped[ClassificationModelVersion] = relationship(overlaps="classification_model")
+    dataset_snapshot: Mapped[ClassificationDatasetSnapshot] = relationship()
+    created_by: Mapped[User] = relationship(foreign_keys=[created_by_user_id])
+    execution_actor: Mapped[User] = relationship(foreign_keys=[execution_actor_user_id])
+
+    __mapper_args__: ClassVar[dict[str, Any]] = {"version_id_col": row_version}
+
+
 class ClassificationEvaluation(Base):
     __tablename__ = "classification_evaluation"
     __table_args__ = (

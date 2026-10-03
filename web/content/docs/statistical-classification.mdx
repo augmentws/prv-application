@@ -1,0 +1,49 @@
+---
+title: Statistical classification
+description: Understand the available backend workflow for model configuration, training, governance, and reproducible batch scoring.
+---
+
+Priv-View has a backend workflow for training and batch-scoring statistical classification models against a matter field. The browser interface for this workflow is not implemented yet; matter administrators currently use the versioned Core API or its interactive API documentation.
+
+## What the workflow is for
+
+A classification model belongs to one tenant, matter, and metadata field. Its configuration fixes the selected class keys, binary or multiclass strategy, label rules, feature contract, prediction-resolution policy, and trainer settings. Training creates a candidate model version but does not approve or activate it automatically.
+
+## Prerequisites
+
+- Matter `ADMIN` access.
+- An active, reviewable Boolean or enum metadata field.
+- A classification model and immutable configuration.
+- A ready dataset snapshot with materialized document features and validation splits.
+- An approved model version for scoring. It may be active or selected explicitly as an approved non-active version.
+
+## Normal workflow
+
+1. Create the field-scoped classifier and configuration.
+2. Preview and create a frozen dataset snapshot for the whole matter or a review batch.
+3. Materialize its feature and validation-split artifacts.
+4. Preview and launch a durable model build.
+5. Review the candidate metrics, then explicitly approve or reject the version.
+6. Preview and perform activation when the version should become the classifier default.
+7. Preview a scoring run against an immutable dataset snapshot. The preview resolves and returns the exact model version.
+8. Launch using that returned version ID. The scoring run remains pinned even if another version is activated while it executes.
+9. Read the run status and use the prediction artifact for downstream processing.
+
+## Scoring states and results
+
+Scoring moves through queued, validation, runtime, publishing, and finalization stages. It finishes as `COMPLETED`, `COMPLETED_WITH_ERRORS`, `FAILED`, or `CANCELED`. A completed run reports population, scored, abstained, excluded, and failed counts. Those counts reconcile to the immutable population.
+
+Predictions are stored as one Artifact-owned Parquet file rather than one Core database record per document. Every population document receives a row. Successful rows include ordered probabilities, resolved class keys or abstention, probability margin, and uncertainty. Documents without usable features remain present as explicit exclusions or failures with a reason code.
+
+## Reproducibility and version selection
+
+The run freezes the model version and package hash, dataset and feature hashes, feature contract, classification configuration, and scoring-policy hash. Execution never consults the mutable active-version pointer again. This also allows a compatible approved historical version to be scored deliberately without reactivating it.
+
+Duplicate launches with the same logical inputs reuse the existing scoring run and immutable outputs. If a worker loses its response after publication, an administrator can reconcile the run from the authoritative artifacts instead of producing a second result.
+
+## Current limitations
+
+- There is no browser UI for model or scoring administration yet.
+- Batch scoring consumes a ready classification dataset snapshot; a scoring-only population snapshot is not yet a separate resource type.
+- Scoring results are not published into matter metadata automatically.
+- Continuous active learning queues and rounds are planned separately.

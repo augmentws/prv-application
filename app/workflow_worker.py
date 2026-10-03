@@ -35,6 +35,7 @@ def main() -> None:
         bulk_tags,
         classification_lifecycle,
         classification_models,
+        classification_scoring,
         collection_deletion,
         collection_text_processing,
         matter_definition_assessments,

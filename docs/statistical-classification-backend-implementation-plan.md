@@ -714,6 +714,18 @@ in Phase 9, the active pointer is the only implemented retention blocker.
 
 ## 13. Phase 9: Durable batch scoring
 
+Implementation status: complete. Core now persists immutable scoring-run
+provenance and executes `classification_model_score_v1` through DBOS. Preview
+resolves the active model only once and returns its version ID; launch stores
+that exact version, so later activation changes cannot redirect a run. An
+administrator may instead select any compatible approved non-active version.
+The runtime validates the package and feature contract before inference and
+writes one prediction row for every population document, including explicit
+feature exclusions and row failures. Core verifies authoritative Artifact
+scope, producer, derivation, hashes, references, manifest identity, and
+reconciled counts before completion. Nonterminal scoring references block
+retirement; completed historical provenance does not.
+
 ### Goal
 
 Score an immutable population with an exact model version and keep complete
@@ -748,6 +760,7 @@ POST /v1/matters/{matter_id}/classification-models/{model_id}/scoring-runs
 GET  /v1/matters/{matter_id}/classification-models/{model_id}/scoring-runs
 GET  /v1/matters/{matter_id}/classification-models/{model_id}/scoring-runs/{run_id}
 POST /v1/matters/{matter_id}/classification-models/{model_id}/scoring-runs/{run_id}/cancel
+POST /v1/matters/{matter_id}/classification-models/{model_id}/scoring-runs/{run_id}/reconcile
 ```
 
 ### Tests and exit criteria

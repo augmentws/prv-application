@@ -637,8 +637,11 @@ class ClassificationScoringResult(StrictModel):
     output_derivation_key: Sha256
     prediction_artifact: ArtifactReference
     result_manifest_artifact: ArtifactReference
+    population_document_count: int = Field(ge=0)
     scored_document_count: int = Field(ge=0)
     abstained_document_count: int = Field(default=0, ge=0)
+    excluded_document_count: int = Field(default=0, ge=0)
+    failed_document_count: int = Field(default=0, ge=0)
     warnings: list[str] = Field(default_factory=list, max_length=100)
 
     @model_validator(mode="after")
@@ -649,4 +652,11 @@ class ClassificationScoringResult(StrictModel):
             raise ValueError("result_manifest_artifact must reference CLASSIFICATION_RESULT_MANIFEST")
         if self.abstained_document_count > self.scored_document_count:
             raise ValueError("Abstained document count cannot exceed scored document count")
+        if (
+            self.scored_document_count
+            + self.excluded_document_count
+            + self.failed_document_count
+            != self.population_document_count
+        ):
+            raise ValueError("Scoring outcome counts must reconcile to the population")
         return self

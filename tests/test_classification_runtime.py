@@ -344,25 +344,26 @@ def test_train_reload_and_score_all_strategies(strategy: ClassificationStrategy)
     assert repeated.model_content_hash == result.model_content_hash
     assert store.read(repeated.model_artifact) == package_bytes
 
-    score = backend.score(
-        ClassificationScoringRequest(
-            scoring_run_id=uuid.uuid4(),
-            tenant_id=request.tenant_id,
-            matter_id=request.matter_id,
-            classification_model_id=request.classification_model_id,
-            model_version_id=uuid.uuid4(),
-            configuration_hash=request.configuration_hash,
-            target_field_snapshot=request.target_field_snapshot,
-            classification_strategy=request.classification_strategy,
-            ordered_class_keys=request.ordered_class_keys,
-            prediction_resolution_policy=request.prediction_resolution_policy,
-            model_artifact=result.model_artifact,
-            feature_artifact=request.feature_artifact,
-            output_derivation_key="e" * 64,
-        ),
-        store,
+    scoring_request = ClassificationScoringRequest(
+        scoring_run_id=uuid.uuid4(),
+        tenant_id=request.tenant_id,
+        matter_id=request.matter_id,
+        classification_model_id=request.classification_model_id,
+        model_version_id=uuid.uuid4(),
+        configuration_hash=request.configuration_hash,
+        target_field_snapshot=request.target_field_snapshot,
+        classification_strategy=request.classification_strategy,
+        ordered_class_keys=request.ordered_class_keys,
+        prediction_resolution_policy=request.prediction_resolution_policy,
+        model_artifact=result.model_artifact,
+        feature_artifact=request.feature_artifact,
+        output_derivation_key="e" * 64,
     )
+    score = backend.score(scoring_request, store)
+    repeated_score = backend.score(scoring_request, store)
     assert score.scored_document_count == 36
+    assert repeated_score.prediction_artifact == score.prediction_artifact
+    assert repeated_score.result_manifest_artifact == score.result_manifest_artifact
     assert pq.read_table(io.BytesIO(store.read(score.prediction_artifact))).num_rows == 36
 
 
@@ -528,6 +529,59 @@ def test_scoring_requires_exact_field_snapshot_and_model_hash() -> None:
     )
     with pytest.raises(ClassificationRuntimeError, match="hash mismatch"):
         backend.score(scoring, store)
+
+
+def test_scoring_records_every_document_and_reconciles_feature_failures() -> None:
+    store, training = _fixture(ClassificationStrategy.BINARY)
+    backend = ClassificationBackend(_settings())
+    trained = backend.train(training, store)
+    feature_rows = pq.read_table(io.BytesIO(store.read(training.feature_artifact))).to_pylist()
+    feature_rows[0]["feature_status"] = "FAILED"
+    feature_rows[0]["embedding"] = None
+    feature_rows[0]["failure_reason"] = "CHUNK_VECTOR_SET_INVALID"
+    feature_rows[1]["feature_status"] = "MISSING"
+    feature_rows[1]["embedding"] = None
+    feature_rows[1]["failure_reason"] = "SOURCE_VECTOR_MISSING"
+    scoring_features = store.add(
+        ArtifactType.CLASSIFICATION_FEATURES,
+        _parquet(
+            feature_rows,
+            {
+                "schema": "classification-features",
+                "feature_specification_hash": FEATURE_HASH,
+            },
+        ),
+    )
+    scored = backend.score(
+        ClassificationScoringRequest(
+            scoring_run_id=uuid.uuid4(),
+            tenant_id=training.tenant_id,
+            matter_id=training.matter_id,
+            classification_model_id=training.classification_model_id,
+            model_version_id=uuid.uuid4(),
+            configuration_hash=training.configuration_hash,
+            target_field_snapshot=training.target_field_snapshot,
+            classification_strategy=training.classification_strategy,
+            ordered_class_keys=training.ordered_class_keys,
+            prediction_resolution_policy=training.prediction_resolution_policy,
+            model_artifact=trained.model_artifact,
+            feature_artifact=scoring_features,
+            output_derivation_key="9" * 64,
+        ),
+        store,
+    )
+
+    assert scored.population_document_count == 36
+    assert scored.scored_document_count == 34
+    assert scored.excluded_document_count == 1
+    assert scored.failed_document_count == 1
+    rows = pq.read_table(io.BytesIO(store.read(scored.prediction_artifact))).to_pylist()
+    assert len(rows) == 36
+    assert rows[0]["result_status"] == "FAILED"
+    assert rows[0]["failure_reason"] == "CHUNK_VECTOR_SET_INVALID"
+    assert rows[1]["result_status"] == "EXCLUDED"
+    assert rows[1]["failure_reason"] == "SOURCE_VECTOR_MISSING"
+    assert all(row["model_version_id"] for row in rows)
 
 
 def test_runtime_api_requires_service_token() -> None:
