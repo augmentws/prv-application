@@ -5,6 +5,7 @@
  * Phase-one Core API for authentication, hierarchical tenants, clients, matters, and matter metadata definitions.
  * OpenAPI spec version: 0.1.0
  */
+import type { MatterAnalysisTaskVersionCreateDecisionProvider } from './matterAnalysisTaskVersionCreateDecisionProvider';
 
 export interface MatterAnalysisTaskVersionCreate {
   /**
@@ -14,4 +15,7 @@ export interface MatterAnalysisTaskVersionCreate {
   definition_markdown: string;
   /** @minimum 1 */
   based_on_version: number;
+  decision_provider?: MatterAnalysisTaskVersionCreateDecisionProvider;
+  destination_metadata_definition_ids?: string[] | null;
+  classification_model_version_id?: string | null;
 }

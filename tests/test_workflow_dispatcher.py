@@ -46,6 +46,29 @@ def test_classification_builds_use_transactional_versioned_workflow(monkeypatch)
     dbos_client.enqueue_in_transaction.assert_called_once_with(db, options, "run-id")
 
 
+def test_classification_training_jobs_own_preparation_before_builds(monkeypatch) -> None:
+    settings = SimpleNamespace(
+        dbos_enabled=True,
+        dbos_application_name="test-application",
+    )
+    dbos_client = Mock()
+    db = Mock()
+    monkeypatch.setattr(dispatcher, "get_settings", lambda: settings)
+    monkeypatch.setattr(dispatcher, "get_dbos_client", lambda: dbos_client)
+
+    dispatcher.enqueue_classification_training_job(
+        db,
+        "classification-training-job:job-id",
+        "job-id",
+    )
+
+    options = dbos_client.enqueue_in_transaction.call_args.args[1]
+    assert options["workflow_name"] == "classification_training_job_v1"
+    assert options["queue_name"] == "classification-training-jobs"
+    assert options["workflow_id"] == "classification-training-job:job-id"
+    dbos_client.enqueue_in_transaction.assert_called_once_with(db, options, "job-id")
+
+
 def test_classification_scoring_uses_transactional_versioned_workflow(monkeypatch) -> None:
     settings = SimpleNamespace(
         dbos_enabled=True,
@@ -67,6 +90,52 @@ def test_classification_scoring_uses_transactional_versioned_workflow(monkeypatc
     assert options["queue_name"] == "classification-model-scoring"
     assert options["workflow_id"] == "classification-model-score:run-id"
     dbos_client.enqueue_in_transaction.assert_called_once_with(db, options, "run-id")
+
+
+def test_classification_projection_uses_transactional_versioned_workflow(monkeypatch) -> None:
+    settings = SimpleNamespace(
+        dbos_enabled=True,
+        dbos_application_name="test-application",
+    )
+    dbos_client = Mock()
+    db = Mock()
+    monkeypatch.setattr(dispatcher, "get_settings", lambda: settings)
+    monkeypatch.setattr(dispatcher, "get_dbos_client", lambda: dbos_client)
+
+    dispatcher.enqueue_classification_projection(
+        db,
+        "classification-prediction-project:run-id",
+        "run-id",
+    )
+
+    options = dbos_client.enqueue_in_transaction.call_args.args[1]
+    assert options["workflow_name"] == "classification_prediction_project_v1"
+    assert options["queue_name"] == "classification-projections"
+    assert options["workflow_id"] == "classification-prediction-project:run-id"
+    dbos_client.enqueue_in_transaction.assert_called_once_with(db, options, "run-id")
+
+
+def test_analysis_task_promotions_use_transactional_versioned_workflow(monkeypatch) -> None:
+    settings = SimpleNamespace(
+        dbos_enabled=True,
+        dbos_application_name="test-application",
+    )
+    dbos_client = Mock()
+    db = Mock()
+    monkeypatch.setattr(dispatcher, "get_settings", lambda: settings)
+    monkeypatch.setattr(dispatcher, "get_dbos_client", lambda: dbos_client)
+
+    dispatcher.enqueue_analysis_task_promotion(
+        db,
+        "analysis-task-promotion:promotion-id:attempt-id",
+        "promotion-id",
+    )
+
+    options = dbos_client.enqueue_in_transaction.call_args.args[1]
+    assert options["workflow_name"] == "analysis_task_run_promotion_v1"
+    assert options["queue_name"] == "analysis-task-promotions"
+    assert options["workflow_id"] == "analysis-task-promotion:promotion-id:attempt-id"
+    dbos_client.enqueue_in_transaction.assert_called_once_with(db, options, "promotion-id")
 
 
 def test_classification_promotions_use_transactional_versioned_workflow(monkeypatch) -> None:

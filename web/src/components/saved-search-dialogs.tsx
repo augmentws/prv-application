@@ -1,6 +1,6 @@
 "use client";
 
-import { BookmarkPlus, FolderSearch, Globe2, LoaderCircle, LockKeyhole, Play, Trash2, UsersRound } from "lucide-react";
+import { BookmarkPlus, FolderSearch, Globe2, LoaderCircle, LockKeyhole, Play, Save, Trash2, UsersRound } from "lucide-react";
 import { type FormEvent, useState } from "react";
 
 import { Button } from "@/components/ui/button";
@@ -9,7 +9,7 @@ import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Textarea } from "@/components/ui/textarea";
-import type { MatterSavedSearchCreate, MatterSavedSearchRead, MatterSearchRequest, UserRead } from "@/generated/models";
+import type { MatterSavedSearchCreate, MatterSavedSearchRead, MatterSavedSearchUpdate, MatterSearchRequest, UserRead } from "@/generated/models";
 import { formatDate } from "@/lib/format";
 
 type Visibility = "PRIVATE" | "PUBLIC" | "SHARED";
@@ -20,20 +20,40 @@ export function SaveSearchDialog({ search, users, currentUserId, onCreate }: {
   currentUserId?: string;
   onCreate: (payload: MatterSavedSearchCreate) => Promise<void>;
 }) {
+  return <SavedSearchEditorDialog search={search} users={users} currentUserId={currentUserId} onSubmit={onCreate} />;
+}
+
+export function UpdateSavedSearchDialog({ saved, search, users, currentUserId, onUpdate }: {
+  saved: MatterSavedSearchRead;
+  search: MatterSearchRequest;
+  users: UserRead[];
+  currentUserId?: string;
+  onUpdate: (payload: MatterSavedSearchUpdate) => Promise<void>;
+}) {
+  return <SavedSearchEditorDialog saved={saved} search={search} users={users} currentUserId={currentUserId} onSubmit={onUpdate} />;
+}
+
+function SavedSearchEditorDialog({ saved, search, users, currentUserId, onSubmit }: {
+  saved?: MatterSavedSearchRead;
+  search: MatterSearchRequest;
+  users: UserRead[];
+  currentUserId?: string;
+  onSubmit: (payload: MatterSavedSearchCreate) => Promise<void>;
+}) {
   const [open, setOpen] = useState(false);
-  const [name, setName] = useState("");
-  const [description, setDescription] = useState("");
-  const [visibility, setVisibility] = useState<Visibility>("PRIVATE");
-  const [sharedUserIds, setSharedUserIds] = useState<string[]>([]);
+  const [name, setName] = useState(saved?.name ?? "");
+  const [description, setDescription] = useState(saved?.description ?? "");
+  const [visibility, setVisibility] = useState<Visibility>(saved?.visibility ?? "PRIVATE");
+  const [sharedUserIds, setSharedUserIds] = useState<string[]>(saved?.shared_users.map((user) => user.id) ?? []);
   const [submitting, setSubmitting] = useState(false);
   const [error, setError] = useState("");
   const shareCandidates = users.filter((user) => user.id !== currentUserId && user.status === "ACTIVE");
 
   const reset = () => {
-    setName("");
-    setDescription("");
-    setVisibility("PRIVATE");
-    setSharedUserIds([]);
+    setName(saved?.name ?? "");
+    setDescription(saved?.description ?? "");
+    setVisibility(saved?.visibility ?? "PRIVATE");
+    setSharedUserIds(saved?.shared_users.map((user) => user.id) ?? []);
     setError("");
   };
 
@@ -42,7 +62,7 @@ export function SaveSearchDialog({ search, users, currentUserId, onCreate }: {
     setSubmitting(true);
     setError("");
     try {
-      await onCreate({
+      await onSubmit({
         name,
         description: description.trim() || null,
         visibility,
@@ -52,7 +72,7 @@ export function SaveSearchDialog({ search, users, currentUserId, onCreate }: {
       reset();
       setOpen(false);
     } catch (caught) {
-      setError(caught instanceof Error ? caught.message : "The search could not be saved.");
+      setError(caught instanceof Error ? caught.message : `The saved search could not be ${saved ? "updated" : "created"}.`);
     } finally {
       setSubmitting(false);
     }
@@ -66,11 +86,15 @@ export function SaveSearchDialog({ search, users, currentUserId, onCreate }: {
 
   return (
     <Dialog open={open} onOpenChange={(next) => { setOpen(next); if (!next) reset(); }}>
-      <DialogTrigger asChild><Button variant="outline" size="sm"><BookmarkPlus />Save search</Button></DialogTrigger>
+      <DialogTrigger asChild>
+        <Button variant="outline" size="sm">{saved ? <Save /> : <BookmarkPlus />}{saved ? "Update saved search" : "Save search"}</Button>
+      </DialogTrigger>
       <DialogContent>
         <DialogHeader>
-          <DialogTitle>Save this search</DialogTitle>
-          <DialogDescription>Save the query and filters. Opening it later searches the matter&apos;s current documents.</DialogDescription>
+          <DialogTitle>{saved ? `Update ${saved.name}` : "Save this search"}</DialogTitle>
+          <DialogDescription>{saved
+            ? "Replace this saved search with the current query, filters, search mode, and sort."
+            : "Save the query and filters. Opening it later searches the matter's current documents."}</DialogDescription>
         </DialogHeader>
         <form className="space-y-5" onSubmit={submit}>
           <div className="space-y-2">
@@ -110,7 +134,8 @@ export function SaveSearchDialog({ search, users, currentUserId, onCreate }: {
           <DialogFooter>
             <Button type="button" variant="outline" onClick={() => setOpen(false)}>Cancel</Button>
             <Button type="submit" disabled={submitting || !name.trim() || (visibility === "SHARED" && !sharedUserIds.length)}>
-              {submitting ? <LoaderCircle className="animate-spin" /> : <BookmarkPlus />}{submitting ? "Saving…" : "Save search"}
+              {submitting ? <LoaderCircle className="animate-spin" /> : saved ? <Save /> : <BookmarkPlus />}
+              {submitting ? (saved ? "Updating…" : "Saving…") : (saved ? "Update saved search" : "Save search")}
             </Button>
           </DialogFooter>
         </form>

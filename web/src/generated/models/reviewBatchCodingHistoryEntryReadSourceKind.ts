@@ -14,4 +14,5 @@ export const ReviewBatchCodingHistoryEntryReadSourceKind = {
   JEV: 'JEV',
   AGENT: 'AGENT',
   WORKFLOW: 'WORKFLOW',
+  CLASSIFIER: 'CLASSIFIER',
 } as const;

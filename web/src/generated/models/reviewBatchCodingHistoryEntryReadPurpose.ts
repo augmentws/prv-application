@@ -6,7 +6,7 @@
  * OpenAPI spec version: 0.1.0
  */
 
-export type ReviewBatchCodingHistoryEntryReadPurpose = typeof ReviewBatchCodingHistoryEntryReadPurpose[keyof typeof ReviewBatchCodingHistoryEntryReadPurpose];
+export type ReviewBatchCodingHistoryEntryReadPurpose = typeof ReviewBatchCodingHistoryEntryReadPurpose[keyof typeof ReviewBatchCodingHistoryEntryReadPurpose] | null;
 
 
 export const ReviewBatchCodingHistoryEntryReadPurpose = {

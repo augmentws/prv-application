@@ -7,10 +7,16 @@ from typing import Any
 from sqlalchemy import and_, func, or_, select, text
 from sqlalchemy.orm import Session, sessionmaker
 
-from app.artifact_gateway import SearchItemSnapshot, get_search_item_snapshot, load_current_chunk_artifacts
+from app.artifact_gateway import (
+    SearchItemSnapshot,
+    get_email_participant_snapshots,
+    get_search_item_snapshot,
+    load_current_chunk_artifacts,
+)
 from app.config import Settings, get_settings
 from app.database import SessionLocal
 from app.document_metadata import current_metadata_values, event_value
+from app.email_domains import extract_email_domains
 from app.embeddings.configuration import canonical_hash, processing_configuration
 from app.embeddings.parquet import read_chunk_set, read_vector_set
 from app.metadata_hierarchy import hierarchy_entries, is_hierarchical_field
@@ -26,17 +32,20 @@ from app.models import (
     MatterDocumentImportJob,
     MatterEmbeddingBatch,
     MatterEmbeddingJob,
+    MatterSearchExportJob,
     MatterTopicBatch,
     MatterTopicJob,
     MetadataDefinition,
     ReviewBatch,
     ReviewBatchDocument,
     ReviewBatchRunValue,
+    ReviewBatchSearchCodingProjection,
     ReviewBatchSearchCodingRun,
     SearchIndexGeneration,
     SearchProjectionOperation,
 )
 from app.search.client import OpenSearchBulkError, OpenSearchClient
+from app.search.coding_provenance import coded_by_tokens, coded_by_tokens_for_documents
 from app.search.mappings import compile_document_index, schema_hash
 from app.search.schema import SearchReindexRequired, plan_schema_change
 from embedding_service.config import get_embedding_settings
@@ -197,6 +206,7 @@ def build_document_projection(
     batch_ids: list[uuid.UUID] | None = None,
     batch_topics: list[dict[str, str]] | None = None,
     batch_coding: list[dict[str, Any]] | None = None,
+    coded_by: list[str] | None = None,
 ) -> dict[str, Any]:
     matter = db.get(Matter, document.matter_id)
     if matter is None:
@@ -225,6 +235,7 @@ def build_document_projection(
         "email_to": recipients["TO"],
         "email_cc": recipients["CC"],
         "email_bcc": recipients["BCC"],
+        "email_domain": extract_email_domains(snapshot.email_sender, recipients),
         "email_subject": snapshot.email_subject,
         "email_sent_at": snapshot.email_sent_at,
         "email_received_at": snapshot.email_received_at,
@@ -287,6 +298,7 @@ def build_document_projection(
         "batch_ids": [str(value) for value in (batch_ids or [])],
         "batch_topics": batch_topics or [],
         "batch_coding": batch_coding or [],
+        "coded_by": coded_by if coded_by is not None else coded_by_tokens(db, document.id),
         "created_at": document.created_at.isoformat(),
         "record_type": snapshot.record_type,
         "processing_status": snapshot.processing_status,
@@ -370,6 +382,27 @@ class SearchIndexManager:
                     )
                 )
             )
+            pinned_generation_ids.update(
+                self.db.scalars(
+                    select(MatterSearchExportJob.search_index_generation_id).where(
+                        MatterSearchExportJob.matter_id == active.matter_id,
+                        MatterSearchExportJob.search_index_generation_id.is_not(None),
+                        or_(
+                            MatterSearchExportJob.status.in_(["QUEUED", "RUNNING"]),
+                            and_(
+                                or_(
+                                    and_(
+                                        MatterSearchExportJob.status == "FAILED",
+                                        MatterSearchExportJob.failure_retriable.is_(True),
+                                    ),
+                                    MatterSearchExportJob.status == "CANCELED",
+                                ),
+                                MatterSearchExportJob.retry_until > utcnow(),
+                            ),
+                        ),
+                    )
+                )
+            )
             pinned_index_names = {
                 generation.index_name for generation in generations if generation.id in pinned_generation_ids
             }
@@ -407,6 +440,46 @@ class SearchIndexManager:
                 active.matter_id,
                 active.index_name,
             )
+
+    def _resolve_superseded_schema_operations(
+        self,
+        generation: SearchIndexGeneration,
+        *,
+        exclude_operation_id: uuid.UUID | None = None,
+    ) -> int:
+        """Complete schema confirmations satisfied by a newer full rebuild."""
+
+        resolved_at = generation.activated_at
+        if resolved_at is None:
+            return 0
+        statement = select(SearchProjectionOperation).where(
+            SearchProjectionOperation.matter_id == generation.matter_id,
+            SearchProjectionOperation.status == "AWAITING_USER",
+            SearchProjectionOperation.updated_at <= resolved_at,
+        )
+        if exclude_operation_id is not None:
+            statement = statement.where(SearchProjectionOperation.id != exclude_operation_id)
+        pending_operations = list(self.db.scalars(statement))
+        resolved_count = 0
+        for pending in pending_operations:
+            schema_change = pending.payload.get("schema_change")
+            if not isinstance(schema_change, dict) or schema_change.get("action") != "REINDEX_REQUIRED":
+                continue
+            pending.status = "COMPLETED"
+            pending.completed_at = resolved_at
+            pending.error_message = None
+            pending.payload = {
+                **pending.payload,
+                "schema_change_resolution": {
+                    "kind": "SUPERSEDED_BY_REBUILD",
+                    "search_index_generation_id": str(generation.id),
+                    "generation": generation.generation,
+                    "schema_hash": generation.schema_hash,
+                    "resolved_at": resolved_at.isoformat(),
+                },
+            }
+            resolved_count += 1
+        return resolved_count
 
     def ensure(
         self,
@@ -524,7 +597,35 @@ class SearchIndexManager:
             generation.status = "ACTIVE"
             generation.document_count = count
             generation.activated_at = utcnow()
+            # A rebuild sources every retained READY run from Postgres, so all
+            # of those projections are current in the newly activated index.
+            retained_batch_coding = list(
+                self.db.scalars(
+                    select(ReviewBatchSearchCodingProjection)
+                    .join(
+                        ReviewBatch,
+                        ReviewBatch.id == ReviewBatchSearchCodingProjection.review_batch_id,
+                    )
+                    .where(
+                        ReviewBatch.matter_id == matter.id,
+                        ReviewBatchSearchCodingProjection.status == "READY",
+                    )
+                )
+            )
+            for retained_projection in retained_batch_coding:
+                retained_projection.search_index_generation_id = generation.id
+            resolved_schema_operation_count = self._resolve_superseded_schema_operations(
+                generation,
+                exclude_operation_id=operation_id,
+            )
             self.db.commit()
+            if resolved_schema_operation_count:
+                logger.info(
+                    "Resolved schema operations superseded by rebuild matter_id=%s generation=%s count=%s",
+                    matter.id,
+                    generation.generation,
+                    resolved_schema_operation_count,
+                )
             _save_rebuild_progress(
                 operation_id,
                 phase="CLEANING_UP",
@@ -645,6 +746,132 @@ class SearchIndexManager:
         self._bulk_upsert(index_name, documents, definitions)
         self.client.refresh(index_name)
         return len(documents)
+
+    def backfill_requested_metadata_fields(
+        self,
+        index_name: str,
+        matter: Matter,
+        definitions: list[MetadataDefinition],
+        field_keys: tuple[str, ...],
+        *,
+        operation: SearchProjectionOperation,
+        page_size: int = 500,
+    ) -> int:
+        """Partially update every matter document for an explicit system-field refresh.
+
+        System-derived values do not have ``DocumentMetadataCurrent`` rows, so
+        the ordinary additive-field optimization cannot identify their source
+        documents. This bounded keyset scan is resumable through the operation
+        payload and intentionally covers documents whose derived value is empty.
+        """
+
+        known_keys = {definition.key for definition in definitions if definition.status == "ACTIVE"}
+        requested_keys = tuple(key for key in field_keys if key in known_keys)
+        if not requested_keys:
+            return 0
+        unsupported_keys = set(requested_keys) - {"email_domain"}
+        if unsupported_keys:
+            raise ValueError(
+                "Explicit system metadata backfill is not implemented for: "
+                + ", ".join(sorted(unsupported_keys))
+            )
+        total = int(
+            self.db.scalar(
+                select(func.count()).select_from(MatterDocument).where(MatterDocument.matter_id == matter.id)
+            )
+            or 0
+        )
+        processed = int(operation.payload.get("metadata_backfill_processed", 0) or 0)
+        last_created_at_raw = operation.payload.get("metadata_backfill_last_created_at")
+        last_document_id_raw = operation.payload.get("metadata_backfill_last_document_id")
+        last_created_at = (
+            datetime.fromisoformat(last_created_at_raw.replace("Z", "+00:00"))
+            if isinstance(last_created_at_raw, str)
+            else None
+        )
+        last_document_id = uuid.UUID(last_document_id_raw) if isinstance(last_document_id_raw, str) else None
+        operation.payload = {
+            **operation.payload,
+            "metadata_backfill_fields": list(requested_keys),
+            "metadata_backfill_processed": processed,
+            "metadata_backfill_total": total,
+            "progress": {
+                "phase": "UPDATING_EMAIL_DOMAINS",
+                "processed_documents": processed,
+                "total_documents": total,
+                "updated_at": utcnow().isoformat(),
+            },
+        }
+        self.db.commit()
+
+        while True:
+            statement = (
+                select(MatterDocument)
+                .where(MatterDocument.matter_id == matter.id)
+                .order_by(MatterDocument.created_at, MatterDocument.id)
+                .limit(page_size)
+            )
+            if last_created_at is not None and last_document_id is not None:
+                statement = statement.where(
+                    or_(
+                        MatterDocument.created_at > last_created_at,
+                        and_(
+                            MatterDocument.created_at == last_created_at,
+                            MatterDocument.id > last_document_id,
+                        ),
+                    )
+                )
+            documents = list(self.db.scalars(statement))
+            if not documents:
+                break
+            if operation.created_by_user_id is None:
+                raise ValueError("Email Domain updates require an initiating user")
+            snapshots = get_email_participant_snapshots(
+                collection_item_ids=[document.collection_item_id for document in documents],
+                actor_user_id=operation.created_by_user_id,
+                tenant_id=matter.client.tenant_id,
+                client_id=matter.client_id,
+            )
+            self.client.bulk(
+                index_name,
+                (
+                    (
+                        "update",
+                        str(document.id),
+                        {
+                            "doc": {
+                                "metadata": {
+                                    "email_domain": extract_email_domains(
+                                        snapshots[document.collection_item_id].sender,
+                                        snapshots[document.collection_item_id].recipients,
+                                    )
+                                }
+                            }
+                        },
+                    )
+                    for document in documents
+                ),
+            )
+            processed += len(documents)
+            last_created_at = documents[-1].created_at
+            last_document_id = documents[-1].id
+            operation.payload = {
+                **operation.payload,
+                "metadata_backfill_fields": list(requested_keys),
+                "metadata_backfill_processed": processed,
+                "metadata_backfill_total": total,
+                "metadata_backfill_last_created_at": last_created_at.isoformat(),
+                "metadata_backfill_last_document_id": str(last_document_id),
+                "progress": {
+                    "phase": "UPDATING_EMAIL_DOMAINS",
+                    "processed_documents": processed,
+                    "total_documents": total,
+                    "updated_at": utcnow().isoformat(),
+                },
+            }
+            self.db.commit()
+        self.client.refresh(index_name)
+        return processed
 
     def upsert_documents(self, matter_id: uuid.UUID, document_ids: list[uuid.UUID]) -> int:
         generation = self.ensure(matter_id)
@@ -877,22 +1104,72 @@ class SearchIndexManager:
         self.db.commit()
         return len(document_ids)
 
+    def _batch_coding_generation(self, matter_id: uuid.UUID) -> SearchIndexGeneration:
+        """Use the active index without gating Batch Coding on unrelated schema drift."""
+
+        generation = self.active(matter_id)
+        if generation is None:
+            return self.ensure(matter_id)
+        current_mappings = generation.schema_snapshot.get("mappings")
+        current_mappings = current_mappings if isinstance(current_mappings, dict) else {}
+        current_properties = current_mappings.get("properties")
+        current_properties = current_properties if isinstance(current_properties, dict) else {}
+        if "batch_coding" in current_properties:
+            return generation
+
+        definitions = list(
+            self.db.scalars(
+                select(MetadataDefinition)
+                .where(MetadataDefinition.matter_id == matter_id, MetadataDefinition.status == "ACTIVE")
+                .order_by(MetadataDefinition.key)
+            )
+        )
+        desired = compile_document_index(
+            definitions,
+            embedding_dimensions=get_embedding_settings().dimensions,
+        )
+        batch_coding_mapping = desired["mappings"]["properties"]["batch_coding"]
+        self.client.update_mapping(
+            generation.index_name,
+            {"properties": {"batch_coding": batch_coding_mapping}},
+        )
+        generation.schema_snapshot = {
+            **generation.schema_snapshot,
+            "mappings": {
+                **current_mappings,
+                "properties": {
+                    **current_properties,
+                    "batch_coding": batch_coding_mapping,
+                },
+            },
+        }
+        generation.schema_hash = schema_hash(generation.schema_snapshot)
+        self.db.commit()
+        return generation
+
     def sync_batch_coding(self, batch_id: uuid.UUID, run_id: uuid.UUID) -> int:
         batch = self.db.get(ReviewBatch, batch_id)
         selection = self.db.get(ReviewBatchSearchCodingRun, batch_id)
-        if batch is None or selection is None or selection.review_batch_run_id != run_id:
-            raise ValueError("Selected batch coding run not found")
+        projection = self.db.get(ReviewBatchSearchCodingProjection, (batch_id, run_id))
+        if batch is None or projection is None:
+            raise ValueError("Batch coding projection not found")
         if not self.settings.search_enabled:
-            selection.status = "NOT_CONFIGURED"
-            selection.error_message = None
+            projection.status = "NOT_CONFIGURED"
+            projection.error_message = None
+            if selection is not None and selection.review_batch_run_id == run_id:
+                selection.status = "NOT_CONFIGURED"
+                selection.error_message = None
             self.db.commit()
             return 0
 
-        selection.status = "SYNCING"
-        selection.error_message = None
+        projection.status = "SYNCING"
+        projection.error_message = None
+        if selection is not None and selection.review_batch_run_id == run_id:
+            selection.status = "SYNCING"
+            selection.error_message = None
         self.db.commit()
         try:
-            generation = self.ensure(batch.matter_id)
+            generation = self._batch_coding_generation(batch.matter_id)
             self._lock_matter_search(batch.matter_id)
             document_ids = list(
                 self.db.scalars(
@@ -943,12 +1220,14 @@ class SearchIndexManager:
                                         "if (ctx._source.batch_coding == null) { "
                                         "ctx._source.batch_coding = []; } "
                                         "for (int i = ctx._source.batch_coding.size() - 1; i >= 0; i--) { "
-                                        "if (ctx._source.batch_coding[i].batch_id == params.batch_id) { "
+                                        "if (ctx._source.batch_coding[i].batch_id == params.batch_id "
+                                        "&& ctx._source.batch_coding[i].run_id == params.run_id) { "
                                         "ctx._source.batch_coding.remove(i); } } "
                                         "ctx._source.batch_coding.addAll(params.values);"
                                     ),
                                     "params": {
                                         "batch_id": str(batch.id),
+                                        "run_id": str(run_id),
                                         "values": projected_by_document[document_id],
                                     },
                                 }
@@ -958,21 +1237,30 @@ class SearchIndexManager:
                     ),
                 )
             self.client.refresh(generation.index_name)
-            self.db.expire(selection)
-            if selection.review_batch_run_id != run_id:
-                raise ValueError("The selected batch coding run changed during projection")
-            selection.status = "READY"
-            selection.projected_at = utcnow()
-            selection.error_message = None
+            projected_at = utcnow()
+            self.db.expire(projection)
+            projection.status = "READY"
+            projection.search_index_generation_id = generation.id
+            projection.projected_at = projected_at
+            projection.error_message = None
+            current_selection = self.db.get(ReviewBatchSearchCodingRun, batch_id)
+            if current_selection is not None and current_selection.review_batch_run_id == run_id:
+                current_selection.status = "READY"
+                current_selection.projected_at = projected_at
+                current_selection.error_message = None
             self.db.commit()
             return len(document_ids)
         except Exception as exc:
             self.db.rollback()
-            failed = self.db.get(ReviewBatchSearchCodingRun, batch_id)
-            if failed is not None and failed.review_batch_run_id == run_id:
-                failed.status = "FAILED"
-                failed.error_message = str(exc)[:4000]
-                self.db.commit()
+            failed_projection = self.db.get(ReviewBatchSearchCodingProjection, (batch_id, run_id))
+            if failed_projection is not None:
+                failed_projection.status = "FAILED"
+                failed_projection.error_message = str(exc)[:4000]
+            failed_selection = self.db.get(ReviewBatchSearchCodingRun, batch_id)
+            if failed_selection is not None and failed_selection.review_batch_run_id == run_id:
+                failed_selection.status = "FAILED"
+                failed_selection.error_message = str(exc)[:4000]
+            self.db.commit()
             raise
 
     def _bulk_upsert(
@@ -984,6 +1272,10 @@ class SearchIndexManager:
         batch_size = self.settings.search_bulk_batch_size
         for offset in range(0, len(documents), batch_size):
             batch = documents[offset : offset + batch_size]
+            coding_actors = coded_by_tokens_for_documents(
+                self.db,
+                [document.id for document in batch],
+            )
             memberships: dict[uuid.UUID, list[uuid.UUID]] = {document.id: [] for document in batch}
             rows = self.db.execute(
                 select(ReviewBatchDocument.matter_document_id, ReviewBatchDocument.review_batch_id)
@@ -1027,11 +1319,11 @@ class SearchIndexManager:
                 select(
                     ReviewBatchRunValue,
                     MetadataDefinition,
-                    ReviewBatchSearchCodingRun.review_batch_id,
+                    ReviewBatchSearchCodingProjection.review_batch_id,
                 )
                 .join(
-                    ReviewBatchSearchCodingRun,
-                    ReviewBatchSearchCodingRun.review_batch_run_id
+                    ReviewBatchSearchCodingProjection,
+                    ReviewBatchSearchCodingProjection.review_batch_run_id
                     == ReviewBatchRunValue.review_batch_run_id,
                 )
                 .join(
@@ -1040,11 +1332,12 @@ class SearchIndexManager:
                 )
                 .where(
                     ReviewBatchRunValue.matter_document_id.in_(batch_coding),
-                    ReviewBatchSearchCodingRun.status == "READY",
+                    ReviewBatchSearchCodingProjection.status == "READY",
                     MetadataDefinition.status == "ACTIVE",
                 )
                 .order_by(
-                    ReviewBatchSearchCodingRun.review_batch_id,
+                    ReviewBatchSearchCodingProjection.review_batch_id,
+                    ReviewBatchSearchCodingProjection.review_batch_run_id,
                     ReviewBatchRunValue.metadata_definition_id,
                     ReviewBatchRunValue.value_ordinal,
                 )
@@ -1075,6 +1368,7 @@ class SearchIndexManager:
                             batch_ids=memberships[document.id],
                             batch_topics=batch_topics[document.id],
                             batch_coding=batch_coding[document.id],
+                            coded_by=coding_actors[document.id],
                         ),
                     )
                     for document in batch
@@ -1092,6 +1386,7 @@ class SearchIndexManager:
                         memberships[document.id],
                         batch_topics[document.id],
                         batch_coding[document.id],
+                        coding_actors[document.id],
                     )
                     for document in batch
                 ]
@@ -1102,6 +1397,7 @@ class SearchIndexManager:
                         list[uuid.UUID],
                         list[dict[str, str]],
                         list[dict[str, Any]],
+                        list[str],
                     ],
                     session_factory=projection_session,
                 ) -> tuple[str, str, dict[str, Any]]:
@@ -1110,6 +1406,7 @@ class SearchIndexManager:
                         document_batch_ids,
                         document_batch_topics,
                         document_batch_coding,
+                        document_coding_actors,
                     ) = item
                     with session_factory() as worker_db:
                         document = worker_db.get(MatterDocument, document_id)
@@ -1122,6 +1419,7 @@ class SearchIndexManager:
                             batch_ids=document_batch_ids,
                             batch_topics=document_batch_topics,
                             batch_coding=document_batch_coding,
+                            coded_by=document_coding_actors,
                         )
                         return "index", str(document_id), projection
 
@@ -1260,11 +1558,31 @@ def process_search_operation(operation_id: uuid.UUID) -> None:
         try:
             manager = SearchIndexManager(db, client, settings)
             if operation.kind in {"SCHEMA_SYNC", "REBUILD"}:
-                manager.ensure(
+                generation = manager.ensure(
                     operation.matter_id,
                     force=operation.kind == "REBUILD",
                     operation=operation if operation.kind == "REBUILD" else None,
                 )
+                requested_backfill = operation.payload.get("metadata_backfill_fields")
+                if operation.kind == "SCHEMA_SYNC" and isinstance(requested_backfill, list):
+                    matter = db.get(Matter, operation.matter_id)
+                    if matter is None:
+                        raise ValueError("Matter not found")
+                    definitions = list(
+                        db.scalars(
+                            select(MetadataDefinition).where(
+                                MetadataDefinition.matter_id == matter.id,
+                                MetadataDefinition.status == "ACTIVE",
+                            )
+                        )
+                    )
+                    manager.backfill_requested_metadata_fields(
+                        generation.index_name,
+                        matter,
+                        definitions,
+                        tuple(str(value) for value in requested_backfill),
+                        operation=operation,
+                    )
             elif operation.kind == "DOCUMENT_UPSERT":
                 topic_job_id = operation.payload.get("topic_job_id")
                 embedding_job_id = operation.payload.get("embedding_job_id")

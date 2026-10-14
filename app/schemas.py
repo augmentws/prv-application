@@ -18,11 +18,11 @@ from app.decision_specifications import DecisionSpecification
 from classification_service.schemas import (
     BinaryClassMapping,
     ClassificationStrategy,
+    ClassValue,
     FeatureContract,
     LabelPolicy,
     PredictionResolutionPolicy,
     Sha256,
-    StableKey,
     TargetCardinality,
     TargetFieldSnapshot,
     TargetMetadataType,
@@ -33,6 +33,7 @@ from classification_service.schemas import (
 
 ResourceStatus = Literal["ACTIVE", "SUSPENDED", "ARCHIVED"]
 AdminRole = Literal["ADMIN"]
+LegacyTenantRole = Literal["ADMIN", "USER"]
 MetadataType = Literal["TEXT", "LONG_TEXT", "INTEGER", "DECIMAL", "BOOLEAN", "DATE", "DATETIME", "ENUM", "JSON"]
 MetadataValueSource = Literal["SYSTEM", "IMPORTED", "ASSERTED"]
 MetadataReferenceTarget = Literal["CUSTODIAN"]
@@ -54,10 +55,19 @@ MatterDefinitionSourceKind = Literal[
     "PASTE", "MARKDOWN", "TEXT", "DOCX", "AGENT_EDIT", "USER_EDIT", "ASSESSMENT_REFINEMENT", "CLONE"
 ]
 MatterDefinitionUserSourceKind = Literal["PASTE", "MARKDOWN", "TEXT", "USER_EDIT"]
-MatterAnalysisTaskType = Literal["QUESTION_ANSWERING"]
+MatterAnalysisTaskType = Literal["QUESTION_ANSWERING", "CLASSIFICATION"]
 MatterAnalysisTaskStatus = Literal["ACTIVE", "SUSPENDED", "ARCHIVED"]
 MatterAnalysisTaskVersionStatus = Literal["DRAFT", "PUBLISHED", "RETIRED"]
 MatterAnalysisTaskCompilationStatus = Literal["NOT_GENERATED", "STALE", "GENERATING", "READY", "FAILED"]
+JobExecutionStatus = Literal[
+    "QUEUED",
+    "RUNNING",
+    "WAITING",
+    "COMPLETED",
+    "COMPLETED_WITH_ERRORS",
+    "FAILED",
+    "CANCELED",
+]
 DecisionConfidenceKind = Literal[
     "PROVIDER_CONFIDENCE",
     "SELECTED_PROBABILITY",
@@ -101,10 +111,11 @@ class TokenPair(BaseModel):
 
 
 class UserCreate(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
     email: EmailStr
     display_name: str = Field(min_length=1, max_length=200)
     password: str = Field(min_length=12, max_length=1024)
-    role: AdminRole = "ADMIN"
 
 
 class UserRead(ORMModel):
@@ -113,13 +124,18 @@ class UserRead(ORMModel):
     email: EmailStr
     display_name: str
     status: ResourceStatus
-    tenant_role: AdminRole
+    tenant_role: LegacyTenantRole
     is_superuser: bool
     created_at: datetime
 
 
-class TenantAdminCreate(UserCreate):
-    pass
+class TenantAdminCreate(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    email: EmailStr
+    display_name: str = Field(min_length=1, max_length=200)
+    password: str = Field(min_length=12, max_length=1024)
+    role: AdminRole = "ADMIN"
 
 
 class TenantCreate(BaseModel):
@@ -142,6 +158,201 @@ class TenantRead(ORMModel):
 class TenantCreated(BaseModel):
     tenant: TenantRead
     initial_admin: UserRead
+
+
+class AuditRecordRead(BaseModel):
+    id: uuid.UUID
+    tenant_id: uuid.UUID
+    actor_user_id: uuid.UUID | None
+    actor_display_name: str | None
+    actor_email: str | None
+    action: str
+    target_type: str
+    target_id: uuid.UUID
+    details: dict[str, Any] | None
+    created_at: datetime
+
+
+class AuditRecordPage(BaseModel):
+    items: list[AuditRecordRead]
+    next_cursor: str | None
+
+
+class PermissionRead(ORMModel):
+    id: uuid.UUID
+    key: str
+    display_name: str
+    description: str
+    category: str
+    resource_type: Literal["TENANT", "CLIENT", "COLLECTION", "MATTER"]
+    dangerous: bool
+    status: Literal["ACTIVE", "ARCHIVED"]
+
+
+class RoleCreate(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    key: Annotated[
+        str,
+        StringConstraints(strip_whitespace=True, to_upper=True, pattern=r"^[A-Z][A-Z0-9_]{1,99}$"),
+    ]
+    display_name: str = Field(min_length=1, max_length=200)
+    description: str | None = Field(default=None, max_length=2000)
+    permission_keys: list[str] = Field(default_factory=list, max_length=100)
+
+
+class RoleUpdate(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    display_name: str | None = Field(default=None, min_length=1, max_length=200)
+    description: str | None = Field(default=None, max_length=2000)
+    row_version: int = Field(ge=1)
+
+
+class RolePermissionsReplace(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    permission_keys: list[str] = Field(max_length=100)
+    row_version: int = Field(ge=1)
+
+    @field_validator("permission_keys")
+    @classmethod
+    def unique_permission_keys(cls, value: list[str]) -> list[str]:
+        if len(value) != len(set(value)):
+            raise ValueError("permission_keys must not contain duplicates")
+        return value
+
+
+class RoleRead(BaseModel):
+    id: uuid.UUID
+    tenant_id: uuid.UUID | None
+    key: str
+    display_name: str
+    description: str | None
+    role_kind: Literal["SYSTEM", "CUSTOM"]
+    status: Literal["ACTIVE", "ARCHIVED"]
+    row_version: int
+    permission_keys: list[str]
+    grant_count: int
+    created_at: datetime
+    updated_at: datetime
+
+
+class AccessGroupCreate(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    key: Annotated[
+        str,
+        StringConstraints(strip_whitespace=True, to_lower=True, pattern=r"^[a-z][a-z0-9_-]{1,99}$"),
+    ]
+    display_name: str = Field(min_length=1, max_length=200)
+    description: str | None = Field(default=None, max_length=2000)
+
+
+class AccessGroupUpdate(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    display_name: str | None = Field(default=None, min_length=1, max_length=200)
+    description: str | None = Field(default=None, max_length=2000)
+    row_version: int = Field(ge=1)
+
+
+class AccessGroupMembersReplace(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    user_ids: list[uuid.UUID] = Field(max_length=1000)
+    row_version: int = Field(ge=1)
+
+    @field_validator("user_ids")
+    @classmethod
+    def unique_user_ids(cls, value: list[uuid.UUID]) -> list[uuid.UUID]:
+        if len(value) != len(set(value)):
+            raise ValueError("user_ids must not contain duplicates")
+        return value
+
+
+class AccessGroupRead(BaseModel):
+    id: uuid.UUID
+    tenant_id: uuid.UUID
+    key: str
+    display_name: str
+    description: str | None
+    group_kind: Literal["LOCAL"]
+    status: Literal["ACTIVE", "ARCHIVED"]
+    row_version: int
+    member_ids: list[uuid.UUID]
+    grant_count: int
+    created_at: datetime
+    updated_at: datetime
+
+
+class AuthorizationSubjectInput(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    type: Literal["USER", "ACCESS_GROUP"]
+    id: uuid.UUID
+
+
+class AuthorizationScopeInput(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    type: Literal["TENANT", "CLIENT", "COLLECTION", "MATTER"]
+    id: uuid.UUID
+
+
+class AuthorizationGrantCreate(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    subject: AuthorizationSubjectInput
+    role_id: uuid.UUID
+    scope: AuthorizationScopeInput
+
+
+class AuthorizationGrantUpdate(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    role_id: uuid.UUID
+    row_version: int = Field(ge=1)
+
+
+class AuthorizationGrantRead(BaseModel):
+    id: uuid.UUID
+    tenant_id: uuid.UUID
+    subject_type: Literal["USER", "ACCESS_GROUP"]
+    subject_id: uuid.UUID
+    subject_display_name: str
+    role_id: uuid.UUID
+    role_key: str
+    role_display_name: str
+    scope_type: Literal["TENANT", "CLIENT", "COLLECTION", "MATTER"]
+    scope_id: uuid.UUID
+    scope_display_name: str
+    row_version: int
+    created_by_user_id: uuid.UUID
+    updated_by_user_id: uuid.UUID
+    created_at: datetime
+    updated_at: datetime
+
+
+class EffectivePermissionsRead(BaseModel):
+    resource_type: Literal["TENANT", "CLIENT", "COLLECTION", "MATTER"]
+    resource_id: uuid.UUID
+    authorization_revision: int
+    permission_keys: list[str]
+
+
+class AuthorizationExplanationRead(BaseModel):
+    allowed: bool
+    permission_key: str
+    resource_type: Literal["TENANT", "CLIENT", "COLLECTION", "MATTER"]
+    resource_id: uuid.UUID
+    grant_id: uuid.UUID | None = None
+    role_id: uuid.UUID | None = None
+    role_key: str | None = None
+    subject_type: str | None = None
+    subject_id: uuid.UUID | None = None
+    scope_type: str | None = None
+    scope_id: uuid.UUID | None = None
 
 
 class ClientCreate(BaseModel):
@@ -300,6 +511,35 @@ class MatterDocumentImportCreate(BaseModel):
     selection_summary: str = Field(min_length=1, max_length=1000)
 
 
+class JobExecutionRead(ORMModel):
+    id: uuid.UUID
+    job_type: str | None
+    job_id: uuid.UUID | None
+    attempt_number: int
+    retry_of_workflow_run_id: uuid.UUID | None
+    workflow_key: str
+    dbos_workflow_id: str
+    status: JobExecutionStatus
+    current_stage: str | None
+    stage_label: str
+    progress_completed: int
+    progress_total: int | None
+    progress_unit: str | None
+    progress: dict[str, Any]
+    cancel_requested_at: datetime | None
+    cancel_requested_by_user_id: uuid.UUID | None
+    last_heartbeat_at: datetime | None
+    failure_code: str | None
+    failure_summary: str | None
+    failure_retriable: bool
+    initiated_by_user_id: uuid.UUID
+    started_at: datetime | None
+    completed_at: datetime | None
+    created_at: datetime
+    updated_at: datetime
+    available_actions: list[Literal["CANCEL", "RETRY"]]
+
+
 class MatterDocumentImportRead(ORMModel):
     id: uuid.UUID
     matter_id: uuid.UUID
@@ -316,6 +556,9 @@ class MatterDocumentImportRead(ORMModel):
     added_count: int
     duplicate_count: int
     failed_count: int
+    imported_label_document_count: int
+    imported_label_event_count: int
+    imported_label_warning_count: int
     error_message: str | None
     created_by_user_id: uuid.UUID
     started_at: datetime | None
@@ -323,6 +566,7 @@ class MatterDocumentImportRead(ORMModel):
     canceled_at: datetime | None
     created_at: datetime
     updated_at: datetime
+    execution: JobExecutionRead | None = None
 
 
 class MatterDocumentRead(ORMModel):
@@ -367,6 +611,7 @@ class MatterEmbeddingJobRead(ORMModel):
     canceled_at: datetime | None
     created_at: datetime
     updated_at: datetime
+    execution: JobExecutionRead | None = None
 
 
 class MatterEmbeddingBatchRead(ORMModel):
@@ -533,7 +778,7 @@ class MatterTopicApplyRequest(BaseModel):
         return self
 
 
-SearchFilterOperator = Literal["EQ", "IN", "RANGE", "EXISTS", "NOT_EXISTS"]
+SearchFilterOperator = Literal["EQ", "IN", "NOT_IN", "RANGE", "EXISTS", "NOT_EXISTS"]
 SearchSortDirection = Literal["ASC", "DESC"]
 SearchMode = Literal["KEYWORD", "SEMANTIC", "HYBRID"]
 SearchOperationKind = Literal[
@@ -561,8 +806,12 @@ class MatterSearchFilter(BaseModel):
     def validate_operator_values(self) -> "MatterSearchFilter":
         if self.operator == "EQ" and self.value is None:
             raise ValueError("EQ filters require value")
-        if self.operator == "IN" and not self.values and not self.include_missing:
-            raise ValueError("IN filters require one or more values or include_missing")
+        if (
+            self.operator in {"IN", "NOT_IN"}
+            and not self.values
+            and not (self.operator == "IN" and self.include_missing)
+        ):
+            raise ValueError(f"{self.operator} filters require one or more values")
         if self.operator == "RANGE" and self.from_value is None and self.to_value is None:
             raise ValueError("RANGE filters require from or to")
         if self.operator in {"EXISTS", "NOT_EXISTS"} and any(
@@ -609,7 +858,7 @@ class MatterSearchRequest(BaseModel):
 class MatterFacetValuesRequest(BaseModel):
     search: MatterSearchRequest
     query: str | None = Field(default=None, max_length=200)
-    size: int = Field(default=20, ge=1, le=50)
+    size: int = Field(default=20, ge=1, le=1000)
     parent: HierarchyNodeId | None = None
 
 
@@ -658,6 +907,8 @@ class MatterFacetValuesResponse(BaseModel):
     field: MetadataKey
     values: list[MatterSearchFacetValue]
     missing_count: int = Field(default=0, ge=0)
+    total_count: int = Field(default=0, ge=0)
+    has_more: bool = False
 
 
 class MatterSearchResponse(BaseModel):
@@ -666,6 +917,83 @@ class MatterSearchResponse(BaseModel):
     timed_out: bool
     hits: list[MatterSearchHit]
     facets: dict[str, list[MatterSearchFacetValue]]
+
+
+class SearchExportFieldRead(BaseModel):
+    id: str
+    stable_key: str
+    display_name: str
+    group_id: uuid.UUID | None = None
+    group_display_name: str | None = None
+    source_path: str
+    value_type: str
+    cardinality: Literal["SINGLE", "MULTIPLE"]
+    selectable: bool = True
+    unavailable_reason: str | None = None
+    large_value: bool = False
+    enum_values: list[dict[str, Any]] = Field(default_factory=list)
+
+
+class MatterSearchExportCreate(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    search: MatterSearchRequest
+    field_ids: list[str] = Field(min_length=1, max_length=250)
+    spreadsheet_safe: bool = True
+    requested_filename: str = Field(default="search-results.csv", min_length=1, max_length=255)
+    idempotency_key: str = Field(min_length=1, max_length=200)
+
+    @model_validator(mode="after")
+    def validate_export(self) -> "MatterSearchExportCreate":
+        if len(self.field_ids) != len(set(self.field_ids)):
+            raise ValueError("field_ids must be unique")
+        filename = self.requested_filename.strip()
+        if not filename.lower().endswith(".csv"):
+            filename += ".csv"
+        self.requested_filename = filename
+        self.idempotency_key = self.idempotency_key.strip()
+        return self
+
+
+class MatterSearchExportRead(ORMModel):
+    id: uuid.UUID
+    matter_id: uuid.UUID
+    search_index_generation_id: uuid.UUID | None
+    requested_filename: str
+    status: Literal["QUEUED", "RUNNING", "COMPLETED", "FAILED", "CANCELED"]
+    current_stage: str | None
+    matched_count: int
+    exported_count: int
+    page_count: int
+    selected_field_count: int
+    output_artifact_id: uuid.UUID | None
+    output_content_hash: str | None
+    output_byte_length: int | None
+    output_filename: str | None
+    snapshot_started_at: datetime | None
+    expires_at: datetime | None
+    failure_code: str | None
+    failure_summary: str | None
+    failure_retriable: bool
+    created_by_user_id: uuid.UUID
+    created_by_display_name: str
+    created_by_email: str
+    started_at: datetime | None
+    completed_at: datetime | None
+    created_at: datetime
+    updated_at: datetime
+    execution: JobExecutionRead | None = None
+
+
+class MatterSearchExportArtifactRead(BaseModel):
+    artifact_id: uuid.UUID
+    export_job_id: uuid.UUID
+    filename: str
+    byte_length: int = Field(ge=0)
+    content_hash: str
+    row_count: int = Field(ge=0)
+    column_count: int = Field(ge=0)
+    created_at: datetime
 
 
 BulkTagJobStatus = Literal[
@@ -805,16 +1133,22 @@ ReviewBatchSelectionType = Literal[
     "RANDOM_MATTER",
     "RANDOM_BATCH",
     "RANDOM_SAVED_SEARCH",
+    "RANDOM_ASSESSMENT",
     "DEFINITION_ASSESSMENT",
 ]
 InteractiveReviewBatchSelectionType = Literal[
-    "ALL_MATTER", "SEARCH_QUERY", "RANDOM_MATTER", "RANDOM_BATCH", "RANDOM_SAVED_SEARCH"
+    "ALL_MATTER",
+    "SEARCH_QUERY",
+    "RANDOM_MATTER",
+    "RANDOM_BATCH",
+    "RANDOM_SAVED_SEARCH",
+    "RANDOM_ASSESSMENT",
 ]
 ReviewBatchValueVisibility = Literal["OWN_VALUES", "ALL_REVIEWER_VALUES"]
-ReviewBatchStatus = Literal["QUEUED", "BUILDING", "READY", "FAILED", "ARCHIVED"]
+ReviewBatchStatus = Literal["QUEUED", "BUILDING", "READY", "FAILED", "CANCELED", "ARCHIVED"]
 ReviewBatchSearchStatus = Literal["QUEUED", "SYNCING", "READY", "FAILED", "NOT_CONFIGURED"]
-ReviewBatchRunType = Literal["HUMAN", "AGENT", "WORKFLOW"]
-InteractiveReviewBatchRunType = Literal["HUMAN", "AGENT"]
+ReviewBatchRunType = Literal["AGENT", "WORKFLOW", "CLASSIFIER"]
+InteractiveReviewBatchRunType = Literal["AGENT"]
 ReviewBatchRunPurpose = Literal["REVIEW", "REFERENCE", "CANDIDATE", "ASSESSMENT"]
 InteractiveReviewBatchRunPurpose = Literal["REVIEW", "REFERENCE", "CANDIDATE"]
 ReviewBatchRunStatus = Literal[
@@ -825,6 +1159,7 @@ ReviewBatchRunStatus = Literal[
     "FAILED",
     "CANCELED",
 ]
+ReviewBatchRunPromotionStatus = Literal["QUEUED", "RUNNING", "COMPLETED", "FAILED"]
 
 
 class ReviewBatchCreate(BaseModel):
@@ -834,6 +1169,7 @@ class ReviewBatchCreate(BaseModel):
     search: MatterSearchRequest | None = None
     source_batch_id: uuid.UUID | None = None
     saved_search_id: uuid.UUID | None = None
+    assessment_run_id: uuid.UUID | None = None
     sample_size: int | None = Field(default=None, ge=1, le=10_000_000)
     random_seed: str | None = Field(default=None, min_length=1, max_length=100)
     assigned_user_id: uuid.UUID | None = None
@@ -862,6 +1198,13 @@ class ReviewBatchCreate(BaseModel):
                 raise ValueError("RANDOM_SAVED_SEARCH batches require sample_size")
         elif self.saved_search_id is not None:
             raise ValueError("saved_search_id is only valid for RANDOM_SAVED_SEARCH batches")
+        if self.selection_type == "RANDOM_ASSESSMENT":
+            if self.assessment_run_id is None:
+                raise ValueError("RANDOM_ASSESSMENT batches require assessment_run_id")
+            if self.sample_size is None:
+                raise ValueError("RANDOM_ASSESSMENT batches require sample_size")
+        elif self.assessment_run_id is not None:
+            raise ValueError("assessment_run_id is only valid for RANDOM_ASSESSMENT batches")
         if self.selection_type in {"ALL_MATTER", "SEARCH_QUERY"} and self.sample_size is not None:
             raise ValueError("sample_size is only valid for random batches")
         return self
@@ -932,6 +1275,7 @@ class ReviewBatchRead(BaseModel):
     created_at: datetime
     updated_at: datetime
     completed_at: datetime | None
+    execution: JobExecutionRead | None = None
 
 
 class ReviewBatchDocumentRead(BaseModel):
@@ -965,8 +1309,6 @@ class ReviewBatchRunCreate(BaseModel):
 
     @model_validator(mode="after")
     def validate_actor(self) -> "ReviewBatchRunCreate":
-        if self.run_type == "HUMAN" and self.agent_definition_version_id is not None:
-            raise ValueError("Human runs cannot specify an agent version")
         if self.run_type == "AGENT" and self.agent_definition_version_id is None:
             raise ValueError("Agent runs require an agent definition version")
         if self.run_type == "AGENT" and self.actor_user_id is not None:
@@ -985,7 +1327,11 @@ class ReviewBatchRunRead(ORMModel):
     actor_user_id: uuid.UUID | None
     agent_definition_version_id: uuid.UUID | None
     workflow_run_record_id: uuid.UUID | None
+    classification_scoring_run_id: uuid.UUID | None = None
+    derivation_key: Sha256 | None = None
+    idempotency_key: str | None = None
     configuration_snapshot: dict[str, Any]
+    result_summary: dict[str, Any] | None = None
     initiated_by_user_id: uuid.UUID
     processed_document_count: int
     error_message: str | None
@@ -993,12 +1339,101 @@ class ReviewBatchRunRead(ORMModel):
     completed_at: datetime | None
     created_at: datetime
     updated_at: datetime
+    archived: bool = False
+    archived_at: datetime | None = None
+    execution: JobExecutionRead | None = None
 
 
 class ReviewBatchAnalysisRunCreate(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     matter_analysis_task_id: uuid.UUID
+
+
+class ReviewBatchClassifierRunCreate(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    classification_scoring_run_id: uuid.UUID
+    minimum_confidence: float = Field(ge=0, le=1)
+    maximum_confidence: float | None = Field(default=None, ge=0, le=1)
+    selected_class_keys: list[ClassValue] = Field(default_factory=list, max_length=1000)
+    idempotency_key: str = Field(min_length=1, max_length=200)
+
+    @model_validator(mode="after")
+    def validate_confidence_window(self) -> "ReviewBatchClassifierRunCreate":
+        if self.maximum_confidence is not None and self.maximum_confidence <= self.minimum_confidence:
+            raise ValueError("maximum_confidence must be greater than minimum_confidence")
+        if len(self.selected_class_keys) != len(set(self.selected_class_keys)):
+            raise ValueError("selected_class_keys must be unique")
+        self.idempotency_key = self.idempotency_key.strip()
+        if not self.idempotency_key:
+            raise ValueError("idempotency_key is required")
+        return self
+
+
+class ReviewBatchRunPromotionDestinationRead(BaseModel):
+    id: uuid.UUID
+    key: MetadataKey
+    display_name: str
+    type: MetadataType
+    cardinality: Cardinality
+    assertion_policy: AssertionPolicy
+    resolution_policy: ResolutionPolicy
+
+
+class ReviewBatchRunPromotionRead(ORMModel):
+    id: uuid.UUID
+    matter_id: uuid.UUID
+    review_batch_id: uuid.UUID
+    review_batch_run_id: uuid.UUID | None
+    reviewer_coding_id: uuid.UUID | None
+    reviewer_coding_revision: int | None
+    matter_analysis_task_version_id: uuid.UUID | None
+    status: ReviewBatchRunPromotionStatus
+    mode: Literal["REPLACE"]
+    destination_snapshot: list[ReviewBatchRunPromotionDestinationRead]
+    total_document_count: int
+    eligible_document_count: int
+    processed_document_count: int
+    skipped_document_count: int
+    event_count: int
+    created_by_user_id: uuid.UUID
+    dbos_workflow_id: str
+    search_operation_id: uuid.UUID | None
+    error_message: str | None
+    started_at: datetime | None
+    completed_at: datetime | None
+    created_at: datetime
+    updated_at: datetime
+    execution: JobExecutionRead | None = None
+
+
+class ReviewBatchFieldCodingCountRead(BaseModel):
+    coding_group_id: uuid.UUID
+    coding_group_name: str
+    metadata_definition_id: uuid.UUID
+    field_key: MetadataKey
+    field_display_name: str
+    document_count: int = Field(ge=0)
+
+
+class ReviewBatchReviewerStatisticsRead(BaseModel):
+    reviewer_coding_id: uuid.UUID
+    reviewer: MatterSavedSearchUserRead
+    completed_document_count: int = Field(ge=0)
+    skipped_document_count: int = Field(ge=0)
+    incomplete_document_count: int = Field(ge=0)
+    field_counts: list[ReviewBatchFieldCodingCountRead]
+    promotion: ReviewBatchRunPromotionRead | None
+    created_at: datetime
+    updated_at: datetime
+
+
+class ReviewBatchStatisticsRead(BaseModel):
+    review_batch_id: uuid.UUID
+    document_count: int = Field(ge=0)
+    reviewers: list[ReviewBatchReviewerStatisticsRead]
+    can_promote: bool
 
 
 class ReviewBatchDocumentAnalysisRead(BaseModel):
@@ -1018,6 +1453,8 @@ class ReviewBatchRunFieldValue(BaseModel):
 class ReviewBatchRunDocumentValues(BaseModel):
     matter_document_id: uuid.UUID
     fields: list[ReviewBatchRunFieldValue] = Field(max_length=100)
+    origin: Literal["REVIEW_UI", "IMPORT"] = "REVIEW_UI"
+    request_key: str | None = Field(default=None, min_length=1, max_length=200)
 
     @model_validator(mode="after")
     def validate_unique_fields(self) -> "ReviewBatchRunDocumentValues":
@@ -1025,6 +1462,32 @@ class ReviewBatchRunDocumentValues(BaseModel):
         if len(field_ids) != len(set(field_ids)):
             raise ValueError("Each coding field may appear only once per document save")
         return self
+
+
+class ReviewBatchReviewerCodingRead(ORMModel):
+    id: uuid.UUID
+    review_batch_id: uuid.UUID
+    reviewer_user_id: uuid.UUID
+    revision: int = Field(ge=0)
+    created_at: datetime
+    updated_at: datetime
+
+
+class ReviewBatchReviewerCodingValueRead(BaseModel):
+    reviewer_coding_id: uuid.UUID
+    matter_document_id: uuid.UUID
+    metadata_definition_id: uuid.UUID
+    value_ordinal: int
+    value: Any
+
+
+class ReviewBatchReviewerProgressRead(BaseModel):
+    reviewer_coding_id: uuid.UUID
+    document_count: int
+    not_started_count: int
+    in_progress_count: int
+    completed_count: int
+    skipped_count: int
 
 
 class ReviewBatchRunValueRead(BaseModel):
@@ -1053,10 +1516,25 @@ class ReviewBatchCodingSearchFilter(BaseModel):
     field: MetadataKey
     values: list[Any] = Field(min_length=1, max_length=1000)
     minimum_confidence: float | None = Field(default=None, ge=0, le=1)
+    maximum_confidence: float | None = Field(default=None, ge=0, le=1)
+
+    @model_validator(mode="after")
+    def validate_confidence_window(self) -> "ReviewBatchCodingSearchFilter":
+        if (
+            self.minimum_confidence is not None
+            and self.maximum_confidence is not None
+            and self.maximum_confidence <= self.minimum_confidence
+        ):
+            raise ValueError("maximum_confidence must be greater than minimum_confidence")
+        return self
 
 
 class ReviewBatchSearchRequest(MatterSearchRequest):
     coding_filters: list[ReviewBatchCodingSearchFilter] = Field(default_factory=list, max_length=100)
+
+
+class ReviewBatchSearchExportCreate(MatterSearchExportCreate):
+    search: ReviewBatchSearchRequest
 
 
 class ReviewBatchFacetValuesRequest(MatterFacetValuesRequest):
@@ -1064,7 +1542,7 @@ class ReviewBatchFacetValuesRequest(MatterFacetValuesRequest):
 
 
 class ReviewBatchReviewerValueRead(BaseModel):
-    review_batch_run_id: uuid.UUID
+    reviewer_coding_id: uuid.UUID
     actor_user_id: uuid.UUID
     actor_user: MatterSavedSearchUserRead
     metadata_definition_id: uuid.UUID
@@ -1074,21 +1552,26 @@ class ReviewBatchReviewerValueRead(BaseModel):
 class ReviewBatchDocumentCodingRead(BaseModel):
     matter_document_id: uuid.UUID
     review_status: Literal["NOT_STARTED", "IN_PROGRESS", "COMPLETED", "SKIPPED"]
-    values: list[ReviewBatchRunValueRead]
+    values: list[ReviewBatchReviewerCodingValueRead]
     reviewer_values: list[ReviewBatchReviewerValueRead]
 
 
 class ReviewBatchCodingHistoryEntryRead(BaseModel):
-    review_batch_run_id: uuid.UUID
-    run_type: ReviewBatchRunType
-    purpose: ReviewBatchRunPurpose
-    metadata_definition_id: uuid.UUID
+    review_batch_run_id: uuid.UUID | None = None
+    reviewer_coding_id: uuid.UUID | None = None
+    reviewer_revision: int | None = Field(default=None, ge=1)
+    reviewer_origin: Literal["REVIEW_UI", "IMPORT", "SYSTEM_MIGRATION"] | None = None
+    event_kind: Literal["VALUE", "NO_VALUE", "STATUS"] | None = None
+    document_status: Literal["IN_PROGRESS", "COMPLETED", "SKIPPED"] | None = None
+    run_type: ReviewBatchRunType | None = None
+    purpose: ReviewBatchRunPurpose | None = None
+    metadata_definition_id: uuid.UUID | None = None
     field_key: str
     field_display_name: str
-    value: Any
+    value: Any | None
     value_label: str
     recorded_at: datetime
-    source_kind: Literal["HUMAN", "JEV", "AGENT", "WORKFLOW"]
+    source_kind: Literal["HUMAN", "JEV", "AGENT", "WORKFLOW", "CLASSIFIER"]
     source_label: str
     source_detail: str | None
     score: float | None
@@ -1152,6 +1635,151 @@ class ReviewBatchComparisonRead(BaseModel):
     right_run_id: uuid.UUID
     document_count: int
     fields: list[ReviewBatchComparisonFieldRead]
+
+
+ReviewBatchComparisonRowFilter = Literal["ALL", "AGREEMENT", "DISAGREEMENT", "INCOMPLETE"]
+ReviewBatchComparisonSourceState = Literal["EVALUATED", "SKIPPED", "FAILED", "INCOMPLETE", "NOT_EVALUATED"]
+
+
+class ReviewBatchComparisonRequest(BaseModel):
+    metadata_definition_id: uuid.UUID
+    source_ids: list[uuid.UUID] = Field(min_length=2, max_length=12)
+    row_filter: ReviewBatchComparisonRowFilter = "ALL"
+    offset: int = Field(default=0, ge=0)
+    limit: int = Field(default=50, ge=1, le=200)
+
+    @model_validator(mode="after")
+    def validate_unique_runs(self) -> "ReviewBatchComparisonRequest":
+        if len(self.source_ids) != len(set(self.source_ids)):
+            raise ValueError("Each comparison source may be selected only once")
+        return self
+
+
+class ReviewBatchComparisonSourceOptionRead(BaseModel):
+    id: uuid.UUID
+    source_type: Literal["REVIEWER", "RUN"]
+    run_type: ReviewBatchRunType | None = None
+    purpose: ReviewBatchRunPurpose | None = None
+    status: ReviewBatchRunStatus | None = None
+    label: str
+    detail: str | None
+    metadata_definition_ids: list[uuid.UUID]
+    created_at: datetime
+
+
+class ReviewBatchComparisonFieldOptionRead(BaseModel):
+    id: uuid.UUID
+    key: str
+    display_name: str
+    type: MetadataType
+    cardinality: Cardinality
+    allowed_values: list[dict[str, Any]]
+
+
+class ReviewBatchComparisonOptionsRead(BaseModel):
+    review_batch_id: uuid.UUID
+    sources: list[ReviewBatchComparisonSourceOptionRead]
+    fields: list[ReviewBatchComparisonFieldOptionRead]
+
+
+class ReviewBatchComparisonValueCountRead(BaseModel):
+    value_key: str
+    display_label: str
+    document_count: int = Field(ge=0)
+
+
+class ReviewBatchComparisonSourceSummaryRead(BaseModel):
+    source_id: uuid.UUID
+    evaluated_document_count: int = Field(ge=0)
+    no_value_document_count: int = Field(ge=0)
+    skipped_document_count: int = Field(ge=0)
+    failed_document_count: int = Field(ge=0)
+    incomplete_document_count: int = Field(ge=0)
+    not_evaluated_document_count: int = Field(ge=0)
+    value_counts: list[ReviewBatchComparisonValueCountRead]
+    value_counts_truncated: bool = False
+
+
+class ReviewBatchComparisonMatrixCellRead(BaseModel):
+    left_value: str
+    right_value: str
+    document_count: int = Field(ge=0)
+
+
+class ReviewBatchComparisonClassAgreementRead(BaseModel):
+    value_key: str
+    display_label: str
+    both_selected_count: int = Field(ge=0)
+    left_only_count: int = Field(ge=0)
+    right_only_count: int = Field(ge=0)
+    both_not_selected_count: int = Field(ge=0)
+    jaccard: float | None = Field(default=None, ge=0, le=1)
+
+
+class ReviewBatchComparisonSourceValueCountRead(BaseModel):
+    source_id: uuid.UUID
+    document_count: int = Field(ge=0)
+
+
+class ReviewBatchMultiSourceClassAgreementRead(BaseModel):
+    value_key: str
+    display_label: str
+    source_counts: list[ReviewBatchComparisonSourceValueCountRead]
+    all_selected_count: int = Field(ge=0)
+    any_selected_count: int = Field(ge=0)
+    jaccard: float | None = Field(default=None, ge=0, le=1)
+
+
+class ReviewBatchMultiSourceAgreementRead(BaseModel):
+    compared_document_count: int = Field(ge=0)
+    incomplete_document_count: int = Field(ge=0)
+    class_agreement: list[ReviewBatchMultiSourceClassAgreementRead]
+
+
+class ReviewBatchPairwiseAgreementRead(BaseModel):
+    left_source_id: uuid.UUID
+    right_source_id: uuid.UUID
+    compared_document_count: int = Field(ge=0)
+    exact_match_count: int = Field(ge=0)
+    partial_match_count: int = Field(ge=0)
+    disagreement_count: int = Field(ge=0)
+    incomplete_document_count: int = Field(ge=0)
+    exact_agreement: float | None = Field(default=None, ge=0, le=1)
+    mean_jaccard: float | None = Field(default=None, ge=0, le=1)
+    confusion_matrix: list[ReviewBatchComparisonMatrixCellRead]
+    class_agreement: list[ReviewBatchComparisonClassAgreementRead]
+
+
+class ReviewBatchComparisonDocumentSourceRead(BaseModel):
+    source_id: uuid.UUID
+    state: ReviewBatchComparisonSourceState
+    value_keys: list[str]
+    display_values: list[str]
+    top_confidence: float | None = Field(default=None, ge=0, le=1)
+
+
+class ReviewBatchComparisonDocumentRead(BaseModel):
+    matter_document_id: uuid.UUID
+    collection_item_id: uuid.UUID
+    sequence_number: int = Field(ge=1)
+    agreement_status: Literal["EXACT", "PARTIAL", "DISAGREEMENT", "INCOMPLETE"]
+    sources: list[ReviewBatchComparisonDocumentSourceRead]
+
+
+class ReviewBatchCodingComparisonRead(BaseModel):
+    review_batch_id: uuid.UUID
+    metadata_definition_id: uuid.UUID
+    field_display_name: str
+    cardinality: Cardinality
+    document_count: int = Field(ge=0)
+    filtered_document_count: int = Field(ge=0)
+    offset: int = Field(ge=0)
+    limit: int = Field(ge=1)
+    sources: list[ReviewBatchComparisonSourceOptionRead]
+    source_summaries: list[ReviewBatchComparisonSourceSummaryRead]
+    multi_source_agreement: ReviewBatchMultiSourceAgreementRead
+    pairwise_agreements: list[ReviewBatchPairwiseAgreementRead]
+    documents: list[ReviewBatchComparisonDocumentRead]
 
 
 class SearchIndexGenerationRead(ORMModel):
@@ -1330,6 +1958,13 @@ class MetadataDefinitionRead(ORMModel):
     ai_assignable: bool
     status: ResourceStatus
     created_at: datetime
+
+
+class EmailDomainUpdateRead(BaseModel):
+    metadata_definition_id: uuid.UUID
+    definition_created: bool
+    search_operation_id: uuid.UUID
+    status: SearchOperationStatus
 
 
 class MetadataEventCreate(BaseModel):
@@ -1891,7 +2526,17 @@ class MatterAnalysisTaskCreate(BaseModel):
     name: str = Field(min_length=1, max_length=200)
     description: str | None = Field(default=None, max_length=10_000)
     task_type: MatterAnalysisTaskType
+    decision_provider: Literal["JEV", "OPENAI_DECISIONS"] = "JEV"
     definition_markdown: str = Field(min_length=1, max_length=2_000_000)
+    destination_metadata_definition_ids: list[uuid.UUID] = Field(default_factory=list, max_length=100)
+    classification_model_version_id: uuid.UUID | None = None
+
+    @field_validator("destination_metadata_definition_ids")
+    @classmethod
+    def validate_unique_destinations(cls, value: list[uuid.UUID]) -> list[uuid.UUID]:
+        if len(value) != len(set(value)):
+            raise ValueError("Destination metadata fields must be unique")
+        return value
 
 
 class MatterAnalysisTaskVersionCreate(BaseModel):
@@ -1899,6 +2544,16 @@ class MatterAnalysisTaskVersionCreate(BaseModel):
 
     definition_markdown: str = Field(min_length=1, max_length=2_000_000)
     based_on_version: int = Field(ge=1)
+    decision_provider: Literal["JEV", "OPENAI_DECISIONS"] | None = None
+    destination_metadata_definition_ids: list[uuid.UUID] | None = Field(default=None, max_length=100)
+    classification_model_version_id: uuid.UUID | None = None
+
+    @field_validator("destination_metadata_definition_ids")
+    @classmethod
+    def validate_unique_destinations(cls, value: list[uuid.UUID] | None) -> list[uuid.UUID] | None:
+        if value is not None and len(value) != len(set(value)):
+            raise ValueError("Destination metadata fields must be unique")
+        return value
 
 
 class MatterAnalysisTaskSpecificationUpdate(BaseModel):
@@ -1942,6 +2597,12 @@ class MatterAnalysisTaskVersionRead(ORMModel):
     compilation_status: MatterAnalysisTaskCompilationStatus
     definition_markdown: str
     definition_content_hash: str
+    destination_metadata_definition_ids: list[uuid.UUID] | None
+    decision_provider: Literal["JEV", "OPENAI_DECISIONS"]
+    decision_model: str | None
+    classification_model_id: uuid.UUID | None
+    classification_model_version_id: uuid.UUID | None
+    classification_embedding_job_id: uuid.UUID | None = None
     decision_specification: DecisionSpecification | None
     specification_content_hash: str | None
     input_contract: dict[str, Any]
@@ -1951,6 +2612,7 @@ class MatterAnalysisTaskVersionRead(ORMModel):
     compiler_skill_definition_version_id: uuid.UUID | None
     compiler_skill_run_id: uuid.UUID | None
     compiler_workflow_run_id: uuid.UUID | None
+    compilation_progress: dict[str, Any] = Field(default_factory=dict)
     compiler_model_configuration: dict[str, Any]
     validation_report: dict[str, Any]
     source_provenance: dict[str, Any]
@@ -1975,6 +2637,150 @@ class MatterAnalysisTaskRead(ORMModel):
     created_at: datetime
     updated_at: datetime
     version: MatterAnalysisTaskVersionRead
+    published_version_details: MatterAnalysisTaskVersionRead | None = None
+
+
+class MatterAnalysisTaskRunCreate(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    scope_type: Literal["MATTER", "REVIEW_BATCH"]
+    scope_id: uuid.UUID
+    embedding_job_id: uuid.UUID
+    idempotency_key: str = Field(min_length=1, max_length=200)
+
+    @field_validator("idempotency_key")
+    @classmethod
+    def normalize_analysis_run_idempotency_key(cls, value: str) -> str:
+        normalized = value.strip()
+        if not normalized:
+            raise ValueError("Idempotency key is required")
+        return normalized
+
+
+class JobExecutionHistoryRead(BaseModel):
+    job_type: str
+    job_id: uuid.UUID
+    current_execution: JobExecutionRead | None
+    attempts: list[JobExecutionRead]
+
+
+class MatterAnalysisTaskRunRead(ORMModel):
+    id: uuid.UUID
+    tenant_id: uuid.UUID
+    matter_id: uuid.UUID
+    matter_analysis_task_id: uuid.UUID
+    matter_analysis_task_version_id: uuid.UUID
+    scope_type: Literal["MATTER", "REVIEW_BATCH"]
+    scope_id: uuid.UUID
+    classification_model_id: uuid.UUID
+    classification_model_version_id: uuid.UUID
+    embedding_job_id: uuid.UUID
+    dataset_snapshot_id: uuid.UUID | None
+    classification_scoring_run_id: uuid.UUID | None
+    status: Literal[
+        "QUEUED",
+        "SNAPSHOTTING",
+        "PREPARING_FEATURES",
+        "SCORING",
+        "COMPLETED",
+        "COMPLETED_WITH_ERRORS",
+        "FAILED",
+        "CANCELED",
+    ]
+    current_stage: str
+    progress_completed: int
+    progress_total: int
+    population_document_count: int
+    feature_processed_count: int
+    feature_ready_count: int
+    feature_missing_count: int
+    feature_failed_count: int
+    failure_code: str | None
+    failure_summary: str | None
+    failure_retriable: bool
+    created_by_user_id: uuid.UUID
+    started_at: datetime | None
+    completed_at: datetime | None
+    canceled_at: datetime | None
+    created_at: datetime
+    updated_at: datetime
+    execution: JobExecutionRead | None = None
+
+
+class ReviewBatchAnalysisJobRead(BaseModel):
+    """One Analysis Task job whose frozen scope is a review batch."""
+
+    id: uuid.UUID
+    job_type: Literal["ANALYSIS_TASK_BATCH_RUN", "CLASSIFICATION_ANALYSIS_TASK"]
+    task_type: Literal["QUESTION_ANSWERING", "CLASSIFICATION"]
+    matter_analysis_task_id: uuid.UUID | None
+    task_name: str
+    task_version: int | None
+    status: str
+    created_at: datetime
+    updated_at: datetime
+    execution: JobExecutionRead | None = None
+    review_batch_run: ReviewBatchRunRead | None = None
+    classification_analysis_run: MatterAnalysisTaskRunRead | None = None
+
+    @model_validator(mode="after")
+    def validate_domain_run(self) -> "ReviewBatchAnalysisJobRead":
+        populated = int(self.review_batch_run is not None) + int(self.classification_analysis_run is not None)
+        if populated != 1:
+            raise ValueError("Exactly one Analysis Task domain run is required")
+        if self.task_type == "QUESTION_ANSWERING" and self.review_batch_run is None:
+            raise ValueError("Question-answering jobs require a review batch run")
+        if self.task_type == "CLASSIFICATION" and self.classification_analysis_run is None:
+            raise ValueError("Classification jobs require a classification analysis run")
+        return self
+
+
+class MatterQuestionAnsweringJobRead(BaseModel):
+    id: uuid.UUID
+    review_batch_id: uuid.UUID
+    review_batch_name: str
+    matter_analysis_task_id: uuid.UUID | None
+    task_name: str
+    task_version: int | None
+    decision_provider: Literal["JEV", "OPENAI_DECISIONS"]
+    model_key: str
+    status: ReviewBatchRunStatus
+    processed_document_count: int
+    successful_document_count: int
+    document_count: int
+    failed_document_count: int = 0
+    retryable_failed_document_count: int = 0
+    error_message: str | None
+    started_at: datetime | None
+    completed_at: datetime | None
+    created_at: datetime
+    updated_at: datetime
+    execution: JobExecutionRead | None = None
+
+
+class JobFailedDocumentRead(BaseModel):
+    matter_document_id: uuid.UUID
+    source_collection_id: uuid.UUID
+    collection_item_id: uuid.UUID
+    failure_code: str
+    failure_message: str
+    failure_retriable: bool
+    attempt_number: int | None
+    failed_at: datetime | None
+
+
+class JobFailedDocumentPage(BaseModel):
+    job_type: str
+    job_id: uuid.UUID
+    total: int
+    retryable_count: int
+    offset: int
+    limit: int
+    items: list[JobFailedDocumentRead]
+
+
+class JobFailedDocumentRetryRequest(BaseModel):
+    document_ids: list[uuid.UUID] | None = Field(default=None, min_length=1, max_length=500)
 
 
 class ReviewDecisionResultRead(ORMModel):
@@ -2240,9 +3046,7 @@ class MatterDefinitionAssessmentRead(ORMModel):
     invalid_result_count: int
     coverage_snapshot: dict[str, Any] | None
     synthesis_result: dict[str, Any] | None
-    guidance_refinement_status: Literal[
-        "NOT_READY", "QUEUED", "RUNNING", "COMPLETED", "NOT_REQUIRED", "FAILED"
-    ]
+    guidance_refinement_status: Literal["NOT_READY", "QUEUED", "RUNNING", "COMPLETED", "NOT_REQUIRED", "FAILED"]
     guidance_refinement_workflow_run_id: uuid.UUID | None
     refined_matter_definition_revision_id: uuid.UUID | None
     guidance_refinement_error_message: str | None
@@ -2394,7 +3198,8 @@ class ClassificationModelConfigurationCreate(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     classification_strategy: ClassificationStrategy
-    ordered_class_keys: list[StableKey] = Field(min_length=2, max_length=1000)
+    hierarchy_level: int | None = Field(default=None, ge=1, le=32)
+    ordered_class_keys: list[ClassValue] = Field(default_factory=list, max_length=1000)
     binary_mapping: BinaryClassMapping | None = None
     label_policy: LabelPolicy
     feature_contract: FeatureContract
@@ -2408,6 +3213,7 @@ class ClassificationTargetFieldRead(BaseModel):
     display_name: str
     metadata_type: TargetMetadataType
     cardinality: TargetCardinality
+    hierarchy_separator: str | None
     status: ResourceStatus
     reviewable: bool
     active_value_keys: list[str]
@@ -2420,7 +3226,8 @@ class ClassificationModelConfigurationRead(BaseModel):
     revision: int
     target_field_snapshot: TargetFieldSnapshot
     classification_strategy: ClassificationStrategy
-    ordered_class_keys: list[StableKey]
+    hierarchy_level: int | None
+    ordered_class_keys: list[ClassValue]
     binary_mapping: BinaryClassMapping | None
     label_policy: LabelPolicy
     feature_contract: FeatureContract
@@ -2464,8 +3271,40 @@ class ClassificationDatasetSnapshotRequest(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     configuration_id: uuid.UUID
-    purpose: Literal["TRAINING"] = "TRAINING"
+    purpose: Literal["TRAINING", "SCORING"] = "TRAINING"
     training_scope: TrainingScopeSpecification
+    embedding_job_id: uuid.UUID | None = None
+
+    @model_validator(mode="after")
+    def validate_snapshot_purpose(self) -> "ClassificationDatasetSnapshotRequest":
+        if self.purpose == "SCORING" and self.embedding_job_id is None:
+            raise ValueError("Scoring snapshots require an embedding job")
+        if self.purpose == "TRAINING" and self.embedding_job_id is not None:
+            raise ValueError("Training snapshots receive their embedding job during feature preparation")
+        return self
+
+
+class ClassificationTargetDistributionRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    training_scope: TrainingScopeSpecification
+    hierarchy_level: int | None = Field(default=None, ge=1, le=32)
+
+
+class ClassificationClassCount(BaseModel):
+    class_key: ClassValue
+    label: str
+    document_count: int = Field(ge=0)
+
+
+class ClassificationTargetDistributionRead(BaseModel):
+    target_field: TargetFieldSnapshot
+    training_scope: TrainingScopeSpecification
+    population_count: int = Field(ge=0)
+    labeled_document_count: int = Field(ge=0)
+    unlabeled_document_count: int = Field(ge=0)
+    conflicting_document_count: int = Field(ge=0)
+    class_counts: list[ClassificationClassCount]
 
 
 class ClassificationFeatureSplitRequest(BaseModel):
@@ -2476,10 +3315,49 @@ class ClassificationFeatureSplitRequest(BaseModel):
     random_seed: int = Field(default=42, ge=0, le=2**32 - 1)
 
 
+class ClassificationTrainingJobCreate(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    configuration_id: uuid.UUID
+    training_scope: TrainingScopeSpecification
+    embedding_job_id: uuid.UUID
+    validation_policy: ValidationPolicy = Field(default_factory=ValidationPolicy)
+    random_seed: int = Field(default=42, ge=0, le=2**32 - 1)
+    idempotency_key: str = Field(min_length=1, max_length=200)
+
+    @field_validator("idempotency_key")
+    @classmethod
+    def normalize_training_job_idempotency_key(cls, value: str) -> str:
+        normalized = value.strip()
+        if not normalized:
+            raise ValueError("Idempotency key is required")
+        return normalized
+
+
 class ClassificationDatasetIssue(BaseModel):
     code: str
     message: str
     count: int | None = None
+
+
+class ClassificationClassExclusion(BaseModel):
+    class_key: ClassValue
+    reason_code: Literal[
+        "INSUFFICIENT_POSITIVE_DOCUMENTS",
+        "INSUFFICIENT_POSITIVE_GROUPS",
+        "INSUFFICIENT_NEGATIVE_DOCUMENTS",
+        "INSUFFICIENT_NEGATIVE_GROUPS",
+        "FOLD_SUPPORT_INFEASIBLE",
+    ]
+    message: str
+    feature_ready_positive_count: int
+    positive_group_count: int
+    feature_ready_negative_count: int
+    negative_group_count: int
+    required_positive_count: int
+    required_group_count: int
+    fold_support: list[int] | None = None
+    fold_negative_support: list[int] | None = None
 
 
 class ClassificationLabelSourceSummary(BaseModel):
@@ -2497,7 +3375,7 @@ class ClassificationDatasetSnapshotPreview(BaseModel):
     classification_model_id: uuid.UUID
     configuration_id: uuid.UUID
     configuration_hash: Sha256
-    purpose: Literal["TRAINING"]
+    purpose: Literal["TRAINING", "SCORING"]
     training_scope: TrainingScopeSpecification
     target_field_snapshot: TargetFieldSnapshot
     population_count: int
@@ -2508,10 +3386,11 @@ class ClassificationDatasetSnapshotPreview(BaseModel):
     family_grouped_count: int
     exact_duplicate_grouped_count: int
     missing_grouping_count: int
+    ordered_class_keys: list[ClassValue]
     class_support: dict[str, int]
     source_summary: list[ClassificationLabelSourceSummary]
     population_content_hash: Sha256
-    label_content_hash: Sha256
+    label_content_hash: Sha256 | None
     aggregate_hash: Sha256
     blocking_errors: list[ClassificationDatasetIssue]
     warnings: list[ClassificationDatasetIssue]
@@ -2524,7 +3403,7 @@ class ClassificationDatasetSnapshotRead(BaseModel):
     matter_id: uuid.UUID
     classification_model_id: uuid.UUID
     configuration_id: uuid.UUID
-    purpose: Literal["TRAINING"]
+    purpose: Literal["TRAINING", "SCORING"]
     training_scope: TrainingScopeSpecification
     target_field_snapshot: TargetFieldSnapshot
     label_policy_snapshot: LabelPolicy
@@ -2542,7 +3421,7 @@ class ClassificationDatasetSnapshotRead(BaseModel):
     split_specification_hash: Sha256 | None
     training_aggregate_hash: Sha256 | None
     aggregate_hash: Sha256
-    status: Literal["BUILDING", "READY_FOR_FEATURES", "READY_FOR_TRAINING", "FAILED"]
+    status: Literal["BUILDING", "READY_FOR_FEATURES", "READY_FOR_TRAINING", "READY_FOR_SCORING", "FAILED"]
     population_count: int
     labeled_count: int
     unlabeled_count: int
@@ -2555,6 +3434,9 @@ class ClassificationDatasetSnapshotRead(BaseModel):
     feature_missing_count: int
     feature_failed_count: int
     training_eligible_count: int
+    ordered_class_keys: list[ClassValue]
+    trained_class_keys: list[ClassValue]
+    excluded_classes: list[ClassificationClassExclusion]
     class_support: dict[str, int]
     source_summary: list[ClassificationLabelSourceSummary]
     warnings: list[ClassificationDatasetIssue]
@@ -2641,6 +3523,10 @@ class ClassificationModelVersionRead(BaseModel):
     version_number: int
     status: Literal["CANDIDATE", "APPROVED", "REJECTED", "RETIRED"]
     target_field_snapshot: TargetFieldSnapshot
+    ordered_class_keys: list[ClassValue]
+    observed_class_keys: list[ClassValue]
+    trained_class_keys: list[ClassValue]
+    excluded_classes: list[ClassificationClassExclusion]
     training_aggregate_hash: Sha256
     feature_specification_hash: Sha256
     model_artifact_id: uuid.UUID
@@ -2793,6 +3679,56 @@ class ClassificationModelBuildCreateResponse(BaseModel):
     created: bool
 
 
+ClassificationTrainingJobStatus = Literal[
+    "QUEUED",
+    "SNAPSHOTTING",
+    "PREPARING_FEATURES",
+    "LAUNCHING",
+    "TRAINING",
+    "FINALIZING",
+    "COMPLETED",
+    "FAILED",
+    "CANCELED",
+]
+
+
+class ClassificationTrainingJobRead(BaseModel):
+    id: uuid.UUID
+    tenant_id: uuid.UUID
+    matter_id: uuid.UUID
+    classification_model_id: uuid.UUID
+    configuration_id: uuid.UUID
+    embedding_job_id: uuid.UUID
+    dataset_snapshot_id: uuid.UUID | None
+    training_run_id: uuid.UUID | None
+    idempotency_key: str
+    workflow_id: str
+    training_scope: TrainingScopeSpecification
+    validation_specification: ValidationPolicy
+    random_seed: int
+    status: ClassificationTrainingJobStatus
+    current_stage: str
+    progress_completed: int
+    progress_total: int
+    failure_code: str | None
+    failure_summary: str | None
+    failure_retriable: bool
+    dataset_snapshot: ClassificationDatasetSnapshotRead | None = None
+    training_run: ClassificationTrainingRunRead | None = None
+    created_by_user_id: uuid.UUID
+    started_at: datetime | None
+    completed_at: datetime | None
+    canceled_at: datetime | None
+    created_at: datetime
+    updated_at: datetime
+    execution: JobExecutionRead | None = None
+
+
+class ClassificationTrainingJobCreateResponse(BaseModel):
+    training_job: ClassificationTrainingJobRead
+    created: bool
+
+
 ClassificationScoringRunStatus = Literal[
     "QUEUED",
     "VALIDATING",
@@ -2852,6 +3788,8 @@ class ClassificationScoringRunRead(BaseModel):
     classification_model_id: uuid.UUID
     model_version_id: uuid.UUID
     dataset_snapshot_id: uuid.UUID
+    dataset_scope_type: Literal["MATTER", "REVIEW_BATCH"]
+    dataset_scope_id: uuid.UUID
     idempotency_key: str
     workflow_id: str
     derivation_key: Sha256
@@ -2885,6 +3823,7 @@ class ClassificationScoringRunRead(BaseModel):
     created_at: datetime
     updated_at: datetime
     row_version: int
+    execution: JobExecutionRead | None = None
 
 
 class ClassificationScoringCreateResponse(BaseModel):
@@ -2914,6 +3853,26 @@ class ClassificationPredictionPreviewRead(BaseModel):
     offset: int
     limit: int
     items: list[ClassificationPredictionRowRead]
+
+
+class ClassificationPredictionClassCount(BaseModel):
+    class_key: ClassValue
+    label: str
+    document_count: int = Field(ge=0)
+
+
+class ClassificationPredictionSummaryRead(BaseModel):
+    scoring_run_id: uuid.UUID
+    model_version_id: uuid.UUID
+    ordered_class_keys: list[ClassValue]
+    minimum_probability: float | None = Field(ge=0, le=1)
+    total_document_count: int = Field(ge=0)
+    evaluated_document_count: int = Field(ge=0)
+    predicted_document_count: int = Field(ge=0)
+    no_prediction_document_count: int = Field(ge=0)
+    predicted_value_count: int = Field(ge=0)
+    abstained_document_count: int = Field(ge=0)
+    class_counts: list[ClassificationPredictionClassCount]
 
 
 class ErrorDetail(BaseModel):

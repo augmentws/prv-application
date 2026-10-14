@@ -5,6 +5,7 @@
  * Phase-one Core API for authentication, hierarchical tenants, clients, matters, and matter metadata definitions.
  * OpenAPI spec version: 0.1.0
  */
+import type { JobExecutionRead } from './jobExecutionRead';
 import type { MatterSavedSearchUserRead } from './matterSavedSearchUserRead';
 import type { ReviewBatchCodingGroupRead } from './reviewBatchCodingGroupRead';
 import type { ReviewBatchReadReviewerValueVisibility } from './reviewBatchReadReviewerValueVisibility';
@@ -44,4 +45,5 @@ export interface ReviewBatchRead {
   created_at: string;
   updated_at: string;
   completed_at: string | null;
+  execution?: JobExecutionRead | null;
 }

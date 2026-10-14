@@ -5,10 +5,12 @@
  * Phase-one Core API for authentication, hierarchical tenants, clients, matters, and matter metadata definitions.
  * OpenAPI spec version: 0.1.0
  */
+import type { ClassificationDatasetSnapshotRequestPurpose } from './classificationDatasetSnapshotRequestPurpose';
 import type { TrainingScopeSpecification } from './trainingScopeSpecification';
 
 export interface ClassificationDatasetSnapshotRequest {
   configuration_id: string;
-  purpose?: 'TRAINING';
+  purpose?: ClassificationDatasetSnapshotRequestPurpose;
   training_scope: TrainingScopeSpecification;
+  embedding_job_id?: string | null;
 }

@@ -220,7 +220,11 @@ def _fixture(strategy: ClassificationStrategy) -> tuple[MemoryArtifactStore, Cla
         ArtifactType.CLASSIFICATION_LABELS,
         _parquet(
             label_rows,
-            {"schema": "classification-labels", "configuration_hash": HASH},
+            {
+                "schema": "classification-labels",
+                "configuration_hash": HASH,
+                "ordered_class_keys": ordered,
+            },
         ),
     )
     split_rows = []
@@ -241,6 +245,7 @@ def _fixture(strategy: ClassificationStrategy) -> tuple[MemoryArtifactStore, Cla
                 "matter_document_id": document_id,
                 "group_id": f"group-{index}",
                 "feature_status": "READY",
+                "label_status": "LABELED",
                 "training_eligible": True,
                 "fold_index": folds[index],
                 "source_weight": raw_weights[index],
@@ -328,6 +333,7 @@ def test_train_reload_and_score_all_strategies(strategy: ClassificationStrategy)
     assert loaded.manifest.target_field_snapshot.metadata_definition_id == request.target_field_snapshot.metadata_definition_id
     assert loaded.manifest.ordered_class_keys == request.ordered_class_keys
     assert result.metrics["primary_pr_auc"] is not None
+    assert result.metrics["macro_f1"] is not None
     assert set(zipfile.ZipFile(io.BytesIO(package_bytes)).namelist()) == {
         "manifest.json",
         "signature.json",
@@ -365,6 +371,89 @@ def test_train_reload_and_score_all_strategies(strategy: ClassificationStrategy)
     assert repeated_score.prediction_artifact == score.prediction_artifact
     assert repeated_score.result_manifest_artifact == score.result_manifest_artifact
     assert pq.read_table(io.BytesIO(store.read(score.prediction_artifact))).num_rows == 36
+    scoring_manifest = json.loads(store.read(score.result_manifest_artifact))
+    prediction_summary = scoring_manifest["prediction_summary"]
+    assert prediction_summary["evaluated_document_count"] == 36
+    assert (
+        prediction_summary["predicted_document_count"]
+        + prediction_summary["no_prediction_document_count"]
+        == 36
+    )
+    assert prediction_summary["predicted_value_count"] == sum(
+        item["document_count"] for item in prediction_summary["class_counts"]
+    )
+
+
+def test_scoring_streams_populations_larger_than_the_package_batch_limit() -> None:
+    store, request = _fixture(ClassificationStrategy.BINARY)
+    backend = ClassificationBackend(_settings())
+    trained = backend.train(request, store)
+    source_rows = pq.read_table(io.BytesIO(store.read(request.feature_artifact))).to_pylist()
+    scoring_rows = []
+    for index in range(10_025):
+        source = source_rows[index % len(source_rows)]
+        scoring_rows.append(
+            {
+                **source,
+                "matter_document_id": str(uuid.uuid5(request.matter_id, f"scoring-document-{index}")),
+            }
+        )
+    scoring_features = store.add(
+        ArtifactType.CLASSIFICATION_FEATURES,
+        _parquet(
+            scoring_rows,
+            {
+                "schema": "classification-features",
+                "feature_specification_hash": FEATURE_HASH,
+            },
+        ),
+    )
+    scoring_request = ClassificationScoringRequest(
+        scoring_run_id=uuid.uuid4(),
+        tenant_id=request.tenant_id,
+        matter_id=request.matter_id,
+        classification_model_id=request.classification_model_id,
+        model_version_id=uuid.uuid4(),
+        configuration_hash=request.configuration_hash,
+        target_field_snapshot=request.target_field_snapshot,
+        classification_strategy=request.classification_strategy,
+        ordered_class_keys=request.ordered_class_keys,
+        prediction_resolution_policy=request.prediction_resolution_policy,
+        model_artifact=trained.model_artifact,
+        feature_artifact=scoring_features,
+        output_derivation_key="8" * 64,
+    )
+
+    scored = backend.score(scoring_request, store)
+
+    prediction_file = pq.ParquetFile(io.BytesIO(store.read(scored.prediction_artifact)))
+    assert scored.population_document_count == 10_025
+    assert scored.scored_document_count == 10_025
+    assert scored.excluded_document_count == 0
+    assert scored.failed_document_count == 0
+    assert prediction_file.metadata.num_rows == 10_025
+    assert prediction_file.num_row_groups == 2
+
+
+def test_one_vs_rest_training_slices_frozen_labels_to_trained_classes() -> None:
+    store, request = _fixture(ClassificationStrategy.ONE_VS_REST)
+    trained_keys = ["alpha", "beta"]
+    request = request.model_copy(
+        update={
+            "ordered_class_keys": trained_keys,
+            "prediction_resolution_policy": PredictionResolutionPolicy(
+                one_vs_rest_thresholds={key: 0.5 for key in trained_keys},
+                zero_match_action=PredictionConflictAction.ABSTAIN,
+                multiple_match_action=PredictionConflictAction.HIGHEST_PROBABILITY,
+            ),
+        }
+    )
+
+    result = ClassificationBackend(_settings()).train(request, store)
+    package = load_model_package(store.read(result.model_artifact), maximum_bytes=10_000_000)
+
+    assert package.manifest.ordered_class_keys == trained_keys
+    assert "gamma" not in package.manifest.ordered_class_keys
 
 
 def test_training_rejects_group_leakage_and_missing_fold_support() -> None:

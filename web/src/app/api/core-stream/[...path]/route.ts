@@ -4,22 +4,11 @@ import {
   ACCESS_COOKIE,
   clearSessionCookies,
   REFRESH_COOKIE,
+  refreshCoreSession,
   requestCore,
   setSessionCookies,
   type TokenPair,
 } from "@/lib/server/core-api";
-
-async function refreshSession(request: NextRequest) {
-  const refreshToken = request.cookies.get(REFRESH_COOKIE)?.value;
-  if (!refreshToken) return null;
-  const response = await requestCore("/v1/auth/refresh", {
-    method: "POST",
-    headers: { "content-type": "application/json" },
-    body: JSON.stringify({ refresh_token: refreshToken }),
-  }).catch(() => null);
-  if (!response?.ok) return null;
-  return response.json() as Promise<TokenPair>;
-}
 
 export async function GET(
   request: NextRequest,
@@ -53,7 +42,7 @@ export async function GET(
     coreResponse = await forward(request.cookies.get(ACCESS_COOKIE)?.value);
     if (coreResponse.status === 401) {
       await coreResponse.body?.cancel();
-      pair = await refreshSession(request);
+      pair = await refreshCoreSession(request.cookies.get(REFRESH_COOKIE)?.value);
       if (pair) coreResponse = await forward(pair.access_token);
     }
   } catch {

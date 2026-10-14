@@ -9,7 +9,7 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from app.audit import record_audit
-from app.classification_models import active_value_keys
+from app.authorization import ResourceRef, user_can
 from app.config import Settings, get_settings
 from app.models import (
     ClassificationEvaluation,
@@ -160,9 +160,11 @@ def authorization_context(
         )
     ):
         authorization_source = "MATTER_ADMIN"
+    elif user_can(db, user, "matter.configure", ResourceRef.matter(matter.id)):
+        authorization_source = "RBAC_MATTER_ADMIN"
     if authorization_source is None:
         raise ClassificationLifecycleConflictError(
-            "Promotion actor is no longer authorized for the matter",
+            "Classification actor is no longer authorized for the matter",
             code="PROMOTION_AUTHORIZATION_REVOKED",
         )
     return {
@@ -240,8 +242,8 @@ def _version_compatibility_reasons(
         reasons.append("Classification model is not active")
     if definition.status != "ACTIVE":
         reasons.append("Target metadata definition is not active")
-    if not definition.reviewable:
-        reasons.append("Target metadata definition is not reviewable")
+    if definition.value_source != "ASSERTED":
+        reasons.append("Target metadata definition is not a coding field")
     snapshot = version.target_field_snapshot
     if (
         snapshot.get("metadata_definition_id") != str(definition.id)
@@ -253,18 +255,11 @@ def _version_compatibility_reasons(
     if configuration is None or configuration.classification_model_id != model.id:
         reasons.append("Model version configuration is unavailable")
     else:
-        if configuration.target_field_snapshot != version.target_field_snapshot:
+        if any(
+            configuration.target_field_snapshot.get(key) != version.target_field_snapshot.get(key)
+            for key in ("tenant_id", "matter_id", "metadata_definition_id", "stable_key", "metadata_type", "cardinality")
+        ):
             reasons.append("Model version target snapshot does not match its configuration")
-        available_values = set(active_value_keys(definition)) if definition.type == "ENUM" else {"false", "true"}
-        if configuration.classification_strategy == "BINARY":
-            mapping = configuration.binary_mapping or {}
-            selected_values = set(mapping.get("negative_value_keys", [])) | set(
-                mapping.get("positive_value_keys", [])
-            )
-        else:
-            selected_values = set(configuration.ordered_class_keys)
-        if not selected_values.issubset(available_values):
-            reasons.append("One or more model classes are inactive or missing from the target field")
     if not required_evaluation_present:
         reasons.append("Required cross-fit development evaluation is missing")
     if version.package_schema_version != 1:

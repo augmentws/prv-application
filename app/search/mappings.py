@@ -10,6 +10,7 @@ ANALYZER_VERSION = 1
 INDEX_ANALYZER = f"pvr_edisc_index_v{ANALYZER_VERSION}"
 SEARCH_ANALYZER = f"pvr_edisc_search_v{ANALYZER_VERSION}"
 QUOTE_ANALYZER = f"pvr_edisc_quote_v{ANALYZER_VERSION}"
+CODED_BY_FIELD = "coded_by"
 
 
 def _text(*, exact: bool = False) -> dict[str, Any]:
@@ -88,6 +89,7 @@ def compile_document_index(
                 "source_collection_id": {"type": "keyword"},
                 "collection_item_id": {"type": "keyword"},
                 "batch_ids": {"type": "keyword"},
+                CODED_BY_FIELD: {"type": "keyword", "ignore_above": 512},
                 "batch_topics": {
                     "type": "nested",
                     "properties": {

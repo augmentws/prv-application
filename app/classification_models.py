@@ -8,12 +8,20 @@ from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
 from app.audit import record_audit
-from app.models import ClassificationModel, ClassificationModelConfiguration, Matter, MetadataDefinition
+from app.models import (
+    ClassificationDatasetSnapshot,
+    ClassificationModel,
+    ClassificationModelConfiguration,
+    Matter,
+    MetadataDefinition,
+)
 from app.schemas import ClassificationModelConfigurationCreate, ClassificationModelCreate
 from classification_service.hashing import canonical_model_hash
 from classification_service.schemas import (
+    BinaryClassMapping,
     ClassificationModelConfigurationSpecification,
     ClassificationStrategy,
+    PredictionResolutionPolicy,
     TargetCardinality,
     TargetFieldSnapshot,
     TargetMetadataType,
@@ -32,6 +40,9 @@ class ClassificationModelConflictError(ClassificationModelCommandError):
     pass
 
 
+CLASSIFICATION_TARGET_TYPES = frozenset({"BOOLEAN", "ENUM", "TEXT", "LONG_TEXT"})
+
+
 def active_value_keys(definition: MetadataDefinition) -> list[str]:
     if definition.type != "ENUM":
         return []
@@ -48,8 +59,9 @@ def target_schema_fingerprint(definition: MetadataDefinition) -> str:
         "stable_key": definition.key,
         "metadata_type": definition.type,
         "cardinality": definition.cardinality,
-        "active_value_keys": active_value_keys(definition),
     }
+    if definition.hierarchy_separator is not None:
+        payload["hierarchy_separator"] = definition.hierarchy_separator
     canonical = json.dumps(payload, ensure_ascii=False, separators=(",", ":"), sort_keys=True)
     return hashlib.sha256(canonical.encode("utf-8")).hexdigest()
 
@@ -68,6 +80,7 @@ def target_field_snapshot(
             display_name=definition.display_name,
             metadata_type=TargetMetadataType(definition.type),
             cardinality=TargetCardinality(definition.cardinality),
+            hierarchy_separator=definition.hierarchy_separator,
             schema_fingerprint=target_schema_fingerprint(definition),
             active_value_keys=active_value_keys(definition),
         )
@@ -82,6 +95,7 @@ def target_field_read_data(definition: MetadataDefinition) -> dict[str, Any]:
         "display_name": definition.display_name,
         "metadata_type": definition.type,
         "cardinality": definition.cardinality,
+        "hierarchy_separator": definition.hierarchy_separator,
         "status": definition.status,
         "reviewable": definition.reviewable,
         "active_value_keys": active_value_keys(definition),
@@ -105,10 +119,12 @@ def eligible_target_definition(
         raise ClassificationModelConflictError("Target metadata definition does not belong to this matter")
     if definition.status != "ACTIVE":
         raise ClassificationModelConflictError("Target metadata definition must be active")
-    if not definition.reviewable:
-        raise ClassificationModelConflictError("Target metadata definition must be reviewable")
-    if definition.type not in {"BOOLEAN", "ENUM"}:
-        raise ClassificationModelConflictError("Classification targets must be Boolean or enum fields")
+    if definition.value_source != "ASSERTED":
+        raise ClassificationModelConflictError("Classification targets must be coding fields")
+    if definition.type not in CLASSIFICATION_TARGET_TYPES:
+        raise ClassificationModelConflictError(
+            "Classification targets must be Boolean, enum, text, or long-text fields"
+        )
     if definition.type == "BOOLEAN" and definition.cardinality != "SINGLE":
         raise ClassificationModelConflictError("Boolean classification targets must be single cardinality")
     return definition
@@ -196,11 +212,14 @@ def create_classification_model_configuration(
         matter=matter,
         definition_id=model.target_metadata_definition_id,
     )
-    snapshot = target_field_snapshot(matter=matter, definition=definition)
     try:
+        base_snapshot = target_field_snapshot(matter=matter, definition=definition)
+        snapshot = TargetFieldSnapshot.model_validate(
+            {**base_snapshot.model_dump(mode="json"), "hierarchy_level": payload.hierarchy_level}
+        )
         specification = ClassificationModelConfigurationSpecification(
             target_field_snapshot=snapshot,
-            **payload.model_dump(),
+            **payload.model_dump(exclude={"hierarchy_level"}),
         )
     except ValidationError as exc:
         raise ClassificationModelConflictError(str(exc)) from exc
@@ -269,10 +288,10 @@ def configuration_compatibility(
         reasons.append("Classification model is not active")
     if definition.status != "ACTIVE":
         reasons.append("Target metadata definition is not active")
-    if not definition.reviewable:
-        reasons.append("Target metadata definition is not reviewable")
-    if definition.type not in {"BOOLEAN", "ENUM"}:
-        reasons.append("Target metadata definition is no longer Boolean or enum")
+    if definition.value_source != "ASSERTED":
+        reasons.append("Target metadata definition is not a coding field")
+    if definition.type not in CLASSIFICATION_TARGET_TYPES:
+        reasons.append("Target metadata definition is no longer Boolean, enum, text, or long text")
     if configuration is None:
         return not reasons, None, reasons
 
@@ -286,18 +305,78 @@ def configuration_compatibility(
     if definition.cardinality != snapshot["cardinality"]:
         reasons.append("Target field cardinality changed")
 
-    available_values = set(active_value_keys(definition)) if definition.type == "ENUM" else {"false", "true"}
-    if configuration.classification_strategy == ClassificationStrategy.BINARY.value:
-        mapping = configuration.binary_mapping or {}
-        referenced_values = set(mapping.get("negative_value_keys", [])) | set(mapping.get("positive_value_keys", []))
-    else:
-        referenced_values = set(configuration.ordered_class_keys)
-    missing_values = sorted(referenced_values - available_values)
-    if missing_values:
-        reasons.append(f"Configured target values are inactive or missing: {', '.join(missing_values)}")
-
     fingerprint_matches = target_schema_fingerprint(definition) == snapshot["schema_fingerprint"]
     return not reasons, fingerprint_matches, reasons
+
+
+def frozen_class_keys(
+    snapshot: ClassificationDatasetSnapshot,
+    configuration: ClassificationModelConfiguration | None = None,
+) -> list[str]:
+    discovered = snapshot.target_field_snapshot.get("discovered_class_keys", [])
+    if isinstance(discovered, list) and discovered:
+        return [str(value) for value in discovered]
+    support_keys = set((snapshot.class_support or {}).keys())
+    if (
+        configuration is not None
+        and configuration.classification_strategy == ClassificationStrategy.BINARY.value
+        and configuration.binary_mapping
+    ):
+        mapping = BinaryClassMapping.model_validate(configuration.binary_mapping)
+        ordered = [mapping.negative_class_key, mapping.positive_class_key]
+        if set(ordered) == support_keys:
+            return ordered
+    return sorted(support_keys)
+
+
+def trained_class_keys(
+    snapshot: ClassificationDatasetSnapshot,
+    configuration: ClassificationModelConfiguration | None = None,
+) -> list[str]:
+    trained = snapshot.trained_class_keys or []
+    if trained:
+        return [str(value) for value in trained]
+    if snapshot.status == "READY_FOR_TRAINING":
+        # Historical snapshots created before trained-class persistence used every observed class.
+        return frozen_class_keys(snapshot, configuration)
+    return []
+
+
+def effective_binary_mapping(
+    snapshot: ClassificationDatasetSnapshot,
+    configuration: ClassificationModelConfiguration,
+) -> BinaryClassMapping | None:
+    if configuration.classification_strategy != ClassificationStrategy.BINARY.value:
+        return None
+    if configuration.binary_mapping:
+        return BinaryClassMapping.model_validate(configuration.binary_mapping)
+    classes = frozen_class_keys(snapshot, configuration)
+    if len(classes) != 2:
+        raise ClassificationModelConflictError("Binary training snapshots require exactly two discovered classes")
+    return BinaryClassMapping(
+        negative_class_key=classes[0],
+        positive_class_key=classes[1],
+        negative_value_keys=[classes[0]],
+        positive_value_keys=[classes[1]],
+    )
+
+
+def effective_prediction_policy(
+    snapshot: ClassificationDatasetSnapshot,
+    configuration: ClassificationModelConfiguration,
+) -> PredictionResolutionPolicy:
+    policy = PredictionResolutionPolicy.model_validate(configuration.prediction_resolution_policy)
+    if configuration.classification_strategy != ClassificationStrategy.ONE_VS_REST.value:
+        return policy
+    thresholds = policy.one_vs_rest_thresholds or {}
+    return policy.model_copy(
+        update={
+            "one_vs_rest_thresholds": {
+                key: thresholds.get(key, 0.5)
+                for key in trained_class_keys(snapshot, configuration)
+            }
+        }
+    )
 
 
 def archive_classification_model(

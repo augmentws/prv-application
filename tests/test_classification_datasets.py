@@ -6,6 +6,7 @@ from datetime import datetime, timezone
 
 import pyarrow as pa
 import pyarrow.parquet as pq
+import pytest
 from conftest import (
     ArtifactTestingSessionLocal,
     TestingSessionLocal,
@@ -15,6 +16,11 @@ from fastapi.testclient import TestClient
 from sqlalchemy import select
 
 from app.artifact_gateway import ChunkVectorArtifactSnapshot, CollectionItemGroupingSnapshot
+from app.classification_features import (
+    ClassificationFeatureSplitError,
+    _assign_one_vs_rest_folds,
+    embedding_job_output_is_usable,
+)
 from app.embeddings.chunking import TextChunk
 from app.embeddings.parquet import write_vector_set
 from app.models import (
@@ -25,8 +31,13 @@ from app.models import (
     MatterEmbeddingJob,
     ReviewBatch,
     ReviewBatchDocument,
-    ReviewBatchRun,
-    ReviewBatchRunValue,
+    ReviewBatchReviewerCoding,
+    ReviewBatchReviewerDocument,
+    ReviewBatchReviewerDocumentRevision,
+    ReviewBatchReviewerFieldRevision,
+    ReviewBatchReviewerRevision,
+    ReviewBatchReviewerValue,
+    ReviewBatchReviewerValueRevision,
 )
 
 
@@ -63,22 +74,35 @@ def create_field(
     *,
     key: str,
     cardinality: str = "SINGLE",
+    field_type: str = "ENUM",
+    reviewable: bool = True,
+    hierarchy_separator: str | None = None,
 ) -> dict:
+    payload = {
+        "key": key,
+        "display_name": "Classification Target",
+        "type": field_type,
+        "cardinality": cardinality,
+        "reviewable": reviewable,
+    }
+    if hierarchy_separator is not None:
+        payload.update(
+            {
+                "searchable": True,
+                "facetable": True,
+                "hierarchy_separator": hierarchy_separator,
+            }
+        )
+    if field_type == "ENUM":
+        payload["allowed_values"] = [
+            {"key": "responsive", "label": "Responsive"},
+            {"key": "not_responsive", "label": "Not responsive"},
+            {"key": "needs_review", "label": "Needs review"},
+        ]
     response = client.post(
         f"/v1/matters/{matter_id}/metadata-definitions",
         headers=auth(token),
-        json={
-            "key": key,
-            "display_name": "Classification Target",
-            "type": "ENUM",
-            "cardinality": cardinality,
-            "reviewable": True,
-            "allowed_values": [
-                {"key": "responsive", "label": "Responsive"},
-                {"key": "not_responsive", "label": "Not responsive"},
-                {"key": "needs_review", "label": "Needs review"},
-            ],
-        },
+        json=payload,
     )
     assert response.status_code == 201, response.text
     return response.json()
@@ -105,6 +129,9 @@ def create_configuration(
     *,
     strategy: str = "BINARY",
     sources: list[dict],
+    dynamic_classes: bool = False,
+    target_cardinality: str = "SINGLE",
+    hierarchy_level: int | None = None,
 ) -> dict:
     if strategy == "BINARY":
         classes = ["negative", "positive"]
@@ -125,11 +152,27 @@ def create_configuration(
         prediction = {
             "one_vs_rest_thresholds": {"responsive": 0.5, "needs_review": 0.5},
         }
+    if dynamic_classes:
+        classes = []
+        binary_mapping = None
+        if strategy == "ONE_VS_REST":
+            prediction = {
+                "one_vs_rest_thresholds": {},
+                **(
+                    {
+                        "zero_match_action": "ABSTAIN",
+                        "multiple_match_action": "HIGHEST_PROBABILITY",
+                    }
+                    if target_cardinality == "SINGLE"
+                    else {}
+                ),
+            }
     response = client.post(
         f"/v1/matters/{matter_id}/classification-models/{model_id}/configurations",
         headers=auth(token),
         json={
             "classification_strategy": strategy,
+            "hierarchy_level": hierarchy_level,
             "ordered_class_keys": classes,
             "binary_mapping": binary_mapping,
             "label_policy": {
@@ -194,8 +237,6 @@ def create_review_source(
     documents: list[MatterDocument],
     user_id: uuid.UUID,
     values: dict[uuid.UUID, list[str]],
-    purpose: str = "REFERENCE",
-    configuration_snapshot: dict | None = None,
 ) -> tuple[uuid.UUID, uuid.UUID]:
     with TestingSessionLocal() as db:
         batch = ReviewBatch(
@@ -221,26 +262,65 @@ def create_review_source(
                     sequence_number=index,
                 )
             )
-        run = ReviewBatchRun(
+        coding = ReviewBatchReviewerCoding(
             review_batch_id=batch.id,
-            run_type="HUMAN",
-            purpose=purpose,
-            status="COMPLETED",
-            result_policy="ISOLATED",
-            actor_user_id=user_id,
-            configuration_snapshot=configuration_snapshot or {},
-            initiated_by_user_id=user_id,
-            processed_document_count=len(documents),
-            started_at=datetime.now(timezone.utc),
-            completed_at=datetime.now(timezone.utc),
+            reviewer_user_id=user_id,
+            revision=1,
         )
-        db.add(run)
+        db.add(coding)
         db.flush()
+        db.add(
+            ReviewBatchReviewerRevision(
+                reviewer_coding_id=coding.id,
+                revision=1,
+                actor_user_id=user_id,
+                origin="SYSTEM_MIGRATION",
+            )
+        )
         for document_id, raw_values in values.items():
+            completed_at = datetime.now(timezone.utc)
+            db.add(
+                ReviewBatchReviewerDocument(
+                    reviewer_coding_id=coding.id,
+                    matter_document_id=document_id,
+                    status="COMPLETED",
+                    revision=1,
+                    completed_at=completed_at,
+                )
+            )
+            db.add(
+                ReviewBatchReviewerDocumentRevision(
+                    reviewer_coding_id=coding.id,
+                    revision=1,
+                    matter_document_id=document_id,
+                    status="COMPLETED",
+                    started_at=completed_at,
+                    completed_at=completed_at,
+                )
+            )
+            db.add(
+                ReviewBatchReviewerFieldRevision(
+                    reviewer_coding_id=coding.id,
+                    revision=1,
+                    matter_document_id=document_id,
+                    metadata_definition_id=uuid.UUID(definition_id),
+                )
+            )
             for ordinal, value in enumerate(raw_values):
                 db.add(
-                    ReviewBatchRunValue(
-                        review_batch_run_id=run.id,
+                    ReviewBatchReviewerValue(
+                        reviewer_coding_id=coding.id,
+                        matter_document_id=document_id,
+                        metadata_definition_id=uuid.UUID(definition_id),
+                        value_ordinal=ordinal,
+                        value_text=value,
+                        revision=1,
+                    )
+                )
+                db.add(
+                    ReviewBatchReviewerValueRevision(
+                        reviewer_coding_id=coding.id,
+                        revision=1,
                         matter_document_id=document_id,
                         metadata_definition_id=uuid.UUID(definition_id),
                         value_ordinal=ordinal,
@@ -248,7 +328,7 @@ def create_review_source(
                     )
                 )
         db.commit()
-        return batch.id, run.id
+        return batch.id, coding.id
 
 
 def set_matter_value(
@@ -421,6 +501,240 @@ def test_matter_snapshot_resolves_precedence_deduplicates_and_reuses_identity(
         assert audit is not None
 
 
+def test_dynamic_text_classes_are_discovered_and_frozen_per_snapshot(
+    client: TestClient,
+    root_token: str,
+    root_admin,
+    monkeypatch,
+) -> None:
+    matter = create_matter(client, root_token, root_admin.tenant_id, "Dynamic text classes")
+    definition = create_field(
+        client,
+        root_token,
+        matter["id"],
+        key="dynamic_text_target",
+        field_type="TEXT",
+        reviewable=False,
+    )
+    documents = add_documents(matter["id"], root_admin.id, 2)
+    configure_artifact_gateway(monkeypatch, documents)
+    for document, value in zip(documents, ["Responsive", "Not responsive"], strict=True):
+        set_matter_value(
+            client,
+            root_token,
+            matter_id=matter["id"],
+            document_id=document.id,
+            definition_id=definition["id"],
+            value=value,
+        )
+    model = create_model(client, root_token, matter["id"], definition["id"])
+    configuration = create_configuration(
+        client,
+        root_token,
+        matter["id"],
+        model["id"],
+        strategy="MULTICLASS",
+        dynamic_classes=True,
+        sources=[
+            {
+                "kind": "MATTER_ASSERTED",
+                "authority": "GOLD",
+                "source_weight": 1.0,
+            }
+        ],
+    )
+    assert configuration["ordered_class_keys"] == []
+    base = f"/v1/matters/{matter['id']}/classification-models/{model['id']}/dataset-snapshots"
+    payload = snapshot_request(configuration["id"], "MATTER", matter["id"])
+
+    first_response = client.post(base, headers=auth(root_token), json=payload)
+    assert first_response.status_code == 201, first_response.text
+    first = first_response.json()["snapshot"]
+    assert first["ordered_class_keys"] == ["Not responsive", "Responsive"]
+    assert first["target_field_snapshot"]["discovered_class_keys"] == first["ordered_class_keys"]
+    assert first["class_support"] == {"Not responsive": 1, "Responsive": 1}
+
+    new_document = add_documents(matter["id"], root_admin.id, 1)[0]
+    documents.append(new_document)
+    configure_artifact_gateway(monkeypatch, documents)
+    set_matter_value(
+        client,
+        root_token,
+        matter_id=matter["id"],
+        document_id=new_document.id,
+        definition_id=definition["id"],
+        value="Needs escalation",
+    )
+    second_response = client.post(base, headers=auth(root_token), json=payload)
+    assert second_response.status_code == 201, second_response.text
+    second = second_response.json()["snapshot"]
+    assert second["id"] != first["id"]
+    assert second["ordered_class_keys"] == [
+        "Needs escalation",
+        "Not responsive",
+        "Responsive",
+    ]
+
+    frozen_first = client.get(f"{base}/{first['id']}", headers=auth(root_token))
+    assert frozen_first.status_code == 200
+    assert frozen_first.json()["ordered_class_keys"] == ["Not responsive", "Responsive"]
+
+
+def test_hierarchical_text_classes_are_projected_to_configured_level(
+    client: TestClient,
+    root_token: str,
+    root_admin,
+    monkeypatch,
+) -> None:
+    matter = create_matter(client, root_token, root_admin.tenant_id, "Hierarchy classes")
+    definition = create_field(
+        client,
+        root_token,
+        matter["id"],
+        key="hierarchy_target",
+        field_type="TEXT",
+        hierarchy_separator="/",
+    )
+    documents = add_documents(matter["id"], root_admin.id, 4)
+    configure_artifact_gateway(monkeypatch, documents)
+    for document, value in zip(
+        documents,
+        ["Projects/Alpha/One", "Projects/Alpha/Two", "Projects/Beta/Three", "RootOnly"],
+        strict=True,
+    ):
+        set_matter_value(
+            client,
+            root_token,
+            matter_id=matter["id"],
+            document_id=document.id,
+            definition_id=definition["id"],
+            value=value,
+        )
+    model = create_model(client, root_token, matter["id"], definition["id"])
+    configuration = create_configuration(
+        client,
+        root_token,
+        matter["id"],
+        model["id"],
+        strategy="MULTICLASS",
+        dynamic_classes=True,
+        hierarchy_level=2,
+        sources=[
+            {
+                "kind": "MATTER_ASSERTED",
+                "authority": "GOLD",
+                "source_weight": 1.0,
+            }
+        ],
+    )
+    assert configuration["hierarchy_level"] == 2
+    assert configuration["target_field_snapshot"]["hierarchy_separator"] == "/"
+    assert configuration["target_field_snapshot"]["hierarchy_level"] == 2
+
+    distribution = client.post(
+        f"/v1/matters/{matter['id']}/classification-models/targets/{definition['id']}/distribution",
+        headers=auth(root_token),
+        json={
+            "training_scope": {"scope_type": "MATTER", "scope_id": matter["id"]},
+            "hierarchy_level": 2,
+        },
+    )
+    assert distribution.status_code == 200, distribution.text
+    assert distribution.json()["labeled_document_count"] == 3
+    assert distribution.json()["unlabeled_document_count"] == 1
+    assert {
+        value["class_key"]: value["document_count"]
+        for value in distribution.json()["class_counts"]
+    } == {"Projects/Alpha": 2, "Projects/Beta": 1}
+
+    base = f"/v1/matters/{matter['id']}/classification-models/{model['id']}/dataset-snapshots"
+    snapshot_response = client.post(
+        base,
+        headers=auth(root_token),
+        json=snapshot_request(configuration["id"], "MATTER", matter["id"]),
+    )
+    assert snapshot_response.status_code == 201, snapshot_response.text
+    snapshot = snapshot_response.json()["snapshot"]
+    assert snapshot["ordered_class_keys"] == ["Projects/Alpha", "Projects/Beta"]
+    assert snapshot["class_support"] == {"Projects/Alpha": 2, "Projects/Beta": 1}
+    assert snapshot["labeled_count"] == 3
+    assert snapshot["unlabeled_count"] == 0
+    assert snapshot["excluded_count"] == 1
+
+
+def test_target_distribution_counts_current_coding_for_matter_and_batch_scope(
+    client: TestClient,
+    root_token: str,
+    root_admin,
+) -> None:
+    matter = create_matter(client, root_token, root_admin.tenant_id, "Target distribution")
+    definition = create_field(client, root_token, matter["id"], key="distribution_target")
+    documents = add_documents(matter["id"], root_admin.id, 4)
+    for document, value in zip(
+        documents[:3],
+        ["responsive", "responsive", "not_responsive"],
+        strict=True,
+    ):
+        set_matter_value(
+            client,
+            root_token,
+            matter_id=matter["id"],
+            document_id=document.id,
+            definition_id=definition["id"],
+            value=value,
+        )
+
+    endpoint = (
+        f"/v1/matters/{matter['id']}/classification-models"
+        f"/targets/{definition['id']}/distribution"
+    )
+    matter_distribution = client.post(
+        endpoint,
+        headers=auth(root_token),
+        json={
+            "training_scope": {
+                "scope_type": "MATTER",
+                "scope_id": matter["id"],
+            }
+        },
+    )
+    assert matter_distribution.status_code == 200, matter_distribution.text
+    matter_data = matter_distribution.json()
+    assert matter_data["population_count"] == 4
+    assert matter_data["labeled_document_count"] == 3
+    assert matter_data["unlabeled_document_count"] == 1
+    assert {
+        item["class_key"]: item["document_count"]
+        for item in matter_data["class_counts"]
+    } == {
+        "needs_review": 0,
+        "not_responsive": 1,
+        "responsive": 2,
+    }
+
+    batch_id, _ = create_review_source(
+        matter_id=matter["id"],
+        definition_id=definition["id"],
+        documents=[documents[0], documents[3]],
+        user_id=root_admin.id,
+        values={},
+    )
+    batch_distribution = client.post(
+        endpoint,
+        headers=auth(root_token),
+        json={
+            "training_scope": {
+                "scope_type": "REVIEW_BATCH",
+                "scope_id": str(batch_id),
+            }
+        },
+    )
+    assert batch_distribution.status_code == 200, batch_distribution.text
+    assert batch_distribution.json()["population_count"] == 2
+    assert batch_distribution.json()["labeled_document_count"] == 1
+    assert batch_distribution.json()["unlabeled_document_count"] == 1
+
+
 def test_review_batch_scope_is_exact_and_rejects_wrong_matter(
     client: TestClient,
     root_token: str,
@@ -493,7 +807,7 @@ def test_review_batch_scope_is_exact_and_rejects_wrong_matter(
     }
 
 
-def test_multiclass_conflicts_and_blinded_sources_are_reported(
+def test_multiclass_reviewer_conflicts_are_reported(
     client: TestClient,
     root_token: str,
     root_admin,
@@ -508,20 +822,10 @@ def test_multiclass_conflicts_and_blinded_sources_are_reported(
         definition_id=definition["id"],
         documents=documents,
         user_id=root_admin.id,
-        purpose="REVIEW",
         values={
             documents[0].id: ["responsive", "not_responsive"],
             documents[1].id: ["needs_review"],
         },
-    )
-    _, blinded_run_id = create_review_source(
-        matter_id=matter["id"],
-        definition_id=definition["id"],
-        documents=documents,
-        user_id=root_admin.id,
-        purpose="ASSESSMENT",
-        configuration_snapshot={"blinded": True},
-        values={documents[0].id: ["responsive"]},
     )
     model = create_model(client, root_token, matter["id"], definition["id"])
     configuration = create_configuration(
@@ -537,12 +841,6 @@ def test_multiclass_conflicts_and_blinded_sources_are_reported(
                 "source_weight": 1.0,
                 "source_reference_id": str(review_run_id),
             },
-            {
-                "kind": "HUMAN_REVIEW",
-                "authority": "SILVER",
-                "source_weight": 0.5,
-                "source_reference_id": str(blinded_run_id),
-            },
         ],
     )
     base = f"/v1/matters/{matter['id']}/classification-models/{model['id']}/dataset-snapshots"
@@ -555,13 +853,12 @@ def test_multiclass_conflicts_and_blinded_sources_are_reported(
     data = preview.json()
     assert data["labeled_count"] == 1
     assert data["conflicting_count"] == 1
-    assert data["source_summary"][1]["excluded_blinded"] is True
+    assert data["source_summary"][0]["excluded_blinded"] is False
     warning_codes = {warning["code"] for warning in data["warnings"]}
     assert "TARGET_CONFLICTS_EXCLUDED" in warning_codes
-    assert "BLINDED_LABEL_SOURCE_EXCLUDED" in warning_codes
 
 
-def test_one_vs_rest_partial_observed_mask_is_preserved(
+def test_one_vs_rest_reviewer_source_uses_the_selected_class_set(
     client: TestClient,
     root_token: str,
     root_admin,
@@ -582,8 +879,6 @@ def test_one_vs_rest_partial_observed_mask_is_preserved(
         definition_id=definition["id"],
         documents=documents,
         user_id=root_admin.id,
-        purpose="REVIEW",
-        configuration_snapshot={"classification_observed_class_keys": ["responsive"]},
         values={documents[0].id: ["responsive"]},
     )
     model = create_model(client, root_token, matter["id"], definition["id"])
@@ -609,13 +904,14 @@ def test_one_vs_rest_partial_observed_mask_is_preserved(
         json=snapshot_request(configuration["id"], "MATTER", matter["id"]),
     )
     assert created.status_code == 201, created.text
+    assert created.json()["snapshot"]["label_policy_snapshot"]["allowed_sources"][0]["source_revision"] == 1
     label_rows = read_workflow_parquet(
         client,
         root_token,
         created.json()["snapshot"]["label_artifact_id"],
     )
     assert label_rows[0]["one_vs_rest_labels"] == [1, 0]
-    assert label_rows[0]["one_vs_rest_observed_mask"] == [True, False]
+    assert label_rows[0]["one_vs_rest_observed_mask"] == [True, True]
     assert label_rows[0]["class_keys"] == ["responsive", "needs_review"]
 
 
@@ -707,6 +1003,46 @@ def create_completed_embedding_job(
         db.commit()
         db.refresh(job)
         return job
+
+
+def test_fully_processed_canceled_embedding_output_is_usable() -> None:
+    job = MatterEmbeddingJob(
+        status="CANCELED",
+        total_count=100,
+        processed_count=100,
+        chunk_count=250,
+    )
+
+    assert embedding_job_output_is_usable(job) is True
+
+    job.processed_count = 99
+    assert embedding_job_output_is_usable(job) is False
+
+
+def test_one_vs_rest_split_fails_when_fewer_than_two_classes_are_viable() -> None:
+    class_keys = ["alpha", "beta", "gamma"]
+    labels = [
+        {
+            "one_vs_rest_labels": [int(class_index == index // 2) for class_index in range(3)],
+            "one_vs_rest_observed_mask": [True, True, True],
+        }
+        for index in range(6)
+    ]
+    groups = {f"group-{index}": [index] for index in range(6)}
+
+    with pytest.raises(ClassificationFeatureSplitError) as raised:
+        _assign_one_vs_rest_folds(
+            groups=groups,
+            candidate_indices=set(range(6)),
+            labels=labels,
+            observed_class_keys=class_keys,
+            fold_count=2,
+            minimum_labeled_count=6,
+            minimum_per_class=2,
+            seed=42,
+        )
+
+    assert raised.value.code == "INSUFFICIENT_TRAINABLE_CLASSES"
 
 
 def chunk_vector_snapshot(
@@ -812,8 +1148,12 @@ def test_feature_and_split_materialization_is_deterministic_and_group_aware(
         for index, document in enumerate(documents[:-1])
     }
     monkeypatch.setattr(
-        "app.classification_features.load_current_chunk_vector_artifact",
-        lambda collection_item_id, **_: vector_artifacts.get(collection_item_id),
+        "app.classification_features.load_current_chunk_vector_artifacts",
+        lambda collection_item_ids, **_: {
+            item_id: vector_artifacts[item_id]
+            for item_id in collection_item_ids
+            if item_id in vector_artifacts
+        },
     )
     endpoint = f"{base}/{snapshot['id']}/features-and-splits"
     payload = {
@@ -836,7 +1176,7 @@ def test_feature_and_split_materialization_is_deterministic_and_group_aware(
     assert ready["feature_failed_count"] == 1
     assert ready["training_eligible_count"] == 8
     assert ready["feature_specification"]["embedding_job_id"] == str(job.id)
-    assert ready["split_specification"]["algorithm"]["version"] == 1
+    assert ready["split_specification"]["algorithm"]["version"] == 2
     assert ready["training_aggregate_hash"]
     assert {
         warning["code"] for warning in ready["warnings"]
@@ -980,8 +1320,10 @@ def test_feature_split_rejects_class_confined_to_one_connected_group(
         for index, document in enumerate(documents)
     }
     monkeypatch.setattr(
-        "app.classification_features.load_current_chunk_vector_artifact",
-        lambda collection_item_id, **_: vectors[collection_item_id],
+        "app.classification_features.load_current_chunk_vector_artifacts",
+        lambda collection_item_ids, **_: {
+            item_id: vectors[item_id] for item_id in collection_item_ids
+        },
     )
     response = client.post(
         f"{base}/{snapshot['id']}/features-and-splits",
@@ -1001,3 +1343,125 @@ def test_feature_split_rejects_class_confined_to_one_connected_group(
     assert read.status_code == 200
     assert read.json()["status"] == "FAILED"
     assert read.json()["failure_code"] == "INSUFFICIENT_CLASS_SUPPORT_PER_FOLD"
+
+
+def test_one_vs_rest_feature_split_excludes_unsupported_class(
+    client: TestClient,
+    root_token: str,
+    root_admin,
+    monkeypatch,
+) -> None:
+    matter = create_matter(client, root_token, root_admin.tenant_id, "OVR class exclusion")
+    definition = create_field(
+        client,
+        root_token,
+        matter["id"],
+        key="dataset_ovr_class_exclusion",
+        cardinality="MULTIPLE",
+    )
+    documents = add_documents(matter["id"], root_admin.id, 14)
+    configure_artifact_gateway(monkeypatch, documents)
+    values = {
+        document.id: [
+            "responsive"
+            if index < 6
+            else "needs_review"
+            if index < 12
+            else "not_responsive"
+        ]
+        for index, document in enumerate(documents)
+    }
+    _, review_run_id = create_review_source(
+        matter_id=matter["id"],
+        definition_id=definition["id"],
+        documents=documents,
+        user_id=root_admin.id,
+        values=values,
+    )
+    model = create_model(client, root_token, matter["id"], definition["id"])
+    configuration = create_configuration(
+        client,
+        root_token,
+        matter["id"],
+        model["id"],
+        strategy="ONE_VS_REST",
+        dynamic_classes=True,
+        target_cardinality="MULTIPLE",
+        sources=[
+            {
+                "kind": "HUMAN_REVIEW",
+                "authority": "GOLD",
+                "source_weight": 1.0,
+                "source_reference_id": str(review_run_id),
+            }
+        ],
+    )
+    base = f"/v1/matters/{matter['id']}/classification-models/{model['id']}/dataset-snapshots"
+    snapshot_response = client.post(
+        base,
+        headers=auth(root_token),
+        json=snapshot_request(configuration["id"], "MATTER", matter["id"]),
+    )
+    assert snapshot_response.status_code == 201, snapshot_response.text
+    snapshot = snapshot_response.json()["snapshot"]
+    assert set(snapshot["ordered_class_keys"]) == {
+        "responsive",
+        "needs_review",
+        "not_responsive",
+    }
+    job = create_completed_embedding_job(matter_id=matter["id"], user_id=root_admin.id)
+    vectors = {
+        document.collection_item_id: chunk_vector_snapshot(
+            document_index=index,
+            configuration_hash=job.configuration_hash,
+        )
+        for index, document in enumerate(documents)
+    }
+    monkeypatch.setattr(
+        "app.classification_features.load_current_chunk_vector_artifacts",
+        lambda collection_item_ids, **_: {
+            item_id: vectors[item_id] for item_id in collection_item_ids
+        },
+    )
+    response = client.post(
+        f"{base}/{snapshot['id']}/features-and-splits",
+        headers=auth(root_token),
+        json={
+            "embedding_job_id": str(job.id),
+            "validation_policy": {
+                "fold_count": 2,
+                "minimum_labeled_count": 6,
+                "minimum_labeled_count_per_class": 2,
+            },
+            "random_seed": 42,
+        },
+    )
+    assert response.status_code == 201, response.text
+    ready = response.json()["snapshot"]
+    assert ready["status"] == "READY_FOR_TRAINING"
+    assert set(ready["trained_class_keys"]) == {"responsive", "needs_review"}
+    assert ready["excluded_classes"] == [
+        {
+            "class_key": "not_responsive",
+            "reason_code": "INSUFFICIENT_POSITIVE_DOCUMENTS",
+            "message": (
+                "Class not_responsive has 2 positive and 12 negative feature-ready documents across "
+                "2 positive and 11 negative connected groups; training requires at least 4 documents "
+                "of each outcome across 2 groups"
+            ),
+            "feature_ready_positive_count": 2,
+            "positive_group_count": 2,
+            "feature_ready_negative_count": 12,
+            "negative_group_count": 11,
+            "required_positive_count": 4,
+            "required_group_count": 2,
+            "fold_support": None,
+            "fold_negative_support": None,
+        }
+    ]
+    assert ready["split_specification"]["summary"]["observed_class_keys"] == snapshot[
+        "ordered_class_keys"
+    ]
+    assert ready["split_specification"]["summary"]["trained_class_keys"] == ready[
+        "trained_class_keys"
+    ]

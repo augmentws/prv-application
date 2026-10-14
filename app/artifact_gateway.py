@@ -1,11 +1,13 @@
 import json
 import uuid
-from dataclasses import dataclass
-from datetime import datetime
+from collections.abc import Iterator
+from dataclasses import dataclass, field
+from datetime import datetime, timezone
 from typing import Any, BinaryIO
 
 import httpx
-from sqlalchemy import and_, case, select
+from sqlalchemy import Uuid, and_, bindparam, case, func, select
+from sqlalchemy.dialects.postgresql import ARRAY
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
@@ -38,6 +40,7 @@ from artifact_service.models import (
 from artifact_service.schemas import (
     CollectionDeletionJobRead,
     CollectionItemGroupingSnapshotsRequest,
+    CollectionItemRead,
     CollectionSelectionCreate,
     WorkflowArtifactLineageInput,
     WorkflowArtifactUploadMetadata,
@@ -47,6 +50,7 @@ from artifact_service.selections import (
     delete_collection_selection,
     get_collection_selection_batch,
     get_collection_selection_batch_custodians,
+    get_collection_selection_batch_unmapped_metadata,
 )
 from artifact_service.storage import get_storage
 from artifact_service.workflow_artifacts import (
@@ -57,6 +61,47 @@ from artifact_service.workflow_artifacts import (
 )
 from artifact_service.workflow_artifacts import store_workflow_artifact as persist_workflow_artifact
 from classification_service.schemas import ArtifactType
+
+REMOTE_GROUPING_SNAPSHOT_BATCH_SIZE = 5000
+
+
+def get_collection_item_read(
+    *,
+    collection_item_id: uuid.UUID,
+    actor_user_id: uuid.UUID,
+    tenant_id: uuid.UUID,
+    client_id: uuid.UUID,
+) -> CollectionItemRead:
+    """Read one exact collection item after Core has authorized its link.
+
+    Callers must first validate the matter-document relationship.  The
+    tenant/client checks here are defense in depth for the Artifact boundary.
+    """
+
+    settings = get_settings()
+    if settings.artifact_mode == "embedded":
+        # Keep Artifact's response construction canonical in embedded mode.
+        from artifact_service.api import _item_read
+
+        with ArtifactSessionLocal() as db:
+            item = db.get(CollectionItem, collection_item_id)
+            if item is None:
+                raise ValueError("Collection item not found")
+            if item.tenant_id != tenant_id or item.client_id != client_id:
+                raise PermissionError("Collection item is not available to this matter")
+            return _item_read(db, item)
+
+    with httpx.Client(base_url=settings.artifact_base_url, timeout=30) as client:
+        response = client.get(
+            f"/v1/collection-items/{collection_item_id}",
+            headers=_headers(actor_user_id, tenant_id, client_id),
+        )
+    if response.status_code == 404:
+        raise ValueError("Collection item not found")
+    if response.status_code == 403:
+        raise PermissionError("Collection item is not available to this matter")
+    response.raise_for_status()
+    return CollectionItemRead.model_validate(response.json())
 
 
 @dataclass(frozen=True)
@@ -69,6 +114,7 @@ class SelectionCustodian:
 class SelectionBatchItem:
     item_id: uuid.UUID
     custodians: list[SelectionCustodian]
+    unmapped_metadata: dict[str, Any] = field(default_factory=dict)
 
 
 @dataclass(frozen=True)
@@ -95,6 +141,98 @@ class SearchItemSnapshot:
     raw_metadata: dict[str, Any]
     unmapped_metadata: dict[str, Any]
     body_text: str | None
+
+
+@dataclass(frozen=True)
+class EmailParticipantSnapshot:
+    item_id: uuid.UUID
+    sender: str | None
+    recipients: dict[str, list[str]]
+
+
+def get_email_participant_snapshots(
+    *,
+    collection_item_ids: list[uuid.UUID],
+    actor_user_id: uuid.UUID,
+    tenant_id: uuid.UUID,
+    client_id: uuid.UUID,
+) -> dict[uuid.UUID, EmailParticipantSnapshot]:
+    """Read only structured email participants for a bounded item page."""
+
+    if not collection_item_ids:
+        return {}
+    settings = get_settings()
+    if settings.artifact_mode == "embedded":
+        with ArtifactSessionLocal() as db:
+            item_ids = set(
+                db.scalars(
+                    select(CollectionItem.id).where(
+                        CollectionItem.id.in_(collection_item_ids),
+                        CollectionItem.tenant_id == tenant_id,
+                        CollectionItem.client_id == client_id,
+                    )
+                )
+            )
+            if item_ids != set(collection_item_ids):
+                raise PermissionError("One or more collection items are not available to this matter")
+            senders = {
+                item_id: sender
+                for item_id, sender in db.execute(
+                    select(CollectionItemEmail.collection_item_id, CollectionItemEmail.sender).where(
+                        CollectionItemEmail.collection_item_id.in_(item_ids)
+                    )
+                )
+            }
+            snapshots = {
+                item_id: EmailParticipantSnapshot(
+                    item_id=item_id,
+                    sender=senders.get(item_id),
+                    recipients={"TO": [], "CC": [], "BCC": []},
+                )
+                for item_id in item_ids
+            }
+            for item_id, recipient_type, email_address, display_name in db.execute(
+                select(
+                    CollectionItemEmailRecipient.collection_item_id,
+                    CollectionItemEmailRecipient.recipient_type,
+                    CollectionItemEmailRecipient.email_address,
+                    CollectionItemEmailRecipient.display_name,
+                )
+                .where(CollectionItemEmailRecipient.collection_item_id.in_(item_ids))
+                .order_by(
+                    CollectionItemEmailRecipient.collection_item_id,
+                    CollectionItemEmailRecipient.recipient_type,
+                    CollectionItemEmailRecipient.ordinal,
+                )
+            ):
+                value = email_address or display_name
+                if value:
+                    snapshots[item_id].recipients[recipient_type].append(value)
+            return snapshots
+
+    snapshots: dict[uuid.UUID, EmailParticipantSnapshot] = {}
+    with httpx.Client(base_url=settings.artifact_base_url, timeout=30) as client:
+        headers = _headers(actor_user_id, tenant_id, client_id)
+        for item_id in collection_item_ids:
+            response = client.get(f"/v1/collection-items/{item_id}", headers=headers)
+            if response.status_code == 404:
+                raise ValueError("Collection item not found")
+            if response.status_code == 403:
+                raise PermissionError("Collection item is not available to this matter")
+            response.raise_for_status()
+            email = response.json().get("email") or {}
+            recipients: dict[str, list[str]] = {"TO": [], "CC": [], "BCC": []}
+            for recipient in email.get("recipients", []):
+                value = recipient.get("email_address") or recipient.get("display_name")
+                recipient_type = recipient.get("recipient_type")
+                if value and recipient_type in recipients:
+                    recipients[recipient_type].append(value)
+            snapshots[item_id] = EmailParticipantSnapshot(
+                item_id=item_id,
+                sender=email.get("sender"),
+                recipients=recipients,
+            )
+    return snapshots
 
 
 @dataclass(frozen=True)
@@ -168,6 +306,7 @@ class WorkflowArtifactReference:
     producer_kind: str
     producer_run_id: uuid.UUID
     metadata: dict[str, Any]
+    created_at: datetime
 
 
 @dataclass(frozen=True)
@@ -328,6 +467,17 @@ def get_collection_item_grouping_snapshots(
     snapshots: dict[uuid.UUID, CollectionItemGroupingSnapshot] = {}
     if settings.artifact_mode == "embedded":
         with ArtifactSessionLocal() as db:
+            requested_items = (
+                select(
+                    func.unnest(
+                        bindparam(
+                            "grouping_item_ids",
+                            type_=ARRAY(Uuid(as_uuid=True)),
+                        )
+                    ).label("item_id")
+                )
+                .subquery("requested_grouping_item")
+            )
             rows = db.execute(
                 select(
                     CollectionItem.id,
@@ -335,6 +485,8 @@ def get_collection_item_grouping_snapshots(
                     CollectionItem.record_type,
                     Artifact.content_hash,
                 )
+                .select_from(requested_items)
+                .join(CollectionItem, CollectionItem.id == requested_items.c.item_id)
                 .outerjoin(
                     CollectionItemArtifact,
                     and_(
@@ -352,8 +504,8 @@ def get_collection_item_grouping_snapshots(
                 .where(
                     CollectionItem.tenant_id == tenant_id,
                     CollectionItem.client_id == client_id,
-                    CollectionItem.id.in_(unique_item_ids),
-                )
+                ),
+                {"grouping_item_ids": unique_item_ids},
             )
             for item_id, family_id, record_type, content_hash in rows:
                 snapshots[item_id] = CollectionItemGroupingSnapshot(
@@ -365,11 +517,13 @@ def get_collection_item_grouping_snapshots(
         return snapshots
 
     with httpx.Client(base_url=settings.artifact_base_url, timeout=120) as client:
-        for offset in range(0, len(unique_item_ids), 5000):
+        for offset in range(0, len(unique_item_ids), REMOTE_GROUPING_SNAPSHOT_BATCH_SIZE):
             payload = CollectionItemGroupingSnapshotsRequest(
                 tenant_id=tenant_id,
                 client_id=client_id,
-                item_ids=unique_item_ids[offset : offset + 5000],
+                item_ids=unique_item_ids[
+                    offset : offset + REMOTE_GROUPING_SNAPSHOT_BATCH_SIZE
+                ],
             )
             response = client.post(
                 "/v1/collection-items/grouping-snapshots",
@@ -645,6 +799,7 @@ def selection_batch(
     actor_user_id: uuid.UUID,
     tenant_id: uuid.UUID,
     client_id: uuid.UUID,
+    metadata_keys: list[str] | None = None,
 ) -> list[SelectionBatchItem]:
     settings = get_settings()
     if settings.artifact_mode == "embedded":
@@ -654,6 +809,11 @@ def selection_batch(
                 raise ValueError("Collection selection not found")
             item_ids = get_collection_selection_batch(db, selection, offset=offset, limit=limit)
             custodians = get_collection_selection_batch_custodians(db, item_ids)
+            unmapped_metadata = get_collection_selection_batch_unmapped_metadata(
+                db,
+                item_ids,
+                metadata_keys or [],
+            )
             return [
                 SelectionBatchItem(
                     item_id=item_id,
@@ -661,6 +821,7 @@ def selection_batch(
                         SelectionCustodian(custodian_id=custodian_id, relationship_type=relationship_type)
                         for custodian_id, relationship_type in custodians[item_id]
                     ],
+                    unmapped_metadata=unmapped_metadata[item_id],
                 )
                 for item_id in item_ids
             ]
@@ -668,7 +829,7 @@ def selection_batch(
     with httpx.Client(base_url=settings.artifact_base_url, timeout=120) as client:
         response = client.get(
             f"/v1/collection-selections/{selection_id}/items",
-            params={"offset": offset, "limit": limit},
+            params={"offset": offset, "limit": limit, "metadata_key": metadata_keys or []},
             headers=_headers(actor_user_id, tenant_id, client_id),
         )
     response.raise_for_status()
@@ -682,6 +843,7 @@ def selection_batch(
                 )
                 for value in item["custodians"]
             ],
+            unmapped_metadata=item.get("unmapped_metadata") or {},
         )
         for item in response.json()["items"]
     ]
@@ -1183,6 +1345,9 @@ def store_derived_artifact(
 def _workflow_artifact_reference_from_record(
     artifact: WorkflowArtifact,
 ) -> WorkflowArtifactReference:
+    created_at = artifact.created_at
+    if created_at.tzinfo is None:
+        created_at = created_at.replace(tzinfo=timezone.utc)
     return WorkflowArtifactReference(
         artifact_id=artifact.id,
         tenant_id=artifact.tenant_id,
@@ -1198,10 +1363,14 @@ def _workflow_artifact_reference_from_record(
         producer_kind=artifact.producer_kind,
         producer_run_id=artifact.producer_run_id,
         metadata=artifact.workflow_metadata or {},
+        created_at=created_at,
     )
 
 
 def _workflow_artifact_reference_from_data(data: dict[str, Any]) -> WorkflowArtifactReference:
+    created_at = datetime.fromisoformat(str(data["created_at"]).replace("Z", "+00:00"))
+    if created_at.tzinfo is None:
+        created_at = created_at.replace(tzinfo=timezone.utc)
     return WorkflowArtifactReference(
         artifact_id=uuid.UUID(data["id"]),
         tenant_id=uuid.UUID(data["tenant_id"]),
@@ -1217,6 +1386,7 @@ def _workflow_artifact_reference_from_data(data: dict[str, Any]) -> WorkflowArti
         producer_kind=data["producer_kind"],
         producer_run_id=uuid.UUID(data["producer_run_id"]),
         metadata=data.get("metadata") or {},
+        created_at=created_at,
     )
 
 
@@ -1259,7 +1429,37 @@ def find_workflow_artifact_reference(
     return _workflow_artifact_reference_from_data(response.json())
 
 
-def store_classification_workflow_artifact(
+def get_workflow_artifact_reference(
+    *,
+    artifact_id: uuid.UUID,
+    actor_user_id: uuid.UUID,
+    tenant_id: uuid.UUID,
+    client_id: uuid.UUID,
+) -> WorkflowArtifactReference:
+    settings = get_settings()
+    if settings.artifact_mode == "embedded":
+        with ArtifactSessionLocal() as db:
+            artifact = db.get(WorkflowArtifact, artifact_id)
+            if artifact is None:
+                raise ValueError("Workflow artifact not found")
+            if artifact.tenant_id != tenant_id or artifact.client_id != client_id:
+                raise PermissionError("Workflow artifact is not available to this matter")
+            return _workflow_artifact_reference_from_record(artifact)
+
+    with httpx.Client(base_url=settings.artifact_base_url, timeout=120) as client:
+        response = client.get(
+            f"/v1/workflow-artifacts/{artifact_id}",
+            headers=_headers(actor_user_id, tenant_id, client_id),
+        )
+    if response.status_code == 404:
+        raise ValueError("Workflow artifact not found")
+    if response.status_code == 403:
+        raise PermissionError("Workflow artifact is not available to this matter")
+    response.raise_for_status()
+    return _workflow_artifact_reference_from_data(response.json())
+
+
+def store_workflow_artifact(
     *,
     content: BinaryIO,
     artifact_type: ArtifactType,
@@ -1345,6 +1545,62 @@ def store_classification_workflow_artifact(
     return _workflow_artifact_reference_from_data(data["artifact"]), bool(data["created"])
 
 
+# Compatibility for classification callers while the generic workflow-artifact
+# boundary is adopted across the codebase.
+store_classification_workflow_artifact = store_workflow_artifact
+
+
+def list_workflow_artifact_references(
+    *,
+    actor_user_id: uuid.UUID,
+    tenant_id: uuid.UUID,
+    client_id: uuid.UUID,
+    core_scope_kind: str | None = None,
+    core_scope_id: uuid.UUID | None = None,
+    artifact_type: ArtifactType | None = None,
+    limit: int = 100,
+) -> list[WorkflowArtifactReference]:
+    settings = get_settings()
+    if settings.artifact_mode == "embedded":
+        with ArtifactSessionLocal() as db:
+            statement = select(WorkflowArtifact).where(
+                WorkflowArtifact.tenant_id == tenant_id,
+                WorkflowArtifact.client_id == client_id,
+            )
+            if core_scope_kind is not None:
+                statement = statement.where(WorkflowArtifact.core_scope_kind == core_scope_kind)
+            if core_scope_id is not None:
+                statement = statement.where(WorkflowArtifact.core_scope_id == core_scope_id)
+            if artifact_type is not None:
+                statement = statement.where(WorkflowArtifact.artifact_type == artifact_type.value)
+            records = db.scalars(
+                statement.order_by(WorkflowArtifact.created_at.desc(), WorkflowArtifact.id.desc()).limit(limit)
+            ).all()
+            return [_workflow_artifact_reference_from_record(record) for record in records]
+
+    params: dict[str, str | int] = {
+        "tenant_id": str(tenant_id),
+        "client_id": str(client_id),
+        "limit": limit,
+    }
+    if core_scope_kind is not None:
+        params["core_scope_kind"] = core_scope_kind
+    if core_scope_id is not None:
+        params["core_scope_id"] = str(core_scope_id)
+    if artifact_type is not None:
+        params["artifact_type"] = artifact_type.value
+    with httpx.Client(base_url=settings.artifact_base_url, timeout=120) as client:
+        response = client.get(
+            "/v1/workflow-artifacts",
+            params=params,
+            headers=_headers(actor_user_id, tenant_id, client_id),
+        )
+    if response.status_code == 403:
+        raise PermissionError("Workflow artifacts are not available to this matter")
+    response.raise_for_status()
+    return [_workflow_artifact_reference_from_data(item) for item in response.json()]
+
+
 def copy_workflow_artifact_content(
     *,
     artifact_id: uuid.UUID,
@@ -1386,6 +1642,45 @@ def copy_workflow_artifact_content(
             destination.write(chunk)
             copied += len(chunk)
     return copied
+
+
+def iter_workflow_artifact_content(
+    *,
+    artifact_id: uuid.UUID,
+    actor_user_id: uuid.UUID,
+    tenant_id: uuid.UUID,
+    client_id: uuid.UUID,
+    chunk_size: int = 1024 * 1024,
+) -> Iterator[bytes]:
+    """Stream a workflow artifact while retaining scope checks in both modes."""
+
+    settings = get_settings()
+    if settings.artifact_mode == "embedded":
+        with ArtifactSessionLocal() as db:
+            artifact = db.get(WorkflowArtifact, artifact_id)
+            if artifact is None:
+                raise ValueError("Workflow artifact not found")
+            if artifact.tenant_id != tenant_id or artifact.client_id != client_id:
+                raise PermissionError("Workflow artifact is not available to this matter")
+            blob = db.get(ContentBlob, artifact.content_blob_id)
+            if blob is None:
+                raise ValueError("Workflow artifact content is unavailable")
+            with get_storage().open(blob.bucket_name, blob.storage_key) as stream:
+                while chunk := stream.read(chunk_size):
+                    yield chunk
+        return
+
+    with httpx.Client(base_url=settings.artifact_base_url, timeout=120) as client, client.stream(
+        "GET",
+        f"/v1/workflow-artifacts/{artifact_id}/content",
+        headers=_headers(actor_user_id, tenant_id, client_id),
+    ) as response:
+        if response.status_code == 404:
+            raise ValueError("Workflow artifact not found")
+        if response.status_code == 403:
+            raise PermissionError("Workflow artifact is not available to this matter")
+        response.raise_for_status()
+        yield from response.iter_bytes(chunk_size=chunk_size)
 
 
 def load_current_chunk_artifacts(
@@ -1516,9 +1811,97 @@ def load_current_chunk_vector_artifact(
         vector = vectors[0]
         vector_response = client.get(f"/v1/artifacts/{vector['id']}/content", headers=headers)
         vector_response.raise_for_status()
-        return ChunkVectorArtifactSnapshot(
-            artifact_id=uuid.UUID(vector["id"]),
-            content_hash=vector["sha256"],
-            content=vector_response.content,
-            metadata=vector.get("metadata") or {},
+    return ChunkVectorArtifactSnapshot(
+        artifact_id=uuid.UUID(vector["id"]),
+        content_hash=vector["sha256"],
+        content=vector_response.content,
+        metadata=vector.get("metadata") or {},
+    )
+
+
+def load_current_chunk_vector_artifacts(
+    *,
+    collection_item_ids: list[uuid.UUID],
+    configuration_hash: str,
+    actor_user_id: uuid.UUID,
+    tenant_id: uuid.UUID,
+    client_id: uuid.UUID,
+) -> dict[uuid.UUID, ChunkVectorArtifactSnapshot]:
+    """Load current vector sets with one relation join per bounded batch."""
+
+    if not collection_item_ids:
+        return {}
+    unique_item_ids = list(dict.fromkeys(collection_item_ids))
+    settings = get_settings()
+    if settings.artifact_mode != "embedded":
+        return {
+            item_id: artifact
+            for item_id in unique_item_ids
+            if (
+                artifact := load_current_chunk_vector_artifact(
+                    collection_item_id=item_id,
+                    configuration_hash=configuration_hash,
+                    actor_user_id=actor_user_id,
+                    tenant_id=tenant_id,
+                    client_id=client_id,
+                )
+            )
+            is not None
+        }
+
+    snapshots: dict[uuid.UUID, ChunkVectorArtifactSnapshot] = {}
+    with ArtifactSessionLocal() as db:
+        requested_items = (
+            select(
+                func.unnest(
+                    bindparam(
+                        "vector_item_ids",
+                        type_=ARRAY(Uuid(as_uuid=True)),
+                    )
+                ).label("item_id")
+            )
+            .subquery("requested_vector_item")
         )
+        rows = db.execute(
+            select(
+                requested_items.c.item_id,
+                Artifact,
+                ContentBlob,
+            )
+            .select_from(requested_items)
+            .join(
+                CollectionItemArtifact,
+                and_(
+                    CollectionItemArtifact.collection_item_id == requested_items.c.item_id,
+                    CollectionItemArtifact.artifact_role == "CHUNK_VECTOR_SET",
+                ),
+            )
+            .join(
+                Artifact,
+                and_(
+                    Artifact.id == CollectionItemArtifact.artifact_id,
+                    Artifact.status == "FINALIZED",
+                    Artifact.tenant_id == tenant_id,
+                    Artifact.client_id == client_id,
+                ),
+            )
+            .join(ContentBlob, ContentBlob.id == Artifact.content_blob_id)
+            .order_by(requested_items.c.item_id, Artifact.created_at.desc()),
+            {"vector_item_ids": unique_item_ids},
+        ).all()
+        storage = get_storage()
+        for item_id, artifact, blob in rows:
+            if item_id in snapshots:
+                continue
+            metadata = artifact.artifact_metadata or {}
+            if metadata.get("configuration_hash") != configuration_hash:
+                continue
+            with storage.open(blob.bucket_name, blob.storage_key) as stream:
+                content = stream.read()
+            snapshots[item_id] = ChunkVectorArtifactSnapshot(
+                artifact_id=artifact.id,
+                content_hash=artifact.content_hash,
+                content=content,
+                metadata=metadata,
+            )
+    return snapshots

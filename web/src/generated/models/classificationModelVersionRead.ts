@@ -5,6 +5,7 @@
  * Phase-one Core API for authentication, hierarchical tenants, clients, matters, and matter metadata definitions.
  * OpenAPI spec version: 0.1.0
  */
+import type { ClassificationClassExclusion } from './classificationClassExclusion';
 import type { ClassificationModelVersionReadMetricSummary } from './classificationModelVersionReadMetricSummary';
 import type { ClassificationModelVersionReadStatus } from './classificationModelVersionReadStatus';
 import type { TargetFieldSnapshot } from './targetFieldSnapshot';
@@ -20,6 +21,22 @@ export interface ClassificationModelVersionRead {
   version_number: number;
   status: ClassificationModelVersionReadStatus;
   target_field_snapshot: TargetFieldSnapshot;
+  /**
+     * @items.minLength 1
+     * @items.maxLength 20000
+     */
+  ordered_class_keys: string[];
+  /**
+     * @items.minLength 1
+     * @items.maxLength 20000
+     */
+  observed_class_keys: string[];
+  /**
+     * @items.minLength 1
+     * @items.maxLength 20000
+     */
+  trained_class_keys: string[];
+  excluded_classes: ClassificationClassExclusion[];
   /** @pattern ^[0-9a-f]{64}$ */
   training_aggregate_hash: string;
   /** @pattern ^[0-9a-f]{64}$ */

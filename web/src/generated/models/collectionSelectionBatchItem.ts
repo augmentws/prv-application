@@ -6,9 +6,11 @@
  * OpenAPI spec version: 0.1.0
  */
 import type { CollectionSelectionBatchCustodian } from './collectionSelectionBatchCustodian';
+import type { CollectionSelectionBatchItemUnmappedMetadata } from './collectionSelectionBatchItemUnmappedMetadata';
 
 export interface CollectionSelectionBatchItem {
   item_id: string;
   custodian_ids: string[];
   custodians: CollectionSelectionBatchCustodian[];
+  unmapped_metadata?: CollectionSelectionBatchItemUnmappedMetadata;
 }

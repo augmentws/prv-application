@@ -56,7 +56,13 @@ def get_document_coding_history(
 ) -> DocumentCodingHistoryRead:
     """Return authoritative direct coding first, then isolated history grouped by batch."""
 
-    _authorized_document(db, principal, matter_id, document_id)
+    _authorized_document(
+        db,
+        principal,
+        matter_id,
+        document_id,
+        permission_key="document.view_history",
+    )
     direct_rows = db.execute(
         select(MetadataEvent, MetadataDefinition, User)
         .join(MetadataDefinition, MetadataDefinition.id == MetadataEvent.metadata_definition_id)

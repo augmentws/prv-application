@@ -1,3 +1,4 @@
+import hashlib
 import json
 import math
 import uuid
@@ -47,6 +48,12 @@ class EventStates:
     confirmed_ids: set[uuid.UUID]
     superseded_ids: set[uuid.UUID]
     invalidated_ids: set[uuid.UUID]
+
+
+@dataclass(frozen=True)
+class ImportedMetadataApplication:
+    events: list[MetadataEvent]
+    warnings: list[str]
 
 
 def event_value(event: MetadataEvent | DocumentMetadataCurrent) -> Any | None:
@@ -126,6 +133,125 @@ def _canonical(value: Any) -> str:
     if isinstance(value, (date, datetime)):
         value = value.isoformat()
     return json.dumps(value, sort_keys=True, separators=(",", ":"), ensure_ascii=False)
+
+
+def _import_source_id(
+    *,
+    collection_item_id: uuid.UUID,
+    definition: MetadataDefinition,
+    value: Any,
+) -> str:
+    base = f"collection-item:{collection_item_id}:unmapped:{definition.key}"
+    if definition.cardinality == "SINGLE":
+        return base
+    digest = hashlib.sha256(_canonical(value).encode("utf-8")).hexdigest()
+    return f"{base}:{digest}"
+
+
+def apply_imported_metadata_value(
+    db: Session,
+    *,
+    document: MatterDocument,
+    definition: MetadataDefinition,
+    raw_value: Any,
+    actor_id: uuid.UUID | None,
+    collection_item_id: uuid.UUID,
+) -> ImportedMetadataApplication:
+    """Idempotently append collection metadata as IMPORT assertions.
+
+    Missing values remain implicit. Invalid source values are returned as
+    bounded warnings so one malformed external field does not discard the
+    document publication batch.
+    """
+    if definition.matter_id != document.matter_id:
+        raise ValueError("Metadata definition does not belong to the document matter")
+    if definition.status != "ACTIVE" or definition.value_source != "ASSERTED":
+        raise ValueError("Imported labels require an active asserted metadata definition")
+    if raw_value in (None, "", []):
+        return ImportedMetadataApplication(events=[], warnings=[])
+
+    if definition.cardinality == "MULTIPLE" and isinstance(raw_value, list):
+        supplied = raw_value
+    elif definition.cardinality == "SINGLE" and definition.type != "JSON" and isinstance(raw_value, list):
+        # Collection adapters commonly represent every unmapped field as a
+        # list, including fields that become single-valued matter metadata.
+        supplied = raw_value
+    else:
+        supplied = [raw_value]
+    supplied = [value for value in supplied if value not in (None, "")]
+    if not supplied:
+        return ImportedMetadataApplication(events=[], warnings=[])
+    if definition.cardinality == "SINGLE" and len(supplied) != 1:
+        return ImportedMetadataApplication(
+            events=[],
+            warnings=[f"{definition.key}: single-cardinality field received {len(supplied)} values"],
+        )
+
+    unique: list[tuple[Any, dict[str, Any], str]] = []
+    seen: set[str] = set()
+    warnings: list[str] = []
+    for value in supplied:
+        canonical = _canonical(value)
+        if canonical in seen:
+            continue
+        seen.add(canonical)
+        try:
+            columns = value_columns(value, definition)
+        except ValueError as exc:
+            warnings.append(f"{definition.key}: {exc}")
+            continue
+        unique.append(
+            (
+                value,
+                columns,
+                _import_source_id(
+                    collection_item_id=collection_item_id,
+                    definition=definition,
+                    value=value,
+                ),
+            )
+        )
+    if not unique:
+        return ImportedMetadataApplication(events=[], warnings=warnings)
+
+    source_ids = [source_id for _, _, source_id in unique]
+    existing = {
+        event.source_id: event
+        for event in db.scalars(
+            select(MetadataEvent).where(
+                MetadataEvent.matter_document_id == document.id,
+                MetadataEvent.metadata_definition_id == definition.id,
+                MetadataEvent.source_type == "IMPORT",
+                MetadataEvent.source_id.in_(source_ids),
+            )
+        )
+    }
+    created: list[MetadataEvent] = []
+    base_time = utcnow()
+    operation = "SET" if definition.cardinality == "SINGLE" else "ADD"
+    for index, (value, columns, source_id) in enumerate(unique):
+        prior = existing.get(source_id)
+        if prior is not None:
+            if prior.operation != operation or _canonical(event_value(prior)) != _canonical(value):
+                raise ValueError("Imported metadata changed for an immutable source identity")
+            continue
+        event = MetadataEvent(
+            matter_id=document.matter_id,
+            matter_document_id=document.id,
+            metadata_definition_id=definition.id,
+            operation=operation,
+            source_type="IMPORT",
+            source_id=source_id,
+            actor_id=actor_id,
+            created_at=base_time + timedelta(microseconds=index),
+            **columns,
+        )
+        db.add(event)
+        created.append(event)
+    if created:
+        db.flush()
+        project_field(db, document, definition)
+    return ImportedMetadataApplication(events=created, warnings=warnings)
 
 
 def derive_event_states(events: list[MetadataEvent], definition: MetadataDefinition) -> EventStates:
@@ -511,6 +637,97 @@ def apply_metadata_values(
                 matter_document_id=document.id,
                 metadata_definition_id=definition.id,
                 operation="ADD",
+                source_type=source_type,
+                source_id=source_id,
+                actor_id=actor_id,
+                confidence=(confidences or {}).get(str(value)),
+                created_at=base_time + timedelta(microseconds=index),
+                **value_columns(value, definition),
+            )
+        )
+    db.add_all(events)
+    db.flush()
+    return events, project_field(db, document, definition)
+
+
+def replace_metadata_values(
+    db: Session,
+    *,
+    matter_id: uuid.UUID,
+    document_id: uuid.UUID,
+    definition_id: uuid.UUID,
+    values: list[Any],
+    source_type: str,
+    actor_id: uuid.UUID | None,
+    source_id: str,
+    confidences: dict[str, float] | None = None,
+) -> tuple[list[MetadataEvent], FieldResolution]:
+    """Replace one single- or multi-valued asserted field in one auditable command."""
+
+    document = db.scalar(
+        select(MatterDocument)
+        .where(MatterDocument.id == document_id, MatterDocument.matter_id == matter_id)
+        .with_for_update()
+    )
+    if document is None:
+        raise ValueError("Matter document not found")
+    definition = db.scalar(
+        select(MetadataDefinition).where(
+            MetadataDefinition.id == definition_id,
+            MetadataDefinition.matter_id == matter_id,
+        )
+    )
+    if definition is None:
+        raise ValueError("Metadata definition not found")
+    if definition.cardinality == "SINGLE" and len(values) > 1:
+        raise ValueError("Single-valued fields accept at most one replacement value")
+
+    unique_values: list[Any] = []
+    seen_values: set[str] = set()
+    for value in values:
+        key = _canonical(value)
+        if key not in seen_values:
+            value_columns(value, definition)
+            unique_values.append(value)
+            seen_values.add(key)
+
+    validate_event_relationships(
+        db,
+        document=document,
+        definition=definition,
+        operation="CLEAR",
+        target_event_id=None,
+        supersedes_id=None,
+    )
+    base_time = utcnow()
+    events = [
+        MetadataEvent(
+            matter_id=matter_id,
+            matter_document_id=document.id,
+            metadata_definition_id=definition.id,
+            operation="CLEAR",
+            source_type=source_type,
+            source_id=source_id,
+            actor_id=actor_id,
+            created_at=base_time,
+        )
+    ]
+    value_operation = "SET" if definition.cardinality == "SINGLE" else "ADD"
+    for index, value in enumerate(unique_values, start=1):
+        validate_event_relationships(
+            db,
+            document=document,
+            definition=definition,
+            operation=value_operation,
+            target_event_id=None,
+            supersedes_id=None,
+        )
+        events.append(
+            MetadataEvent(
+                matter_id=matter_id,
+                matter_document_id=document.id,
+                metadata_definition_id=definition.id,
+                operation=value_operation,
                 source_type=source_type,
                 source_id=source_id,
                 actor_id=actor_id,

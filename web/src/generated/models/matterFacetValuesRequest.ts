@@ -12,7 +12,7 @@ export interface MatterFacetValuesRequest {
   query?: string | null;
   /**
      * @minimum 1
-     * @maximum 50
+     * @maximum 1000
      */
   size?: number;
   parent?: string | null;

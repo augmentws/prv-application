@@ -155,14 +155,26 @@ describe("ReviewWorkspace", () => {
       if (path === "/v1/auth/me") return { id: "user-1", tenant_id: "tenant-1", email: "reviewer@example.com", display_name: "Review User", status: "ACTIVE", tenant_role: "ADMIN", is_superuser: false, created_at: "2026-09-14T12:00:00Z" } as never;
       if (path === "/v1/matters/matter-1") return { id: "matter-1", client_id: "client-1", name: "Acme Investigation", status: "ACTIVE", created_at: "2026-09-14T12:00:00Z" } as never;
       if (path === "/v1/clients/client-1") return { id: "client-1", tenant_id: "tenant-1", name: "Acme", status: "ACTIVE", created_at: "2026-09-14T12:00:00Z" } as never;
-      if (path === "/v1/tenants/tenant-1/users") return [{ id: "user-1", tenant_id: "tenant-1", email: "reviewer@example.com", display_name: "Review User", status: "ACTIVE", tenant_role: "ADMIN", is_superuser: false, created_at: "2026-09-14T12:00:00Z" }] as never;
+      if (path === "/v1/authorization/effective?resource_type=MATTER&resource_id=matter-1") return { resource_type: "MATTER", resource_id: "matter-1", permission_keys: ["matter.view", "metadata.view", "document.view", "document.review", "document.view_history", "document.bulk_code"] } as never;
+      if (path === "/v1/matters/matter-1/access-users?permission_key=document.view") return [{ id: "user-1", tenant_id: "tenant-1", email: "reviewer@example.com", display_name: "Review User", status: "ACTIVE", tenant_role: "ADMIN", is_superuser: false, created_at: "2026-09-14T12:00:00Z" }] as never;
       if (path === "/v1/matters/matter-1/saved-searches" && !init?.method) return [] as never;
       if (path.endsWith("/metadata-definitions")) return definitions as never;
       if (path.endsWith("/metadata-groups")) return groups as never;
-      if (path === "/v1/clients/client-1/custodians") return [{ id: "custodian-1", client_id: "client-1", display_name: "Alice Adams", email_addresses: [], external_reference: null, status: "ACTIVE", created_at: "2026-09-14T12:00:00Z" }] as never;
+      if (path === "/v1/matters/matter-1/custodians") return [{ id: "custodian-1", client_id: "client-1", display_name: "Alice Adams", email_addresses: [], external_reference: null, status: "ACTIVE", created_at: "2026-09-14T12:00:00Z" }] as never;
       if (path.endsWith("/search") && init?.method === "POST") return searchResponse as never;
+      if (path.endsWith("/facets/coded_by/values") && init?.method === "POST") return {
+        field: "coded_by",
+        values: [{ value: "user:reviewer@example.com", label: "Review User (reviewer@example.com)", count: 12 }],
+        missing_count: 4,
+        total_count: 16,
+        has_more: false,
+      } as never;
       if (path.endsWith("/bulk-tag-jobs/preview") && init?.method === "POST") return { candidate_count: 126, matched_count: 42 } as never;
-      if (path.endsWith("/facets/custodian/values") && init?.method === "POST") return { field: "custodian", values: [{ value: "custodian-1", count: 1 }], missing_count: 7 } as never;
+      if (path.endsWith("/facets/custodian/values") && init?.method === "POST") {
+        const request = JSON.parse(String(init.body)) as { size: number };
+        const facetValues = Array.from({ length: 9 }, (_, index) => ({ value: `custodian-${index + 1}`, count: 9 - index }));
+        return { field: "custodian", values: facetValues.slice(0, request.size), missing_count: 7, total_count: 16, has_more: request.size < facetValues.length } as never;
+      }
       if (path.endsWith("/facets/category/values") && init?.method === "POST") {
         const request = JSON.parse(String(init.body)) as { parent: string | null };
         if (request.parent === "Initiatives") return { field: "category", values: [{ value: "Initiatives/344", label: "344", parent: "Initiatives", has_children: false, count: 1 }] } as never;
@@ -172,7 +184,7 @@ describe("ReviewWorkspace", () => {
         const field = path.includes("document_date") ? "document_date" : "email_sent";
         return { field, interval: "month", buckets: [{ start: "2024-01-01T00:00:00Z", count: 1 }] } as never;
       }
-      if (path === "/v1/collection-items/item-1") return collectionItem as never;
+      if (path === "/v1/matters/matter-1/documents/document-1/collection-item") return collectionItem as never;
       if (path.endsWith("/documents/document-1/coding-history")) return {
         direct: [{
           metadata_event_id: "event-direct-1", metadata_definition_id: "definition-responsive", field_key: "responsiveness", field_display_name: "Responsiveness",
@@ -228,6 +240,10 @@ describe("ReviewWorkspace", () => {
     renderWorkspace({ initialPage: 2 });
 
     expect(await screen.findByText("Budget update")).toBeInTheDocument();
+    expect(screen.getByRole("main")).toHaveClass("fixed", "inset-0", "overscroll-none");
+    expect(screen.getByRole("main")).toHaveStyle({ overflow: "clip" });
+    const searchFilters = screen.getByRole("complementary", { name: "Search filters" });
+    expect(searchFilters.querySelector(".overflow-y-auto")).toHaveClass("overscroll-contain");
     expect(within(screen.getByRole("list", { name: "Document search results" })).getByLabelText("Result 51")).toHaveTextContent("51");
     expect(screen.getByPlaceholderText("Search document body, filenames, paths, email headers, and metadata")).toBeInTheDocument();
     expect(screen.getByText(/moved to a private communications channel/)).toBeInTheDocument();
@@ -282,8 +298,32 @@ describe("ReviewWorkspace", () => {
 
     await user.click(screen.getByRole("button", { name: /^Filters/ }));
     expect(screen.getByRole("button", { name: "Topics" })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Coded by" })).toBeInTheDocument();
+    await user.click(screen.getByRole("button", { name: "Coded by" }));
+    const reviewerFilter = await screen.findByRole("checkbox", { name: /Review User \(reviewer@example\.com\)/ });
+    await user.click(reviewerFilter);
+    await waitFor(() => {
+      const searchCalls = vi.mocked(coreApi).mock.calls.filter(([path, init]) => path.endsWith("/search") && init?.method === "POST");
+      const lastRequest = JSON.parse(String(searchCalls.at(-1)?.[1]?.body)) as { filters: MatterSearchFilter[] };
+      expect(lastRequest.filters).toContainEqual({ field: "coded_by", operator: "IN", values: ["user:reviewer@example.com"] });
+    });
+    await user.click(reviewerFilter);
+    await user.click(screen.getByRole("button", { name: "Coded by" }));
     expect(screen.queryByRole("checkbox", { name: /Alice Adams/ })).not.toBeInTheDocument();
     await user.click(screen.getByRole("button", { name: "Custodian" }));
+    const moreCustodians = await screen.findByRole("button", { name: "Show more Custodian values" });
+    expect(screen.queryByRole("checkbox", { name: /custodian-9/ })).not.toBeInTheDocument();
+    await user.click(moreCustodians);
+    expect(await screen.findByRole("checkbox", { name: /custodian-9/ })).toBeInTheDocument();
+    await waitFor(() => expect(screen.queryByRole("button", { name: "Show more Custodian values" })).not.toBeInTheDocument());
+    await user.click(screen.getByRole("checkbox", { name: /Has value/ }));
+
+    await waitFor(() => {
+      const searchCalls = vi.mocked(coreApi).mock.calls.filter(([path, init]) => path.endsWith("/search") && init?.method === "POST");
+      const lastRequest = JSON.parse(String(searchCalls.at(-1)?.[1]?.body)) as { filters: MatterSearchFilter[] };
+      expect(lastRequest.filters).toContainEqual({ field: "custodian", operator: "EXISTS" });
+    });
+
     await user.click(await screen.findByRole("checkbox", { name: /No value/ }));
 
     await waitFor(() => {
@@ -299,6 +339,25 @@ describe("ReviewWorkspace", () => {
       const searchCalls = vi.mocked(coreApi).mock.calls.filter(([path, init]) => path.endsWith("/search") && init?.method === "POST");
       const lastRequest = JSON.parse(String(searchCalls.at(-1)?.[1]?.body)) as { filters: { field: string; values: string[] }[] };
       expect(lastRequest.filters).toContainEqual({ field: "custodian", operator: "IN", values: ["custodian-1"] });
+    });
+
+    const aliceFilter = screen.getByRole("checkbox", { name: /Alice Adams/ });
+    await user.click(screen.getByRole("button", { name: "Negate" }));
+
+    await waitFor(() => {
+      const searchCalls = vi.mocked(coreApi).mock.calls.filter(([path, init]) => path.endsWith("/search") && init?.method === "POST");
+      const lastRequest = JSON.parse(String(searchCalls.at(-1)?.[1]?.body)) as { filters: { field: string; values: string[] }[] };
+      expect(lastRequest.filters).toContainEqual({ field: "custodian", operator: "NOT_IN", values: ["custodian-1"] });
+      expect(aliceFilter.nextElementSibling).toHaveAttribute("data-selection-mode", "excluded");
+    });
+
+    await user.click(screen.getByRole("button", { name: "Include" }));
+
+    await waitFor(() => {
+      const searchCalls = vi.mocked(coreApi).mock.calls.filter(([path, init]) => path.endsWith("/search") && init?.method === "POST");
+      const lastRequest = JSON.parse(String(searchCalls.at(-1)?.[1]?.body)) as { filters: { field: string; values: string[] }[] };
+      expect(lastRequest.filters).toContainEqual({ field: "custodian", operator: "IN", values: ["custodian-1"] });
+      expect(aliceFilter.nextElementSibling).toHaveAttribute("data-selection-mode", "included");
     });
 
     const openFilterDialog = screen.getByRole("dialog", { name: "Filter documents" });

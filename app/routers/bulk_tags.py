@@ -9,6 +9,7 @@ from app.bulk_tags import preview_ranked_bulk_tag_scope
 from app.database import get_db
 from app.dependencies import Principal, can_admin_matter, get_principal
 from app.document_metadata import value_columns
+from app.job_archives import MATTER_BULK_TAG_JOB_TYPE, job_not_archived
 from app.models import Matter, MatterBulkTagJob, MetadataDefinition, SearchIndexGeneration
 from app.schemas import (
     MatterBulkTagCreate,
@@ -173,7 +174,10 @@ def list_bulk_tag_jobs(
     return list(
         db.scalars(
             select(MatterBulkTagJob)
-            .where(MatterBulkTagJob.matter_id == matter_id)
+            .where(
+                MatterBulkTagJob.matter_id == matter_id,
+                job_not_archived(MATTER_BULK_TAG_JOB_TYPE, MatterBulkTagJob.id),
+            )
             .order_by(MatterBulkTagJob.created_at.desc())
             .limit(limit)
         )

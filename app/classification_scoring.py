@@ -17,8 +17,19 @@ from app.artifact_gateway import copy_workflow_artifact_content, find_workflow_a
 from app.audit import record_audit
 from app.classification_gateway import ClassificationArtifactAccess, ClassificationGateway, ClassificationGatewayError
 from app.classification_lifecycle import ClassificationLifecycleError, authorization_context
-from app.classification_models import active_value_keys
+from app.classification_models import (
+    CLASSIFICATION_TARGET_TYPES,
+    effective_prediction_policy,
+    trained_class_keys,
+)
 from app.database import SessionLocal
+from app.job_executions import (
+    CLASSIFICATION_SCORING_RUN_JOB_TYPE,
+    JobScope,
+    create_job_execution,
+    current_job_execution,
+    transition_job_execution,
+)
 from app.models import (
     ClassificationDatasetSnapshot,
     ClassificationModel,
@@ -29,10 +40,13 @@ from app.models import (
 )
 from app.schemas import (
     ClassificationDatasetIssue,
+    ClassificationPredictionClassCount,
     ClassificationPredictionPreviewRead,
     ClassificationPredictionRowRead,
+    ClassificationPredictionSummaryRead,
     ClassificationScoringPreview,
 )
+from classification_service.backend import ClassificationRuntimeError
 from classification_service.hashing import canonical_value_hash, classification_output_artifact_derivation_key
 from classification_service.schemas import (
     ArtifactReference,
@@ -116,11 +130,15 @@ def _compatibility_issues(
                 message="Scoring requires an approved model version",
             )
         )
-    if definition.status != "ACTIVE" or not definition.reviewable:
+    if (
+        definition.status != "ACTIVE"
+        or definition.value_source != "ASSERTED"
+        or definition.type not in CLASSIFICATION_TARGET_TYPES
+    ):
         issues.append(
             ClassificationDatasetIssue(
                 code="TARGET_FIELD_NOT_ELIGIBLE",
-                message="Target field must be active and reviewable",
+                message="Target field must be an active Boolean, enum, text, or long-text coding field",
             )
         )
     if not (
@@ -135,27 +153,21 @@ def _compatibility_issues(
                 message="Model-version target field identity is no longer compatible",
             )
         )
-    available = set(active_value_keys(definition)) if definition.type == "ENUM" else {"false", "true"}
-    if configuration.classification_strategy == ClassificationStrategy.BINARY.value:
-        mapping = configuration.binary_mapping or {}
-        selected = set(mapping.get("negative_value_keys", [])) | set(mapping.get("positive_value_keys", []))
-    else:
-        selected = set(configuration.ordered_class_keys)
-    if not selected.issubset(available):
-        issues.append(
-            ClassificationDatasetIssue(
-                code="TARGET_CLASSES_UNAVAILABLE",
-                message="One or more model-version target classes are inactive or missing",
-            )
-        )
-    if snapshot.status != "READY_FOR_TRAINING" or not snapshot.feature_artifact_id or not snapshot.feature_content_hash:
+    if (
+        snapshot.status not in {"READY_FOR_TRAINING", "READY_FOR_SCORING"}
+        or not snapshot.feature_artifact_id
+        or not snapshot.feature_content_hash
+    ):
         issues.append(
             ClassificationDatasetIssue(
                 code="SCORING_DATASET_NOT_READY",
                 message="Dataset snapshot must contain a complete immutable feature artifact",
             )
         )
-    if not snapshot.feature_specification_hash or snapshot.feature_specification_hash != version.feature_specification_hash:
+    if (
+        not snapshot.feature_specification_hash
+        or snapshot.feature_specification_hash != version.feature_specification_hash
+    ):
         issues.append(
             ClassificationDatasetIssue(
                 code="FEATURE_CONTRACT_MISMATCH",
@@ -230,7 +242,7 @@ def prepare_scoring(
             )
         else:
             errors.extend(_compatibility_issues(model, version, configuration, snapshot))
-            policy = PredictionResolutionPolicy.model_validate(configuration.prediction_resolution_policy)
+            policy = effective_prediction_policy(version.dataset_snapshot, configuration)
             policy_hash = canonical_value_hash(policy.model_dump(mode="json"))
             if snapshot.feature_content_hash and snapshot.feature_specification_hash:
                 derivation_key = canonical_value_hash(
@@ -311,9 +323,17 @@ def create_scoring_run(
         if existing is not None:
             return existing, False
     if prepared.blocking_errors or not all(
-        (prepared.version, prepared.configuration, prepared.scoring_policy, prepared.scoring_policy_hash, prepared.derivation_key)
+        (
+            prepared.version,
+            prepared.configuration,
+            prepared.scoring_policy,
+            prepared.scoring_policy_hash,
+            prepared.derivation_key,
+        )
     ):
-        raise ClassificationScoringConflictError("Classification scoring preview contains blocking errors", code="SCORING_BLOCKED")
+        raise ClassificationScoringConflictError(
+            "Classification scoring preview contains blocking errors", code="SCORING_BLOCKED"
+        )
     assert prepared.version is not None
     assert prepared.configuration is not None
     assert prepared.scoring_policy is not None
@@ -344,6 +364,29 @@ def create_scoring_run(
     )
     db.add(run)
     db.flush()
+    matter = db.get(Matter, run.matter_id)
+    if matter is None:
+        raise ClassificationScoringConflictError("Scoring-run matter not found")
+    create_job_execution(
+        db,
+        job_type=CLASSIFICATION_SCORING_RUN_JOB_TYPE,
+        job_id=run.id,
+        scope=JobScope(run.tenant_id, matter.client_id, run.matter_id),
+        workflow_key="classification_model_scoring_v1",
+        code_version="1",
+        dbos_workflow_id=run.workflow_id,
+        initiated_by_user_id=actor_user_id,
+        idempotency_key=idempotency_key,
+        progress_total=run.progress_total,
+        progress_unit="stages",
+        input_snapshot={
+            "classification_model_id": str(run.classification_model_id),
+            "model_version_id": str(run.model_version_id),
+            "dataset_snapshot_id": str(run.dataset_snapshot_id),
+            "derivation_key": run.derivation_key,
+        },
+        configuration_snapshot={"scoring_policy": run.scoring_policy},
+    )
     record_audit(
         db,
         tenant_id=run.tenant_id,
@@ -473,9 +516,7 @@ def prediction_preview(
                 "Prediction artifact class metadata is invalid",
                 code="PREDICTION_ARTIFACT_INVALID",
             ) from exc
-        if not isinstance(ordered_class_keys, list) or not all(
-            isinstance(value, str) for value in ordered_class_keys
-        ):
+        if not isinstance(ordered_class_keys, list) or not all(isinstance(value, str) for value in ordered_class_keys):
             raise ClassificationScoringConflictError(
                 "Prediction artifact class metadata is invalid",
                 code="PREDICTION_ARTIFACT_INVALID",
@@ -525,6 +566,220 @@ def prediction_preview(
     )
 
 
+def _prediction_class_labels(run: ClassificationScoringRun) -> dict[str, str]:
+    definition = run.classification_model.target_metadata_definition
+    labels: dict[str, str] = {}
+    for value in definition.allowed_values or []:
+        if not isinstance(value, dict):
+            continue
+        key = value.get("key")
+        label = value.get("label")
+        if isinstance(key, str) and isinstance(label, str) and label.strip():
+            labels[key] = label
+    if definition.type == "BOOLEAN":
+        labels.setdefault("false", "False")
+        labels.setdefault("true", "True")
+    return labels
+
+
+def _prediction_summary_read(
+    run: ClassificationScoringRun,
+    summary: dict[str, Any],
+    *,
+    minimum_probability: float | None = None,
+) -> ClassificationPredictionSummaryRead:
+    ordered_class_keys = summary.get("ordered_class_keys")
+    class_counts = summary.get("class_counts")
+    if not isinstance(ordered_class_keys, list) or not all(isinstance(value, str) for value in ordered_class_keys):
+        raise ValueError("Prediction summary class keys are invalid")
+    if not isinstance(class_counts, list):
+        raise TypeError("Prediction summary class counts are invalid")
+    count_by_key: dict[str, int] = {}
+    for item in class_counts:
+        if not isinstance(item, dict) or not isinstance(item.get("class_key"), str):
+            raise TypeError("Prediction summary class count is invalid")
+        document_count = item.get("document_count")
+        if not isinstance(document_count, int) or isinstance(document_count, bool) or document_count < 0:
+            raise ValueError("Prediction summary document count is invalid")
+        count_by_key[item["class_key"]] = document_count
+    all_class_keys = [*ordered_class_keys, *sorted(set(count_by_key) - set(ordered_class_keys))]
+    labels = _prediction_class_labels(run)
+    return ClassificationPredictionSummaryRead(
+        scoring_run_id=run.id,
+        model_version_id=run.model_version_id,
+        ordered_class_keys=ordered_class_keys,
+        minimum_probability=minimum_probability,
+        total_document_count=summary["total_document_count"],
+        evaluated_document_count=summary["evaluated_document_count"],
+        predicted_document_count=summary["predicted_document_count"],
+        no_prediction_document_count=summary["no_prediction_document_count"],
+        predicted_value_count=summary["predicted_value_count"],
+        abstained_document_count=summary["abstained_document_count"],
+        class_counts=[
+            ClassificationPredictionClassCount(
+                class_key=class_key,
+                label=labels.get(class_key, class_key),
+                document_count=count_by_key.get(class_key, 0),
+            )
+            for class_key in all_class_keys
+        ],
+    )
+
+
+def prediction_summary(
+    run: ClassificationScoringRun,
+    *,
+    matter: Matter,
+    actor_user_id: uuid.UUID,
+    minimum_probability: float | None = None,
+) -> ClassificationPredictionSummaryRead:
+    if run.status not in {"COMPLETED", "COMPLETED_WITH_ERRORS"}:
+        raise ClassificationScoringConflictError(
+            "Prediction summary is available only after scoring completes",
+            code="SCORING_OUTPUT_NOT_READY",
+        )
+    if run.prediction_artifact_id is None or run.prediction_content_hash is None:
+        raise ClassificationScoringConflictError(
+            "Completed scoring run is missing its prediction artifact",
+            code="SCORING_OUTPUT_MISSING",
+        )
+    artifact_derivation = classification_output_artifact_derivation_key(
+        run.derivation_key,
+        ArtifactType.CLASSIFICATION_PREDICTIONS.value,
+    )
+    reference = find_workflow_artifact_reference(
+        artifact_type=ArtifactType.CLASSIFICATION_PREDICTIONS,
+        derivation_key=artifact_derivation,
+        actor_user_id=actor_user_id,
+        tenant_id=run.tenant_id,
+        client_id=matter.client_id,
+    )
+    cached_summary = reference.metadata.get("prediction_summary") if reference is not None else None
+    if (
+        minimum_probability is None
+        and reference is not None
+        and reference.artifact_id == run.prediction_artifact_id
+        and reference.content_hash == run.prediction_content_hash
+        and isinstance(cached_summary, dict)
+    ):
+        try:
+            return _prediction_summary_read(run, cached_summary)
+        except (KeyError, TypeError, ValueError):
+            pass
+
+    with tempfile.SpooledTemporaryFile(max_size=8 * 1024 * 1024) as artifact_file:
+        copy_workflow_artifact_content(
+            artifact_id=run.prediction_artifact_id,
+            destination=artifact_file,
+            actor_user_id=actor_user_id,
+            tenant_id=run.tenant_id,
+            client_id=matter.client_id,
+        )
+        artifact_file.seek(0)
+        digest = hashlib.sha256()
+        while chunk := artifact_file.read(1024 * 1024):
+            digest.update(chunk)
+        if digest.hexdigest() != run.prediction_content_hash:
+            raise ClassificationScoringConflictError(
+                "Prediction artifact content hash does not match the scoring run",
+                code="PREDICTION_ARTIFACT_HASH_MISMATCH",
+            )
+        artifact_file.seek(0)
+        try:
+            parquet = pq.ParquetFile(artifact_file)
+        except Exception as exc:
+            raise ClassificationScoringConflictError(
+                "Prediction artifact is not readable Parquet",
+                code="PREDICTION_ARTIFACT_INVALID",
+            ) from exc
+        metadata = parquet.schema_arrow.metadata or {}
+        if (
+            metadata.get(b"pvr.schema") != b"classification-scoring-predictions"
+            or metadata.get(b"pvr.scoring_run_id") != str(run.id).encode()
+            or metadata.get(b"pvr.model_version_id") != str(run.model_version_id).encode()
+        ):
+            raise ClassificationScoringConflictError(
+                "Prediction artifact identity does not match the scoring run",
+                code="PREDICTION_ARTIFACT_IDENTITY_MISMATCH",
+            )
+        try:
+            ordered_class_keys = json.loads(metadata[b"pvr.ordered_class_keys"])
+        except (KeyError, UnicodeDecodeError, json.JSONDecodeError) as exc:
+            raise ClassificationScoringConflictError(
+                "Prediction artifact class metadata is invalid",
+                code="PREDICTION_ARTIFACT_INVALID",
+            ) from exc
+        if not isinstance(ordered_class_keys, list) or not all(isinstance(value, str) for value in ordered_class_keys):
+            raise ClassificationScoringConflictError(
+                "Prediction artifact class metadata is invalid",
+                code="PREDICTION_ARTIFACT_INVALID",
+            )
+        required_columns = {"result_status", "predicted_class_keys", "abstained"}
+        if minimum_probability is not None:
+            required_columns.add("probabilities")
+        if not required_columns.issubset(parquet.schema_arrow.names):
+            raise ClassificationScoringConflictError(
+                "Prediction artifact is missing summary columns",
+                code="PREDICTION_ARTIFACT_INVALID",
+            )
+        class_counts: dict[str, int] = {}
+        evaluated_document_count = predicted_document_count = no_prediction_document_count = 0
+        predicted_value_count = abstained_document_count = 0
+        strategy = run.model_version.training_run.configuration.classification_strategy
+        for batch in parquet.iter_batches(columns=sorted(required_columns)):
+            for row in batch.to_pylist():
+                if row["result_status"] != "SUCCESS":
+                    continue
+                evaluated_document_count += 1
+                abstained_document_count += int(bool(row["abstained"]))
+                if minimum_probability is None:
+                    predicted_keys = list(dict.fromkeys(row["predicted_class_keys"] or []))
+                else:
+                    probabilities = row["probabilities"] or []
+                    if len(probabilities) != len(ordered_class_keys):
+                        raise ClassificationScoringConflictError(
+                            "Prediction artifact probability vectors do not match its class metadata",
+                            code="PREDICTION_ARTIFACT_INVALID",
+                        )
+                    if strategy == ClassificationStrategy.ONE_VS_REST.value:
+                        predicted_keys = [
+                            class_key
+                            for class_key, probability in zip(ordered_class_keys, probabilities, strict=True)
+                            if probability >= minimum_probability
+                        ]
+                    else:
+                        selected = max(range(len(probabilities)), key=probabilities.__getitem__)
+                        predicted_keys = (
+                            [ordered_class_keys[selected]]
+                            if probabilities[selected] >= minimum_probability
+                            else []
+                        )
+                if predicted_keys:
+                    predicted_document_count += 1
+                    predicted_value_count += len(predicted_keys)
+                    for class_key in predicted_keys:
+                        class_counts[class_key] = class_counts.get(class_key, 0) + 1
+                else:
+                    no_prediction_document_count += 1
+        return _prediction_summary_read(
+            run,
+            {
+                "ordered_class_keys": ordered_class_keys,
+                "total_document_count": parquet.metadata.num_rows,
+                "evaluated_document_count": evaluated_document_count,
+                "predicted_document_count": predicted_document_count,
+                "no_prediction_document_count": no_prediction_document_count,
+                "predicted_value_count": predicted_value_count,
+                "abstained_document_count": abstained_document_count,
+                "class_counts": [
+                    {"class_key": class_key, "document_count": count}
+                    for class_key, count in class_counts.items()
+                ],
+            },
+            minimum_probability=minimum_probability,
+        )
+
+
 def scoring_request(run: ClassificationScoringRun) -> ClassificationScoringRequest:
     configuration = run.model_version.training_run.configuration
     snapshot = run.dataset_snapshot
@@ -537,7 +792,10 @@ def scoring_request(run: ClassificationScoringRun) -> ClassificationScoringReque
         configuration_hash=run.configuration_hash,
         target_field_snapshot=TargetFieldSnapshot.model_validate(run.model_version.target_field_snapshot),
         classification_strategy=ClassificationStrategy(configuration.classification_strategy),
-        ordered_class_keys=configuration.ordered_class_keys,
+        ordered_class_keys=(
+            run.model_version.trained_class_keys
+            or trained_class_keys(run.model_version.dataset_snapshot, configuration)
+        ),
         prediction_resolution_policy=PredictionResolutionPolicy.model_validate(run.scoring_policy),
         model_artifact=_artifact_reference(
             run.model_version.model_artifact_id,
@@ -596,6 +854,16 @@ def prepare_runtime_invocation(
         run.current_stage = "VALIDATING_PACKAGE"
         run.progress_completed = 1
         run.started_at = run.started_at or utcnow()
+        transition_job_execution(
+            db,
+            job_type=CLASSIFICATION_SCORING_RUN_JOB_TYPE,
+            job_id=run.id,
+            status="RUNNING",
+            current_stage="VALIDATING_PACKAGE",
+            progress_completed=1,
+            progress_total=run.progress_total,
+            progress={"population_document_count": run.population_document_count},
+        )
         request = scoring_request(run)
         db.commit()
         return {
@@ -634,6 +902,30 @@ def _validate_package(
             "Pinned model package identity or signature is incompatible",
             code="MODEL_PACKAGE_IDENTITY_MISMATCH",
         )
+
+
+def mark_scoring_runtime_started(
+    scoring_run_id: uuid.UUID,
+    *,
+    session_factory: Callable[[], Session] = SessionLocal,
+) -> None:
+    with session_factory() as db:
+        run = db.get(ClassificationScoringRun, scoring_run_id)
+        if run is None:
+            raise ClassificationScoringNotFoundError("Classification scoring run not found")
+        if run.status in {"CANCELED", "COMPLETED", "COMPLETED_WITH_ERRORS"}:
+            return
+        transition_job_execution(
+            db,
+            job_type=CLASSIFICATION_SCORING_RUN_JOB_TYPE,
+            job_id=run.id,
+            status="RUNNING",
+            current_stage="SCORING_DOCUMENTS",
+            progress_completed=max(2, run.progress_completed),
+            progress_total=run.progress_total,
+            progress={"population_document_count": run.population_document_count},
+        )
+        db.commit()
 
 
 def _workflow_reference(reference: Any) -> ArtifactReference:
@@ -691,11 +983,15 @@ def _load_published_scoring_output(
     )
     content = destination.getvalue()
     if hashlib.sha256(content).hexdigest() != manifest_reference.content_hash:
-        raise ClassificationScoringConflictError("Scoring result manifest hash mismatch", code="RESULT_MANIFEST_HASH_MISMATCH")
+        raise ClassificationScoringConflictError(
+            "Scoring result manifest hash mismatch", code="RESULT_MANIFEST_HASH_MISMATCH"
+        )
     try:
         manifest = json.loads(content)
     except (UnicodeDecodeError, json.JSONDecodeError) as exc:
-        raise ClassificationScoringConflictError("Scoring result manifest is invalid", code="RESULT_MANIFEST_INVALID") from exc
+        raise ClassificationScoringConflictError(
+            "Scoring result manifest is invalid", code="RESULT_MANIFEST_INVALID"
+        ) from exc
     prediction_reference = references[ArtifactType.CLASSIFICATION_PREDICTIONS]
     try:
         manifest_prediction = ArtifactReference.model_validate(manifest.get("prediction_artifact"))
@@ -735,7 +1031,8 @@ def invoke_runtime(
     invocation: dict[str, Any],
     *,
     gateway: ClassificationGateway | None = None,
-    published_result_verifier: Callable[[ClassificationScoringResult, ClassificationArtifactAccess], dict[str, Any]] | None = None,
+    published_result_verifier: Callable[[ClassificationScoringResult, ClassificationArtifactAccess], dict[str, Any]]
+    | None = None,
 ) -> dict[str, Any]:
     if invocation.get("completed"):
         return invocation
@@ -770,10 +1067,8 @@ def _validate_runtime_output(
     if result.population_document_count != run.population_document_count:
         raise ClassificationScoringConflictError("Runtime scoring population does not match the frozen snapshot")
     if (
-        manifest.get("status")
-        != ("COMPLETED_WITH_ERRORS" if result.failed_document_count else "COMPLETED")
-        or
-        manifest.get("model_version_id") != str(run.model_version_id)
+        manifest.get("status") != ("COMPLETED_WITH_ERRORS" if result.failed_document_count else "COMPLETED")
+        or manifest.get("model_version_id") != str(run.model_version_id)
         or manifest.get("configuration_hash") != run.configuration_hash
         or manifest.get("feature_specification_hash") != run.feature_specification_hash
         or manifest.get("input_artifact_hashes")
@@ -796,7 +1091,7 @@ def finalize_scoring_run(
     manifest = runtime_output.get("result_manifest")
     if not isinstance(manifest, dict):
         raise ClassificationScoringConflictError("Verified scoring result manifest is missing")
-    with (nullcontext(db) if db is not None else session_factory()) as active_db:
+    with nullcontext(db) if db is not None else session_factory() as active_db:
         run = active_db.scalar(
             select(ClassificationScoringRun).where(ClassificationScoringRun.id == scoring_run_id).with_for_update()
         )
@@ -806,6 +1101,15 @@ def finalize_scoring_run(
             return
         if run.status in {"COMPLETED", "COMPLETED_WITH_ERRORS"}:
             return
+        transition_job_execution(
+            active_db,
+            job_type=CLASSIFICATION_SCORING_RUN_JOB_TYPE,
+            job_id=run.id,
+            status="RUNNING",
+            current_stage="FINALIZING",
+            progress_completed=max(3, run.progress_completed),
+            progress_total=run.progress_total,
+        )
         _validate_runtime_output(run, result, manifest)
         run.status = "COMPLETED_WITH_ERRORS" if result.failed_document_count else "COMPLETED"
         run.current_stage = run.status
@@ -822,6 +1126,21 @@ def finalize_scoring_run(
         run.failure_summary = None
         run.failure_retriable = False
         run.completed_at = utcnow()
+        transition_job_execution(
+            active_db,
+            job_type=CLASSIFICATION_SCORING_RUN_JOB_TYPE,
+            job_id=run.id,
+            status=run.status,
+            current_stage=run.status,
+            progress_completed=run.progress_total,
+            progress={
+                "population_document_count": run.population_document_count,
+                "scored_document_count": run.scored_document_count,
+                "abstained_document_count": run.abstained_document_count,
+                "excluded_document_count": run.excluded_document_count,
+                "failed_document_count": run.failed_document_count,
+            },
+        )
         record_audit(
             active_db,
             tenant_id=run.tenant_id,
@@ -860,13 +1179,34 @@ def fail_scoring_run(
         run.failure_summary = message[:4000]
         run.failure_retriable = retriable
         run.completed_at = utcnow()
+        transition_job_execution(
+            db,
+            job_type=CLASSIFICATION_SCORING_RUN_JOB_TYPE,
+            job_id=run.id,
+            status="FAILED",
+            current_stage="FAILED",
+            progress_completed=run.progress_completed,
+            failure_code=run.failure_code,
+            failure_summary=run.failure_summary,
+            failure_retriable=retriable,
+        )
         db.commit()
 
 
+def scoring_failure_cause(exc: Exception) -> Exception:
+    errors = getattr(exc, "errors", None)
+    if isinstance(errors, list) and errors and isinstance(errors[-1], Exception):
+        return scoring_failure_cause(errors[-1])
+    return exc
+
+
 def scoring_failure_details(exc: Exception) -> tuple[str, bool]:
-    if isinstance(exc, ClassificationScoringError):
-        return exc.code, exc.code in {"PUBLISHED_OUTPUT_NOT_VISIBLE"}
-    if isinstance(exc, ClassificationGatewayError):
+    cause = scoring_failure_cause(exc)
+    if isinstance(cause, ClassificationScoringError):
+        return cause.code, cause.code in {"PUBLISHED_OUTPUT_NOT_VISIBLE"}
+    if isinstance(cause, ClassificationRuntimeError):
+        return cause.code, False
+    if isinstance(cause, ClassificationGatewayError):
         return "CLASSIFICATION_RUNTIME_UNAVAILABLE", True
     return "CLASSIFICATION_SCORING_FAILED", True
 
@@ -882,6 +1222,118 @@ def cancel_scoring_run(run: ClassificationScoringRun) -> bool:
     run.completed_at = run.canceled_at
     run.failure_retriable = False
     return True
+
+
+def retry_scoring_run(
+    db: Session,
+    *,
+    run: ClassificationScoringRun,
+    actor_user_id: uuid.UUID,
+):
+    previous = current_job_execution(
+        db,
+        job_type=CLASSIFICATION_SCORING_RUN_JOB_TYPE,
+        job_id=run.id,
+        for_update=True,
+    )
+    matter = db.get(Matter, run.matter_id)
+    if matter is None:
+        raise ClassificationScoringConflictError("Scoring-run matter not found")
+    if previous is None and run.status in {"FAILED", "CANCELED"}:
+        terminal_status = run.status
+        terminal_stage = run.current_stage
+        terminal_progress = run.progress_completed
+        terminal_failure_code = run.failure_code
+        terminal_failure_summary = run.failure_summary
+        terminal_failure_retriable = run.failure_retriable
+        previous = create_job_execution(
+            db,
+            job_type=CLASSIFICATION_SCORING_RUN_JOB_TYPE,
+            job_id=run.id,
+            scope=JobScope(run.tenant_id, matter.client_id, matter.id),
+            workflow_key="classification_model_scoring_v1",
+            code_version="1",
+            dbos_workflow_id=run.workflow_id,
+            initiated_by_user_id=run.execution_actor_user_id,
+            idempotency_key=run.idempotency_key,
+            progress_total=run.progress_total,
+            progress_unit="stages",
+            input_snapshot={
+                "classification_model_id": str(run.classification_model_id),
+                "model_version_id": str(run.model_version_id),
+                "dataset_snapshot_id": str(run.dataset_snapshot_id),
+                "derivation_key": run.derivation_key,
+            },
+            configuration_snapshot={"scoring_policy": run.scoring_policy},
+        )
+        previous = transition_job_execution(
+            db,
+            job_type=CLASSIFICATION_SCORING_RUN_JOB_TYPE,
+            job_id=run.id,
+            status=terminal_status,
+            current_stage=terminal_stage,
+            progress_completed=terminal_progress,
+            failure_code=terminal_failure_code,
+            failure_summary=terminal_failure_summary,
+            failure_retriable=terminal_failure_retriable,
+        )
+    elif run.status in {"FAILED", "CANCELED"} and previous.status not in {"FAILED", "CANCELED"}:
+        previous = transition_job_execution(
+            db,
+            job_type=CLASSIFICATION_SCORING_RUN_JOB_TYPE,
+            job_id=run.id,
+            status=run.status,
+            current_stage=run.current_stage,
+            progress_completed=max(run.progress_completed, previous.progress_completed),
+            failure_code=run.failure_code,
+            failure_summary=run.failure_summary,
+            failure_retriable=run.failure_retriable,
+        )
+    if previous is None or previous.status not in {"FAILED", "CANCELED"}:
+        raise ClassificationScoringConflictError("Only a failed or canceled scoring run can be retried")
+    if previous.status == "FAILED" and not previous.failure_retriable:
+        raise ClassificationScoringConflictError("This scoring failure is not marked as retryable")
+    attempt = previous.attempt_number + 1
+    run.workflow_id = f"classification-model-score:{run.id}:attempt:{attempt}"
+    run.status = "QUEUED"
+    run.current_stage = "QUEUED"
+    run.progress_completed = 0
+    run.scored_document_count = 0
+    run.abstained_document_count = 0
+    run.excluded_document_count = 0
+    run.failed_document_count = 0
+    run.prediction_artifact_id = None
+    run.prediction_content_hash = None
+    run.result_manifest_artifact_id = None
+    run.result_manifest_content_hash = None
+    run.failure_code = None
+    run.failure_summary = None
+    run.failure_retriable = False
+    run.execution_actor_user_id = actor_user_id
+    run.started_at = None
+    run.completed_at = None
+    run.canceled_at = None
+    return create_job_execution(
+        db,
+        job_type=CLASSIFICATION_SCORING_RUN_JOB_TYPE,
+        job_id=run.id,
+        scope=JobScope(run.tenant_id, matter.client_id, matter.id),
+        workflow_key="classification_model_scoring_v1",
+        code_version="1",
+        dbos_workflow_id=run.workflow_id,
+        initiated_by_user_id=actor_user_id,
+        idempotency_key=f"{run.idempotency_key}:attempt:{attempt}",
+        progress_total=run.progress_total,
+        progress_unit="stages",
+        input_snapshot={
+            "classification_model_id": str(run.classification_model_id),
+            "model_version_id": str(run.model_version_id),
+            "dataset_snapshot_id": str(run.dataset_snapshot_id),
+            "derivation_key": run.derivation_key,
+        },
+        configuration_snapshot={"scoring_policy": run.scoring_policy},
+        retry_of=previous,
+    )
 
 
 def reconcile_scoring_run(db: Session, *, run: ClassificationScoringRun) -> None:
@@ -915,6 +1367,14 @@ def reconcile_scoring_run(db: Session, *, run: ClassificationScoringRun) -> None
     )
     run.status = "RECONCILING"
     run.current_stage = "FINALIZING_RECONCILED_OUTPUTS"
+    transition_job_execution(
+        db,
+        job_type=CLASSIFICATION_SCORING_RUN_JOB_TYPE,
+        job_id=run.id,
+        status="RUNNING",
+        current_stage="FINALIZING_RECONCILED_OUTPUTS",
+        progress_completed=max(1, run.progress_completed),
+    )
     db.commit()
     finalize_scoring_run(
         run.id,
@@ -928,12 +1388,14 @@ def execute_scoring_run(
     *,
     session_factory: Callable[[], Session] = SessionLocal,
     gateway: ClassificationGateway | None = None,
-    published_result_verifier: Callable[[ClassificationScoringResult, ClassificationArtifactAccess], dict[str, Any]] | None = None,
+    published_result_verifier: Callable[[ClassificationScoringResult, ClassificationArtifactAccess], dict[str, Any]]
+    | None = None,
 ) -> None:
     try:
         invocation = prepare_runtime_invocation(scoring_run_id, session_factory=session_factory)
         if invocation is None or invocation.get("completed"):
             return
+        mark_scoring_runtime_started(scoring_run_id, session_factory=session_factory)
         output = invoke_runtime(
             invocation,
             gateway=gateway,
@@ -942,5 +1404,11 @@ def execute_scoring_run(
         finalize_scoring_run(scoring_run_id, output, session_factory=session_factory)
     except Exception as exc:
         code, retriable = scoring_failure_details(exc)
-        fail_scoring_run(scoring_run_id, str(exc), code=code, retriable=retriable, session_factory=session_factory)
+        fail_scoring_run(
+            scoring_run_id,
+            str(scoring_failure_cause(exc)),
+            code=code,
+            retriable=retriable,
+            session_factory=session_factory,
+        )
         raise

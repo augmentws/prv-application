@@ -9,7 +9,7 @@ from unittest.mock import Mock
 import pytest
 from fastapi import HTTPException
 from fastapi.testclient import TestClient
-from sqlalchemy import select
+from sqlalchemy import delete, select
 from sqlalchemy.orm import Session
 
 from app.artifact_gateway import SearchItemSnapshot
@@ -27,14 +27,23 @@ from app.models import (
     MatterTopicBatch,
     MatterTopicJob,
     MetadataDefinition,
+    MetadataGroupField,
+    ReviewBatch,
+    ReviewBatchDocument,
+    ReviewBatchRun,
+    ReviewBatchRunValue,
+    ReviewBatchSearchCodingProjection,
+    ReviewBatchSearchCodingRun,
     SearchIndexGeneration,
     SearchProjectionOperation,
     Tenant,
     User,
+    WorkflowRun,
 )
 from app.schemas import MatterSearchRequest
 from app.search.client import OpenSearchBulkError, OpenSearchError, is_retryable_opensearch_error
 from app.search.mappings import (
+    CODED_BY_FIELD,
     INDEX_ANALYZER,
     QUOTE_ANALYZER,
     SEARCH_ANALYZER,
@@ -49,6 +58,7 @@ from app.search.query import (
     compile_date_histogram_request,
     compile_facet_values_request,
     compile_search_request,
+    execute_batch_coding_facets,
     execute_date_histogram,
     execute_facet_values,
     execute_search,
@@ -128,6 +138,10 @@ def test_mapping_uses_versioned_ediscovery_analyzers_and_numeric_types() -> None
     properties = mapping["mappings"]["properties"]["metadata"]["properties"]
     vector_method = mapping["mappings"]["properties"]["chunks"]["properties"]["embedding"]["method"]
     assert mapping["mappings"]["properties"]["batch_ids"] == {"type": "keyword"}
+    assert mapping["mappings"]["properties"][CODED_BY_FIELD] == {
+        "type": "keyword",
+        "ignore_above": 512,
+    }
     assert mapping["mappings"]["properties"]["batch_topics"] == {
         "type": "nested",
         "properties": {
@@ -183,6 +197,17 @@ def test_mapping_omits_hierarchy_storage_when_no_searchable_field_is_hierarchica
 
     assert "hierarchy_facets" not in mapping["mappings"]["properties"]
     assert "_meta" not in mapping["mappings"]
+
+
+def test_adding_coded_by_requires_historical_reindex() -> None:
+    desired = compile_document_index([])
+    current = deepcopy(desired)
+    current["mappings"]["properties"].pop(CODED_BY_FIELD)
+
+    plan = plan_schema_change(current, desired)
+
+    assert plan.action == "REINDEX_REQUIRED"
+    assert CODED_BY_FIELD in " ".join(plan.reasons)
 
 
 def test_adding_the_first_enum_hierarchy_requires_reindex() -> None:
@@ -280,6 +305,22 @@ def test_query_compiler_supports_missing_and_value_or_missing_filters() -> None:
         "bool": {"must_not": [{"exists": {"field": "metadata.issue"}}]}
     } in missing["query"]["bool"]["filter"]
 
+    negated_values = compile_search_request(
+        MatterSearchRequest.model_validate(
+            {"filters": [{"field": "issue", "operator": "NOT_IN", "values": ["pricing", "conduct"]}]}
+        ),
+        definitions,
+        tenant_id="tenant-1",
+        matter_id="matter-1",
+    )
+    assert {
+        "bool": {
+            "must_not": [
+                {"terms": {"metadata.issue.exact": ["pricing", "conduct"]}}
+            ]
+        }
+    } in negated_values["query"]["bool"]["filter"]
+
     value_or_missing = compile_search_request(
         MatterSearchRequest.model_validate(
             {
@@ -339,6 +380,37 @@ def test_facet_value_query_is_limited_searchable_and_self_excluding() -> None:
     assert body["aggs"]["issue"]["terms"]["size"] == 20
     assert body["aggs"]["issue"]["terms"]["include"] == ".*trade.*"
     assert body["aggs"]["issue__missing"] == {"missing": {"field": "metadata.issue.exact"}}
+
+
+def test_coded_by_is_a_built_in_self_excluding_facet() -> None:
+    request = MatterSearchRequest.model_validate(
+        {
+            "filters": [
+                {"field": CODED_BY_FIELD, "operator": "IN", "values": ["user:reviewer@example.com"]},
+            ]
+        }
+    )
+
+    search_body = compile_search_request(
+        request,
+        [],
+        tenant_id="tenant-1",
+        matter_id="matter-1",
+    )
+    assert {"terms": {CODED_BY_FIELD: ["user:reviewer@example.com"]}} in search_body["query"]["bool"]["filter"]
+
+    facet_body = compile_facet_values_request(
+        request,
+        [],
+        field=CODED_BY_FIELD,
+        tenant_id="tenant-1",
+        matter_id="matter-1",
+        value_query=None,
+        size=8,
+    )
+    assert {"terms": {CODED_BY_FIELD: ["user:reviewer@example.com"]}} not in facet_body["query"]["bool"]["filter"]
+    assert facet_body["aggs"][CODED_BY_FIELD]["terms"] == {"field": CODED_BY_FIELD, "size": 8}
+    assert facet_body["aggs"][f"{CODED_BY_FIELD}__missing"] == {"missing": {"field": CODED_BY_FIELD}}
 
 
 def test_facet_value_query_normalizes_lowercase_search_text() -> None:
@@ -406,6 +478,9 @@ def test_hierarchical_enum_filters_and_facets_use_ancestor_projection() -> None:
         parent="legal",
     )
     child_scope = facet_body["aggs"]["category"]["aggs"]["scope"]
+    assert facet_body["aggs"]["category__missing"] == {
+        "missing": {"field": "metadata.category"}
+    }
     assert {"term": {"hierarchy_facets.parent_id": "legal"}} in child_scope["filter"]["bool"]["filter"]
     assert child_scope["aggs"]["values"]["aggs"] == {
         "documents": {"reverse_nested": {}},
@@ -555,6 +630,7 @@ def test_batch_coding_filter_and_facet_keep_run_field_and_value_in_one_nested_sc
         definition=issue,
         values=["hurricane", "regulatory"],
         minimum_confidence=0.7,
+        maximum_confidence=0.9,
     )
     nested_filters = coding_filter["nested"]["query"]["bool"]["filter"]
     assert nested_filters == [
@@ -562,7 +638,7 @@ def test_batch_coding_filter_and_facet_keep_run_field_and_value_in_one_nested_sc
         {"term": {"batch_coding.run_id": "run-2"}},
         {"term": {"batch_coding.field_id": str(issue.id)}},
         {"terms": {"batch_coding.value_keyword": ["hurricane", "regulatory"]}},
-        {"range": {"batch_coding.confidence": {"gte": 0.7}}},
+        {"range": {"batch_coding.confidence": {"gte": 0.7, "lt": 0.9}}},
     ]
 
     body = compile_batch_coding_facet_request(
@@ -574,14 +650,56 @@ def test_batch_coding_filter_and_facet_keep_run_field_and_value_in_one_nested_sc
         batch_id="batch-1",
         run_id="run-2",
         required_filters=[{"term": {"batch_ids": "batch-1"}}],
+        minimum_confidence=0.7,
+        maximum_confidence=0.9,
     )
     scope = body["aggs"]["batch_coding"]["aggs"]["scope"]
     assert scope["filter"]["bool"]["filter"] == [
         {"term": {"batch_coding.batch_id": "batch-1"}},
         {"term": {"batch_coding.run_id": "run-2"}},
         {"term": {"batch_coding.field_id": str(issue.id)}},
+        {"range": {"batch_coding.confidence": {"gte": 0.7, "lt": 0.9}}},
     ]
     assert scope["aggs"]["values"]["terms"]["field"] == "batch_coding.value_keyword"
+
+
+class FakeBatchCodingFacetClient:
+    def search(self, index: str, body: dict) -> dict:
+        return {
+            "hits": {"total": {"value": 1}, "hits": []},
+            "aggregations": {
+                "batch_coding": {
+                    "scope": {
+                        "values": {
+                            "buckets": [{"key": "topic_417", "doc_count": 857}],
+                        }
+                    }
+                }
+            },
+        }
+
+
+def test_batch_coding_enum_facets_return_display_labels_with_stable_keys() -> None:
+    issue = definition("issue_coding", "ENUM")
+    issue.allowed_values = [
+        {"key": "topic_417", "label": "Movie Gallery", "active": True},
+    ]
+
+    response = execute_batch_coding_facets(
+        FakeBatchCodingFacetClient(),  # type: ignore[arg-type]
+        "matter-documents",
+        MatterSearchRequest(),
+        [issue],
+        definition=issue,
+        tenant_id="tenant-1",
+        matter_id="matter-1",
+        batch_id="batch-1",
+        run_id="run-2",
+    )
+
+    assert response.values[0].value == "topic_417"
+    assert response.values[0].label == "Movie Gallery"
+    assert response.values[0].count == 857
 
 
 def test_date_histogram_is_calendar_bucketed_and_self_excluding() -> None:
@@ -769,13 +887,14 @@ def test_search_response_hides_opensearch_shape() -> None:
 class FakeBooleanFacetClient:
     def search(self, index: str, body: dict) -> dict:
         return {
-            "hits": {"total": {"value": 0}, "hits": []},
+            "hits": {"total": {"value": 9}, "hits": []},
             "aggregations": {
                 "key_document": {
+                    "sum_other_doc_count": 0,
                     "buckets": [
                         {"key": 1, "key_as_string": "true", "doc_count": 4},
                         {"key": 0, "key_as_string": "false", "doc_count": 2},
-                    ]
+                    ],
                 },
                 "key_document__missing": {"doc_count": 3},
             },
@@ -797,6 +916,39 @@ def test_boolean_facet_values_use_boolean_bucket_labels() -> None:
 
     assert [(item.value, item.count) for item in response.values] == [(True, 4), (False, 2)]
     assert response.missing_count == 3
+    assert response.total_count == 9
+    assert response.has_more is False
+
+
+class FakeLimitedFacetClient:
+    def search(self, index: str, body: dict) -> dict:
+        return {
+            "hits": {"total": {"value": 45}, "hits": []},
+            "aggregations": {
+                "custodian": {
+                    "sum_other_doc_count": 1,
+                    "buckets": [{"key": f"custodian-{index}", "doc_count": 9 - index} for index in range(8)],
+                },
+                "custodian__missing": {"doc_count": 0},
+            },
+        }
+
+
+def test_facet_values_report_when_more_buckets_are_available() -> None:
+    response = execute_facet_values(
+        FakeLimitedFacetClient(),  # type: ignore[arg-type]
+        "matter-documents",
+        MatterSearchRequest(),
+        [definition("custodian", "TEXT", facetable=True)],
+        field="custodian",
+        tenant_id="tenant-1",
+        matter_id="matter-1",
+        value_query=None,
+        size=8,
+    )
+
+    assert len(response.values) == 8
+    assert response.has_more is True
 
 
 class FakeHybridFacetClient(FakeBooleanFacetClient):
@@ -831,7 +983,9 @@ def test_hybrid_facet_values_skip_rrf_pipeline() -> None:
 class FakeHierarchyFacetClient:
     def search(self, index: str, body: dict) -> dict:
         return {
+            "hits": {"total": {"value": 12}},
             "aggregations": {
+                "category__missing": {"doc_count": 7},
                 "category": {
                     "scope": {
                         "values": {
@@ -878,6 +1032,8 @@ def test_hierarchical_facet_values_return_document_counts_and_navigation_metadat
         "parent": "legal",
         "has_children": True,
     }
+    assert response.total_count == 12
+    assert response.missing_count == 7
 
 
 class FakePathHierarchyFacetClient:
@@ -1043,22 +1199,30 @@ def test_document_projection_includes_artifact_body_text(monkeypatch: pytest.Mon
     monkeypatch.setattr("app.search.service.get_search_item_snapshot", lambda **_: snapshot)
     monkeypatch.setattr("app.search.service.load_current_chunk_artifacts", lambda **_: None)
     monkeypatch.setattr("app.search.service.current_metadata_values", lambda *_: {})
+    monkeypatch.setattr(
+        "app.search.service.coded_by_tokens",
+        lambda *_: ["user:reviewer@example.com"],
+    )
 
     batch_ids = [uuid.uuid4(), uuid.uuid4()]
     definitions = [
         definition("email_from", "TEXT", facetable=True, normalize_to_lowercase=True),
         definition("email_to", "TEXT", facetable=True, normalize_to_lowercase=True),
+        definition("email_domain", "TEXT", facetable=True, normalize_to_lowercase=True),
         definition("initiative", "TEXT", facetable=True, hierarchy_separator="/"),
     ]
     definitions[1].cardinality = "MULTIPLE"
+    definitions[2].cardinality = "MULTIPLE"
     projection = build_document_projection(db, document, definitions, batch_ids=batch_ids)
 
     assert projection["body_text"] == "The confidential project is Juniper."
     assert projection["batch_ids"] == [str(value) for value in batch_ids]
+    assert projection["coded_by"] == ["user:reviewer@example.com"]
     assert projection["email_from"] == "sender@example.com"
     assert projection["email_to"] == ["recipient@example.com"]
     assert projection["metadata"]["email_from"] == "sender@example.com"
     assert projection["metadata"]["email_to"] == ["recipient@example.com"]
+    assert projection["metadata"]["email_domain"] == ["example.com"]
     assert projection["metadata"]["initiative"] == "Initiatives/344"
     assert projection["hierarchy_facets"] == [
         {
@@ -1132,6 +1296,7 @@ def test_document_projection_attaches_nested_chunk_vectors(monkeypatch: pytest.M
     monkeypatch.setattr("app.search.service.get_search_item_snapshot", lambda **_: snapshot)
     monkeypatch.setattr("app.search.service.load_current_chunk_artifacts", lambda **_: (chunk_set, vector_set))
     monkeypatch.setattr("app.search.service.current_metadata_values", lambda *_: {})
+    monkeypatch.setattr("app.search.service.coded_by_tokens", lambda *_: [])
 
     projection = build_document_projection(db, document, [])
 
@@ -1194,6 +1359,148 @@ class FakeIndexClient:
 
     def count(self, index: str) -> int:
         return self.indexed_document_count
+
+
+def test_batch_coding_sync_removes_only_the_target_run_projection(
+    db: Session,
+    root_admin: User,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    client_record = Client(tenant_id=root_admin.tenant_id, name="Retained run client")
+    db.add(client_record)
+    db.flush()
+    matter = Matter(client_id=client_record.id, name="Retained run matter")
+    db.add(matter)
+    db.flush()
+    import_job = MatterDocumentImportJob(
+        matter_id=matter.id,
+        source_collection_id=uuid.uuid4(),
+        selection_type="EXPLICIT",
+        selection={},
+        selection_summary="Retained run test",
+        status="COMPLETED",
+        workflow_id=f"import:{uuid.uuid4()}",
+        created_by_user_id=root_admin.id,
+    )
+    db.add(import_job)
+    db.flush()
+    document = MatterDocument(
+        matter_id=matter.id,
+        source_collection_id=import_job.source_collection_id,
+        collection_item_id=uuid.uuid4(),
+        added_by_import_job_id=import_job.id,
+    )
+    batch = ReviewBatch(
+        matter_id=matter.id,
+        name="Retained run batch",
+        selection_type="ALL_MATTER",
+        selection_definition={"type": "ALL_MATTER"},
+        status="READY",
+        search_status="READY",
+        workflow_id=f"review-batch:{uuid.uuid4()}",
+        document_count=1,
+        created_by_user_id=root_admin.id,
+    )
+    target_definition = definition("responsiveness", "ENUM", facetable=True)
+    target_definition.matter_id = matter.id
+    db.add_all([document, batch, target_definition])
+    db.flush()
+    db.add(ReviewBatchDocument(review_batch_id=batch.id, matter_document_id=document.id, sequence_number=1))
+    workflows = [
+        WorkflowRun(
+            tenant_id=root_admin.tenant_id,
+            client_id=client_record.id,
+            matter_id=matter.id,
+            workflow_key="retained-projection-test",
+            code_version="test",
+            dbos_workflow_id=f"retained-projection:{uuid.uuid4()}",
+            status="COMPLETED",
+            initiated_by_user_id=root_admin.id,
+        )
+        for _ in range(2)
+    ]
+    db.add_all(workflows)
+    db.flush()
+    runs = [
+        ReviewBatchRun(
+            review_batch_id=batch.id,
+            run_type="WORKFLOW",
+            purpose="REFERENCE",
+            status="COMPLETED",
+            result_policy="ISOLATED",
+            workflow_run_record_id=workflow.id,
+            configuration_snapshot={},
+            initiated_by_user_id=root_admin.id,
+            processed_document_count=1,
+        )
+        for workflow in workflows
+    ]
+    db.add_all(runs)
+    db.flush()
+    db.add(
+        ReviewBatchRunValue(
+            review_batch_run_id=runs[1].id,
+            matter_document_id=document.id,
+            metadata_definition_id=target_definition.id,
+            value_ordinal=0,
+            value_text="responsive",
+            confidence=0.92,
+        )
+    )
+    generation = SearchIndexGeneration(
+        matter_id=matter.id,
+        generation=1,
+        index_name="retained-run-v1",
+        alias_name="retained-run",
+        schema_hash="b" * 64,
+        status="ACTIVE",
+        document_count=1,
+        schema_snapshot={},
+    )
+    db.add(generation)
+    db.flush()
+    db.add_all(
+        [
+            ReviewBatchSearchCodingProjection(
+                review_batch_id=batch.id,
+                review_batch_run_id=run.id,
+                search_index_generation_id=generation.id if run is runs[0] else None,
+                status="READY" if run is runs[0] else "QUEUED",
+                requested_by_user_id=root_admin.id,
+            )
+            for run in runs
+        ]
+    )
+    db.add(
+        ReviewBatchSearchCodingRun(
+            review_batch_id=batch.id,
+            review_batch_run_id=runs[1].id,
+            status="QUEUED",
+            selected_by_user_id=root_admin.id,
+        )
+    )
+    db.commit()
+
+    captured: list[tuple[str, str, dict]] = []
+    fake = Mock()
+    fake.bulk.side_effect = lambda _index, operations: captured.extend(list(operations))
+    manager = SearchIndexManager(db, fake, Settings(search_bulk_batch_size=100))
+    ensure = Mock(return_value=generation)
+    monkeypatch.setattr(manager, "ensure", ensure)
+
+    assert manager.sync_batch_coding(batch.id, runs[1].id) == 1
+    ensure.assert_not_called()
+    fake.update_mapping.assert_called_once()
+    assert len(captured) == 1
+    script = captured[0][2]["script"]
+    assert "run_id == params.run_id" in script["source"]
+    assert script["params"]["batch_id"] == str(batch.id)
+    assert script["params"]["run_id"] == str(runs[1].id)
+    retained = db.get(ReviewBatchSearchCodingProjection, (batch.id, runs[0].id))
+    projected = db.get(ReviewBatchSearchCodingProjection, (batch.id, runs[1].id))
+    assert retained is not None and retained.status == "READY"
+    assert projected is not None and projected.status == "READY"
+    assert projected.search_index_generation_id == generation.id
 
 
 def test_embedding_job_indexing_checkpoints_and_retries_only_failed_documents(
@@ -1675,6 +1982,54 @@ def test_index_manager_requires_confirmation_for_existing_metadata_mapping_chang
     assert "metadata.issue" in " ".join(required.value.plan.reasons)
 
 
+def test_full_rebuild_completes_older_pending_schema_operations(db: Session) -> None:
+    tenant = Tenant(slug="superseded-search-tenant", name="Superseded Search Tenant", status="ACTIVE", is_root=True)
+    db.add(tenant)
+    db.flush()
+    client_record = Client(tenant_id=tenant.id, name="Superseded Search Client", status="ACTIVE")
+    db.add(client_record)
+    db.flush()
+    matter = Matter(client_id=client_record.id, name="Superseded Search Matter", status="ACTIVE")
+    db.add(matter)
+    db.commit()
+
+    fake = FakeIndexClient()
+    manager = SearchIndexManager(db, fake, Settings(opensearch_index_prefix="test"))  # type: ignore[arg-type]
+    manager.ensure(matter.id)
+    pending = SearchProjectionOperation(
+        matter_id=matter.id,
+        kind="DOCUMENT_UPSERT",
+        payload={
+            "document_ids": [str(uuid.uuid4())],
+            "schema_change": {
+                "action": "REINDEX_REQUIRED",
+                "desired_schema_hash": "a" * 64,
+                "reasons": ["New fields require historical document projection: hierarchy_facets."],
+            },
+        },
+        status="AWAITING_USER",
+        workflow_id=f"search-projection:{uuid.uuid4()}",
+    )
+    db.add(pending)
+    db.commit()
+
+    replacement = manager.ensure(matter.id, force=True)
+    db.refresh(pending)
+
+    assert replacement.generation == 2
+    assert pending.status == "COMPLETED"
+    assert pending.completed_at is not None
+    assert replacement.activated_at is not None
+    assert pending.completed_at.replace(tzinfo=None) == replacement.activated_at.replace(tzinfo=None)
+    assert pending.payload["schema_change_resolution"] == {
+        "kind": "SUPERSEDED_BY_REBUILD",
+        "search_index_generation_id": str(replacement.id),
+        "generation": replacement.generation,
+        "schema_hash": replacement.schema_hash,
+        "resolved_at": replacement.activated_at.isoformat(),
+    }
+
+
 def test_index_manager_applies_allowlisted_additive_mapping_in_place(db: Session) -> None:
     tenant = Tenant(slug="in-place-tenant", name="In-place Tenant", status="ACTIVE", is_root=True)
     db.add(tenant)
@@ -1900,6 +2255,19 @@ def test_reindex_confirmation_requeues_the_schema_operation(
             "reasons": ["Existing field mappings changed: metadata."],
         }
     }
+    email_domain = db.scalar(
+        select(MetadataDefinition).where(
+            MetadataDefinition.matter_id == uuid.UUID(matter["id"]),
+            MetadataDefinition.key == "email_domain",
+        )
+    )
+    assert email_domain is not None
+    db.execute(
+        delete(MetadataGroupField).where(
+            MetadataGroupField.metadata_definition_id == email_domain.id
+        )
+    )
+    db.delete(email_domain)
     db.commit()
 
     response = client.post(
@@ -1912,6 +2280,64 @@ def test_reindex_confirmation_requeues_the_schema_operation(
     assert confirmed["kind"] == "REBUILD"
     assert confirmed["status"] == "QUEUED"
     assert confirmed["payload"]["confirmation"]["confirmed_by_user_id"]
+    installed = db.scalar(
+        select(MetadataDefinition).where(
+            MetadataDefinition.matter_id == uuid.UUID(matter["id"]),
+            MetadataDefinition.key == "email_domain",
+        )
+    )
+    assert installed is not None
+    assert installed.cardinality == "MULTIPLE"
+
+
+def test_explicit_rebuild_installs_missing_email_domain_definition(
+    client: TestClient,
+    root_token: str,
+    db: Session,
+) -> None:
+    headers = auth(root_token)
+    tenant_id = client.get("/v1/auth/me", headers=headers).json()["tenant_id"]
+    created_client = client.post(
+        f"/v1/tenants/{tenant_id}/clients",
+        headers=headers,
+        json={"name": "Email Domain Rebuild Client"},
+    ).json()
+    matter = client.post(
+        f"/v1/clients/{created_client['id']}/matters",
+        headers=headers,
+        json={"name": "Legacy Email Domain Matter"},
+    ).json()
+    matter_id = uuid.UUID(matter["id"])
+    email_domain = db.scalar(
+        select(MetadataDefinition).where(
+            MetadataDefinition.matter_id == matter_id,
+            MetadataDefinition.key == "email_domain",
+        )
+    )
+    assert email_domain is not None
+    db.execute(
+        delete(MetadataGroupField).where(
+            MetadataGroupField.metadata_definition_id == email_domain.id
+        )
+    )
+    db.delete(email_domain)
+    db.commit()
+
+    response = client.post(
+        f"/v1/matters/{matter_id}/search-indexes/rebuild",
+        headers=headers,
+    )
+
+    assert response.status_code == 202, response.text
+    assert response.json()["kind"] == "REBUILD"
+    installed = db.scalar(
+        select(MetadataDefinition).where(
+            MetadataDefinition.matter_id == matter_id,
+            MetadataDefinition.key == "email_domain",
+        )
+    )
+    assert installed is not None
+    assert installed.value_source == "SYSTEM"
 
 
 def test_failed_document_upserts_can_be_requeued_in_bulk(

@@ -11,7 +11,7 @@ import httpx
 import pyarrow as pa
 import pyarrow.parquet as pq
 from pydantic import ValidationError
-from sqlalchemy import select
+from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
 from app.artifact_gateway import (
@@ -21,8 +21,16 @@ from app.artifact_gateway import (
     store_classification_workflow_artifact,
 )
 from app.audit import record_audit
-from app.classification_models import get_classification_model, target_schema_fingerprint
+from app.classification_models import (
+    CLASSIFICATION_TARGET_TYPES,
+    active_value_keys,
+    eligible_target_definition,
+    get_classification_model,
+    target_field_snapshot,
+    target_schema_fingerprint,
+)
 from app.document_metadata import event_value
+from app.metadata_hierarchy import parse_hierarchy_path
 from app.models import (
     ClassificationDatasetSnapshot,
     ClassificationModel,
@@ -32,6 +40,8 @@ from app.models import (
     MatterDocument,
     ReviewBatch,
     ReviewBatchDocument,
+    ReviewBatchReviewerCoding,
+    ReviewBatchReviewerRevision,
     ReviewBatchRun,
     ReviewBatchRunValue,
 )
@@ -40,6 +50,7 @@ from app.schemas import (
     ClassificationDatasetSnapshotPreview,
     ClassificationDatasetSnapshotRequest,
     ClassificationLabelSourceSummary,
+    ClassificationTargetDistributionRead,
 )
 from artifact_service.schemas import WorkflowArtifactLineageInput
 from classification_service.schemas import (
@@ -51,6 +62,7 @@ from classification_service.schemas import (
     LabelSourceKind,
     LabelSourceSpecification,
     MissingLabelAction,
+    TargetCardinality,
     TargetFieldSnapshot,
     TargetMetadataType,
     TrainingScopeSpecification,
@@ -125,11 +137,12 @@ class ResolvedLabel:
 class PreparedDatasetSnapshot:
     model: ClassificationModel
     configuration: ClassificationModelConfiguration
+    label_policy: LabelPolicy
     request: ClassificationDatasetSnapshotRequest
     population_rows: list[PopulationRow]
     label_rows: list[ResolvedLabel]
     population_bytes: bytes
-    label_bytes: bytes
+    label_bytes: bytes | None
     preview: ClassificationDatasetSnapshotPreview
 
 
@@ -232,6 +245,7 @@ def _write_label_parquet(
     *,
     configuration_hash: str,
     strategy: str,
+    ordered_class_keys: list[str],
 ) -> bytes:
     schema = pa.schema(
         [
@@ -259,6 +273,7 @@ def _write_label_parquet(
                 "schema_version": LABEL_SCHEMA_VERSION,
                 "configuration_hash": configuration_hash,
                 "classification_strategy": strategy,
+                "ordered_class_keys": json.dumps(ordered_class_keys, ensure_ascii=False, separators=(",", ":")),
             }
         ),
     )
@@ -413,7 +428,17 @@ def _population_rows(
 def _target_value(value: Any, target: TargetFieldSnapshot) -> str | None:
     if target.metadata_type == TargetMetadataType.BOOLEAN:
         return str(value).lower() if isinstance(value, bool) else None
-    return value if isinstance(value, str) else None
+    if not isinstance(value, str) or not value.strip():
+        return None
+    if target.hierarchy_separator is None or target.hierarchy_level is None:
+        return value
+    try:
+        segments = parse_hierarchy_path(value, target.hierarchy_separator)
+    except (TypeError, ValueError):
+        return None
+    if len(segments) < target.hierarchy_level:
+        return None
+    return target.hierarchy_separator.join(segments[: target.hierarchy_level])
 
 
 def _observed_class_keys(
@@ -426,7 +451,15 @@ def _observed_class_keys(
         configured = configured.get(str(target.metadata_definition_id), configured.get(target.stable_key))
     if not isinstance(configured, list):
         return None
-    return tuple(sorted({str(value) for value in configured}))
+    return tuple(
+        sorted(
+            {
+                projected
+                for value in configured
+                if (projected := _target_value(value, target)) is not None
+            }
+        )
+    )
 
 
 def _run_is_blinded(run: ReviewBatchRun) -> bool:
@@ -478,22 +511,6 @@ def _validate_run_source(
             message="Pinned label source runs must be complete",
         )
         return None
-    if source.kind == LabelSourceKind.HUMAN_REVIEW and run.run_type != "HUMAN":
-        _append_issue(
-            blocking_errors,
-            code="LABEL_SOURCE_KIND_MISMATCH",
-            message="HUMAN_REVIEW sources must reference a human review run",
-        )
-        return None
-    if source.kind == LabelSourceKind.ADJUDICATED_REVIEW and (
-        run.run_type != "HUMAN" or run.purpose != "REFERENCE"
-    ):
-        _append_issue(
-            blocking_errors,
-            code="LABEL_SOURCE_KIND_MISMATCH",
-            message="ADJUDICATED_REVIEW sources must reference a human reference run",
-        )
-        return None
     if source.kind == LabelSourceKind.ACCEPTED_JEV and run.run_type not in {"AGENT", "WORKFLOW"}:
         _append_issue(
             blocking_errors,
@@ -504,6 +521,56 @@ def _validate_run_source(
     return run
 
 
+def _validate_reviewer_source(
+    db: Session,
+    *,
+    matter: Matter,
+    source: LabelSourceSpecification,
+    blocking_errors: list[ClassificationDatasetIssue],
+) -> ReviewBatchReviewerCoding | None:
+    if source.source_reference_id is None:
+        _append_issue(
+            blocking_errors,
+            code="LABEL_SOURCE_REFERENCE_REQUIRED",
+            message=f"{source.kind.value} requires a pinned reviewer coding source",
+        )
+        return None
+    coding = db.get(ReviewBatchReviewerCoding, source.source_reference_id)
+    batch = db.get(ReviewBatch, coding.review_batch_id) if coding is not None else None
+    if coding is None or batch is None:
+        _append_issue(
+            blocking_errors,
+            code="LABEL_SOURCE_NOT_FOUND",
+            message=f"Pinned label source {source.source_reference_id} was not found",
+        )
+        return None
+    if batch.matter_id != matter.id:
+        _append_issue(
+            blocking_errors,
+            code="LABEL_SOURCE_WRONG_MATTER",
+            message="Pinned label sources must belong to the model's matter",
+        )
+        return None
+    if (
+        source.source_revision is not None
+        and db.get(
+            ReviewBatchReviewerRevision,
+            (coding.id, source.source_revision),
+        )
+        is None
+    ):
+        _append_issue(
+            blocking_errors,
+            code="LABEL_SOURCE_REVISION_NOT_FOUND",
+            message=(
+                f"Reviewer source {coding.id} does not contain revision "
+                f"{source.source_revision}"
+            ),
+        )
+        return None
+    return coding
+
+
 def _matter_claims(
     db: Session,
     *,
@@ -512,52 +579,75 @@ def _matter_claims(
     policy_index: int,
     source: LabelSourceSpecification,
 ) -> dict[uuid.UUID, LabelClaim]:
-    rows = db.scalars(
-        select(DocumentMetadataCurrent)
-        .where(
-            DocumentMetadataCurrent.matter_document_id.in_(document_ids),
-            DocumentMetadataCurrent.metadata_definition_id == target.metadata_definition_id,
-        )
-        .order_by(
-            DocumentMetadataCurrent.matter_document_id,
-            DocumentMetadataCurrent.value_ordinal,
-        )
-    ).all()
     grouped: dict[uuid.UUID, list[DocumentMetadataCurrent]] = defaultdict(list)
-    for row in rows:
-        grouped[row.matter_document_id].append(row)
+    for offset in range(0, len(document_ids), 10_000):
+        rows = db.scalars(
+            select(DocumentMetadataCurrent)
+            .where(
+                DocumentMetadataCurrent.matter_document_id.in_(document_ids[offset : offset + 10_000]),
+                DocumentMetadataCurrent.metadata_definition_id == target.metadata_definition_id,
+            )
+            .order_by(
+                DocumentMetadataCurrent.matter_document_id,
+                DocumentMetadataCurrent.value_ordinal,
+            )
+        ).all()
+        for row in rows:
+            grouped[row.matter_document_id].append(row)
     claims: dict[uuid.UUID, LabelClaim] = {}
     for document_id, values in grouped.items():
-        usable = [row for row in values if row.resolution_state == "VALUE"]
-        raw_values = tuple(
-            sorted(
+        claims[document_id] = _matter_claim(
+            document_id=document_id,
+            values=values,
+            target=target,
+            policy_index=policy_index,
+            source=source,
+        )
+    return claims
+
+
+def _matter_claim(
+    *,
+    document_id: uuid.UUID,
+    values: list[DocumentMetadataCurrent],
+    target: TargetFieldSnapshot,
+    policy_index: int,
+    source: LabelSourceSpecification,
+) -> LabelClaim:
+    usable = [row for row in values if row.resolution_state == "VALUE"]
+    raw_values = tuple(
+        sorted(
+            {
                 value
                 for row in usable
                 if (value := _target_value(event_value(row), target)) is not None
-            )
-        )
-        provenance = sorted(
-            {
-                value
-                for row in values
-                for value in [
-                    *(row.supporting_event_ids or []),
-                    *(row.conflicting_event_ids or []),
-                    *(row.pending_event_ids or []),
-                    *([str(row.source_event_id)] if row.source_event_id else []),
-                ]
             }
         )
-        claims[document_id] = LabelClaim(
-            policy_index=policy_index,
-            source=source,
-            raw_value_keys=raw_values,
-            source_record_ids=tuple(provenance),
-            label_timestamp=max((row.updated_at for row in values), default=None),
-            observed_class_keys=None,
-            target_conflict=any(row.resolution_state == "CONFLICTED" for row in values),
-        )
-    return claims
+    )
+    provenance = sorted(
+        {
+            value
+            for row in values
+            for value in [
+                *(row.supporting_event_ids or []),
+                *(row.conflicting_event_ids or []),
+                *(row.pending_event_ids or []),
+                *([str(row.source_event_id)] if row.source_event_id else []),
+            ]
+        }
+    )
+    return LabelClaim(
+        policy_index=policy_index,
+        source=source,
+        raw_value_keys=raw_values,
+        source_record_ids=tuple(provenance),
+        label_timestamp=max((row.updated_at for row in values), default=None),
+        observed_class_keys=None,
+        target_conflict=(
+            any(row.resolution_state == "CONFLICTED" for row in values)
+            or (target.cardinality == TargetCardinality.SINGLE and len(raw_values) > 1)
+        ),
+    )
 
 
 def _run_claims(
@@ -589,9 +679,11 @@ def _run_claims(
     for document_id, values in grouped.items():
         raw_values = tuple(
             sorted(
-                value
-                for row in values
-                if (value := _target_value(event_value(row), target)) is not None
+                {
+                    value
+                    for row in values
+                    if (value := _target_value(event_value(row), target)) is not None
+                }
             )
         )
         record_ids = tuple(
@@ -610,18 +702,86 @@ def _run_claims(
     return claims
 
 
+def _reviewer_claims(
+    db: Session,
+    *,
+    coding: ReviewBatchReviewerCoding,
+    document_ids: list[uuid.UUID],
+    target: TargetFieldSnapshot,
+    policy_index: int,
+    source: LabelSourceSpecification,
+) -> dict[uuid.UUID, LabelClaim]:
+    from app.reviewer_coding import resolve_reviewer_coding_as_of
+
+    source_revision = source.source_revision or coding.revision
+    resolved = resolve_reviewer_coding_as_of(
+        db,
+        reviewer_coding_id=coding.id,
+        revision=source_revision,
+        document_ids=document_ids,
+        metadata_definition_ids=[target.metadata_definition_id],
+    )
+    completed_document_ids = {
+        row.matter_document_id for row in resolved.documents if row.status == "COMPLETED"
+    }
+    grouped: dict[uuid.UUID, list[Any]] = defaultdict(list)
+    for row in resolved.values:
+        if row.matter_document_id in completed_document_ids:
+            grouped[row.matter_document_id].append(row)
+    revision_timestamps = {
+        revision: created_at
+        for revision, created_at in db.execute(
+            select(
+                ReviewBatchReviewerRevision.revision,
+                ReviewBatchReviewerRevision.created_at,
+            ).where(
+                ReviewBatchReviewerRevision.reviewer_coding_id == coding.id,
+                ReviewBatchReviewerRevision.revision.in_({row.revision for row in resolved.values}),
+            )
+        )
+    }
+    claims: dict[uuid.UUID, LabelClaim] = {}
+    for document_id, values in grouped.items():
+        raw_values = tuple(
+            sorted(
+                {
+                    value
+                    for row in values
+                    if (value := _target_value(event_value(row), target)) is not None
+                }
+            )
+        )
+        claims[document_id] = LabelClaim(
+            policy_index=policy_index,
+            source=source,
+            raw_value_keys=raw_values,
+            source_record_ids=tuple(
+                f"{coding.id}:{document_id}:{target.metadata_definition_id}:{row.value_ordinal}:r{row.revision}"
+                for row in values
+            ),
+            label_timestamp=max(
+                (revision_timestamps[row.revision] for row in values),
+                default=None,
+            ),
+            observed_class_keys=None,
+            target_conflict=(target.cardinality.value == "SINGLE" and len(raw_values) > 1),
+        )
+    return claims
+
+
 def _shape_claim(
     claim: LabelClaim,
     *,
     configuration: ClassificationModelConfiguration,
+    class_keys: tuple[str, ...],
+    binary_mapping: dict[str, Any] | None,
 ) -> tuple[tuple[Any, ...] | None, str | None]:
     if claim.target_conflict:
         return None, "TARGET_VALUE_CONFLICT"
     raw_values = set(claim.raw_value_keys)
     strategy = ClassificationStrategy(configuration.classification_strategy)
-    class_keys = tuple(configuration.ordered_class_keys)
     if strategy == ClassificationStrategy.BINARY:
-        mapping = configuration.binary_mapping or {}
+        mapping = binary_mapping or {}
         negative = raw_values.intersection(mapping.get("negative_value_keys", []))
         positive = raw_values.intersection(mapping.get("positive_value_keys", []))
         if negative and positive:
@@ -752,68 +912,161 @@ def _resolve_labels(
     policy: LabelPolicy,
     blocking_errors: list[ClassificationDatasetIssue],
     warnings: list[ClassificationDatasetIssue],
-) -> list[ResolvedLabel]:
+) -> tuple[list[ResolvedLabel], list[str]]:
     resolved: list[ResolvedLabel] = []
     source_conflicts = 0
     target_conflicts = 0
     missing = 0
-    class_keys = tuple(configuration.ordered_class_keys)
+    strategy = ClassificationStrategy(configuration.classification_strategy)
+    binary_mapping = configuration.binary_mapping
+    configured_class_keys = tuple(configuration.ordered_class_keys)
+    selections: dict[
+        uuid.UUID,
+        tuple[LabelClaim | None, list[LabelClaim], str | None, str | None],
+    ] = {}
     for document_id in document_ids:
         claims = claims_by_document.get(document_id, [])
         if not claims:
             missing += 1
-            resolved.append(
-                _unresolved_label(
-                    document_id,
-                    status="UNLABELED",
-                    reason="MISSING_LABEL",
-                    class_keys=class_keys,
-                )
-            )
+            selections[document_id] = (None, claims, "UNLABELED", "MISSING_LABEL")
             continue
         highest = max(AUTHORITY_RANK[claim.source.authority] for claim in claims)
         authoritative = sorted(
             [claim for claim in claims if AUTHORITY_RANK[claim.source.authority] == highest],
             key=lambda claim: claim.policy_index,
         )
-        shaped = [(claim, *_shape_claim(claim, configuration=configuration)) for claim in authoritative]
-        invalid = [(claim, reason) for claim, signature, reason in shaped if signature is None]
-        valid = [(claim, signature) for claim, signature, _ in shaped if signature is not None]
-        if invalid:
+        invalid = next((claim for claim in authoritative if claim.target_conflict), None)
+        if invalid is not None:
             target_conflicts += 1
-            reason = invalid[0][1] or "TARGET_VALUE_CONFLICT"
-            status = "EXCLUDED" if reason == "TARGET_VALUE_OUT_OF_SCOPE" else "CONFLICTING"
-            resolved.append(
-                _unresolved_label(
-                    document_id,
-                    status=status,
-                    reason=reason,
-                    class_keys=class_keys,
-                    raw_values=invalid[0][0].raw_value_keys,
-                    claims=claims,
-                )
-            )
+            selections[document_id] = (invalid, claims, "CONFLICTING", "TARGET_VALUE_CONFLICT")
             continue
-        signatures = {signature for _, signature in valid}
-        if len(signatures) != 1:
+        if configured_class_keys:
+            shaped = [
+                (
+                    claim,
+                    *_shape_claim(
+                        claim,
+                        configuration=configuration,
+                        class_keys=configured_class_keys,
+                        binary_mapping=binary_mapping,
+                    ),
+                )
+                for claim in authoritative
+            ]
+            invalid_shapes = [
+                (claim, reason)
+                for claim, signature, reason in shaped
+                if signature is None
+            ]
+            if invalid_shapes:
+                target_conflicts += 1
+                invalid_claim, invalid_reason = invalid_shapes[0]
+                selections[document_id] = (
+                    invalid_claim,
+                    claims,
+                    "EXCLUDED" if invalid_reason == "TARGET_VALUE_OUT_OF_SCOPE" else "CONFLICTING",
+                    invalid_reason or "TARGET_VALUE_CONFLICT",
+                )
+                continue
+            shaped_signatures = {signature for _, signature, _ in shaped}
+            if len(shaped_signatures) != 1:
+                source_conflicts += 1
+                selections[document_id] = (None, claims, "CONFLICTING", "SOURCE_CONFLICT")
+                continue
+            selections[document_id] = (authoritative[0], claims, None, None)
+            continue
+        raw_signatures = {claim.raw_value_keys for claim in authoritative}
+        if len(raw_signatures) != 1:
             source_conflicts += 1
+            selections[document_id] = (None, claims, "CONFLICTING", "SOURCE_CONFLICT")
+            continue
+        selected_claim = authoritative[0]
+        if not selected_claim.raw_value_keys:
+            target_conflicts += 1
+            selections[document_id] = (selected_claim, claims, "EXCLUDED", "TARGET_VALUE_OUT_OF_SCOPE")
+            continue
+        selections[document_id] = (selected_claim, claims, None, None)
+
+    discovered_values = sorted(
+        {
+            value
+            for selected, _, status, _ in selections.values()
+            if selected is not None and status is None
+            for value in selected.raw_value_keys
+        }
+    )
+    if configured_class_keys:
+        class_keys = configured_class_keys
+    elif strategy == ClassificationStrategy.BINARY and binary_mapping:
+        class_keys = (
+            binary_mapping["negative_class_key"],
+            binary_mapping["positive_class_key"],
+        )
+    else:
+        class_keys = tuple(discovered_values)
+    if len(class_keys) < 2:
+        _append_issue(
+            blocking_errors,
+            code="INSUFFICIENT_DISCOVERED_CLASSES",
+            message="The frozen training labels must contain at least two distinct classes",
+            count=len(class_keys),
+        )
+    if len(class_keys) > 1000:
+        _append_issue(
+            blocking_errors,
+            code="TOO_MANY_DISCOVERED_CLASSES",
+            message="The frozen training labels contain more than 1,000 distinct classes",
+            count=len(class_keys),
+        )
+    if strategy == ClassificationStrategy.BINARY and not binary_mapping and len(class_keys) != 2:
+        _append_issue(
+            blocking_errors,
+            code="BINARY_CLASS_COUNT_INVALID",
+            message="Binary training requires exactly two discovered classes",
+            count=len(class_keys),
+        )
+
+    for document_id in document_ids:
+        selected_claim, claims, status, reason = selections[document_id]
+        if status is not None or selected_claim is None:
+            raw_values = selected_claim.raw_value_keys if selected_claim is not None else tuple(
+                sorted({value for claim in claims for value in claim.raw_value_keys})
+            )
             resolved.append(
                 _unresolved_label(
                     document_id,
-                    status="CONFLICTING",
-                    reason="SOURCE_CONFLICT",
+                    status=status or "UNLABELED",
+                    reason=reason or "MISSING_LABEL",
                     class_keys=class_keys,
-                    raw_values=tuple(sorted({value for claim, _ in valid for value in claim.raw_value_keys})),
+                    raw_values=raw_values,
                     claims=claims,
                 )
             )
             continue
-        selected_claim, selected_signature = valid[0]
+        signature, shape_reason = _shape_claim(
+            selected_claim,
+            configuration=configuration,
+            class_keys=class_keys,
+            binary_mapping=binary_mapping,
+        )
+        if signature is None:
+            target_conflicts += 1
+            resolved.append(
+                _unresolved_label(
+                    document_id,
+                    status="EXCLUDED" if shape_reason == "TARGET_VALUE_OUT_OF_SCOPE" else "CONFLICTING",
+                    reason=shape_reason or "TARGET_VALUE_CONFLICT",
+                    class_keys=class_keys,
+                    raw_values=selected_claim.raw_value_keys,
+                    claims=claims,
+                )
+            )
+            continue
         resolved.append(
             _resolved_label(
                 document_id,
                 selected_claim,
-                selected_signature,
+                signature,
                 class_keys=class_keys,
                 claims=claims,
             )
@@ -869,25 +1122,26 @@ def _resolve_labels(
                 message="Invalid or out-of-scope target values are excluded from training",
                 count=target_conflicts,
             )
-    return resolved
+    return resolved, list(class_keys)
 
 
 def _class_support(
     rows: list[ResolvedLabel],
-    configuration: ClassificationModelConfiguration,
+    *,
+    strategy: ClassificationStrategy,
+    class_keys: list[str],
 ) -> dict[str, int]:
-    support = {key: 0 for key in configuration.ordered_class_keys}
-    strategy = ClassificationStrategy(configuration.classification_strategy)
+    support = {key: 0 for key in class_keys}
     for row in rows:
         if row.resolution_status != "LABELED":
             continue
         if strategy == ClassificationStrategy.BINARY:
-            support[configuration.ordered_class_keys[row.binary_label or 0]] += 1
+            support[class_keys[row.binary_label or 0]] += 1
         elif strategy == ClassificationStrategy.MULTICLASS and row.multiclass_key is not None:
             support[row.multiclass_key] += 1
         else:
             for key, label, observed in zip(
-                configuration.ordered_class_keys,
+                class_keys,
                 row.one_vs_rest_labels,
                 row.one_vs_rest_observed_mask,
                 strict=True,
@@ -895,6 +1149,168 @@ def _class_support(
                 if observed and label:
                     support[key] += 1
     return support
+
+
+def target_distribution(
+    db: Session,
+    *,
+    matter: Matter,
+    definition_id: uuid.UUID,
+    training_scope: TrainingScopeSpecification,
+    hierarchy_level: int | None = None,
+) -> ClassificationTargetDistributionRead:
+    definition = eligible_target_definition(
+        db,
+        matter=matter,
+        definition_id=definition_id,
+    )
+    if training_scope.scope_type == TrainingScopeType.MATTER:
+        if training_scope.scope_id != matter.id:
+            raise ClassificationDatasetConflictError(
+                "Matter scope ID must equal the model's matter ID"
+            )
+        population_count = int(
+            db.scalar(
+                select(func.count())
+                .select_from(MatterDocument)
+                .where(MatterDocument.matter_id == matter.id)
+            )
+            or 0
+        )
+        current_values = (
+            select(DocumentMetadataCurrent)
+            .where(
+                DocumentMetadataCurrent.matter_id == matter.id,
+                DocumentMetadataCurrent.metadata_definition_id == definition.id,
+            )
+            .order_by(
+                DocumentMetadataCurrent.matter_document_id,
+                DocumentMetadataCurrent.value_ordinal,
+            )
+        )
+    else:
+        batch = db.get(ReviewBatch, training_scope.scope_id)
+        if batch is None:
+            raise ClassificationDatasetConflictError("Training review batch was not found")
+        if batch.matter_id != matter.id:
+            raise ClassificationDatasetConflictError(
+                "Training review batch does not belong to the model's matter"
+            )
+        if batch.status != "READY":
+            raise ClassificationDatasetConflictError(
+                "Training review batch must be ready before it can be used"
+            )
+        population_count = int(
+            db.scalar(
+                select(func.count())
+                .select_from(ReviewBatchDocument)
+                .join(
+                    MatterDocument,
+                    MatterDocument.id == ReviewBatchDocument.matter_document_id,
+                )
+                .where(
+                    ReviewBatchDocument.review_batch_id == batch.id,
+                    MatterDocument.matter_id == matter.id,
+                )
+            )
+            or 0
+        )
+        if population_count != batch.document_count:
+            raise ClassificationDatasetConflictError(
+                "Ready review-batch membership does not match its recorded document count"
+            )
+        current_values = (
+            select(DocumentMetadataCurrent)
+            .join(
+                ReviewBatchDocument,
+                ReviewBatchDocument.matter_document_id
+                == DocumentMetadataCurrent.matter_document_id,
+            )
+            .where(
+                ReviewBatchDocument.review_batch_id == batch.id,
+                DocumentMetadataCurrent.matter_id == matter.id,
+                DocumentMetadataCurrent.metadata_definition_id == definition.id,
+            )
+            .order_by(
+                DocumentMetadataCurrent.matter_document_id,
+                DocumentMetadataCurrent.value_ordinal,
+            )
+        )
+
+    try:
+        base_target = target_field_snapshot(matter=matter, definition=definition)
+        target = TargetFieldSnapshot.model_validate(
+            {**base_target.model_dump(mode="json"), "hierarchy_level": hierarchy_level}
+        )
+    except ValidationError as exc:
+        raise ClassificationDatasetConflictError(str(exc)) from exc
+    source = LabelSourceSpecification(
+        kind=LabelSourceKind.MATTER_ASSERTED,
+        authority=LabelAuthority.SILVER,
+        source_weight=1.0,
+    )
+    counts: Counter[str] = Counter()
+    labeled_count = 0
+    conflicting_count = 0
+
+    def count_values(document_id: uuid.UUID, values: list[DocumentMetadataCurrent]) -> None:
+        nonlocal conflicting_count, labeled_count
+        claim = _matter_claim(
+            document_id=document_id,
+            values=values,
+            target=target,
+            policy_index=0,
+            source=source,
+        )
+        if not claim.raw_value_keys:
+            return
+        if claim.target_conflict:
+            conflicting_count += 1
+            return
+        labeled_count += 1
+        counts.update(set(claim.raw_value_keys))
+
+    current_document_id: uuid.UUID | None = None
+    document_values: list[DocumentMetadataCurrent] = []
+    for current in db.scalars(current_values).yield_per(5_000):
+        if current_document_id is not None and current.matter_document_id != current_document_id:
+            count_values(current_document_id, document_values)
+            document_values = []
+        current_document_id = current.matter_document_id
+        document_values.append(current)
+    if current_document_id is not None:
+        count_values(current_document_id, document_values)
+
+    configured_keys = (
+        ["false", "true"]
+        if definition.type == "BOOLEAN"
+        else active_value_keys(definition)
+        if definition.type == "ENUM"
+        else []
+    )
+    class_keys = [*configured_keys, *sorted(set(counts) - set(configured_keys))]
+    labels = {
+        str(value["key"]): str(value.get("label") or value["key"])
+        for value in definition.allowed_values or []
+    }
+    if definition.type == "BOOLEAN":
+        labels.update({"false": "False", "true": "True"})
+    return ClassificationTargetDistributionRead(
+        target_field=target,
+        training_scope=training_scope,
+        population_count=population_count,
+        labeled_document_count=labeled_count,
+        unlabeled_document_count=population_count - labeled_count - conflicting_count,
+        conflicting_document_count=conflicting_count,
+        class_counts=[
+            {
+                "class_key": class_key,
+                "label": labels.get(class_key, class_key),
+                "document_count": counts[class_key],
+            }
+            for class_key in class_keys
+        ],
+    )
 
 
 def prepare_dataset_snapshot(
@@ -925,11 +1341,18 @@ def prepare_dataset_snapshot(
     except ValidationError as exc:
         raise ClassificationDatasetConflictError(str(exc)) from exc
     definition = model.target_metadata_definition
-    if definition.status != "ACTIVE" or not definition.reviewable:
+    if (
+        definition.status != "ACTIVE"
+        or definition.value_source != "ASSERTED"
+        or definition.type not in CLASSIFICATION_TARGET_TYPES
+    ):
         _append_issue(
             blocking_errors,
             code="TARGET_FIELD_NOT_ELIGIBLE",
-            message="The configured target field must remain active and reviewable",
+            message=(
+                "The configured target field must remain an active Boolean, enum, text, "
+                "or long-text coding field"
+            ),
         )
     if target.schema_fingerprint != target_schema_fingerprint(definition):
         _append_issue(
@@ -984,10 +1407,71 @@ def prepare_dataset_snapshot(
             count=missing_grouping_count,
         )
 
+    if request.purpose == "SCORING":
+        population_bytes = _write_population_parquet(
+            population_rows,
+            configuration_hash=configuration.configuration_hash,
+            scope=request.training_scope,
+        )
+        population_hash = _sha256(population_bytes)
+        aggregate_hash = _sha256(
+            _canonical_json(
+                {
+                    "snapshot_schema_version": 1,
+                    "classification_model_id": str(model.id),
+                    "configuration_id": str(configuration.id),
+                    "configuration_hash": configuration.configuration_hash,
+                    "purpose": request.purpose,
+                    "training_scope": request.training_scope.model_dump(mode="json"),
+                    "embedding_job_id": str(request.embedding_job_id),
+                    "target_field_snapshot": target.model_dump(mode="json"),
+                    "population_content_hash": population_hash,
+                }
+            )
+        )
+        preview = ClassificationDatasetSnapshotPreview(
+            classification_model_id=model.id,
+            configuration_id=configuration.id,
+            configuration_hash=configuration.configuration_hash,
+            purpose=request.purpose,
+            training_scope=request.training_scope,
+            target_field_snapshot=target,
+            population_count=len(population_rows),
+            labeled_count=0,
+            unlabeled_count=len(population_rows),
+            excluded_count=0,
+            conflicting_count=0,
+            family_grouped_count=family_grouped_count,
+            exact_duplicate_grouped_count=exact_duplicate_grouped_count,
+            missing_grouping_count=missing_grouping_count,
+            ordered_class_keys=[],
+            class_support={},
+            source_summary=[],
+            population_content_hash=population_hash,
+            label_content_hash=None,
+            aggregate_hash=aggregate_hash,
+            blocking_errors=blocking_errors,
+            warnings=warnings,
+            can_materialize=not blocking_errors,
+        )
+        return PreparedDatasetSnapshot(
+            model=model,
+            configuration=configuration,
+            label_policy=policy,
+            request=request,
+            population_rows=population_rows,
+            label_rows=[],
+            population_bytes=population_bytes,
+            label_bytes=None,
+            preview=preview,
+        )
+
     document_ids = [row.matter_document_id for row in population_rows]
     claims_by_document: dict[uuid.UUID, list[LabelClaim]] = defaultdict(list)
     summaries: list[ClassificationLabelSourceSummary] = []
+    resolved_sources: list[LabelSourceSpecification] = []
     for policy_index, source in enumerate(policy.allowed_sources):
+        resolved_source = source
         excluded_blinded = False
         source_claims: dict[uuid.UUID, LabelClaim] = {}
         if source.kind == LabelSourceKind.MATTER_ASSERTED:
@@ -995,7 +1479,7 @@ def prepare_dataset_snapshot(
                 _append_issue(
                     blocking_errors,
                     code="MATTER_LABEL_SOURCE_REFERENCE_INVALID",
-                    message="MATTER_ASSERTED must not specify a review-run reference",
+                    message="MATTER_ASSERTED must not specify a source reference",
                 )
             else:
                 source_claims = _matter_claims(
@@ -1004,6 +1488,25 @@ def prepare_dataset_snapshot(
                     target=target,
                     policy_index=policy_index,
                     source=source,
+                )
+        elif source.kind in {LabelSourceKind.HUMAN_REVIEW, LabelSourceKind.ADJUDICATED_REVIEW}:
+            coding = _validate_reviewer_source(
+                db,
+                matter=matter,
+                source=source,
+                blocking_errors=blocking_errors,
+            )
+            if coding is not None:
+                resolved_source = source.model_copy(
+                    update={"source_revision": source.source_revision or coding.revision}
+                )
+                source_claims = _reviewer_claims(
+                    db,
+                    coding=coding,
+                    document_ids=document_ids,
+                    target=target,
+                    policy_index=policy_index,
+                    source=resolved_source,
                 )
         else:
             run = _validate_run_source(
@@ -1029,6 +1532,7 @@ def prepare_dataset_snapshot(
                     policy_index=policy_index,
                     source=source,
                 )
+        resolved_sources.append(resolved_source)
         for document_id, claim in source_claims.items():
             claims_by_document[document_id].append(claim)
         summaries.append(
@@ -1044,7 +1548,9 @@ def prepare_dataset_snapshot(
             )
         )
 
-    label_rows = _resolve_labels(
+    policy = policy.model_copy(update={"allowed_sources": resolved_sources})
+
+    label_rows, ordered_class_keys = _resolve_labels(
         document_ids=document_ids,
         claims_by_document=claims_by_document,
         configuration=configuration,
@@ -1081,7 +1587,9 @@ def prepare_dataset_snapshot(
         label_rows,
         configuration_hash=configuration.configuration_hash,
         strategy=configuration.classification_strategy,
+        ordered_class_keys=ordered_class_keys,
     )
+    frozen_target = target.model_copy(update={"discovered_class_keys": ordered_class_keys})
     population_hash = _sha256(population_bytes)
     label_hash = _sha256(label_bytes)
     aggregate_hash = _sha256(
@@ -1093,8 +1601,9 @@ def prepare_dataset_snapshot(
                 "configuration_hash": configuration.configuration_hash,
                 "purpose": request.purpose,
                 "training_scope": request.training_scope.model_dump(mode="json"),
-                "target_field_snapshot": target.model_dump(mode="json"),
+                "target_field_snapshot": frozen_target.model_dump(mode="json"),
                 "label_policy": policy.model_dump(mode="json"),
+                "ordered_class_keys": ordered_class_keys,
                 "population_content_hash": population_hash,
                 "label_content_hash": label_hash,
             }
@@ -1106,7 +1615,7 @@ def prepare_dataset_snapshot(
         configuration_hash=configuration.configuration_hash,
         purpose=request.purpose,
         training_scope=request.training_scope,
-        target_field_snapshot=target,
+        target_field_snapshot=frozen_target,
         population_count=len(population_rows),
         labeled_count=labeled_count,
         unlabeled_count=unlabeled_count,
@@ -1115,7 +1624,12 @@ def prepare_dataset_snapshot(
         family_grouped_count=family_grouped_count,
         exact_duplicate_grouped_count=exact_duplicate_grouped_count,
         missing_grouping_count=missing_grouping_count,
-        class_support=_class_support(label_rows, configuration),
+        ordered_class_keys=ordered_class_keys,
+        class_support=_class_support(
+            label_rows,
+            strategy=ClassificationStrategy(configuration.classification_strategy),
+            class_keys=ordered_class_keys,
+        ),
         source_summary=summaries,
         population_content_hash=population_hash,
         label_content_hash=label_hash,
@@ -1127,6 +1641,7 @@ def prepare_dataset_snapshot(
     return PreparedDatasetSnapshot(
         model=model,
         configuration=configuration,
+        label_policy=policy,
         request=request,
         population_rows=population_rows,
         label_rows=label_rows,
@@ -1152,7 +1667,7 @@ def begin_dataset_snapshot(
         )
     )
     if existing is not None:
-        if existing.status in {"READY_FOR_FEATURES", "READY_FOR_TRAINING"}:
+        if existing.status in {"READY_FOR_FEATURES", "READY_FOR_TRAINING", "READY_FOR_SCORING"}:
             return existing, False, False
         existing.status = "BUILDING"
         existing.failure_code = None
@@ -1171,7 +1686,7 @@ def begin_dataset_snapshot(
         scope_type=prepared.request.training_scope.scope_type.value,
         scope_id=prepared.request.training_scope.scope_id,
         target_field_snapshot=preview.target_field_snapshot.model_dump(mode="json"),
-        label_policy_snapshot=prepared.configuration.label_policy,
+        label_policy_snapshot=prepared.label_policy.model_dump(mode="json"),
         aggregate_hash=preview.aggregate_hash,
         status="BUILDING",
         population_count=preview.population_count,
@@ -1246,41 +1761,43 @@ def materialize_dataset_snapshot(
         client_id=prepared.model.matter.client_id,
         filename="classification-population.parquet",
     )
-    label_reference, _ = store_classification_workflow_artifact(
-        content=io.BytesIO(prepared.label_bytes),
-        artifact_type=ArtifactType.CLASSIFICATION_LABELS,
-        core_scope_kind="CLASSIFICATION_DATASET_SNAPSHOT",
-        core_scope_id=snapshot.id,
-        schema_version=LABEL_SCHEMA_VERSION,
-        derivation_key=_derivation_key(
-            snapshot_id=snapshot.id,
+    label_reference: WorkflowArtifactReference | None = None
+    if prepared.label_bytes is not None and prepared.preview.label_content_hash is not None:
+        label_reference, _ = store_classification_workflow_artifact(
+            content=io.BytesIO(prepared.label_bytes),
             artifact_type=ArtifactType.CLASSIFICATION_LABELS,
+            core_scope_kind="CLASSIFICATION_DATASET_SNAPSHOT",
+            core_scope_id=snapshot.id,
+            schema_version=LABEL_SCHEMA_VERSION,
+            derivation_key=_derivation_key(
+                snapshot_id=snapshot.id,
+                artifact_type=ArtifactType.CLASSIFICATION_LABELS,
+                content_hash=prepared.preview.label_content_hash,
+            ),
             content_hash=prepared.preview.label_content_hash,
-        ),
-        content_hash=prepared.preview.label_content_hash,
-        byte_length=len(prepared.label_bytes),
-        media_type=PARQUET_MEDIA_TYPE,
-        producer_kind="CORE",
-        producer_run_id=snapshot.id,
-        artifact_metadata={
-            "snapshot_aggregate_hash": snapshot.aggregate_hash,
-            "configuration_hash": prepared.configuration.configuration_hash,
-            "classification_strategy": prepared.configuration.classification_strategy,
-            "population_artifact_id": str(population_reference.artifact_id),
-            "row_count": snapshot.population_count,
-            "labeled_count": snapshot.labeled_count,
-        },
-        lineage=[
-            WorkflowArtifactLineageInput(
-                source_kind="WORKFLOW_ARTIFACT",
-                source_artifact_id=population_reference.artifact_id,
-            )
-        ],
-        actor_user_id=actor_user_id,
-        tenant_id=snapshot.tenant_id,
-        client_id=prepared.model.matter.client_id,
-        filename="classification-labels.parquet",
-    )
+            byte_length=len(prepared.label_bytes),
+            media_type=PARQUET_MEDIA_TYPE,
+            producer_kind="CORE",
+            producer_run_id=snapshot.id,
+            artifact_metadata={
+                "snapshot_aggregate_hash": snapshot.aggregate_hash,
+                "configuration_hash": prepared.configuration.configuration_hash,
+                "classification_strategy": prepared.configuration.classification_strategy,
+                "population_artifact_id": str(population_reference.artifact_id),
+                "row_count": snapshot.population_count,
+                "labeled_count": snapshot.labeled_count,
+            },
+            lineage=[
+                WorkflowArtifactLineageInput(
+                    source_kind="WORKFLOW_ARTIFACT",
+                    source_artifact_id=population_reference.artifact_id,
+                )
+            ],
+            actor_user_id=actor_user_id,
+            tenant_id=snapshot.tenant_id,
+            client_id=prepared.model.matter.client_id,
+            filename="classification-labels.parquet",
+        )
     _finalize_snapshot(
         snapshot,
         population_reference=population_reference,
@@ -1312,12 +1829,12 @@ def _finalize_snapshot(
     snapshot: ClassificationDatasetSnapshot,
     *,
     population_reference: WorkflowArtifactReference,
-    label_reference: WorkflowArtifactReference,
+    label_reference: WorkflowArtifactReference | None,
 ) -> None:
     snapshot.population_artifact_id = population_reference.artifact_id
     snapshot.population_content_hash = population_reference.content_hash
-    snapshot.label_artifact_id = label_reference.artifact_id
-    snapshot.label_content_hash = label_reference.content_hash
+    snapshot.label_artifact_id = label_reference.artifact_id if label_reference else None
+    snapshot.label_content_hash = label_reference.content_hash if label_reference else None
     snapshot.status = "READY_FOR_FEATURES"
     snapshot.failure_code = None
     snapshot.failure_summary = None

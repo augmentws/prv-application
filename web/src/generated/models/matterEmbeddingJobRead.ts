@@ -5,6 +5,7 @@
  * Phase-one Core API for authentication, hierarchical tenants, clients, matters, and matter metadata definitions.
  * OpenAPI spec version: 0.1.0
  */
+import type { JobExecutionRead } from './jobExecutionRead';
 import type { MatterEmbeddingJobReadStatus } from './matterEmbeddingJobReadStatus';
 
 export interface MatterEmbeddingJobRead {
@@ -35,4 +36,5 @@ export interface MatterEmbeddingJobRead {
   canceled_at: string | null;
   created_at: string;
   updated_at: string;
+  execution?: JobExecutionRead | null;
 }

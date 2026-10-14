@@ -456,6 +456,7 @@ class CollectionSelectionBatchItem(BaseModel):
     item_id: uuid.UUID
     custodian_ids: list[uuid.UUID]
     custodians: list[CollectionSelectionBatchCustodian]
+    unmapped_metadata: dict[str, Any] = Field(default_factory=dict)
 
 
 class CollectionSelectionBatch(BaseModel):

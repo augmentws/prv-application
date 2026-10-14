@@ -167,7 +167,7 @@ def test_individual_email_upload_with_source_container(client: TestClient, root_
             ],
         },
         "raw_metadata": {"file": "allen-p/_sent_mail/1."},
-        "unmapped_metadata": {},
+        "unmapped_metadata": {"Tr2016_Facets": ["george w. bush", "marketing"], "ignored": "value"},
     }
     item_response = client.post(
         f"/v1/collections/{collection_id}/items:upload",
@@ -237,8 +237,18 @@ def test_individual_email_upload_with_source_container(client: TestClient, root_
             "item_id": payload["item"]["id"],
             "custodian_ids": [custodian_id],
             "custodians": [{"custodian_id": custodian_id, "relationship_type": "PRIMARY"}],
+            "unmapped_metadata": {},
         }
     ]
+    metadata_batch_response = client.get(
+        f"/v1/collection-selections/{selection_response.json()['id']}/items",
+        headers=auth(root_token),
+        params=[("metadata_key", "tr2016_facets")],
+    )
+    assert metadata_batch_response.status_code == 200, metadata_batch_response.text
+    assert metadata_batch_response.json()["items"][0]["unmapped_metadata"] == {
+        "tr2016_facets": ["george w. bush", "marketing"]
+    }
 
     custodian_summary_response = client.get(
         f"/v1/collections/{collection_id}/custodians",

@@ -146,22 +146,25 @@ export function textParagraphRanges(source: string): TextParagraphRange[] {
   return ranges;
 }
 
-export function DocumentViewerSurface({ item, className, highlightedParagraphs = [], highlightTerms = [], showUnmappedMetadata = false }: {
+export function DocumentViewerSurface({ item, className, highlightedParagraphs = [], highlightTerms = [], showUnmappedMetadata = false, contentPath: requestedContentPath }: {
   item: CollectionItemRead;
   className?: string;
   highlightedParagraphs?: number[];
   highlightTerms?: string[];
   showUnmappedMetadata?: boolean;
+  contentPath?: string;
 }) {
   const viewerRef = useRef<HTMLElement>(null);
+  const contentScrollRef = useRef<HTMLDivElement>(null);
   const firstHighlightRef = useRef<HTMLElement>(null);
   const emailHeaderDrag = useRef<{ y: number; height: number } | null>(null);
   const [emailHeaderHeight, setEmailHeaderHeight] = useState(EMAIL_HEADER_DEFAULT_HEIGHT);
   const [view, setView] = useState<"document" | "metadata">("document");
   const kind = previewKind(item);
+  const contentPath = requestedContentPath ?? `/v1/artifacts/${item.native_artifact.id}/content`;
   const content = useQuery({
-    queryKey: ["artifact-content", item.native_artifact.id],
-    queryFn: () => coreApiContent(`/v1/artifacts/${item.native_artifact.id}/content`),
+    queryKey: ["artifact-content", item.native_artifact.id, contentPath],
+    queryFn: () => coreApiContent(contentPath),
     enabled: kind !== "unsupported",
     staleTime: 5 * 60 * 1000,
   });
@@ -217,11 +220,20 @@ export function DocumentViewerSurface({ item, className, highlightedParagraphs =
   const highlightedBody = paragraphHighlightedBody ?? searchHighlightedBody;
 
   useEffect(() => {
-    firstHighlightRef.current?.scrollIntoView?.({ block: "center", behavior: "smooth" });
+    const container = contentScrollRef.current;
+    const target = firstHighlightRef.current;
+    if (!container || !target) return;
+    const containerRect = container.getBoundingClientRect();
+    const targetRect = target.getBoundingClientRect();
+    const targetTop = container.scrollTop + targetRect.top - containerRect.top;
+    container.scrollTo?.({
+      top: Math.max(0, targetTop - (container.clientHeight - targetRect.height) / 2),
+      behavior: "smooth",
+    });
   }, [body, highlightTerms, highlightedParagraphs, item.id]);
 
   const title = item.email?.subject?.trim() || item.original_filename || "Document";
-  const downloadUrl = `/api/core/v1/artifacts/${item.native_artifact.id}/content`;
+  const downloadUrl = `/api/core${contentPath}`;
   const clampEmailHeaderHeight = (next: number) => {
     const availableHeight = viewerRef.current?.clientHeight;
     const responsiveMaximum = availableHeight
@@ -233,7 +245,7 @@ export function DocumentViewerSurface({ item, className, highlightedParagraphs =
 
   return (
     <section ref={viewerRef} className={cn("flex min-h-0 flex-col overflow-hidden bg-card", className)} aria-label="Document viewer">
-      <header className="border-b px-4 py-3">
+      <header className="shrink-0 border-b px-4 py-3">
         <div className="flex min-w-0 items-start gap-3">
           <span className="mt-0.5 grid size-9 shrink-0 place-items-center rounded-lg bg-muted text-muted-foreground">
             {kind === "email" ? <Mail className="size-4" /> : <FileText className="size-4" />}
@@ -296,7 +308,7 @@ export function DocumentViewerSurface({ item, className, highlightedParagraphs =
         </>
       ) : null}
 
-      <div className="min-h-0 flex-1 overflow-y-auto bg-background">
+      <div ref={contentScrollRef} role="region" aria-label="Document content" className="min-h-0 flex-1 overflow-y-auto overscroll-contain bg-background">
         {kind === "unsupported" ? (
           <div className="grid min-h-full place-items-center p-8 text-center">
             <div><FileText className="mx-auto size-9 text-muted-foreground" /><p className="mt-3 font-medium">Preview is not available for this file type.</p><p className="mt-1 text-sm text-muted-foreground">Download the original file to open it.</p></div>

@@ -12,8 +12,9 @@ import {
   LogOut,
   Menu,
   PanelLeftClose,
+  ScrollText,
+  ShieldCheck,
   Wrench,
-  Users,
   X,
 } from "lucide-react";
 import Link from "next/link";
@@ -31,7 +32,6 @@ import { cn } from "@/lib/utils";
 const primaryLinks = [
   { href: "/app", label: "Overview", icon: LayoutDashboard, exact: true },
   { href: "/app/clients", label: "Clients", icon: FolderKanban },
-  { href: "/app/users", label: "Users", icon: Users },
   { href: "/docs", label: "Documentation", icon: BookOpenText },
 ];
 
@@ -47,7 +47,7 @@ function Shell({ children }: { children: ReactNode }) {
   const pathname = usePathname();
   const router = useRouter();
   const queryClient = useQueryClient();
-  const { user, tenant, tenants, selectedTenantId, setSelectedTenantId } = useWorkspace();
+  const { user, tenant, tenants, permissionKeys = [], selectedTenantId, setSelectedTenantId } = useWorkspace();
   const [mobileOpen, setMobileOpen] = useState(false);
   const [collapsed, setCollapsed] = useState(false);
 
@@ -58,14 +58,22 @@ function Shell({ children }: { children: ReactNode }) {
     router.refresh();
   }
 
+  const canManageAccess = user.is_superuser || user.tenant_role === "ADMIN" || permissionKeys.some((key) => key === "tenant.manage_users" || key === "tenant.manage_roles" || key === "tenant.manage_groups");
+  const canViewAudit = user.is_superuser || user.tenant_role === "ADMIN" || permissionKeys.includes("tenant.view_audit");
   const navigation = user.is_superuser
     ? [
         ...primaryLinks,
+        { href: "/app/access", label: "Access control", icon: ShieldCheck },
+        { href: "/app/audit-log", label: "Audit log", icon: ScrollText },
         { href: "/admin/tenants", label: "Tenants", icon: Building2 },
         { href: "/admin/agents", label: "Agents", icon: Bot },
         { href: "/admin/skills", label: "Skills", icon: Wrench },
       ]
-    : primaryLinks;
+    : [
+        ...primaryLinks,
+        ...(canManageAccess ? [{ href: "/app/access", label: "Access control", icon: ShieldCheck }] : []),
+        ...(canViewAudit ? [{ href: "/app/audit-log", label: "Audit log", icon: ScrollText }] : []),
+      ];
 
   const sidebar = (
     <aside className={cn("flex h-full flex-col border-r border-sidebar-border bg-sidebar text-sidebar-foreground", collapsed ? "w-[4.75rem]" : "w-64")}>

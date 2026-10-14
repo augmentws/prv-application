@@ -22,7 +22,7 @@ from app.schemas import (
     MatterSearchResponse,
 )
 from app.search.client import OpenSearchClient
-from app.search.mappings import metadata_query_path
+from app.search.mappings import CODED_BY_FIELD, metadata_query_path
 
 DEFAULT_QUERY_FIELDS = [
     "original_filename^2",
@@ -123,6 +123,16 @@ def _filter_clause(search_filter: MatterSearchFilter, definition: MetadataDefini
         if len(clauses) == 1:
             return clauses[0]
         return {"bool": {"should": clauses, "minimum_should_match": 1}}
+    if search_filter.operator == "NOT_IN":
+        if field_type in {"TEXT", "LONG_TEXT"} and not definition.facetable:
+            raise _bad_request(f"Field '{definition.key}' must be facetable to use NOT_IN")
+        values = [_typed_value(definition, value) for value in search_filter.values or []]
+        excluded = (
+            _hierarchy_filter(definition.key, values)
+            if is_hierarchical_field(definition)
+            else {"terms": {exact_path: values}}
+        )
+        return {"bool": {"must_not": [excluded]}}
     if search_filter.operator == "RANGE":
         if field_type not in {"INTEGER", "DECIMAL", "DATE", "DATETIME"}:
             raise _bad_request(f"Field '{definition.key}' does not support RANGE")
@@ -133,6 +143,37 @@ def _filter_clause(search_filter: MatterSearchFilter, definition: MetadataDefini
             bounds["lte"] = _typed_value(definition, search_filter.to_value)
         return {"range": {metadata_query_path(definition): bounds}}
     raise _bad_request(f"Unsupported filter operator: {search_filter.operator}")
+
+
+def _coded_by_filter_clause(search_filter: MatterSearchFilter) -> dict[str, Any]:
+    """Compile the built-in coding-provenance filter.
+
+    Coded-by values are opaque actor tokens projected from the metadata-event
+    ledger.  They intentionally support the same selection, negation, and
+    presence operations as a normal flat facet, but are not user-configurable
+    metadata.
+    """
+
+    if search_filter.operator == "EXISTS":
+        return {"exists": {"field": CODED_BY_FIELD}}
+    if search_filter.operator == "NOT_EXISTS":
+        return {"bool": {"must_not": [{"exists": {"field": CODED_BY_FIELD}}]}}
+    if search_filter.operator == "EQ" and isinstance(search_filter.value, str):
+        return {"term": {CODED_BY_FIELD: search_filter.value}}
+    if search_filter.operator in {"IN", "NOT_IN"}:
+        values = search_filter.values or []
+        if not all(isinstance(value, str) for value in values):
+            raise _bad_request("Coded by filters accept actor keys only")
+        clause: dict[str, Any] = {"terms": {CODED_BY_FIELD: values}}
+        if search_filter.operator == "NOT_IN":
+            return {"bool": {"must_not": [clause]}}
+        clauses = [clause] if values else []
+        if search_filter.include_missing:
+            clauses.append({"bool": {"must_not": [{"exists": {"field": CODED_BY_FIELD}}]}})
+        if len(clauses) == 1:
+            return clauses[0]
+        return {"bool": {"should": clauses, "minimum_should_match": 1}}
+    raise _bad_request(f"Coded by does not support {search_filter.operator}")
 
 
 def _hierarchy_filter(field: str, values: list[Any]) -> dict[str, Any]:
@@ -258,6 +299,9 @@ def compile_search_request(
         *(required_filters or []),
     ]
     for search_filter in request.filters:
+        if search_filter.field == CODED_BY_FIELD:
+            filters.append(_coded_by_filter_clause(search_filter))
+            continue
         definition = catalog.get(search_filter.field)
         if definition is None:
             raise _bad_request(f"Unknown or non-searchable field: {search_filter.field}")
@@ -312,6 +356,9 @@ def compile_search_request(
 
     aggregations: dict[str, Any] = {}
     for key in request.facets:
+        if key == CODED_BY_FIELD:
+            aggregations[key] = {"terms": {"field": CODED_BY_FIELD, "size": DEFAULT_FACET_SIZE}}
+            continue
         definition = catalog.get(key)
         if definition is None or not definition.facetable:
             raise _bad_request(f"Unknown or non-facetable field: {key}")
@@ -360,6 +407,47 @@ def compile_search_request(
     return body
 
 
+def compile_search_export_request(
+    request: MatterSearchRequest,
+    definitions: list[MetadataDefinition],
+    *,
+    tenant_id: str,
+    matter_id: str,
+    source_paths: list[str],
+    page_size: int,
+    query_vector: list[float] | None = None,
+    search_after: list[Any] | None = None,
+    required_filters: list[dict[str, Any]] | None = None,
+) -> dict[str, Any]:
+    """Compile the current search for deterministic PIT/search_after export."""
+
+    scoped = request.model_copy(update={"offset": 0, "size": min(page_size, 500), "facets": []})
+    body = compile_search_request(
+        scoped,
+        definitions,
+        tenant_id=tenant_id,
+        matter_id=matter_id,
+        query_vector=query_vector,
+        required_filters=required_filters,
+    )
+    body.pop("from", None)
+    body.pop("aggs", None)
+    body.pop("highlight", None)
+    body["size"] = page_size
+    body["track_total_hits"] = search_after is None
+    body["_source"] = {"includes": sorted({"document_id", *source_paths})}
+
+    sort = list(body.get("sort") or [])
+    if not sort:
+        sort = ([{"_score": "desc"}] if request.query else [])
+    if not any("document_id" in item for item in sort):
+        sort.append({"document_id": "asc"})
+    body["sort"] = sort
+    if search_after is not None:
+        body["search_after"] = search_after
+    return body
+
+
 def compile_facet_values_request(
     request: MatterSearchRequest,
     definitions: list[MetadataDefinition],
@@ -376,7 +464,8 @@ def compile_facet_values_request(
 ) -> dict[str, Any]:
     catalog = _definition_map(definitions)
     definition = catalog.get(field)
-    if definition is None or not definition.facetable:
+    built_in = field == CODED_BY_FIELD
+    if not built_in and (definition is None or not definition.facetable):
         raise _bad_request(f"Unknown or non-facetable field: {field}")
     scoped = request.model_copy(
         update={
@@ -396,6 +485,18 @@ def compile_facet_values_request(
     )
     body["size"] = 0
     body.pop("highlight", None)
+    facet_path = CODED_BY_FIELD if built_in else metadata_query_path(definition, exact=True)
+    body["aggs"][f"{field}__missing"] = {"missing": {"field": facet_path}}
+    if built_in:
+        if parent is not None:
+            raise _bad_request(f"Field '{field}' is not hierarchical")
+        terms = body["aggs"][field]["terms"]
+        terms["size"] = size
+        if include_values is not None:
+            terms["include"] = include_values
+        elif value_query:
+            terms["include"] = f".*{re.escape(value_query)}.*"
+        return body
     if is_hierarchical_field(definition):
         if definition.type == "ENUM":
             options = enum_option_map(definition)
@@ -419,9 +520,6 @@ def compile_facet_values_request(
     if parent is not None:
         raise _bad_request(f"Field '{field}' is not hierarchical")
     terms = body["aggs"][field]["terms"]
-    body["aggs"][f"{field}__missing"] = {
-        "missing": {"field": metadata_query_path(definition, exact=True)}
-    }
     terms["size"] = size
     if include_values is not None:
         terms["include"] = [
@@ -476,6 +574,7 @@ def batch_coding_filter(
     definition: MetadataDefinition,
     values: list[Any],
     minimum_confidence: float | None = None,
+    maximum_confidence: float | None = None,
 ) -> dict[str, Any]:
     filters: list[dict[str, Any]] = [
         {"term": {"batch_coding.batch_id": batch_id}},
@@ -489,8 +588,13 @@ def batch_coding_filter(
             }
         },
     ]
+    confidence_range: dict[str, float] = {}
     if minimum_confidence is not None:
-        filters.append({"range": {"batch_coding.confidence": {"gte": minimum_confidence}}})
+        confidence_range["gte"] = minimum_confidence
+    if maximum_confidence is not None:
+        confidence_range["lt"] = maximum_confidence
+    if confidence_range:
+        filters.append({"range": {"batch_coding.confidence": confidence_range}})
     return {
         "nested": {
             "path": "batch_coding",
@@ -508,6 +612,8 @@ def compile_batch_coding_facet_request(
     matter_id: str,
     batch_id: str,
     run_id: str,
+    minimum_confidence: float | None = None,
+    maximum_confidence: float | None = None,
     query_vector: list[float] | None = None,
     required_filters: list[dict[str, Any]] | None = None,
 ) -> dict[str, Any]:
@@ -521,6 +627,18 @@ def compile_batch_coding_facet_request(
     )
     body["size"] = 0
     body.pop("highlight", None)
+    scope_filters: list[dict[str, Any]] = [
+        {"term": {"batch_coding.batch_id": batch_id}},
+        {"term": {"batch_coding.run_id": run_id}},
+        {"term": {"batch_coding.field_id": str(definition.id)}},
+    ]
+    confidence_range: dict[str, float] = {}
+    if minimum_confidence is not None:
+        confidence_range["gte"] = minimum_confidence
+    if maximum_confidence is not None:
+        confidence_range["lt"] = maximum_confidence
+    if confidence_range:
+        scope_filters.append({"range": {"batch_coding.confidence": confidence_range}})
     body["aggs"] = {
         "batch_coding": {
             "nested": {"path": "batch_coding"},
@@ -528,11 +646,7 @@ def compile_batch_coding_facet_request(
                 "scope": {
                     "filter": {
                         "bool": {
-                            "filter": [
-                                {"term": {"batch_coding.batch_id": batch_id}},
-                                {"term": {"batch_coding.run_id": run_id}},
-                                {"term": {"batch_coding.field_id": str(definition.id)}},
-                            ]
+                            "filter": scope_filters
                         }
                     },
                     "aggs": {
@@ -689,25 +803,31 @@ def _facet_buckets(definition: MetadataDefinition | None, aggregation: dict[str,
     return aggregation.get("buckets", [])
 
 
+def _facet_has_more(definition: MetadataDefinition | None, aggregation: dict[str, Any]) -> bool:
+    if definition is not None and is_hierarchical_field(definition):
+        aggregation = aggregation.get("scope", {}).get("values", {})
+    return int(aggregation.get("sum_other_doc_count", 0)) > 0
+
+
 def _facet_value(definition: MetadataDefinition | None, bucket: dict[str, Any]) -> dict[str, Any]:
     value = _facet_bucket_value(definition, bucket)
     result: dict[str, Any] = {
         "value": value,
         "count": bucket.get("documents", {}).get("doc_count", bucket["doc_count"]),
     }
+    enum_option: dict[str, Any] = {}
+    if definition is not None and definition.type == "ENUM":
+        enum_option = enum_option_map(definition).get(str(value), {})
+        result["label"] = enum_option.get("label", str(value))
     if definition is not None and is_hierarchical_field(definition):
         if definition.type == "ENUM":
-            options = enum_option_map(definition)
-            option = options.get(str(value), {})
-            label = option.get("label", str(value))
-            parent = option.get("parent_key")
+            parent = enum_option.get("parent_key")
         else:
             separator = definition.hierarchy_separator or "/"
-            label = hierarchy_path_label(str(value), separator)
+            result["label"] = hierarchy_path_label(str(value), separator)
             parent = hierarchy_path_parent(str(value), separator)
         result.update(
             {
-                "label": label,
                 "parent": parent,
                 "has_children": bucket.get("children", {}).get("doc_count", 0) > 0,
             }
@@ -800,6 +920,9 @@ def execute_facet_values(
     # Aggregation-only requests have no fetch hits for an RRF processor to rewrite.
     # Running the score pipeline with size=0 causes OpenSearch to reject the query/fetch count mismatch.
     raw = client.search(alias_name, body)
+    total = raw.get("hits", {}).get("total", 0)
+    if isinstance(total, dict):
+        total = total.get("value", 0)
     missing_count = raw.get("aggregations", {}).get(f"{field}__missing", {}).get("doc_count", 0)
     definition = _definition_map(definitions).get(field)
     buckets = _facet_buckets(definition, raw.get("aggregations", {}).get(field, {}))
@@ -807,6 +930,8 @@ def execute_facet_values(
         field=field,
         values=[_facet_value(definition, bucket) for bucket in buckets],
         missing_count=int(missing_count),
+        total_count=int(total),
+        has_more=_facet_has_more(definition, raw.get("aggregations", {}).get(field, {})),
     )
 
 
@@ -858,6 +983,8 @@ def execute_batch_coding_facets(
     matter_id: str,
     batch_id: str,
     run_id: str,
+    minimum_confidence: float | None = None,
+    maximum_confidence: float | None = None,
     query_vector: list[float] | None = None,
     required_filters: list[dict[str, Any]] | None = None,
 ) -> MatterFacetValuesResponse:
@@ -869,6 +996,8 @@ def execute_batch_coding_facets(
         matter_id=matter_id,
         batch_id=batch_id,
         run_id=run_id,
+        minimum_confidence=minimum_confidence,
+        maximum_confidence=maximum_confidence,
         query_vector=query_vector,
         required_filters=required_filters,
     )
@@ -882,10 +1011,7 @@ def execute_batch_coding_facets(
     )
     return MatterFacetValuesResponse(
         field=definition.key,
-        values=[
-            {"value": _facet_bucket_value(definition, bucket), "count": int(bucket["doc_count"])}
-            for bucket in buckets
-        ],
+        values=[_facet_value(definition, bucket) for bucket in buckets],
     )
 
 

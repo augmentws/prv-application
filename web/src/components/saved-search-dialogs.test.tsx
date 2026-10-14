@@ -2,8 +2,8 @@ import { cleanup, render, screen, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { afterEach, describe, expect, it, vi } from "vitest";
 
-import { SavedSearchesDialog, SaveSearchDialog } from "@/components/saved-search-dialogs";
-import type { MatterSavedSearchCreate, MatterSavedSearchRead, MatterSearchRequest, UserRead } from "@/generated/models";
+import { SavedSearchesDialog, SaveSearchDialog, UpdateSavedSearchDialog } from "@/components/saved-search-dialogs";
+import type { MatterSavedSearchCreate, MatterSavedSearchRead, MatterSavedSearchUpdate, MatterSearchRequest, UserRead } from "@/generated/models";
 
 const search: MatterSearchRequest = {
   query: "price coordination",
@@ -68,5 +68,39 @@ describe("saved search dialogs", () => {
     await user.click(within(screen.getByRole("dialog")).getByRole("button", { name: "Run" }));
 
     expect(onRun).toHaveBeenCalledWith(saved);
+  });
+
+  it("updates an executed owner search with the current search definition", async () => {
+    const saved: MatterSavedSearchRead = {
+      id: "saved-1",
+      matter_id: "matter-1",
+      name: "Privileged pricing",
+      description: "Pricing review",
+      visibility: "SHARED",
+      search,
+      owner: { id: "owner", display_name: "Owner", email: "owner@example.com" },
+      shared_users: [{ id: "reviewer", display_name: "Reviewer", email: "reviewer@example.com" }],
+      is_owner: true,
+      created_at: "2026-09-14T12:00:00Z",
+      updated_at: "2026-09-14T12:00:00Z",
+    };
+    const currentSearch: MatterSearchRequest = { ...search, query: "updated pricing terms", offset: 100 };
+    const onUpdate = vi.fn(async (payload: MatterSavedSearchUpdate) => { void payload; });
+    const user = userEvent.setup();
+    render(<UpdateSavedSearchDialog saved={saved} search={currentSearch} users={users} currentUserId="owner" onUpdate={onUpdate} />);
+
+    await user.click(screen.getByRole("button", { name: "Update saved search" }));
+    const dialog = screen.getByRole("dialog");
+    expect(within(dialog).getByLabelText("Name")).toHaveValue("Privileged pricing");
+    expect(within(dialog).getByLabelText("Description (optional)")).toHaveValue("Pricing review");
+    expect(within(dialog).getByRole("checkbox", { name: /Reviewer/ })).toBeChecked();
+    await user.click(within(dialog).getByRole("button", { name: "Update saved search" }));
+
+    expect(onUpdate).toHaveBeenCalledWith(expect.objectContaining({
+      name: "Privileged pricing",
+      visibility: "SHARED",
+      shared_user_ids: ["reviewer"],
+      search: expect.objectContaining({ query: "updated pricing terms", offset: 0 }),
+    }));
   });
 });

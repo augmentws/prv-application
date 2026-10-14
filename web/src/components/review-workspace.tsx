@@ -3,6 +3,7 @@
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import {
   ArrowLeft,
+  Check,
   ChevronDown,
   ChevronRight,
   Clock3,
@@ -29,7 +30,8 @@ import { DocumentViewerSurface } from "@/components/document-viewer-dialog";
 import { HelpLink } from "@/components/help-link";
 import { QueryError } from "@/components/query-state";
 import { ResultPagination } from "@/components/result-pagination";
-import { SavedSearchesDialog, SaveSearchDialog } from "@/components/saved-search-dialogs";
+import { SavedSearchesDialog, SaveSearchDialog, UpdateSavedSearchDialog } from "@/components/saved-search-dialogs";
+import { SearchExportDialog } from "@/components/search-export-dialog";
 import { parseMinimumSimilarity, SemanticThresholdControl } from "@/components/semantic-threshold-control";
 import { ThemeToggle } from "@/components/theme-toggle";
 import { Badge } from "@/components/ui/badge";
@@ -45,12 +47,14 @@ import type {
   CustodianRead,
   DocumentMetadataFieldRead,
   DocumentCodingHistoryRead,
+  EffectivePermissionsRead,
   MatterRead,
   MatterBulkTagCreate,
   MatterBulkTagJobRead,
   MatterDateHistogramResponse,
   MatterSavedSearchCreate,
   MatterSavedSearchRead,
+  MatterSavedSearchUpdate,
   MatterFacetValuesResponse,
   MatterSearchFilter,
   MatterSearchHit,
@@ -66,13 +70,14 @@ import type {
 } from "@/generated/models";
 import { coreApi } from "@/lib/api-client";
 import { bulkTagDisplayStatus, bulkTagIsWaiting } from "@/lib/bulk-tag-jobs";
-import { NO_VALUE_FILTER_TOKEN } from "@/lib/search-filters";
+import { HAS_VALUE_FILTER_TOKEN, NO_VALUE_FILTER_TOKEN, toggleFacetFilterToken } from "@/lib/search-filters";
 import { cn } from "@/lib/utils";
 
 const PAGE_SIZE = 50;
+const FACET_PAGE_SIZE = 8;
 const SEMANTIC_CANDIDATE_LIMIT = 1600;
 const HYBRID_CANDIDATE_LIMIT = 100;
-const PREFERRED_FACETS = ["custodian", "file_extension", "responsiveness", "privilege", "key_document"];
+const PREFERRED_FACETS = ["coded_by", "custodian", "file_extension", "responsiveness", "privilege", "key_document"];
 const SEARCH_PROJECTION_POLL_MS = 500;
 const SEARCH_PROJECTION_POLL_ATTEMPTS = 60;
 const SEARCH_PLACEHOLDERS: Record<MatterSearchRequestSearchMode, string> = {
@@ -89,10 +94,38 @@ interface CodingAction {
   payload: MetadataEventCreate;
 }
 
+function codedByFilterDefinition(matterId: string): MetadataDefinitionRead {
+  return {
+    id: "built-in:coded_by",
+    matter_id: matterId,
+    key: "coded_by",
+    display_name: "Coded by",
+    description: "Documents with at least one field update by the selected user or agent.",
+    type: "TEXT",
+    cardinality: "MULTIPLE",
+    allowed_values: null,
+    value_source: "SYSTEM",
+    reference_target: null,
+    template_key: "coded_by",
+    template_version: 1,
+    assertion_policy: "IMMEDIATE",
+    resolution_policy: "LATEST_VALID",
+    searchable: true,
+    facetable: true,
+    normalize_to_lowercase: false,
+    hierarchy_separator: null,
+    reviewable: false,
+    ai_assignable: false,
+    status: "ACTIVE",
+    created_at: "1970-01-01T00:00:00Z",
+  };
+}
+
 interface ReviewWorkspaceProps {
   matterId: string;
   initialQuery?: string;
   initialFilters?: SelectedFilters;
+  initialNegatedFilterFields?: string[];
   initialDocumentId?: string;
   initialPage?: number;
   initialSearchMode?: MatterSearchRequestSearchMode;
@@ -263,6 +296,7 @@ export function ReviewWorkspace({
   matterId,
   initialQuery = "",
   initialFilters = {},
+  initialNegatedFilterFields = [],
   initialDocumentId,
   initialPage = 1,
   initialSearchMode = "KEYWORD",
@@ -276,6 +310,7 @@ export function ReviewWorkspace({
   const [draftMinimumSimilarity, setDraftMinimumSimilarity] = useState(initialMinimumSimilarity?.toString() ?? "");
   const [minimumSimilarity, setMinimumSimilarity] = useState<number | null>(initialMinimumSimilarity);
   const [filters, setFilters] = useState<SelectedFilters>(initialFilters);
+  const [negatedFilterFields, setNegatedFilterFields] = useState(() => new Set(initialNegatedFilterFields));
   const [offset, setOffset] = useState(Math.max(0, initialPage - 1) * PAGE_SIZE);
   const [selectedDocumentId, setSelectedDocumentId] = useState(initialDocumentId ?? "");
   const [mobileDocumentOpen, setMobileDocumentOpen] = useState(Boolean(initialDocumentId));
@@ -283,11 +318,25 @@ export function ReviewWorkspace({
   const [codingOpen, setCodingOpen] = useState(false);
   const [bulkTagOpen, setBulkTagOpen] = useState(false);
   const [bulkTagJobId, setBulkTagJobId] = useState("");
+  const [executedSavedSearchId, setExecutedSavedSearchId] = useState("");
   const [facetWidth, setFacetWidth] = useState(248);
   const [resultsWidth, setResultsWidth] = useState(384);
   const [detailsWidth, setDetailsWidth] = useState(352);
+  const permissions = useQuery({
+    queryKey: ["effective-permissions", "MATTER", matterId],
+    queryFn: () => coreApi<EffectivePermissionsRead>(`/v1/authorization/effective?resource_type=MATTER&resource_id=${matterId}`),
+  });
+  const permissionKeys = new Set(permissions.data?.permission_keys ?? []);
+  const canReview = permissionKeys.has("document.review");
+  const canBulkCode = permissionKeys.has("document.bulk_code");
+  const canViewJobs = permissionKeys.has("job.view");
+  const canExport = permissionKeys.has("document.export");
 
   const refreshAfterSearchProjection = useCallback(async (operationIds: string[]) => {
+    if (!canViewJobs) {
+      toast.info("Metadata was saved. Search will update in the background.");
+      return;
+    }
     const pendingIds = new Set(operationIds);
     try {
       for (let attempt = 0; attempt < SEARCH_PROJECTION_POLL_ATTEMPTS; attempt += 1) {
@@ -312,7 +361,7 @@ export function ReviewWorkspace({
     } catch {
       toast.info("Metadata was saved. Refresh search to check the indexed value.");
     }
-  }, [matterId, queryClient]);
+  }, [canViewJobs, matterId, queryClient]);
 
   const matter = useQuery({ queryKey: ["matter", matterId], queryFn: () => coreApi<MatterRead>(`/v1/matters/${matterId}`) });
   const client = useQuery({
@@ -329,37 +378,37 @@ export function ReviewWorkspace({
     queryFn: () => coreApi<MetadataGroupRead[]>(`/v1/matters/${matterId}/metadata-groups`),
   });
   const custodians = useQuery({
-    queryKey: ["custodians", matter.data?.client_id],
-    queryFn: () => coreApi<CustodianRead[]>(`/v1/clients/${matter.data!.client_id}/custodians`),
-    enabled: Boolean(matter.data?.client_id),
+    queryKey: ["matter-custodians", matterId],
+    queryFn: () => coreApi<CustodianRead[]>(`/v1/matters/${matterId}/custodians`),
   });
   const currentUser = useQuery({
     queryKey: ["session"],
     queryFn: () => coreApi<UserRead>("/v1/auth/me"),
   });
   const tenantUsers = useQuery({
-    queryKey: ["tenant-users", client.data?.tenant_id],
-    queryFn: () => coreApi<UserRead[]>(`/v1/tenants/${client.data!.tenant_id}/users`),
-    enabled: Boolean(client.data?.tenant_id),
+    queryKey: ["matter-access-users", matterId, "document.view"],
+    queryFn: () => coreApi<UserRead[]>(`/v1/matters/${matterId}/access-users?permission_key=document.view`),
   });
   const savedSearches = useQuery({
     queryKey: ["matter-saved-searches", matterId],
     queryFn: () => coreApi<MatterSavedSearchRead[]>(`/v1/matters/${matterId}/saved-searches`),
   });
+  const executedSavedSearch = savedSearches.data?.find((saved) => saved.id === executedSavedSearchId);
 
   const filterDefinitions = useMemo(() => {
     const available = (definitions.data ?? []).filter((definition) =>
-      definition.status === "ACTIVE" && definition.searchable && (
+      definition.key !== "coded_by" && definition.status === "ACTIVE" && definition.searchable && (
         isDateFilter(definition)
         || (definition.facetable && ["TEXT", "ENUM", "BOOLEAN"].includes(definition.type))
       ),
     );
+    available.push(codedByFilterDefinition(matterId));
     return available.sort((left, right) => {
       const leftRank = PREFERRED_FACETS.indexOf(left.key);
       const rightRank = PREFERRED_FACETS.indexOf(right.key);
       return (leftRank < 0 ? 1000 : leftRank) - (rightRank < 0 ? 1000 : rightRank) || left.display_name.localeCompare(right.display_name);
     });
-  }, [definitions.data]);
+  }, [definitions.data, matterId]);
 
   const searchRequest = useMemo<MatterSearchRequest>(() => {
     const definitionByKey = new Map(filterDefinitions.map((definition) => [definition.key, definition]));
@@ -376,14 +425,21 @@ export function ReviewWorkspace({
           to: range.to ? dateRangeBound(range.to, definition, true) : null,
         }];
       }
+      const negated = negatedFilterFields.has(key);
+      if (values.includes(HAS_VALUE_FILTER_TOKEN)) {
+        return [{ field: key, operator: negated ? "NOT_EXISTS" : "EXISTS" }];
+      }
+      if (values.includes(NO_VALUE_FILTER_TOKEN) && negated) {
+        return [{ field: key, operator: "EXISTS" }];
+      }
       const includeMissing = values.includes(NO_VALUE_FILTER_TOKEN);
-      const selectedValues = values.filter((value) => value !== NO_VALUE_FILTER_TOKEN);
+      const selectedValues = values.filter((value) => ![HAS_VALUE_FILTER_TOKEN, NO_VALUE_FILTER_TOKEN].includes(value));
       if (!selectedValues.length && includeMissing) return [{ field: key, operator: "NOT_EXISTS" }];
       return [{
         field: key,
-        operator: "IN",
+        operator: negated ? "NOT_IN" : "IN",
         values: selectedValues.map((value) => typedFacetValue(value, definition)),
-        ...(includeMissing ? { include_missing: true } : {}),
+        ...(!negated && includeMissing ? { include_missing: true } : {}),
       }];
     });
     const effectiveMode = query.trim() ? searchMode : "KEYWORD";
@@ -400,7 +456,7 @@ export function ReviewWorkspace({
       offset,
       size: PAGE_SIZE,
     };
-  }, [filterDefinitions, filters, minimumSimilarity, offset, query, searchMode]);
+  }, [filterDefinitions, filters, minimumSimilarity, negatedFilterFields, offset, query, searchMode]);
 
   const searchResults = useQuery({
     queryKey: ["matter-search", matterId, searchRequest],
@@ -437,9 +493,9 @@ export function ReviewWorkspace({
   const selectedHighlightTerms = useMemo(() => selectedHit ? resultHighlightTerms(selectedHit) : [], [selectedHit]);
   const selectedCollectionItemId = typeof selectedHit?.fields.collection_item_id === "string" ? selectedHit.fields.collection_item_id : "";
   const collectionItem = useQuery({
-    queryKey: ["collection-item", selectedCollectionItemId],
-    queryFn: () => coreApi<CollectionItemRead>(`/v1/collection-items/${selectedCollectionItemId}`),
-    enabled: Boolean(selectedCollectionItemId),
+    queryKey: ["matter-document-collection-item", matterId, effectiveSelectedDocumentId],
+    queryFn: () => coreApi<CollectionItemRead>(`/v1/matters/${matterId}/documents/${effectiveSelectedDocumentId}/collection-item`),
+    enabled: Boolean(effectiveSelectedDocumentId),
   });
   const metadataValues = useQuery({
     queryKey: ["document-metadata-values", matterId, effectiveSelectedDocumentId],
@@ -454,6 +510,7 @@ export function ReviewWorkspace({
     documentId?: string,
     nextSearchMode: MatterSearchRequestSearchMode = searchMode,
     nextMinimumSimilarity: number | null = minimumSimilarity,
+    nextNegatedFilterFields: Set<string> = negatedFilterFields,
   ) => {
     const params = new URLSearchParams();
     if (nextQuery.trim()) params.set("q", nextQuery.trim());
@@ -464,14 +521,16 @@ export function ReviewWorkspace({
     for (const [key, values] of Object.entries(nextFilters)) {
       for (const value of values) {
         if (value === NO_VALUE_FILTER_TOKEN) params.set(`m_${key}`, "1");
+        else if (value === HAS_VALUE_FILTER_TOKEN) params.set(`e_${key}`, "1");
         else params.append(`f_${key}`, value);
       }
+      if (nextNegatedFilterFields.has(key) && values.length) params.set(`n_${key}`, "1");
     }
     if (nextOffset) params.set("page", String(Math.floor(nextOffset / PAGE_SIZE) + 1));
     if (documentId) params.set("document", documentId);
     const suffix = params.size ? `?${params.toString()}` : "";
     router.replace(`/review/matters/${matterId}${suffix}`, { scroll: false });
-  }, [matterId, minimumSimilarity, router, searchMode]);
+  }, [matterId, minimumSimilarity, negatedFilterFields, router, searchMode]);
 
   const metadataMutation = useMutation({
     mutationFn: async (actions: CodingAction[]) => {
@@ -505,10 +564,19 @@ export function ReviewWorkspace({
       toast.success(`${saved.name} was saved.`);
     },
   });
+  const updateSavedSearchMutation = useMutation({
+    mutationFn: ({ saved, payload }: { saved: MatterSavedSearchRead; payload: MatterSavedSearchUpdate }) => coreApi<MatterSavedSearchRead>(`/v1/matters/${matterId}/saved-searches/${saved.id}`, { method: "PUT", body: JSON.stringify(payload) }),
+    onSuccess: (updated) => {
+      queryClient.setQueryData<MatterSavedSearchRead[]>(["matter-saved-searches", matterId], (current) => current?.map((saved) => saved.id === updated.id ? updated : saved));
+      toast.success(`${updated.name} was updated.`);
+    },
+    onError: (error) => toast.error(error instanceof Error ? error.message : "The saved search could not be updated."),
+  });
   const deleteSavedSearchMutation = useMutation({
     mutationFn: (saved: MatterSavedSearchRead) => coreApi<void>(`/v1/matters/${matterId}/saved-searches/${saved.id}`, { method: "DELETE" }),
     onSuccess: (_, saved) => {
       queryClient.setQueryData<MatterSavedSearchRead[]>(["matter-saved-searches", matterId], (current) => current?.filter((item) => item.id !== saved.id));
+      if (executedSavedSearchId === saved.id) setExecutedSavedSearchId("");
       toast.success(`${saved.name} was deleted.`);
     },
     onError: (error) => toast.error(error instanceof Error ? error.message : "The saved search could not be deleted."),
@@ -551,13 +619,24 @@ export function ReviewWorkspace({
   const toggleFilter = (key: string, value: string) => {
     const next = { ...filters };
     const current = next[key] ?? [];
-    next[key] = current.includes(value) ? current.filter((item) => item !== value) : [...current, value];
+    next[key] = toggleFacetFilterToken(current, value);
     if (!next[key].length) delete next[key];
     setFilters(next);
     setOffset(0);
     setSelectedDocumentId("");
     setMobileDocumentOpen(false);
     syncUrl(query, next, 0);
+  };
+
+  const toggleFilterNegation = (key: string) => {
+    const next = new Set(negatedFilterFields);
+    if (next.has(key)) next.delete(key);
+    else next.add(key);
+    setNegatedFilterFields(next);
+    setOffset(0);
+    setSelectedDocumentId("");
+    setMobileDocumentOpen(false);
+    syncUrl(query, filters, 0, undefined, searchMode, minimumSimilarity, next);
   };
 
   const changeDateRange = (key: string, range: DateRange) => {
@@ -574,10 +653,11 @@ export function ReviewWorkspace({
 
   const clearFilters = () => {
     setFilters({});
+    setNegatedFilterFields(new Set());
     setOffset(0);
     setSelectedDocumentId("");
     setMobileDocumentOpen(false);
-    syncUrl(query, {}, 0);
+    syncUrl(query, {}, 0, undefined, searchMode, minimumSimilarity, new Set());
   };
 
   const selectDocument = (documentId: string) => {
@@ -598,6 +678,7 @@ export function ReviewWorkspace({
     const nextMode = nextQuery ? (saved.search.search_mode ?? "KEYWORD") : "KEYWORD";
     const nextMinimumSimilarity = nextMode === "SEMANTIC" ? saved.search.minimum_similarity ?? null : null;
     const nextFilters: SelectedFilters = {};
+    const nextNegatedFilterFields = new Set<string>();
     for (const filter of saved.search.filters ?? []) {
       const definition = filterDefinitions.find((candidate) => candidate.key === filter.field);
       if (filter.operator === "RANGE" && definition && isDateFilter(definition)) {
@@ -612,10 +693,17 @@ export function ReviewWorkspace({
         nextFilters[filter.field] = [NO_VALUE_FILTER_TOKEN];
         continue;
       }
-      const values = filter.operator === "IN" ? filter.values : filter.operator === "EQ" ? [filter.value] : [];
+      if (filter.operator === "EXISTS") {
+        nextFilters[filter.field] = [HAS_VALUE_FILTER_TOKEN];
+        continue;
+      }
+      const values = filter.operator === "IN" || filter.operator === "NOT_IN" ? filter.values : filter.operator === "EQ" ? [filter.value] : [];
       const tokens = (values ?? []).filter((value) => value !== null && value !== undefined).map(facetToken);
       if (filter.operator === "IN" && filter.include_missing) tokens.push(NO_VALUE_FILTER_TOKEN);
-      if (tokens.length) nextFilters[filter.field] = tokens;
+      if (tokens.length) {
+        nextFilters[filter.field] = tokens;
+        if (filter.operator === "NOT_IN") nextNegatedFilterFields.add(filter.field);
+      }
     }
     setDraftQuery(nextQuery);
     setQuery(nextQuery);
@@ -623,10 +711,12 @@ export function ReviewWorkspace({
     setDraftMinimumSimilarity(nextMinimumSimilarity?.toString() ?? "");
     setMinimumSimilarity(nextMinimumSimilarity);
     setFilters(nextFilters);
+    setNegatedFilterFields(nextNegatedFilterFields);
     setOffset(0);
     setSelectedDocumentId("");
     setMobileDocumentOpen(false);
-    syncUrl(nextQuery, nextFilters, 0, undefined, nextMode, nextMinimumSimilarity);
+    setExecutedSavedSearchId(saved.id);
+    syncUrl(nextQuery, nextFilters, 0, undefined, nextMode, nextMinimumSimilarity, nextNegatedFilterFields);
     toast.success(`Running ${saved.name}.`);
   };
 
@@ -646,12 +736,15 @@ export function ReviewWorkspace({
   const pageStart = total ? offset + 1 : 0;
   const pageEnd = Math.min(offset + PAGE_SIZE, total);
 
-  if (matter.error || definitions.error || groups.error || savedSearches.error) {
-    return <main id="main-content" className="grid min-h-screen place-items-center p-6"><QueryError message={matter.error?.message ?? definitions.error?.message ?? groups.error?.message ?? savedSearches.error?.message} /></main>;
+  if (matter.error || definitions.error || groups.error || savedSearches.error || permissions.error) {
+    return <main id="main-content" className="grid min-h-screen place-items-center p-6"><QueryError message={matter.error?.message ?? definitions.error?.message ?? groups.error?.message ?? savedSearches.error?.message ?? permissions.error?.message} /></main>;
+  }
+  if (permissions.isPending) {
+    return <main id="main-content" className="grid min-h-screen place-items-center p-6"><Skeleton className="h-12 w-64" /></main>;
   }
 
   return (
-    <main id="main-content" className="flex h-dvh min-h-[36rem] flex-col overflow-hidden bg-background">
+    <main id="main-content" className="fixed inset-0 flex h-dvh min-h-0 w-full max-w-full flex-col overscroll-none bg-background" style={{ overflow: "clip" }}>
       <header className="shrink-0 border-b bg-card shadow-sm">
         <div className="flex min-h-14 flex-wrap items-center gap-2 px-3 py-2 lg:flex-nowrap">
           <BrandMark className="size-8 shrink-0 rounded-lg" />
@@ -679,7 +772,18 @@ export function ReviewWorkspace({
           <Button variant="outline" size="sm" className="xl:hidden" onClick={() => setFiltersOpen(true)}><Filter />Filters{activeFilterCount ? <Badge variant="accent">{activeFilterCount}</Badge> : null}</Button>
           <Button variant="outline" size="sm" className="2xl:hidden" disabled={!effectiveSelectedDocumentId} onClick={() => setCodingOpen(true)}><PanelRight />Details</Button>
           <SavedSearchesDialog searches={savedSearches.data ?? []} loading={savedSearches.isPending} onRun={runSavedSearch} onDelete={(saved) => deleteSavedSearchMutation.mutateAsync(saved).then(() => undefined)} />
+          {executedSavedSearch?.is_owner ? (
+            <UpdateSavedSearchDialog
+              key={`${executedSavedSearch.id}-${executedSavedSearch.updated_at}`}
+              saved={executedSavedSearch}
+              search={searchRequest}
+              users={tenantUsers.data ?? []}
+              currentUserId={currentUser.data?.id}
+              onUpdate={(payload) => updateSavedSearchMutation.mutateAsync({ saved: executedSavedSearch, payload }).then(() => undefined)}
+            />
+          ) : null}
           <SaveSearchDialog search={searchRequest} users={tenantUsers.data ?? []} currentUserId={currentUser.data?.id} onCreate={(payload) => createSavedSearchMutation.mutateAsync(payload).then(() => undefined)} />
+          {canExport ? <SearchExportDialog matterId={matterId} search={searchRequest} resultCount={searchResults.data?.total ?? 0} disabled={!searchResults.data?.total || searchResults.isFetching} onCreated={() => router.push(`/app/clients/${matter.data?.client_id}/matters/${matterId}?tab=jobs&job_type=SEARCH_EXPORTS`)} /> : null}
           <HelpLink topic="matterReview" />
           <ThemeToggle />
         </div>
@@ -699,7 +803,7 @@ export function ReviewWorkspace({
           style={{ "--review-facet-width": `${facetWidth}px` } as CSSProperties}
           aria-label="Search filters"
         >
-          <FacetPanel matterId={matterId} searchRequest={searchRequest} definitions={filterDefinitions} filters={filters} custodianNames={custodianNames} onToggle={toggleFilter} onDateRangeChange={changeDateRange} onClear={clearFilters} />
+          <FacetPanel matterId={matterId} searchRequest={searchRequest} definitions={filterDefinitions} filters={filters} negatedFilterFields={negatedFilterFields} custodianNames={custodianNames} onToggle={toggleFilter} onToggleNegation={toggleFilterNegation} onDateRangeChange={changeDateRange} onClear={clearFilters} />
         </aside>
         <ResizeHandle className="hidden xl:flex" label="Resize filter panel" value={facetWidth} min={184} max={420} onChange={setFacetWidth} />
 
@@ -722,7 +826,7 @@ export function ReviewWorkspace({
         <section className={cn("min-h-0 min-w-0 flex-1 overflow-hidden bg-background", mobileDocumentOpen ? "flex" : "hidden md:flex")} aria-label="Selected document">
           {collectionItem.isPending && selectedCollectionItemId ? <DocumentLoading />
             : collectionItem.error ? <div className="w-full p-5"><QueryError message={collectionItem.error.message} /></div>
-            : collectionItem.data ? <DocumentViewerSurface item={collectionItem.data} highlightTerms={selectedHighlightTerms} className="h-full w-full" />
+            : collectionItem.data ? <DocumentViewerSurface item={collectionItem.data} contentPath={`/v1/matters/${matterId}/documents/${effectiveSelectedDocumentId}/content`} highlightTerms={selectedHighlightTerms} className="h-full w-full" />
             : <DocumentEmpty />}
         </section>
         <ResizeHandle className="hidden 2xl:flex" label="Resize document details panel" value={detailsWidth} min={304} max={520} direction={-1} onChange={setDetailsWidth} />
@@ -732,21 +836,21 @@ export function ReviewWorkspace({
           style={{ "--review-details-width": `${detailsWidth}px` } as CSSProperties}
           aria-label="Document details"
         >
-          <DocumentDetailsPanel matterId={matterId} definitions={definitions.data ?? []} groups={groups.data ?? []} hit={selectedHit} values={metadataValues.data} valuesVersion={metadataValues.dataUpdatedAt} loading={metadataValues.isPending && Boolean(effectiveSelectedDocumentId)} saving={metadataMutation.isPending} onSave={(actions) => metadataMutation.mutateAsync(actions).then(() => undefined)} onBulkTag={hasActiveSearch && currentUser.data?.tenant_role === "ADMIN" ? openBulkTag : undefined} />
+          <DocumentDetailsPanel canReview={canReview} matterId={matterId} definitions={definitions.data ?? []} groups={groups.data ?? []} hit={selectedHit} values={metadataValues.data} valuesVersion={metadataValues.dataUpdatedAt} loading={metadataValues.isPending && Boolean(effectiveSelectedDocumentId)} saving={metadataMutation.isPending} onSave={(actions) => metadataMutation.mutateAsync(actions).then(() => undefined)} onBulkTag={hasActiveSearch && canBulkCode ? openBulkTag : undefined} />
         </aside>
       </div>
 
       <Dialog open={filtersOpen} onOpenChange={setFiltersOpen}>
         <DialogContent className="flex h-[min(86vh,48rem)] max-w-md flex-col overflow-hidden p-0 xl:hidden">
           <DialogHeader className="mb-0 border-b px-5 py-4"><DialogTitle>Filter documents</DialogTitle><DialogDescription>Narrow the current matter results.</DialogDescription></DialogHeader>
-          <FacetPanel matterId={matterId} searchRequest={searchRequest} definitions={filterDefinitions} filters={filters} custodianNames={custodianNames} onToggle={toggleFilter} onDateRangeChange={changeDateRange} onClear={clearFilters} />
+          <FacetPanel matterId={matterId} searchRequest={searchRequest} definitions={filterDefinitions} filters={filters} negatedFilterFields={negatedFilterFields} custodianNames={custodianNames} onToggle={toggleFilter} onToggleNegation={toggleFilterNegation} onDateRangeChange={changeDateRange} onClear={clearFilters} />
         </DialogContent>
       </Dialog>
 
       <Dialog open={codingOpen} onOpenChange={setCodingOpen}>
         <DialogContent className="flex h-[min(90vh,52rem)] max-w-xl flex-col overflow-hidden p-0 2xl:hidden">
           <DialogTitle className="sr-only">Document details</DialogTitle>
-          <DocumentDetailsPanel matterId={matterId} definitions={definitions.data ?? []} groups={groups.data ?? []} hit={selectedHit} values={metadataValues.data} valuesVersion={metadataValues.dataUpdatedAt} loading={metadataValues.isPending && Boolean(effectiveSelectedDocumentId)} saving={metadataMutation.isPending} onSave={(actions) => metadataMutation.mutateAsync(actions).then(() => undefined)} onBulkTag={hasActiveSearch && currentUser.data?.tenant_role === "ADMIN" ? openBulkTag : undefined} />
+          <DocumentDetailsPanel canReview={canReview} matterId={matterId} definitions={definitions.data ?? []} groups={groups.data ?? []} hit={selectedHit} values={metadataValues.data} valuesVersion={metadataValues.dataUpdatedAt} loading={metadataValues.isPending && Boolean(effectiveSelectedDocumentId)} saving={metadataMutation.isPending} onSave={(actions) => metadataMutation.mutateAsync(actions).then(() => undefined)} onBulkTag={hasActiveSearch && canBulkCode ? openBulkTag : undefined} />
         </DialogContent>
       </Dialog>
 
@@ -766,13 +870,15 @@ export function ReviewWorkspace({
   );
 }
 
-function FacetPanel({ matterId, searchRequest, definitions, filters, custodianNames, onToggle, onDateRangeChange, onClear }: {
+function FacetPanel({ matterId, searchRequest, definitions, filters, negatedFilterFields, custodianNames, onToggle, onToggleNegation, onDateRangeChange, onClear }: {
   matterId: string;
   searchRequest: MatterSearchRequest;
   definitions: MetadataDefinitionRead[];
   filters: SelectedFilters;
+  negatedFilterFields: Set<string>;
   custodianNames: Map<string, string>;
   onToggle: (key: string, value: string) => void;
+  onToggleNegation: (key: string) => void;
   onDateRangeChange: (key: string, range: DateRange) => void;
   onClear: () => void;
 }) {
@@ -783,7 +889,7 @@ function FacetPanel({ matterId, searchRequest, definitions, filters, custodianNa
         <h2 className="flex items-center gap-2 text-sm font-semibold"><SlidersHorizontal className="size-4" />Filters</h2>
         {hasFilters ? <Button variant="ghost" size="sm" onClick={onClear}>Clear</Button> : null}
       </div>
-      <div className="min-h-0 min-w-0 flex-1 divide-y overflow-x-hidden overflow-y-auto">
+      <div className="min-h-0 min-w-0 flex-1 divide-y overflow-x-hidden overflow-y-auto overscroll-contain">
         {definitions.map((definition) => isDateFilter(definition) ? (
           <DateHistogramFilter
             key={definition.id}
@@ -794,7 +900,7 @@ function FacetPanel({ matterId, searchRequest, definitions, filters, custodianNa
             onChange={(range) => onDateRangeChange(definition.key, range)}
           />
         ) : (
-          <FacetSection key={definition.id} matterId={matterId} searchRequest={searchRequest} definition={definition} selected={filters[definition.key] ?? []} custodianNames={custodianNames} onToggle={onToggle} />
+          <FacetSection key={definition.id} matterId={matterId} searchRequest={searchRequest} definition={definition} selected={filters[definition.key] ?? []} negated={negatedFilterFields.has(definition.key)} custodianNames={custodianNames} onToggle={onToggle} onToggleNegation={() => onToggleNegation(definition.key)} />
         ))}
         {!definitions.length ? <p className="p-4 text-sm text-muted-foreground">No filterable fields are configured for this matter.</p> : null}
       </div>
@@ -886,27 +992,30 @@ function useDebouncedValue(value: string, delay: number) {
   return debounced;
 }
 
-function FacetSection({ matterId, searchRequest, definition, selected, custodianNames, onToggle }: {
+function FacetSection({ matterId, searchRequest, definition, selected, negated, custodianNames, onToggle, onToggleNegation }: {
   matterId: string;
   searchRequest: MatterSearchRequest;
   definition: MetadataDefinitionRead;
   selected: string[];
+  negated: boolean;
   custodianNames: Map<string, string>;
   onToggle: (key: string, value: string) => void;
+  onToggleNegation: () => void;
 }) {
   const [open, setOpen] = useState(false);
   const [valueQuery, setValueQuery] = useState("");
   const [parent, setParent] = useState<string | null>(null);
   const debouncedQuery = useDebouncedValue(valueQuery.trim(), 250);
+  const [valueLimit, setValueLimit] = useState(FACET_PAGE_SIZE);
   const enumOptions = useMemo(() => new Map((definition.allowed_values ?? []).map((option) => [option.key, option])), [definition.allowed_values]);
   const enumLabels = useMemo(() => new Map([...enumOptions].map(([key, option]) => [key, option.label])), [enumOptions]);
   const hierarchySeparator = definition.hierarchy_separator;
   const hierarchical = Boolean(hierarchySeparator) || (definition.type === "ENUM" && [...enumOptions.values()].some((option) => option.parent_key));
   const values = useQuery({
-    queryKey: ["matter-facet-values", matterId, definition.key, searchRequest, debouncedQuery, parent],
+    queryKey: ["matter-facet-values", matterId, definition.key, searchRequest, debouncedQuery, parent, valueLimit],
     queryFn: () => coreApi<MatterFacetValuesResponse>(`/v1/matters/${matterId}/facets/${definition.key}/values`, {
       method: "POST",
-      body: JSON.stringify({ search: searchRequest, query: debouncedQuery || null, size: debouncedQuery ? 20 : 8, parent }),
+      body: JSON.stringify({ search: searchRequest, query: debouncedQuery || null, size: valueLimit, parent }),
     }),
     enabled: open,
     placeholderData: hierarchical ? undefined : (previous) => previous,
@@ -914,6 +1023,10 @@ function FacetSection({ matterId, searchRequest, definition, selected, custodian
   const options = useMemo(() => {
     const available = new Map((values.data?.values ?? []).map((option) => [facetToken(option.value), option]));
     if (!hierarchical) {
+      const hasValueCount = Math.max((values.data?.total_count ?? 0) - (values.data?.missing_count ?? 0), 0);
+      if (hasValueCount > 0 || selected.includes(HAS_VALUE_FILTER_TOKEN)) {
+        available.set(HAS_VALUE_FILTER_TOKEN, { value: HAS_VALUE_FILTER_TOKEN, count: hasValueCount });
+      }
       if ((values.data?.missing_count ?? 0) > 0 || selected.includes(NO_VALUE_FILTER_TOKEN)) {
         available.set(NO_VALUE_FILTER_TOKEN, { value: NO_VALUE_FILTER_TOKEN, count: values.data?.missing_count ?? 0 });
       }
@@ -922,8 +1035,9 @@ function FacetSection({ matterId, searchRequest, definition, selected, custodian
       }
     }
     return [...available.values()];
-  }, [hierarchical, selected, values.data?.missing_count, values.data?.values]);
-  const labelFor = (token: string) => token === NO_VALUE_FILTER_TOKEN ? "No value"
+  }, [hierarchical, selected, values.data?.missing_count, values.data?.total_count, values.data?.values]);
+  const labelFor = (token: string) => token === HAS_VALUE_FILTER_TOKEN ? "Has value"
+    : token === NO_VALUE_FILTER_TOKEN ? "No value"
     : definition.key === "custodian" ? custodianNames.get(token) ?? token
     : definition.type === "ENUM" ? enumLabels.get(token) ?? token
     : definition.type === "BOOLEAN" ? token === "true" ? "Yes" : "No"
@@ -936,6 +1050,7 @@ function FacetSection({ matterId, searchRequest, definition, selected, custodian
   const navigate = (nextParent: string | null) => {
     setParent(nextParent);
     setValueQuery("");
+    setValueLimit(FACET_PAGE_SIZE);
   };
 
   return (
@@ -950,7 +1065,7 @@ function FacetSection({ matterId, searchRequest, definition, selected, custodian
           <Button type="button" variant="ghost" size="sm" className="h-7 shrink-0 px-2" onClick={() => navigate(parentParent)}><ArrowLeft />Back</Button>
           <span className="min-w-0 flex-1 truncate pr-1 text-xs font-medium" title={parentLabel ?? undefined}>{parentLabel}</span>
         </div> : null}
-        {definition.type !== "BOOLEAN" ? <div className="relative"><Search className="pointer-events-none absolute left-2.5 top-1/2 size-3.5 -translate-y-1/2 text-muted-foreground" /><Input value={valueQuery} onChange={(event) => setValueQuery(event.target.value)} className="h-8 pl-8 text-sm" placeholder={`Find ${definition.display_name.toLowerCase()}…`} aria-label={`Find ${definition.display_name} values`} /></div> : null}
+        {definition.type !== "BOOLEAN" ? <div className="relative"><Search className="pointer-events-none absolute left-2.5 top-1/2 size-3.5 -translate-y-1/2 text-muted-foreground" /><Input value={valueQuery} onChange={(event) => { setValueQuery(event.target.value); setValueLimit(event.target.value.trim() ? 20 : FACET_PAGE_SIZE); }} className="h-8 pl-8 text-sm" placeholder={`Find ${definition.display_name.toLowerCase()}…`} aria-label={`Find ${definition.display_name} values`} /></div> : null}
         {values.isPending ? <p className="px-1 text-xs text-muted-foreground">Loading values…</p>
           : values.error ? <p className="px-1 text-xs text-destructive">Values could not be loaded.</p>
           : options.length ? <div className="min-w-0 space-y-0.5 overflow-hidden">
@@ -960,13 +1075,18 @@ function FacetSection({ matterId, searchRequest, definition, selected, custodian
               const label = option.label ?? labelFor(token);
               return <div key={token} className="flex min-h-8 min-w-0 items-center overflow-hidden rounded-md hover:bg-muted">
                 <label className="flex min-w-0 flex-1 cursor-pointer items-center gap-2 overflow-hidden px-1.5 py-1 text-sm">
-                <input type="checkbox" checked={checked} onChange={() => onToggle(definition.key, token)} className="size-4 shrink-0 accent-primary" />
+                <input type="checkbox" checked={checked} onChange={() => onToggle(definition.key, token)} className="sr-only" />
+                <span aria-hidden="true" data-selection-mode={checked ? negated ? "excluded" : "included" : "unselected"} className={cn("grid size-4 shrink-0 place-items-center rounded-sm border", checked ? negated ? "border-destructive bg-destructive text-destructive-foreground" : "border-primary bg-primary text-primary-foreground" : "border-input bg-background")}>{checked ? negated ? <X className="size-3" strokeWidth={3} /> : <Check className="size-3" strokeWidth={3} /> : null}</span>
                 <span className="min-w-0 flex-1 truncate" title={label}>{label}</span>
                 <span className="font-mono text-xs tabular-nums text-muted-foreground">{option.count ? option.count.toLocaleString() : "—"}</span>
                 </label>
                 {hierarchical && option.has_children ? <Button type="button" variant="ghost" size="icon" className="size-8 shrink-0" aria-label={`Show children of ${label}`} onClick={() => navigate(token)}><ChevronRight /></Button> : null}
               </div>;
             })}
+            <div className="flex min-h-8 items-center justify-between">
+              {values.data?.has_more ? <button type="button" className="h-8 px-1.5 text-sm font-medium text-primary underline-offset-4 hover:underline disabled:opacity-50" aria-label={`Show more ${definition.display_name} values`} disabled={values.isFetching} onClick={() => setValueLimit((current) => current + FACET_PAGE_SIZE)}>{values.isFetching ? "Loading…" : "More"}</button> : <span />}
+              <button type="button" className={cn("h-8 px-1.5 text-sm font-medium underline-offset-4 hover:underline", negated ? "text-destructive" : "text-primary")} onClick={onToggleNegation}>{negated ? "Include" : "Negate"}</button>
+            </div>
           </div> : <p className="px-1 text-xs text-muted-foreground">No matching values.</p>}
       </div> : null}
     </section>
@@ -1071,7 +1191,8 @@ function ResizeHandle({ className, label, value, min, max, direction = 1, onChan
 
 type DetailsTab = "coding" | "metadata" | "history";
 
-function DocumentDetailsPanel({ matterId, definitions, groups, hit, values, valuesVersion, loading, saving, onSave, onBulkTag }: {
+function DocumentDetailsPanel({ canReview, matterId, definitions, groups, hit, values, valuesVersion, loading, saving, onSave, onBulkTag }: {
+  canReview: boolean;
   matterId: string;
   definitions: MetadataDefinitionRead[];
   groups: MetadataGroupRead[];
@@ -1083,7 +1204,7 @@ function DocumentDetailsPanel({ matterId, definitions, groups, hit, values, valu
   onSave: (actions: CodingAction[]) => Promise<void>;
   onBulkTag?: () => void;
 }) {
-  const [tab, setTab] = useState<DetailsTab>("coding");
+  const [tab, setTab] = useState<DetailsTab>(canReview ? "coding" : "metadata");
   const tabsId = useId();
   const definitionById = new Map(definitions.map((definition) => [definition.id, definition]));
   const valueByDefinition = new Map((values ?? []).map((field) => [field.metadata_definition_id, field]));
@@ -1097,7 +1218,7 @@ function DocumentDetailsPanel({ matterId, definitions, groups, hit, values, valu
   return (
     <div className="flex min-h-0 min-w-0 flex-1 flex-col overflow-hidden">
       <div className="flex h-11 shrink-0 items-end border-b px-2" role="tablist" aria-label="Document details">
-        <button id={`${tabsId}-coding`} type="button" role="tab" aria-selected={tab === "coding"} aria-controls={`${tabsId}-panel`} onClick={() => setTab("coding")} className={detailsTabClass(tab === "coding")}>Coding</button>
+        {canReview ? <button id={`${tabsId}-coding`} type="button" role="tab" aria-selected={tab === "coding"} aria-controls={`${tabsId}-panel`} onClick={() => setTab("coding")} className={detailsTabClass(tab === "coding")}>Coding</button> : null}
         <button id={`${tabsId}-metadata`} type="button" role="tab" aria-selected={tab === "metadata"} aria-controls={`${tabsId}-panel`} onClick={() => setTab("metadata")} className={detailsTabClass(tab === "metadata")}>Metadata</button>
         <button id={`${tabsId}-history`} type="button" role="tab" aria-selected={tab === "history"} aria-controls={`${tabsId}-panel`} onClick={() => setTab("history")} className={detailsTabClass(tab === "history")}>History</button>
       </div>
@@ -1130,23 +1251,31 @@ function documentHistoryScore(entry: DocumentHistoryEntry) {
   return `${Math.round(entry.score * 1000) / 10}%${kind ? ` ${kind}` : " score"}`;
 }
 
+function documentReviewerHistoryOrigin(entry: DocumentHistoryEntry) {
+  if (!("reviewer_origin" in entry) || !entry.reviewer_origin) return null;
+  if (entry.reviewer_origin === "REVIEW_UI") return "Review workspace";
+  if (entry.reviewer_origin === "SYSTEM_MIGRATION") return "Migrated baseline";
+  return "CSV import";
+}
+
 function DocumentHistoryEntries({ entries }: { entries: DocumentHistoryEntry[] }) {
   if (!entries.length) return <p className="rounded-lg border border-dashed p-3 text-sm text-muted-foreground">No coding activity in this section.</p>;
   return <ol className="space-y-3">{entries.map((entry) => {
     const rawCode = displayValue(entry.value);
     const showRawCode = rawCode !== "—" && entry.value_label !== rawCode;
     const score = documentHistoryScore(entry);
+    const reviewerOrigin = documentReviewerHistoryOrigin(entry);
     const direct = "metadata_event_id" in entry;
     const key = direct
       ? entry.metadata_event_id
-      : `${entry.review_batch_run_id}:${entry.metadata_definition_id}:${entry.recorded_at}:${rawCode}`;
+      : `${entry.reviewer_coding_id ?? entry.review_batch_run_id}:${entry.reviewer_revision ?? "run"}:${entry.event_kind ?? "value"}:${entry.metadata_definition_id}:${entry.recorded_at}:${rawCode}`;
     return <li key={key} className="rounded-lg border bg-background p-3 shadow-xs">
       <div className="flex items-start justify-between gap-3">
         <div className="min-w-0"><p className="text-xs font-medium uppercase tracking-wide text-muted-foreground">{entry.field_display_name}</p><p className="mt-1 break-words text-sm font-semibold">{entry.value_label}</p>{showRawCode ? <p className="mt-0.5 break-all font-mono text-[11px] text-muted-foreground">{rawCode}</p> : null}</div>
         <Badge variant={entry.source_kind === "HUMAN" ? "accent" : "outline"}>{entry.source_kind === "JEV" ? "Jev" : entry.source_kind.toLowerCase()}</Badge>
       </div>
       {direct ? <div className="mt-2 flex flex-wrap gap-1"><Badge variant="outline">{entry.operation.toLowerCase()}</Badge>{entry.effective_status !== "ACTIVE" ? <Badge variant="outline">{entry.effective_status.toLowerCase()}</Badge> : null}</div> : null}
-      <dl className="mt-3 grid grid-cols-[auto_1fr] gap-x-3 gap-y-1 text-xs"><dt className="text-muted-foreground">Date</dt><dd>{formatHistoryDate(entry.recorded_at)}</dd><dt className="text-muted-foreground">Source</dt><dd className="min-w-0 break-words">{entry.source_label}{entry.source_detail ? <span className="text-muted-foreground"> · {entry.source_detail}</span> : null}</dd><dt className="text-muted-foreground">Score</dt><dd>{score ?? "—"}</dd></dl>
+      <dl className="mt-3 grid grid-cols-[auto_1fr] gap-x-3 gap-y-1 text-xs"><dt className="text-muted-foreground">Date</dt><dd>{formatHistoryDate(entry.recorded_at)}</dd><dt className="text-muted-foreground">Source</dt><dd className="min-w-0 break-words">{entry.source_label}{entry.source_detail ? <span className="text-muted-foreground"> · {entry.source_detail}</span> : null}</dd>{"reviewer_revision" in entry && entry.reviewer_revision ? <><dt className="text-muted-foreground">Revision</dt><dd>#{entry.reviewer_revision}{reviewerOrigin ? <span className="text-muted-foreground"> · {reviewerOrigin}</span> : null}</dd></> : null}<dt className="text-muted-foreground">Score</dt><dd>{score ?? "—"}</dd></dl>
     </li>;
   })}</ol>;
 }

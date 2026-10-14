@@ -7,20 +7,28 @@
  */
 
 export interface BinaryClassMapping {
-  /** @pattern ^[A-Za-z][A-Za-z0-9_-]{0,127}$ */
+  /**
+     * @minLength 1
+     * @maxLength 20000
+     */
   negative_class_key: string;
-  /** @pattern ^[A-Za-z][A-Za-z0-9_-]{0,127}$ */
+  /**
+     * @minLength 1
+     * @maxLength 20000
+     */
   positive_class_key: string;
   /**
      * @minItems 1
      * @maxItems 1000
-     * @items.pattern ^[A-Za-z][A-Za-z0-9_-]{0,127}$
+     * @items.minLength 1
+     * @items.maxLength 20000
      */
   negative_value_keys: string[];
   /**
      * @minItems 1
      * @maxItems 1000
-     * @items.pattern ^[A-Za-z][A-Za-z0-9_-]{0,127}$
+     * @items.minLength 1
+     * @items.maxLength 20000
      */
   positive_value_keys: string[];
 }

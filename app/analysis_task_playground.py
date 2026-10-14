@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import copy
 import json
 import uuid
 from collections import defaultdict
@@ -11,11 +12,17 @@ from sqlalchemy.orm import Session
 
 from app.analysis_task_evidence import (
     EVIDENCE_LOCALIZATION_VERSION,
-    build_same_request_evidence_questions,
-    collect_same_request_evidence,
+    build_conditional_evidence_questions,
+    collect_conditional_evidence,
     primary_decision_answers,
+    select_evidence_question_keys,
 )
-from app.analysis_tasks import MatterAnalysisTaskConflict, json_content_hash
+from app.analysis_tasks import (
+    MatterAnalysisTaskConflict,
+    MatterAnalysisTaskInputTooLarge,
+    decision_provider_engine_key,
+    json_content_hash,
+)
 from app.artifact_gateway import get_preferred_text_source
 from app.config import Settings, get_settings
 from app.decision_engine import DecisionRequest
@@ -86,7 +93,7 @@ def materialize_decision_recommendations(
             )
         )
     }
-    seen: dict[uuid.UUID, Any] = {}
+    seen: dict[uuid.UUID, list[Any]] = defaultdict(list)
     for definition_key, recommendation in candidates:
         definition = definitions.get(definition_key)
         if definition is None:
@@ -94,34 +101,52 @@ def materialize_decision_recommendations(
                 f"Decision recommendation targets an unavailable metadata field: {definition_key}"
             )
         raw_value = recommendation.get("value")
-        if definition.id in seen:
-            if seen[definition.id] != raw_value:
-                raise MatterAnalysisTaskConflict(
-                    f"Decision policy produced conflicting values for metadata field: {definition_key}"
-                )
+        existing_values = seen[definition.id]
+        if raw_value in existing_values:
             continue
+        if (
+            definition.cardinality == "SINGLE"
+            and existing_values
+            and existing_values[0] != raw_value
+        ):
+            raise MatterAnalysisTaskConflict(
+                f"Decision policy produced conflicting values for metadata field: {definition_key}"
+            )
         try:
             columns = value_columns(raw_value, definition)
         except ValueError as exc:
             raise MatterAnalysisTaskConflict(
                 f"Decision recommendation is invalid for metadata field '{definition_key}': {exc}"
             ) from exc
-        probability = recommendation.get("probability")
-        confidence = float(probability) if isinstance(probability, (int, float)) else None
+        raw_confidence = recommendation.get("confidence", recommendation.get("probability"))
+        confidence = (
+            float(raw_confidence)
+            if isinstance(raw_confidence, (int, float)) and not isinstance(raw_confidence, bool)
+            else None
+        )
+        confidence_kind = recommendation.get("confidence_kind")
+        if confidence is None:
+            confidence_kind = "NONE"
+        elif confidence_kind not in {
+            "PROVIDER_CONFIDENCE",
+            "SELECTED_PROBABILITY",
+            "DERIVED_PROBABILITY",
+        }:
+            confidence_kind = "SELECTED_PROBABILITY"
         db.add(
             ReviewBatchRunValue(
                 review_batch_run_id=review_run_id,
                 matter_document_id=document_id,
                 metadata_definition_id=definition.id,
-                value_ordinal=0,
+                value_ordinal=len(existing_values) if definition.cardinality == "MULTIPLE" else 0,
                 confidence=confidence,
-                confidence_kind="SELECTED_PROBABILITY" if confidence is not None else "NONE",
+                confidence_kind=confidence_kind,
                 review_decision_result_id=decision_result.id,
                 question_key=recommendation.get("question_key"),
                 **columns,
             )
         )
-        seen[definition.id] = raw_value
+        existing_values.append(raw_value)
 
 
 def _document_metadata_state(db: Session, document: MatterDocument) -> dict[str, Any]:
@@ -183,6 +208,57 @@ def build_document_review_state(
     return state, paragraph_map
 
 
+_STRUCTURED_DECISION_CONTEXT_KEYS = (
+    "controlling_guidance",
+    "responsiveness_scope",
+    "inclusion_criteria",
+    "exclusion_criteria",
+    "issue_definitions",
+    "key_entities",
+    "date_scope",
+    "terminology",
+    "examples",
+)
+
+
+def _runtime_decision_context(decision_context: dict[str, Any]) -> dict[str, Any]:
+    """Remove exact source material once its compiled execution context is available.
+
+    The published specification retains source_material for review and provenance. Sending it
+    again on every document evaluation duplicates the structured criteria produced by the
+    compiler and consumes a substantial portion of the provider token budget.
+    """
+
+    runtime_context = copy.deepcopy(decision_context)
+    has_structured_context = any(
+        bool(runtime_context.get(key)) for key in _STRUCTURED_DECISION_CONTEXT_KEYS
+    )
+    if has_structured_context and runtime_context.get("source_material"):
+        runtime_context.pop("source_material", None)
+    return runtime_context
+
+
+def _classification_state(
+    state: dict[str, Any],
+    *,
+    required_paths: list[str],
+) -> dict[str, Any]:
+    """Avoid sending two equivalent representations of the document to classification."""
+
+    projected = copy.deepcopy(state)
+    document = projected.get("document")
+    if not isinstance(document, dict):
+        return projected
+    required = set(required_paths)
+    requires_text = "document.text" in required
+    requires_paragraphs = "document.paragraphs" in required
+    if requires_text and not requires_paragraphs:
+        document.pop("paragraphs", None)
+    elif requires_paragraphs and not requires_text:
+        document.pop("text", None)
+    return projected
+
+
 def queue_analysis_task_playground(
     db: Session,
     *,
@@ -218,7 +294,8 @@ def queue_analysis_task_playground(
         raise MatterAnalysisTaskConflict(f"Decision evaluation managed skill is not configured: {exc}") from exc
     bindings = binding_snapshot(resolved)
     role_binding = bindings["decision_evaluation"]
-    engine_key = str(role_binding["configuration"].get("engine_key") or "jev")
+    engine_key = decision_provider_engine_key(task_version.decision_provider)
+    model_key = task_version.decision_model or str(role_binding["model_key"])
     workflow_id = f"analysis-task:{task.id}:version:{task_version.version}:playground:{uuid.uuid4()}"
     workflow = WorkflowRun(
         tenant_id=matter.client.tenant_id,
@@ -240,7 +317,8 @@ def queue_analysis_task_playground(
         binding_snapshot=bindings,
         configuration_snapshot={
             "engine_key": engine_key,
-            "model_key": role_binding["model_key"],
+            "model_key": model_key,
+            "decision_provider": task_version.decision_provider,
             "result_policy": "ISOLATED",
         },
         progress={"stage": "QUEUED"},
@@ -269,6 +347,8 @@ def queue_analysis_task_playground(
             "task_version_id": str(task_version.id),
             "task_version": task_version.version,
             "engine_key": engine_key,
+            "model_key": model_key,
+            "decision_provider": task_version.decision_provider,
         },
         initiated_by_user_id=initiated_by_user_id,
         dbos_workflow_id=workflow_id,
@@ -320,9 +400,14 @@ def execute_analysis_task_document(
     if existing is not None:
         if run_document.status != "COMPLETED":
             run_document.status = "COMPLETED"
+            run_document.failure_code = None
+            run_document.failure_message = None
+            run_document.failure_retriable = False
             run_document.completed_at = run_document.completed_at or utcnow()
             db.commit()
         return existing
+    if workflow.status == "CANCELED" or run_document.status == "SKIPPED":
+        raise MatterAnalysisTaskConflict("Analysis task batch run was canceled")
     snapshot = workflow.input_snapshot
     task_version = db.get(MatterAnalysisTaskVersion, uuid.UUID(snapshot["task_version_id"]))
     document = db.get(MatterDocument, matter_document_id)
@@ -375,7 +460,7 @@ def execute_analysis_task_document(
         db,
         matter=matter,
         document=document,
-        decision_context=decision_context,
+        decision_context=_runtime_decision_context(decision_context),
         source_content_hash=source.content_hash,
         source_text=source.text,
     )
@@ -386,16 +471,16 @@ def execute_analysis_task_document(
         raise MatterAnalysisTaskConflict(
             f"State builder cannot provide required paths: {', '.join(missing_paths)}"
         )
+    state = _classification_state(
+        state,
+        required_paths=specification.state_contract.required_paths,
+    )
     state_characters = len(json.dumps(state, ensure_ascii=False, separators=(",", ":")))
     if state_characters > settings.analysis_task_decision_max_characters:
-        raise MatterAnalysisTaskConflict(
-            "Document exceeds the single-request analysis limit; windowed evaluation is not yet enabled"
+        raise MatterAnalysisTaskInputTooLarge(
+            actual_characters=state_characters,
+            maximum_characters=settings.analysis_task_decision_max_characters,
         )
-    provider_questions, evidence_plans = build_same_request_evidence_questions(
-        specification,
-        paragraph_map,
-    )
-
     now = utcnow()
     if complete_run:
         workflow.status = "RUNNING"
@@ -408,11 +493,11 @@ def execute_analysis_task_document(
     run_document.status = "IN_PROGRESS"
     run_document.started_at = now
     request_input = {
+        "phase": "CLASSIFICATION",
         "state": state,
         "questions": {
-            key: question.model_dump(mode="json") for key, question in provider_questions.items()
+            key: question.model_dump(mode="json") for key, question in specification.questions.items()
         },
-        "evidence_localization_version": EVIDENCE_LOCALIZATION_VERSION,
         "task_version": {
             "id": str(task_version.id),
             "definition_content_hash": task_version.definition_content_hash,
@@ -430,30 +515,38 @@ def execute_analysis_task_document(
         request_input=request_input,
     )
     engine_key = str(workflow.configuration_snapshot.get("engine_key") or "jev")
+    model_key = str(workflow.configuration_snapshot.get("model_key") or skill_version.model_key)
+    model_settings = {**skill_version.model_policy, "engine_key": engine_key}
     request = DecisionRequest(
         state=state,
-        questions=provider_questions,
-        model_key=skill_version.model_key,
-        model_settings=skill_version.model_policy,
+        questions=specification.questions,
+        model_key=model_key,
+        model_settings=model_settings,
         limits=skill_version.limits,
         run_id=str(skill_run.id),
-        request_type="analysis-task-decision",
+        request_type="analysis-task-classification",
         idempotency_key=json_content_hash(
             {
+                "phase": "CLASSIFICATION",
                 "task_version_id": str(task_version.id),
                 "source_content_hash": source.content_hash,
                 "state_hash": json_content_hash(state),
-                "model_key": skill_version.model_key,
-                "evidence_localization_version": EVIDENCE_LOCALIZATION_VERSION,
+                "model_key": model_key,
             }
         ),
+    )
+    decision_registry = registry or get_shared_decision_engine_registry(settings)
+    usage_job_type = (
+        "MATTER_ANALYSIS_TASK_PLAYGROUND"
+        if workflow.workflow_key == MATTER_ANALYSIS_TASK_PLAYGROUND_SPEC.key
+        else "MATTER_ANALYSIS_TASK_BATCH"
     )
     try:
         execution = asyncio.run(
             execute_decision_request(
                 request,
                 engine_key=engine_key,
-                registry=registry or get_shared_decision_engine_registry(settings),
+                registry=decision_registry,
                 settings=settings,
             )
         )
@@ -466,14 +559,11 @@ def execute_analysis_task_document(
                 client_id=workflow.client_id,
                 matter_id=workflow.matter_id,
                 started_by_user_id=workflow.initiated_by_user_id,
-                job_type=(
-                    "MATTER_ANALYSIS_TASK_PLAYGROUND"
-                    if workflow.workflow_key == MATTER_ANALYSIS_TASK_PLAYGROUND_SPEC.key
-                    else "MATTER_ANALYSIS_TASK_BATCH"
-                ),
+                job_type=usage_job_type,
                 job_id=workflow.id,
                 job_created_at=workflow.created_at,
                 details={
+                    "phase": "CLASSIFICATION",
                     "workflow_key": workflow.workflow_key,
                     "role_key": step.role_key,
                     "task_version_id": str(task_version.id),
@@ -485,16 +575,118 @@ def execute_analysis_task_document(
     except Exception as exc:
         fail_skill_run(skill_run, exc)
         raise
-    evidence, evidence_complete = collect_same_request_evidence(
-        evidence_plans,
-        execution.decision.answers,
-    )
     primary_answers = primary_decision_answers(specification, execution.decision.answers)
     primary_envelope = execution.decision.model_copy(update={"answers": primary_answers})
     recommendations, routes = evaluate_decision_policy(
         specification.decision_policy,
         primary_answers,
         specification.questions,
+    )
+    evidence_question_keys = select_evidence_question_keys(
+        specification,
+        recommendations,
+        routes,
+    )
+    evidence_questions, evidence_plans = build_conditional_evidence_questions(
+        specification,
+        paragraph_map,
+        evidence_question_keys,
+    )
+    evidence_skill_run = None
+    evidence_answers = {}
+    if evidence_questions:
+        evidence_state = {
+            "document": {
+                "id": str(document.id),
+                "source_content_hash": source.content_hash,
+                "paragraphs": [paragraph.as_dict() for paragraph in paragraph_map.paragraphs],
+            },
+            "classification": {
+                "answers": {
+                    key: primary_answers[key].model_dump(mode="json") for key in evidence_question_keys
+                }
+            },
+        }
+        evidence_request_input = {
+            "phase": "EVIDENCE_LOCALIZATION",
+            "state": evidence_state,
+            "questions": {
+                key: question.model_dump(mode="json") for key, question in evidence_questions.items()
+            },
+            "evidence_localization_version": EVIDENCE_LOCALIZATION_VERSION,
+            "task_version": {
+                "id": str(task_version.id),
+                "definition_content_hash": task_version.definition_content_hash,
+                "specification_content_hash": task_version.specification_content_hash,
+            },
+        }
+        evidence_skill_run = create_skill_run(
+            db,
+            workflow=workflow,
+            step=step,
+            skill_version=skill_version,
+            scope_type="MATTER_DOCUMENT_EVIDENCE",
+            scope_id=document.id,
+            request_input=evidence_request_input,
+        )
+        evidence_request = DecisionRequest(
+            state=evidence_state,
+            questions=evidence_questions,
+            model_key=model_key,
+            model_settings=model_settings,
+            limits=skill_version.limits,
+            run_id=str(evidence_skill_run.id),
+            request_type="analysis-task-evidence-localization",
+            idempotency_key=json_content_hash(
+                {
+                    "phase": "EVIDENCE_LOCALIZATION",
+                    "task_version_id": str(task_version.id),
+                    "source_content_hash": source.content_hash,
+                    "classification_answers": evidence_state["classification"]["answers"],
+                    "question_keys": evidence_question_keys,
+                    "model_key": model_key,
+                    "evidence_localization_version": EVIDENCE_LOCALIZATION_VERSION,
+                }
+            ),
+        )
+        try:
+            evidence_execution = asyncio.run(
+                execute_decision_request(
+                    evidence_request,
+                    engine_key=engine_key,
+                    registry=decision_registry,
+                    settings=settings,
+                )
+            )
+            persist_model_invocations(
+                db,
+                evidence_execution.invocations,
+                skill_run_id=evidence_skill_run.id,
+                usage_context=ProviderUsageContext(
+                    tenant_id=workflow.tenant_id,
+                    client_id=workflow.client_id,
+                    matter_id=workflow.matter_id,
+                    started_by_user_id=workflow.initiated_by_user_id,
+                    job_type=usage_job_type,
+                    job_id=workflow.id,
+                    job_created_at=workflow.created_at,
+                    details={
+                        "phase": "EVIDENCE_LOCALIZATION",
+                        "workflow_key": workflow.workflow_key,
+                        "role_key": step.role_key,
+                        "task_version_id": str(task_version.id),
+                        "matter_document_id": str(document.id),
+                    },
+                ),
+            )
+            complete_skill_run(db, evidence_skill_run, refresh_workflow_usage=complete_run)
+            evidence_answers = evidence_execution.decision.answers
+        except Exception as exc:
+            fail_skill_run(evidence_skill_run, exc)
+            raise
+    evidence, evidence_complete = collect_conditional_evidence(
+        evidence_plans,
+        evidence_answers,
     )
     result = record_review_decision_result(
         db,
@@ -517,8 +709,11 @@ def execute_analysis_task_document(
         coverage_details={
             "input_complete": True,
             "evidence_complete": evidence_complete,
+            "evidence_target_question_count": len(evidence_question_keys),
+            "evidence_localization_request_count": 1 if evidence_questions else 0,
             "paragraph_count": len(paragraph_map.paragraphs),
         },
+        evidence_skill_run_id=evidence_skill_run.id if evidence_skill_run is not None else None,
     )
     materialize_decision_recommendations(
         db,
@@ -530,6 +725,9 @@ def execute_analysis_task_document(
     )
     completed_at = utcnow()
     run_document.status = "COMPLETED"
+    run_document.failure_code = None
+    run_document.failure_message = None
+    run_document.failure_retriable = False
     run_document.completed_at = completed_at
     if complete_run:
         review_run.status = "COMPLETED"

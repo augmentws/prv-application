@@ -64,6 +64,23 @@ Each collection item is a logical evidence record and does not contain a storage
 
 The original source-created and source-modified timestamps remain available separately from the canonical file date so source metadata is not discarded.
 
+## Unmapped metadata
+
+Collection importers separate normalized evidence properties from source-specific fields:
+
+- normalized collection-item properties include filename, source path, source dates, family relationships, record type, and processing status;
+- email sender, recipients, subject, and dates use the collection email model;
+- `raw_metadata` records import provenance and source details; and
+- `unmapped_metadata` preserves external fields that do not have a normalized collection property, including externally supplied coding columns.
+
+Unmapped does not mean discarded. The original key and value remain attached to the collection item. Collection search projections may expose a value when an applicable field uses the same key.
+
+When a collection selection is published to a matter, Priv-View requests only unmapped keys that match active asserted metadata definitions in that matter. Matching is case-insensitive. Valid values are added to the matter's metadata history with source **Import**; unknown keys remain collection metadata. The matter field controls type, cardinality, allowed enum values, confirmation, and conflict resolution.
+
+This association deliberately uses the stable field key. If an external column is intended to become a matter label, create the destination matter field with the same key before publishing the documents. Publishing the same collection item again is idempotent and can backfill labels onto a document already present in the matter.
+
+See [Matter jobs](/docs/matter-jobs#publish-unmapped-metadata-as-matter-labels) for publication behavior, counters, retries, and warnings.
+
 ## Process text for chunking and search
 
 Open **Processing** when extracted email bodies or text contain repeated reply history, signatures, export banners, or collection-specific boilerplate that would reduce topic and embedding quality.

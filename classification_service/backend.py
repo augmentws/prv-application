@@ -80,12 +80,13 @@ def _read_parquet(
     reference: ArtifactReference,
     *,
     expected_schema: str,
+    columns: list[str] | None = None,
 ) -> tuple[bytes, pa.Table]:
     content = store.read(reference)
     if content_hash(content) != reference.content_hash:
         raise ClassificationRuntimeError("Input artifact hash mismatch", code="ARTIFACT_HASH_MISMATCH")
     try:
-        table = pq.read_table(io.BytesIO(content))
+        table = pq.read_table(io.BytesIO(content), columns=columns)
     except (OSError, ValueError, pa.ArrowException) as exc:
         raise ClassificationRuntimeError(
             f"{expected_schema} input is not readable Parquet",
@@ -346,6 +347,13 @@ def _load_training_dataset(
         store,
         request.label_artifact,
         expected_schema="classification-labels",
+        columns=[
+            "matter_document_id",
+            "binary_label",
+            "multiclass_key",
+            "one_vs_rest_labels",
+            "one_vs_rest_observed_mask",
+        ],
     )
     _, split_table = _read_parquet(
         store,
@@ -354,6 +362,16 @@ def _load_training_dataset(
     )
     if _metadata_text(label_table, "configuration_hash") != request.configuration_hash:
         raise ClassificationRuntimeError("Label artifact configuration hash mismatch")
+    observed_class_keys = _metadata_json(label_table, "ordered_class_keys")
+    if observed_class_keys is None:
+        # Backward compatibility for pre-class-exclusion label artifacts and test fixtures.
+        observed_class_keys = list(request.ordered_class_keys)
+    if (
+        not isinstance(observed_class_keys, list)
+        or not all(isinstance(value, str) for value in observed_class_keys)
+        or len(observed_class_keys) != len(set(observed_class_keys))
+    ):
+        raise ClassificationRuntimeError("Label artifact class order is invalid")
     feature_specification_hash = _metadata_text(feature_table, "feature_specification_hash")
     if feature_specification_hash is None:
         raise ClassificationRuntimeError("Feature specification hash is missing")
@@ -390,9 +408,19 @@ def _load_training_dataset(
             "Feature, label, and split artifacts must contain unique document IDs",
             code="DATASET_ROW_ALIGNMENT_FAILED",
         )
-    if set(features) != set(labels) or set(features) != split_ids:
+    if set(labels) != split_ids:
         raise ClassificationRuntimeError(
-            "Feature, label, and split artifacts do not align by document ID",
+            "Label and split artifacts do not align by document ID",
+            code="DATASET_ROW_ALIGNMENT_FAILED",
+        )
+    labeled_split_ids = {
+        row["matter_document_id"]
+        for row in split_rows
+        if row["label_status"] == "LABELED"
+    }
+    if set(features) != labeled_split_ids:
+        raise ClassificationRuntimeError(
+            "Feature artifacts must align with the labeled split population",
             code="DATASET_ROW_ALIGNMENT_FAILED",
         )
     eligible = [row for row in split_rows if row["training_eligible"]]
@@ -459,17 +487,25 @@ def _load_training_dataset(
                 code="INSUFFICIENT_CLASS_SUPPORT",
             )
     else:
-        ovr_labels = np.asarray(
+        try:
+            trained_class_indices = [observed_class_keys.index(key) for key in request.ordered_class_keys]
+        except ValueError as exc:
+            raise ClassificationRuntimeError(
+                "A trained one-vs-rest class is absent from the frozen label artifact"
+            ) from exc
+        complete_ovr_labels = np.asarray(
             [row["one_vs_rest_labels"] for row in selected_labels],
             dtype=np.int8,
         )
-        ovr_observed = np.asarray(
+        complete_ovr_observed = np.asarray(
             [row["one_vs_rest_observed_mask"] for row in selected_labels],
             dtype=bool,
         )
-        expected_shape = (len(selected_labels), len(request.ordered_class_keys))
-        if ovr_labels.shape != expected_shape or ovr_observed.shape != expected_shape:
+        complete_shape = (len(selected_labels), len(observed_class_keys))
+        if complete_ovr_labels.shape != complete_shape or complete_ovr_observed.shape != complete_shape:
             raise ClassificationRuntimeError("One-vs-rest labels have an invalid shape")
+        ovr_labels = complete_ovr_labels[:, trained_class_indices]
+        ovr_observed = complete_ovr_observed[:, trained_class_indices]
         for class_index, class_key in enumerate(request.ordered_class_keys):
             _assert_two_classes(
                 ovr_labels[ovr_observed[:, class_index], class_index],
@@ -493,6 +529,10 @@ def _load_training_dataset(
                 int(np.sum((ovr_labels[held_out, index] == 1) & ovr_observed[held_out, index]))
                 for index in range(len(request.ordered_class_keys))
             ]
+            supports.extend(
+                int(np.sum((ovr_labels[held_out, index] == 0) & ovr_observed[held_out, index]))
+                for index in range(len(request.ordered_class_keys))
+            )
         if any(support < minimum_per_fold for support in supports):
             raise ClassificationRuntimeError(
                 f"Validation fold {fold} does not meet minimum per-class support",
@@ -619,7 +659,29 @@ def _scoring_prediction_parquet(
     request: ClassificationScoringRequest,
     feature_specification_hash: str,
 ) -> bytes:
-    schema = pa.schema(
+    schema = _scoring_prediction_schema(
+        request=request,
+        feature_specification_hash=feature_specification_hash,
+    )
+    table = pa.Table.from_pylist(rows, schema=schema)
+    output = io.BytesIO()
+    pq.write_table(
+        table,
+        output,
+        compression="zstd",
+        use_dictionary=False,
+        write_statistics=True,
+        data_page_version="2.0",
+    )
+    return output.getvalue()
+
+
+def _scoring_prediction_schema(
+    *,
+    request: ClassificationScoringRequest,
+    feature_specification_hash: str,
+) -> pa.Schema:
+    return pa.schema(
         [
             ("matter_document_id", pa.string()),
             ("collection_item_id", pa.string()),
@@ -647,17 +709,6 @@ def _scoring_prediction_parquet(
             b"pvr.model_version_id": str(request.model_version_id).encode(),
         },
     )
-    table = pa.Table.from_pylist(rows, schema=schema)
-    output = io.BytesIO()
-    pq.write_table(
-        table,
-        output,
-        compression="zstd",
-        use_dictionary=False,
-        write_statistics=True,
-        data_page_version="2.0",
-    )
-    return output.getvalue()
 
 
 def _artifact_derivation(output_derivation_key: str, artifact_type: ArtifactType) -> str:
@@ -969,93 +1020,167 @@ class ClassificationBackend:
         if package.content_hash != request.model_artifact.content_hash:
             raise ClassificationRuntimeError("Model package artifact hash mismatch")
         self._validate_scoring_package(request, package)
-        _, feature_table = _read_parquet(
-            store,
-            request.feature_artifact,
-            expected_schema="classification-features",
-        )
-        feature_hash = _metadata_text(feature_table, "feature_specification_hash")
-        if feature_hash != package.signature.feature_specification_hash:
+        feature_content = store.read(request.feature_artifact)
+        if content_hash(feature_content) != request.feature_artifact.content_hash:
+            raise ClassificationRuntimeError("Input artifact hash mismatch", code="ARTIFACT_HASH_MISMATCH")
+        try:
+            feature_file = pq.ParquetFile(io.BytesIO(feature_content))
+        except (OSError, ValueError, pa.ArrowException) as exc:
+            raise ClassificationRuntimeError(
+                "classification-features input is not readable Parquet",
+                code="ARTIFACT_SCHEMA_INVALID",
+            ) from exc
+        feature_metadata = feature_file.schema_arrow.metadata or {}
+        if feature_metadata.get(b"pvr.schema") != b"classification-features":
+            raise ClassificationRuntimeError(
+                "Expected classification-features input artifact",
+                code="ARTIFACT_SCHEMA_INVALID",
+            )
+        feature_hash_value = feature_metadata.get(b"pvr.feature_specification_hash")
+        feature_hash = feature_hash_value.decode() if feature_hash_value is not None else None
+        if feature_hash is None or feature_hash != package.signature.feature_specification_hash:
             raise ClassificationRuntimeError(
                 "Scoring features are incompatible with the model package",
                 code="FEATURE_CONTRACT_MISMATCH",
             )
-        feature_rows = feature_table.to_pylist()
-        ready = [row for row in feature_rows if row["feature_status"] == "READY"]
-        if len(ready) > package.signature.maximum_batch_size:
-            raise ClassificationRuntimeError("Scoring batch exceeds the package maximum batch size")
-        if ready:
-            matrix = np.asarray([row["embedding"] for row in ready], dtype=np.float64)
-            probabilities = package.predict_probabilities(matrix)
-        else:
-            output_columns = (
-                2
-                if request.classification_strategy == ClassificationStrategy.BINARY
-                else len(request.ordered_class_keys)
+        desired_feature_columns = [
+            "matter_document_id",
+            "collection_item_id",
+            "scope_ordinal",
+            "source_vector_content_hash",
+            "feature_status",
+            "failure_reason",
+            "embedding",
+        ]
+        if not {"matter_document_id", "feature_status", "embedding"}.issubset(
+            feature_file.schema_arrow.names
+        ):
+            raise ClassificationRuntimeError(
+                "Classification feature artifact is missing required columns",
+                code="ARTIFACT_SCHEMA_INVALID",
             )
-            probabilities = np.empty((0, output_columns), dtype=np.float64)
-        # Reuse the training-row serializer with a narrow runtime view.
-        selected_c = float(package.manifest.selected_hyperparameters.get("C", 0.0))
-        scored_by_document: dict[str, dict[str, Any]] = {}
-        for source, values in zip(ready, probabilities, strict=True):
-            sorted_probabilities = np.sort(values)
-            margin = float(sorted_probabilities[-1] - sorted_probabilities[-2])
-            try:
-                predicted, abstained = self._resolve_scoring_prediction(request, values)
-                result_status = "SUCCESS"
-                failure_reason = None
-            except ClassificationRuntimeError as exc:
-                predicted, abstained = [], False
-                result_status = "FAILED"
-                failure_reason = exc.code
-            scored_by_document[source["matter_document_id"]] = {
-                "probabilities": values.astype(float).tolist(),
-                "predicted_class_keys": predicted,
-                "abstained": abstained,
-                "probability_margin": margin,
-                "uncertainty": float(1.0 - np.max(values)),
-                "result_status": result_status,
-                "failure_reason": failure_reason,
-            }
-        rows = []
-        for source in feature_rows:
-            outcome = scored_by_document.get(source["matter_document_id"])
-            if outcome is None:
-                feature_status = source.get("feature_status")
-                outcome = {
-                    "probabilities": [],
-                    "predicted_class_keys": [],
-                    "abstained": False,
-                    "probability_margin": None,
-                    "uncertainty": None,
-                    "result_status": "FAILED" if feature_status == "FAILED" else "EXCLUDED",
-                    "failure_reason": source.get("failure_reason") or f"FEATURE_{feature_status}",
-                }
-            rows.append(
-                {
-                    "matter_document_id": source["matter_document_id"],
-                    "collection_item_id": source.get("collection_item_id"),
-                    "scope_ordinal": source.get("scope_ordinal"),
-                    "source_vector_content_hash": source.get("source_vector_content_hash"),
-                    "scoring_run_id": str(request.scoring_run_id),
-                    "model_version_id": str(request.model_version_id),
-                    **outcome,
-                    "fold_index": None,
-                    "evaluation_kind": "SCORING",
-                    "selected_c": selected_c,
-                }
-            )
-        scored_count = sum(row["result_status"] == "SUCCESS" for row in rows)
-        excluded_count = sum(row["result_status"] == "EXCLUDED" for row in rows)
-        failed_count = sum(row["result_status"] == "FAILED" for row in rows)
-        abstained_count = sum(
-            row["result_status"] == "SUCCESS" and row["abstained"] for row in rows
-        )
-        prediction_bytes = _scoring_prediction_parquet(
-            rows,
+        feature_columns = [
+            column for column in desired_feature_columns if column in feature_file.schema_arrow.names
+        ]
+
+        prediction_schema = _scoring_prediction_schema(
             request=request,
             feature_specification_hash=feature_hash,
         )
+        prediction_output = io.BytesIO()
+        prediction_writer = pq.ParquetWriter(
+            prediction_output,
+            prediction_schema,
+            compression="zstd",
+            use_dictionary=False,
+            write_statistics=True,
+            data_page_version="2.0",
+        )
+        selected_c = float(package.manifest.selected_hyperparameters.get("C", 0.0))
+        population_count = scored_count = excluded_count = failed_count = abstained_count = 0
+        predicted_document_count = no_prediction_document_count = predicted_value_count = 0
+        prediction_class_counts: dict[str, int] = defaultdict(int)
+        try:
+            for feature_batch in feature_file.iter_batches(
+                batch_size=package.signature.maximum_batch_size,
+                columns=feature_columns,
+            ):
+                feature_rows = feature_batch.to_pylist()
+                ready = [row for row in feature_rows if row["feature_status"] == "READY"]
+                if ready:
+                    matrix = np.asarray([row["embedding"] for row in ready], dtype=np.float64)
+                    probabilities = iter(package.predict_probabilities(matrix))
+                else:
+                    probabilities = iter(())
+                output_rows: list[dict[str, Any]] = []
+                for source in feature_rows:
+                    feature_status = source.get("feature_status")
+                    if feature_status == "READY":
+                        values = next(probabilities)
+                        sorted_probabilities = np.sort(values)
+                        margin = float(sorted_probabilities[-1] - sorted_probabilities[-2])
+                        try:
+                            predicted, abstained = self._resolve_scoring_prediction(request, values)
+                            result_status = "SUCCESS"
+                            failure_reason = None
+                        except ClassificationRuntimeError as exc:
+                            predicted, abstained = [], False
+                            result_status = "FAILED"
+                            failure_reason = exc.code
+                        outcome = {
+                            "probabilities": values.astype(float).tolist(),
+                            "predicted_class_keys": predicted,
+                            "abstained": abstained,
+                            "probability_margin": margin,
+                            "uncertainty": float(1.0 - np.max(values)),
+                            "result_status": result_status,
+                            "failure_reason": failure_reason,
+                        }
+                    else:
+                        outcome = {
+                            "probabilities": [],
+                            "predicted_class_keys": [],
+                            "abstained": False,
+                            "probability_margin": None,
+                            "uncertainty": None,
+                            "result_status": "FAILED" if feature_status == "FAILED" else "EXCLUDED",
+                            "failure_reason": source.get("failure_reason") or f"FEATURE_{feature_status}",
+                        }
+                    result_status = outcome["result_status"]
+                    scored_count += int(result_status == "SUCCESS")
+                    excluded_count += int(result_status == "EXCLUDED")
+                    failed_count += int(result_status == "FAILED")
+                    abstained_count += int(result_status == "SUCCESS" and outcome["abstained"])
+                    if result_status == "SUCCESS":
+                        predicted_keys = list(dict.fromkeys(outcome["predicted_class_keys"]))
+                        if predicted_keys:
+                            predicted_document_count += 1
+                            predicted_value_count += len(predicted_keys)
+                            for class_key in predicted_keys:
+                                prediction_class_counts[class_key] += 1
+                        else:
+                            no_prediction_document_count += 1
+                    output_rows.append(
+                        {
+                            "matter_document_id": source["matter_document_id"],
+                            "collection_item_id": source.get("collection_item_id"),
+                            "scope_ordinal": source.get("scope_ordinal"),
+                            "source_vector_content_hash": source.get("source_vector_content_hash"),
+                            "scoring_run_id": str(request.scoring_run_id),
+                            "model_version_id": str(request.model_version_id),
+                            **outcome,
+                            "fold_index": None,
+                            "evaluation_kind": "SCORING",
+                            "selected_c": selected_c,
+                        }
+                    )
+                population_count += len(output_rows)
+                prediction_writer.write_table(
+                    pa.Table.from_pylist(output_rows, schema=prediction_schema),
+                    row_group_size=package.signature.maximum_batch_size,
+                )
+        finally:
+            prediction_writer.close()
+        prediction_bytes = prediction_output.getvalue()
+        summary_class_keys = [
+            *request.ordered_class_keys,
+            *sorted(set(prediction_class_counts) - set(request.ordered_class_keys)),
+        ]
+        prediction_summary = {
+            "scoring_run_id": str(request.scoring_run_id),
+            "model_version_id": str(request.model_version_id),
+            "ordered_class_keys": request.ordered_class_keys,
+            "total_document_count": population_count,
+            "evaluated_document_count": scored_count,
+            "predicted_document_count": predicted_document_count,
+            "no_prediction_document_count": no_prediction_document_count,
+            "predicted_value_count": predicted_value_count,
+            "abstained_document_count": abstained_count,
+            "class_counts": [
+                {"class_key": class_key, "document_count": prediction_class_counts[class_key]}
+                for class_key in summary_class_keys
+            ],
+        }
         prediction_reference = store.write(
             artifact_type=ArtifactType.CLASSIFICATION_PREDICTIONS,
             core_scope_kind="CLASSIFICATION_SCORING_RUN",
@@ -1068,7 +1193,11 @@ class ClassificationBackend:
             content=prediction_bytes,
             media_type=PARQUET_MEDIA_TYPE,
             producer_run_id=request.scoring_run_id,
-            metadata={"row_count": len(rows), "scoring_failure_count": failed_count},
+            metadata={
+                "row_count": population_count,
+                "scoring_failure_count": failed_count,
+                "prediction_summary": prediction_summary,
+            },
             lineage=[request.model_artifact, request.feature_artifact],
             filename="classification-scoring-predictions.parquet",
         )
@@ -1086,11 +1215,12 @@ class ClassificationBackend:
                     "features": request.feature_artifact.content_hash,
                 },
                 "prediction_artifact": prediction_reference.model_dump(mode="json"),
-                "population_document_count": len(rows),
+                "population_document_count": population_count,
                 "scored_document_count": scored_count,
                 "abstained_document_count": abstained_count,
                 "excluded_document_count": excluded_count,
                 "failed_document_count": failed_count,
+                "prediction_summary": prediction_summary,
             }
         )
         manifest_reference = store.write(
@@ -1107,7 +1237,7 @@ class ClassificationBackend:
             producer_run_id=request.scoring_run_id,
             metadata={
                 "status": "COMPLETED_WITH_ERRORS" if failed_count else "COMPLETED",
-                "row_count": len(rows),
+                "row_count": population_count,
             },
             lineage=[prediction_reference],
             filename="classification-scoring-result.json",
@@ -1117,7 +1247,7 @@ class ClassificationBackend:
             output_derivation_key=request.output_derivation_key,
             prediction_artifact=prediction_reference,
             result_manifest_artifact=manifest_reference,
-            population_document_count=len(rows),
+            population_document_count=population_count,
             scored_document_count=scored_count,
             abstained_document_count=abstained_count,
             excluded_document_count=excluded_count,

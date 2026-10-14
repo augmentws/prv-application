@@ -15,6 +15,7 @@ export interface ClassificationTargetFieldRead {
   display_name: string;
   metadata_type: TargetMetadataType;
   cardinality: TargetCardinality;
+  hierarchy_separator: string | null;
   status: ClassificationTargetFieldReadStatus;
   reviewable: boolean;
   active_value_keys: string[];

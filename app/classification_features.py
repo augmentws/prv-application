@@ -2,11 +2,13 @@ import hashlib
 import io
 import json
 import math
+import tempfile
 import uuid
 from collections import Counter, defaultdict
+from collections.abc import Callable, Iterable, Iterator
 from dataclasses import dataclass
 from datetime import datetime, timezone
-from typing import Any
+from typing import Any, BinaryIO
 
 import pyarrow as pa
 import pyarrow.parquet as pq
@@ -17,7 +19,7 @@ from app.artifact_gateway import (
     ChunkVectorArtifactSnapshot,
     WorkflowArtifactReference,
     copy_workflow_artifact_content,
-    load_current_chunk_vector_artifact,
+    load_current_chunk_vector_artifacts,
     store_classification_workflow_artifact,
 )
 from app.audit import record_audit
@@ -43,7 +45,8 @@ FEATURE_SCHEMA_VERSION = 1
 SPLIT_SCHEMA_VERSION = 1
 POOLING_ALGORITHM_VERSION = 1
 SPLIT_ALGORITHM_NAME = "greedy-stratified-connected-groups"
-SPLIT_ALGORITHM_VERSION = 1
+SPLIT_ALGORITHM_VERSION = 2
+FEATURE_LOAD_BATCH_SIZE = 1000
 
 
 class ClassificationFeatureSplitError(ClassificationDatasetConflictError):
@@ -98,6 +101,21 @@ class PreparedFeatureSplit:
     feature_missing_count: int
     feature_failed_count: int
     training_eligible_count: int
+    trained_class_keys: list[str]
+    excluded_classes: list[dict[str, Any]]
+
+
+@dataclass(frozen=True)
+class PreparedScoringFeatures:
+    feature_stream: BinaryIO
+    feature_row_count: int
+    feature_byte_length: int
+    feature_specification: dict[str, Any]
+    feature_specification_hash: str
+    feature_content_hash: str
+    feature_ready_count: int
+    feature_missing_count: int
+    feature_failed_count: int
 
 
 def _canonical_json(value: Any) -> bytes:
@@ -106,6 +124,17 @@ def _canonical_json(value: Any) -> bytes:
 
 def _sha256(value: bytes) -> str:
     return hashlib.sha256(value).hexdigest()
+
+
+def _hash_seekable_stream(stream: BinaryIO) -> tuple[str, int]:
+    digest = hashlib.sha256()
+    byte_length = 0
+    stream.seek(0)
+    while chunk := stream.read(1024 * 1024):
+        digest.update(chunk)
+        byte_length += len(chunk)
+    stream.seek(0)
+    return digest.hexdigest(), byte_length
 
 
 def _metadata(values: dict[str, Any]) -> dict[bytes, bytes]:
@@ -145,6 +174,7 @@ def _validate_base_artifact(
     *,
     expected_hash: str | None,
     expected_schema: str,
+    columns: list[str] | None = None,
 ) -> pa.Table:
     if expected_hash is None or _sha256(content) != expected_hash:
         raise ClassificationFeatureSplitError(
@@ -152,7 +182,7 @@ def _validate_base_artifact(
             code="BASE_ARTIFACT_HASH_MISMATCH",
         )
     try:
-        table = pq.read_table(io.BytesIO(content))
+        table = pq.read_table(io.BytesIO(content), columns=columns)
     except (OSError, ValueError, pa.ArrowException) as exc:
         raise ClassificationFeatureSplitError(
             f"{expected_schema} artifact is not readable Parquet",
@@ -253,84 +283,136 @@ def _pool_vector_artifact(
     return tuple(pooled), len(values)
 
 
-def _build_feature_rows(
+def _iter_feature_row_batches(
     population: list[dict[str, Any]],
+    labels: Iterable[dict[str, Any]],
     *,
     job: MatterEmbeddingJob,
     contract: FeatureContract,
     actor_user_id: uuid.UUID,
     snapshot: ClassificationDatasetSnapshot,
     client_id: uuid.UUID,
-) -> list[FeatureRow]:
-    rows: list[FeatureRow] = []
-    for source in population:
-        document_id = uuid.UUID(source["matter_document_id"])
-        collection_item_id = uuid.UUID(source["collection_item_id"])
-        try:
-            artifact = load_current_chunk_vector_artifact(
-                collection_item_id=collection_item_id,
-                configuration_hash=job.configuration_hash,
-                actor_user_id=actor_user_id,
-                tenant_id=snapshot.tenant_id,
-                client_id=client_id,
-            )
-            if artifact is None:
+) -> Iterator[tuple[list[FeatureRow], int, int, int, int]]:
+    processed = 0
+    status_counts: Counter[str] = Counter()
+    labeled_sources = [
+        source
+        for source, label in zip(population, labels, strict=True)
+        if label["resolution_status"] == "LABELED"
+    ]
+    for offset in range(0, len(labeled_sources), FEATURE_LOAD_BATCH_SIZE):
+        sources = labeled_sources[offset : offset + FEATURE_LOAD_BATCH_SIZE]
+        rows: list[FeatureRow] = []
+        item_ids = [uuid.UUID(source["collection_item_id"]) for source in sources]
+        artifacts = load_current_chunk_vector_artifacts(
+            collection_item_ids=item_ids,
+            configuration_hash=job.configuration_hash,
+            actor_user_id=actor_user_id,
+            tenant_id=snapshot.tenant_id,
+            client_id=client_id,
+        )
+        for source, collection_item_id in zip(sources, item_ids, strict=True):
+            document_id = uuid.UUID(source["matter_document_id"])
+            try:
+                artifact = artifacts.get(collection_item_id)
+                if artifact is None:
+                    rows.append(
+                        FeatureRow(
+                            document_id,
+                            collection_item_id,
+                            source["scope_ordinal"],
+                            "MISSING",
+                            "CHUNK_VECTOR_SET_NOT_FOUND",
+                            None,
+                            None,
+                            0,
+                            None,
+                        )
+                    )
+                    status_counts["MISSING"] += 1
+                    continue
+                vector, chunk_count = _pool_vector_artifact(artifact, job=job, contract=contract)
                 rows.append(
                     FeatureRow(
                         document_id,
                         collection_item_id,
                         source["scope_ordinal"],
-                        "MISSING",
-                        "CHUNK_VECTOR_SET_NOT_FOUND",
+                        "READY",
+                        None,
+                        artifact.artifact_id,
+                        artifact.content_hash,
+                        chunk_count,
+                        vector,
+                    )
+                )
+                status_counts["READY"] += 1
+            except Exception:  # noqa: BLE001 - row-level failures are data, not job crashes
+                rows.append(
+                    FeatureRow(
+                        document_id,
+                        collection_item_id,
+                        source["scope_ordinal"],
+                        "FAILED",
+                        "CHUNK_VECTOR_SET_INVALID",
                         None,
                         None,
                         0,
                         None,
                     )
                 )
-                continue
-            vector, chunk_count = _pool_vector_artifact(artifact, job=job, contract=contract)
-            rows.append(
-                FeatureRow(
-                    document_id,
-                    collection_item_id,
-                    source["scope_ordinal"],
-                    "READY",
-                    None,
-                    artifact.artifact_id,
-                    artifact.content_hash,
-                    chunk_count,
-                    vector,
-                )
-            )
-        except Exception:  # noqa: BLE001 - row-level failures are data, not job crashes
-            rows.append(
-                FeatureRow(
-                    document_id,
-                    collection_item_id,
-                    source["scope_ordinal"],
-                    "FAILED",
-                    "CHUNK_VECTOR_SET_INVALID",
-                    None,
-                    None,
-                    0,
-                    None,
-                )
+                status_counts["FAILED"] += 1
+        processed += len(rows)
+        yield (
+            rows,
+            processed,
+            status_counts["READY"],
+            status_counts["MISSING"],
+            status_counts["FAILED"],
+        )
+
+
+def _build_feature_rows(
+    population: list[dict[str, Any]],
+    labels: Iterable[dict[str, Any]],
+    *,
+    job: MatterEmbeddingJob,
+    contract: FeatureContract,
+    actor_user_id: uuid.UUID,
+    snapshot: ClassificationDatasetSnapshot,
+    client_id: uuid.UUID,
+    progress_callback: Callable[[int, int, int, int], None] | None = None,
+) -> list[FeatureRow]:
+    rows: list[FeatureRow] = []
+    for batch, processed, ready, missing, failed in _iter_feature_row_batches(
+        population,
+        labels,
+        job=job,
+        contract=contract,
+        actor_user_id=actor_user_id,
+        snapshot=snapshot,
+        client_id=client_id,
+    ):
+        rows.extend(batch)
+        if progress_callback is not None:
+            progress_callback(
+                processed,
+                ready,
+                missing,
+                failed,
             )
     return rows
 
 
-def _write_feature_parquet(
-    rows: list[FeatureRow],
+def _feature_parquet_schema(
     *,
     dimensions: int,
     data_type: FeatureDataType,
     specification: dict[str, Any],
     specification_hash: str,
     snapshot: ClassificationDatasetSnapshot,
-) -> bytes:
+) -> pa.Schema:
     scalar_type = pa.float32() if data_type == FeatureDataType.FLOAT32 else pa.float64()
-    schema = pa.schema(
+    return pa.schema(
         [
             ("matter_document_id", pa.string()),
             ("collection_item_id", pa.string()),
@@ -354,7 +436,10 @@ def _write_feature_parquet(
             }
         ),
     )
-    table = pa.Table.from_pylist(
+
+
+def _feature_rows_table(rows: list[FeatureRow], *, dimensions: int, schema: pa.Schema) -> pa.Table:
+    return pa.Table.from_pylist(
         [
             {
                 "matter_document_id": str(row.matter_document_id),
@@ -374,6 +459,25 @@ def _write_feature_parquet(
         ],
         schema=schema,
     )
+
+
+def _write_feature_parquet(
+    rows: list[FeatureRow],
+    *,
+    dimensions: int,
+    data_type: FeatureDataType,
+    specification: dict[str, Any],
+    specification_hash: str,
+    snapshot: ClassificationDatasetSnapshot,
+) -> bytes:
+    schema = _feature_parquet_schema(
+        dimensions=dimensions,
+        data_type=data_type,
+        specification=specification,
+        specification_hash=specification_hash,
+        snapshot=snapshot,
+    )
+    table = _feature_rows_table(rows, dimensions=dimensions, schema=schema)
     destination = io.BytesIO()
     pq.write_table(
         table,
@@ -436,6 +540,7 @@ def _row_class_memberships(
     *,
     strategy: ClassificationStrategy,
     class_keys: list[str],
+    selected_class_keys: set[str] | None = None,
 ) -> tuple[str, ...]:
     if strategy == ClassificationStrategy.BINARY:
         value = label.get("binary_label")
@@ -448,8 +553,86 @@ def _row_class_memberships(
     return tuple(
         key
         for key, positive, is_observed in zip(class_keys, labels, observed, strict=True)
-        if is_observed and positive
+        if is_observed and positive and (selected_class_keys is None or key in selected_class_keys)
     )
+
+
+def _row_observes_any_class(
+    label: dict[str, Any],
+    *,
+    observed_class_keys: list[str],
+    selected_class_keys: set[str],
+) -> bool:
+    observed = label.get("one_vs_rest_observed_mask") or []
+    return any(
+        is_observed and key in selected_class_keys
+        for key, is_observed in zip(observed_class_keys, observed, strict=True)
+    )
+
+
+def _row_observes_class(
+    label: dict[str, Any],
+    *,
+    observed_class_keys: list[str],
+    class_key: str,
+) -> bool:
+    observed = label.get("one_vs_rest_observed_mask") or []
+    return any(
+        key == class_key and is_observed
+        for key, is_observed in zip(observed_class_keys, observed, strict=True)
+    )
+
+
+def _allocate_folds(
+    *,
+    eligible_groups: dict[str, list[int]],
+    memberships: dict[int, tuple[str, ...]],
+    class_keys: list[str],
+    fold_count: int,
+    seed: int,
+) -> tuple[dict[int, int], list[Counter[str]]]:
+    group_counts: dict[str, Counter[str]] = {
+        group_id: Counter(key for index in indices for key in memberships[index])
+        for group_id, indices in eligible_groups.items()
+    }
+    total_counts = Counter(key for indices in eligible_groups.values() for index in indices for key in memberships[index])
+    ordered_groups = sorted(
+        eligible_groups,
+        key=lambda group_id: (
+            -max(group_counts[group_id].values(), default=0),
+            -sum(group_counts[group_id].values()),
+            -len(eligible_groups[group_id]),
+            _sha256(f"{seed}:{group_id}".encode()),
+        ),
+    )
+    fold_counts = [Counter() for _ in range(fold_count)]
+    fold_sizes = [0 for _ in range(fold_count)]
+    group_fold: dict[str, int] = {}
+    row_count = sum(len(indices) for indices in eligible_groups.values())
+    for group_id in ordered_groups:
+        empty = [fold for fold, size in enumerate(fold_sizes) if size == 0]
+        candidates = empty or list(range(fold_count))
+        selected = min(
+            candidates,
+            key=lambda fold: (
+                sum(
+                    ((fold_counts[fold][key] + group_counts[group_id][key]) / max(total_counts[key], 1))
+                    ** 2
+                    for key in class_keys
+                ),
+                (fold_sizes[fold] + len(eligible_groups[group_id])) / max(row_count, 1),
+                _sha256(f"{seed}:{group_id}:{fold}".encode()),
+            ),
+        )
+        group_fold[group_id] = selected
+        fold_counts[selected].update(group_counts[group_id])
+        fold_sizes[selected] += len(eligible_groups[group_id])
+    assignments = {
+        index: group_fold[group_id]
+        for group_id, indices in eligible_groups.items()
+        for index in indices
+    }
+    return assignments, fold_counts
 
 
 def _assign_folds(
@@ -485,36 +668,13 @@ def _assign_folds(
                 code="INSUFFICIENT_CLASS_SUPPORT_PER_FOLD",
             )
 
-    ordered_groups = sorted(
-        eligible_groups,
-        key=lambda group_id: (
-            -max(group_counts[group_id].values(), default=0),
-            -sum(group_counts[group_id].values()),
-            -len(eligible_groups[group_id]),
-            _sha256(f"{seed}:{group_id}".encode()),
-        ),
+    assignments, fold_counts = _allocate_folds(
+        eligible_groups=eligible_groups,
+        memberships=memberships,
+        class_keys=class_keys,
+        fold_count=fold_count,
+        seed=seed,
     )
-    fold_counts = [Counter() for _ in range(fold_count)]
-    fold_sizes = [0 for _ in range(fold_count)]
-    group_fold: dict[str, int] = {}
-    for group_id in ordered_groups:
-        empty = [fold for fold, size in enumerate(fold_sizes) if size == 0]
-        candidates = empty or list(range(fold_count))
-        selected = min(
-            candidates,
-            key=lambda fold: (
-                sum(
-                    ((fold_counts[fold][key] + group_counts[group_id][key]) / max(total_counts[key], 1))
-                    ** 2
-                    for key in class_keys
-                ),
-                (fold_sizes[fold] + len(eligible_groups[group_id])) / len(eligible_indices),
-                _sha256(f"{seed}:{group_id}:{fold}".encode()),
-            ),
-        )
-        group_fold[group_id] = selected
-        fold_counts[selected].update(group_counts[group_id])
-        fold_sizes[selected] += len(eligible_groups[group_id])
 
     for fold, support in enumerate(fold_counts):
         deficient = [key for key in class_keys if support[key] < minimum_per_class]
@@ -523,12 +683,206 @@ def _assign_folds(
                 f"Fold {fold} lacks minimum support for: {', '.join(deficient)}",
                 code="INSUFFICIENT_CLASS_SUPPORT_PER_FOLD",
             )
-    assignments = {
-        index: group_fold[group_id]
-        for group_id, indices in eligible_groups.items()
-        for index in indices
-    }
     return assignments, [dict(sorted(support.items())) for support in fold_counts]
+
+
+def _assign_one_vs_rest_folds(
+    *,
+    groups: dict[str, list[int]],
+    candidate_indices: set[int],
+    labels: list[dict[str, Any]],
+    observed_class_keys: list[str],
+    fold_count: int,
+    minimum_labeled_count: int,
+    minimum_per_class: int,
+    seed: int,
+) -> tuple[dict[int, int], list[dict[str, int]], set[int], list[str], list[dict[str, Any]]]:
+    required_positive_count = fold_count * minimum_per_class
+    candidate_memberships = {
+        index: _row_class_memberships(
+            labels[index],
+            strategy=ClassificationStrategy.ONE_VS_REST,
+            class_keys=observed_class_keys,
+        )
+        for index in candidate_indices
+    }
+    index_to_group = {
+        index: group_id for group_id, indices in groups.items() for index in indices
+    }
+    exclusions: dict[str, dict[str, Any]] = {}
+    trained = list(observed_class_keys)
+    for class_key in observed_class_keys:
+        positive_indices = [index for index in candidate_indices if class_key in candidate_memberships[index]]
+        negative_indices = [
+            index
+            for index in candidate_indices
+            if class_key not in candidate_memberships[index]
+            and _row_observes_class(
+                labels[index],
+                observed_class_keys=observed_class_keys,
+                class_key=class_key,
+            )
+        ]
+        positive_groups = {index_to_group[index] for index in positive_indices}
+        negative_groups = {index_to_group[index] for index in negative_indices}
+        reason_code: str | None = None
+        if len(positive_indices) < required_positive_count:
+            reason_code = "INSUFFICIENT_POSITIVE_DOCUMENTS"
+        elif len(positive_groups) < fold_count:
+            reason_code = "INSUFFICIENT_POSITIVE_GROUPS"
+        elif len(negative_indices) < required_positive_count:
+            reason_code = "INSUFFICIENT_NEGATIVE_DOCUMENTS"
+        elif len(negative_groups) < fold_count:
+            reason_code = "INSUFFICIENT_NEGATIVE_GROUPS"
+        if reason_code is not None:
+            exclusions[class_key] = {
+                "class_key": class_key,
+                "reason_code": reason_code,
+                "message": (
+                    f"Class {class_key} has {len(positive_indices)} positive and "
+                    f"{len(negative_indices)} negative feature-ready documents across "
+                    f"{len(positive_groups)} positive and {len(negative_groups)} negative connected groups; "
+                    f"training requires at least {required_positive_count} documents of each outcome "
+                    f"across {fold_count} groups"
+                ),
+                "feature_ready_positive_count": len(positive_indices),
+                "positive_group_count": len(positive_groups),
+                "feature_ready_negative_count": len(negative_indices),
+                "negative_group_count": len(negative_groups),
+                "required_positive_count": required_positive_count,
+                "required_group_count": fold_count,
+                "fold_support": None,
+                "fold_negative_support": None,
+            }
+            trained.remove(class_key)
+
+    while True:
+        if len(trained) < 2:
+            exclusion_summary = ", ".join(
+                f"{key} ({value['reason_code']})"
+                for key, value in list(exclusions.items())[:10]
+            )
+            if len(exclusions) > 10:
+                exclusion_summary += f", plus {len(exclusions) - 10} more"
+            raise ClassificationFeatureSplitError(
+                "Fewer than two one-vs-rest classes have enough leakage-safe support for training. "
+                f"Excluded: {exclusion_summary}",
+                code="INSUFFICIENT_TRAINABLE_CLASSES",
+            )
+        selected = set(trained)
+        eligible_indices = {
+            index
+            for index in candidate_indices
+            if _row_observes_any_class(
+                labels[index],
+                observed_class_keys=observed_class_keys,
+                selected_class_keys=selected,
+            )
+        }
+        if len(eligible_indices) < minimum_labeled_count:
+            raise ClassificationFeatureSplitError(
+                "Rows observing the remaining one-vs-rest classes do not meet the minimum labeled count",
+                code="INSUFFICIENT_LABELED_FEATURES",
+            )
+        eligible_groups = {
+            group_id: [index for index in indices if index in eligible_indices]
+            for group_id, indices in groups.items()
+        }
+        eligible_groups = {key: value for key, value in eligible_groups.items() if value}
+        if len(eligible_groups) < fold_count:
+            raise ClassificationFeatureSplitError(
+                "Group-aware validation requires at least one eligible connected group per fold",
+                code="INSUFFICIENT_GROUPS_FOR_FOLDS",
+            )
+        memberships = {
+            index: tuple(key for key in candidate_memberships[index] if key in selected)
+            for index in eligible_indices
+        }
+        assignments, fold_counts = _allocate_folds(
+            eligible_groups=eligible_groups,
+            memberships=memberships,
+            class_keys=trained,
+            fold_count=fold_count,
+            seed=seed,
+        )
+        fold_negative_counts = [
+            {
+                key: sum(
+                    assignments[index] == fold
+                    and _row_observes_class(
+                        labels[index],
+                        observed_class_keys=observed_class_keys,
+                        class_key=key,
+                    )
+                    and key not in memberships[index]
+                    for index in eligible_indices
+                )
+                for key in trained
+            }
+            for fold in range(fold_count)
+        ]
+        deficient = [
+            key
+            for key in trained
+            if any(support[key] < minimum_per_class for support in fold_counts)
+            or any(support[key] < minimum_per_class for support in fold_negative_counts)
+        ]
+        if not deficient:
+            return (
+                assignments,
+                [dict(sorted(support.items())) for support in fold_counts],
+                eligible_indices,
+                trained,
+                [exclusions[key] for key in observed_class_keys if key in exclusions],
+            )
+        # Remove one worst-supported class and recompute the complete allocation. This avoids
+        # excluding classes that become feasible after a single constraining class is removed.
+        class_key = min(
+            deficient,
+            key=lambda key: (
+                min(
+                    min(counts[key] for counts in fold_counts),
+                    min(counts[key] for counts in fold_negative_counts),
+                ),
+                trained.index(key),
+            ),
+        )
+        support = [counts[class_key] for counts in fold_counts]
+        negative_support = [counts[class_key] for counts in fold_negative_counts]
+        positive_count = sum(class_key in candidate_memberships[index] for index in candidate_indices)
+        positive_groups = {
+            index_to_group[index]
+            for index in candidate_indices
+            if class_key in candidate_memberships[index]
+        }
+        negative_indices = [
+            index
+            for index in candidate_indices
+            if class_key not in candidate_memberships[index]
+            and _row_observes_class(
+                labels[index],
+                observed_class_keys=observed_class_keys,
+                class_key=class_key,
+            )
+        ]
+        negative_groups = {index_to_group[index] for index in negative_indices}
+        exclusions[class_key] = {
+            "class_key": class_key,
+            "reason_code": "FOLD_SUPPORT_INFEASIBLE",
+            "message": (
+                f"Class {class_key} could not be allocated with at least {minimum_per_class} "
+                "positive documents in every leakage-safe fold"
+            ),
+            "feature_ready_positive_count": positive_count,
+            "positive_group_count": len(positive_groups),
+            "feature_ready_negative_count": len(negative_indices),
+            "negative_group_count": len(negative_groups),
+            "required_positive_count": required_positive_count,
+            "required_group_count": fold_count,
+            "fold_support": support,
+            "fold_negative_support": negative_support,
+        }
+        trained.remove(class_key)
 
 
 def _build_split_rows(
@@ -537,46 +891,76 @@ def _build_split_rows(
     features: list[FeatureRow],
     *,
     configuration: ClassificationModelConfiguration,
+    class_keys: list[str],
     request: ClassificationFeatureSplitRequest,
-) -> tuple[list[SplitRow], dict[str, Any]]:
+) -> tuple[list[SplitRow], dict[str, Any], list[str], list[dict[str, Any]]]:
     population_ids = [row["matter_document_id"] for row in population]
     label_ids = [row["matter_document_id"] for row in labels]
     feature_ids = [str(row.matter_document_id) for row in features]
-    if population_ids != label_ids or population_ids != feature_ids:
+    labeled_ids = [
+        label["matter_document_id"]
+        for label in labels
+        if label["resolution_status"] == "LABELED"
+    ]
+    if (
+        population_ids != label_ids
+        or len(feature_ids) != len(set(feature_ids))
+        or feature_ids != labeled_ids
+    ):
         raise ClassificationFeatureSplitError(
-            "Population, label, and feature rows must align exactly by document ID and order",
+            "Population and label rows, plus labeled feature rows, must align by document ID and order",
             code="DATASET_ROW_ALIGNMENT_FAILED",
         )
+    features_by_document_id = {
+        str(feature.matter_document_id): feature for feature in features
+    }
     groups, index_to_group = _connected_groups(population)
     strategy = ClassificationStrategy(configuration.classification_strategy)
-    class_keys = list(configuration.ordered_class_keys)
-    eligible_indices = {
+    candidate_indices = {
         index
-        for index, (label, feature) in enumerate(zip(labels, features, strict=True))
-        if label["resolution_status"] == "LABELED" and feature.status == "READY"
+        for index, label in enumerate(labels)
+        if label["resolution_status"] == "LABELED"
+        and features_by_document_id[label["matter_document_id"]].status == "READY"
     }
-    if len(eligible_indices) < request.validation_policy.minimum_labeled_count:
+    if len(candidate_indices) < request.validation_policy.minimum_labeled_count:
         raise ClassificationFeatureSplitError(
             "Feature-ready labeled rows do not meet the minimum labeled count",
             code="INSUFFICIENT_LABELED_FEATURES",
         )
-    memberships = {
-        index: _row_class_memberships(
-            labels[index],
-            strategy=strategy,
-            class_keys=class_keys,
+    if strategy == ClassificationStrategy.ONE_VS_REST:
+        assignments, fold_support, eligible_indices, trained_class_keys, excluded_classes = (
+            _assign_one_vs_rest_folds(
+                groups=groups,
+                candidate_indices=candidate_indices,
+                labels=labels,
+                observed_class_keys=class_keys,
+                fold_count=request.validation_policy.fold_count,
+                minimum_labeled_count=request.validation_policy.minimum_labeled_count,
+                minimum_per_class=request.validation_policy.minimum_labeled_count_per_class,
+                seed=request.random_seed,
+            )
         )
-        for index in eligible_indices
-    }
-    assignments, fold_support = _assign_folds(
-        groups=groups,
-        eligible_indices=eligible_indices,
-        memberships=memberships,
-        class_keys=class_keys,
-        fold_count=request.validation_policy.fold_count,
-        minimum_per_class=request.validation_policy.minimum_labeled_count_per_class,
-        seed=request.random_seed,
-    )
+    else:
+        eligible_indices = candidate_indices
+        trained_class_keys = list(class_keys)
+        excluded_classes = []
+        memberships = {
+            index: _row_class_memberships(
+                labels[index],
+                strategy=strategy,
+                class_keys=class_keys,
+            )
+            for index in eligible_indices
+        }
+        assignments, fold_support = _assign_folds(
+            groups=groups,
+            eligible_indices=eligible_indices,
+            memberships=memberships,
+            class_keys=class_keys,
+            fold_count=request.validation_policy.fold_count,
+            minimum_per_class=request.validation_policy.minimum_labeled_count_per_class,
+            seed=request.random_seed,
+        )
     fold_scales: list[float] = []
     for validation_fold in range(request.validation_policy.fold_count):
         weights = [
@@ -592,13 +976,12 @@ def _build_split_rows(
         fold_scales.append(len(weights) / math.fsum(weights))
 
     split_rows: list[SplitRow] = []
-    for index, (population_row, label, feature) in enumerate(
-        zip(population, labels, features, strict=True)
-    ):
+    for index, (population_row, label) in enumerate(zip(population, labels, strict=True)):
+        feature = features_by_document_id.get(label["matter_document_id"])
         eligible = index in eligible_indices
         if label["resolution_status"] != "LABELED":
             exclusion_reason = label["reason_code"]
-        elif feature.status != "READY":
+        elif feature is not None and feature.status != "READY":
             exclusion_reason = feature.failure_reason
         else:
             exclusion_reason = None
@@ -612,12 +995,12 @@ def _build_split_rows(
         )
         split_rows.append(
             SplitRow(
-                matter_document_id=feature.matter_document_id,
+                matter_document_id=uuid.UUID(population_row["matter_document_id"]),
                 group_id=index_to_group[index],
                 family_id=population_row.get("family_id"),
                 exact_duplicate_group_id=population_row.get("exact_duplicate_group_id"),
                 near_duplicate_group_id=None,
-                feature_status=feature.status,
+                feature_status=feature.status if feature is not None else "NOT_REQUIRED",
                 label_status=label["resolution_status"],
                 training_eligible=eligible,
                 exclusion_reason=exclusion_reason,
@@ -633,8 +1016,11 @@ def _build_split_rows(
             for fold in range(request.validation_policy.fold_count)
         ],
         "fold_class_support": fold_support,
+        "observed_class_keys": class_keys,
+        "trained_class_keys": trained_class_keys,
+        "excluded_classes": excluded_classes,
     }
-    return split_rows, summary
+    return split_rows, summary, trained_class_keys, excluded_classes
 
 
 def _write_split_parquet(
@@ -705,12 +1091,35 @@ def _write_split_parquet(
     return destination.getvalue()
 
 
+def embedding_job_output_is_usable(job: MatterEmbeddingJob) -> bool:
+    if job.status in {"COMPLETED", "COMPLETED_WITH_ERRORS"}:
+        return True
+    return (
+        job.status == "CANCELED"
+        and job.total_count > 0
+        and job.processed_count == job.total_count
+        and job.chunk_count > 0
+    )
+
+
+def feature_specification_hash_for_job(
+    configuration: ClassificationModelConfiguration,
+    job: MatterEmbeddingJob,
+) -> str:
+    try:
+        contract = FeatureContract.model_validate(configuration.feature_contract)
+    except ValidationError as exc:
+        raise ClassificationFeatureSplitError("Classification feature contract is invalid") from exc
+    return _feature_specification(contract, job)[1]
+
+
 def prepare_feature_split(
     db: Session,
     *,
     snapshot: ClassificationDatasetSnapshot,
     request: ClassificationFeatureSplitRequest,
     actor_user_id: uuid.UUID,
+    progress_callback: Callable[[int, int, int, int], None] | None = None,
 ) -> PreparedFeatureSplit:
     if snapshot.status not in {"READY_FOR_FEATURES", "READY_FOR_TRAINING", "FAILED", "BUILDING"}:
         raise ClassificationFeatureSplitError("Dataset snapshot is not ready for feature materialization")
@@ -728,9 +1137,9 @@ def prepare_feature_split(
             "Embedding job was not found in the dataset matter",
             code="EMBEDDING_JOB_NOT_FOUND",
         )
-    if job.status not in {"COMPLETED", "COMPLETED_WITH_ERRORS"}:
+    if not embedding_job_output_is_usable(job):
         raise ClassificationFeatureSplitError(
-            "Embedding job must be complete before features can be materialized",
+            "Embedding job must have complete reusable output before features can be materialized",
             code="EMBEDDING_JOB_NOT_COMPLETE",
         )
     try:
@@ -759,6 +1168,16 @@ def prepare_feature_split(
         label_content,
         expected_hash=snapshot.label_content_hash,
         expected_schema="classification-labels",
+        columns=[
+            "matter_document_id",
+            "binary_label",
+            "multiclass_key",
+            "one_vs_rest_labels",
+            "one_vs_rest_observed_mask",
+            "source_weight",
+            "resolution_status",
+            "reason_code",
+        ],
     )
     population = population_table.to_pylist()
     labels = label_table.to_pylist()
@@ -769,11 +1188,13 @@ def prepare_feature_split(
         )
     feature_rows = _build_feature_rows(
         population,
+        labels,
         job=job,
         contract=contract,
         actor_user_id=actor_user_id,
         snapshot=snapshot,
         client_id=matter.client_id,
+        progress_callback=progress_callback,
     )
     feature_bytes = _write_feature_parquet(
         feature_rows,
@@ -784,11 +1205,12 @@ def prepare_feature_split(
         snapshot=snapshot,
     )
     feature_content_hash = _sha256(feature_bytes)
-    split_rows, split_summary = _build_split_rows(
+    split_rows, split_summary, trained_class_keys, excluded_classes = _build_split_rows(
         population,
         labels,
         feature_rows,
         configuration=configuration,
+        class_keys=list(snapshot.target_field_snapshot.get("discovered_class_keys", [])),
         request=request,
     )
     split_specification = {
@@ -843,7 +1265,198 @@ def prepare_feature_split(
         feature_missing_count=status_counts["MISSING"],
         feature_failed_count=status_counts["FAILED"],
         training_eligible_count=sum(row.training_eligible for row in split_rows),
+        trained_class_keys=trained_class_keys,
+        excluded_classes=excluded_classes,
     )
+
+
+def prepare_scoring_features(
+    db: Session,
+    *,
+    snapshot: ClassificationDatasetSnapshot,
+    embedding_job_id: uuid.UUID,
+    actor_user_id: uuid.UUID,
+    progress_callback: Callable[[int, int, int, int], None] | None = None,
+) -> PreparedScoringFeatures:
+    if snapshot.purpose != "SCORING":
+        raise ClassificationFeatureSplitError("Only scoring snapshots can materialize scoring features")
+    if snapshot.status not in {"READY_FOR_FEATURES", "READY_FOR_SCORING", "FAILED", "BUILDING"}:
+        raise ClassificationFeatureSplitError("Scoring snapshot is not ready for feature materialization")
+    if snapshot.population_artifact_id is None:
+        raise ClassificationFeatureSplitError("Scoring population artifact is incomplete")
+    configuration = db.get(ClassificationModelConfiguration, snapshot.configuration_id)
+    if configuration is None or configuration.classification_model_id != snapshot.classification_model_id:
+        raise ClassificationFeatureSplitError("Scoring snapshot configuration was not found")
+    matter = db.get(Matter, snapshot.matter_id)
+    if matter is None:
+        raise ClassificationFeatureSplitError("Scoring snapshot matter was not found")
+    job = db.get(MatterEmbeddingJob, embedding_job_id)
+    if job is None or job.matter_id != snapshot.matter_id:
+        raise ClassificationFeatureSplitError(
+            "Embedding job was not found in the scoring matter",
+            code="EMBEDDING_JOB_NOT_FOUND",
+        )
+    if not embedding_job_output_is_usable(job):
+        raise ClassificationFeatureSplitError(
+            "Embedding job must have complete reusable output before scoring",
+            code="EMBEDDING_JOB_NOT_COMPLETE",
+        )
+    try:
+        contract = FeatureContract.model_validate(configuration.feature_contract)
+    except ValidationError as exc:
+        raise ClassificationFeatureSplitError("Classification feature contract is invalid") from exc
+    feature_specification, feature_specification_hash = _feature_specification(contract, job)
+    population_content = _read_workflow_bytes(
+        snapshot.population_artifact_id,
+        actor_user_id=actor_user_id,
+        snapshot=snapshot,
+        client_id=matter.client_id,
+    )
+    population_table = _validate_base_artifact(
+        population_content,
+        expected_hash=snapshot.population_content_hash,
+        expected_schema="classification-population",
+    )
+    population = population_table.to_pylist()
+    if len(population) != snapshot.population_count:
+        raise ClassificationFeatureSplitError(
+            "Frozen population row count does not match the scoring snapshot",
+            code="DATASET_ROW_ALIGNMENT_FAILED",
+        )
+    schema = _feature_parquet_schema(
+        dimensions=contract.dimensions,
+        data_type=contract.data_type,
+        specification=feature_specification,
+        specification_hash=feature_specification_hash,
+        snapshot=snapshot,
+    )
+    feature_stream = tempfile.SpooledTemporaryFile(  # noqa: SIM115 - consumed by the materialization step
+        max_size=64 * 1024 * 1024,
+        mode="w+b",
+    )
+    writer = pq.ParquetWriter(
+        feature_stream,
+        schema,
+        compression="zstd",
+        use_dictionary=False,
+        write_statistics=True,
+        data_page_version="2.0",
+    )
+    processed = ready = missing = failed = 0
+    try:
+        for batch, processed, ready, missing, failed in _iter_feature_row_batches(
+            population,
+            ({"resolution_status": "LABELED"} for _ in population),
+            job=job,
+            contract=contract,
+            actor_user_id=actor_user_id,
+            snapshot=snapshot,
+            client_id=matter.client_id,
+        ):
+            writer.write_table(
+                _feature_rows_table(batch, dimensions=contract.dimensions, schema=schema),
+                row_group_size=FEATURE_LOAD_BATCH_SIZE,
+            )
+            if progress_callback is not None:
+                progress_callback(processed, ready, missing, failed)
+        writer.close()
+        feature_content_hash, feature_byte_length = _hash_seekable_stream(feature_stream)
+        return PreparedScoringFeatures(
+            feature_stream=feature_stream,
+            feature_row_count=processed,
+            feature_byte_length=feature_byte_length,
+            feature_specification=feature_specification,
+            feature_specification_hash=feature_specification_hash,
+            feature_content_hash=feature_content_hash,
+            feature_ready_count=ready,
+            feature_missing_count=missing,
+            feature_failed_count=failed,
+        )
+    except Exception:
+        writer.close()
+        feature_stream.close()
+        raise
+
+
+def materialize_scoring_features(
+    db: Session,
+    *,
+    snapshot: ClassificationDatasetSnapshot,
+    prepared: PreparedScoringFeatures,
+    actor_user_id: uuid.UUID,
+) -> ClassificationDatasetSnapshot:
+    matter = db.get(Matter, snapshot.matter_id)
+    if matter is None:
+        raise ClassificationFeatureSplitError("Scoring snapshot matter was not found")
+    try:
+        feature_reference, _ = store_classification_workflow_artifact(
+            content=prepared.feature_stream,
+            artifact_type=ArtifactType.CLASSIFICATION_FEATURES,
+            core_scope_kind="CLASSIFICATION_DATASET_SNAPSHOT",
+            core_scope_id=snapshot.id,
+            schema_version=FEATURE_SCHEMA_VERSION,
+            derivation_key=_derivation_key(
+                snapshot_id=snapshot.id,
+                artifact_type=ArtifactType.CLASSIFICATION_FEATURES,
+                content_hash=prepared.feature_content_hash,
+            ),
+            content_hash=prepared.feature_content_hash,
+            byte_length=prepared.feature_byte_length,
+            media_type=PARQUET_MEDIA_TYPE,
+            producer_kind="CORE",
+            producer_run_id=snapshot.id,
+            artifact_metadata={
+                "snapshot_aggregate_hash": snapshot.aggregate_hash,
+                "feature_specification_hash": prepared.feature_specification_hash,
+                "row_count": prepared.feature_row_count,
+                "population_row_count": snapshot.population_count,
+                "ready_count": prepared.feature_ready_count,
+                "missing_count": prepared.feature_missing_count,
+                "failed_count": prepared.feature_failed_count,
+                "purpose": "SCORING",
+            },
+            lineage=[
+                WorkflowArtifactLineageInput(
+                    source_kind="WORKFLOW_ARTIFACT",
+                    source_artifact_id=snapshot.population_artifact_id,
+                )
+            ],
+            actor_user_id=actor_user_id,
+            tenant_id=snapshot.tenant_id,
+            client_id=matter.client_id,
+            filename="classification-scoring-features.parquet",
+        )
+    finally:
+        prepared.feature_stream.close()
+    snapshot.feature_artifact_id = feature_reference.artifact_id
+    snapshot.feature_content_hash = feature_reference.content_hash
+    snapshot.feature_specification = prepared.feature_specification
+    snapshot.feature_specification_hash = prepared.feature_specification_hash
+    snapshot.feature_ready_count = prepared.feature_ready_count
+    snapshot.feature_missing_count = prepared.feature_missing_count
+    snapshot.feature_failed_count = prepared.feature_failed_count
+    snapshot.training_eligible_count = 0
+    snapshot.status = "READY_FOR_SCORING"
+    snapshot.failure_code = None
+    snapshot.failure_summary = None
+    snapshot.completed_at = datetime.now(timezone.utc)
+    record_audit(
+        db,
+        tenant_id=snapshot.tenant_id,
+        actor_user_id=actor_user_id,
+        action="classification_dataset_snapshot.ready_for_scoring",
+        target_type="classification_dataset_snapshot",
+        target_id=snapshot.id,
+        details={
+            "matter_id": str(snapshot.matter_id),
+            "classification_model_id": str(snapshot.classification_model_id),
+            "feature_artifact_id": str(feature_reference.artifact_id),
+            "population_count": snapshot.population_count,
+            "feature_ready_count": prepared.feature_ready_count,
+        },
+    )
+    db.flush()
+    return snapshot
 
 
 def request_matches_materialized_snapshot(
@@ -866,6 +1479,12 @@ def begin_feature_split(snapshot: ClassificationDatasetSnapshot) -> None:
     snapshot.failure_code = None
     snapshot.failure_summary = None
     snapshot.completed_at = None
+    snapshot.feature_ready_count = 0
+    snapshot.trained_class_keys = []
+    snapshot.excluded_classes = []
+    snapshot.feature_missing_count = 0
+    snapshot.feature_failed_count = 0
+    snapshot.training_eligible_count = 0
 
 
 def _derivation_key(
@@ -916,7 +1535,8 @@ def materialize_feature_split(
         artifact_metadata={
             "snapshot_aggregate_hash": snapshot.aggregate_hash,
             "feature_specification_hash": prepared.feature_specification_hash,
-            "row_count": snapshot.population_count,
+            "row_count": len(prepared.feature_rows),
+            "population_row_count": snapshot.population_count,
             "ready_count": prepared.feature_ready_count,
             "missing_count": prepared.feature_missing_count,
             "failed_count": prepared.feature_failed_count,
@@ -1020,6 +1640,8 @@ def _finalize_feature_split(
     snapshot.feature_missing_count = prepared.feature_missing_count
     snapshot.feature_failed_count = prepared.feature_failed_count
     snapshot.training_eligible_count = prepared.training_eligible_count
+    snapshot.trained_class_keys = prepared.trained_class_keys
+    snapshot.excluded_classes = prepared.excluded_classes
     warnings = list(snapshot.warnings or [])
     warning_codes = {warning.get("code") for warning in warnings}
     if prepared.feature_missing_count and "MISSING_FEATURES_EXCLUDED" not in warning_codes:
@@ -1044,6 +1666,14 @@ def _finalize_feature_split(
                 "code": "NEAR_DUPLICATE_GROUPING_UNAVAILABLE",
                 "message": "Splits use family and exact-duplicate groups; near-duplicate groups are not yet available",
                 "count": None,
+            }
+        )
+    if prepared.excluded_classes and "CLASSES_EXCLUDED_FROM_TRAINING" not in warning_codes:
+        warnings.append(
+            {
+                "code": "CLASSES_EXCLUDED_FROM_TRAINING",
+                "message": "One-vs-rest classes without sufficient leakage-safe support were excluded",
+                "count": len(prepared.excluded_classes),
             }
         )
     snapshot.warnings = warnings

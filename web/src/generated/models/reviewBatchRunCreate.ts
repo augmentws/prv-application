@@ -6,10 +6,9 @@
  * OpenAPI spec version: 0.1.0
  */
 import type { ReviewBatchRunCreatePurpose } from './reviewBatchRunCreatePurpose';
-import type { ReviewBatchRunCreateRunType } from './reviewBatchRunCreateRunType';
 
 export interface ReviewBatchRunCreate {
-  run_type: ReviewBatchRunCreateRunType;
+  run_type: 'AGENT';
   purpose?: ReviewBatchRunCreatePurpose;
   actor_user_id?: string | null;
   agent_definition_version_id?: string | null;

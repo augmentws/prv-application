@@ -1,51 +1,78 @@
 ---
 title: Statistical classification
-description: Understand the available backend workflow for model configuration, training, governance, and reproducible batch scoring.
+description: Train and inspect statistical classifiers for matter coding fields.
 ---
 
-Priv-View has an admin-only validation workspace for training and batch-scoring statistical classification models against a matter field. It is available from a matter's **Classification** tab and exercises the same versioned Core APIs used by automation.
+Priv-View provides an administrator-only **Classification** tab for training statistical models against matter coding. The MVP concentrates on getting a new training run right; retraining, promotion, and reviewer-facing CAL workflows come later.
 
-## What the workflow is for
+## Choose a coding field
 
-A classification model belongs to one tenant, matter, and metadata field. Its configuration fixes the selected class keys, binary or multiclass strategy, label rules, feature contract, prediction-resolution policy, and trainer settings. Training creates a candidate model version but does not approve or activate it automatically.
+The first screen lists eligible coding fields rather than model infrastructure. An eligible target is an active asserted Boolean, enum, text, or long-text field, including the standard Privilege and Responsiveness fields and compatible custom fields. Imported and system metadata, such as Email subject or Original filename, are not coding targets. A field does not need to be visible to reviewers to be eligible.
 
-## Prerequisites
+Select a field to see the models already created for it. Each model links to its own page. That page shows the training activity and, after training completes, overall metrics, per-class quality, and the confusion matrix.
 
-- Matter `ADMIN` access.
-- An active, reviewable Boolean or enum metadata field.
-- A classification model and immutable configuration.
-- A ready dataset snapshot with materialized document features and validation splits.
-- An approved model version for scoring. It may be active or selected explicitly as an approved non-active version.
+## Train a model
 
-## Normal workflow
+From the selected field, **Train a new model** collects the choices that define one reproducible training run:
 
-1. Create the field-scoped classifier and configuration.
-2. Preview and create a frozen dataset snapshot for the whole matter or a review batch.
-3. Materialize its feature and validation-split artifacts.
-4. Preview and launch a durable model build.
-5. Review the candidate metrics, then explicitly approve or reject the version.
-6. Preview and perform activation when the version should become the classifier default.
-7. Preview a scoring run against an immutable dataset snapshot. The preview resolves and returns the exact model version.
-8. Launch using that returned version ID. The scoring run remains pinned even if another version is activated while it executes.
-9. Read the run status and inspect a bounded, read-only prediction sample. The workspace verifies the immutable prediction artifact before showing rows.
+- Model name and binary, multiclass, or one-vs-rest strategy.
+- For a delimited hierarchical Text field, an optional 1-based hierarchy level.
+  Level 1 trains on root paths; leaving it blank trains on complete paths.
+- Training population: the entire matter or one ready review batch.
+- Train/validation ratio and random seed.
+- Logistic-regression regularization candidates and maximum iterations.
+- Minimum labeled-document and per-class validation requirements.
+- The completed matter embedding set used as document features.
 
-## Scoring states and results
+If embeddings have not been prepared, start that prerequisite from the same form. Labels come from current matter coding. The UI does not offer adjudicated-run or human-review-run sources until those sources actually exist in the platform.
 
-Scoring moves through queued, validation, runtime, publishing, and finalization stages. It finishes as `COMPLETED`, `COMPLETED_WITH_ERRORS`, `FAILED`, or `CANCELED`. A completed run reports population, scored, abstained, excluded, and failed counts. Those counts reconcile to the immutable population.
+Below Document features, the class-distribution chart shows the current document count for each class in the selected matter or review-batch scope. For facetable fields it uses the same facet-values request shape as the Filter panel, while the backend converts it to an aggregation-only OpenSearch request with zero document hits. This keeps both surfaces on the same indexed counts. Non-facetable coding fields use the current-coding database endpoint instead. The chart also reports labeled, unlabeled, and conflicting document totals so class imbalance or insufficient coding is visible before training starts. Multi-value fields count a document once in every class currently assigned to it.
 
-Predictions are stored as one Artifact-owned Parquet file rather than one Core database record per document. Every population document receives a row. Successful rows include ordered probabilities, resolved class keys or abstention, probability margin, and uncertainty. Documents without usable features remain present as explicit exclusions or failures with a reason code.
+The displayed train/validation ratio is implemented with group-aware cross-validation. For example, 80/20 uses five folds, with every document held out once. Family and exact-duplicate groups stay together to reduce leakage.
 
-The browser preview reads at most 200 rows per request and never writes predictions into document coding. Use it to validate class order, thresholds, abstentions, exclusions, and failures before building a CAL workflow or another publication path.
+Selecting **Train model** performs the governed backend workflow as one user action. Priv-View creates the field-scoped model and immutable configuration, then immediately creates and queues a durable training job. The browser opens the model page while DBOS freezes the selected document and label population, discovers and freezes that run's classes, materializes features and validation folds, validates the build, and runs training. Closing the browser does not stop the job.
 
-## Reproducibility and version selection
+The model page polls the newest durable job and shows its current stage, execution attempt, last update, document and label counts, labeled-feature progress, training eligibility, runtime progress, and any retained failure details. An active job can be canceled; a failed job marked retriable or a canceled job can be queued as a new attempt without overwriting earlier execution history. Cancellation also reaches a nested model-build workflow when one has started. Older jobs are separated under **Previous attempts** so a stale failure is not presented as the current status. Feature preparation reads vectors only for documents with a resolved training label; unlabeled documents remain frozen in the full scope snapshot but are not loaded into the training feature artifact. Preparation and training use real counters rather than a time estimate; the amount of work in each stage can differ substantially.
 
-The run freezes the model version and package hash, dataset and feature hashes, feature contract, classification configuration, and scoring-policy hash. Execution never consults the mutable active-version pointer again. This also allows a compatible approved historical version to be scored deliberately without reactivating it.
+## Classes can change between runs
 
-Duplicate launches with the same logical inputs reuse the existing scoring run and immutable outputs. If a worker loses its response after publication, an administrator can reconcile the run from the authoritative artifacts instead of producing a second result.
+Classes are discovered from the labels present in each training population. The discovered class order is frozen on that dataset snapshot and on the resulting model version. Review may introduce or remove classes later; a later training run can therefore have a different class catalog without changing historical snapshots or versions.
+
+For a Text coding field with a hierarchy delimiter, the training configuration can project labels to one hierarchy level without modifying the stored coding. For example, level 2 maps both `Projects/Alpha/One` and `Projects/Alpha/Two` to `Projects/Alpha`. Values with fewer segments than the selected level are excluded as out of scope. The delimiter and selected level are frozen in the target snapshot and configuration hash, and the class-distribution chart applies the same projection before training begins.
+
+For one-vs-rest training, each discovered class must have enough feature-ready positive and negative documents across distinct family/exact-duplicate groups to satisfy every validation fold. Priv-View excludes an unsupported child classifier, recomputes the leakage-safe folds, and records the counts and reason on the snapshot and model version. The model page shows these exclusions. The frozen observed class catalog remains complete, but the package and scoring output contain only the trained classes. Binary and native multiclass runs still fail as a unit when any required class is unsupported; a one-vs-rest run also fails when fewer than two viable classifiers remain.
+
+## Training results
+
+Training produces a candidate version and an immutable evaluation report. The model page reports run state, seed and fold count, overall metrics, per-class support, precision, recall, F1 and PR AUC where applicable, and a confusion matrix. A failed run retains its failure summary for diagnosis.
+
+Training evaluation is development evidence, not final independent validation. Approval, activation, and scoring remain separate governed operations and are not performed automatically by the Train action.
+
+## Run a classifier as an Analysis Task
+
+Model lifecycle and document analysis are separate surfaces. Train, inspect, approve, and activate statistical models in the **Classification** tab. To apply an approved model, create a **Classification** task in the matter's **Analysis** tab. The published task version pins the approved model version and its destination coding field.
+
+Select **Run classification**, then choose either a ready review batch or **Whole matter**. A batch run freezes its existing membership. A whole-matter run writes the ordered document population to an immutable Parquet artifact; it does not create a review-batch membership row for every matter document. Both scopes then materialize features for every frozen document and execute the durable DBOS classification scorer.
+
+The Analysis Task page defines and starts the reusable operation, but completed output is reviewed under **Jobs → Classification analysis**. Open a job to see its frozen scope, population, document-level feature progress, scoring counts, retained failures, and per-class prediction counts. This is the same job-result surface whether the scope was one review batch or the whole matter.
+
+The job's class chart can show the model's resolved output or recompute counts at a selected minimum probability, such as 80%, directly from the saved prediction artifact; changing this display threshold does not rerun the classifier or publish coding. For a multi-label one-vs-rest model, every class meeting the threshold counts, so one document can appear under multiple classes. Feature preparation reads and writes bounded document batches to a temporary Parquet stream instead of retaining the whole matter's vectors in memory. An active run can be canceled from its job entry. Cancellation marks the Core run as canceled, requests cancellation of its durable workflow and any nested scoring workflow, and stops feature loading at the next document batch boundary. Results remain an immutable prediction artifact and do not update authoritative matter coding. A later review projection may materialize an appropriate confidence interval into isolated batch coding.
+
+## Project scored predictions for review
+
+After a scoring run completes, its entry on the model page offers **Create projection**. Choose a ready batch with the same frozen scope and the model target in its coding configuration, then choose an inclusive minimum confidence, an optional exclusive maximum, and optionally a subset of trained classes. For example, 80 to 90 creates `[80%, 90%)` without rescoring the documents.
+
+The projection becomes isolated Batch Coding and does not update the matter field. The worker verifies that the scoring artifact and batch contain exactly the same documents and retains the scoring run and model-version provenance. Successful predictions outside the confidence window or selected classes, predictions without a usable selected-class confidence, and abstentions are completed as **No value**. Feature-excluded documents that the model could not evaluate are **Skipped**, while runtime failures are **Failed**. Binary models can project only when each binary class maps to one destination value; a combined class that represents several different field values is not safe to publish as coding.
+
+Reprojecting the same classifier task run replaces its ordinary selectable projection in Batch Statistics. The previous immutable projection remains in history for audit and provenance, but it is not shown as a second classifier task.
+
+Within the batch Filters tab, each Batch Coding field has confidence presets and a custom range. Minimum confidence is inclusive and maximum confidence is exclusive. An active range excludes values without a score. Classifier probabilities and Jev confidence are shown through the same filter controls, but they measure different systems and should not be compared as though they were calibrated identically.
 
 ## Current limitations
 
-- The browser workspace is an MVP validation surface for matter administrators, not a reviewer-facing CAL interface.
-- Batch scoring consumes a ready classification dataset snapshot; a scoring-only population snapshot is not yet a separate resource type.
-- Scoring results are not published into matter metadata automatically.
-- Continuous active learning queues and rounds are planned separately.
+- Retrain is intentionally deferred. Each MVP Train action creates a new logical model.
+- Runtime progress is reported at durable workflow boundaries. Fold-level and one-vs-rest class-level progress require a future trainer heartbeat protocol.
+- The interface is for matter administrators, not reviewers.
+- Labels currently come only from asserted matter coding.
+- Scoring results are not written into matter metadata automatically. Batch-scoped results may be projected into isolated batch coding for review; creating a new review batch from a qualifying whole-matter result set remains a later workflow slice.
+- Continuous active-learning queues and rounds are planned separately.

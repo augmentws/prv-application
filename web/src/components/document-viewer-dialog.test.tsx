@@ -106,5 +106,6 @@ describe("DocumentViewerSurface", () => {
     renderViewer(false);
 
     expect(screen.queryByRole("tab", { name: "Metadata" })).not.toBeInTheDocument();
+    expect(screen.getByRole("region", { name: "Document content" })).toHaveClass("min-h-0", "overflow-y-auto", "overscroll-contain");
   });
 });

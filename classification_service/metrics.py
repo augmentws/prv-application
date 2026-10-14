@@ -42,6 +42,7 @@ def _binary_metrics(
     tn, fp, fn, tp = confusion_matrix(y_true, predictions, labels=[0, 1]).ravel()
     precision = tp / (tp + fp) if tp + fp else 0.0
     recall = tp / (tp + fn) if tp + fn else 0.0
+    f1 = 2 * precision * recall / (precision + recall) if precision + recall else 0.0
     false_positive_rate = fp / (fp + tn) if fp + tn else 0.0
     false_negative_rate = fn / (fn + tp) if fn + tp else 0.0
     return {
@@ -54,6 +55,7 @@ def _binary_metrics(
         "false_negative": int(fn),
         "precision": float(precision),
         "recall": float(recall),
+        "f1": float(f1),
         "false_positive_rate": float(false_positive_rate),
         "false_negative_rate": float(false_negative_rate),
         "pr_auc": (
@@ -135,6 +137,7 @@ def evaluate_probabilities(
             ),
             "micro_pr_auc": positive_metrics["pr_auc"],
             "accuracy": float(np.mean(predictions == binary_labels)),
+            "macro_f1": float(np.mean([negative_metrics["f1"], positive_metrics["f1"]])),
             "brier_score": positive_metrics["brier_score"],
             "log_loss": positive_metrics["log_loss"],
         }
@@ -163,12 +166,18 @@ def evaluate_probabilities(
                 one_hot[:, class_index],
                 probabilities[:, class_index],
             )
-        precision, recall, _, _ = precision_recall_fscore_support(
+        precision, recall, f1, _ = precision_recall_fscore_support(
             multiclass_labels,
             predictions,
             labels=list(range(len(ordered_class_keys))),
             zero_division=0,
         )
+        for class_index, class_key in enumerate(ordered_class_keys):
+            per_class[class_key].update(
+                precision=float(precision[class_index]),
+                recall=float(recall[class_index]),
+                f1=float(f1[class_index]),
+            )
         pr_values = [
             value["pr_auc"] for value in per_class.values() if value["pr_auc"] is not None
         ]
@@ -178,6 +187,7 @@ def evaluate_probabilities(
             "micro_pr_auc": float(average_precision_score(one_hot.ravel(), probabilities.ravel())),
             "macro_precision": float(np.mean(precision)),
             "macro_recall": float(np.mean(recall)),
+            "macro_f1": float(np.mean(f1)),
             "accuracy": float(np.mean(predictions == multiclass_labels)),
             "brier_score": float(np.mean(np.sum((probabilities - one_hot) ** 2, axis=1))),
             "log_loss": float(
@@ -230,6 +240,7 @@ def evaluate_probabilities(
         "primary_pr_auc": float(np.mean(pr_values)),
         "macro_pr_auc": float(np.mean(pr_values)),
         "micro_pr_auc": float(average_precision_score(flat_labels, flat_probabilities)),
+        "macro_f1": float(np.mean([value["f1"] for value in per_class.values()])),
         "brier_score": float(brier_score_loss(flat_labels, flat_probabilities)),
         "log_loss": float(log_loss(flat_labels, flat_probabilities, labels=[0, 1])),
     }

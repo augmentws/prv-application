@@ -16,17 +16,28 @@ Choose how to select documents:
 - **Random matter sample** selects a repeatable random sample from the matter.
 - **Random sample from batch** selects from an existing ready batch.
 - **Random sample from saved search** runs an accessible Keyword saved search and samples only its matching documents.
+- **Random sample from assessment** selects from the assessment's complete persisted retrieval candidate pool.
 
 Leaving the random sample size empty includes all source documents in a randomized order. The system stores the random seed, so the selection is reproducible.
 Saved-search samples require a sample size. Priv-View snapshots the saved search definition, its name and update time, the active physical search generation, and the random seed. Later edits or deletion of the saved search do not change the frozen batch.
 
+Assessment samples also require a sample size. Their source is every document assembled by assessment retrieval, including candidates selected for the assessment batch and candidates that were not selected because of the assessment target size. Priv-View does not rerun retrieval and does not sample only the final assessment batch. The new batch snapshots the assessment identity, name, candidate and selected counts, guidance revision and content hash, search generation, and random seed for provenance.
+
 Select one or more shared metadata groups to define the coding fields. The system snapshots those fields when the batch is created. Later edits to the matter group do not silently change the batch.
 
-Use **Groups** in the Batches table or review workspace to change that batch snapshot. Check groups to add them, uncheck groups to remove them, then select **Save groups**. Removing a group hides its fields from subsequent batch coding without deleting values already stored in earlier review runs.
+Use **Groups** in the Batches table or review workspace to change that batch snapshot. Check groups to add them, uncheck groups to remove them, then select **Save groups**. Removing a group hides its fields from subsequent batch coding without deleting reviewer values already stored for the batch.
 
 ## Status
 
-A batch normally moves from **Queued** to **Building** to **Ready**. Its document count is final when it is ready. The system then prepares the batch for search; review opens with searchable documents when that projection is ready. A failed batch remains visible with its error so the selection can be diagnosed. Search-query batches require a ready matter search index.
+A batch normally moves from **Queued** to **Building** to **Ready**. Its durable job reports whether it is resolving the population, materializing membership, or syncing search, together with document progress and the attempt number. Matter managers can cancel an active build and retry a failed or canceled build; a retry creates a new attempt without erasing the earlier result.
+
+Its document count is final when membership is ready. The system then prepares the batch for search; review opens with searchable documents when that projection is ready. If search projection fails, the valid frozen population remains ready and the separate search error is shown. A failed membership build remains visible with its error so the selection can be diagnosed. Search-query batches require a ready matter search index.
+
+## Delete a batch
+
+Users with **Delete batches** permission can select **Delete batch** from a ready batch's action menu, or delete a failed or canceled batch from its row. An active batch build, analysis run, or coding promotion must be canceled or completed first.
+
+Deletion is soft: the batch is archived and disappears from normal batch selectors and lists, but its frozen membership, coding runs, analysis results, artifacts, and audit history remain stored. The audit log records who deleted it and its previous status.
 
 ## Assignment and value visibility
 
@@ -36,13 +47,89 @@ A batch can have one current human assignee. **Only the reviewer’s values** ke
 
 When a batch is **Ready**, select **Open review** from the Batches table. If the batch is unassigned, opening it assigns it to you. A batch assigned to someone else cannot be opened for coding.
 
-The review workspace shows indexed document titles, the selected document, and the batch's snapshotted coding groups. Search is always restricted to the batch and supports keyword, semantic, and hybrid modes. Facets and facet value type-ahead also remain restricted to the batch. The number beside each result is its stable position in the original frozen batch, even when a query changes the visible order.
+The review workspace shows indexed document titles, the selected document, and the batch's snapshotted coding groups. The left column has separate **Filters** and **Documents** tabs, so each can use the full column height. The Filters tab shows the number of active selections, and the Documents tab shows the current result count. Long topic and field-value lists scroll inside the filter pane and cannot resize or displace the document viewer. Submitting a header search returns to Documents; selecting **View filters** from an analysis run opens Filters at its Batch Coding fields without scrolling the surrounding page.
+
+Search is always restricted to the batch and supports keyword, semantic, and hybrid modes. Facets and facet value type-ahead also remain restricted to the batch. Each ordinary facet initially shows eight values; select **More** repeatedly to reveal the remaining values. The number beside each result is its stable position in the original frozen batch, even when a query changes the visible order.
+
+Users with **Export documents** permission can select **Export results** in the batch review header. The export freezes the current query together with the authoritative batch-membership filter, selected diagnostic topics, and any selected Batch Coding values or confidence range. Choose and order the CSV fields in the dialog, then follow the durable job under **Jobs → Search exports**. The export includes every matching document in the frozen batch, not only the visible page, and never widens the request to the full matter.
 
 Select **Save & next** to save all displayed coding fields as one isolated reviewer result, mark the document reviewed, and advance. A document with no selected field values can still be saved as reviewed. Select **Skip** when the document should remain uncoded but count as processed.
 
-The progress bar counts saved and skipped documents for your review run. Reopening an unfinished batch resumes the same run. When every document has been saved or skipped, the run is complete and becomes read-only.
+The progress bar counts saved and skipped documents in your reviewer coding. Reopening a batch resumes that same canonical coding set. Saving or importing a document replaces the current values for the supplied fields, but Priv-View retains the previous values as immutable reviewer revisions. The most recently accepted revision is current; it never creates another reviewer source.
 
-If the batch uses **Values from all reviewers**, earlier human-review values appear beneath the corresponding field with the reviewer's name. Your edits remain stored under your own run identity. Agent results are not mixed into this panel.
+Open **History** for a document to see each reviewer revision, including prior values, status changes, explicit **No value** clears, and whether the change came from the review workspace, a CSV import, or the initial migrated baseline. Skipping a document does not erase its earlier field history. Coding the document later appends another revision and becomes the current state.
+
+If the batch uses **Values from all reviewers**, the other reviewers' current values appear beneath the corresponding field with the reviewer's name. Your edits remain stored under your reviewer identity. Agent results are not mixed into this panel.
+
+## Batch statistics and human-coding promotion
+
+Select **Statistics** from the Batches table or the batch review header. Statistics always opens in a separate browser tab or window so the active review workspace is preserved. The dedicated page has two views: **Compare coding** for result-set comparison and **Human progress & promotion** for reviewer completion and controlled publication.
+
+### Compare coding
+
+Select one coding field and two to six result sets from the same frozen batch. Each human reviewer appears exactly once, using that reviewer's current coding. A JEV, agent, or classifier source appears only after it has successfully completed and produced coding for the selected field. Failed, canceled, queued, running, zero-value, playground, and legacy assessment workflow records are not offered as analysis sources. Changing the field does not silently substitute a different result set.
+
+Analysis sources use the current Analysis Task name resolved from the run's pinned task identity. A creation-time snapshot name is used only for legacy runs that cannot be linked to an Analysis Task.
+
+The comparison contains these sections:
+
+- **Source summaries** report evaluated, intentionally blank, skipped, failed, and incomplete or never-evaluated document counts. **No value** means that the source completed the document but supplied no value for this field. It is not negative coding. A confidence percentage appears in the document matrix only when that source stored a score; for a multi-value result it is the highest stored score.
+- **Coding counts** show distinct documents for each field value and source. A multi-value document can contribute to more than one value. The chart displays the 40 most frequent values across the selected sources. If a source contains more than 200 distinct values, the summary is marked as truncated; exports still retain every document value.
+- **Pairwise agreement** compares every pair of selected sources only on documents both sources evaluated. Exact agreement means their complete value sets are identical, including two intentionally blank sets. Partial agreement means the sets differ but share at least one value. Disagreement means they share no value. Documents skipped, failed, unfinished, or not evaluated by either source are counted as incomplete and excluded from agreement percentages.
+- **Confusion matrix** is shown for a single-value enum or Boolean field and counts each value combination for the pair selected in the agreement matrix, including **No value**. Its columns use the two source names rather than positional left/right labels.
+- **Per-value overlap** includes every selected reviewer or analysis run. Each source column counts comparable documents where that source assigned the value. **All selected** counts documents where every selected source assigned it; **Any selected** counts documents where one or more selected sources assigned it. Only documents evaluated by every selected source contribute to these counts.
+- **Document matrix** shows one frozen batch document per row and one selected result set per column. **Exact agreement** displays identical evaluated sets. **Disagreements** includes both partial overlaps and completely disjoint sets. **Incomplete** includes any row where at least one source was skipped, failed, unfinished, or not evaluated. Results are paged 50 rows at a time.
+
+**Jaccard similarity** measures set overlap:
+
+```text
+Jaccard = values selected by both sources / values selected by either source
+        = |intersection| / |union|
+```
+
+A score of 100% means identical sets and 0% means no shared values. When both evaluated sources intentionally supplied no value, their two empty sets count as 100% overlap. The pair summary is the mean of the per-document Jaccard scores across documents evaluated by both sources. In the all-source **Per-value overlap** table, overlap is `All selected / Any selected`; documents where no selected source assigned that value do not inflate the score. Hover over or focus the help icon in the interface to see this definition.
+
+The agreement measures are symmetric and do not identify either source as correct. They measure consistency, not accuracy, precision, or recall. Those accuracy measures require an explicitly designated reference or adjudicated source.
+
+The **CSV** and **Parquet** buttons export every row matching the current document filter, not only the visible page. Each export includes the matter-document ID, collection-item ID, stable batch sequence, agreement status, and one column per selected result set. Blank completed coding is written as `[NO VALUE]`; other unavailable states are written explicitly, such as `[FAILED]` or `[SKIPPED]`. Parquet metadata retains the selected source IDs, and duplicate source labels receive a short source-ID suffix.
+
+Comparison reads authoritative reviewer coding and evaluation-run values directly from the database. It does not depend on the Batch Coding search projection, change which run is searchable, republish results, update matter coding, or rebuild OpenSearch.
+
+### Human progress and promotion
+
+Open **Human progress & promotion** to inspect human coding. This view shows exactly one row for each reviewer, including completed and skipped document totals and the number of distinct documents coded for every snapshotted field in each coding group. A zero is retained in the display so an omitted field is visible rather than disappearing from the report.
+
+A user with **Publish coding** permission—included in the Matter Administrator role and higher administrative roles—can promote one reviewer's current coding to matter coding. Priv-View freezes the selected reviewer's revision when promotion is queued; it does not merge values from multiple reviewers or choose a reviewer implicitly.
+
+Human promotion uses replace semantics on completed documents only. For every configured batch field, the current matter value is cleared and then replaced with the frozen reviewer values. A blank field therefore clears a stale matter value. Skipped and unfinished documents are excluded and remain unchanged. The confirmation step states these consequences before the durable promotion is queued.
+
+Promotion appends normal auditable `HUMAN` metadata events, attributes them to the original reviewer, records the administrator who requested the promotion in the audit log, and reindexes affected documents. The modal shows queued, running, completed, and failed states; a failed promotion can be retried safely.
+
+## Import reviewer coding from CSV
+
+Use the batch-coding import CLI to load external tags into a reviewer's canonical batch coding. The command authenticates as the reviewer account named by `--email`; it does not impersonate another user or write directly to the database. That account must have **Review batches** access, and a batch assigned to someone else cannot be imported. Repeated imports update the same reviewer row. Imported values remain batch-only until an authorized matter manager explicitly promotes that reviewer coding.
+
+The CSV requires `matter_document_id` and at least one coding-field column. Name coding columns with their stable field keys; a unique field display name is also accepted. An empty cell records an intentional **No value** for that field. Multi-value cells should use JSON arrays. Enum cells accept either stable keys or unambiguous display labels. Add `_review_status` with `SKIPPED` to skip a row; the default is `COMPLETED`.
+
+```csv
+matter_document_id,responsiveness,issue_coding,_review_status
+8db87924-e9af-4a71-964b-b3f9dd487823,Responsive,"[""topic_401"",""topic_408""]",COMPLETED
+35c9a859-129e-444c-88f2-c70022af3601,,,SKIPPED
+```
+
+Validate the complete file and batch membership without changing reviewer coding:
+
+```bash
+export PVR_BATCH_IMPORT_PASSWORD="reviewer password"
+pipenv run python -m scripts.batch_coding_import \
+  --source ./reviewer-coding.csv \
+  --matter-id "matter UUID" \
+  --batch-id "batch UUID" \
+  --email "reviewer@example.com" \
+  --dry-run
+```
+
+Remove `--dry-run` to update the authenticated reviewer's coding. The resulting JSON includes the reviewer-coding ID and document counts. Each changed row appends an `IMPORT` revision. If an API error interrupts an import, correct the problem and run the command again; an identical replay uses the row's deterministic request key and does not append a duplicate revision. A changed row appends a new revision and becomes current. Use `--continue-on-error` to retain row failures in the report. An access token may be provided through `PVR_BATCH_IMPORT_ACCESS_TOKEN` instead of a password.
 
 ## Assessment analyses and diagnostic topics
 
@@ -62,30 +149,60 @@ Batch chat requires a ready search projection, document embeddings for semantic 
 
 ## Evidence in Batch Coding analysis
 
-When a published analysis task requires evidence, the JEV request asks the task's decision questions and companion evidence questions together. JEV checks whether document evidence exists and ranks the document's numbered paragraphs for each required decision. Priv-View validates the selected paragraph identifiers before storing them with the immutable decision result. Matter guidance is decision context; it is never stored as document evidence.
+Analysis uses two bounded stages. The first JEV request evaluates every published decision question and freezes those typed answers. Priv-View then applies the reviewed Decision Policy. Only matched recommendations and matched review routes whose questions require evidence proceed to a second, reduced evidence-localization request. For multi-value issue coding, this normally means positively assigned or review-routed issues; unmatched issue questions do not each receive an evidence request.
 
-A result is complete only when every required decision question has a qualifying document paragraph at or above its configured evidence-existence threshold. Missing or weak evidence remains visible as partial coverage and does not erase the underlying typed decision. Evidence localization currently supports up to 255 numbered paragraphs in one request. A longer document remains partial until windowed evidence localization is available; Priv-View does not silently search only part of it.
+The evidence request contains the frozen selected answers and numbered document paragraphs, not the full matter context or a second copy of the raw document text. JEV checks whether document evidence exists and ranks paragraphs for each selected outcome. The evidence locator may explicitly select `no_support` when none of the available paragraphs directly supports the frozen answer. Priv-View validates selected paragraph identifiers before storing them with the immutable decision result. A result is complete only when every selected evidence target has a qualifying paragraph at or above its configured evidence-existence threshold. Missing or weak evidence, including `no_support`, remains visible as partial coverage and does not erase the underlying typed decision. Evidence localization currently supports up to 255 numbered paragraphs in one request. A longer document remains partial until windowed evidence localization is available; Priv-View does not silently search only part of it.
 
 The Batch Chat panel uses the same authenticated lifecycle stream as Matter Definition Chat. A **Live** indicator means normal conversation polling is disabled. The panel reconnects from its last durable event cursor after a transient interruption and automatically restores polling after repeated stream failures. Assistant text is displayed when the final message is committed; token-by-token output is not streamed.
 
 ## Agent evaluation
 
-Each human or agent pass receives a separate run identity. Re-running an updated agent against the same batch creates a new run and preserves the earlier output. The two runs—or an agent run and a human reference run—can then be compared field by field.
+Each agent, workflow, or classifier pass receives a separate run identity. Re-running an updated executable evaluation against the same batch creates a new run and preserves the earlier output. A human reviewer instead has one canonical source with immutable revisions, so statistics show the reviewer once while History retains every change. Human sources and selected evaluation runs can be compared field by field.
 
-Run results do not change the matter’s ordinary metadata. A manager may explicitly project one run into batch-scoped search for analysis, but publishing accepted evaluation results into final matter coding remains a separate planned action.
+Run results remain isolated until an authorized administrator explicitly makes them searchable inside the batch or promotes them into matter coding. These are separate operations: **Make searchable** creates batch-only facets for that immutable run, while **Promote coding** appends auditable metadata events. Search projections are retained by run ID; selecting a previously projected run changes the visible Batch Coding source without reprojecting the batch when the cached projection belongs to the active search-index generation. A human-run promotion uses the batch's snapshotted coding fields; an Analysis Task promotion uses that task version's configured destination fields.
 
 ## Analysis tasks and selected issue recommendations
 
-A published Analysis Task can be run from the batch **Analysis** panel. The run pins that exact task version and stores an immutable Decision Result for each document. Published task versions cannot be edited. Select **Create draft revision** in the task workspace to start a new version with the same definition, then regenerate or edit its Decision Specification before publishing it.
+An active question-answering Analysis Task run can be canceled from the batch Analysis panel. Cancellation preserves completed and failed results, marks unfinished documents as skipped, and stops the durable parent workflow and its outstanding document workflows. Start a new run when you want to evaluate the batch again.
 
-Generated Decision Specifications include a frozen `decision_context` derived from the reviewed Task Definition. It summarizes the controlling guidance, responsiveness scope, inclusions, exclusions, issue definitions, entities, dates, terminology, and examples needed for the decision. The compiler also attaches every exact reviewed definition excerpt and its content hash as `source_material`, so the generated summary is not the provider's only source of matter guidance. Every document request sends this context to Jev as `matter.decision_context` alongside the document text, metadata, and paragraphs. Older specifications without embedded source material receive the complete pinned Task Definition as a runtime compatibility fallback; regenerate and publish a new task version to make the structured context directly reviewable.
+The matter Jobs table reports cumulative successful documents against the complete frozen batch population. Retrying selected failures creates a smaller execution attempt, but that attempt does not replace the run's batch-wide progress denominator or erase results completed by earlier attempts.
 
-For a multi-class issue question, the Decision Specification can use a `SELECTED_OPTION` recommendation. The question's field mapping explicitly lists which model options may become `issue_tag` values, and the policy sets the minimum selected-option probability. A mapped option that meets the threshold produces a recommendation containing the issue value and probability. An unmapped fallback such as `unclear`, or a selected option below the threshold, fails closed and does not recommend a tag.
+If a document exceeds `ANALYSIS_TASK_DECISION_MAX_CHARACTERS`, its failure is recorded as `ANALYSIS_DOCUMENT_INPUT_TOO_LARGE` with the measured and configured character counts. The worker does not immediately repeat the same request under an unchanged limit. After an administrator raises the limit and reloads the worker configuration, the failed-document dialog permits a selective retry.
+
+A published Analysis Task can be run from the batch **Analysis** panel. If the panel already shows an earlier run, select **Run new task** to open the complete published-task picker; **Run again** intentionally selects the task used by that historical run. The picker shows the published version and decision provider, and its detail card shows the pinned model before launch. The run pins that exact task version and stores an immutable Decision Result for each document. Published task versions cannot be edited. Select **Create draft revision** in the task workspace to start a new version with the same definition, then regenerate or edit its Decision Specification before publishing it.
+
+When creating a question-answering Analysis Task, select either **TypeSafe JEV** or **OpenAI Decisions** as its decision provider. The selection is stored on the immutable task version; changing it creates a new draft version. Each run snapshots the provider engine and resolved model so retries and later review retain the same provenance. Existing task versions remain on JEV. OpenAI Decisions task versions currently pin `gpt-6-luna`, the only model supported by the public-beta endpoint. Both providers normalize predicate/Noul, Choice, and Score answers into the same Decision Result contract, including complete probability distributions and provider/model usage telemetry. Configure `OPENAI_API_KEY` on the API and workflow-worker processes before running an OpenAI Decisions version.
+
+Each new task version also pins its destination fields. The picker lists only active, matter-owned fields with **Agents may assign values** enabled. The compiler treats that selection as its output allowlist: it may create questions and coding recommendations for the selected destinations, but it cannot map results to another field. Changing destinations creates a new draft version just like changing the task definition. Older task versions that predate this control retain their definition-based destination behavior until a new revision selects explicit destinations.
+
+Generated Decision Specifications include a frozen `decision_context` derived from the reviewed Task Definition. It summarizes the controlling guidance, responsiveness scope, inclusions, exclusions, issue definitions, entities, dates, terminology, and examples needed for the decision. The compiler also attaches every exact reviewed definition excerpt and its content hash as `source_material`, so the generated summary is not the provider's only source of matter guidance. Every document request sends this context to the selected decision provider as `matter.decision_context` alongside the document text, metadata, and paragraphs. Older specifications without embedded source material receive the complete pinned Task Definition as a runtime compatibility fallback; regenerate and publish a new task version to make the structured context directly reviewable.
+
+While generation is running, the task workspace shows the persisted workflow stage, selected destination plan, active enum-value counts, source-reference count, candidate number, and concise validation-repair diagnostics. These are auditable work products and deterministic validation results; the application does not expose or treat private model reasoning as provenance.
+
+For a single-value enum, the Decision Specification uses one Choice question and a `SELECTED_OPTION` recommendation. Its field mapping explicitly lists which model options may become coding values, and the policy sets the minimum selected-option probability. An unmapped fallback such as `unclear`, or a selected option below the threshold, fails closed.
+
+For a multi-value enum such as Issue Coding, the compiler creates an independent Noul question for each active value supported by the task guidance. Its `MAPPED_VALUE` recommendation contains the threshold predicate, destination field, and static value; this recommendation is the authoritative assignment mapping, so those details are not duplicated on the question. Zero, one, or many recommendations may match the same document, and distinct matched values are stored with separate ordinals. The compiler must account for every active selected enum value with either a mapped question or a structured omission explaining why the value cannot be evaluated. Multiple outputs remain an error for a single-value destination.
 
 Matched, field-mapped recommendations are also stored as typed values on the isolated analysis run. After the run completes, select **Make searchable** in the Analysis panel to choose that run as the batch's searchable coding source. A batch can expose only one selected run at a time. When projection finishes, a **Batch Coding** section appears with batch-only filters and facets for responsiveness, privilege, issue, or any other mapped field produced by that run.
 
-This operation does not accept or publish the values as final matter tags. The database remains authoritative for every run, while OpenSearch contains a rebuildable, bounded projection identified by batch, selected run, field, value, and score. Ordinary matter search and metadata remain unchanged. Selecting a different completed run replaces only this batch's searchable coding projection.
+Completed statistical-classification scoring can use the same Batch Coding surface. From the model page, **Create projection** selects this batch, a confidence interval, and optional classes. Each interval creates a separate immutable classifier run from the existing prediction artifact; it does not rerun the model or change matter coding. The scoring population must exactly match the batch membership.
+
+Review the source classification execution, including its feature and scoring counts and threshold-adjustable per-class chart, under the matter's **Jobs → Classification analysis** section. The Analysis Task page defines and starts the operation; it is not the result-review surface. The Batch Coding section shows only an explicitly created classifier projection and its pinned confidence window.
+
+Each Batch Coding field provides confidence presets and a custom minimum/maximum range. The minimum is inclusive and the maximum is exclusive, so 80% to under 90% never overlaps the 90% and above interval. Values without a score do not match an active range. The controls also work for Jev values that include confidence, although Jev confidence and classifier probabilities should not be treated as directly calibrated equivalents.
+
+This operation does not accept or publish the values as final matter tags. The database remains authoritative for every run, while OpenSearch contains rebuildable, bounded entries identified by batch, run, field, value, and score. Ordinary matter search and metadata remain unchanged. Only one run is selected for the Batch Coding UI at a time, but making another run searchable does not remove retained entries for earlier runs. A full index rebuild restores all retained READY run projections from PostgreSQL.
+
+Making a run searchable does not require a full matter reindex. The projection uses the active index and, when necessary, adds only the Batch Coding mapping in place. An unrelated pending search-schema change does not block Batch Coding publication.
+
+## Promote Analysis Task results to matter coding
+
+After an Analysis Task run completes, select **Promote coding** under **Matter Coding** to publish its policy-approved values to the destination fields pinned by that task version. Promotion uses replace semantics for each eligible document and destination: it first records a clear event, then records the selected value for a single-value field or each selected value for a multi-value field. A complete decision with no matched recommendation therefore clears a stale destination value instead of silently retaining it.
+
+Only documents with complete input and question coverage are eligible. Evidence-only partial results may still be promoted because their typed classifications are complete; failed, skipped, input-incomplete, and question-incomplete results are counted as skipped. The durable promotion shows queued, running, completed, or failed status and can be retried safely without duplicating its metadata events.
+
+Promoted events use the `AGENT` source and retain the promotion, task version, batch run, scores, and promoting user in the audit trail. Completion queues a matter-search reindex for the affected documents. The search index uses the destination field's stable key internally, while the matter and batch filter interfaces display the field's current **Display name** and enum value labels. For example, a destination stored under `issue_coding` appears as **Issue Coding** in filters.
 
 ## Current limitations
 
-Keyword query batches and samples from Keyword saved searches are supported; semantic and hybrid result sets are not yet available for ordinary batch creation. Assessment retrieval can use all controlled search modes. Adjudication and publish-to-matter controls remain planned.
+Keyword query batches and samples from Keyword saved searches are supported; semantic and hybrid result sets are not yet available for ordinary batch creation. Assessment retrieval can use all controlled search modes. Adjudication remains planned.

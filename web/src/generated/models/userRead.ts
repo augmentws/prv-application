@@ -6,6 +6,7 @@
  * OpenAPI spec version: 0.1.0
  */
 import type { UserReadStatus } from './userReadStatus';
+import type { UserReadTenantRole } from './userReadTenantRole';
 
 export interface UserRead {
   id: string;
@@ -13,7 +14,7 @@ export interface UserRead {
   email: string;
   display_name: string;
   status: UserReadStatus;
-  tenant_role: 'ADMIN';
+  tenant_role: UserReadTenantRole;
   is_superuser: boolean;
   created_at: string;
 }

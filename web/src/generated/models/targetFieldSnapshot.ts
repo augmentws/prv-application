@@ -21,6 +21,8 @@ export interface TargetFieldSnapshot {
   display_name: string;
   metadata_type: TargetMetadataType;
   cardinality: TargetCardinality;
+  hierarchy_separator?: string | null;
+  hierarchy_level?: number | null;
   /** @pattern ^[0-9a-f]{64}$ */
   schema_fingerprint: string;
   /**
@@ -28,4 +30,10 @@ export interface TargetFieldSnapshot {
      * @items.pattern ^[A-Za-z][A-Za-z0-9_-]{0,127}$
      */
   active_value_keys?: string[];
+  /**
+     * @maxItems 1000
+     * @items.minLength 1
+     * @items.maxLength 20000
+     */
+  discovered_class_keys?: string[];
 }

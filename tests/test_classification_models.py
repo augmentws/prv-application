@@ -204,7 +204,28 @@ def test_create_revise_list_and_read_classification_model(
     }
 
 
-def test_registry_rejects_wrong_matter_and_ineligible_fields(
+def test_hierarchy_level_requires_a_delimited_text_target(
+    client: TestClient,
+    root_token: str,
+    root_admin,
+) -> None:
+    matter = create_matter(client, root_token, str(root_admin.tenant_id), "Hierarchy validation")
+    definition = create_enum_field(client, root_token, matter["id"])
+    model = create_model(client, root_token, matter["id"], definition["id"])
+    payload = binary_configuration()
+    payload["hierarchy_level"] = 1
+
+    response = client.post(
+        f"/v1/matters/{matter['id']}/classification-models/{model['id']}/configurations",
+        headers=auth(root_token),
+        json=payload,
+    )
+
+    assert response.status_code == 409, response.text
+    assert "Hierarchy level requires a target field hierarchy separator" in response.text
+
+
+def test_registry_accepts_asserted_text_and_non_reviewable_fields_but_rejects_wrong_scope_source_and_type(
     client: TestClient,
     root_token: str,
     root_admin,
@@ -224,22 +245,39 @@ def test_registry_rejects_wrong_matter_and_ineligible_fields(
     )
     assert wrong_matter.status_code == 409
 
-    text_field = client.post(
+    definitions = client.get(
+        f"/v1/matters/{second_matter['id']}/metadata-definitions",
+        headers=auth(root_token),
+    )
+    assert definitions.status_code == 200, definitions.text
+    imported_subject = next(item for item in definitions.json() if item["key"] == "email_subject")
+    imported_model = client.post(
+        f"/v1/matters/{second_matter['id']}/classification-models",
+        headers=auth(root_token),
+        json={
+            "target_metadata_definition_id": imported_subject["id"],
+            "name": "Imported subject model",
+        },
+    )
+    assert imported_model.status_code == 409
+
+    long_text_field = client.post(
         f"/v1/matters/{second_matter['id']}/metadata-definitions",
         headers=auth(root_token),
         json={
             "key": "notes_target",
             "display_name": "Notes",
-            "type": "TEXT",
+            "type": "LONG_TEXT",
             "reviewable": True,
         },
-    ).json()
-    unsupported = client.post(
+    )
+    assert long_text_field.status_code == 201, long_text_field.text
+    text_model = client.post(
         f"/v1/matters/{second_matter['id']}/classification-models",
         headers=auth(root_token),
-        json={"target_metadata_definition_id": text_field["id"], "name": "Text model"},
+        json={"target_metadata_definition_id": long_text_field.json()["id"], "name": "Text model"},
     )
-    assert unsupported.status_code == 409
+    assert text_model.status_code == 201, text_model.text
 
     non_reviewable = create_enum_field(
         client,
@@ -248,15 +286,36 @@ def test_registry_rejects_wrong_matter_and_ineligible_fields(
         key="non_reviewable_target",
         reviewable=False,
     )
-    rejected = client.post(
+    hidden_model = client.post(
         f"/v1/matters/{second_matter['id']}/classification-models",
         headers=auth(root_token),
         json={"target_metadata_definition_id": non_reviewable["id"], "name": "Hidden model"},
     )
-    assert rejected.status_code == 409
+    assert hidden_model.status_code == 201, hidden_model.text
+
+    integer_field = client.post(
+        f"/v1/matters/{second_matter['id']}/metadata-definitions",
+        headers=auth(root_token),
+        json={
+            "key": "integer_target",
+            "display_name": "Integer target",
+            "type": "INTEGER",
+            "reviewable": True,
+        },
+    )
+    assert integer_field.status_code == 201, integer_field.text
+    unsupported = client.post(
+        f"/v1/matters/{second_matter['id']}/classification-models",
+        headers=auth(root_token),
+        json={
+            "target_metadata_definition_id": integer_field.json()["id"],
+            "name": "Integer model",
+        },
+    )
+    assert unsupported.status_code == 409
 
 
-def test_compatibility_detects_deactivated_values_and_archive_blocks_revision(
+def test_class_catalog_changes_remain_compatible_and_archive_blocks_revision(
     client: TestClient,
     root_token: str,
     root_admin,
@@ -283,11 +342,11 @@ def test_compatibility_detects_deactivated_values_and_archive_blocks_revision(
         headers=auth(root_token),
     )
     assert deactivated.status_code == 200, deactivated.text
-    incompatible = client.get(f"{base}/compatibility", headers=auth(root_token))
-    assert incompatible.status_code == 200
-    assert incompatible.json()["compatible"] is False
-    assert incompatible.json()["schema_fingerprint_matches"] is False
-    assert "needs_review" in incompatible.json()["reasons"][0]
+    still_compatible = client.get(f"{base}/compatibility", headers=auth(root_token))
+    assert still_compatible.status_code == 200
+    assert still_compatible.json()["compatible"] is True
+    assert still_compatible.json()["schema_fingerprint_matches"] is True
+    assert still_compatible.json()["reasons"] == []
 
     archived = client.post(f"{base}/archive", headers=auth(root_token))
     assert archived.status_code == 200

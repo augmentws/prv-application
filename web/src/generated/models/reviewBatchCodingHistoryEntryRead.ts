@@ -5,19 +5,27 @@
  * Phase-one Core API for authentication, hierarchical tenants, clients, matters, and matter metadata definitions.
  * OpenAPI spec version: 0.1.0
  */
+import type { ReviewBatchCodingHistoryEntryReadDocumentStatus } from './reviewBatchCodingHistoryEntryReadDocumentStatus';
+import type { ReviewBatchCodingHistoryEntryReadEventKind } from './reviewBatchCodingHistoryEntryReadEventKind';
 import type { ReviewBatchCodingHistoryEntryReadPurpose } from './reviewBatchCodingHistoryEntryReadPurpose';
+import type { ReviewBatchCodingHistoryEntryReadReviewerOrigin } from './reviewBatchCodingHistoryEntryReadReviewerOrigin';
 import type { ReviewBatchCodingHistoryEntryReadRunType } from './reviewBatchCodingHistoryEntryReadRunType';
 import type { ReviewBatchCodingHistoryEntryReadScoreKind } from './reviewBatchCodingHistoryEntryReadScoreKind';
 import type { ReviewBatchCodingHistoryEntryReadSourceKind } from './reviewBatchCodingHistoryEntryReadSourceKind';
 
 export interface ReviewBatchCodingHistoryEntryRead {
-  review_batch_run_id: string;
-  run_type: ReviewBatchCodingHistoryEntryReadRunType;
-  purpose: ReviewBatchCodingHistoryEntryReadPurpose;
-  metadata_definition_id: string;
+  review_batch_run_id?: string | null;
+  reviewer_coding_id?: string | null;
+  reviewer_revision?: number | null;
+  reviewer_origin?: ReviewBatchCodingHistoryEntryReadReviewerOrigin;
+  event_kind?: ReviewBatchCodingHistoryEntryReadEventKind;
+  document_status?: ReviewBatchCodingHistoryEntryReadDocumentStatus;
+  run_type?: ReviewBatchCodingHistoryEntryReadRunType;
+  purpose?: ReviewBatchCodingHistoryEntryReadPurpose;
+  metadata_definition_id?: string | null;
   field_key: string;
   field_display_name: string;
-  value: unknown;
+  value: unknown | null;
   value_label: string;
   recorded_at: string;
   source_kind: ReviewBatchCodingHistoryEntryReadSourceKind;

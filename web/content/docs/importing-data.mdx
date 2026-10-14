@@ -46,4 +46,6 @@ MIME transfer encodings are decoded before attachment bytes are uploaded. A malf
 
 Original MBOX, CSV, or ZIP inputs are retained as **SOURCE_CONTAINER** artifacts. Extracted files and messages become collection items with **NATIVE** artifacts. Attachments are related to their parent message and family.
 
+Dataset adapters place normalized file and email properties in the corresponding `ImportItem` fields. Use `raw_metadata` for import provenance and source details. Use `unmapped_metadata` for source-specific fields that must be preserved but do not have a normalized collection property, including external coding columns. When documents are later published to a matter, an unmapped key that matches an active asserted matter field is published as a metadata label with source **Import**. Structured email participants are also the source for the read-only, multi-value **Email Domain** system field when documents are indexed; this does not depend on `unmapped_metadata`. See [Collections](/docs/collections#unmapped-metadata).
+
 Chunk sets and vector chunk sets are not created during initial import. Later processing stores each set as its own Parquet artifact.

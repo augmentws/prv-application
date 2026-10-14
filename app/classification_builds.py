@@ -18,7 +18,13 @@ from app.classification_gateway import (
     ClassificationGateway,
     ClassificationGatewayError,
 )
-from app.classification_models import active_value_keys, target_schema_fingerprint
+from app.classification_models import (
+    CLASSIFICATION_TARGET_TYPES,
+    effective_binary_mapping,
+    effective_prediction_policy,
+    target_schema_fingerprint,
+    trained_class_keys,
+)
 from app.config import Settings, get_settings
 from app.database import SessionLocal
 from app.models import (
@@ -44,14 +50,12 @@ from classification_service.hashing import (
 from classification_service.schemas import (
     ArtifactReference,
     ArtifactType,
-    BinaryClassMapping,
     ClassificationStrategy,
     ClassificationTrainingRequest,
     ClassificationTrainingResult,
     FeatureContract,
     LabelPolicy,
     PackageValidationResult,
-    PredictionResolutionPolicy,
     TargetFieldSnapshot,
     TrainerSpecification,
     TrainingScopeSpecification,
@@ -123,11 +127,15 @@ def _configuration_issues(
     snapshot = configuration.target_field_snapshot
     if model.status != "ACTIVE":
         issues.append(ClassificationDatasetIssue(code="MODEL_NOT_ACTIVE", message="Classification model is not active"))
-    if definition.status != "ACTIVE" or not definition.reviewable:
+    if (
+        definition.status != "ACTIVE"
+        or definition.value_source != "ASSERTED"
+        or definition.type not in CLASSIFICATION_TARGET_TYPES
+    ):
         issues.append(
             ClassificationDatasetIssue(
                 code="TARGET_FIELD_NOT_ELIGIBLE",
-                message="Target field must be active and reviewable",
+                message="Target field must be an active Boolean, enum, text, or long-text coding field",
             )
         )
     identity_matches = (
@@ -141,19 +149,6 @@ def _configuration_issues(
             ClassificationDatasetIssue(
                 code="TARGET_FIELD_IDENTITY_CHANGED",
                 message="Configured target field identity is no longer compatible",
-            )
-        )
-    available = set(active_value_keys(definition)) if definition.type == "ENUM" else {"false", "true"}
-    if configuration.classification_strategy == ClassificationStrategy.BINARY.value:
-        mapping = configuration.binary_mapping or {}
-        selected = set(mapping.get("negative_value_keys", [])) | set(mapping.get("positive_value_keys", []))
-    else:
-        selected = set(configuration.ordered_class_keys)
-    if not selected.issubset(available):
-        issues.append(
-            ClassificationDatasetIssue(
-                code="TARGET_CLASSES_UNAVAILABLE",
-                message="One or more configured target classes are inactive or missing",
             )
         )
     return issues
@@ -235,7 +230,12 @@ def prepare_build(
                 message="Dataset snapshot must have complete frozen training artifacts",
             )
         )
-    if snapshot.target_field_snapshot != configuration.target_field_snapshot:
+    configured_target = configuration.target_field_snapshot
+    frozen_target = snapshot.target_field_snapshot
+    if any(
+        frozen_target.get(key) != configured_target.get(key)
+        for key in ("tenant_id", "matter_id", "metadata_definition_id", "stable_key", "metadata_type", "cardinality")
+    ):
         issues.append(
             ClassificationDatasetIssue(
                 code="DATASET_CONFIGURATION_MISMATCH",
@@ -437,12 +437,12 @@ def retry_training_run(
     run: ClassificationTrainingRun,
     actor_user_id: uuid.UUID,
 ) -> ClassificationTrainingRun:
-    if run.status != "FAILED":
+    if run.status not in {"FAILED", "CANCELED"}:
         raise ClassificationBuildConflictError(
-            "Only failed classification builds can be retried",
+            "Only failed or canceled classification builds can be retried",
             code="BUILD_NOT_FAILED",
         )
-    if not run.failure_retriable:
+    if run.status == "FAILED" and not run.failure_retriable:
         raise ClassificationBuildConflictError(
             "Classification build failure is not retriable",
             code="BUILD_FAILURE_NOT_RETRIABLE",
@@ -541,6 +541,7 @@ def _actor_is_authorized(db: Session, run: ClassificationTrainingRun) -> bool:
 def training_request(run: ClassificationTrainingRun) -> ClassificationTrainingRequest:
     configuration = run.configuration
     snapshot = run.dataset_snapshot
+    ordered_class_keys = trained_class_keys(snapshot, configuration)
     return ClassificationTrainingRequest(
         training_run_id=run.id,
         tenant_id=run.tenant_id,
@@ -552,14 +553,10 @@ def training_request(run: ClassificationTrainingRun) -> ClassificationTrainingRe
             scope_type=TrainingScopeType(snapshot.scope_type),
             scope_id=snapshot.scope_id,
         ),
-        target_field_snapshot=TargetFieldSnapshot.model_validate(configuration.target_field_snapshot),
+        target_field_snapshot=TargetFieldSnapshot.model_validate(snapshot.target_field_snapshot),
         classification_strategy=ClassificationStrategy(configuration.classification_strategy),
-        ordered_class_keys=configuration.ordered_class_keys,
-        binary_mapping=(
-            BinaryClassMapping.model_validate(configuration.binary_mapping)
-            if configuration.binary_mapping is not None
-            else None
-        ),
+        ordered_class_keys=ordered_class_keys,
+        binary_mapping=effective_binary_mapping(snapshot, configuration),
         label_policy=LabelPolicy.model_validate(configuration.label_policy),
         feature_contract=FeatureContract.model_validate(configuration.feature_contract),
         trainer_specification=TrainerSpecification.model_validate(configuration.trainer_specification),
@@ -582,9 +579,7 @@ def training_request(run: ClassificationTrainingRun) -> ClassificationTrainingRe
             "application/vnd.apache.parquet",
         ),
         validation_policy=ValidationPolicy.model_validate(run.validation_specification),
-        prediction_resolution_policy=PredictionResolutionPolicy.model_validate(
-            configuration.prediction_resolution_policy
-        ),
+        prediction_resolution_policy=effective_prediction_policy(snapshot, configuration),
         random_seed=run.random_seed,
         output_derivation_key=run.derivation_key,
     )
@@ -674,6 +669,48 @@ def invoke_runtime(
     }
 
 
+def mark_training_runtime_started(
+    training_run_id: uuid.UUID,
+    *,
+    session_factory: Callable[[], Session] = SessionLocal,
+) -> None:
+    with session_factory() as db:
+        run = db.scalar(
+            select(ClassificationTrainingRun)
+            .where(ClassificationTrainingRun.id == training_run_id)
+            .with_for_update()
+        )
+        if run is None:
+            raise ClassificationBuildNotFoundError("Classification training run not found")
+        if run.status in {"CANCELED", "COMPLETED"}:
+            return
+        run.status = "TRAINING"
+        run.current_stage = "FITTING_AND_EVALUATING_MODEL"
+        run.progress_completed = 2
+        db.commit()
+
+
+def mark_training_runtime_completed(
+    training_run_id: uuid.UUID,
+    *,
+    session_factory: Callable[[], Session] = SessionLocal,
+) -> None:
+    with session_factory() as db:
+        run = db.scalar(
+            select(ClassificationTrainingRun)
+            .where(ClassificationTrainingRun.id == training_run_id)
+            .with_for_update()
+        )
+        if run is None:
+            raise ClassificationBuildNotFoundError("Classification training run not found")
+        if run.status in {"CANCELED", "COMPLETED"}:
+            return
+        run.status = "FINALIZING"
+        run.current_stage = "VALIDATING_RUNTIME_OUTPUTS"
+        run.progress_completed = 3
+        db.commit()
+
+
 def _validate_runtime_result(
     run: ClassificationTrainingRun,
     result: ClassificationTrainingResult,
@@ -684,6 +721,8 @@ def _validate_runtime_result(
     manifest = package.manifest
     signature = package.signature
     feature_contract = FeatureContract.model_validate(configuration.feature_contract)
+    ordered_class_keys = trained_class_keys(snapshot, configuration)
+    prediction_policy = effective_prediction_policy(snapshot, configuration)
     if not package.valid:
         raise ClassificationBuildConflictError("Runtime package validation did not succeed")
     if result.training_run_id != run.id or result.output_derivation_key != run.derivation_key:
@@ -704,14 +743,14 @@ def _validate_runtime_result(
         or manifest.runtime_image_digest != run.runtime_image_digest
         or manifest.source_revision != run.source_revision
         or manifest.feature_specification_hash != snapshot.feature_specification_hash
-        or manifest.target_field_snapshot.model_dump(mode="json") != configuration.target_field_snapshot
+        or manifest.target_field_snapshot.model_dump(mode="json") != snapshot.target_field_snapshot
         or manifest.classification_strategy.value != configuration.classification_strategy
-        or manifest.ordered_class_keys != configuration.ordered_class_keys
+        or manifest.ordered_class_keys != ordered_class_keys
         or manifest.trainer_specification.model_dump(mode="json") != run.trainer_specification
         or (
             manifest.prediction_resolution_policy is None
             or manifest.prediction_resolution_policy.model_dump(mode="json")
-            != configuration.prediction_resolution_policy
+            != prediction_policy.model_dump(mode="json")
         )
     ):
         raise ClassificationBuildConflictError("Validated package identity does not match frozen build inputs")
@@ -721,7 +760,7 @@ def _validate_runtime_result(
         or signature.feature_data_type != feature_contract.data_type
         or signature.feature_specification_hash != snapshot.feature_specification_hash
         or signature.classification_strategy.value != configuration.classification_strategy
-        or signature.ordered_class_keys != configuration.ordered_class_keys
+        or signature.ordered_class_keys != ordered_class_keys
     ):
         raise ClassificationBuildConflictError("Validated package signature does not match frozen build inputs")
     expected_hashes = {
@@ -807,7 +846,9 @@ def finalize_training_run(
             dataset_snapshot_id=run.dataset_snapshot_id,
             version_number=version_number,
             status="CANDIDATE",
-            target_field_snapshot=run.configuration.target_field_snapshot,
+            target_field_snapshot=run.dataset_snapshot.target_field_snapshot,
+            trained_class_keys=trained_class_keys(run.dataset_snapshot, run.configuration),
+            excluded_classes=run.dataset_snapshot.excluded_classes or [],
             training_aggregate_hash=run.dataset_snapshot.training_aggregate_hash,
             feature_specification_hash=run.dataset_snapshot.feature_specification_hash,
             model_artifact_id=result.model_artifact.artifact_id,

@@ -7,14 +7,17 @@ from app.decision_engine import ChoiceDecisionAnswer, DecisionAnswer, NoulDecisi
 from app.decision_specifications import (
     ChoiceDecisionQuestion,
     DecisionAggregation,
+    DecisionMappedValueRecommendation,
+    DecisionPolicyExpression,
     DecisionQuestion,
+    DecisionSelectedOptionRecommendation,
     DecisionSpecification,
     NoulCriteria,
     NoulDecisionQuestion,
 )
 from app.document_evidence import ParagraphMap
 
-EVIDENCE_LOCALIZATION_VERSION = "jev-same-request-evidence-v1"
+EVIDENCE_LOCALIZATION_VERSION = "jev-conditional-evidence-v2"
 MAX_EVIDENCE_PARAGRAPHS = 255
 MAX_DECISION_REQUEST_QUESTIONS = 500
 MAX_STORED_EVIDENCE_CANDIDATES = 5
@@ -56,18 +59,20 @@ def _companion_questions(
         option: {"paragraph_id": paragraph_id}
         for option, paragraph_id in option_to_paragraph_id.items()
     }
-    if len(location_criteria) == 1:
-        location_criteria["no_support"] = {
-            "meaning": "The document paragraph does not provide direct support for the correct answer"
-        }
+    location_criteria["no_support"] = {
+        "meaning": "No document paragraph directly supports the frozen classification outcome"
+    }
     context = _decision_question_context(question)
     shared_instruction = {
         "decision_question_key": question_key,
         "decision_question": context,
+        "classification_outcome": (
+            "The classification answer is frozen in classification.answers. Locate evidence for that outcome; "
+            "do not reclassify the document."
+        ),
         "evidence_scope": (
             "Use only document.paragraphs as evidence. Matter guidance explains the decision standard but is not "
-            "document evidence. Evidence may support an inclusion, exclusion, positive, negative, or uncertain "
-            "answer, but it must directly support the correct answer for this document."
+            "document evidence. The selected paragraph must directly support the frozen classification outcome."
         ),
     }
     exists_question = NoulDecisionQuestion(
@@ -92,7 +97,8 @@ def _companion_questions(
             **shared_instruction,
             "task": (
                 "Which document paragraph most directly supports the correct answer to the decision question? "
-                "Select the option whose paragraph_id matches document.paragraphs."
+                "Select the option whose paragraph_id matches document.paragraphs, or select no_support when "
+                "none of the document paragraphs directly supports the frozen classification outcome."
             ),
         },
         criteria=location_criteria,
@@ -113,18 +119,58 @@ def _companion_questions(
     )
 
 
-def build_same_request_evidence_questions(
+def _expression_question_keys(expression: DecisionPolicyExpression) -> set[str]:
+    predicates = [expression.predicate] if expression.predicate is not None else expression.operands
+    return {predicate.question_key for predicate in predicates}
+
+
+def select_evidence_question_keys(
+    specification: DecisionSpecification,
+    recommendations: dict[str, Any],
+    routes: dict[str, Any],
+) -> tuple[str, ...]:
+    """Select evidence only for actionable recommendations and matched review routes."""
+
+    selected: set[str] = set()
+    for rule_key, result in recommendations.items():
+        if not isinstance(result, dict) or result.get("matched") is not True:
+            continue
+        question_key = result.get("question_key")
+        if isinstance(question_key, str):
+            selected.add(question_key)
+            continue
+        rule = specification.decision_policy.recommendations.get(rule_key)
+        if isinstance(rule, DecisionSelectedOptionRecommendation):
+            selected.add(rule.question_key)
+        elif isinstance(rule, DecisionMappedValueRecommendation):
+            selected.add(rule.predicate.question_key)
+        elif isinstance(rule, DecisionPolicyExpression):
+            selected.update(_expression_question_keys(rule))
+
+    for route_key, result in routes.items():
+        if not isinstance(result, dict) or result.get("matched") is not True:
+            continue
+        route = specification.decision_policy.routes.get(route_key)
+        if route is not None:
+            selected.update(_expression_question_keys(route))
+
+    return tuple(
+        key
+        for key, question in specification.questions.items()
+        if key in selected and question.evidence.required
+    )
+
+
+def build_conditional_evidence_questions(
     specification: DecisionSpecification,
     paragraph_map: ParagraphMap,
+    question_keys: tuple[str, ...],
 ) -> tuple[dict[str, DecisionQuestion], tuple[EvidenceQuestionPlan, ...]]:
-    """Add internal JEV evidence questions without changing the published specification."""
+    """Build a reduced second-pass request for selected classification outcomes."""
 
-    required = [
-        (key, question)
-        for key, question in specification.questions.items()
-        if question.evidence.required
-    ]
-    questions = dict(specification.questions)
+    selected = set(question_keys)
+    required = [(key, question) for key, question in specification.questions.items() if key in selected]
+    questions: dict[str, DecisionQuestion] = {}
     if not required:
         return questions, ()
 
@@ -133,7 +179,7 @@ def build_same_request_evidence_questions(
         unavailable_reason = "no_document_paragraphs"
     elif len(paragraph_map.paragraphs) > MAX_EVIDENCE_PARAGRAPHS:
         unavailable_reason = "paragraph_limit_exceeded"
-    elif len(questions) + (2 * len(required)) > MAX_DECISION_REQUEST_QUESTIONS:
+    elif 2 * len(required) > MAX_DECISION_REQUEST_QUESTIONS:
         unavailable_reason = "question_limit_exceeded"
 
     if unavailable_reason is not None:
@@ -166,11 +212,11 @@ def build_same_request_evidence_questions(
     return questions, tuple(plans)
 
 
-def collect_same_request_evidence(
+def collect_conditional_evidence(
     plans: tuple[EvidenceQuestionPlan, ...],
     answers: dict[str, DecisionAnswer],
 ) -> tuple[dict[str, Any], bool]:
-    """Validate internal JEV evidence answers and retain compact, auditable paragraph references."""
+    """Validate second-pass evidence answers and retain compact, auditable paragraph references."""
 
     evidence: dict[str, Any] = {}
     complete = True

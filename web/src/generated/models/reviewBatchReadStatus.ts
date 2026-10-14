@@ -14,5 +14,6 @@ export const ReviewBatchReadStatus = {
   BUILDING: 'BUILDING',
   READY: 'READY',
   FAILED: 'FAILED',
+  CANCELED: 'CANCELED',
   ARCHIVED: 'ARCHIVED',
 } as const;

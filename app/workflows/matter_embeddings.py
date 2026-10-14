@@ -87,7 +87,12 @@ def matter_embedding_voyage_batch(
     return finalize_voyage(batch_id)
 
 
-@DBOS.step(name="refresh_matter_embedding_progress")
+@DBOS.step(
+    name="refresh_matter_embedding_progress",
+    retries_allowed=True,
+    interval_seconds=1,
+    max_attempts=5,
+)
 def refresh(job_id: str) -> None:
     refresh_job(uuid.UUID(job_id))
 
@@ -104,12 +109,22 @@ def index(job_id: str) -> str:
     return index_job(uuid.UUID(job_id))
 
 
-@DBOS.step(name="complete_matter_embedding_job")
+@DBOS.step(
+    name="complete_matter_embedding_job",
+    retries_allowed=True,
+    interval_seconds=1,
+    max_attempts=5,
+)
 def complete(job_id: str) -> None:
     complete_job(uuid.UUID(job_id))
 
 
-@DBOS.step(name="fail_matter_embedding_job")
+@DBOS.step(
+    name="fail_matter_embedding_job",
+    retries_allowed=True,
+    interval_seconds=1,
+    max_attempts=5,
+)
 def fail(job_id: str, message: str) -> None:
     fail_job(uuid.UUID(job_id), message)
 

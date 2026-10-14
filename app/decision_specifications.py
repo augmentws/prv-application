@@ -264,15 +264,31 @@ class DecisionSelectedOptionRecommendation(SpecificationModel):
     minimum_probability: float = Field(ge=0, le=1)
 
 
+class DecisionMappedValueRecommendation(SpecificationModel):
+    """Emit one static destination value when a bounded predicate matches."""
+
+    operator: Literal["MAPPED_VALUE"]
+    predicate: DecisionPredicate
+    metadata_definition_key: str = Field(pattern=r"^[a-z][a-z0-9_]{0,99}$")
+    value: Any
+
+    @field_validator("value")
+    @classmethod
+    def validate_static_value(cls, value: Any) -> Any:
+        if value is None:
+            raise ValueError("MAPPED_VALUE recommendations require a static value")
+        return value
+
+
 DecisionRecommendation = Annotated[
-    DecisionPolicyExpression | DecisionSelectedOptionRecommendation,
+    DecisionPolicyExpression | DecisionSelectedOptionRecommendation | DecisionMappedValueRecommendation,
     Field(discriminator="operator"),
 ]
 
 
 class DecisionPolicy(SpecificationModel):
     version: Literal["decision-policy-v1"] = "decision-policy-v1"
-    recommendations: dict[str, DecisionRecommendation] = Field(default_factory=dict, max_length=100)
+    recommendations: dict[str, DecisionRecommendation] = Field(default_factory=dict, max_length=500)
     routes: dict[str, DecisionPolicyExpression] = Field(default_factory=dict, max_length=100)
 
 
@@ -284,7 +300,10 @@ def validate_decision_policy_semantics(policy: DecisionPolicy) -> None:
         for rule_name, expression in expressions.items():
             if isinstance(expression, DecisionSelectedOptionRecommendation):
                 continue
-            predicates = [expression.predicate] if expression.predicate is not None else expression.operands
+            if isinstance(expression, DecisionMappedValueRecommendation):
+                predicates = [expression.predicate]
+            else:
+                predicates = [expression.predicate] if expression.predicate is not None else expression.operands
             for predicate in predicates:
                 if (
                     predicate.measure in {"noul", "confidence", "probability"}
@@ -325,6 +344,41 @@ def validate_selected_option_policy_semantics(specification: DecisionSpecificati
         raise ValueError("; ".join(errors))
 
 
+def validate_mapped_value_policy_semantics(specification: DecisionSpecification) -> None:
+    errors: list[str] = []
+    for recommendation_key, recommendation in specification.decision_policy.recommendations.items():
+        if not isinstance(recommendation, DecisionMappedValueRecommendation):
+            continue
+        question = specification.questions.get(recommendation.predicate.question_key)
+        if question is None:
+            errors.append(
+                f"decision_policy.recommendations.{recommendation_key} references unknown question "
+                f"{recommendation.predicate.question_key}"
+            )
+            continue
+        mapping = question.field_mapping
+        if mapping is None:
+            continue
+        if mapping.value_source != "STATIC":
+            errors.append(
+                f"decision_policy.recommendations.{recommendation_key} is incompatible with the non-STATIC "
+                f"field mapping on {recommendation.predicate.question_key}"
+            )
+            continue
+        if mapping.metadata_definition_key != recommendation.metadata_definition_key:
+            errors.append(
+                f"decision_policy.recommendations.{recommendation_key} destination must match the field mapping "
+                f"on {recommendation.predicate.question_key}"
+            )
+        if mapping.value != recommendation.value:
+            errors.append(
+                f"decision_policy.recommendations.{recommendation_key} value must match the static field mapping "
+                f"on {recommendation.predicate.question_key}"
+            )
+    if errors:
+        raise ValueError("; ".join(errors))
+
+
 class DecisionStateContract(SpecificationModel):
     builder_version: str = Field(min_length=1, max_length=100)
     required_paths: list[StatePath] = Field(min_length=1, max_length=100)
@@ -358,9 +412,13 @@ class DecisionSpecification(SpecificationModel):
             if isinstance(expression, DecisionSelectedOptionRecommendation):
                 self._validate_selected_option_recommendation(expression)
                 continue
+            if isinstance(expression, DecisionMappedValueRecommendation):
+                self._validate_predicate(expression.predicate)
+                continue
             self._validate_expression(expression)
         for expression in self.decision_policy.routes.values():
             self._validate_expression(expression)
+        validate_mapped_value_policy_semantics(self)
         return self
 
     def _validate_selected_option_recommendation(
@@ -415,7 +473,21 @@ class DecisionCompilationWarning(SpecificationModel):
 class DecisionCompilationOmission(SpecificationModel):
     subject: str = Field(min_length=1, max_length=500)
     rationale: str = Field(min_length=1, max_length=4000)
+    metadata_definition_key: str | None = Field(
+        default=None,
+        pattern=r"^[a-z][a-z0-9_]{0,99}$",
+    )
+    metadata_value_key: str | None = Field(
+        default=None,
+        pattern=r"^[A-Za-z][A-Za-z0-9_-]{0,99}$",
+    )
     source_refs: list[DecisionSourceReference] = Field(default_factory=list, max_length=100)
+
+    @model_validator(mode="after")
+    def validate_destination_reference(self) -> DecisionCompilationOmission:
+        if self.metadata_value_key is not None and self.metadata_definition_key is None:
+            raise ValueError("metadata_value_key requires metadata_definition_key")
+        return self
 
 
 class DecisionSpecificationCompilationOutput(SpecificationModel):
@@ -448,6 +520,7 @@ def validate_specification_for_task_version(
 ) -> None:
     validate_decision_policy_semantics(specification.decision_policy)
     validate_selected_option_policy_semantics(specification)
+    validate_mapped_value_policy_semantics(specification)
     mismatched = sorted(
         {
             str(reference.task_version_id)

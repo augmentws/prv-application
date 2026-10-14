@@ -7,7 +7,9 @@ from app.classification_scoring import (
     fail_scoring_run,
     finalize_scoring_run,
     invoke_runtime,
+    mark_scoring_runtime_started,
     prepare_runtime_invocation,
+    scoring_failure_cause,
     scoring_failure_details,
 )
 from app.config import get_settings
@@ -33,6 +35,7 @@ def prepare(scoring_run_id: str) -> dict | None:
     max_attempts=3,
 )
 def score(invocation: dict) -> dict:
+    mark_scoring_runtime_started(uuid.UUID(invocation["request"]["scoring_run_id"]))
     return invoke_runtime(invocation)
 
 
@@ -57,5 +60,5 @@ def classification_model_score(scoring_run_id: str) -> None:
     except Exception as exc:
         logger.exception("Classification scoring failed scoring_run_id=%s", scoring_run_id)
         code, retriable = scoring_failure_details(exc)
-        fail(scoring_run_id, str(exc), code, retriable)
+        fail(scoring_run_id, str(scoring_failure_cause(exc)), code, retriable)
         raise

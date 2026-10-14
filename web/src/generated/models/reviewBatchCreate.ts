@@ -20,6 +20,7 @@ export interface ReviewBatchCreate {
   search?: MatterSearchRequest | null;
   source_batch_id?: string | null;
   saved_search_id?: string | null;
+  assessment_run_id?: string | null;
   sample_size?: number | null;
   random_seed?: string | null;
   assigned_user_id?: string | null;

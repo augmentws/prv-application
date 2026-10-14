@@ -385,8 +385,13 @@ def test_decision_result_is_complete_auditable_and_idempotent(
     )
     assert history.status_code == 200, history.text
     assert history.json()[0] == {
-        "review_batch_run_id": str(ids["batch_run"]),
-        "run_type": "WORKFLOW",
+            "review_batch_run_id": str(ids["batch_run"]),
+            "reviewer_coding_id": None,
+            "reviewer_revision": None,
+            "reviewer_origin": None,
+            "document_status": None,
+            "event_kind": None,
+            "run_type": "WORKFLOW",
         "purpose": "REVIEW",
         "metadata_definition_id": str(ids["definition"]),
         "field_key": "privilege",

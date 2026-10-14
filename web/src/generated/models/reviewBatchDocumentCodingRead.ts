@@ -6,12 +6,12 @@
  * OpenAPI spec version: 0.1.0
  */
 import type { ReviewBatchDocumentCodingReadReviewStatus } from './reviewBatchDocumentCodingReadReviewStatus';
+import type { ReviewBatchReviewerCodingValueRead } from './reviewBatchReviewerCodingValueRead';
 import type { ReviewBatchReviewerValueRead } from './reviewBatchReviewerValueRead';
-import type { ReviewBatchRunValueRead } from './reviewBatchRunValueRead';
 
 export interface ReviewBatchDocumentCodingRead {
   matter_document_id: string;
   review_status: ReviewBatchDocumentCodingReadReviewStatus;
-  values: ReviewBatchRunValueRead[];
+  values: ReviewBatchReviewerCodingValueRead[];
   reviewer_values: ReviewBatchReviewerValueRead[];
 }

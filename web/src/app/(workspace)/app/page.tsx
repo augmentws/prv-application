@@ -24,7 +24,7 @@ export default function OverviewPage() {
       {clients.error || users.error ? <QueryError /> : null}
       <div className="grid gap-4 sm:grid-cols-2 xl:grid-cols-3">
         <MetricCard icon={FolderKanban} label="Clients" value={clients.data?.length} href="/app/clients" />
-        <MetricCard icon={Users} label="Users" value={users.data?.length} href="/app/users" />
+        <MetricCard icon={Users} label="Users" value={users.data?.length} href="/app/access" />
         <Card className="overflow-hidden border-primary/20 bg-primary text-primary-foreground">
           <CardHeader><span className="mb-3 grid size-9 place-items-center rounded-lg bg-white/10"><Braces className="size-4" /></span><CardTitle>Metadata lives with matters</CardTitle><CardDescription className="text-white/70">Open a client and matter to define review fields.</CardDescription></CardHeader>
         </Card>

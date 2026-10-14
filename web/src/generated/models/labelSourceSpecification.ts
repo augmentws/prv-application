@@ -17,4 +17,5 @@ export interface LabelSourceSpecification {
      */
   source_weight: number;
   source_reference_id?: string | null;
+  source_revision?: number | null;
 }

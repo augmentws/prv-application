@@ -15,6 +15,8 @@ The first Phase 1 foundation is implemented:
   source references and metadata mappings, and persist SkillRun/model-usage provenance;
 - the official TypeSafe SDK-backed `jev` adapter with code-owned registration, provider/model admission control,
   bounded 429-aware retries, filesystem tracing, and shared ModelInvocation telemetry;
+- an OpenAI Decisions adapter for the dedicated `/v1/decisions` endpoint, with provider selection and the
+  currently supported `gpt-6-luna` model pinned on each immutable Analysis Task version;
 - a database-enforced immutable Decision Result ledger with full typed answers, explicit coverage, task/document/
   workflow provenance, reusable-input hashes, and confidence-kind provenance on projected batch values;
 - a managed, durable single-document playground backend that evaluates a published task version against a document
@@ -253,18 +255,23 @@ not have an independently publishable version or moving pointer.
       ],
       "aggregation": {"operator": "ANY_WINDOW"},
       "evidence": {"required": true, "minimum_exists_probability": 0.7},
-      "field_mapping": {
-        "metadata_definition_key": "responsiveness",
-        "value": "responsive",
-        "uncertainty": {
-          "kind": "DERIVED_PROBABILITY",
-          "source": "MAPPED_BOOLEAN_PROBABILITY"
-        }
-      }
+      "field_mapping": null
     }
   },
   "decision_policy": {
-    "recommendations": {},
+    "recommendations": {
+      "issue_coding.issue_1_nonrenewal": {
+        "operator": "MAPPED_VALUE",
+        "predicate": {
+          "question_key": "responsiveness.issue_1_nonrenewal",
+          "measure": "noul",
+          "comparator": "GTE",
+          "threshold": 0.7
+        },
+        "metadata_definition_key": "issue_coding",
+        "value": "issue_1_nonrenewal"
+      }
+    },
     "routes": {},
     "version": "decision-policy-v1"
   },
@@ -279,11 +286,17 @@ The JSON is authoritative. The UI renders it as a readable question catalog with
 canonical export. A generated Markdown rendering may be attached for convenience, but it is not the source of
 truth and does not require a new Artifact type. The enclosing task version is the only publication boundary.
 
-Multi-class Choice assignments use an explicit `SELECTED_OPTION` mapping and recommendation. The field mapping's
-`option_value_map` allowlists the Choice options that may become metadata values; fallback options such as `unclear`
-are deliberately omitted. A `SELECTED_OPTION` recommendation adds the minimum selected-option probability. Policy
-evaluation returns the mapped value only when the option is allowlisted and meets the threshold, and otherwise fails
-closed without producing a coding recommendation.
+Mutually exclusive, single-value enum assignments use an explicit `SELECTED_OPTION` mapping and recommendation. The
+field mapping's `option_value_map` allowlists the Choice options that may become metadata values; fallback options
+such as `unclear` are deliberately omitted. A `SELECTED_OPTION` recommendation adds the minimum selected-option
+probability. Policy evaluation returns the mapped value only when the option is allowlisted and meets the threshold,
+and otherwise fails closed without producing a coding recommendation.
+
+Multi-value enum assignments use one independent Noul question per active destination value. Its `MAPPED_VALUE`
+recommendation is the authoritative assignment mapping and contains the predicate, destination key, and static
+value. This permits multiple distinct values to match the same document while retaining conflict detection for a
+single-value destination. Compiler output must account for every active value of every explicitly selected enum with
+either a mapped question or a structured omission naming the destination and value keys.
 
 ## Phase 4: compiler managed skill
 
@@ -317,6 +330,8 @@ Reject or warn on:
 - a Choice without `other`, `unclear`, or `insufficient_evidence` where the options are not exhaustive;
 - source references whose task version, heading, or quoted excerpt cannot be validated;
 - field mappings to missing, inactive, incompatible, or non-snapshotted metadata definitions;
+- selected enum values that have neither a mapped question nor a structured omission;
+- contradictory static mappings and `MAPPED_VALUE` recommendations;
 - embedded runtime values such as today's date instead of a state path;
 - unknown aggregation operators or policy operations;
 - unbounded question or option counts;
@@ -468,21 +483,23 @@ Creation produces:
 - one linked `ReviewBatchRun` with `run_type=WORKFLOW`;
 - frozen task-version, model, field-schema, and batch snapshots;
 - one `ReviewBatchRunDocument` per batch member;
-- workflow steps for preparation, decision and evidence evaluation, projection, and completion. Evidence remains a
-  distinct logical result contract even when its companion questions share the same provider invocation.
+- workflow steps for preparation, decision and evidence evaluation, projection, and completion. Evidence is a
+  distinct logical result contract and uses a conditional provider invocation after classification.
 
 ### Per-document execution
 
 1. Load the preferred faithful source text from Artifact Service.
 2. Build deterministic state from document metadata and the versioned paragraph map.
-3. If the document fits the provider input limit, evaluate all compatible decision questions together. For each
-   question whose evidence policy is required, include an evidence-existence Noul and a paragraph-location Choice in
-   the same Jev request.
+3. If the document fits the provider input limit, evaluate all compatible decision questions together without
+   evidence-localization companions. Freeze the typed answers and apply the bounded decision policy.
 4. Otherwise, evaluate bounded paragraph windows and apply the question's reviewed aggregation policy.
-5. Locate and validate supporting paragraph IDs for actionable positive or boundary answers. A Choice localization
-   never establishes evidence by itself because it must select an option; require its companion existence probability
-   to meet the question's reviewed threshold.
-6. Apply the bounded decision-policy interpreter.
+5. Select evidence targets from matched recommendations and matched review routes. Unmatched negative issue questions
+   do not receive separate evidence requests.
+6. For selected targets only, make a reduced second Jev request containing the frozen target answers, numbered
+   document paragraphs, an evidence-existence Noul, and a paragraph-location Choice. Do not send the complete matter
+   context or duplicate raw document text in this evidence request. A Choice localization never establishes evidence
+   by itself because it must select an option; require its companion existence probability to meet the question's
+   reviewed threshold.
 7. Store the immutable Decision Result.
 8. Project mapped suggestions into isolated `ReviewBatchRunValue` rows.
 9. Mark the document complete, skipped, or failed without hiding partial coverage.

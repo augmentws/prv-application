@@ -6,4 +6,4 @@
  * OpenAPI spec version: 0.1.0
  */
 
-export type PredictionResolutionPolicyOneVsRestThresholds = { [key: string]: unknown } | null;
+export type PredictionResolutionPolicyOneVsRestThresholds = {[key: string]: number} | null;

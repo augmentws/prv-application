@@ -5,7 +5,9 @@
  * Phase-one Core API for authentication, hierarchical tenants, clients, matters, and matter metadata definitions.
  * OpenAPI spec version: 0.1.0
  */
+import type { ClassificationScoringRunReadDatasetScopeType } from './classificationScoringRunReadDatasetScopeType';
 import type { ClassificationScoringRunReadStatus } from './classificationScoringRunReadStatus';
+import type { JobExecutionRead } from './jobExecutionRead';
 import type { PredictionResolutionPolicy } from './predictionResolutionPolicy';
 
 export interface ClassificationScoringRunRead {
@@ -15,6 +17,8 @@ export interface ClassificationScoringRunRead {
   classification_model_id: string;
   model_version_id: string;
   dataset_snapshot_id: string;
+  dataset_scope_type: ClassificationScoringRunReadDatasetScopeType;
+  dataset_scope_id: string;
   idempotency_key: string;
   workflow_id: string;
   /** @pattern ^[0-9a-f]{64}$ */
@@ -54,4 +58,5 @@ export interface ClassificationScoringRunRead {
   created_at: string;
   updated_at: string;
   row_version: number;
+  execution?: JobExecutionRead | null;
 }

@@ -479,6 +479,60 @@ def test_runtime_finalization_creates_one_inactive_candidate(
     assert read.status_code == 200, read.text
     assert read.json()["model_version"]["status"] == "CANDIDATE"
 
+    with TestingSessionLocal() as db:
+        version = db.get(ClassificationModelVersion, version_id)
+        assert version is not None
+        configuration = db.get(ClassificationModelConfiguration, version.configuration_id)
+        assert configuration is not None
+        report = {
+            "report_schema_version": 1,
+            "training_run_id": str(run_id),
+            "tenant_id": str(version.tenant_id),
+            "matter_id": str(version.matter_id),
+            "classification_model_id": str(version.classification_model_id),
+            "configuration_id": str(version.configuration_id),
+            "configuration_hash": configuration.configuration_hash,
+            "classification_strategy": "BINARY",
+            "ordered_class_keys": ["negative", "positive"],
+            "labeled_document_count": 30,
+            "training_document_count": 30,
+            "validation_document_count": 30,
+            "metrics": {"accuracy": 0.9, "macro_f1": 0.89},
+            "per_class_metrics": {
+                "negative": {"positive_support": 15, "precision": 0.88, "recall": 0.9, "f1": 0.89},
+                "positive": {"positive_support": 15, "precision": 0.9, "recall": 0.88, "f1": 0.89},
+            },
+            "confusion_matrix": [[14, 1], [2, 13]],
+        }
+        evaluation_bytes = json.dumps(report, separators=(",", ":"), sort_keys=True).encode()
+        evaluation_hash = hashlib.sha256(evaluation_bytes).hexdigest()
+        version.evaluation_content_hash = evaluation_hash
+        evaluation = db.scalar(
+            select(ClassificationEvaluation).where(ClassificationEvaluation.model_version_id == version_id)
+        )
+        assert evaluation is not None
+        evaluation.evaluation_content_hash = evaluation_hash
+        db.commit()
+
+    def copy_evaluation(*, artifact_id, destination, **kwargs):
+        del kwargs
+        assert gateway.result is not None
+        assert artifact_id == gateway.result.evaluation_artifact.artifact_id
+        destination.write(evaluation_bytes)
+
+    monkeypatch.setattr(
+        "app.routers.classification_models.copy_workflow_artifact_content",
+        copy_evaluation,
+    )
+    evaluation_response = client.get(
+        f"/v1/matters/{matter['id']}/classification-models/{model['id']}"
+        f"/versions/{version_id}/evaluation",
+        headers=auth(root_token),
+    )
+    assert evaluation_response.status_code == 200, evaluation_response.text
+    assert evaluation_response.json()["confusion_matrix"] == [[14, 1], [2, 13]]
+    assert evaluation_response.json()["metrics"]["macro_f1"] == 0.89
+
 
 @pytest.mark.parametrize("wrong_tenant", [False, True])
 def test_runtime_failure_is_persisted_without_a_candidate(

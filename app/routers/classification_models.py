@@ -1,4 +1,6 @@
+import hashlib
 import hmac
+import io
 import uuid
 
 from fastapi import APIRouter, Depends, HTTPException, Query, status
@@ -6,6 +8,7 @@ from sqlalchemy import select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session, selectinload
 
+from app.artifact_gateway import copy_workflow_artifact_content
 from app.audit import record_audit
 from app.classification_builds import (
     ClassificationBuildError,
@@ -27,6 +30,7 @@ from app.classification_datasets import (
     get_dataset_snapshot,
     materialize_dataset_snapshot,
     prepare_dataset_snapshot,
+    target_distribution,
 )
 from app.classification_features import (
     ClassificationFeatureSplitError,
@@ -49,7 +53,9 @@ from app.classification_models import (
     ClassificationModelCommandError,
     ClassificationModelNotFoundError,
     configuration_compatibility,
+    frozen_class_keys,
     target_field_read_data,
+    trained_class_keys,
 )
 from app.classification_models import archive_classification_model as archive_classification_model_command
 from app.classification_models import create_classification_model as create_classification_model_command
@@ -64,14 +70,26 @@ from app.classification_scoring import (
     create_scoring_run,
     get_scoring_run,
     prediction_preview,
+    prediction_summary,
     prepare_scoring,
     reconcile_scoring_run,
     resolve_existing_scoring_run,
     scoring_preview,
 )
+from app.classification_training_jobs import (
+    ClassificationTrainingJobError,
+    ClassificationTrainingJobNotFoundError,
+    create_training_job,
+    get_training_job,
+    resolve_training_job,
+)
 from app.config import get_settings
 from app.database import get_db
 from app.dependencies import Principal, can_admin_matter, get_principal
+from app.job_executions import (
+    CLASSIFICATION_SCORING_RUN_JOB_TYPE,
+    cancel_job_execution,
+)
 from app.models import (
     ClassificationDatasetSnapshot,
     ClassificationModel,
@@ -79,6 +97,7 @@ from app.models import (
     ClassificationModelDecision,
     ClassificationModelVersion,
     ClassificationScoringRun,
+    ClassificationTrainingJob,
     ClassificationTrainingRun,
     Matter,
 )
@@ -102,6 +121,7 @@ from app.schemas import (
     ClassificationModelRead,
     ClassificationModelVersionRead,
     ClassificationPredictionPreviewRead,
+    ClassificationPredictionSummaryRead,
     ClassificationPromotionCreate,
     ClassificationPromotionPreview,
     ClassificationPromotionPreviewRequest,
@@ -111,7 +131,13 @@ from app.schemas import (
     ClassificationScoringPreview,
     ClassificationScoringPreviewRequest,
     ClassificationScoringRunRead,
+    ClassificationTargetDistributionRead,
+    ClassificationTargetDistributionRequest,
+    ClassificationTrainingJobCreate,
+    ClassificationTrainingJobCreateResponse,
+    ClassificationTrainingJobRead,
     ClassificationTrainingRunRead,
+    JobExecutionRead,
 )
 from app.workflows.dispatcher import (
     cancel_classification_model_build,
@@ -119,7 +145,9 @@ from app.workflows.dispatcher import (
     enqueue_classification_model_build,
     enqueue_classification_model_promotion,
     enqueue_classification_model_scoring,
+    enqueue_classification_training_job,
 )
+from classification_service.schemas import ClassificationEvaluationReport
 
 router = APIRouter(
     prefix="/v1/matters/{matter_id}/classification-models",
@@ -148,6 +176,7 @@ def configuration_read(
             "revision": configuration.revision,
             "target_field_snapshot": configuration.target_field_snapshot,
             "classification_strategy": configuration.classification_strategy,
+            "hierarchy_level": configuration.target_field_snapshot.get("hierarchy_level"),
             "ordered_class_keys": configuration.ordered_class_keys,
             "binary_mapping": configuration.binary_mapping,
             "label_policy": configuration.label_policy,
@@ -187,6 +216,7 @@ def model_read(model: ClassificationModel) -> ClassificationModelRead:
 
 
 def model_version_read(version: ClassificationModelVersion) -> ClassificationModelVersionRead:
+    version_trained_class_keys = version.trained_class_keys or trained_class_keys(version.dataset_snapshot)
     return ClassificationModelVersionRead.model_validate(
         {
             "id": version.id,
@@ -199,6 +229,10 @@ def model_version_read(version: ClassificationModelVersion) -> ClassificationMod
             "version_number": version.version_number,
             "status": version.status,
             "target_field_snapshot": version.target_field_snapshot,
+            "ordered_class_keys": version_trained_class_keys,
+            "observed_class_keys": frozen_class_keys(version.dataset_snapshot),
+            "trained_class_keys": version_trained_class_keys,
+            "excluded_classes": version.excluded_classes or version.dataset_snapshot.excluded_classes or [],
             "training_aggregate_hash": version.training_aggregate_hash,
             "feature_specification_hash": version.feature_specification_hash,
             "model_artifact_id": version.model_artifact_id,
@@ -258,9 +292,7 @@ def promotion_preview_read(preview) -> ClassificationPromotionPreview:
 
 
 def training_run_read(db: Session, run: ClassificationTrainingRun) -> ClassificationTrainingRunRead:
-    version = db.scalar(
-        select(ClassificationModelVersion).where(ClassificationModelVersion.training_run_id == run.id)
-    )
+    version = db.scalar(select(ClassificationModelVersion).where(ClassificationModelVersion.training_run_id == run.id))
     return ClassificationTrainingRunRead.model_validate(
         {
             "id": run.id,
@@ -307,6 +339,48 @@ def training_run_read(db: Session, run: ClassificationTrainingRun) -> Classifica
     )
 
 
+def training_job_read(db: Session, job: ClassificationTrainingJob) -> ClassificationTrainingJobRead:
+    snapshot = db.get(ClassificationDatasetSnapshot, job.dataset_snapshot_id) if job.dataset_snapshot_id else None
+    run = db.get(ClassificationTrainingRun, job.training_run_id) if job.training_run_id else None
+    return ClassificationTrainingJobRead.model_validate(
+        {
+            "id": job.id,
+            "tenant_id": job.tenant_id,
+            "matter_id": job.matter_id,
+            "classification_model_id": job.classification_model_id,
+            "configuration_id": job.configuration_id,
+            "embedding_job_id": job.embedding_job_id,
+            "dataset_snapshot_id": job.dataset_snapshot_id,
+            "training_run_id": job.training_run_id,
+            "idempotency_key": job.idempotency_key,
+            "workflow_id": job.workflow_id,
+            "training_scope": {"scope_type": job.scope_type, "scope_id": job.scope_id},
+            "validation_specification": job.validation_specification,
+            "random_seed": job.random_seed,
+            "status": job.status,
+            "current_stage": job.current_stage,
+            "progress_completed": job.progress_completed,
+            "progress_total": job.progress_total,
+            "failure_code": job.failure_code,
+            "failure_summary": job.failure_summary,
+            "failure_retriable": job.failure_retriable,
+            "dataset_snapshot": dataset_snapshot_read(snapshot) if snapshot is not None else None,
+            "training_run": training_run_read(db, run) if run is not None else None,
+            "created_by_user_id": job.created_by_user_id,
+            "started_at": job.started_at,
+            "completed_at": job.completed_at,
+            "canceled_at": job.canceled_at,
+            "created_at": job.created_at,
+            "updated_at": job.updated_at,
+            "execution": (
+                JobExecutionRead.model_validate(job.current_workflow_run)
+                if job.current_workflow_run is not None
+                else None
+            ),
+        }
+    )
+
+
 def scoring_run_read(run: ClassificationScoringRun) -> ClassificationScoringRunRead:
     return ClassificationScoringRunRead.model_validate(
         {
@@ -316,6 +390,8 @@ def scoring_run_read(run: ClassificationScoringRun) -> ClassificationScoringRunR
             "classification_model_id": run.classification_model_id,
             "model_version_id": run.model_version_id,
             "dataset_snapshot_id": run.dataset_snapshot_id,
+            "dataset_scope_type": run.dataset_snapshot.scope_type,
+            "dataset_scope_id": run.dataset_snapshot.scope_id,
             "idempotency_key": run.idempotency_key,
             "workflow_id": run.workflow_id,
             "derivation_key": run.derivation_key,
@@ -349,6 +425,11 @@ def scoring_run_read(run: ClassificationScoringRun) -> ClassificationScoringRunR
             "created_at": run.created_at,
             "updated_at": run.updated_at,
             "row_version": run.row_version,
+            "execution": (
+                JobExecutionRead.model_validate(run.current_workflow_run)
+                if run.current_workflow_run is not None
+                else None
+            ),
         }
     )
 
@@ -397,6 +478,9 @@ def dataset_snapshot_read(
             "feature_missing_count": snapshot.feature_missing_count,
             "feature_failed_count": snapshot.feature_failed_count,
             "training_eligible_count": snapshot.training_eligible_count,
+            "ordered_class_keys": frozen_class_keys(snapshot),
+            "trained_class_keys": trained_class_keys(snapshot),
+            "excluded_classes": snapshot.excluded_classes or [],
             "class_support": snapshot.class_support or {},
             "source_summary": snapshot.source_summary or [],
             "warnings": snapshot.warnings or [],
@@ -411,26 +495,29 @@ def dataset_snapshot_read(
 
 def command_error(exc: ClassificationModelCommandError) -> HTTPException:
     error_status = (
-        status.HTTP_404_NOT_FOUND
-        if isinstance(exc, ClassificationModelNotFoundError)
-        else status.HTTP_409_CONFLICT
+        status.HTTP_404_NOT_FOUND if isinstance(exc, ClassificationModelNotFoundError) else status.HTTP_409_CONFLICT
     )
     return HTTPException(status_code=error_status, detail=str(exc))
 
 
 def dataset_error(exc: ClassificationDatasetError) -> HTTPException:
     error_status = (
-        status.HTTP_404_NOT_FOUND
-        if isinstance(exc, ClassificationDatasetNotFoundError)
-        else status.HTTP_409_CONFLICT
+        status.HTTP_404_NOT_FOUND if isinstance(exc, ClassificationDatasetNotFoundError) else status.HTTP_409_CONFLICT
     )
     return HTTPException(status_code=error_status, detail=str(exc))
 
 
 def build_error(exc: ClassificationBuildError) -> HTTPException:
     error_status = (
+        status.HTTP_404_NOT_FOUND if isinstance(exc, ClassificationBuildNotFoundError) else status.HTTP_409_CONFLICT
+    )
+    return HTTPException(status_code=error_status, detail=str(exc))
+
+
+def training_job_error(exc: ClassificationTrainingJobError) -> HTTPException:
+    error_status = (
         status.HTTP_404_NOT_FOUND
-        if isinstance(exc, ClassificationBuildNotFoundError)
+        if isinstance(exc, ClassificationTrainingJobNotFoundError)
         else status.HTTP_409_CONFLICT
     )
     return HTTPException(status_code=error_status, detail=str(exc))
@@ -438,18 +525,14 @@ def build_error(exc: ClassificationBuildError) -> HTTPException:
 
 def lifecycle_error(exc: ClassificationLifecycleError) -> HTTPException:
     error_status = (
-        status.HTTP_404_NOT_FOUND
-        if isinstance(exc, ClassificationLifecycleNotFoundError)
-        else status.HTTP_409_CONFLICT
+        status.HTTP_404_NOT_FOUND if isinstance(exc, ClassificationLifecycleNotFoundError) else status.HTTP_409_CONFLICT
     )
     return HTTPException(status_code=error_status, detail=str(exc))
 
 
 def scoring_error(exc: ClassificationScoringError) -> HTTPException:
     error_status = (
-        status.HTTP_404_NOT_FOUND
-        if isinstance(exc, ClassificationScoringNotFoundError)
-        else status.HTTP_409_CONFLICT
+        status.HTTP_404_NOT_FOUND if isinstance(exc, ClassificationScoringNotFoundError) else status.HTTP_409_CONFLICT
     )
     return HTTPException(status_code=error_status, detail=str(exc))
 
@@ -494,6 +577,32 @@ def list_classification_models(
         .order_by(ClassificationModel.created_at, ClassificationModel.id)
     ).all()
     return [model_read(model) for model in models]
+
+
+@router.post(
+    "/targets/{target_metadata_definition_id}/distribution",
+    response_model=ClassificationTargetDistributionRead,
+)
+def read_classification_target_distribution(
+    matter_id: uuid.UUID,
+    target_metadata_definition_id: uuid.UUID,
+    payload: ClassificationTargetDistributionRequest,
+    principal: Principal = Depends(get_principal),
+    db: Session = Depends(get_db),
+) -> ClassificationTargetDistributionRead:
+    matter = get_authorized_matter(db, principal, matter_id)
+    try:
+        return target_distribution(
+            db,
+            matter=matter,
+            definition_id=target_metadata_definition_id,
+            training_scope=payload.training_scope,
+            hierarchy_level=payload.hierarchy_level,
+        )
+    except ClassificationModelCommandError as exc:
+        raise command_error(exc) from exc
+    except ClassificationDatasetError as exc:
+        raise dataset_error(exc) from exc
 
 
 @router.get("/{classification_model_id}", response_model=ClassificationModelRead)
@@ -811,6 +920,108 @@ def read_classification_dataset_snapshot(
         return dataset_snapshot_read(snapshot)
     except ClassificationDatasetError as exc:
         raise dataset_error(exc) from exc
+
+
+@router.post(
+    "/{classification_model_id}/training-jobs",
+    response_model=ClassificationTrainingJobCreateResponse,
+    status_code=status.HTTP_202_ACCEPTED,
+)
+def create_classification_training_job(
+    matter_id: uuid.UUID,
+    classification_model_id: uuid.UUID,
+    payload: ClassificationTrainingJobCreate,
+    principal: Principal = Depends(get_principal),
+    db: Session = Depends(get_db),
+) -> ClassificationTrainingJobCreateResponse:
+    matter = get_authorized_matter(db, principal, matter_id)
+    try:
+        job, created = create_training_job(
+            db,
+            matter=matter,
+            classification_model_id=classification_model_id,
+            payload=payload,
+            actor_user_id=principal.user.id,
+        )
+        if created:
+            enqueue_classification_training_job(db, job.workflow_id, str(job.id))
+        db.commit()
+        db.refresh(job)
+        return ClassificationTrainingJobCreateResponse(
+            training_job=training_job_read(db, job),
+            created=created,
+        )
+    except ClassificationTrainingJobError as exc:
+        db.rollback()
+        raise training_job_error(exc) from exc
+    except IntegrityError as exc:
+        db.rollback()
+        try:
+            job = resolve_training_job(
+                db,
+                classification_model_id=classification_model_id,
+                idempotency_key=payload.idempotency_key,
+            )
+            return ClassificationTrainingJobCreateResponse(
+                training_job=training_job_read(db, job),
+                created=False,
+            )
+        except ClassificationTrainingJobError as conflict:
+            raise training_job_error(conflict) from exc
+
+
+@router.get(
+    "/{classification_model_id}/training-jobs",
+    response_model=list[ClassificationTrainingJobRead],
+)
+def list_classification_training_jobs(
+    matter_id: uuid.UUID,
+    classification_model_id: uuid.UUID,
+    principal: Principal = Depends(get_principal),
+    db: Session = Depends(get_db),
+) -> list[ClassificationTrainingJobRead]:
+    get_authorized_matter(db, principal, matter_id)
+    try:
+        get_classification_model_record(
+            db,
+            matter_id=matter_id,
+            classification_model_id=classification_model_id,
+        )
+    except ClassificationModelCommandError as exc:
+        raise command_error(exc) from exc
+    jobs = db.scalars(
+        select(ClassificationTrainingJob)
+        .where(
+            ClassificationTrainingJob.matter_id == matter_id,
+            ClassificationTrainingJob.classification_model_id == classification_model_id,
+        )
+        .order_by(ClassificationTrainingJob.created_at.desc(), ClassificationTrainingJob.id)
+    ).all()
+    return [training_job_read(db, job) for job in jobs]
+
+
+@router.get(
+    "/{classification_model_id}/training-jobs/{training_job_id}",
+    response_model=ClassificationTrainingJobRead,
+)
+def read_classification_training_job(
+    matter_id: uuid.UUID,
+    classification_model_id: uuid.UUID,
+    training_job_id: uuid.UUID,
+    principal: Principal = Depends(get_principal),
+    db: Session = Depends(get_db),
+) -> ClassificationTrainingJobRead:
+    get_authorized_matter(db, principal, matter_id)
+    try:
+        job = get_training_job(
+            db,
+            matter_id=matter_id,
+            classification_model_id=classification_model_id,
+            training_job_id=training_job_id,
+        )
+        return training_job_read(db, job)
+    except ClassificationTrainingJobError as exc:
+        raise training_job_error(exc) from exc
 
 
 @router.post(
@@ -1235,6 +1446,41 @@ def preview_classification_model_scoring_predictions(
         ) from exc
 
 
+@router.get(
+    "/{classification_model_id}/scoring-runs/{scoring_run_id}/prediction-summary",
+    response_model=ClassificationPredictionSummaryRead,
+)
+def summarize_classification_model_scoring_predictions(
+    matter_id: uuid.UUID,
+    classification_model_id: uuid.UUID,
+    scoring_run_id: uuid.UUID,
+    minimum_probability: float | None = Query(default=None, ge=0, le=1),
+    principal: Principal = Depends(get_principal),
+    db: Session = Depends(get_db),
+) -> ClassificationPredictionSummaryRead:
+    matter = get_authorized_matter(db, principal, matter_id)
+    try:
+        run = get_scoring_run(
+            db,
+            matter_id=matter_id,
+            classification_model_id=classification_model_id,
+            scoring_run_id=scoring_run_id,
+        )
+        return prediction_summary(
+            run,
+            matter=matter,
+            actor_user_id=principal.user.id,
+            minimum_probability=minimum_probability,
+        )
+    except ClassificationScoringError as exc:
+        raise scoring_error(exc) from exc
+    except (PermissionError, ValueError) as exc:
+        raise HTTPException(
+            status_code=status.HTTP_502_BAD_GATEWAY,
+            detail="Classification prediction summary could not be read",
+        ) from exc
+
+
 @router.post(
     "/{classification_model_id}/scoring-runs/{scoring_run_id}/cancel",
     response_model=ClassificationScoringRunRead,
@@ -1257,6 +1503,12 @@ def cancel_classification_model_scoring_run(
         )
         canceled = cancel_scoring_run(run)
         if canceled:
+            cancel_job_execution(
+                db,
+                job_type=CLASSIFICATION_SCORING_RUN_JOB_TYPE,
+                job_id=run.id,
+                actor_user_id=principal.user.id,
+            )
             record_audit(
                 db,
                 tenant_id=run.tenant_id,
@@ -1363,6 +1615,76 @@ def read_classification_model_version(
         )
     except ClassificationLifecycleError as exc:
         raise lifecycle_error(exc) from exc
+
+
+@router.get(
+    "/{classification_model_id}/versions/{model_version_id}/evaluation",
+    response_model=ClassificationEvaluationReport,
+)
+def read_classification_model_evaluation(
+    matter_id: uuid.UUID,
+    classification_model_id: uuid.UUID,
+    model_version_id: uuid.UUID,
+    principal: Principal = Depends(get_principal),
+    db: Session = Depends(get_db),
+) -> ClassificationEvaluationReport:
+    matter = get_authorized_matter(db, principal, matter_id)
+    try:
+        version = get_model_version(
+            db,
+            matter_id=matter_id,
+            classification_model_id=classification_model_id,
+            model_version_id=model_version_id,
+        )
+    except ClassificationLifecycleError as exc:
+        raise lifecycle_error(exc) from exc
+
+    content = io.BytesIO()
+    try:
+        copy_workflow_artifact_content(
+            artifact_id=version.evaluation_artifact_id,
+            destination=content,
+            actor_user_id=principal.user.id,
+            tenant_id=matter.client.tenant_id,
+            client_id=matter.client_id,
+        )
+    except PermissionError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Classification evaluation is not available to this matter",
+        ) from exc
+    except (OSError, ValueError) as exc:
+        raise HTTPException(
+            status_code=status.HTTP_502_BAD_GATEWAY,
+            detail="Classification evaluation artifact is unavailable",
+        ) from exc
+
+    payload = content.getvalue()
+    if not hmac.compare_digest(hashlib.sha256(payload).hexdigest(), version.evaluation_content_hash):
+        raise HTTPException(
+            status_code=status.HTTP_502_BAD_GATEWAY,
+            detail="Classification evaluation artifact failed integrity verification",
+        )
+    try:
+        report = ClassificationEvaluationReport.model_validate_json(payload)
+    except ValueError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_502_BAD_GATEWAY,
+            detail="Classification evaluation artifact is invalid",
+        ) from exc
+    if (
+        report.tenant_id != version.tenant_id
+        or report.matter_id != version.matter_id
+        or report.classification_model_id != version.classification_model_id
+        or report.configuration_id != version.configuration_id
+        or report.training_run_id != version.training_run_id
+        or report.ordered_class_keys != (version.trained_class_keys or trained_class_keys(version.dataset_snapshot))
+    ):
+        raise HTTPException(
+            status_code=status.HTTP_502_BAD_GATEWAY,
+            detail="Classification evaluation artifact identity does not match the model version",
+        )
+    return report
 
 
 def _decide_classification_model_candidate(
@@ -1580,9 +1902,8 @@ def _promote_classification_model(
             model_version_id=payload.model_version_id,
             action=action,
         )
-        if (
-            current_preview.expected_model_row_version != payload.expected_model_row_version
-            or not hmac.compare_digest(current_preview.preview_token, payload.preview_token)
+        if current_preview.expected_model_row_version != payload.expected_model_row_version or not hmac.compare_digest(
+            current_preview.preview_token, payload.preview_token
         ):
             raise ClassificationLifecycleError("Promotion preview is stale; request a new preview")
         if current_preview.blocking_reasons:

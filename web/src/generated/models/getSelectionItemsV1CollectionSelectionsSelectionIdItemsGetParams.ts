@@ -16,4 +16,5 @@ offset?: number;
  * @maximum 5000
  */
 limit?: number;
+metadata_key?: string[] | null;
 };

@@ -13,5 +13,6 @@ export const ClassificationDatasetSnapshotReadStatus = {
   BUILDING: 'BUILDING',
   READY_FOR_FEATURES: 'READY_FOR_FEATURES',
   READY_FOR_TRAINING: 'READY_FOR_TRAINING',
+  READY_FOR_SCORING: 'READY_FOR_SCORING',
   FAILED: 'FAILED',
 } as const;

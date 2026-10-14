@@ -6,8 +6,9 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from app.audit import record_audit
+from app.authorization import ResourceRef, can
 from app.database import get_db
-from app.dependencies import Principal, can_admin_matter, get_principal
+from app.dependencies import Principal, get_principal
 from app.document_metadata import add_metadata_event, derive_event_states, event_value
 from app.models import DocumentMetadataCurrent, Matter, MatterDocument, MetadataDefinition, MetadataEvent
 from app.schemas import (
@@ -30,14 +31,18 @@ def _authorized_document(
     principal: Principal,
     matter_id: uuid.UUID,
     document_id: uuid.UUID,
+    permission_key: str = "document.view",
 ) -> tuple[Matter, MatterDocument]:
     matter = db.get(Matter, matter_id)
     if matter is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Matter not found")
     if matter.status != "ACTIVE" or matter.client.status != "ACTIVE" or matter.client.tenant.status != "ACTIVE":
         raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="Matter, client, or tenant is not active")
-    if not can_admin_matter(db, principal, matter):
-        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Matter ADMIN required")
+    if not can(db, principal, permission_key, ResourceRef.matter(matter.id)):
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail=f"Permission required: {permission_key}",
+        )
     document = db.scalar(
         select(MatterDocument).where(
             MatterDocument.id == document_id,
@@ -228,7 +233,13 @@ def list_document_metadata_events(
     principal: Principal = Depends(get_principal),
     db: Session = Depends(get_db),
 ) -> list[MetadataEventRead]:
-    _authorized_document(db, principal, matter_id, document_id)
+    _authorized_document(
+        db,
+        principal,
+        matter_id,
+        document_id,
+        permission_key="document.view_history",
+    )
     definition = _definition(db, matter_id, definition_id)
     return _event_reads(_events(db, document_id, definition.id), definition)
 
@@ -242,7 +253,13 @@ def create_document_metadata_event(
     principal: Principal = Depends(get_principal),
     db: Session = Depends(get_db),
 ) -> MetadataMutationRead:
-    matter, document = _authorized_document(db, principal, matter_id, document_id)
+    matter, document = _authorized_document(
+        db,
+        principal,
+        matter_id,
+        document_id,
+        permission_key="document.review",
+    )
     definition = _definition(db, matter_id, definition_id)
     search_operation_id = None
     try:

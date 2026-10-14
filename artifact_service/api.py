@@ -80,6 +80,7 @@ from artifact_service.schemas import (
     TextProcessingRule,
     WorkflowArtifactLineageRead,
     WorkflowArtifactRead,
+    WorkflowArtifactScopeKind,
     WorkflowArtifactUploadMetadata,
     WorkflowArtifactUploadResponse,
 )
@@ -89,6 +90,7 @@ from artifact_service.selections import (
     delete_collection_selection,
     get_collection_selection_batch,
     get_collection_selection_batch_custodians,
+    get_collection_selection_batch_unmapped_metadata,
 )
 from artifact_service.service import (
     create_artifact,
@@ -497,6 +499,33 @@ def build_router(
         require_client(principal, artifact.tenant_id, artifact.client_id)
         return _workflow_artifact_read(artifact)
 
+    @router.get("/workflow-artifacts", response_model=list[WorkflowArtifactRead])
+    def list_workflow_artifacts(
+        tenant_id: uuid.UUID,
+        client_id: uuid.UUID,
+        core_scope_kind: WorkflowArtifactScopeKind | None = None,
+        core_scope_id: uuid.UUID | None = None,
+        artifact_type: ArtifactType | None = None,
+        limit: Annotated[int, Query(ge=1, le=500)] = 100,
+        principal: ArtifactPrincipal = Depends(principal_dependency),
+        db: Session = Depends(get_artifact_db),
+    ) -> list[WorkflowArtifactRead]:
+        require_client(principal, tenant_id, client_id)
+        statement = select(WorkflowArtifact).where(
+            WorkflowArtifact.tenant_id == tenant_id,
+            WorkflowArtifact.client_id == client_id,
+        )
+        if core_scope_kind is not None:
+            statement = statement.where(WorkflowArtifact.core_scope_kind == core_scope_kind)
+        if core_scope_id is not None:
+            statement = statement.where(WorkflowArtifact.core_scope_id == core_scope_id)
+        if artifact_type is not None:
+            statement = statement.where(WorkflowArtifact.artifact_type == artifact_type.value)
+        artifacts = db.scalars(
+            statement.order_by(WorkflowArtifact.created_at.desc(), WorkflowArtifact.id.desc()).limit(limit)
+        ).all()
+        return [_workflow_artifact_read(artifact) for artifact in artifacts]
+
     @router.get(
         "/workflow-artifacts/{workflow_artifact_id}/lineage",
         response_model=list[WorkflowArtifactLineageRead],
@@ -542,6 +571,8 @@ def build_router(
             if artifact.media_type.startswith("application/vnd.apache.arrow")
             else ".zip"
             if artifact.artifact_type == ArtifactType.CLASSIFICATION_MODEL_PACKAGE.value
+            else ".csv"
+            if artifact.media_type == "text/csv"
             else ".json"
         )
         filename = f"{artifact.artifact_type.lower().replace('_', '-')}{extension}"
@@ -854,6 +885,7 @@ def build_router(
         selection_id: uuid.UUID,
         offset: Annotated[int, Query(ge=0)] = 0,
         limit: Annotated[int, Query(ge=1, le=5000)] = 1000,
+        metadata_key: Annotated[list[str] | None, Query()] = None,
         principal: ArtifactPrincipal = Depends(principal_dependency),
         db: Session = Depends(get_artifact_db),
     ) -> CollectionSelectionBatch:
@@ -863,6 +895,14 @@ def build_router(
         require_client(principal, selection.tenant_id, selection.client_id)
         item_ids = get_collection_selection_batch(db, selection, offset=offset, limit=limit)
         custodians = get_collection_selection_batch_custodians(db, item_ids)
+        try:
+            unmapped_metadata = get_collection_selection_batch_unmapped_metadata(
+                db,
+                item_ids,
+                metadata_key or [],
+            )
+        except ValueError as exc:
+            raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_CONTENT, detail=str(exc)) from exc
         return CollectionSelectionBatch(
             selection_id=selection.id,
             offset=offset,
@@ -879,6 +919,7 @@ def build_router(
                         )
                         for custodian_id, relationship_type in custodians[item_id]
                     ],
+                    unmapped_metadata=unmapped_metadata[item_id],
                 )
                 for item_id in item_ids
             ],

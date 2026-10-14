@@ -6,6 +6,7 @@
  * OpenAPI spec version: 0.1.0
  */
 import type { MatterAnalysisTaskReadStatus } from './matterAnalysisTaskReadStatus';
+import type { MatterAnalysisTaskReadTaskType } from './matterAnalysisTaskReadTaskType';
 import type { MatterAnalysisTaskVersionRead } from './matterAnalysisTaskVersionRead';
 
 export interface MatterAnalysisTaskRead {
@@ -14,7 +15,7 @@ export interface MatterAnalysisTaskRead {
   key: string;
   name: string;
   description: string | null;
-  task_type: 'QUESTION_ANSWERING';
+  task_type: MatterAnalysisTaskReadTaskType;
   workflow_key: string;
   current_version: number;
   published_version: number | null;
@@ -23,4 +24,5 @@ export interface MatterAnalysisTaskRead {
   created_at: string;
   updated_at: string;
   version: MatterAnalysisTaskVersionRead;
+  published_version_details?: MatterAnalysisTaskVersionRead | null;
 }

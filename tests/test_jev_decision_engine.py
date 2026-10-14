@@ -267,7 +267,7 @@ def test_jev_adapter_rejects_missing_configuration_and_mismatched_answers() -> N
 
 def test_jev_is_registered_in_a_code_owned_adapter_allowlist() -> None:
     registry = build_decision_engine_registry(Settings(typesafe_api_key="secret"))
-    assert registry.keys() == ("jev",)
+    assert registry.keys() == ("jev", "openai_decisions")
     assert isinstance(registry.get("jev"), TypeSafeJevDecisionEngine)
 
 

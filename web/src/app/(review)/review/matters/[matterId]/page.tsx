@@ -3,7 +3,7 @@ import type { Metadata } from "next";
 import { BatchReviewWorkspace } from "@/components/batch-review-workspace";
 import { ReviewWorkspace } from "@/components/review-workspace";
 import type { MatterSearchRequestSearchMode } from "@/generated/models";
-import { NO_VALUE_FILTER_TOKEN } from "@/lib/search-filters";
+import { HAS_VALUE_FILTER_TOKEN, NO_VALUE_FILTER_TOKEN } from "@/lib/search-filters";
 
 export const metadata: Metadata = { title: "Search & Review" };
 
@@ -27,6 +27,7 @@ export default async function ReviewPage({
     return <BatchReviewWorkspace matterId={matterId} batchId={batchId} initialDocumentId={initialDocumentId} initialParagraphReference={initialParagraphReference} initialPage={initialPage} initialAnalysisDialogOpen={analysisAction === "run"} />;
   }
   const initialFilters: Record<string, string[]> = {};
+  const initialNegatedFilterFields: string[] = [];
 
   for (const [key, value] of Object.entries(query)) {
     if (value === undefined) continue;
@@ -35,6 +36,11 @@ export default async function ReviewPage({
     } else if (key.startsWith("m_")) {
       const field = key.slice(2);
       initialFilters[field] = [...(initialFilters[field] ?? []), NO_VALUE_FILTER_TOKEN];
+    } else if (key.startsWith("e_")) {
+      const field = key.slice(2);
+      initialFilters[field] = [HAS_VALUE_FILTER_TOKEN];
+    } else if (key.startsWith("n_")) {
+      initialNegatedFilterFields.push(key.slice(2));
     }
   }
 
@@ -57,6 +63,7 @@ export default async function ReviewPage({
       matterId={matterId}
       initialQuery={(Array.isArray(query.q) ? query.q[0] : query.q) ?? ""}
       initialFilters={initialFilters}
+      initialNegatedFilterFields={initialNegatedFilterFields}
       initialDocumentId={initialDocumentId}
       initialPage={initialPage}
       initialSearchMode={searchMode}

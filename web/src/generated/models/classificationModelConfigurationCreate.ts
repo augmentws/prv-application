@@ -14,12 +14,13 @@ import type { TrainerSpecification } from './trainerSpecification';
 
 export interface ClassificationModelConfigurationCreate {
   classification_strategy: ClassificationStrategy;
+  hierarchy_level?: number | null;
   /**
-     * @minItems 2
      * @maxItems 1000
-     * @items.pattern ^[A-Za-z][A-Za-z0-9_-]{0,127}$
+     * @items.minLength 1
+     * @items.maxLength 20000
      */
-  ordered_class_keys: string[];
+  ordered_class_keys?: string[];
   binary_mapping?: BinaryClassMapping | null;
   label_policy: LabelPolicy;
   feature_contract: FeatureContract;

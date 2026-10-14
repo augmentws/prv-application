@@ -19,7 +19,11 @@ export interface ClassificationModelConfigurationRead {
   revision: number;
   target_field_snapshot: TargetFieldSnapshot;
   classification_strategy: ClassificationStrategy;
-  /** @items.pattern ^[A-Za-z][A-Za-z0-9_-]{0,127}$ */
+  hierarchy_level: number | null;
+  /**
+     * @items.minLength 1
+     * @items.maxLength 20000
+     */
   ordered_class_keys: string[];
   binary_mapping: BinaryClassMapping | null;
   label_policy: LabelPolicy;

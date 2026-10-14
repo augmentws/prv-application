@@ -5,9 +5,11 @@
  * Phase-one Core API for authentication, hierarchical tenants, clients, matters, and matter metadata definitions.
  * OpenAPI spec version: 0.1.0
  */
+import type { ClassificationClassExclusion } from './classificationClassExclusion';
 import type { ClassificationDatasetIssue } from './classificationDatasetIssue';
 import type { ClassificationDatasetSnapshotReadClassSupport } from './classificationDatasetSnapshotReadClassSupport';
 import type { ClassificationDatasetSnapshotReadFeatureSpecification } from './classificationDatasetSnapshotReadFeatureSpecification';
+import type { ClassificationDatasetSnapshotReadPurpose } from './classificationDatasetSnapshotReadPurpose';
 import type { ClassificationDatasetSnapshotReadSplitSpecification } from './classificationDatasetSnapshotReadSplitSpecification';
 import type { ClassificationDatasetSnapshotReadStatus } from './classificationDatasetSnapshotReadStatus';
 import type { ClassificationLabelSourceSummary } from './classificationLabelSourceSummary';
@@ -21,7 +23,7 @@ export interface ClassificationDatasetSnapshotRead {
   matter_id: string;
   classification_model_id: string;
   configuration_id: string;
-  purpose: 'TRAINING';
+  purpose: ClassificationDatasetSnapshotReadPurpose;
   training_scope: TrainingScopeSpecification;
   target_field_snapshot: TargetFieldSnapshot;
   label_policy_snapshot: LabelPolicy;
@@ -53,6 +55,17 @@ export interface ClassificationDatasetSnapshotRead {
   feature_missing_count: number;
   feature_failed_count: number;
   training_eligible_count: number;
+  /**
+     * @items.minLength 1
+     * @items.maxLength 20000
+     */
+  ordered_class_keys: string[];
+  /**
+     * @items.minLength 1
+     * @items.maxLength 20000
+     */
+  trained_class_keys: string[];
+  excluded_classes: ClassificationClassExclusion[];
   class_support: ClassificationDatasetSnapshotReadClassSupport;
   source_summary: ClassificationLabelSourceSummary[];
   warnings: ClassificationDatasetIssue[];

@@ -6,14 +6,16 @@ from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
 from app.audit import record_audit
+from app.authorization import legacy_or_can_manage_tenant
 from app.database import get_db
 from app.dependencies import (
     Principal,
-    can_admin_tenant,
     get_principal,
     require_root_admin,
 )
-from app.models import PasswordCredential, Tenant, User
+from app.models import AuthorizationGrant, PasswordCredential, Tenant, User
+from app.rbac_catalog import ensure_rbac_catalog
+from app.rbac_manifest import SYSTEM_ROLE_BY_KEY
 from app.schemas import (
     TenantCreate,
     TenantCreated,
@@ -73,6 +75,20 @@ def create_tenant(
         db.rollback()
         raise conflict("A user with that email already exists") from exc
     db.add(PasswordCredential(user_id=admin.id, password_hash=hash_password(payload.initial_admin.password)))
+    ensure_rbac_catalog(db)
+    tenant_admin_role = SYSTEM_ROLE_BY_KEY["TENANT_ADMINISTRATOR"]
+    initial_grant = AuthorizationGrant(
+        tenant_id=tenant.id,
+        user_id=admin.id,
+        role_id=tenant_admin_role.id,
+        scope_type="TENANT",
+        tenant_scope_id=tenant.id,
+        created_by_user_id=principal.user.id,
+        updated_by_user_id=principal.user.id,
+    )
+    db.add(initial_grant)
+    db.flush()
+    tenant.authorization_revision += 1
     record_audit(
         db,
         tenant_id=tenant.id,
@@ -81,6 +97,23 @@ def create_tenant(
         target_type="tenant",
         target_id=tenant.id,
         details={"parent_tenant_id": str(parent.id), "initial_admin_user_id": str(admin.id)},
+    )
+    record_audit(
+        db,
+        tenant_id=tenant.id,
+        actor_user_id=principal.user.id,
+        action="authorization.grant.created",
+        target_type="authorization_grant",
+        target_id=initial_grant.id,
+        details={
+            "subject_type": "USER",
+            "subject_id": str(admin.id),
+            "role_id": str(tenant_admin_role.id),
+            "scope_type": "TENANT",
+            "scope_id": str(tenant.id),
+            "authorization_revision_before": 1,
+            "authorization_revision_after": tenant.authorization_revision,
+        },
     )
     try:
         db.commit()
@@ -99,8 +132,8 @@ def get_tenant(
     tenant = db.scalar(select(Tenant).where(Tenant.id == tenant_id))
     if tenant is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Tenant not found")
-    if not can_admin_tenant(principal, tenant.id):
-        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Tenant ADMIN required")
+    if not principal.is_root_admin and principal.user.tenant_id != tenant.id:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Tenant not found")
     return tenant
 
 
@@ -113,8 +146,8 @@ def list_tenant_users(
     tenant = db.scalar(select(Tenant).where(Tenant.id == tenant_id))
     if tenant is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Tenant not found")
-    if not can_admin_tenant(principal, tenant.id):
-        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Tenant ADMIN required")
+    if not legacy_or_can_manage_tenant(db, principal, tenant.id, "tenant.manage_users"):
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Permission required: tenant.manage_users")
     return list(db.scalars(select(User).where(User.tenant_id == tenant.id).order_by(User.display_name, User.email)))
 
 
@@ -130,8 +163,8 @@ def create_tenant_user(
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Tenant not found")
     if tenant.status != "ACTIVE":
         raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="Tenant is not active")
-    if not can_admin_tenant(principal, tenant.id):
-        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Tenant ADMIN required")
+    if not legacy_or_can_manage_tenant(db, principal, tenant.id, "tenant.manage_users"):
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Permission required: tenant.manage_users")
 
     user = User(
         tenant_id=tenant.id,
@@ -139,7 +172,7 @@ def create_tenant_user(
         normalized_email=normalize_email(str(payload.email)),
         display_name=payload.display_name,
         status="ACTIVE",
-        tenant_role="ADMIN",
+        tenant_role="USER",
     )
     db.add(user)
     try:

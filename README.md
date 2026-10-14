@@ -12,7 +12,7 @@ Application with a FastAPI Core API, independent Artifact and Embedding services
 - root-admin subtenant and subtenant-user creation;
 - client creation with explicit creator `ADMIN` membership;
 - matter creation with explicit creator `ADMIN` membership;
-- automatic `edrm-core-v1` metadata definitions for every new matter;
+- automatic versioned `edrm-core` metadata definitions for every new matter;
 - additional matter-level metadata-definition creation and validation;
 - system, matter-wide, and personal metadata groups with per-user table/document visibility;
 - tenant-wide and client-specific matter templates plus direct configuration cloning;
@@ -37,13 +37,10 @@ pipenv run python -m app.bootstrap
 pipenv run uvicorn app.main:app --reload
 ```
 
-When upgrading data that already contains matter documents from before migration `0007`, copy their Artifact-owned custodian relationships into Core once:
-
-```bash
-pipenv run python -m scripts.backfill_matter_document_custodians
-```
-
-The backfill is idempotent and reports missing or client-mismatched custodian references without creating invalid links.
+Maintenance, import, preprocessing, and developer commands are cataloged in
+[`scripts/README.md`](scripts/README.md). The guide documents every runnable
+script and internal importer module, including inputs, side effects, dry-run or
+idempotency behavior, prerequisites, and Pipenv examples.
 
 Start the durable workflow worker in another terminal before creating matter document-import jobs:
 
@@ -58,13 +55,15 @@ refreshing its status; they are not worker progress messages.
 
 DBOS stores its workflow state in the `dbos` schema of `pvr-core`. The application stores its user-visible job and batch records in the normal Core schema.
 
-Set a unique `JWT_SECRET` and change the bootstrap password in `.env` before running the bootstrap command. Bootstrap is idempotent for the configured root tenant, administrator, and standard Matter Definition Setup agent. Existing installations can rerun `pipenv run python -m app.bootstrap` to provision the standard agent without replacing a previously configured agent with the same key.
+Set a unique `JWT_SECRET` and change the bootstrap password in `.env` before running the bootstrap command. Bootstrap is idempotent for the configured root tenant, administrator, standard agents, and code-owned managed skills. Existing installations must rerun `pipenv run python -m app.bootstrap` after updating code-owned skill instructions or limits; restarting only the API or workflow worker does not publish a new persisted skill version. Bootstrap preserves explicitly configured resources while publishing changed standard definitions and updating their workflow bindings.
 
 To run the standard agent through Google AI Studio, set `AGENT_DEFAULT_MODEL` to a `google:<model-id>` value and provide `GOOGLE_API_KEY`. The Core API and workflow worker must be restarted after changing their environment.
 
 All model requests share process-wide rate-limit buckets keyed by provider and model. The defaults (`MODEL_RATE_LIMIT_REQUESTS_PER_MINUTE=12` and `MODEL_RATE_LIMIT_INPUT_TOKENS_PER_MINUTE=200000`) stay below the Gemini developer free-tier limits. Set them to conservative values for the quota assigned to the configured provider project. A provider HTTP 429 pauses the shared bucket, honors `Retry-After` or structured provider retry guidance, and retries with bounded exponential backoff. These buckets coordinate concurrent calls within one process; deployments with multiple workflow-worker processes must divide the configured quota across those processes or provide a distributed limiter.
 
 Typed first-pass decisions use the official TypeSafe SDK. Set `TYPESAFE_API_KEY` to enable the `jev` decision-engine adapter. `TYPESAFE_DEFAULT_MODEL` defaults to `jev-latest`; the timeout, concurrency, RPM, estimated TPM, and bounded 429 retry settings are listed in `.env.example`. The API key and optional endpoint are process configuration and are never copied into task versions or run snapshots.
+
+Question-answering Analysis Task versions can instead select the OpenAI Decisions provider. Set `OPENAI_API_KEY` on the API and workflow-worker processes to enable it. The provider choice and public-beta `gpt-6-luna` model are pinned on the immutable task version, while credentials remain process configuration. OpenAI Decisions timeout, concurrency, RPM, estimated TPM, and retry controls are listed in `.env.example`.
 
 Interactive API documentation is available at `http://127.0.0.1:8000/docs`; the OpenAPI document is available at `/openapi.json`.
 

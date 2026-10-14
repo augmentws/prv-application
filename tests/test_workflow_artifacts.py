@@ -12,6 +12,7 @@ from fastapi.testclient import TestClient
 from app.artifact_gateway import (
     copy_workflow_artifact_content,
     find_workflow_artifact_reference,
+    get_workflow_artifact_reference,
     store_classification_workflow_artifact,
 )
 from artifact_service.auth import ArtifactPrincipal, mint_artifact_delegation
@@ -42,6 +43,8 @@ def package_bytes() -> bytes:
 
 
 def content_for(artifact_type: ArtifactType) -> tuple[bytes, str]:
+    if artifact_type == ArtifactType.SEARCH_RESULT_EXPORT:
+        return b"Matter document ID,Original filename\r\n1,example.msg\r\n", "text/csv"
     if artifact_type == ArtifactType.CLASSIFICATION_MODEL_PACKAGE:
         return package_bytes(), "application/zip"
     if artifact_type in {
@@ -185,6 +188,21 @@ def test_all_classification_workflow_artifact_types_are_stored_and_resolved(
         )
         assert resolved.status_code == 200, resolved.text
         assert resolved.json()["id"] == result["artifact"]["id"]
+
+    listed = client.get(
+        "/v1/workflow-artifacts",
+        headers=auth(root_token),
+        params={
+            "tenant_id": str(tenant_id),
+            "client_id": str(client_id),
+            "core_scope_kind": "CLASSIFICATION_DATASET_SNAPSHOT",
+            "core_scope_id": str(scope_id),
+            "artifact_type": ArtifactType.SEARCH_RESULT_EXPORT.value,
+        },
+    )
+    assert listed.status_code == 200, listed.text
+    assert len(listed.json()) == 1
+    assert listed.json()[0]["artifact_type"] == ArtifactType.SEARCH_RESULT_EXPORT.value
 
 
 def test_workflow_artifact_retry_lineage_content_and_conflict(
@@ -374,6 +392,12 @@ def test_workflow_artifact_gateway_embedded_remote_parity(
         tenant_id=tenant_id,
         client_id=client_id,
     ) == embedded
+    assert get_workflow_artifact_reference(
+        artifact_id=embedded.artifact_id,
+        actor_user_id=actor_user_id,
+        tenant_id=tenant_id,
+        client_id=client_id,
+    ) == embedded
 
     class TestClientAdapter:
         def __init__(self, *args, **kwargs) -> None:
@@ -420,6 +444,12 @@ def test_workflow_artifact_gateway_embedded_remote_parity(
     )
     assert created is False
     assert remote == embedded
+    assert get_workflow_artifact_reference(
+        artifact_id=embedded.artifact_id,
+        actor_user_id=actor_user_id,
+        tenant_id=tenant_id,
+        client_id=client_id,
+    ) == embedded
     assert find_workflow_artifact_reference(
         artifact_type=ArtifactType.CLASSIFICATION_POPULATION,
         derivation_key="1" * 64,

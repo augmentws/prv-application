@@ -432,7 +432,7 @@ class WorkflowArtifact(ArtifactBase):
             "artifact_type IN ('CLASSIFICATION_POPULATION', 'CLASSIFICATION_FEATURES', "
             "'CLASSIFICATION_LABELS', 'CLASSIFICATION_SPLITS', 'CLASSIFICATION_MODEL_PACKAGE', "
             "'CLASSIFICATION_PREDICTIONS', 'CLASSIFICATION_EVALUATION', "
-            "'CLASSIFICATION_RESULT_MANIFEST')",
+            "'CLASSIFICATION_RESULT_MANIFEST', 'SEARCH_RESULT_EXPORT')",
             name="ck_workflow_artifact_type",
         ),
         CheckConstraint("schema_version > 0", name="ck_workflow_artifact_schema_version"),

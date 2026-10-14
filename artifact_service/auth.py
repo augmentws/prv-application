@@ -47,14 +47,23 @@ def get_embedded_artifact_principal(
             ).all()
         )
     else:
+        from app.authorization import accessible_client_ids
+
         tenant_ids = frozenset({principal.user.tenant_id})
-        client_pairs = frozenset(
-            db.execute(
-                select(Client.tenant_id, Client.id)
+        legacy_client_ids = set(
+            db.scalars(
+                select(Client.id)
                 .join(ClientMembership, ClientMembership.client_id == Client.id)
                 .where(ClientMembership.user_id == principal.user.id)
-            ).all()
+            )
         )
+        rbac_client_ids = set(accessible_client_ids(db, principal, "collection.view"))
+        accessible_ids = legacy_client_ids | rbac_client_ids
+        client_pairs = frozenset(
+            db.execute(
+                select(Client.tenant_id, Client.id).where(Client.id.in_(accessible_ids))
+            ).all()
+        ) if accessible_ids else frozenset()
     accessible_client_ids = [client_id for _, client_id in client_pairs]
     custodian_pairs = frozenset(
         db.execute(

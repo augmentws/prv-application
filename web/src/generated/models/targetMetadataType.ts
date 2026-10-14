@@ -12,4 +12,6 @@ export type TargetMetadataType = typeof TargetMetadataType[keyof typeof TargetMe
 export const TargetMetadataType = {
   BOOLEAN: 'BOOLEAN',
   ENUM: 'ENUM',
+  TEXT: 'TEXT',
+  LONG_TEXT: 'LONG_TEXT',
 } as const;

@@ -7,6 +7,7 @@
  */
 import type { ClassificationDatasetIssue } from './classificationDatasetIssue';
 import type { ClassificationDatasetSnapshotPreviewClassSupport } from './classificationDatasetSnapshotPreviewClassSupport';
+import type { ClassificationDatasetSnapshotPreviewPurpose } from './classificationDatasetSnapshotPreviewPurpose';
 import type { ClassificationLabelSourceSummary } from './classificationLabelSourceSummary';
 import type { TargetFieldSnapshot } from './targetFieldSnapshot';
 import type { TrainingScopeSpecification } from './trainingScopeSpecification';
@@ -16,7 +17,7 @@ export interface ClassificationDatasetSnapshotPreview {
   configuration_id: string;
   /** @pattern ^[0-9a-f]{64}$ */
   configuration_hash: string;
-  purpose: 'TRAINING';
+  purpose: ClassificationDatasetSnapshotPreviewPurpose;
   training_scope: TrainingScopeSpecification;
   target_field_snapshot: TargetFieldSnapshot;
   population_count: number;
@@ -27,12 +28,16 @@ export interface ClassificationDatasetSnapshotPreview {
   family_grouped_count: number;
   exact_duplicate_grouped_count: number;
   missing_grouping_count: number;
+  /**
+     * @items.minLength 1
+     * @items.maxLength 20000
+     */
+  ordered_class_keys: string[];
   class_support: ClassificationDatasetSnapshotPreviewClassSupport;
   source_summary: ClassificationLabelSourceSummary[];
   /** @pattern ^[0-9a-f]{64}$ */
   population_content_hash: string;
-  /** @pattern ^[0-9a-f]{64}$ */
-  label_content_hash: string;
+  label_content_hash: string | null;
   /** @pattern ^[0-9a-f]{64}$ */
   aggregate_hash: string;
   blocking_errors: ClassificationDatasetIssue[];
