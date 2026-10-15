@@ -639,8 +639,7 @@ export function MatterView({ clientId, matterId, requestedTab, requestedMetadata
           <div className="flex shrink-0 flex-wrap items-center gap-2 pb-2">
             <Button asChild><Link href={`/review/matters/${matterId}`}><FileSearch />Search & Review</Link></Button>
             <HelpLink topic={tab === "classification" ? "classification" : tab === "jobs" ? "matterJobs" : tab === "usage" ? "tokenUsage" : tab === "search" ? "matterSearch" : tab === "definition" ? "matterDefinition" : "metadata"} />
-            <CloneMatterDialog sourceName={matter.data.name} onClone={cloneMatter} />
-            <SaveMatterTemplateDialog onCreate={saveTemplate} />
+            {tab === "overview" ? <><CloneMatterDialog sourceName={matter.data.name} onClone={cloneMatter} /><SaveMatterTemplateDialog onCreate={saveTemplate} /></> : null}
             {tab === "metadata" && metadataTab === "definitions" ? <CreateMetadataDialog onCreate={createDefinition} /> : null}
           </div>
         </div>

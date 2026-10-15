@@ -383,6 +383,28 @@ describe("MatterView batches", () => {
 });
 
 describe("MatterView metadata navigation", () => {
+  it("shows configuration actions only on the Overview tab", async () => {
+    vi.mocked(coreApi).mockImplementation(async (path) => {
+      if (path === "/v1/clients/client-1") return { id: "client-1", tenant_id: "tenant-1", name: "Client" } as never;
+      if (path === "/v1/matters/matter-1") return { id: "matter-1", name: "Matter" } as never;
+      if (path === "/v1/matters/matter-1/metadata-definitions") return [] as never;
+      if (path === "/v1/matters/matter-1/metadata-groups") return [] as never;
+      if (path === "/v1/matters/matter-1/overview-counts") return { document_count: 0, custodian_count: 0 } as never;
+      throw new Error(`Unexpected API request: ${path}`);
+    });
+    const client = new QueryClient({ defaultOptions: { queries: { retry: false }, mutations: { retry: false } } });
+    const { rerender } = render(<QueryClientProvider client={client}><MatterView clientId="client-1" matterId="matter-1" requestedTab="metadata" /></QueryClientProvider>);
+
+    expect(await screen.findByRole("tab", { name: "Definitions" })).toHaveAttribute("aria-selected", "true");
+    expect(screen.queryByRole("button", { name: "Clone configuration" })).not.toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "Save as template" })).not.toBeInTheDocument();
+
+    rerender(<QueryClientProvider client={client}><MatterView clientId="client-1" matterId="matter-1" requestedTab="overview" /></QueryClientProvider>);
+
+    expect(await screen.findByRole("button", { name: "Clone configuration" })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Save as template" })).toBeInTheDocument();
+  });
+
   it("does not expose a manual Email Domain update action", async () => {
     vi.mocked(coreApi).mockImplementation(async (path) => {
       if (path === "/v1/clients/client-1") return { id: "client-1", tenant_id: "tenant-1", name: "Client" } as never;
