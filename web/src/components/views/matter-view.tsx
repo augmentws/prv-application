@@ -2,7 +2,7 @@
 
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import type { ColumnDef } from "@tanstack/react-table";
-import { AlertTriangle, Ban, BarChart3, BrainCircuit, BriefcaseBusiness, CheckCircle2, ChevronRight, Database, Download, FileDown, FileSearch, FileText, ListChecks, Play, RefreshCw, RotateCcw, Search, Sparkles, Tags, Trash2, UsersRound } from "lucide-react";
+import { AlertTriangle, Ban, BarChart3, BrainCircuit, BriefcaseBusiness, CheckCircle2, ChevronRight, Database, Download, FileDown, FileSearch, FileText, ListChecks, Play, RotateCcw, Search, Sparkles, Tags, Trash2, UsersRound } from "lucide-react";
 import Link from "next/link";
 import { useRouter } from "next/navigation";
 import { type ReactElement, useCallback, useMemo, useState, useSyncExternalStore } from "react";
@@ -36,7 +36,7 @@ import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Label } from "@/components/ui/label";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { SplitActionButton } from "@/components/ui/split-action-button";
-import type { ClientRead, EffectivePermissionsRead, EmailDomainUpdateRead, JobExecutionRead, MatterAnalysisTaskRead, MatterAnalysisTaskRunRead, MatterBulkTagJobRead, MatterDefinitionAssessmentRead, MatterDocumentImportRead, MatterEmbeddingJobRead, MatterOverviewCounts, MatterProviderUsageReportRead, MatterQuestionAnsweringJobRead, MatterRead, MatterSavedSearchRead, MatterSearchExportRead, MatterTemplateRead, MatterTopicJobCreate, MatterTopicJobRead, MetadataDefinitionCreate, MetadataDefinitionRead, MetadataGroupRead, ReviewBatchCreate, ReviewBatchRead, SearchIndexGenerationRead, SearchProjectionOperationRead, SearchProjectionRetryResponse, UserRead } from "@/generated/models";
+import type { ClientRead, EffectivePermissionsRead, JobExecutionRead, MatterAnalysisTaskRead, MatterAnalysisTaskRunRead, MatterBulkTagJobRead, MatterDefinitionAssessmentRead, MatterDocumentImportRead, MatterEmbeddingJobRead, MatterOverviewCounts, MatterProviderUsageReportRead, MatterQuestionAnsweringJobRead, MatterRead, MatterSavedSearchRead, MatterSearchExportRead, MatterTemplateRead, MatterTopicJobCreate, MatterTopicJobRead, MetadataDefinitionCreate, MetadataDefinitionRead, MetadataGroupRead, ReviewBatchCreate, ReviewBatchRead, SearchIndexGenerationRead, SearchProjectionOperationRead, SearchProjectionRetryResponse, UserRead } from "@/generated/models";
 import { coreApi } from "@/lib/api-client";
 import { bulkTagDisplayStatus, bulkTagIsWaiting } from "@/lib/bulk-tag-jobs";
 import { formatDate } from "@/lib/format";
@@ -218,16 +218,6 @@ export function MatterView({ clientId, matterId, requestedTab, requestedMetadata
     onSuccess: (definition) => { void queryClient.invalidateQueries({ queryKey: ["metadata-definitions", matterId] }); toast.success(`${definition.display_name} was created.`); },
   });
   const createDefinition = useCallback((values: MetadataDefinitionCreate) => mutation.mutateAsync(values).then(() => undefined), [mutation]);
-  const updateEmailDomainsMutation = useMutation({
-    mutationFn: () => coreApi<EmailDomainUpdateRead>(`/v1/matters/${matterId}/metadata-definitions/email-domain/update`, { method: "POST" }),
-    onSuccess: (result) => {
-      void queryClient.invalidateQueries({ queryKey: ["metadata-definitions", matterId] });
-      void queryClient.invalidateQueries({ queryKey: ["metadata-groups", matterId] });
-      void queryClient.invalidateQueries({ queryKey: ["search-operations", matterId] });
-      toast.success(result.definition_created ? "Email Domain was added and its update was queued." : "The Email Domain update was queued.");
-    },
-    onError: (error) => toast.error(error instanceof Error ? error.message : "Email domains could not be updated."),
-  });
   const groupMutation = useMutation({
     mutationFn: (values: CreateMetadataGroupValues) => coreApi<MetadataGroupRead>(`/v1/matters/${matterId}/metadata-groups`, { method: "POST", body: JSON.stringify(values) }),
     onSuccess: (group) => { void queryClient.invalidateQueries({ queryKey: ["metadata-groups", matterId] }); toast.success(`${group.display_name} was created.`); },
@@ -632,6 +622,7 @@ export function MatterView({ clientId, matterId, requestedTab, requestedMetadata
         <ResourcePageHeader
           breadcrumbs={<><Link href="/app/clients" className="hover:text-foreground">Clients</Link><ChevronRight className="size-4" /><Link href={`/app/clients/${clientId}`} className="hover:text-foreground">{client.data.name}</Link><ChevronRight className="size-4" /><span aria-current="page" className="text-foreground">{matter.data.name}</span></>}
           title={matter.data.name}
+          action={<Button asChild><Link href={`/review/matters/${matterId}`}><FileSearch />Search &amp; Review</Link></Button>}
         />
 
         <div className="mb-6 flex min-w-0 flex-wrap items-end justify-between gap-x-4 border-b" aria-label="Matter navigation and actions">
@@ -639,7 +630,7 @@ export function MatterView({ clientId, matterId, requestedTab, requestedMetadata
             <button role="tab" aria-selected={tab === "overview"} onClick={() => openTab("overview")} className={tabClass(tab === "overview")}>Overview</button>
             <button role="tab" aria-selected={tab === "metadata"} onClick={() => openTab("metadata")} className={tabClass(tab === "metadata")}>Metadata</button>
             <button role="tab" aria-selected={tab === "definition"} onClick={() => openTab("definition")} className={tabClass(tab === "definition")}>Matter definition</button>
-            <button role="tab" aria-selected={tab === "analysis"} onClick={() => openTab("analysis")} className={tabClass(tab === "analysis")}>Analysis tasks</button>
+            <button role="tab" aria-selected={tab === "analysis"} onClick={() => openTab("analysis")} className={tabClass(tab === "analysis")}>Analysis</button>
             <button role="tab" aria-selected={tab === "batches"} onClick={() => openTab("batches")} className={tabClass(tab === "batches")}>Batches</button>
             <button role="tab" aria-selected={tab === "classification"} onClick={() => openTab("classification")} className={tabClass(tab === "classification")}>Classification</button>
             <button role="tab" aria-selected={tab === "jobs"} onClick={() => openTab("jobs")} className={tabClass(tab === "jobs")}>Jobs</button>
@@ -647,18 +638,20 @@ export function MatterView({ clientId, matterId, requestedTab, requestedMetadata
             <button role="tab" aria-selected={tab === "search"} onClick={() => openTab("search")} className={tabClass(tab === "search")}>Search index</button>
           </div>
           <div className="flex shrink-0 flex-wrap items-center gap-2 pb-2">
-            <Button asChild><Link href={`/review/matters/${matterId}`}><FileSearch />Search & Review</Link></Button>
             <HelpLink topic={tab === "classification" ? "classification" : tab === "jobs" ? "matterJobs" : tab === "usage" ? "tokenUsage" : tab === "search" ? "matterSearch" : tab === "definition" ? "matterDefinition" : "metadata"} />
-            <CloneMatterDialog sourceName={matter.data.name} onClone={cloneMatter} />
-            <SaveMatterTemplateDialog onCreate={saveTemplate} />
-            {tab === "metadata" && metadataTab === "definitions" ? <><Button type="button" variant="outline" disabled={updateEmailDomainsMutation.isPending} onClick={() => updateEmailDomainsMutation.mutate()}><RefreshCw className={updateEmailDomainsMutation.isPending ? "animate-spin" : undefined} />{updateEmailDomainsMutation.isPending ? "Queuing…" : "Update email domains"}</Button><CreateMetadataDialog onCreate={createDefinition} /></> : null}
           </div>
         </div>
       </div>
       <div className={tab === "definition" ? "matter-definition-page-content" : undefined}>
-        {tab === "metadata" ? <div className="mb-5 flex border-b" role="tablist" aria-label="Metadata sections">
-          <button type="button" role="tab" aria-selected={metadataTab === "definitions"} onClick={() => openMetadataTab("definitions")} className={subtabClass(metadataTab === "definitions")}>Definitions</button>
-          <button type="button" role="tab" aria-selected={metadataTab === "groups"} onClick={() => openMetadataTab("groups")} className={subtabClass(metadataTab === "groups")}>Groups</button>
+        {tab === "overview" ? <div className="mb-5 flex items-center justify-end gap-2 border-b pb-2" aria-label="Overview actions">
+          <CloneMatterDialog sourceName={matter.data.name} onClone={cloneMatter} />
+          <SaveMatterTemplateDialog onCreate={saveTemplate} />
+        </div> : tab === "metadata" ? <div className="mb-5 flex items-end justify-between gap-3 border-b">
+          <div className="flex" role="tablist" aria-label="Metadata sections">
+            <button type="button" role="tab" aria-selected={metadataTab === "definitions"} onClick={() => openMetadataTab("definitions")} className={subtabClass(metadataTab === "definitions")}>Definitions</button>
+            <button type="button" role="tab" aria-selected={metadataTab === "groups"} onClick={() => openMetadataTab("groups")} className={subtabClass(metadataTab === "groups")}>Groups</button>
+          </div>
+          {metadataTab === "definitions" ? <div className="pb-2"><CreateMetadataDialog onCreate={createDefinition} /></div> : null}
         </div> : null}
         {tab === "overview" ? overviewCounts.error ? <QueryError message={overviewCounts.error.message} /> : <div className="grid gap-4 sm:grid-cols-2 xl:grid-cols-5"><Summary icon={FileText} label="Documents" value={overviewCounts.data?.document_count ?? "—"} /><Summary icon={UsersRound} label="Custodians" value={overviewCounts.data?.custodian_count ?? "—"} /><Summary icon={Database} label="Metadata fields" value={definitions.data?.length ?? 0} /><Summary icon={Search} label="Searchable fields" value={definitions.data?.filter((item) => item.searchable).length ?? 0} /><Summary icon={Sparkles} label="Agent assignable" value={definitions.data?.filter((item) => item.ai_assignable).length ?? 0} /></div>
         : tab === "metadata" && metadataTab === "definitions" ? definitions.isPending ? <TableLoading /> : definitions.error ? <QueryError message={definitions.error.message} /> : <DataTable columns={columns} data={definitions.data} emptyMessage="No metadata fields yet. Add the first field definition for this matter." />

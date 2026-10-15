@@ -19,4 +19,18 @@ describe("ResourcePageHeader", () => {
     expect(within(header).getByRole("heading", { name: "Example resource" })).toBeVisible();
     expect(within(header).queryByRole("button")).not.toBeInTheDocument();
   });
+
+  it("replaces the visible title with an action when provided", () => {
+    render(
+      <ResourcePageHeader
+        breadcrumbs={<><a href="/clients">Clients</a><span>Example</span></>}
+        title="Example resource"
+        action={<a href="/review">Search &amp; Review</a>}
+      />,
+    );
+
+    const header = screen.getByRole("banner", { name: "Example resource header" });
+    expect(within(header).getByRole("link", { name: "Search & Review" })).toHaveAttribute("href", "/review");
+    expect(within(header).queryByRole("heading", { name: "Example resource" })).not.toBeInTheDocument();
+  });
 });

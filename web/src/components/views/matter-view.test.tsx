@@ -1,5 +1,5 @@
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
-import { cleanup, render, screen, waitFor } from "@testing-library/react";
+import { cleanup, render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import type { ReactNode } from "react";
 import { afterEach, describe, expect, it, vi } from "vitest";
@@ -383,30 +383,50 @@ describe("MatterView batches", () => {
 });
 
 describe("MatterView metadata navigation", () => {
-  it("queues the derived Email Domain update for an existing matter", async () => {
-    vi.mocked(coreApi).mockImplementation(async (path, init) => {
+  it("shows configuration actions only on the Overview tab", async () => {
+    vi.mocked(coreApi).mockImplementation(async (path) => {
       if (path === "/v1/clients/client-1") return { id: "client-1", tenant_id: "tenant-1", name: "Client" } as never;
       if (path === "/v1/matters/matter-1") return { id: "matter-1", name: "Matter" } as never;
-      if (path === "/v1/matters/matter-1/metadata-definitions/email-domain/update" && init?.method === "POST") return {
-        metadata_definition_id: "definition-email-domain",
-        definition_created: true,
-        search_operation_id: "operation-1",
-        status: "QUEUED",
-      } as never;
+      if (path === "/v1/matters/matter-1/metadata-definitions") return [] as never;
+      if (path === "/v1/matters/matter-1/metadata-groups") return [] as never;
+      if (path === "/v1/matters/matter-1/overview-counts") return { document_count: 0, custodian_count: 0 } as never;
+      throw new Error(`Unexpected API request: ${path}`);
+    });
+    const client = new QueryClient({ defaultOptions: { queries: { retry: false }, mutations: { retry: false } } });
+    const { rerender } = render(<QueryClientProvider client={client}><MatterView clientId="client-1" matterId="matter-1" requestedTab="metadata" /></QueryClientProvider>);
+
+    expect(await screen.findByRole("tab", { name: "Definitions" })).toHaveAttribute("aria-selected", "true");
+    expect(screen.getByRole("tab", { name: "Analysis" })).toBeInTheDocument();
+    expect(screen.queryByRole("tab", { name: "Analysis tasks" })).not.toBeInTheDocument();
+    expect(screen.getAllByRole("link", { name: "Search & Review" })).toHaveLength(1);
+    expect(within(screen.getByRole("banner", { name: "Matter header" })).getByRole("link", { name: "Search & Review" })).toBeInTheDocument();
+    expect(screen.queryByRole("heading", { name: "Matter" })).not.toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "Clone configuration" })).not.toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "Save as template" })).not.toBeInTheDocument();
+
+    rerender(<QueryClientProvider client={client}><MatterView clientId="client-1" matterId="matter-1" requestedTab="overview" /></QueryClientProvider>);
+
+    const overviewActions = await screen.findByLabelText("Overview actions");
+    expect(within(overviewActions).getByRole("button", { name: "Clone configuration" })).toBeInTheDocument();
+    expect(within(overviewActions).getByRole("button", { name: "Save as template" })).toBeInTheDocument();
+  });
+
+  it("does not expose a manual Email Domain update action", async () => {
+    vi.mocked(coreApi).mockImplementation(async (path) => {
+      if (path === "/v1/clients/client-1") return { id: "client-1", tenant_id: "tenant-1", name: "Client" } as never;
+      if (path === "/v1/matters/matter-1") return { id: "matter-1", name: "Matter" } as never;
       if (path === "/v1/matters/matter-1/metadata-definitions") return [] as never;
       if (path === "/v1/matters/matter-1/metadata-groups") return [] as never;
       throw new Error(`Unexpected API request: ${path}`);
     });
     const client = new QueryClient({ defaultOptions: { queries: { retry: false }, mutations: { retry: false } } });
-    const user = userEvent.setup();
 
     render(<QueryClientProvider client={client}><MatterView clientId="client-1" matterId="matter-1" requestedTab="metadata" /></QueryClientProvider>);
 
-    await user.click(await screen.findByRole("button", { name: "Update email domains" }));
-    await waitFor(() => expect(coreApi).toHaveBeenCalledWith(
-      "/v1/matters/matter-1/metadata-definitions/email-domain/update",
-      { method: "POST" },
-    ));
+    expect(await screen.findByRole("tab", { name: "Definitions" })).toHaveAttribute("aria-selected", "true");
+    expect(screen.queryByRole("button", { name: "Update email domains" })).not.toBeInTheDocument();
+    const metadataSubtabs = screen.getByRole("tablist", { name: "Metadata sections" });
+    expect(within(metadataSubtabs.parentElement!).getByRole("button", { name: "Add field" })).toBeInTheDocument();
   });
 
   it("shows one Metadata tab with Definitions and Groups subtabs and preserves the legacy groups link", async () => {
@@ -427,6 +447,7 @@ describe("MatterView metadata navigation", () => {
     expect(screen.getByRole("tab", { name: "Groups" })).toHaveAttribute("aria-selected", "true");
     expect(screen.queryByRole("tab", { name: "Metadata definitions" })).not.toBeInTheDocument();
     expect(screen.queryByRole("tab", { name: "Metadata groups" })).not.toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "Add field" })).not.toBeInTheDocument();
   });
 
   it("allows an administrator to make an asserted field AI-assignable", async () => {
