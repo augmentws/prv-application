@@ -71,9 +71,30 @@ For each document, Priv-View chooses extracted text first, then OCR text, then a
 The embedding job reports:
 
 - **Generated** for documents that received a new vector set;
-- **Skipped** for documents whose matching artifacts already exist or that have no usable text;
+- **Reused** when a compatible vector set already existed and no inference was needed;
+- **Skipped** only when a document had no supported or usable text;
 - **Chunks** for the total chunks represented by processed documents;
 - **Failed** for individual documents that could not be processed.
+
+For newly planned jobs, select **View outcomes** from the job row to inspect the
+complete document-level manifest. The viewer separates generated, reused, skipped,
+failed, excluded, and canceled documents; shows stable reason codes; filters by
+status or reason; links back to each authorized document; and downloads the full
+manifest as CSV or Parquet. The same outcome viewer is available beside the selected
+embedding set on the Classification tab.
+
+Core stores one small manifest record for the logical job. The Artifact Service owns
+the compressed Parquet rows, with exactly one row per frozen document, so complete
+diagnostics do not add one Core database row per document. Each durable batch first
+publishes an immutable outcome fragment, and job completion verifies and combines
+all fragments before the job becomes complete. Cancellation retains finished batch
+outcomes and records uncompleted documents as **Canceled** when a planned manifest
+exists.
+
+Jobs completed before document outcomes were introduced retain their existing
+aggregate totals and bounded error text. Their outcome viewer explicitly labels the
+details as unavailable instead of attempting to reconstruct document identities or
+reasons that were never stored.
 
 The displayed document and chunk counts are reconciled from the job's durable batch records whenever the job is loaded. If a worker interruption leaves the application record active after its durable workflow has already succeeded, failed, or been canceled, loading the job reconciles that terminal state and stops unnecessary status polling. Canceling a job also reports the latest completed batch totals rather than the last progress snapshot written by the parent workflow.
 
@@ -171,7 +192,7 @@ Search export retries create a new common job execution attempt while retaining 
 
 ## Reliability and cleanup
 
-Jobs use a durable workflow worker and can resume after an application or worker restart. Import selections are removed after their deterministic batches have been durably queued. Document-import and embedding jobs retain a common execution attempt with stage, progress, heartbeat, cancellation, structured failure, and attempt history. Embedding and topic jobs retain compact batch snapshots containing the document IDs so their scope cannot drift. Core job records remain available for progress and audit history.
+Jobs use a durable workflow worker and can resume after an application or worker restart. Import selections are removed after their deterministic batches have been durably queued. Document-import and embedding jobs retain a common execution attempt with stage, progress, heartbeat, cancellation, structured failure, and attempt history. Embedding and topic jobs retain compact batch snapshots containing the document IDs so their scope cannot drift. New embedding jobs additionally retain an Artifact-backed document-outcome manifest. Core job records remain available for progress and audit history.
 
 Users with **Delete jobs** permission can delete a completed, completed-with-errors, failed, or canceled job from its row action menu. Active work must be canceled or allowed to complete first. Job deletion is soft: the logical job disappears from the normal Jobs lists while its domain record, execution attempts, document failures, outputs, artifacts, and audit history remain intact. This operation does not delete documents or reverse coding that the job already published.
 

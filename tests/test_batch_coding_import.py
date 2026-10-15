@@ -6,9 +6,9 @@ from typing import Any
 import pytest
 
 from scripts.batch_coding_import import (
-    GET_REVIEWER_CODING,
     GET_BATCH,
     GET_CURRENT_USER,
+    GET_REVIEWER_CODING,
     LIST_BATCH_DOCUMENTS,
     REPLACE_VALUES,
     SKIP_DOCUMENT,

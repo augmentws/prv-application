@@ -22,6 +22,7 @@ export interface MatterEmbeddingJobRead {
   batch_count: number;
   processed_count: number;
   embedded_count: number;
+  reused_count: number;
   skipped_count: number;
   failed_count: number;
   chunk_count: number;

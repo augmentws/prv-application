@@ -53,6 +53,7 @@ from artifact_service.selections import (
     get_collection_selection_batch_unmapped_metadata,
 )
 from artifact_service.storage import get_storage
+from artifact_service.workflow_artifact_types import ArtifactType
 from artifact_service.workflow_artifacts import (
     find_matching_workflow_artifact,
     find_workflow_artifact,
@@ -60,7 +61,6 @@ from artifact_service.workflow_artifacts import (
     workflow_artifact_max_bytes,
 )
 from artifact_service.workflow_artifacts import store_workflow_artifact as persist_workflow_artifact
-from classification_service.schemas import ArtifactType
 
 REMOTE_GROUPING_SNAPSHOT_BATCH_SIZE = 5000
 
