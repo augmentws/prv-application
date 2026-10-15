@@ -423,13 +423,13 @@ class WorkflowArtifact(ArtifactBase):
             name="uq_workflow_artifact_derivation",
         ),
         CheckConstraint(
-            "core_scope_kind IN ('MATTER', 'REVIEW_BATCH', 'CLASSIFICATION_MODEL', "
+            "core_scope_kind IN ('MATTER', 'REVIEW_BATCH', 'ANALYSIS_INPUT_MANIFEST', 'CLASSIFICATION_MODEL', "
             "'CLASSIFICATION_CONFIGURATION', 'CLASSIFICATION_DATASET_SNAPSHOT', "
             "'CLASSIFICATION_TRAINING_RUN', 'CLASSIFICATION_SCORING_RUN')",
             name="ck_workflow_artifact_scope_kind",
         ),
         CheckConstraint(
-            "artifact_type IN ('CLASSIFICATION_POPULATION', 'CLASSIFICATION_FEATURES', "
+            "artifact_type IN ('ANALYSIS_INPUT_MANIFEST', 'CLASSIFICATION_POPULATION', 'CLASSIFICATION_FEATURES', "
             "'CLASSIFICATION_LABELS', 'CLASSIFICATION_SPLITS', 'CLASSIFICATION_MODEL_PACKAGE', "
             "'CLASSIFICATION_PREDICTIONS', 'CLASSIFICATION_EVALUATION', "
             "'CLASSIFICATION_RESULT_MANIFEST', 'SEARCH_RESULT_EXPORT', "

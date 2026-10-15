@@ -69,6 +69,7 @@ import type {
   ClassificationPromotionPreview,
   ClassificationPromotionPreviewRequest,
   ClassificationPromotionResponse,
+  ClassificationReviewBatchCreate,
   ClassificationScoringCreate,
   ClassificationScoringCreateResponse,
   ClassificationScoringPreview,
@@ -9740,6 +9741,72 @@ export const listReviewBatchesV1MattersMatterIdReviewBatchesGet = async (matterI
 
   const data: listReviewBatchesV1MattersMatterIdReviewBatchesGetResponse['data'] = body ? JSON.parse(body) : {}
   return { data, status: res.status, headers: res.headers } as listReviewBatchesV1MattersMatterIdReviewBatchesGetResponse
+}
+
+
+
+export type createClassificationReviewBatchV1MattersMatterIdReviewBatchesFromClassificationRunPostResponse202 = {
+  data: ReviewBatchRead
+  status: 202
+}
+
+export type createClassificationReviewBatchV1MattersMatterIdReviewBatchesFromClassificationRunPostResponse422 = {
+  data: HTTPValidationError
+  status: 422
+}
+
+export type createClassificationReviewBatchV1MattersMatterIdReviewBatchesFromClassificationRunPostResponseSuccess = (createClassificationReviewBatchV1MattersMatterIdReviewBatchesFromClassificationRunPostResponse202) & {
+  headers: Headers;
+};
+export type createClassificationReviewBatchV1MattersMatterIdReviewBatchesFromClassificationRunPostResponseError = (createClassificationReviewBatchV1MattersMatterIdReviewBatchesFromClassificationRunPostResponse422) & {
+  headers: Headers;
+};
+
+export type createClassificationReviewBatchV1MattersMatterIdReviewBatchesFromClassificationRunPostResponse = (createClassificationReviewBatchV1MattersMatterIdReviewBatchesFromClassificationRunPostResponseSuccess | createClassificationReviewBatchV1MattersMatterIdReviewBatchesFromClassificationRunPostResponseError)
+
+export const getCreateClassificationReviewBatchV1MattersMatterIdReviewBatchesFromClassificationRunPostUrl = (matterId: string,) => {
+
+
+
+
+  return `/api/core/v1/matters/${matterId}/review-batches/from-classification-run`
+}
+
+/**
+ * Freeze prediction matches and attach their isolated classifier coding.
+ * @summary Create Classification Review Batch
+ */
+export const createClassificationReviewBatchV1MattersMatterIdReviewBatchesFromClassificationRunPost = async (matterId: string,
+    classificationReviewBatchCreate: ClassificationReviewBatchCreate, options?: RequestInit): Promise<createClassificationReviewBatchV1MattersMatterIdReviewBatchesFromClassificationRunPostResponse> => {
+
+    const getHeaders = (h?: NonNullable<RequestInit['headers']>): Record<string, string | readonly string[]> => {
+    if (!h) return {};
+    if (h instanceof Headers) return Object.fromEntries(h.entries());
+    if (Symbol.iterator in h) {
+      return Object.fromEntries(
+        Array.from(h as Iterable<Iterable<string>>, (entry) => Array.from(entry) as [string, string]),
+      );
+    }
+    const headers: Record<string, string | readonly string[]> = {};
+    for (const [name, value] of Object.entries<string | readonly string[] | undefined>(h)) {
+      if (value !== undefined) headers[name] = value;
+    }
+    return headers;
+  };
+const res = await fetch(getCreateClassificationReviewBatchV1MattersMatterIdReviewBatchesFromClassificationRunPostUrl(matterId),
+  {
+    ...options,
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json', ...getHeaders(options?.headers) },
+    body: JSON.stringify(classificationReviewBatchCreate)
+  }
+)
+
+
+  const body = [204, 205, 304].includes(res.status) ? null : await res.text();
+
+  const data: createClassificationReviewBatchV1MattersMatterIdReviewBatchesFromClassificationRunPostResponse['data'] = body ? JSON.parse(body) : {}
+  return { data, status: res.status, headers: res.headers } as createClassificationReviewBatchV1MattersMatterIdReviewBatchesFromClassificationRunPostResponse
 }
 
 

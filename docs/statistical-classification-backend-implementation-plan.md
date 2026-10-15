@@ -320,7 +320,7 @@ Artifact Service does not create foreign keys into Core.
 Initial types:
 
 ```text
-CLASSIFICATION_POPULATION
+ANALYSIS_INPUT_MANIFEST
 CLASSIFICATION_FEATURES
 CLASSIFICATION_LABELS
 CLASSIFICATION_SPLITS
@@ -329,6 +329,13 @@ CLASSIFICATION_PREDICTIONS
 CLASSIFICATION_EVALUATION
 CLASSIFICATION_RESULT_MANIFEST
 ```
+
+`ANALYSIS_INPUT_MANIFEST` is the implemented generic replacement for new
+classification population artifacts. `CLASSIFICATION_POPULATION` remains an
+accepted legacy type so historical snapshots are reproducible. The Core
+snapshot retains its population artifact ID/hash fields as compatibility
+aliases and also records the authoritative `analysis_input_manifest_id`. See
+[Generic Analysis Input Manifest Platform](analysis-input-manifest-platform.md).
 
 Required operations are create-or-return by derivation key, authorized metadata
 and content reads, derivation lookup for reconciliation, and explicit lineage.

@@ -24,6 +24,7 @@ from app.classification_features import (
 from app.embeddings.chunking import TextChunk
 from app.embeddings.parquet import write_vector_set
 from app.models import (
+    AnalysisInputManifest,
     AuditRecord,
     ClassificationDatasetSnapshot,
     MatterDocument,
@@ -39,6 +40,7 @@ from app.models import (
     ReviewBatchReviewerValue,
     ReviewBatchReviewerValueRevision,
 )
+from artifact_service.models import WorkflowArtifact
 
 
 def auth(token: str) -> dict[str, str]:
@@ -466,6 +468,7 @@ def test_matter_snapshot_resolves_precedence_deduplicates_and_reuses_identity(
     snapshot = created.json()["snapshot"]
     assert created.json()["created"] is True
     assert snapshot["status"] == "READY_FOR_FEATURES"
+    assert snapshot["analysis_input_manifest_id"] is not None
     assert snapshot["aggregate_hash"] == preview_data["aggregate_hash"]
     label_rows = read_workflow_parquet(client, root_token, snapshot["label_artifact_id"])
     labeled = {
@@ -492,6 +495,13 @@ def test_matter_snapshot_resolves_precedence_deduplicates_and_reuses_identity(
     assert stored.json()["population_count"] == 4
     assert len(read_workflow_parquet(client, root_token, snapshot["population_artifact_id"])) == 4
     with TestingSessionLocal() as db:
+        manifest = db.get(AnalysisInputManifest, uuid.UUID(snapshot["analysis_input_manifest_id"]))
+        assert manifest is not None
+        assert manifest.manifest_status == "FINALIZED"
+        assert manifest.owner_type == "CLASSIFICATION_DATASET_SNAPSHOT"
+        assert manifest.owner_id == uuid.UUID(snapshot["id"])
+        assert manifest.artifact_id == uuid.UUID(snapshot["population_artifact_id"])
+        assert manifest.item_count == 4
         audit = db.scalar(
             select(AuditRecord).where(
                 AuditRecord.action == "classification_dataset_snapshot.created",
@@ -499,6 +509,11 @@ def test_matter_snapshot_resolves_precedence_deduplicates_and_reuses_identity(
             )
         )
         assert audit is not None
+    with ArtifactTestingSessionLocal() as db:
+        artifact = db.get(WorkflowArtifact, uuid.UUID(snapshot["population_artifact_id"]))
+        assert artifact is not None
+        assert artifact.artifact_type == "ANALYSIS_INPUT_MANIFEST"
+        assert artifact.core_scope_kind == "ANALYSIS_INPUT_MANIFEST"
 
 
 def test_dynamic_text_classes_are_discovered_and_frozen_per_snapshot(

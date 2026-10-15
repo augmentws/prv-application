@@ -34,10 +34,11 @@ There is no `classification_prediction_projection` table and no separate
 ## 2. Locked decisions
 
 1. Add `CLASSIFIER` as a distinct `review_batch_run.run_type`.
-2. A classifier projection belongs to a ready, frozen review batch. An
-   entire-matter population uses an `ALL_MATTER` batch frozen before scoring.
-3. The classification scoring run and projection batch must cover the same
-   frozen population. Document count alone is not sufficient proof.
+2. A classifier projection belongs to a frozen review batch. A completed
+   batch- or matter-scoped analysis run may derive one or more new review
+   batches directly from its immutable prediction artifact.
+3. The projection batch must be a verified subset of the classification
+   scoring population. Document count alone is not sufficient proof.
 4. The immutable prediction artifact remains the complete authoritative
    classifier output.
 5. Each confidence window creates a new immutable `CLASSIFIER` batch run. It
@@ -63,8 +64,9 @@ There is no `classification_prediction_projection` table and no separate
 13. Confidence-range filtering is shared by JEV, classifier, agent, and any
     other batch-run values that contain confidence.
 14. Missing confidence never matches an active confidence range.
-15. Automatic creation of a downstream review batch from prediction results
-    is outside this plan.
+15. Creating downstream review batches from selected classes and confidence
+    bands is supported; direct classifier-to-matter publication remains out of
+    scope.
 
 ## 3. Scope and prerequisites
 
@@ -94,18 +96,19 @@ There is no `classification_prediction_projection` table and no separate
 
 - A completed or completed-with-errors `classification_scoring_run`.
 - A verified prediction artifact and content hash.
-- A ready review batch whose membership is the scoring population.
+- A ready review batch whose membership is a verified subset of the scoring
+  population, or a request to derive a new batch from the artifact.
 - The batch's matter and the scoring run's matter must match.
 - The scoring run's target metadata definition must be present in the batch's
   coding configuration and remain compatible.
 
-For the first slice, the recommended entire-matter workflow is:
+The supported entire-matter workflow is:
 
-1. Create and freeze an `ALL_MATTER` review batch.
-2. Build the classification feature/scoring population from that review-batch
-   scope.
-3. Score the frozen population.
-4. Create one or more classifier projection runs on that same batch.
+1. Score the frozen matter population once.
+2. Select a confidence range and optional classes from the completed job.
+3. Create one or more derived review batches from the immutable prediction
+   artifact.
+4. Materialize the corresponding classifier values as isolated Batch Coding.
 
 This avoids attempting to reconstruct an earlier matter population after
 documents have been added or removed.
@@ -189,7 +192,8 @@ Validation rules:
   class set.
 - The scoring run must be terminal and have a verified prediction artifact.
 - The model, target field, matter, dataset snapshot, and batch must agree.
-- The scoring population document IDs must exactly equal batch membership.
+- Every batch member must belong to the scoring population; a batch may be a
+  selected subset.
 - The target field must exist in the batch coding snapshot.
 
 The derivation key includes all frozen inputs that change output:
@@ -233,7 +237,7 @@ Implement `classification_prediction_project_v1` as a DBOS workflow.
 2. Lock and load the classifier run.
 3. Verify the scoring run and Artifact reference.
 4. Verify the batch is ready and belongs to the same matter.
-5. Verify exact population identity.
+5. Verify subset population identity.
 6. Move the run from `QUEUED` to `RUNNING`.
 
 ### Stage 2: stream and validate predictions
@@ -519,7 +523,7 @@ Roll out in this order:
 
 1. Schema migration and `CLASSIFIER` contracts.
 2. Projection request validation and deterministic derivation.
-3. Artifact streaming, exact population validation, and bounded selection.
+3. Artifact streaming, subset population validation, and bounded selection.
 4. Idempotent run-document and run-value materialization.
 5. Finalization plus existing search-projection dispatch.
 6. Maximum-confidence query and facet support.

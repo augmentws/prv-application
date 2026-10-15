@@ -1,7 +1,7 @@
 """Let Matter Analysis Task runs carry fact-development runs, with frozen per-chunk document slices.
 
-Revision ID: 0092_fact_development_runs
-Revises: 0091_fact_summary_embeddings
+Revision ID: 0094_fact_development_runs
+Revises: 0093_fact_summary_embeddings
 """
 
 from collections.abc import Sequence
@@ -10,8 +10,8 @@ import sqlalchemy as sa
 
 from alembic import op
 
-revision: str = "0092_fact_development_runs"
-down_revision: str | None = "0091_fact_summary_embeddings"
+revision: str = "0094_fact_development_runs"
+down_revision: str | None = "0093_fact_summary_embeddings"
 branch_labels: str | Sequence[str] | None = None
 depends_on: str | Sequence[str] | None = None
 

@@ -765,6 +765,65 @@ class JobOutcomeManifest(TimestampMixin, Base):
     failure_summary: Mapped[str | None] = mapped_column(Text, nullable=True)
 
 
+class AnalysisInputManifest(TimestampMixin, Base):
+    """One Core control record for an immutable, Artifact-owned document input manifest."""
+
+    __tablename__ = "analysis_input_manifest"
+    __table_args__ = (
+        UniqueConstraint("owner_type", "owner_id", name="uq_analysis_input_manifest_owner"),
+        CheckConstraint(
+            "manifest_status IN ('BUILDING', 'FINALIZED', 'FAILED')",
+            name="ck_analysis_input_manifest_status",
+        ),
+        CheckConstraint("manifest_schema_version > 0", name="ck_analysis_input_manifest_schema_version"),
+        CheckConstraint("item_count >= 0", name="ck_analysis_input_manifest_item_count"),
+        CheckConstraint(
+            "(artifact_id IS NULL AND artifact_content_hash IS NULL AND artifact_byte_length IS NULL) OR "
+            "(artifact_id IS NOT NULL AND artifact_content_hash IS NOT NULL AND artifact_byte_length IS NOT NULL)",
+            name="ck_analysis_input_manifest_artifact_tuple",
+        ),
+        CheckConstraint(
+            "manifest_status != 'FINALIZED' OR (artifact_id IS NOT NULL AND finalized_at IS NOT NULL)",
+            name="ck_analysis_input_manifest_finalized",
+        ),
+        Index("ix_analysis_input_manifest_scope", "tenant_id", "client_id", "matter_id"),
+        Index("ix_analysis_input_manifest_derivation", "derivation_key"),
+    )
+
+    id: Mapped[uuid.UUID] = mapped_column(Uuid, primary_key=True, default=uuid.uuid4)
+    tenant_id: Mapped[uuid.UUID] = mapped_column(
+        Uuid, ForeignKey("tenant.id", ondelete="RESTRICT"), index=True
+    )
+    client_id: Mapped[uuid.UUID] = mapped_column(
+        Uuid, ForeignKey("client.id", ondelete="RESTRICT"), index=True
+    )
+    matter_id: Mapped[uuid.UUID] = mapped_column(
+        Uuid, ForeignKey("matter.id", ondelete="CASCADE"), index=True
+    )
+    owner_type: Mapped[str] = mapped_column(String(80))
+    owner_id: Mapped[uuid.UUID] = mapped_column(Uuid)
+    scope_type: Mapped[str] = mapped_column(String(40))
+    scope_id: Mapped[uuid.UUID] = mapped_column(Uuid, index=True)
+    manifest_schema: Mapped[str] = mapped_column(String(100))
+    manifest_schema_version: Mapped[int] = mapped_column(Integer)
+    resolver_version: Mapped[str] = mapped_column(String(100))
+    input_contract: Mapped[dict[str, Any]] = mapped_column(JSON_DOCUMENT)
+    input_contract_hash: Mapped[str] = mapped_column(String(64))
+    derivation_key: Mapped[str] = mapped_column(String(64))
+    artifact_id: Mapped[uuid.UUID | None] = mapped_column(Uuid, nullable=True)
+    artifact_content_hash: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    artifact_byte_length: Mapped[int | None] = mapped_column(BigInteger, nullable=True)
+    item_count: Mapped[int] = mapped_column(BigInteger, default=0)
+    manifest_status: Mapped[str] = mapped_column(String(20), default="BUILDING")
+    producer_kind: Mapped[str] = mapped_column(String(50))
+    producer_run_id: Mapped[uuid.UUID] = mapped_column(Uuid)
+    created_by_user_id: Mapped[uuid.UUID] = mapped_column(
+        Uuid, ForeignKey("app_user.id", ondelete="RESTRICT"), index=True
+    )
+    finalized_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    failure_summary: Mapped[str | None] = mapped_column(Text, nullable=True)
+
+
 class MatterTopicJob(TimestampMixin, Base):
     __tablename__ = "matter_topic_job"
     __table_args__ = (
@@ -1256,7 +1315,8 @@ class ReviewBatch(TimestampMixin, Base):
     __table_args__ = (
         CheckConstraint(
             "selection_type IN ('ALL_MATTER', 'SEARCH_QUERY', 'RANDOM_MATTER', 'RANDOM_BATCH', "
-            "'RANDOM_SAVED_SEARCH', 'RANDOM_ASSESSMENT', 'DEFINITION_ASSESSMENT')",
+            "'RANDOM_SAVED_SEARCH', 'RANDOM_ASSESSMENT', 'DEFINITION_ASSESSMENT', "
+            "'CLASSIFICATION_PREDICTIONS')",
             name="ck_review_batch_selection_type",
         ),
         CheckConstraint(
@@ -2543,6 +2603,12 @@ class ClassificationDatasetSnapshot(Base):
     scope_id: Mapped[uuid.UUID] = mapped_column(Uuid, index=True)
     target_field_snapshot: Mapped[dict[str, Any]] = mapped_column(JSON_DOCUMENT)
     label_policy_snapshot: Mapped[dict[str, Any]] = mapped_column(JSON_DOCUMENT)
+    analysis_input_manifest_id: Mapped[uuid.UUID | None] = mapped_column(
+        Uuid,
+        ForeignKey("analysis_input_manifest.id", ondelete="RESTRICT"),
+        nullable=True,
+        index=True,
+    )
     population_artifact_id: Mapped[uuid.UUID | None] = mapped_column(Uuid, nullable=True)
     population_content_hash: Mapped[str | None] = mapped_column(String(64), nullable=True)
     label_artifact_id: Mapped[uuid.UUID | None] = mapped_column(Uuid, nullable=True)
@@ -2586,6 +2652,7 @@ class ClassificationDatasetSnapshot(Base):
     completed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
 
     created_by: Mapped[User] = relationship()
+    analysis_input_manifest: Mapped[AnalysisInputManifest | None] = relationship()
 
 
 class ClassificationTrainingJob(TimestampMixin, Base):

@@ -451,6 +451,7 @@ def dataset_snapshot_read(
             },
             "target_field_snapshot": snapshot.target_field_snapshot,
             "label_policy_snapshot": snapshot.label_policy_snapshot,
+            "analysis_input_manifest_id": snapshot.analysis_input_manifest_id,
             "population_artifact_id": snapshot.population_artifact_id,
             "population_content_hash": snapshot.population_content_hash,
             "label_artifact_id": snapshot.label_artifact_id,

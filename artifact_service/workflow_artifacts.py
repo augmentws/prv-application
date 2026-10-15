@@ -21,6 +21,7 @@ from artifact_service.storage import BlobStorage
 from artifact_service.workflow_artifact_types import ArtifactType
 
 COLUMNAR_ARTIFACT_TYPES = {
+    ArtifactType.ANALYSIS_INPUT_MANIFEST,
     ArtifactType.CLASSIFICATION_POPULATION,
     ArtifactType.CLASSIFICATION_FEATURES,
     ArtifactType.CLASSIFICATION_LABELS,
@@ -46,6 +47,7 @@ JSON_MEDIA_TYPES = {"application/json"}
 CSV_MEDIA_TYPES = {"text/csv"}
 
 WORKFLOW_ARTIFACT_MAX_BYTES = {
+    ArtifactType.ANALYSIS_INPUT_MANIFEST: 20 * 1024**3,
     ArtifactType.CLASSIFICATION_POPULATION: 10 * 1024**3,
     ArtifactType.CLASSIFICATION_FEATURES: 50 * 1024**3,
     ArtifactType.CLASSIFICATION_LABELS: 10 * 1024**3,

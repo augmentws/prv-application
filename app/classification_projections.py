@@ -26,6 +26,7 @@ from app.job_executions import (
 from app.models import (
     ClassificationScoringRun,
     Matter,
+    MatterDocument,
     MetadataDefinition,
     ReviewBatch,
     ReviewBatchCodingField,
@@ -141,6 +142,8 @@ def create_classifier_projection_run(
     batch: ReviewBatch,
     payload: ReviewBatchClassifierRunCreate,
     actor_user_id: uuid.UUID,
+    allow_pending_batch: bool = False,
+    enqueue: bool = True,
 ) -> tuple[ReviewBatchRun, bool]:
     scoring_run = db.get(ClassificationScoringRun, payload.classification_scoring_run_id)
     if scoring_run is None or scoring_run.matter_id != matter.id:
@@ -149,8 +152,10 @@ def create_classifier_projection_run(
         raise ClassificationProjectionError("Classification scoring must complete before projection")
     if scoring_run.prediction_artifact_id is None or scoring_run.prediction_content_hash is None:
         raise ClassificationProjectionError("Classification scoring output is unavailable")
-    if batch.status != "READY" or batch.search_status != "READY":
+    if not allow_pending_batch and (batch.status != "READY" or batch.search_status != "READY"):
         raise ClassificationProjectionError("Review batch and its search projection must be ready")
+    if allow_pending_batch and batch.status not in {"QUEUED", "BUILDING", "READY"}:
+        raise ClassificationProjectionError("Review batch is not available for classifier projection")
     if batch.matter_id != matter.id:
         raise ClassificationProjectionError("Review batch is outside the scoring matter")
 
@@ -267,9 +272,10 @@ def create_classifier_projection_run(
             "derivation_key": derivation_key,
         },
     )
-    from app.workflows.dispatcher import enqueue_classification_projection
+    if enqueue:
+        from app.workflows.dispatcher import enqueue_classification_projection
 
-    enqueue_classification_projection(db, run.dbos_workflow_id, str(run.id))
+        enqueue_classification_projection(db, run.dbos_workflow_id, str(run.id))
     return run, True
 
 
@@ -358,11 +364,81 @@ def _validate_population(
             if document_id in artifact_ids:
                 raise ClassificationProjectionError("Prediction artifact contains duplicate documents")
             artifact_ids.add(document_id)
-    if artifact_ids != batch_ids:
+    if not batch_ids.issubset(artifact_ids):
         raise ClassificationProjectionError(
-            "Classification scoring population does not exactly match review batch membership"
+            "Review batch contains documents outside the classification scoring population"
         )
     return batch_ids
+
+
+def classification_projection_document_ids(db: Session, batch: ReviewBatch) -> list[uuid.UUID]:
+    """Resolve a derived batch population from its immutable prediction artifact."""
+
+    run_id = batch.selection_definition.get("classification_projection_run_id")
+    if not run_id:
+        raise ClassificationProjectionError("Classification-derived batch is missing its projection run")
+    run = db.get(ReviewBatchRun, uuid.UUID(str(run_id)))
+    if run is None or run.review_batch_id != batch.id or run.run_type != "CLASSIFIER":
+        raise ClassificationProjectionError("Classification-derived batch projection is unavailable")
+    scoring_run = db.get(ClassificationScoringRun, run.classification_scoring_run_id)
+    matter = db.get(Matter, batch.matter_id)
+    if scoring_run is None or matter is None or scoring_run.matter_id != matter.id:
+        raise ClassificationProjectionError("Classification scoring source is unavailable")
+    artifact_file, parquet, ordered_class_keys = _load_parquet(run=run, scoring_run=scoring_run, matter=matter)
+    try:
+        minimum = float(run.configuration_snapshot["minimum_confidence"])
+        maximum_raw = run.configuration_snapshot.get("maximum_confidence")
+        maximum = float(maximum_raw) if maximum_raw is not None else None
+        selected_classes = set(run.configuration_snapshot.get("selected_class_keys") or ordered_class_keys)
+        class_ordinals = {key: index for index, key in enumerate(ordered_class_keys)}
+        document_ids: list[uuid.UUID] = []
+        seen: set[uuid.UUID] = set()
+        for row_group_index in range(parquet.num_row_groups):
+            rows = parquet.read_row_group(row_group_index, columns=sorted(REQUIRED_PREDICTION_COLUMNS)).to_pylist()
+            for row in rows:
+                document_id = uuid.UUID(str(row["matter_document_id"]))
+                if document_id in seen:
+                    raise ClassificationProjectionError("Prediction artifact contains duplicate documents")
+                seen.add(document_id)
+                if row.get("result_status") != "SUCCESS" or row.get("abstained") is True:
+                    continue
+                probabilities = row.get("probabilities") or []
+                if len(probabilities) != len(ordered_class_keys):
+                    raise ClassificationProjectionError(
+                        f"Prediction probability shape is invalid for document {document_id}"
+                    )
+                include = False
+                for class_key in row.get("predicted_class_keys") or []:
+                    ordinal = class_ordinals.get(class_key)
+                    if ordinal is None:
+                        raise ClassificationProjectionError(f"Prediction contains unknown class key: {class_key}")
+                    confidence_raw = probabilities[ordinal]
+                    if confidence_raw is None or class_key not in selected_classes:
+                        continue
+                    confidence = float(confidence_raw)
+                    if confidence >= minimum and (maximum is None or confidence < maximum):
+                        include = True
+                        break
+                if include:
+                    document_ids.append(document_id)
+        verified: set[uuid.UUID] = set()
+        for offset in range(0, len(document_ids), 5_000):
+            page = document_ids[offset : offset + 5_000]
+            verified.update(
+                db.scalars(
+                    select(MatterDocument.id).where(
+                        MatterDocument.matter_id == batch.matter_id,
+                        MatterDocument.id.in_(page),
+                    )
+                )
+            )
+        if len(verified) != len(document_ids):
+            raise ClassificationProjectionError(
+                "Prediction artifact contains documents outside the destination matter"
+            )
+        return document_ids
+    finally:
+        artifact_file.close()
 
 
 def execute_classifier_projection(db: Session, run_id: uuid.UUID) -> None:
@@ -414,7 +490,7 @@ def execute_classifier_projection(db: Session, run_id: uuid.UUID) -> None:
         matter=matter,
     )
     try:
-        _validate_population(db, batch_id=batch.id, parquet=parquet)
+        batch_ids = _validate_population(db, batch_id=batch.id, parquet=parquet)
         db.execute(delete(ReviewBatchRunValue).where(ReviewBatchRunValue.review_batch_run_id == run.id))
         db.execute(delete(ReviewBatchRunDocument).where(ReviewBatchRunDocument.review_batch_run_id == run.id))
         db.commit()
@@ -449,6 +525,8 @@ def execute_classifier_projection(db: Session, run_id: uuid.UUID) -> None:
             now = utcnow()
             for row in rows:
                 document_id = uuid.UUID(str(row["matter_document_id"]))
+                if document_id not in batch_ids:
+                    continue
                 summary["population_document_count"] += 1
                 result_status = row.get("result_status")
                 projected = 0

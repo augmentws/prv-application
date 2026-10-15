@@ -21,7 +21,12 @@ from app.analysis_tasks import MatterAnalysisTaskConflict
 from app.artifact_gateway import read_artifact_bytes
 from app.audit import record_audit
 from app.authorization import ResourceRef, can, user_can
-from app.classification_projections import ClassificationProjectionError, create_classifier_projection_run
+from app.classification_projections import (
+    ClassificationProjectionError,
+    create_classifier_projection_run,
+    execute_classifier_projection,
+    fail_classifier_projection,
+)
 from app.config import Settings, get_settings
 from app.database import get_db
 from app.dependencies import Principal, get_principal
@@ -42,6 +47,7 @@ from app.models import (
     BatchTopic,
     BatchTopicAssignment,
     BatchTopicTaxonomy,
+    ClassificationScoringRun,
     JobArchive,
     Matter,
     MatterAnalysisTask,
@@ -95,6 +101,7 @@ from app.routers.search import (
 from app.schemas import (
     BatchTopicRead,
     BatchTopicTaxonomyRead,
+    ClassificationReviewBatchCreate,
     JobExecutionRead,
     MatterAnalysisTaskRunRead,
     MatterFacetValuesResponse,
@@ -150,6 +157,7 @@ from app.search.query import batch_coding_filter, batch_topic_filter
 from app.search.service import sync_review_batch_search
 from app.search_exports import create_search_export_job
 from app.workflows.dispatcher import enqueue_review_batch, enqueue_search_export, get_dbos_client
+from classification_service.hashing import canonical_value_hash
 
 router = APIRouter(prefix="/v1/matters/{matter_id}/review-batches", tags=["review batches"])
 logger = logging.getLogger(__name__)
@@ -643,6 +651,179 @@ def create_review_batch(
                 db.commit()
         batch = db.get(ReviewBatch, batch.id) or batch
     return _read_batch(db, batch)
+
+
+@router.post("/from-classification-run", response_model=ReviewBatchRead, status_code=status.HTTP_202_ACCEPTED)
+def create_classification_review_batch(
+    matter_id: uuid.UUID,
+    payload: ClassificationReviewBatchCreate,
+    principal: Principal = Depends(get_principal),
+    db: Session = Depends(get_db),
+    settings: Settings = Depends(get_settings),
+) -> ReviewBatchRead:
+    """Freeze prediction matches and attach their isolated classifier coding."""
+
+    matter = _matter(db, matter_id, principal, "batch.create")
+    resource = ResourceRef.matter(matter.id)
+    for permission_key in ("batch.configure", "classification.score"):
+        if not can(db, principal, permission_key, resource):
+            raise HTTPException(status_code=403, detail=f"Permission required: {permission_key}")
+    _validate_user(db, matter, payload.assigned_user_id)
+    analysis_run = db.scalar(
+        select(MatterAnalysisTaskRun).where(
+            MatterAnalysisTaskRun.id == payload.classification_analysis_run_id,
+            MatterAnalysisTaskRun.matter_id == matter.id,
+        )
+    )
+    if analysis_run is None or analysis_run.classification_scoring_run_id is None:
+        raise HTTPException(status_code=404, detail="Classification analysis run was not found")
+    if analysis_run.status not in {"COMPLETED", "COMPLETED_WITH_ERRORS"}:
+        raise HTTPException(status_code=409, detail="Classification analysis must complete before creating a batch")
+    scoring_run = db.get(ClassificationScoringRun, analysis_run.classification_scoring_run_id)
+    if (
+        scoring_run is None
+        or scoring_run.matter_id != matter.id
+        or scoring_run.status not in {"COMPLETED", "COMPLETED_WITH_ERRORS"}
+        or scoring_run.prediction_artifact_id is None
+        or scoring_run.prediction_content_hash is None
+    ):
+        raise HTTPException(status_code=409, detail="Completed classification predictions are unavailable")
+
+    derivation_key = canonical_value_hash(
+        {
+            "classification_analysis_run_id": str(analysis_run.id),
+            "classification_scoring_run_id": str(scoring_run.id),
+            "prediction_content_hash": scoring_run.prediction_content_hash,
+            "minimum_confidence": payload.minimum_confidence,
+            "maximum_confidence": payload.maximum_confidence,
+            "selected_class_keys": payload.selected_class_keys,
+            "name": payload.name,
+            "description": payload.description,
+            "assigned_user_id": str(payload.assigned_user_id) if payload.assigned_user_id else None,
+            "reviewer_value_visibility": payload.reviewer_value_visibility,
+        }
+    )
+    batch_id = uuid.uuid5(analysis_run.id, payload.idempotency_key)
+    existing = db.get(ReviewBatch, batch_id)
+    if existing is not None:
+        if existing.selection_definition.get("derivation_key") != derivation_key:
+            raise HTTPException(status_code=409, detail="Idempotency key was already used for another batch")
+        return _read_batch(db, existing)
+
+    definition = scoring_run.classification_model.target_metadata_definition
+    if definition.matter_id != matter.id or definition.status != "ACTIVE":
+        raise HTTPException(status_code=409, detail="Classification target field is no longer active")
+    selection = {
+        "type": "CLASSIFICATION_PREDICTIONS",
+        "contract_version": 1,
+        "classification_analysis_run_id": str(analysis_run.id),
+        "classification_scoring_run_id": str(scoring_run.id),
+        "prediction_artifact_id": str(scoring_run.prediction_artifact_id),
+        "prediction_content_hash": scoring_run.prediction_content_hash,
+        "minimum_confidence": payload.minimum_confidence,
+        "maximum_confidence": payload.maximum_confidence,
+        "selected_class_keys": payload.selected_class_keys,
+        "confidence_interval": "LOWER_INCLUSIVE_UPPER_EXCLUSIVE",
+        "derivation_key": derivation_key,
+    }
+    batch = ReviewBatch(
+        id=batch_id,
+        matter_id=matter.id,
+        name=payload.name,
+        description=payload.description.strip() if payload.description else None,
+        selection_type="CLASSIFICATION_PREDICTIONS",
+        selection_definition=selection,
+        source_batch_id=(analysis_run.scope_id if analysis_run.scope_type == "REVIEW_BATCH" else None),
+        sample_size=None,
+        random_seed=None,
+        assigned_user_id=payload.assigned_user_id,
+        assigned_by_user_id=principal.user.id if payload.assigned_user_id else None,
+        assigned_at=utcnow() if payload.assigned_user_id else None,
+        reviewer_value_visibility=payload.reviewer_value_visibility,
+        status="QUEUED",
+        workflow_id=f"review-batch:{batch_id}",
+        created_by_user_id=principal.user.id,
+    )
+    db.add(batch)
+    db.flush()
+    group = ReviewBatchCodingGroup(
+        review_batch_id=batch.id,
+        source_metadata_group_id=None,
+        display_name="Classifier review",
+        description=f"Review values predicted for {definition.display_name}.",
+        sort_order=0,
+    )
+    db.add(group)
+    db.flush()
+    db.add(
+        ReviewBatchCodingField(
+            review_batch_coding_group_id=group.id,
+            metadata_definition_id=definition.id,
+            sort_order=0,
+            definition_snapshot={
+                "key": definition.key,
+                "display_name": definition.display_name,
+                "description": definition.description,
+                "type": definition.type,
+                "cardinality": definition.cardinality,
+                "allowed_values": definition.allowed_values,
+            },
+        )
+    )
+    db.flush()
+    projection, _ = create_classifier_projection_run(
+        db,
+        matter=matter,
+        batch=batch,
+        payload=ReviewBatchClassifierRunCreate(
+            classification_scoring_run_id=scoring_run.id,
+            minimum_confidence=payload.minimum_confidence,
+            maximum_confidence=payload.maximum_confidence,
+            selected_class_keys=payload.selected_class_keys,
+            idempotency_key=f"classification-review-batch:{batch.id}",
+        ),
+        actor_user_id=principal.user.id,
+        allow_pending_batch=True,
+        enqueue=False,
+    )
+    batch.selection_definition = {**selection, "classification_projection_run_id": str(projection.id)}
+    execution = create_review_batch_execution(db, batch, initiated_by_user_id=principal.user.id)
+    record_audit(
+        db,
+        tenant_id=matter.client.tenant_id,
+        actor_user_id=principal.user.id,
+        action="classification.review_batch.created",
+        target_type="review_batch",
+        target_id=batch.id,
+        details={
+            "classification_analysis_run_id": str(analysis_run.id),
+            "classification_scoring_run_id": str(scoring_run.id),
+            "classification_projection_run_id": str(projection.id),
+            "minimum_confidence": payload.minimum_confidence,
+            "maximum_confidence": payload.maximum_confidence,
+            "selected_class_keys": payload.selected_class_keys,
+        },
+    )
+    enqueue_review_batch(db, execution.dbos_workflow_id, str(batch.id))
+    db.commit()
+    if not settings.dbos_enabled:
+        try:
+            materialize_review_batch(db, batch.id, settings)
+            batch = db.get(ReviewBatch, batch.id) or batch
+            if batch.status == "READY":
+                if settings.search_enabled and db.get_bind().dialect.name == "postgresql":
+                    sync_review_batch_search(batch.id, settings)
+                else:
+                    batch.search_status = "READY"
+                    db.commit()
+                complete_review_batch_execution(db, batch.id)
+                db.commit()
+                execute_classifier_projection(db, projection.id)
+        except Exception as exc:  # noqa: BLE001 - inline mode preserves durable failures
+            fail_review_batch_execution(db, batch.id, exc)
+            fail_classifier_projection(db, projection.id, f"Derived review batch failed: {exc}")
+            db.commit()
+    return _read_batch(db, db.get(ReviewBatch, batch.id) or batch)
 
 
 @router.get("", response_model=list[ReviewBatchRead])

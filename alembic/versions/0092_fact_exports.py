@@ -1,7 +1,7 @@
 """Add durable fact export jobs.
 
-Revision ID: 0090_fact_exports
-Revises: 0089_fact_ledger_entities
+Revision ID: 0092_fact_exports
+Revises: 0091_fact_ledger_entities
 """
 
 from collections.abc import Sequence
@@ -10,8 +10,8 @@ import sqlalchemy as sa
 
 from alembic import op
 
-revision: str = "0090_fact_exports"
-down_revision: str | None = "0089_fact_ledger_entities"
+revision: str = "0092_fact_exports"
+down_revision: str | None = "0091_fact_ledger_entities"
 branch_labels: str | Sequence[str] | None = None
 depends_on: str | Sequence[str] | None = None
 
