@@ -1185,6 +1185,7 @@ ReviewBatchSelectionType = Literal[
     "RANDOM_SAVED_SEARCH",
     "RANDOM_ASSESSMENT",
     "DEFINITION_ASSESSMENT",
+    "CLASSIFICATION_PREDICTIONS",
 ]
 InteractiveReviewBatchSelectionType = Literal[
     "ALL_MATTER",
@@ -1416,6 +1417,36 @@ class ReviewBatchClassifierRunCreate(BaseModel):
         if len(self.selected_class_keys) != len(set(self.selected_class_keys)):
             raise ValueError("selected_class_keys must be unique")
         self.idempotency_key = self.idempotency_key.strip()
+        if not self.idempotency_key:
+            raise ValueError("idempotency_key is required")
+        return self
+
+
+class ClassificationReviewBatchCreate(BaseModel):
+    """Create a review batch from one completed classification analysis output."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    classification_analysis_run_id: uuid.UUID
+    name: str = Field(min_length=1, max_length=200)
+    description: str | None = Field(default=None, max_length=4000)
+    minimum_confidence: float = Field(ge=0, le=1)
+    maximum_confidence: float | None = Field(default=None, ge=0, le=1)
+    selected_class_keys: list[ClassValue] = Field(default_factory=list, max_length=1000)
+    assigned_user_id: uuid.UUID | None = None
+    reviewer_value_visibility: ReviewBatchValueVisibility = "OWN_VALUES"
+    idempotency_key: str = Field(min_length=1, max_length=200)
+
+    @model_validator(mode="after")
+    def validate_selection(self) -> "ClassificationReviewBatchCreate":
+        if self.maximum_confidence is not None and self.maximum_confidence <= self.minimum_confidence:
+            raise ValueError("maximum_confidence must be greater than minimum_confidence")
+        if len(self.selected_class_keys) != len(set(self.selected_class_keys)):
+            raise ValueError("selected_class_keys must be unique")
+        self.name = " ".join(self.name.split())
+        self.idempotency_key = self.idempotency_key.strip()
+        if not self.name:
+            raise ValueError("name is required")
         if not self.idempotency_key:
             raise ValueError("idempotency_key is required")
         return self

@@ -20,6 +20,10 @@ from app.models import (
     ClassificationModel,
     ClassificationModelConfiguration,
     ClassificationScoringRun,
+    Matter,
+    MatterAnalysisTask,
+    MatterAnalysisTaskRun,
+    MatterAnalysisTaskVersion,
     MatterDocument,
     MatterDocumentImportJob,
     ReviewBatch,
@@ -785,3 +789,108 @@ def test_completed_scoring_artifact_projects_one_confidence_window_into_batch_co
     }
     assert classifier_source_ids == {projection_run_id}
     assert legacy_projection_id not in classifier_source_ids
+
+    from test_classification_training_jobs import create_completed_embedding_job
+
+    embedding_job_id = create_completed_embedding_job(matter_id=matter["id"], user_id=root_admin.id)
+    with TestingSessionLocal() as db:
+        matter_row = db.get(Matter, uuid.UUID(matter["id"]))
+        assert matter_row is not None
+        task = MatterAnalysisTask(
+            matter_id=matter_row.id,
+            key="derived_classifier_review",
+            name="Derived classifier review",
+            description=None,
+            task_type="CLASSIFICATION",
+            workflow_key="classification_scoring_v1",
+            current_version=1,
+            published_version=1,
+            status="ACTIVE",
+            created_by_user_id=root_admin.id,
+        )
+        db.add(task)
+        db.flush()
+        task_version = MatterAnalysisTaskVersion(
+            matter_analysis_task_id=task.id,
+            version=1,
+            status="PUBLISHED",
+            compilation_status="READY",
+            definition_markdown="Apply the approved classifier.",
+            definition_content_hash="a" * 64,
+            destination_metadata_definition_ids=[model["target_metadata_definition_id"]],
+            decision_provider="JEV",
+            classification_model_id=uuid.UUID(model["id"]),
+            classification_model_version_id=version_id,
+            input_contract={},
+            output_contract={},
+            evidence_policy={},
+            routing_policy={},
+            compiler_model_configuration={},
+            validation_report={},
+            source_provenance={},
+            created_by_user_id=root_admin.id,
+            published_by_user_id=root_admin.id,
+            published_at=datetime.now(timezone.utc),
+        )
+        db.add(task_version)
+        db.flush()
+        analysis_run = MatterAnalysisTaskRun(
+            tenant_id=matter_row.client.tenant_id,
+            matter_id=matter_row.id,
+            matter_analysis_task_id=task.id,
+            matter_analysis_task_version_id=task_version.id,
+            scope_type="MATTER",
+            scope_id=matter_row.id,
+            classification_model_id=uuid.UUID(model["id"]),
+            classification_model_version_id=version_id,
+            embedding_job_id=embedding_job_id,
+            dataset_snapshot_id=snapshot.id,
+            classification_scoring_run_id=scoring_run_id,
+            idempotency_key="completed-whole-matter-analysis",
+            workflow_id=f"classification-analysis:{uuid.uuid4()}",
+            status="COMPLETED",
+            current_stage="COMPLETED",
+            progress_completed=4,
+            progress_total=4,
+            population_document_count=2,
+            created_by_user_id=root_admin.id,
+            completed_at=datetime.now(timezone.utc),
+        )
+        db.add(analysis_run)
+        db.commit()
+        analysis_run_id = analysis_run.id
+
+    derived_response = client.post(
+        f"/v1/matters/{matter['id']}/review-batches/from-classification-run",
+        headers=auth(root_token),
+        json={
+            "classification_analysis_run_id": str(analysis_run_id),
+            "name": "Positive predictions at 90%",
+            "minimum_confidence": 0.9,
+            "maximum_confidence": 1.0,
+            "selected_class_keys": ["positive"],
+            "idempotency_key": "derived-positive-90-100",
+        },
+    )
+    assert derived_response.status_code == 202, derived_response.text
+    derived = derived_response.json()
+    assert derived["selection_type"] == "CLASSIFICATION_PREDICTIONS"
+    assert derived["document_count"] == 1
+    assert derived["status"] == "READY"
+    assert derived["searchable_coding_status"] == "QUEUED"
+    derived_batch_id = uuid.UUID(derived["id"])
+    with TestingSessionLocal() as db:
+        derived_batch = db.get(ReviewBatch, derived_batch_id)
+        assert derived_batch is not None
+        derived_projection_id = uuid.UUID(
+            derived_batch.selection_definition["classification_projection_run_id"]
+        )
+        derived_projection = db.get(ReviewBatchRun, derived_projection_id)
+        assert derived_projection is not None
+        assert derived_projection.status == "COMPLETED"
+        derived_documents = list(
+            db.query(ReviewBatchRunDocument)
+            .filter(ReviewBatchRunDocument.review_batch_run_id == derived_projection.id)
+            .all()
+        )
+        assert [row.matter_document_id for row in derived_documents] == [document_ids[0]]

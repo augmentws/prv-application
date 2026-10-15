@@ -162,6 +162,8 @@ export * from './classificationPromotionPreviewRequest';
 export * from './classificationPromotionResponse';
 export * from './classificationPromotionResponseAction';
 export * from './classificationPromotionResponseStatus';
+export * from './classificationReviewBatchCreate';
+export * from './classificationReviewBatchCreateReviewerValueVisibility';
 export * from './classificationScoringCreate';
 export * from './classificationScoringCreateResponse';
 export * from './classificationScoringPreview';
