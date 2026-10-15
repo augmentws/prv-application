@@ -296,7 +296,13 @@ matter_analysis_task_run   (existing, generalized) run_kind (CLASSIFICATION|FACT
                            reviewer-coding revision, chunk size, skill version, model), report, status, progress;
                            classification-only columns are required only when run_kind = CLASSIFICATION
 matter_analysis_task_run_chunk  run_id, chunk_number, ordinal_start, document_ids (JSON), issue_keys (JSON, parallel),
+                           fingerprints (JSON, parallel), prior_fingerprints (JSON, parallel),
                            status, processed_count, failed_count, counts   -- one row per chunk, never per document
+
+Reuse mirrors embeddings: a document's extraction fingerprint is the hash of its source text content hash,
+paragraph-map version, issue-catalog hash and coded issues (not the skill version or model). Finished documents
+record it with their facts; a later attempt or run of the same task reuses any document whose fingerprint matches,
+so relaunching after a cancel continues instead of duplicating facts.
 
 Per-document results are job outcomes (Artifact-owned Parquet fragments plus a final manifest), not Core rows.
 Operations are validated and applied inline; invalid ones are recorded in the document's outcome payload.

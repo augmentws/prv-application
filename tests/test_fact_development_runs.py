@@ -370,10 +370,105 @@ def test_failed_run_retry_skips_documents_already_applied(
         assert run_row.status == "COMPLETED_WITH_ERRORS"
         assert run_row.failure_code == "FACT_DEVELOPMENT_DOCUMENT_FAILURES"
         assert run_row.report["reason_counts"] == {
-            "fact.already_processed": 1,
+            "fact.reused_prior_extraction": 1,
             "fact.operations_invalid": 1,
             "fact.no_matching_issue": 1,
         }
+
+
+def _extraction_output() -> dict:
+    return {
+        "operations": [
+            _operation(),
+            _operation(op="NO_FACT", issue_keys=["safety"], summary=None, date_precision="UNKNOWN",
+                       event_date_start=None, date_basis=None, owner=None, participants=[], evidence=[],
+                       reason="No safety content."),
+        ]
+    }
+
+
+def _reasons(run_id: str) -> dict:
+    with TestingSessionLocal() as db:
+        return db.get(MatterAnalysisTaskRun, uuid.UUID(run_id)).report["reason_counts"]
+
+
+def test_relaunch_after_cancel_reuses_finished_documents(
+    client: TestClient,
+    run_ctx: dict,
+    artifacts: dict,
+) -> None:
+    ctx = run_ctx
+    model = TestModel(custom_output_args=_extraction_output())
+    first = _launch(client, ctx, key="first")
+    with TestingSessionLocal() as db:
+        (chunk_id,) = prepare_fact_development_run(db, uuid.UUID(first["id"]))
+    process_fact_development_chunk(uuid.UUID(chunk_id), session_factory=TestingSessionLocal, model=model)
+    canceled = client.post(f"/v1/jobs/FACT_DEVELOPMENT_ANALYSIS_TASK/{first['id']}/cancel", headers=auth(ctx["token"]))
+    assert canceled.json()["status"] == "CANCELED"
+
+    second = _launch(client, ctx, key="second")
+    _run_all(second["id"], model)
+    assert _reasons(second["id"]) == {"fact.reused_prior_extraction": 2, "fact.no_matching_issue": 1}
+    with TestingSessionLocal() as db:
+        assert db.query(MatterFact).count() == 1
+        assert db.query(SkillRun).filter(SkillRun.scope_type == "MATTER_DOCUMENT").count() == 2  # No new model calls.
+        assert db.get(MatterAnalysisTaskRun, uuid.UUID(second["id"])).report["counts"]["reused"] == 2
+    items = client.get(
+        f"/v1/matters/{ctx['matter_id']}/job-outcomes/FACT_DEVELOPMENT_ANALYSIS_TASK/{second['id']}/items",
+        headers=auth(ctx["token"]),
+        params={"status": "REUSED"},
+    ).json()["items"]
+    assert all(row["input_fingerprint"] for row in items)
+
+
+def test_changed_coding_or_text_is_extracted_again(
+    client: TestClient,
+    run_ctx: dict,
+    artifacts: dict,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    ctx = run_ctx
+    model = TestModel(custom_output_args=_extraction_output())
+    _run_all(_launch(client, ctx, key="first")["id"], model)
+
+    # The safety document is now also coded to pricing; the pricing document is unchanged.
+    with TestingSessionLocal() as db:
+        definition = db.scalar(
+            select(MetadataDefinition).where(
+                MetadataDefinition.matter_id == uuid.UUID(ctx["matter_id"]),
+                MetadataDefinition.key == "issue_coding",
+            )
+        )
+        apply_metadata_values(
+            db,
+            matter_id=uuid.UUID(ctx["matter_id"]),
+            document_id=uuid.UUID(ctx["documents"][1]),
+            definition_id=definition.id,
+            values=["safety", "pricing"],
+            replace=True,
+            source_type="HUMAN",
+            actor_id=uuid.UUID(ctx["user_id"]),
+            source_id="test:recode",
+        )
+        db.commit()
+    recoded = _launch(client, ctx, key="recoded")
+    _run_all(recoded["id"], model)
+    reasons = _reasons(recoded["id"])
+    assert reasons["fact.reused_prior_extraction"] == 1
+    assert reasons["fact.facts_proposed"] == 1
+
+    # New text for every document (a reprocessed text source) invalidates every earlier extraction.
+    monkeypatch.setattr(
+        "app.fact_evidence.get_preferred_text_source",
+        lambda **_: SimpleNamespace(
+            artifact_id=uuid.UUID("00000000-0000-0000-0000-00000000a002"),
+            content_hash="b" * 64,
+            text=DOCUMENT_TEXT,
+        ),
+    )
+    retexted = _launch(client, ctx, key="retexted")
+    _run_all(retexted["id"], model)
+    assert "fact.reused_prior_extraction" not in _reasons(retexted["id"])
 
 
 def test_fact_runs_require_the_run_permission(client: TestClient, run_ctx: dict) -> None:

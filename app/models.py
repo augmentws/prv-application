@@ -4236,6 +4236,10 @@ class MatterAnalysisTaskRunChunk(TimestampMixin, Base):
     ordinal_start: Mapped[int] = mapped_column(Integer)
     document_ids: Mapped[list[str]] = mapped_column(JSON)
     issue_keys: Mapped[list[list[str]]] = mapped_column(JSON)
+    # Parallel to document_ids: the extraction fingerprint of each document this chunk completed (null otherwise),
+    # and the fingerprints earlier runs of the same task recorded for it. A match means the document is reused.
+    fingerprints: Mapped[list[str | None]] = mapped_column(JSON, default=list)
+    prior_fingerprints: Mapped[list[list[str]]] = mapped_column(JSON, default=list)
     item_count: Mapped[int] = mapped_column(Integer)
     status: Mapped[str] = mapped_column(String(30), default="QUEUED")
     processed_count: Mapped[int] = mapped_column(Integer, default=0)

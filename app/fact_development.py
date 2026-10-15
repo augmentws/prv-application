@@ -23,7 +23,7 @@ from dataclasses import dataclass
 from datetime import datetime, timezone
 from typing import Any
 
-from sqlalchemy import exists, func, select
+from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
 from app.agent_models import resolve_agent_model
@@ -80,7 +80,6 @@ from app.models import (
     MatterDocument,
     MatterEntity,
     MatterFact,
-    MatterFactEvidence,
     MatterFactIssue,
     ReviewBatch,
     ReviewBatchDocument,
@@ -108,6 +107,7 @@ COUNT_KEYS = (
     "invalid_operations",
     "proposed_entities",
     "recall_unavailable",
+    "reused",
 )
 
 
@@ -541,6 +541,7 @@ def _freeze_chunks(db: Session, run: MatterAnalysisTaskRun) -> list[MatterAnalys
         )
     except FactIssueMembershipError as exc:
         raise FactDevelopmentRunError(str(exc), code="FACT_ISSUE_MEMBERSHIP_FAILED") from exc
+    prior = _prior_fingerprints(db, run)
     chunk_size = int(configuration["chunk_size"])
     chunks: list[MatterAnalysisTaskRunChunk] = []
     for number, start in enumerate(range(0, len(document_ids), chunk_size)):
@@ -551,6 +552,8 @@ def _freeze_chunks(db: Session, run: MatterAnalysisTaskRun) -> list[MatterAnalys
             ordinal_start=start,
             document_ids=[str(value) for value in slice_ids],
             issue_keys=[membership.get(value, []) for value in slice_ids],
+            fingerprints=[None] * len(slice_ids),
+            prior_fingerprints=[sorted(prior.get(str(value), ())) for value in slice_ids],
             item_count=len(slice_ids),
             status="QUEUED",
             processed_count=0,
@@ -604,7 +607,6 @@ class _RunContext:
     workflow: WorkflowRun
     step: WorkflowStepRun
     skill_version: SkillDefinitionVersion
-    execution_ids: list[uuid.UUID]
     model: Any
 
     @property
@@ -624,14 +626,6 @@ def _run_context(db: Session, run: MatterAnalysisTaskRun, model: Any | None) -> 
     skill_version = db.get(SkillDefinitionVersion, uuid.UUID(run.configuration_snapshot["skill_definition_version_id"]))
     if step is None or skill_version is None:
         raise FactDevelopmentRunError("The pinned fact-extraction skill is unavailable")
-    execution_ids = list(
-        db.scalars(
-            select(WorkflowRun.id).where(
-                WorkflowRun.job_type == FACT_DEVELOPMENT_ANALYSIS_TASK_JOB_TYPE,
-                WorkflowRun.job_id == run.id,
-            )
-        )
-    )
     return _RunContext(
         run=run,
         matter=matter,
@@ -639,24 +633,66 @@ def _run_context(db: Session, run: MatterAnalysisTaskRun, model: Any | None) -> 
         workflow=workflow,
         step=step,
         skill_version=skill_version,
-        execution_ids=execution_ids,
         model=model if model is not None else run.configuration_snapshot["resolved_model"],
     )
 
 
-def _already_processed(db: Session, context: _RunContext, document_id: uuid.UUID) -> bool:
-    """True when an earlier attempt of this run already applied facts or evidence from this document."""
+def _prior_fingerprints(db: Session, run: MatterAnalysisTaskRun) -> dict[str, set[str]]:
+    """Fingerprints that earlier runs of the same task recorded for documents they finished, by document ID."""
 
-    return bool(
-        db.scalar(
-            select(
-                exists().where(
-                    MatterFactEvidence.matter_document_id == document_id,
-                    MatterFactEvidence.workflow_run_id.in_(context.execution_ids),
-                )
-            )
+    prior: dict[str, set[str]] = {}
+    rows = db.execute(
+        select(MatterAnalysisTaskRunChunk.document_ids, MatterAnalysisTaskRunChunk.fingerprints)
+        .join(MatterAnalysisTaskRun, MatterAnalysisTaskRun.id == MatterAnalysisTaskRunChunk.run_id)
+        .where(
+            MatterAnalysisTaskRun.matter_analysis_task_id == run.matter_analysis_task_id,
+            MatterAnalysisTaskRun.run_kind == "FACT_DEVELOPMENT",
+            MatterAnalysisTaskRun.id != run.id,
         )
     )
+    for document_ids, fingerprints in rows:
+        for document_id, fingerprint in zip(document_ids, fingerprints or [], strict=False):
+            if fingerprint:
+                prior.setdefault(document_id, set()).add(fingerprint)
+    return prior
+
+
+def extraction_fingerprint(context: _RunContext, text: DocumentText, issues: list[str]) -> str:
+    """What makes a document's extraction reusable: its exact text, paragraph map, issue catalog and coded issues.
+
+    The skill version and model are deliberately excluded so a platform prompt or model update does not re-extract
+    (and duplicate) reviewed work across a matter.
+    """
+
+    return canonical_hash(
+        {
+            "contract": "fact-extraction-fingerprint-v1",
+            "source_content_hash": text.source_content_hash,
+            "paragraph_map_version": text.paragraph_map.version,
+            "specification_hash": context.configuration["specification_hash"],
+            "issue_keys": sorted(issues),
+        }
+    )
+
+
+@dataclass(frozen=True)
+class _DocumentSlot:
+    """One document's position in its chunk, for reading prior fingerprints and recording its own."""
+
+    chunk: MatterAnalysisTaskRunChunk
+    index: int
+
+    def known(self) -> set[str]:
+        known = set(self.chunk.prior_fingerprints[self.index]) if self.index < len(self.chunk.prior_fingerprints) else set()
+        if self.index < len(self.chunk.fingerprints) and self.chunk.fingerprints[self.index]:
+            known.add(self.chunk.fingerprints[self.index])
+        return known
+
+    def record(self, fingerprint: str) -> None:
+        fingerprints = list(self.chunk.fingerprints or [])
+        fingerprints.extend([None] * (len(self.chunk.document_ids) - len(fingerprints)))
+        fingerprints[self.index] = fingerprint
+        self.chunk.fingerprints = fingerprints
 
 
 def _document_metadata(db: Session, context: _RunContext, document: MatterDocument) -> dict[str, Any]:
@@ -788,6 +824,7 @@ def _outcome(document_id: str, status: str, reason: str, message: str | None = N
 def _process_document(
     db: Session,
     context: _RunContext,
+    slot: _DocumentSlot,
     document_id: str,
     issues: list[str],
     counts: Counter[str],
@@ -796,8 +833,6 @@ def _process_document(
     if not issues:
         return _outcome(document_id, "EXCLUDED", "fact.no_matching_issue", "The document is not coded to any issue")
     parsed_id = uuid.UUID(document_id)
-    if _already_processed(db, context, parsed_id):
-        return _outcome(document_id, "REUSED", "fact.already_processed", "An earlier attempt already applied facts")
     document = db.scalar(
         select(MatterDocument).where(MatterDocument.id == parsed_id, MatterDocument.matter_id == context.matter.id)
     )
@@ -812,6 +847,18 @@ def _process_document(
         )
     except FactEvidenceError as exc:
         return _outcome(document_id, "SKIPPED", "fact.no_text_source", str(exc))
+    fingerprint = extraction_fingerprint(context, text, issues)
+    if fingerprint in slot.known():
+        # The same text, catalog and coding were already extracted by an earlier run or attempt.
+        slot.record(fingerprint)
+        counts["reused"] += 1
+        return _outcome(
+            document_id,
+            "REUSED",
+            "fact.reused_prior_extraction",
+            "This document was already extracted with the same text, issue catalog and coding",
+            input_fingerprint=fingerprint,
+        )
     max_characters = int(context.configuration["max_document_characters"])
     if len(text.text) > max_characters:
         return _outcome(
@@ -892,6 +939,15 @@ def _process_document(
         ),
         extraction,
     )
+    if result.applied_count:
+        status, reason, message = "SUCCEEDED", "fact.facts_proposed", None
+    elif result.invalid_count and not result.no_fact_issue_keys:
+        status, reason, message = "FAILED", "fact.operations_invalid", "Every proposed operation failed validation"
+    else:
+        status, reason, message = "SUCCEEDED", "fact.no_fact", None
+    if status == "SUCCEEDED":
+        # Recorded in the same transaction as the document's facts, so a crash can never separate them.
+        slot.record(fingerprint)
     db.commit()
     counts["facts_created"] += len(result.created_fact_ids)
     counts["evidence_added"] += len(result.evidence_fact_ids)
@@ -916,17 +972,12 @@ def _process_document(
         "no_fact_issue_keys": result.no_fact_issue_keys,
         "errors": result.errors,
     }
-    if result.applied_count:
-        status, reason, message = "SUCCEEDED", "fact.facts_proposed", None
-    elif result.invalid_count and not result.no_fact_issue_keys:
-        status, reason, message = "FAILED", "fact.operations_invalid", "Every proposed operation failed validation"
-    else:
-        status, reason, message = "SUCCEEDED", "fact.no_fact", None
     return _outcome(
         document_id,
         status,
         reason,
         message,
+        input_fingerprint=fingerprint,
         metrics=metrics,
         payload=payload,
         started_at=started_at,
@@ -965,14 +1016,21 @@ def process_fact_development_chunk(
         counts: Counter[str] = Counter()
         outcomes: list[JobItemOutcome] = []
         canceled = False
-        for document_id, issues in zip(chunk.document_ids, chunk.issue_keys, strict=True):
+        for index, (document_id, issues) in enumerate(zip(chunk.document_ids, chunk.issue_keys, strict=True)):
             if canceled or _cancel_requested(db, run.id):
                 canceled = True
                 outcomes.append(
                     _outcome(document_id, "CANCELED", "fact.run_canceled", "The run was canceled before this document")
                 )
                 continue
-            outcome = _process_document(db, context, document_id, list(issues), counts)
+            outcome = _process_document(
+                db,
+                context,
+                _DocumentSlot(chunk, index),
+                document_id,
+                list(issues),
+                counts,
+            )
             outcomes.append(outcome)
             chunk.processed_count += 1
             if outcome.outcome_status == "FAILED":
