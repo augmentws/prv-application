@@ -396,6 +396,8 @@ describe("MatterView metadata navigation", () => {
     const { rerender } = render(<QueryClientProvider client={client}><MatterView clientId="client-1" matterId="matter-1" requestedTab="metadata" /></QueryClientProvider>);
 
     expect(await screen.findByRole("tab", { name: "Definitions" })).toHaveAttribute("aria-selected", "true");
+    expect(screen.getByRole("tab", { name: "Analysis" })).toBeInTheDocument();
+    expect(screen.queryByRole("tab", { name: "Analysis tasks" })).not.toBeInTheDocument();
     expect(screen.queryByRole("button", { name: "Clone configuration" })).not.toBeInTheDocument();
     expect(screen.queryByRole("button", { name: "Save as template" })).not.toBeInTheDocument();
 
