@@ -986,7 +986,7 @@ class MatterSearchExportJob(TimestampMixin, Base):
     csv_policy_snapshot: Mapped[dict[str, Any]] = mapped_column(JSON)
     idempotency_key: Mapped[str] = mapped_column(String(200))
     requested_filename: Mapped[str] = mapped_column(String(255))
-    status: Mapped[str] = mapped_column(String(30), default="QUEUED", index=True)
+    status: Mapped[str] = mapped_column(String(30), default="QUEUED")
     current_workflow_run_id: Mapped[uuid.UUID | None] = mapped_column(
         Uuid,
         ForeignKey("workflow_run.id", ondelete="SET NULL"),
@@ -1374,6 +1374,7 @@ class WorkflowRun(TimestampMixin, Base):
         Index("ix_workflow_run_job_attempt", "job_type", "job_id", "attempt_number"),
         Index("ix_workflow_run_matter_status_created", "matter_id", "status", "created_at"),
         Index("ix_workflow_run_status_heartbeat", "status", "last_heartbeat_at"),
+        Index("ix_workflow_run_retry_of", "retry_of_workflow_run_id"),
     )
 
     id: Mapped[uuid.UUID] = mapped_column(Uuid, primary_key=True, default=uuid.uuid4)
@@ -1391,7 +1392,6 @@ class WorkflowRun(TimestampMixin, Base):
         Uuid,
         ForeignKey("workflow_run.id", ondelete="SET NULL"),
         nullable=True,
-        index=True,
     )
     workflow_key: Mapped[str] = mapped_column(String(100), index=True)
     code_version: Mapped[str] = mapped_column(String(100))
@@ -1606,6 +1606,7 @@ class ReviewBatchReviewerRevision(Base):
             "reviewer_coding_id",
             "revision",
         ),
+        Index("ix_reviewer_revision_actor_user_id", "actor_user_id"),
     )
 
     reviewer_coding_id: Mapped[uuid.UUID] = mapped_column(
@@ -1618,7 +1619,6 @@ class ReviewBatchReviewerRevision(Base):
         Uuid,
         ForeignKey("app_user.id", ondelete="RESTRICT"),
         nullable=True,
-        index=True,
     )
     origin: Mapped[str] = mapped_column(String(30))
     request_key: Mapped[str | None] = mapped_column(String(200), nullable=True)
@@ -1921,6 +1921,7 @@ class ReviewBatchRunDocument(Base):
             name="ck_review_batch_run_document_status",
         ),
         Index("ix_review_batch_run_document_run_status", "review_batch_run_id", "status"),
+        Index("ix_review_batch_run_document_last_workflow", "last_workflow_run_id"),
     )
 
     review_batch_run_id: Mapped[uuid.UUID] = mapped_column(
@@ -1934,7 +1935,6 @@ class ReviewBatchRunDocument(Base):
         Uuid,
         ForeignKey("workflow_run.id", ondelete="SET NULL"),
         nullable=True,
-        index=True,
     )
     failure_code: Mapped[str | None] = mapped_column(String(100), nullable=True)
     failure_message: Mapped[str | None] = mapped_column(Text, nullable=True)
@@ -3909,7 +3909,7 @@ class MatterAnalysisTask(TimestampMixin, Base):
     __table_args__ = (
         UniqueConstraint("matter_id", "key", name="uq_matter_analysis_task_matter_key"),
         CheckConstraint(
-            "task_type IN ('QUESTION_ANSWERING', 'CLASSIFICATION')",
+            "task_type IN ('QUESTION_ANSWERING', 'CLASSIFICATION', 'FACT_DEVELOPMENT')",
             name="ck_matter_analysis_task_type",
         ),
         CheckConstraint(
@@ -3962,6 +3962,8 @@ class MatterAnalysisTaskVersion(Base):
         Index("ix_analysis_task_version_workflow", "compiler_workflow_run_id"),
         Index("ix_analysis_task_version_creator", "created_by_user_id"),
         Index("ix_analysis_task_version_publisher", "published_by_user_id"),
+        Index("ix_analysis_task_version_classification_model", "classification_model_id"),
+        Index("ix_analysis_task_version_classification_version", "classification_model_version_id"),
     )
 
     id: Mapped[uuid.UUID] = mapped_column(Uuid, primary_key=True, default=uuid.uuid4)
@@ -3983,15 +3985,27 @@ class MatterAnalysisTaskVersion(Base):
         Uuid,
         ForeignKey("classification_model.id", ondelete="RESTRICT"),
         nullable=True,
-        index=True,
     )
     classification_model_version_id: Mapped[uuid.UUID | None] = mapped_column(
         Uuid,
         ForeignKey("classification_model_version.id", ondelete="RESTRICT"),
         nullable=True,
+    )
+    review_guidance_id: Mapped[uuid.UUID | None] = mapped_column(
+        Uuid,
+        ForeignKey("matter_definition.id", ondelete="RESTRICT"),
+        nullable=True,
         index=True,
     )
+    review_guidance_revision_id: Mapped[uuid.UUID | None] = mapped_column(
+        Uuid,
+        ForeignKey("matter_definition_revision.id", ondelete="RESTRICT"),
+        nullable=True,
+        index=True,
+    )
+    review_guidance_content_hash: Mapped[str | None] = mapped_column(String(64), nullable=True)
     decision_specification: Mapped[dict[str, Any] | None] = mapped_column(JSON, nullable=True)
+    fact_development_specification: Mapped[dict[str, Any] | None] = mapped_column(JSON, nullable=True)
     specification_content_hash: Mapped[str | None] = mapped_column(String(64), nullable=True, index=True)
     input_contract: Mapped[dict[str, Any]] = mapped_column(JSON, default=dict)
     output_contract: Mapped[dict[str, Any]] = mapped_column(JSON, default=dict)
@@ -4046,49 +4060,47 @@ class MatterAnalysisTaskRun(TimestampMixin, Base):
         Index("ix_analysis_task_run_task_created", "matter_analysis_task_id", "created_at"),
         Index("ix_analysis_task_run_matter_status", "matter_id", "status"),
         Index("ix_analysis_task_run_scoring", "classification_scoring_run_id"),
+        Index("ix_analysis_task_run_current_workflow", "current_workflow_run_id"),
     )
 
     id: Mapped[uuid.UUID] = mapped_column(Uuid, primary_key=True, default=uuid.uuid4)
-    tenant_id: Mapped[uuid.UUID] = mapped_column(Uuid, ForeignKey("tenant.id", ondelete="RESTRICT"), index=True)
-    matter_id: Mapped[uuid.UUID] = mapped_column(Uuid, ForeignKey("matter.id", ondelete="CASCADE"), index=True)
+    tenant_id: Mapped[uuid.UUID] = mapped_column(Uuid, ForeignKey("tenant.id", ondelete="RESTRICT"))
+    matter_id: Mapped[uuid.UUID] = mapped_column(Uuid, ForeignKey("matter.id", ondelete="CASCADE"))
     matter_analysis_task_id: Mapped[uuid.UUID] = mapped_column(
-        Uuid, ForeignKey("matter_analysis_task.id", ondelete="CASCADE"), index=True
+        Uuid, ForeignKey("matter_analysis_task.id", ondelete="CASCADE")
     )
     matter_analysis_task_version_id: Mapped[uuid.UUID] = mapped_column(
-        Uuid, ForeignKey("matter_analysis_task_version.id", ondelete="RESTRICT"), index=True
+        Uuid, ForeignKey("matter_analysis_task_version.id", ondelete="RESTRICT")
     )
     scope_type: Mapped[str] = mapped_column(String(30))
-    scope_id: Mapped[uuid.UUID] = mapped_column(Uuid, index=True)
+    scope_id: Mapped[uuid.UUID] = mapped_column(Uuid)
     classification_model_id: Mapped[uuid.UUID] = mapped_column(
-        Uuid, ForeignKey("classification_model.id", ondelete="RESTRICT"), index=True
+        Uuid, ForeignKey("classification_model.id", ondelete="RESTRICT")
     )
     classification_model_version_id: Mapped[uuid.UUID] = mapped_column(
-        Uuid, ForeignKey("classification_model_version.id", ondelete="RESTRICT"), index=True
+        Uuid, ForeignKey("classification_model_version.id", ondelete="RESTRICT")
     )
     embedding_job_id: Mapped[uuid.UUID] = mapped_column(
-        Uuid, ForeignKey("matter_embedding_job.id", ondelete="RESTRICT"), index=True
+        Uuid, ForeignKey("matter_embedding_job.id", ondelete="RESTRICT")
     )
     dataset_snapshot_id: Mapped[uuid.UUID | None] = mapped_column(
         Uuid,
         ForeignKey("classification_dataset_snapshot.id", ondelete="RESTRICT"),
         nullable=True,
-        index=True,
     )
     classification_scoring_run_id: Mapped[uuid.UUID | None] = mapped_column(
         Uuid,
         ForeignKey("classification_scoring_run.id", ondelete="RESTRICT"),
         nullable=True,
-        index=True,
     )
     current_workflow_run_id: Mapped[uuid.UUID | None] = mapped_column(
         Uuid,
         ForeignKey("workflow_run.id", ondelete="SET NULL"),
         nullable=True,
-        index=True,
     )
     idempotency_key: Mapped[str] = mapped_column(String(200))
     workflow_id: Mapped[str] = mapped_column(String(500))
-    status: Mapped[str] = mapped_column(String(40), default="QUEUED", index=True)
+    status: Mapped[str] = mapped_column(String(40), default="QUEUED")
     current_stage: Mapped[str] = mapped_column(String(100), default="QUEUED")
     progress_completed: Mapped[int] = mapped_column(Integer, default=0)
     progress_total: Mapped[int] = mapped_column(Integer, default=4)
@@ -4096,9 +4108,7 @@ class MatterAnalysisTaskRun(TimestampMixin, Base):
     failure_code: Mapped[str | None] = mapped_column(String(100), nullable=True)
     failure_summary: Mapped[str | None] = mapped_column(Text, nullable=True)
     failure_retriable: Mapped[bool] = mapped_column(Boolean, default=False)
-    created_by_user_id: Mapped[uuid.UUID] = mapped_column(
-        Uuid, ForeignKey("app_user.id", ondelete="RESTRICT"), index=True
-    )
+    created_by_user_id: Mapped[uuid.UUID] = mapped_column(Uuid, ForeignKey("app_user.id", ondelete="RESTRICT"))
     started_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     completed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     canceled_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
@@ -4596,3 +4606,279 @@ class AuditRecord(Base):
     target_id: Mapped[uuid.UUID] = mapped_column(Uuid)
     details: Mapped[dict[str, Any] | None] = mapped_column(JSON)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow, index=True)
+
+
+class MatterEntity(TimestampMixin, Base):
+    """A person or organization in a matter: a canonical entity (no parent) or a variant name/email of one."""
+
+    __tablename__ = "matter_entity"
+    __table_args__ = (
+        CheckConstraint("entity_type IN ('PERSON', 'ORGANIZATION')", name="ck_matter_entity_type"),
+        CheckConstraint(
+            "(parent_id IS NULL AND status IN ('PROPOSED', 'CONFIRMED', 'REJECTED')) OR "
+            "(parent_id IS NOT NULL AND status IS NULL AND title IS NULL AND organization_id IS NULL "
+            "AND custodian_id IS NULL)",
+            name="ck_matter_entity_canonical_shape",
+        ),
+        CheckConstraint("parent_id IS NULL OR parent_id <> id", name="ck_matter_entity_not_own_parent"),
+        CheckConstraint(
+            "(created_by_user_id IS NULL) <> (created_by_workflow_run_id IS NULL)",
+            name="ck_matter_entity_creator",
+        ),
+        CheckConstraint("(email IS NULL) = (normalized_email IS NULL)", name="ck_matter_entity_email_pair"),
+        CheckConstraint("lock_version > 0", name="ck_matter_entity_lock_version"),
+        Index(
+            "uq_matter_entity_matter_email",
+            "matter_id",
+            "normalized_email",
+            unique=True,
+            postgresql_where=text("normalized_email IS NOT NULL"),
+            sqlite_where=text("normalized_email IS NOT NULL"),
+        ),
+        Index("ix_matter_entity_matter_name", "matter_id", "normalized_name"),
+        Index("ix_matter_entity_matter_type_status", "matter_id", "entity_type", "status"),
+    )
+
+    id: Mapped[uuid.UUID] = mapped_column(Uuid, primary_key=True, default=uuid.uuid4)
+    matter_id: Mapped[uuid.UUID] = mapped_column(Uuid, ForeignKey("matter.id", ondelete="CASCADE"), index=True)
+    parent_id: Mapped[uuid.UUID | None] = mapped_column(
+        Uuid, ForeignKey("matter_entity.id", ondelete="RESTRICT"), nullable=True, index=True
+    )
+    entity_type: Mapped[str] = mapped_column(String(20))
+    display_name: Mapped[str] = mapped_column(String(300))
+    normalized_name: Mapped[str] = mapped_column(String(300))
+    email: Mapped[str | None] = mapped_column(String(320), nullable=True)
+    normalized_email: Mapped[str | None] = mapped_column(String(320), nullable=True)
+    title: Mapped[str | None] = mapped_column(String(200), nullable=True)
+    organization_id: Mapped[uuid.UUID | None] = mapped_column(
+        Uuid, ForeignKey("matter_entity.id", ondelete="RESTRICT"), nullable=True, index=True
+    )
+    custodian_id: Mapped[uuid.UUID | None] = mapped_column(
+        Uuid, ForeignKey("custodian.id", ondelete="RESTRICT"), nullable=True, index=True
+    )
+    description: Mapped[str | None] = mapped_column(Text, nullable=True)
+    status: Mapped[str | None] = mapped_column(String(20), nullable=True)
+    created_by_user_id: Mapped[uuid.UUID | None] = mapped_column(
+        Uuid, ForeignKey("app_user.id", ondelete="RESTRICT"), nullable=True, index=True
+    )
+    created_by_workflow_run_id: Mapped[uuid.UUID | None] = mapped_column(
+        Uuid, ForeignKey("workflow_run.id", ondelete="RESTRICT"), nullable=True, index=True
+    )
+    lock_version: Mapped[int] = mapped_column(Integer, default=1)
+
+
+class MatterEntityEvent(Base):
+    """Append-only history of every entity change; the entity rows are its current projection."""
+
+    __tablename__ = "matter_entity_event"
+    __table_args__ = (
+        CheckConstraint("actor_type IN ('HUMAN', 'AGENT', 'SYSTEM')", name="ck_matter_entity_event_actor_type"),
+        Index("ix_matter_entity_event_entity_created", "entity_id", "created_at"),
+    )
+
+    id: Mapped[uuid.UUID] = mapped_column(Uuid, primary_key=True, default=uuid.uuid4)
+    matter_id: Mapped[uuid.UUID] = mapped_column(Uuid, ForeignKey("matter.id", ondelete="CASCADE"), index=True)
+    entity_id: Mapped[uuid.UUID] = mapped_column(Uuid, ForeignKey("matter_entity.id", ondelete="CASCADE"))
+    event_type: Mapped[str] = mapped_column(String(50))
+    payload: Mapped[dict[str, Any]] = mapped_column(JSON, default=dict)
+    actor_type: Mapped[str] = mapped_column(String(20))
+    actor_user_id: Mapped[uuid.UUID | None] = mapped_column(
+        Uuid, ForeignKey("app_user.id", ondelete="RESTRICT"), nullable=True, index=True
+    )
+    workflow_run_id: Mapped[uuid.UUID | None] = mapped_column(
+        Uuid, ForeignKey("workflow_run.id", ondelete="RESTRICT"), nullable=True, index=True
+    )
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+
+
+FACT_DATE_PRECISIONS = "('DAY', 'MONTH', 'QUARTER', 'YEAR', 'RANGE', 'UNKNOWN')"
+FACT_DATE_BASES = "('STATED_IN_TEXT', 'DOCUMENT_DATE', 'INFERRED')"
+
+
+class MatterFact(TimestampMixin, Base):
+    """Current projection of one fact; its history lives in matter_fact_event and matter_fact_revision."""
+
+    __tablename__ = "matter_fact"
+    __table_args__ = (
+        CheckConstraint("status IN ('WORKING', 'CONFIRMED', 'REJECTED', 'MERGED')", name="ck_matter_fact_status"),
+        CheckConstraint(f"date_precision IN {FACT_DATE_PRECISIONS}", name="ck_matter_fact_date_precision"),
+        CheckConstraint(f"date_basis IS NULL OR date_basis IN {FACT_DATE_BASES}", name="ck_matter_fact_date_basis"),
+        CheckConstraint(
+            "(date_precision = 'UNKNOWN' AND event_date_start IS NULL AND event_date_end IS NULL) OR "
+            "(date_precision = 'RANGE' AND event_date_start IS NOT NULL AND event_date_end IS NOT NULL "
+            "AND event_date_end >= event_date_start) OR "
+            "(date_precision IN ('DAY', 'MONTH', 'QUARTER', 'YEAR') AND event_date_start IS NOT NULL "
+            "AND event_date_end IS NULL)",
+            name="ck_matter_fact_date_shape",
+        ),
+        CheckConstraint(
+            "(status = 'MERGED') = (merged_into_fact_id IS NOT NULL)",
+            name="ck_matter_fact_merged_target",
+        ),
+        CheckConstraint(
+            "(status = 'CONFIRMED') = (confirmed_at IS NOT NULL)",
+            name="ck_matter_fact_confirmation",
+        ),
+        CheckConstraint("current_revision > 0 AND lock_version > 0", name="ck_matter_fact_versions"),
+        CheckConstraint("evidence_count >= 0 AND document_count >= 0", name="ck_matter_fact_counts"),
+        Index("ix_matter_fact_matter_status_date", "matter_id", "status", "event_date_start"),
+    )
+
+    id: Mapped[uuid.UUID] = mapped_column(Uuid, primary_key=True, default=uuid.uuid4)
+    matter_id: Mapped[uuid.UUID] = mapped_column(Uuid, ForeignKey("matter.id", ondelete="CASCADE"), index=True)
+    status: Mapped[str] = mapped_column(String(20), default="WORKING")
+    current_revision: Mapped[int] = mapped_column(Integer, default=1)
+    summary: Mapped[str] = mapped_column(Text)
+    event_date_start: Mapped[date | None] = mapped_column(Date, nullable=True)
+    event_date_end: Mapped[date | None] = mapped_column(Date, nullable=True)
+    date_precision: Mapped[str] = mapped_column(String(20), default="UNKNOWN")
+    date_basis: Mapped[str | None] = mapped_column(String(20), nullable=True)
+    owner_entity_id: Mapped[uuid.UUID | None] = mapped_column(
+        Uuid, ForeignKey("matter_entity.id", ondelete="RESTRICT"), nullable=True, index=True
+    )
+    key_fact: Mapped[bool] = mapped_column(Boolean, default=False)
+    has_contradiction: Mapped[bool] = mapped_column(Boolean, default=False)
+    evidence_count: Mapped[int] = mapped_column(Integer, default=0)
+    document_count: Mapped[int] = mapped_column(Integer, default=0)
+    merged_into_fact_id: Mapped[uuid.UUID | None] = mapped_column(
+        Uuid, ForeignKey("matter_fact.id", ondelete="RESTRICT"), nullable=True, index=True
+    )
+    confirmed_by_user_id: Mapped[uuid.UUID | None] = mapped_column(
+        Uuid, ForeignKey("app_user.id", ondelete="RESTRICT"), nullable=True, index=True
+    )
+    confirmed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    created_by_user_id: Mapped[uuid.UUID | None] = mapped_column(
+        Uuid, ForeignKey("app_user.id", ondelete="RESTRICT"), nullable=True, index=True
+    )
+    origin_workflow_run_id: Mapped[uuid.UUID | None] = mapped_column(
+        Uuid, ForeignKey("workflow_run.id", ondelete="RESTRICT"), nullable=True, index=True
+    )
+    lock_version: Mapped[int] = mapped_column(Integer, default=1)
+
+
+class MatterFactRevision(Base):
+    """Immutable snapshot of a fact's editable content after each content change."""
+
+    __tablename__ = "matter_fact_revision"
+    __table_args__ = (
+        UniqueConstraint("fact_id", "revision", name="uq_matter_fact_revision"),
+        CheckConstraint("revision > 0", name="ck_matter_fact_revision_positive"),
+        CheckConstraint("author_type IN ('HUMAN', 'AGENT')", name="ck_matter_fact_revision_author_type"),
+        CheckConstraint(f"date_precision IN {FACT_DATE_PRECISIONS}", name="ck_matter_fact_revision_precision"),
+    )
+
+    id: Mapped[uuid.UUID] = mapped_column(Uuid, primary_key=True, default=uuid.uuid4)
+    fact_id: Mapped[uuid.UUID] = mapped_column(Uuid, ForeignKey("matter_fact.id", ondelete="CASCADE"), index=True)
+    revision: Mapped[int] = mapped_column(Integer)
+    summary: Mapped[str] = mapped_column(Text)
+    event_date_start: Mapped[date | None] = mapped_column(Date, nullable=True)
+    event_date_end: Mapped[date | None] = mapped_column(Date, nullable=True)
+    date_precision: Mapped[str] = mapped_column(String(20))
+    date_basis: Mapped[str | None] = mapped_column(String(20), nullable=True)
+    owner_entity_id: Mapped[uuid.UUID | None] = mapped_column(Uuid, nullable=True)
+    issues: Mapped[list[dict[str, Any]]] = mapped_column(JSON, default=list)
+    participants: Mapped[list[dict[str, Any]]] = mapped_column(JSON, default=list)
+    author_type: Mapped[str] = mapped_column(String(20))
+    author_user_id: Mapped[uuid.UUID | None] = mapped_column(
+        Uuid, ForeignKey("app_user.id", ondelete="RESTRICT"), nullable=True, index=True
+    )
+    workflow_run_id: Mapped[uuid.UUID | None] = mapped_column(
+        Uuid, ForeignKey("workflow_run.id", ondelete="RESTRICT"), nullable=True, index=True
+    )
+    reason: Mapped[str | None] = mapped_column(Text, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+
+
+class MatterFactIssue(Base):
+    __tablename__ = "matter_fact_issue"
+
+    fact_id: Mapped[uuid.UUID] = mapped_column(
+        Uuid, ForeignKey("matter_fact.id", ondelete="CASCADE"), primary_key=True
+    )
+    matter_analysis_task_id: Mapped[uuid.UUID] = mapped_column(
+        Uuid, ForeignKey("matter_analysis_task.id", ondelete="RESTRICT"), primary_key=True, index=True
+    )
+    issue_key: Mapped[str] = mapped_column(String(100), primary_key=True)
+
+
+class MatterFactEntity(Base):
+    """A fact participant: the matched entity row (canonical or variant) and its role."""
+
+    __tablename__ = "matter_fact_entity"
+    __table_args__ = (
+        CheckConstraint("role IN ('PARTICIPANT_ACTOR', 'PARTICIPANT_RECIPIENT')", name="ck_matter_fact_entity_role"),
+    )
+
+    fact_id: Mapped[uuid.UUID] = mapped_column(
+        Uuid, ForeignKey("matter_fact.id", ondelete="CASCADE"), primary_key=True
+    )
+    entity_id: Mapped[uuid.UUID] = mapped_column(
+        Uuid, ForeignKey("matter_entity.id", ondelete="RESTRICT"), primary_key=True, index=True
+    )
+    role: Mapped[str] = mapped_column(String(30), primary_key=True)
+
+
+class MatterFactEvidence(Base):
+    """One exact quote from one document that supports or contradicts a fact."""
+
+    __tablename__ = "matter_fact_evidence"
+    __table_args__ = (
+        CheckConstraint("stance IN ('SUPPORTS', 'CONTRADICTS')", name="ck_matter_fact_evidence_stance"),
+        CheckConstraint("status IN ('ACTIVE', 'REMOVED')", name="ck_matter_fact_evidence_status"),
+        CheckConstraint("char_end > char_start AND char_start >= 0", name="ck_matter_fact_evidence_offsets"),
+        CheckConstraint(
+            "(added_by_user_id IS NULL) <> (workflow_run_id IS NULL)",
+            name="ck_matter_fact_evidence_author",
+        ),
+        Index("ix_matter_fact_evidence_fact_status", "fact_id", "status"),
+        Index("ix_matter_fact_evidence_document_status", "matter_document_id", "status"),
+    )
+
+    id: Mapped[uuid.UUID] = mapped_column(Uuid, primary_key=True, default=uuid.uuid4)
+    fact_id: Mapped[uuid.UUID] = mapped_column(Uuid, ForeignKey("matter_fact.id", ondelete="CASCADE"))
+    matter_document_id: Mapped[uuid.UUID] = mapped_column(
+        Uuid, ForeignKey("matter_document.id", ondelete="RESTRICT")
+    )
+    source_artifact_id: Mapped[uuid.UUID] = mapped_column(Uuid)
+    source_content_hash: Mapped[str] = mapped_column(String(64))
+    paragraph_map_version: Mapped[str] = mapped_column(String(100))
+    paragraph_id: Mapped[str] = mapped_column(String(50))
+    char_start: Mapped[int] = mapped_column(Integer)
+    char_end: Mapped[int] = mapped_column(Integer)
+    quote: Mapped[str] = mapped_column(Text)
+    quote_hash: Mapped[str] = mapped_column(String(64))
+    stance: Mapped[str] = mapped_column(String(20), default="SUPPORTS")
+    status: Mapped[str] = mapped_column(String(20), default="ACTIVE")
+    added_by_user_id: Mapped[uuid.UUID | None] = mapped_column(
+        Uuid, ForeignKey("app_user.id", ondelete="RESTRICT"), nullable=True, index=True
+    )
+    workflow_run_id: Mapped[uuid.UUID | None] = mapped_column(
+        Uuid, ForeignKey("workflow_run.id", ondelete="RESTRICT"), nullable=True, index=True
+    )
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+    removed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+
+
+class MatterFactEvent(Base):
+    """Append-only, authoritative history of every fact change."""
+
+    __tablename__ = "matter_fact_event"
+    __table_args__ = (
+        CheckConstraint("actor_type IN ('HUMAN', 'AGENT', 'SYSTEM')", name="ck_matter_fact_event_actor_type"),
+        Index("ix_matter_fact_event_fact_created", "fact_id", "created_at"),
+        Index("ix_matter_fact_event_matter_created", "matter_id", "created_at"),
+    )
+
+    id: Mapped[uuid.UUID] = mapped_column(Uuid, primary_key=True, default=uuid.uuid4)
+    matter_id: Mapped[uuid.UUID] = mapped_column(Uuid, ForeignKey("matter.id", ondelete="CASCADE"))
+    fact_id: Mapped[uuid.UUID] = mapped_column(Uuid, ForeignKey("matter_fact.id", ondelete="CASCADE"))
+    event_type: Mapped[str] = mapped_column(String(50))
+    payload: Mapped[dict[str, Any]] = mapped_column(JSON, default=dict)
+    actor_type: Mapped[str] = mapped_column(String(20))
+    actor_user_id: Mapped[uuid.UUID | None] = mapped_column(
+        Uuid, ForeignKey("app_user.id", ondelete="RESTRICT"), nullable=True, index=True
+    )
+    workflow_run_id: Mapped[uuid.UUID | None] = mapped_column(
+        Uuid, ForeignKey("workflow_run.id", ondelete="RESTRICT"), nullable=True, index=True
+    )
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)

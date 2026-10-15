@@ -326,6 +326,23 @@ def enqueue_analysis_task_compilation(
     get_dbos_client().enqueue_in_transaction(db, options, task_version_id)
 
 
+def enqueue_fact_specification_compilation(
+    db: Session,
+    workflow_id: str,
+    task_version_id: str,
+) -> None:
+    settings = get_settings()
+    if not settings.dbos_enabled:
+        return
+    options: EnqueueOptions = {
+        "workflow_name": "fact_development_specification_compilation_v1",
+        "queue_name": "fact-specification-compilations",
+        "workflow_id": workflow_id,
+        "application_name": settings.dbos_application_name,
+    }
+    get_dbos_client().enqueue_in_transaction(db, options, task_version_id)
+
+
 def enqueue_analysis_task_playground(db: Session, workflow_id: str, workflow_run_id: str) -> None:
     settings = get_settings()
     if not settings.dbos_enabled:

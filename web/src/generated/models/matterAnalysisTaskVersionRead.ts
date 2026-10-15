@@ -6,6 +6,7 @@
  * OpenAPI spec version: 0.1.0
  */
 import type { DecisionSpecification } from './decisionSpecification';
+import type { FactDevelopmentSpecification } from './factDevelopmentSpecification';
 import type { MatterAnalysisTaskVersionReadCompilationProgress } from './matterAnalysisTaskVersionReadCompilationProgress';
 import type { MatterAnalysisTaskVersionReadCompilationStatus } from './matterAnalysisTaskVersionReadCompilationStatus';
 import type { MatterAnalysisTaskVersionReadCompilerModelConfiguration } from './matterAnalysisTaskVersionReadCompilerModelConfiguration';
@@ -32,7 +33,13 @@ export interface MatterAnalysisTaskVersionRead {
   classification_model_id: string | null;
   classification_model_version_id: string | null;
   classification_embedding_job_id?: string | null;
+  review_guidance_id?: string | null;
+  review_guidance_revision_id?: string | null;
+  review_guidance_revision?: number | null;
+  review_guidance_content_hash?: string | null;
+  review_guidance_pin_stale?: boolean;
   decision_specification: DecisionSpecification | null;
+  fact_development_specification?: FactDevelopmentSpecification | null;
   specification_content_hash: string | null;
   input_contract: MatterAnalysisTaskVersionReadInputContract;
   output_contract: MatterAnalysisTaskVersionReadOutputContract;

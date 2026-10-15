@@ -16,6 +16,7 @@ from app.analysis_tasks import (
     create_analysis_task,
     publish_analysis_task_version,
     set_analysis_task_specification,
+    set_fact_development_specification,
 )
 from app.audit import record_audit
 from app.classification_analysis_tasks import (
@@ -25,6 +26,9 @@ from app.classification_analysis_tasks import (
 )
 from app.database import get_db
 from app.dependencies import Principal, can_admin_matter, get_principal
+from app.fact_issue_membership import FactIssueMembershipError, evaluate_issue_membership, issue_document_counts
+from app.fact_specification_compilation import queue_fact_specification_compilation
+from app.fact_specifications import FactSpecificationError, parse_fact_development_specification
 from app.job_archives import job_not_archived
 from app.job_executions import ANALYSIS_TASK_BATCH_RUN_JOB_TYPE, CLASSIFICATION_ANALYSIS_TASK_JOB_TYPE
 from app.models import (
@@ -33,7 +37,11 @@ from app.models import (
     MatterAnalysisTask,
     MatterAnalysisTaskRun,
     MatterAnalysisTaskVersion,
+    MatterDefinition,
+    MatterDefinitionRevision,
     ReviewBatch,
+    ReviewBatchDocument,
+    ReviewBatchReviewerCoding,
     ReviewBatchRun,
     ReviewBatchRunDocument,
     ReviewDecisionResult,
@@ -42,6 +50,9 @@ from app.models import (
     WorkflowRun,
 )
 from app.schemas import (
+    FactDevelopmentSpecificationUpdate,
+    FactIssueMembershipPreviewCreate,
+    FactIssueMembershipPreviewRead,
     JobExecutionRead,
     MatterAnalysisTaskCreate,
     MatterAnalysisTaskPlaygroundCreate,
@@ -154,10 +165,20 @@ def _task_version_read(
         )
         if raw_embedding_job_id:
             embedding_job_id = uuid.UUID(str(raw_embedding_job_id))
+    guidance_revision_number: int | None = None
+    guidance_pin_stale = False
+    if version.review_guidance_revision_id is not None:
+        guidance_revision = db.get(MatterDefinitionRevision, version.review_guidance_revision_id)
+        guidance = db.get(MatterDefinition, version.review_guidance_id) if version.review_guidance_id else None
+        if guidance_revision is not None:
+            guidance_revision_number = guidance_revision.revision
+            guidance_pin_stale = guidance is not None and guidance.published_revision != guidance_revision.revision
     return MatterAnalysisTaskVersionRead.model_validate(version).model_copy(
         update={
             "compilation_progress": progress,
             "classification_embedding_job_id": embedding_job_id,
+            "review_guidance_revision": guidance_revision_number,
+            "review_guidance_pin_stale": guidance_pin_stale,
         }
     )
 
@@ -329,6 +350,8 @@ def create_matter_analysis_task(
             definition_markdown=payload.definition_markdown,
             destination_metadata_definition_ids=payload.destination_metadata_definition_ids,
             classification_model_version_id=payload.classification_model_version_id,
+            review_guidance_id=payload.review_guidance_id,
+            review_guidance_revision=payload.review_guidance_revision,
         )
     except MatterAnalysisTaskError as exc:
         _raise_task_error(exc)
@@ -531,6 +554,7 @@ def create_analysis_task_version(
             decision_provider=payload.decision_provider,
             destination_metadata_definition_ids=payload.destination_metadata_definition_ids,
             classification_model_version_id=payload.classification_model_version_id,
+            review_guidance_revision=payload.review_guidance_revision,
         )
     except MatterAnalysisTaskError as exc:
         _raise_task_error(exc)
@@ -614,6 +638,131 @@ def update_analysis_task_specification(
     return _task_read(db, task, task_version)
 
 
+@router.put("/{task_id}/versions/{version_number}/fact-specification", response_model=MatterAnalysisTaskRead)
+def update_fact_development_specification(
+    matter_id: uuid.UUID,
+    task_id: uuid.UUID,
+    version_number: int,
+    payload: FactDevelopmentSpecificationUpdate,
+    principal: Principal = Depends(get_principal),
+    db: Session = Depends(get_db),
+) -> MatterAnalysisTaskRead:
+    """Save a reviewer-edited issue catalog; it is validated deterministically before it becomes READY."""
+
+    matter = _require_matter_admin(db, principal, matter_id)
+    task = _require_task(db, matter_id=matter_id, task_id=task_id)
+    prior = _task_version(db, task_id=task.id, version_number=version_number)
+    try:
+        task_version = set_fact_development_specification(
+            db,
+            task_id=task_id,
+            version_number=version_number,
+            specification=payload.fact_development_specification,
+            compiler_skill_definition_version_id=prior.compiler_skill_definition_version_id,
+            compiler_skill_run_id=prior.compiler_skill_run_id,
+            compiler_model_configuration=prior.compiler_model_configuration,
+            validation_report={"warnings": []},
+            source_provenance={"specification_origin": "USER_EDIT"},
+        )
+    except MatterAnalysisTaskError as exc:
+        _raise_task_error(exc)
+    record_audit(
+        db,
+        tenant_id=matter.client.tenant_id,
+        actor_user_id=principal.user.id,
+        action="matter_analysis_task.fact_specification.updated",
+        target_type="matter_analysis_task",
+        target_id=task.id,
+        details={
+            "matter_id": str(matter.id),
+            "version": task_version.version,
+            "specification_content_hash": task_version.specification_content_hash,
+        },
+    )
+    db.commit()
+    db.refresh(task)
+    db.refresh(task_version)
+    return _task_read(db, task, task_version)
+
+
+@router.post(
+    "/{task_id}/versions/{version_number}/issue-membership-preview",
+    response_model=FactIssueMembershipPreviewRead,
+)
+def preview_fact_issue_membership(
+    matter_id: uuid.UUID,
+    task_id: uuid.UUID,
+    version_number: int,
+    payload: FactIssueMembershipPreviewCreate,
+    principal: Principal = Depends(get_principal),
+    db: Session = Depends(get_db),
+) -> FactIssueMembershipPreviewRead:
+    """Count how many documents of a ready batch belong to each issue, without starting a run."""
+
+    _require_matter_admin(db, principal, matter_id)
+    task = _require_task(db, matter_id=matter_id, task_id=task_id)
+    if task.task_type != "FACT_DEVELOPMENT":
+        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="Only fact-development tasks have issues")
+    task_version = _task_version(db, task_id=task.id, version_number=version_number)
+    try:
+        specification = parse_fact_development_specification(task_version.fact_development_specification)
+    except FactSpecificationError as exc:
+        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=str(exc)) from exc
+    batch = db.scalar(
+        select(ReviewBatch).where(ReviewBatch.id == payload.review_batch_id, ReviewBatch.matter_id == matter_id)
+    )
+    if batch is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Review batch not found")
+    if batch.status != "READY":
+        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="The review batch is not ready")
+    reviewer_coding_revision: int | None = None
+    if payload.coding_source == "REVIEWER_CODING":
+        coding = (
+            db.get(ReviewBatchReviewerCoding, payload.reviewer_coding_id)
+            if payload.reviewer_coding_id is not None
+            else None
+        )
+        if coding is None or coding.review_batch_id != batch.id:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail="Reviewer coding was not found for this review batch",
+            )
+        reviewer_coding_revision = coding.revision
+    elif payload.reviewer_coding_id is not None:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail="reviewer_coding_id applies only to the REVIEWER_CODING source",
+        )
+    document_ids = list(
+        db.scalars(
+            select(ReviewBatchDocument.matter_document_id)
+            .where(ReviewBatchDocument.review_batch_id == batch.id)
+            .order_by(ReviewBatchDocument.sequence_number)
+        )
+    )
+    try:
+        membership = evaluate_issue_membership(
+            db,
+            matter_id=matter_id,
+            specification=specification,
+            document_ids=document_ids,
+            coding_source=payload.coding_source,
+            reviewer_coding_id=payload.reviewer_coding_id,
+            reviewer_coding_revision=reviewer_coding_revision,
+        )
+    except FactIssueMembershipError as exc:
+        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=str(exc)) from exc
+    return FactIssueMembershipPreviewRead(
+        review_batch_id=batch.id,
+        coding_source=payload.coding_source,
+        reviewer_coding_id=payload.reviewer_coding_id,
+        reviewer_coding_revision=reviewer_coding_revision,
+        batch_document_count=len(document_ids),
+        matched_document_count=len(membership),
+        issues=issue_document_counts(specification, membership),
+    )
+
+
 @router.post(
     "/{task_id}/versions/{version_number}/compile",
     response_model=MatterAnalysisTaskRead,
@@ -628,13 +777,18 @@ def compile_analysis_task_specification(
 ) -> MatterAnalysisTaskRead:
     matter = _require_matter_admin(db, principal, matter_id)
     task = _require_task(db, matter_id=matter_id, task_id=task_id)
-    if task.task_type != "QUESTION_ANSWERING":
+    if task.task_type not in {"QUESTION_ANSWERING", "FACT_DEVELOPMENT"}:
         raise HTTPException(
             status_code=status.HTTP_409_CONFLICT,
-            detail="Only question-answering tasks compile a Decision Specification",
+            detail="Only question-answering and fact-development tasks compile a specification",
         )
+    queue = (
+        queue_fact_specification_compilation
+        if task.task_type == "FACT_DEVELOPMENT"
+        else queue_analysis_task_compilation
+    )
     try:
-        task_version, workflow = queue_analysis_task_compilation(
+        task_version, workflow = queue(
             db,
             matter=matter,
             task=task,

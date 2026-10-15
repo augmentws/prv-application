@@ -9,12 +9,22 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from app.decision_specifications import DecisionSpecification, validate_specification_for_task_version
+from app.fact_specifications import (
+    FactDevelopmentSpecification,
+    FactSpecificationError,
+    mappable_metadata_definitions,
+    parse_fact_development_specification,
+    task_version_source_catalog,
+    validate_fact_development_specification,
+)
 from app.models import (
     ClassificationModel,
     ClassificationModelVersion,
     Matter,
     MatterAnalysisTask,
     MatterAnalysisTaskVersion,
+    MatterDefinition,
+    MatterDefinitionRevision,
     MetadataDefinition,
     utcnow,
 )
@@ -22,6 +32,7 @@ from app.models import (
 TASK_WORKFLOW_KEYS: dict[str, str] = {
     "QUESTION_ANSWERING": "question_answering_v1",
     "CLASSIFICATION": "classification_scoring_v1",
+    "FACT_DEVELOPMENT": "fact_development_v1",
 }
 
 DECISION_PROVIDER_MODELS: dict[str, str | None] = {
@@ -156,6 +167,67 @@ def _classification_binding(
     return model.id, version.id
 
 
+def _review_guidance_pin(
+    db: Session,
+    *,
+    matter_id: uuid.UUID,
+    review_guidance_id: uuid.UUID | None,
+    review_guidance_revision: int | None,
+) -> tuple[MatterDefinition, MatterDefinitionRevision]:
+    """Resolve the exact published Review Guidance revision a fact-development version pins."""
+
+    if review_guidance_id is None:
+        raise MatterAnalysisTaskError("Fact-development tasks must pin a Review Guidance profile")
+    guidance = db.scalar(
+        select(MatterDefinition).where(
+            MatterDefinition.id == review_guidance_id,
+            MatterDefinition.matter_id == matter_id,
+        )
+    )
+    if guidance is None:
+        raise MatterAnalysisTaskError("Review Guidance was not found in this matter")
+    if guidance.status != "ACTIVE":
+        raise MatterAnalysisTaskError("Archived Review Guidance cannot be pinned")
+    if guidance.published_revision is None:
+        raise MatterAnalysisTaskError("Review Guidance must be published before a fact-development task can pin it")
+    revision_number = guidance.published_revision if review_guidance_revision is None else review_guidance_revision
+    if revision_number != guidance.published_revision:
+        raise MatterAnalysisTaskError(
+            f"Only the published Review Guidance revision ({guidance.published_revision}) can be pinned"
+        )
+    revision = db.scalar(
+        select(MatterDefinitionRevision).where(
+            MatterDefinitionRevision.matter_definition_id == guidance.id,
+            MatterDefinitionRevision.revision == revision_number,
+        )
+    )
+    if revision is None:
+        raise MatterAnalysisTaskError("The published Review Guidance revision is unavailable")
+    return guidance, revision
+
+
+def _reject_guidance_pin_for_other_types(
+    review_guidance_id: uuid.UUID | None,
+    review_guidance_revision: int | None,
+) -> None:
+    if review_guidance_id is not None or review_guidance_revision is not None:
+        raise MatterAnalysisTaskError("Only fact-development tasks pin Review Guidance")
+
+
+def _validate_fact_task_options(
+    *,
+    decision_provider: str,
+    destination_ids: list[str] | None,
+    classification_model_version_id: uuid.UUID | None,
+) -> None:
+    if decision_provider != "JEV":
+        raise MatterAnalysisTaskError("Fact-development tasks do not use a decision provider")
+    if destination_ids:
+        raise MatterAnalysisTaskError("Fact-development tasks do not write coding fields")
+    if classification_model_version_id is not None:
+        raise MatterAnalysisTaskError("Fact-development tasks cannot pin a classification model")
+
+
 def _validate_specification_destinations(
     db: Session,
     *,
@@ -206,6 +278,8 @@ def create_analysis_task(
     definition_markdown: str,
     destination_metadata_definition_ids: list[uuid.UUID],
     classification_model_version_id: uuid.UUID | None = None,
+    review_guidance_id: uuid.UUID | None = None,
+    review_guidance_revision: int | None = None,
 ) -> tuple[MatterAnalysisTask, MatterAnalysisTaskVersion]:
     workflow_key = TASK_WORKFLOW_KEYS.get(task_type)
     if workflow_key is None:
@@ -218,6 +292,8 @@ def create_analysis_task(
     )
     if existing is not None:
         raise MatterAnalysisTaskConflict(f"Analysis task key already exists for this matter: {key}")
+    if task_type == "FACT_DEVELOPMENT" and destination_metadata_definition_ids:
+        raise MatterAnalysisTaskError("Fact-development tasks do not write coding fields")
     destination_ids = _validated_destination_ids(
         db,
         matter_id=matter.id,
@@ -225,7 +301,24 @@ def create_analysis_task(
     )
     classification_model_id: uuid.UUID | None = None
     pinned_model_version_id: uuid.UUID | None = None
+    guidance: MatterDefinition | None = None
+    guidance_revision: MatterDefinitionRevision | None = None
     decision_model = decision_provider_model(decision_provider)
+    if task_type == "FACT_DEVELOPMENT":
+        _validate_fact_task_options(
+            decision_provider=decision_provider,
+            destination_ids=destination_ids,
+            classification_model_version_id=classification_model_version_id,
+        )
+        decision_model = None
+        guidance, guidance_revision = _review_guidance_pin(
+            db,
+            matter_id=matter.id,
+            review_guidance_id=review_guidance_id,
+            review_guidance_revision=review_guidance_revision,
+        )
+    else:
+        _reject_guidance_pin_for_other_types(review_guidance_id, review_guidance_revision)
     if task_type == "CLASSIFICATION":
         if decision_provider != "JEV":
             raise MatterAnalysisTaskError("Classification tasks do not use a decision provider")
@@ -263,6 +356,11 @@ def create_analysis_task(
         decision_model=decision_model,
         classification_model_id=classification_model_id,
         classification_model_version_id=pinned_model_version_id,
+        review_guidance_id=guidance.id if guidance is not None else None,
+        review_guidance_revision_id=guidance_revision.id if guidance_revision is not None else None,
+        review_guidance_content_hash=(
+            content_hash(guidance_revision.content_markdown) if guidance_revision is not None else None
+        ),
         created_by_user_id=actor_user_id,
         source_provenance={
             "origin": "USER_CREATED",
@@ -274,6 +372,11 @@ def create_analysis_task(
                     "classification_model_version_id": str(pinned_model_version_id),
                 }
                 if classification_model_id and pinned_model_version_id
+                else {}
+            ),
+            **(
+                {"review_guidance_id": str(guidance.id), "review_guidance_revision": guidance_revision.revision}
+                if guidance is not None and guidance_revision is not None
                 else {}
             ),
         },
@@ -293,6 +396,7 @@ def append_analysis_task_version(
     decision_provider: str | None,
     destination_metadata_definition_ids: list[uuid.UUID] | None,
     classification_model_version_id: uuid.UUID | None = None,
+    review_guidance_revision: int | None = None,
 ) -> tuple[MatterAnalysisTask, MatterAnalysisTaskVersion]:
     task = db.scalar(select(MatterAnalysisTask).where(MatterAnalysisTask.id == task_id).with_for_update())
     if task is None:
@@ -310,6 +414,8 @@ def append_analysis_task_version(
     )
     if prior_version is None:
         raise MatterAnalysisTaskConflict("Analysis task has no current version")
+    if task.task_type == "FACT_DEVELOPMENT" and destination_metadata_definition_ids:
+        raise MatterAnalysisTaskError("Fact-development tasks do not write coding fields")
     destination_ids = (
         prior_version.destination_metadata_definition_ids
         if destination_metadata_definition_ids is None
@@ -333,8 +439,30 @@ def append_analysis_task_version(
             classification_model_version_id=requested_version_id,
             destination_ids=destination_ids or [],
         )
-    elif classification_model_version_id is not None:
+    elif classification_model_version_id is not None and task.task_type != "FACT_DEVELOPMENT":
         raise MatterAnalysisTaskError("Question-answering tasks cannot pin a classification model")
+    guidance_id = prior_version.review_guidance_id
+    guidance_revision_id = prior_version.review_guidance_revision_id
+    guidance_hash = prior_version.review_guidance_content_hash
+    if task.task_type == "FACT_DEVELOPMENT":
+        _validate_fact_task_options(
+            decision_provider=selected_decision_provider,
+            destination_ids=destination_ids,
+            classification_model_version_id=classification_model_version_id,
+        )
+        decision_model = None
+        if review_guidance_revision is not None:
+            guidance, guidance_revision = _review_guidance_pin(
+                db,
+                matter_id=task.matter_id,
+                review_guidance_id=prior_version.review_guidance_id,
+                review_guidance_revision=review_guidance_revision,
+            )
+            guidance_id = guidance.id
+            guidance_revision_id = guidance_revision.id
+            guidance_hash = content_hash(guidance_revision.content_markdown)
+    else:
+        _reject_guidance_pin_for_other_types(None, review_guidance_revision)
     if prior_version.status == "DRAFT":
         prior_version.status = "RETIRED"
         if prior_version.compilation_status == "GENERATING":
@@ -354,6 +482,9 @@ def append_analysis_task_version(
         decision_model=decision_model,
         classification_model_id=pinned_model_id,
         classification_model_version_id=pinned_model_version_id,
+        review_guidance_id=guidance_id,
+        review_guidance_revision_id=guidance_revision_id,
+        review_guidance_content_hash=guidance_hash,
         created_by_user_id=actor_user_id,
         source_provenance={
             "origin": "USER_EDIT",
@@ -439,6 +570,76 @@ def set_analysis_task_specification(
     return task_version
 
 
+def _validated_fact_specification(
+    db: Session,
+    *,
+    task: MatterAnalysisTask,
+    task_version: MatterAnalysisTaskVersion,
+    specification: FactDevelopmentSpecification,
+) -> list[dict[str, Any]]:
+    try:
+        return validate_fact_development_specification(
+            specification,
+            source_catalog=task_version_source_catalog(db, task_version),
+            definitions=mappable_metadata_definitions(db, task.matter_id),
+        )
+    except FactSpecificationError as exc:
+        raise MatterAnalysisTaskError(str(exc)) from exc
+
+
+def set_fact_development_specification(
+    db: Session,
+    *,
+    task_id: uuid.UUID,
+    version_number: int,
+    specification: FactDevelopmentSpecification,
+    compiler_skill_definition_version_id: uuid.UUID | None,
+    compiler_skill_run_id: uuid.UUID | None,
+    compiler_model_configuration: dict[str, Any],
+    validation_report: dict[str, Any],
+    source_provenance: dict[str, Any],
+) -> MatterAnalysisTaskVersion:
+    """Attach a validated Fact Development Specification to the current draft version and mark it READY."""
+
+    task = db.scalar(select(MatterAnalysisTask).where(MatterAnalysisTask.id == task_id).with_for_update())
+    if task is None:
+        raise MatterAnalysisTaskNotFound("Matter Analysis Task not found")
+    if task.task_type != "FACT_DEVELOPMENT":
+        raise MatterAnalysisTaskConflict("Only fact-development tasks carry a Fact Development Specification")
+    if version_number != task.current_version:
+        raise MatterAnalysisTaskConflict("A specification may only be attached to the current task version")
+    task_version = db.scalar(
+        select(MatterAnalysisTaskVersion)
+        .where(
+            MatterAnalysisTaskVersion.matter_analysis_task_id == task.id,
+            MatterAnalysisTaskVersion.version == version_number,
+        )
+        .with_for_update()
+    )
+    if task_version is None:
+        raise MatterAnalysisTaskNotFound("Matter Analysis Task version not found")
+    if task_version.status != "DRAFT":
+        raise MatterAnalysisTaskConflict("Published or retired task versions are immutable")
+
+    warnings = _validated_fact_specification(db, task=task, task_version=task_version, specification=specification)
+    specification_json = specification.model_dump(mode="json")
+    task_version.fact_development_specification = specification_json
+    task_version.specification_content_hash = json_content_hash(specification_json)
+    task_version.compiler_skill_definition_version_id = compiler_skill_definition_version_id
+    task_version.compiler_skill_run_id = compiler_skill_run_id
+    task_version.compiler_model_configuration = compiler_model_configuration
+    task_version.validation_report = {
+        **validation_report,
+        "status": "VALID",
+        "errors": [],
+        "warnings": [*validation_report.get("warnings", []), *warnings],
+    }
+    task_version.source_provenance = {**task_version.source_provenance, **source_provenance}
+    task_version.compilation_status = "READY"
+    db.flush()
+    return task_version
+
+
 def publish_analysis_task_version(
     db: Session,
     *,
@@ -476,6 +677,17 @@ def publish_analysis_task_version(
             destination_ids=task_version.destination_metadata_definition_ids or [],
         )
         task_version.compilation_status = "READY"
+    elif task.task_type == "FACT_DEVELOPMENT":
+        if task_version.compilation_status != "READY" or task_version.fact_development_specification is None:
+            raise MatterAnalysisTaskConflict(
+                "The Fact Development Specification must be valid and READY before publication"
+            )
+        try:
+            specification = parse_fact_development_specification(task_version.fact_development_specification)
+        except FactSpecificationError as exc:
+            raise MatterAnalysisTaskConflict(str(exc)) from exc
+        # Coding fields or guidance may have changed since the specification was attached.
+        _validated_fact_specification(db, task=task, task_version=task_version, specification=specification)
     else:
         raise MatterAnalysisTaskConflict(f"Unsupported analysis task type: {task.task_type}")
 

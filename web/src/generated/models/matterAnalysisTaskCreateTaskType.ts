@@ -12,4 +12,5 @@ export type MatterAnalysisTaskCreateTaskType = typeof MatterAnalysisTaskCreateTa
 export const MatterAnalysisTaskCreateTaskType = {
   QUESTION_ANSWERING: 'QUESTION_ANSWERING',
   CLASSIFICATION: 'CLASSIFICATION',
+  FACT_DEVELOPMENT: 'FACT_DEVELOPMENT',
 } as const;

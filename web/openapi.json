@@ -4827,6 +4827,162 @@
         }
       }
     },
+    "/v1/matters/{matter_id}/analysis-tasks/{task_id}/versions/{version_number}/fact-specification": {
+      "put": {
+        "tags": [
+          "matter analysis tasks"
+        ],
+        "summary": "Update Fact Development Specification",
+        "description": "Save a reviewer-edited issue catalog; it is validated deterministically before it becomes READY.",
+        "operationId": "update_fact_development_specification_v1_matters__matter_id__analysis_tasks__task_id__versions__version_number__fact_specification_put",
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "matter_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid",
+              "title": "Matter Id"
+            }
+          },
+          {
+            "name": "task_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid",
+              "title": "Task Id"
+            }
+          },
+          {
+            "name": "version_number",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "integer",
+              "title": "Version Number"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/FactDevelopmentSpecificationUpdate"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/MatterAnalysisTaskRead"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v1/matters/{matter_id}/analysis-tasks/{task_id}/versions/{version_number}/issue-membership-preview": {
+      "post": {
+        "tags": [
+          "matter analysis tasks"
+        ],
+        "summary": "Preview Fact Issue Membership",
+        "description": "Count how many documents of a ready batch belong to each issue, without starting a run.",
+        "operationId": "preview_fact_issue_membership_v1_matters__matter_id__analysis_tasks__task_id__versions__version_number__issue_membership_preview_post",
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "matter_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid",
+              "title": "Matter Id"
+            }
+          },
+          {
+            "name": "task_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid",
+              "title": "Task Id"
+            }
+          },
+          {
+            "name": "version_number",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "integer",
+              "title": "Version Number"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/FactIssueMembershipPreviewCreate"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/FactIssueMembershipPreviewRead"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/v1/matters/{matter_id}/analysis-tasks/{task_id}/versions/{version_number}/compile": {
       "post": {
         "tags": [
@@ -14507,6 +14663,1414 @@
                     "$ref": "#/components/schemas/MatterDefinitionAssessmentRead"
                   },
                   "title": "Response List Guidance Assessments V1 Matters  Matter Id  Guidance  Guidance Id  Assessments Get"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v1/matters/{matter_id}/facts": {
+      "get": {
+        "tags": [
+          "matter facts"
+        ],
+        "summary": "List Facts",
+        "description": "Facts in date order, oldest first. Merged facts are excluded unless requested by status.\n\nFull faceted search arrives with the facts index; this list supports the basic filters reviewers need now.",
+        "operationId": "list_facts_v1_matters__matter_id__facts_get",
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "matter_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid",
+              "title": "Matter Id"
+            }
+          },
+          {
+            "name": "status",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "array",
+              "items": {
+                "type": "string"
+              },
+              "default": [],
+              "title": "Status"
+            }
+          },
+          {
+            "name": "issue_key",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "array",
+              "items": {
+                "type": "string"
+              },
+              "default": [],
+              "title": "Issue Key"
+            }
+          },
+          {
+            "name": "entity_id",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string",
+                  "format": "uuid"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Entity Id"
+            }
+          },
+          {
+            "name": "matter_document_id",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string",
+                  "format": "uuid"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Matter Document Id"
+            }
+          },
+          {
+            "name": "updated_since",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string",
+                  "format": "date-time"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Updated Since"
+            }
+          },
+          {
+            "name": "limit",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "integer",
+              "maximum": 500,
+              "minimum": 1,
+              "default": 100,
+              "title": "Limit"
+            }
+          },
+          {
+            "name": "offset",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "integer",
+              "minimum": 0,
+              "default": 0,
+              "title": "Offset"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/MatterFactPage"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      },
+      "post": {
+        "tags": [
+          "matter facts"
+        ],
+        "summary": "Create Matter Fact",
+        "operationId": "create_matter_fact_v1_matters__matter_id__facts_post",
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "matter_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid",
+              "title": "Matter Id"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/MatterFactCreate"
+              }
+            }
+          }
+        },
+        "responses": {
+          "201": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/MatterFactDetailRead"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v1/matters/{matter_id}/facts/{fact_id}": {
+      "get": {
+        "tags": [
+          "matter facts"
+        ],
+        "summary": "Get Matter Fact",
+        "operationId": "get_matter_fact_v1_matters__matter_id__facts__fact_id__get",
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "matter_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid",
+              "title": "Matter Id"
+            }
+          },
+          {
+            "name": "fact_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid",
+              "title": "Fact Id"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/MatterFactDetailRead"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      },
+      "patch": {
+        "tags": [
+          "matter facts"
+        ],
+        "summary": "Update Matter Fact",
+        "operationId": "update_matter_fact_v1_matters__matter_id__facts__fact_id__patch",
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "matter_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid",
+              "title": "Matter Id"
+            }
+          },
+          {
+            "name": "fact_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid",
+              "title": "Fact Id"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/MatterFactUpdate"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/MatterFactDetailRead"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v1/matters/{matter_id}/facts/{fact_id}/confirm": {
+      "post": {
+        "tags": [
+          "matter facts"
+        ],
+        "summary": "Confirm Matter Fact",
+        "operationId": "confirm_matter_fact_v1_matters__matter_id__facts__fact_id__confirm_post",
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "matter_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid",
+              "title": "Matter Id"
+            }
+          },
+          {
+            "name": "fact_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid",
+              "title": "Fact Id"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/MatterFactAction"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/MatterFactDetailRead"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v1/matters/{matter_id}/facts/{fact_id}/reject": {
+      "post": {
+        "tags": [
+          "matter facts"
+        ],
+        "summary": "Reject Matter Fact",
+        "operationId": "reject_matter_fact_v1_matters__matter_id__facts__fact_id__reject_post",
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "matter_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid",
+              "title": "Matter Id"
+            }
+          },
+          {
+            "name": "fact_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid",
+              "title": "Fact Id"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/MatterFactAction"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/MatterFactDetailRead"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v1/matters/{matter_id}/facts/{fact_id}/evidence": {
+      "post": {
+        "tags": [
+          "matter facts"
+        ],
+        "summary": "Add Matter Fact Evidence",
+        "operationId": "add_matter_fact_evidence_v1_matters__matter_id__facts__fact_id__evidence_post",
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "matter_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid",
+              "title": "Matter Id"
+            }
+          },
+          {
+            "name": "fact_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid",
+              "title": "Fact Id"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/MatterFactEvidenceAdd"
+              }
+            }
+          }
+        },
+        "responses": {
+          "201": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/MatterFactDetailRead"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v1/matters/{matter_id}/facts/{fact_id}/evidence/{evidence_id}": {
+      "delete": {
+        "tags": [
+          "matter facts"
+        ],
+        "summary": "Remove Matter Fact Evidence",
+        "operationId": "remove_matter_fact_evidence_v1_matters__matter_id__facts__fact_id__evidence__evidence_id__delete",
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "matter_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid",
+              "title": "Matter Id"
+            }
+          },
+          {
+            "name": "fact_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid",
+              "title": "Fact Id"
+            }
+          },
+          {
+            "name": "evidence_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid",
+              "title": "Evidence Id"
+            }
+          },
+          {
+            "name": "lock_version",
+            "in": "query",
+            "required": true,
+            "schema": {
+              "type": "integer",
+              "minimum": 1,
+              "title": "Lock Version"
+            }
+          },
+          {
+            "name": "reason",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string",
+                  "maxLength": 4000
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Reason"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/MatterFactDetailRead"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v1/matters/{matter_id}/facts/{fact_id}/merge": {
+      "post": {
+        "tags": [
+          "matter facts"
+        ],
+        "summary": "Merge Matter Fact",
+        "description": "Merge this fact into the target fact; returns the target.",
+        "operationId": "merge_matter_fact_v1_matters__matter_id__facts__fact_id__merge_post",
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "matter_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid",
+              "title": "Matter Id"
+            }
+          },
+          {
+            "name": "fact_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid",
+              "title": "Fact Id"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/MatterFactMerge"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/MatterFactDetailRead"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v1/matters/{matter_id}/facts/{fact_id}/unmerge": {
+      "post": {
+        "tags": [
+          "matter facts"
+        ],
+        "summary": "Unmerge Matter Fact",
+        "operationId": "unmerge_matter_fact_v1_matters__matter_id__facts__fact_id__unmerge_post",
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "matter_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid",
+              "title": "Matter Id"
+            }
+          },
+          {
+            "name": "fact_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid",
+              "title": "Fact Id"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/MatterFactAction"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/MatterFactDetailRead"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v1/matters/{matter_id}/entities": {
+      "get": {
+        "tags": [
+          "matter entities"
+        ],
+        "summary": "List Entities",
+        "description": "Canonical entities; a name or email search also matches their variants.",
+        "operationId": "list_entities_v1_matters__matter_id__entities_get",
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "matter_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid",
+              "title": "Matter Id"
+            }
+          },
+          {
+            "name": "q",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string",
+                  "maxLength": 300
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Q"
+            }
+          },
+          {
+            "name": "entity_type",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string",
+                  "pattern": "^(PERSON|ORGANIZATION)$"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Entity Type"
+            }
+          },
+          {
+            "name": "status",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "array",
+              "items": {
+                "type": "string"
+              },
+              "default": [],
+              "title": "Status"
+            }
+          },
+          {
+            "name": "limit",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "integer",
+              "maximum": 500,
+              "minimum": 1,
+              "default": 50,
+              "title": "Limit"
+            }
+          },
+          {
+            "name": "offset",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "integer",
+              "minimum": 0,
+              "default": 0,
+              "title": "Offset"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/MatterEntityPage"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      },
+      "post": {
+        "tags": [
+          "matter entities"
+        ],
+        "summary": "Create Matter Entity",
+        "operationId": "create_matter_entity_v1_matters__matter_id__entities_post",
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "matter_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid",
+              "title": "Matter Id"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/MatterEntityCreate"
+              }
+            }
+          }
+        },
+        "responses": {
+          "201": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/MatterEntityRead"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v1/matters/{matter_id}/entities/{entity_id}": {
+      "get": {
+        "tags": [
+          "matter entities"
+        ],
+        "summary": "Get Matter Entity",
+        "description": "Return the canonical entity, even when ``entity_id`` names one of its variants.",
+        "operationId": "get_matter_entity_v1_matters__matter_id__entities__entity_id__get",
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "matter_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid",
+              "title": "Matter Id"
+            }
+          },
+          {
+            "name": "entity_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid",
+              "title": "Entity Id"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/MatterEntityRead"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      },
+      "patch": {
+        "tags": [
+          "matter entities"
+        ],
+        "summary": "Update Matter Entity",
+        "operationId": "update_matter_entity_v1_matters__matter_id__entities__entity_id__patch",
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "matter_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid",
+              "title": "Matter Id"
+            }
+          },
+          {
+            "name": "entity_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid",
+              "title": "Entity Id"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/MatterEntityUpdate"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/MatterEntityRead"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v1/matters/{matter_id}/entities/{entity_id}/variants": {
+      "post": {
+        "tags": [
+          "matter entities"
+        ],
+        "summary": "Add Matter Entity Variant",
+        "operationId": "add_matter_entity_variant_v1_matters__matter_id__entities__entity_id__variants_post",
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "matter_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid",
+              "title": "Matter Id"
+            }
+          },
+          {
+            "name": "entity_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid",
+              "title": "Entity Id"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/MatterEntityVariantCreate"
+              }
+            }
+          }
+        },
+        "responses": {
+          "201": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/MatterEntityRead"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v1/matters/{matter_id}/entities/{entity_id}/confirm": {
+      "post": {
+        "tags": [
+          "matter entities"
+        ],
+        "summary": "Confirm Matter Entity",
+        "operationId": "confirm_matter_entity_v1_matters__matter_id__entities__entity_id__confirm_post",
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "matter_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid",
+              "title": "Matter Id"
+            }
+          },
+          {
+            "name": "entity_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid",
+              "title": "Entity Id"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/MatterEntityAction"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/MatterEntityRead"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v1/matters/{matter_id}/entities/{entity_id}/reject": {
+      "post": {
+        "tags": [
+          "matter entities"
+        ],
+        "summary": "Reject Matter Entity",
+        "description": "Reject an entity; it is removed from every fact's owner and participants as a new fact revision.",
+        "operationId": "reject_matter_entity_v1_matters__matter_id__entities__entity_id__reject_post",
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "matter_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid",
+              "title": "Matter Id"
+            }
+          },
+          {
+            "name": "entity_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid",
+              "title": "Entity Id"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/MatterEntityAction"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/MatterEntityRead"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v1/matters/{matter_id}/entities/{entity_id}/merge": {
+      "post": {
+        "tags": [
+          "matter entities"
+        ],
+        "summary": "Merge Matter Entity",
+        "description": "Merge this canonical entity (and its variants) into the target; returns the target.",
+        "operationId": "merge_matter_entity_v1_matters__matter_id__entities__entity_id__merge_post",
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "matter_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid",
+              "title": "Matter Id"
+            }
+          },
+          {
+            "name": "entity_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid",
+              "title": "Entity Id"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/MatterEntityMerge"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/MatterEntityRead"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v1/matters/{matter_id}/entities/{entity_id}/unmerge": {
+      "post": {
+        "tags": [
+          "matter entities"
+        ],
+        "summary": "Unmerge Matter Entity",
+        "description": "Split a variant off as its own canonical entity; returns the new canonical entity.",
+        "operationId": "unmerge_matter_entity_v1_matters__matter_id__entities__entity_id__unmerge_post",
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "matter_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid",
+              "title": "Matter Id"
+            }
+          },
+          {
+            "name": "entity_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid",
+              "title": "Entity Id"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/MatterEntityAction"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/MatterEntityRead"
                 }
               }
             }
@@ -28993,6 +30557,457 @@
         ],
         "title": "FacetValue"
       },
+      "FactDevelopmentLimits": {
+        "properties": {
+          "recalled_facts_per_issue": {
+            "type": "integer",
+            "maximum": 100.0,
+            "minimum": 1.0,
+            "title": "Recalled Facts Per Issue",
+            "default": 20
+          },
+          "max_operations_per_document": {
+            "type": "integer",
+            "maximum": 200.0,
+            "minimum": 1.0,
+            "title": "Max Operations Per Document",
+            "default": 25
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "title": "FactDevelopmentLimits"
+      },
+      "FactDevelopmentSpecification": {
+        "properties": {
+          "schema_version": {
+            "type": "string",
+            "const": "fact-development-specification-v1",
+            "title": "Schema Version",
+            "default": "fact-development-specification-v1"
+          },
+          "summary": {
+            "type": "string",
+            "maxLength": 20000,
+            "minLength": 1,
+            "title": "Summary"
+          },
+          "date_rules": {
+            "type": "string",
+            "maxLength": 10000,
+            "minLength": 1,
+            "title": "Date Rules"
+          },
+          "owner_rules": {
+            "type": "string",
+            "maxLength": 10000,
+            "minLength": 1,
+            "title": "Owner Rules"
+          },
+          "issues": {
+            "items": {
+              "$ref": "#/components/schemas/FactIssue"
+            },
+            "type": "array",
+            "maxItems": 200,
+            "minItems": 1,
+            "title": "Issues"
+          },
+          "limits": {
+            "$ref": "#/components/schemas/FactDevelopmentLimits"
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "summary",
+          "date_rules",
+          "owner_rules",
+          "issues"
+        ],
+        "title": "FactDevelopmentSpecification"
+      },
+      "FactDevelopmentSpecificationUpdate": {
+        "properties": {
+          "fact_development_specification": {
+            "$ref": "#/components/schemas/FactDevelopmentSpecification"
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "fact_development_specification"
+        ],
+        "title": "FactDevelopmentSpecificationUpdate"
+      },
+      "FactEvidenceCreate": {
+        "properties": {
+          "matter_document_id": {
+            "type": "string",
+            "format": "uuid",
+            "title": "Matter Document Id"
+          },
+          "paragraph_id": {
+            "type": "string",
+            "maxLength": 50,
+            "minLength": 1,
+            "title": "Paragraph Id"
+          },
+          "quote": {
+            "type": "string",
+            "maxLength": 5000,
+            "minLength": 1,
+            "title": "Quote"
+          },
+          "occurrence": {
+            "type": "integer",
+            "maximum": 1000.0,
+            "minimum": 1.0,
+            "title": "Occurrence",
+            "default": 1
+          },
+          "stance": {
+            "type": "string",
+            "enum": [
+              "SUPPORTS",
+              "CONTRADICTS"
+            ],
+            "title": "Stance",
+            "default": "SUPPORTS"
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "matter_document_id",
+          "paragraph_id",
+          "quote"
+        ],
+        "title": "FactEvidenceCreate"
+      },
+      "FactIssue": {
+        "properties": {
+          "key": {
+            "type": "string",
+            "pattern": "^[a-z][a-z0-9_]{0,99}$",
+            "title": "Key"
+          },
+          "name": {
+            "type": "string",
+            "maxLength": 200,
+            "minLength": 1,
+            "title": "Name"
+          },
+          "description": {
+            "anyOf": [
+              {
+                "type": "string",
+                "maxLength": 10000
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Description"
+          },
+          "fact_guidance": {
+            "type": "string",
+            "maxLength": 20000,
+            "minLength": 1,
+            "title": "Fact Guidance"
+          },
+          "source_refs": {
+            "items": {
+              "$ref": "#/components/schemas/FactSourceReference"
+            },
+            "type": "array",
+            "maxItems": 50,
+            "minItems": 1,
+            "title": "Source Refs"
+          },
+          "coding_mappings": {
+            "items": {
+              "$ref": "#/components/schemas/FactIssueCodingMapping"
+            },
+            "type": "array",
+            "maxItems": 50,
+            "minItems": 1,
+            "title": "Coding Mappings"
+          },
+          "renamed_from": {
+            "anyOf": [
+              {
+                "type": "string",
+                "pattern": "^[a-z][a-z0-9_]{0,99}$"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Renamed From"
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "key",
+          "name",
+          "fact_guidance",
+          "source_refs",
+          "coding_mappings"
+        ],
+        "title": "FactIssue"
+      },
+      "FactIssueCodingMapping": {
+        "properties": {
+          "metadata_definition_key": {
+            "type": "string",
+            "pattern": "^[a-z][a-z0-9_]{0,99}$",
+            "title": "Metadata Definition Key"
+          },
+          "match_type": {
+            "type": "string",
+            "enum": [
+              "ENUM_VALUE",
+              "BOOLEAN",
+              "TEXT_EXACT"
+            ],
+            "title": "Match Type"
+          },
+          "value": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "boolean"
+              }
+            ],
+            "title": "Value"
+          },
+          "include_descendants": {
+            "type": "boolean",
+            "title": "Include Descendants",
+            "default": true
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "metadata_definition_key",
+          "match_type",
+          "value"
+        ],
+        "title": "FactIssueCodingMapping",
+        "description": "How one issue's coding is stored: a document matches when its field holds this value."
+      },
+      "FactIssueMembershipCount": {
+        "properties": {
+          "issue_key": {
+            "type": "string",
+            "title": "Issue Key"
+          },
+          "name": {
+            "type": "string",
+            "title": "Name"
+          },
+          "document_count": {
+            "type": "integer",
+            "title": "Document Count"
+          }
+        },
+        "type": "object",
+        "required": [
+          "issue_key",
+          "name",
+          "document_count"
+        ],
+        "title": "FactIssueMembershipCount"
+      },
+      "FactIssueMembershipPreviewCreate": {
+        "properties": {
+          "review_batch_id": {
+            "type": "string",
+            "format": "uuid",
+            "title": "Review Batch Id"
+          },
+          "coding_source": {
+            "type": "string",
+            "enum": [
+              "MATTER_METADATA",
+              "REVIEWER_CODING"
+            ],
+            "title": "Coding Source",
+            "default": "MATTER_METADATA"
+          },
+          "reviewer_coding_id": {
+            "anyOf": [
+              {
+                "type": "string",
+                "format": "uuid"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Reviewer Coding Id"
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "review_batch_id"
+        ],
+        "title": "FactIssueMembershipPreviewCreate"
+      },
+      "FactIssueMembershipPreviewRead": {
+        "properties": {
+          "review_batch_id": {
+            "type": "string",
+            "format": "uuid",
+            "title": "Review Batch Id"
+          },
+          "coding_source": {
+            "type": "string",
+            "enum": [
+              "MATTER_METADATA",
+              "REVIEWER_CODING"
+            ],
+            "title": "Coding Source"
+          },
+          "reviewer_coding_id": {
+            "anyOf": [
+              {
+                "type": "string",
+                "format": "uuid"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Reviewer Coding Id"
+          },
+          "reviewer_coding_revision": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Reviewer Coding Revision"
+          },
+          "batch_document_count": {
+            "type": "integer",
+            "title": "Batch Document Count"
+          },
+          "matched_document_count": {
+            "type": "integer",
+            "title": "Matched Document Count"
+          },
+          "issues": {
+            "items": {
+              "$ref": "#/components/schemas/FactIssueMembershipCount"
+            },
+            "type": "array",
+            "title": "Issues"
+          }
+        },
+        "type": "object",
+        "required": [
+          "review_batch_id",
+          "coding_source",
+          "reviewer_coding_id",
+          "reviewer_coding_revision",
+          "batch_document_count",
+          "matched_document_count",
+          "issues"
+        ],
+        "title": "FactIssueMembershipPreviewRead"
+      },
+      "FactIssueRefModel": {
+        "properties": {
+          "matter_analysis_task_id": {
+            "type": "string",
+            "format": "uuid",
+            "title": "Matter Analysis Task Id"
+          },
+          "issue_key": {
+            "type": "string",
+            "maxLength": 100,
+            "minLength": 1,
+            "title": "Issue Key"
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "matter_analysis_task_id",
+          "issue_key"
+        ],
+        "title": "FactIssueRefModel"
+      },
+      "FactParticipantModel": {
+        "properties": {
+          "entity_id": {
+            "type": "string",
+            "format": "uuid",
+            "title": "Entity Id"
+          },
+          "role": {
+            "type": "string",
+            "enum": [
+              "PARTICIPANT_ACTOR",
+              "PARTICIPANT_RECIPIENT"
+            ],
+            "title": "Role"
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "entity_id",
+          "role"
+        ],
+        "title": "FactParticipantModel"
+      },
+      "FactSourceReference": {
+        "properties": {
+          "source": {
+            "type": "string",
+            "enum": [
+              "REVIEW_GUIDANCE",
+              "TASK_DEFINITION"
+            ],
+            "title": "Source"
+          },
+          "heading": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Heading"
+          },
+          "excerpt_hash": {
+            "type": "string",
+            "pattern": "^[0-9a-f]{64}$",
+            "title": "Excerpt Hash"
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "source",
+          "heading",
+          "excerpt_hash"
+        ],
+        "title": "FactSourceReference"
+      },
       "FeatureContract": {
         "properties": {
           "family_key": {
@@ -29720,7 +31735,8 @@
             "type": "string",
             "enum": [
               "QUESTION_ANSWERING",
-              "CLASSIFICATION"
+              "CLASSIFICATION",
+              "FACT_DEVELOPMENT"
             ],
             "title": "Task Type"
           },
@@ -29759,6 +31775,30 @@
               }
             ],
             "title": "Classification Model Version Id"
+          },
+          "review_guidance_id": {
+            "anyOf": [
+              {
+                "type": "string",
+                "format": "uuid"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Review Guidance Id"
+          },
+          "review_guidance_revision": {
+            "anyOf": [
+              {
+                "type": "integer",
+                "minimum": 1.0
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Review Guidance Revision"
           }
         },
         "additionalProperties": false,
@@ -29901,7 +31941,8 @@
             "type": "string",
             "enum": [
               "QUESTION_ANSWERING",
-              "CLASSIFICATION"
+              "CLASSIFICATION",
+              "FACT_DEVELOPMENT"
             ],
             "title": "Task Type"
           },
@@ -30393,6 +32434,18 @@
               }
             ],
             "title": "Classification Model Version Id"
+          },
+          "review_guidance_revision": {
+            "anyOf": [
+              {
+                "type": "integer",
+                "minimum": 1.0
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Review Guidance Revision"
           }
         },
         "additionalProperties": false,
@@ -30517,10 +32570,71 @@
             ],
             "title": "Classification Embedding Job Id"
           },
+          "review_guidance_id": {
+            "anyOf": [
+              {
+                "type": "string",
+                "format": "uuid"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Review Guidance Id"
+          },
+          "review_guidance_revision_id": {
+            "anyOf": [
+              {
+                "type": "string",
+                "format": "uuid"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Review Guidance Revision Id"
+          },
+          "review_guidance_revision": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Review Guidance Revision"
+          },
+          "review_guidance_content_hash": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Review Guidance Content Hash"
+          },
+          "review_guidance_pin_stale": {
+            "type": "boolean",
+            "title": "Review Guidance Pin Stale",
+            "default": false
+          },
           "decision_specification": {
             "anyOf": [
               {
                 "$ref": "#/components/schemas/DecisionSpecification"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "fact_development_specification": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/FactDevelopmentSpecification"
               },
               {
                 "type": "null"
@@ -33031,6 +35145,489 @@
         ],
         "title": "MatterEmbeddingJobRead"
       },
+      "MatterEntityAction": {
+        "properties": {
+          "lock_version": {
+            "type": "integer",
+            "minimum": 1.0,
+            "title": "Lock Version"
+          },
+          "reason": {
+            "anyOf": [
+              {
+                "type": "string",
+                "maxLength": 4000
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Reason"
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "lock_version"
+        ],
+        "title": "MatterEntityAction"
+      },
+      "MatterEntityCreate": {
+        "properties": {
+          "entity_type": {
+            "type": "string",
+            "enum": [
+              "PERSON",
+              "ORGANIZATION"
+            ],
+            "title": "Entity Type"
+          },
+          "display_name": {
+            "type": "string",
+            "maxLength": 300,
+            "minLength": 1,
+            "title": "Display Name"
+          },
+          "email": {
+            "anyOf": [
+              {
+                "type": "string",
+                "maxLength": 320
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Email"
+          },
+          "title": {
+            "anyOf": [
+              {
+                "type": "string",
+                "maxLength": 200
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Title"
+          },
+          "organization_id": {
+            "anyOf": [
+              {
+                "type": "string",
+                "format": "uuid"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Organization Id"
+          },
+          "custodian_id": {
+            "anyOf": [
+              {
+                "type": "string",
+                "format": "uuid"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Custodian Id"
+          },
+          "description": {
+            "anyOf": [
+              {
+                "type": "string",
+                "maxLength": 10000
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Description"
+          },
+          "status": {
+            "type": "string",
+            "enum": [
+              "PROPOSED",
+              "CONFIRMED"
+            ],
+            "title": "Status",
+            "default": "CONFIRMED"
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "entity_type",
+          "display_name"
+        ],
+        "title": "MatterEntityCreate"
+      },
+      "MatterEntityMerge": {
+        "properties": {
+          "lock_version": {
+            "type": "integer",
+            "minimum": 1.0,
+            "title": "Lock Version"
+          },
+          "target_entity_id": {
+            "type": "string",
+            "format": "uuid",
+            "title": "Target Entity Id"
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "lock_version",
+          "target_entity_id"
+        ],
+        "title": "MatterEntityMerge"
+      },
+      "MatterEntityPage": {
+        "properties": {
+          "items": {
+            "items": {
+              "$ref": "#/components/schemas/MatterEntityRead"
+            },
+            "type": "array",
+            "title": "Items"
+          },
+          "total": {
+            "type": "integer",
+            "title": "Total"
+          }
+        },
+        "type": "object",
+        "required": [
+          "items",
+          "total"
+        ],
+        "title": "MatterEntityPage"
+      },
+      "MatterEntityRead": {
+        "properties": {
+          "id": {
+            "type": "string",
+            "format": "uuid",
+            "title": "Id"
+          },
+          "matter_id": {
+            "type": "string",
+            "format": "uuid",
+            "title": "Matter Id"
+          },
+          "entity_type": {
+            "type": "string",
+            "enum": [
+              "PERSON",
+              "ORGANIZATION"
+            ],
+            "title": "Entity Type"
+          },
+          "display_name": {
+            "type": "string",
+            "title": "Display Name"
+          },
+          "email": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Email"
+          },
+          "title": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Title"
+          },
+          "organization_id": {
+            "anyOf": [
+              {
+                "type": "string",
+                "format": "uuid"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Organization Id"
+          },
+          "custodian_id": {
+            "anyOf": [
+              {
+                "type": "string",
+                "format": "uuid"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Custodian Id"
+          },
+          "description": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Description"
+          },
+          "status": {
+            "type": "string",
+            "enum": [
+              "PROPOSED",
+              "CONFIRMED",
+              "REJECTED"
+            ],
+            "title": "Status"
+          },
+          "lock_version": {
+            "type": "integer",
+            "title": "Lock Version"
+          },
+          "created_by_user_id": {
+            "anyOf": [
+              {
+                "type": "string",
+                "format": "uuid"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Created By User Id"
+          },
+          "created_by_workflow_run_id": {
+            "anyOf": [
+              {
+                "type": "string",
+                "format": "uuid"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Created By Workflow Run Id"
+          },
+          "created_at": {
+            "type": "string",
+            "format": "date-time",
+            "title": "Created At"
+          },
+          "updated_at": {
+            "type": "string",
+            "format": "date-time",
+            "title": "Updated At"
+          },
+          "variants": {
+            "items": {
+              "$ref": "#/components/schemas/MatterEntityVariantRead"
+            },
+            "type": "array",
+            "title": "Variants"
+          },
+          "fact_count": {
+            "type": "integer",
+            "title": "Fact Count",
+            "default": 0
+          }
+        },
+        "type": "object",
+        "required": [
+          "id",
+          "matter_id",
+          "entity_type",
+          "display_name",
+          "email",
+          "title",
+          "organization_id",
+          "custodian_id",
+          "description",
+          "status",
+          "lock_version",
+          "created_by_user_id",
+          "created_by_workflow_run_id",
+          "created_at",
+          "updated_at"
+        ],
+        "title": "MatterEntityRead"
+      },
+      "MatterEntityUpdate": {
+        "properties": {
+          "lock_version": {
+            "type": "integer",
+            "minimum": 1.0,
+            "title": "Lock Version"
+          },
+          "display_name": {
+            "anyOf": [
+              {
+                "type": "string",
+                "maxLength": 300,
+                "minLength": 1
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Display Name"
+          },
+          "title": {
+            "anyOf": [
+              {
+                "type": "string",
+                "maxLength": 200
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Title"
+          },
+          "organization_id": {
+            "anyOf": [
+              {
+                "type": "string",
+                "format": "uuid"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Organization Id"
+          },
+          "custodian_id": {
+            "anyOf": [
+              {
+                "type": "string",
+                "format": "uuid"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Custodian Id"
+          },
+          "description": {
+            "anyOf": [
+              {
+                "type": "string",
+                "maxLength": 10000
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Description"
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "lock_version"
+        ],
+        "title": "MatterEntityUpdate",
+        "description": "Only fields present in the request are changed."
+      },
+      "MatterEntityVariantCreate": {
+        "properties": {
+          "lock_version": {
+            "type": "integer",
+            "minimum": 1.0,
+            "title": "Lock Version"
+          },
+          "display_name": {
+            "anyOf": [
+              {
+                "type": "string",
+                "maxLength": 300,
+                "minLength": 1
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Display Name"
+          },
+          "email": {
+            "anyOf": [
+              {
+                "type": "string",
+                "maxLength": 320
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Email"
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "lock_version"
+        ],
+        "title": "MatterEntityVariantCreate"
+      },
+      "MatterEntityVariantRead": {
+        "properties": {
+          "id": {
+            "type": "string",
+            "format": "uuid",
+            "title": "Id"
+          },
+          "display_name": {
+            "type": "string",
+            "title": "Display Name"
+          },
+          "email": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Email"
+          },
+          "lock_version": {
+            "type": "integer",
+            "title": "Lock Version"
+          },
+          "created_at": {
+            "type": "string",
+            "format": "date-time",
+            "title": "Created At"
+          }
+        },
+        "type": "object",
+        "required": [
+          "id",
+          "display_name",
+          "email",
+          "lock_version",
+          "created_at"
+        ],
+        "title": "MatterEntityVariantRead"
+      },
       "MatterFacetValuesRequest": {
         "properties": {
           "search": {
@@ -33113,6 +35710,1253 @@
           "values"
         ],
         "title": "MatterFacetValuesResponse"
+      },
+      "MatterFactAction": {
+        "properties": {
+          "lock_version": {
+            "type": "integer",
+            "minimum": 1.0,
+            "title": "Lock Version"
+          },
+          "reason": {
+            "anyOf": [
+              {
+                "type": "string",
+                "maxLength": 4000
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Reason"
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "lock_version"
+        ],
+        "title": "MatterFactAction"
+      },
+      "MatterFactCreate": {
+        "properties": {
+          "summary": {
+            "type": "string",
+            "maxLength": 4000,
+            "minLength": 1,
+            "title": "Summary"
+          },
+          "date_precision": {
+            "type": "string",
+            "enum": [
+              "DAY",
+              "MONTH",
+              "QUARTER",
+              "YEAR",
+              "RANGE",
+              "UNKNOWN"
+            ],
+            "title": "Date Precision",
+            "default": "UNKNOWN"
+          },
+          "event_date_start": {
+            "anyOf": [
+              {
+                "type": "string",
+                "format": "date"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Event Date Start"
+          },
+          "event_date_end": {
+            "anyOf": [
+              {
+                "type": "string",
+                "format": "date"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Event Date End"
+          },
+          "date_basis": {
+            "anyOf": [
+              {
+                "type": "string",
+                "enum": [
+                  "STATED_IN_TEXT",
+                  "DOCUMENT_DATE",
+                  "INFERRED"
+                ]
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Date Basis"
+          },
+          "owner_entity_id": {
+            "anyOf": [
+              {
+                "type": "string",
+                "format": "uuid"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Owner Entity Id"
+          },
+          "issues": {
+            "items": {
+              "$ref": "#/components/schemas/FactIssueRefModel"
+            },
+            "type": "array",
+            "maxItems": 100,
+            "minItems": 1,
+            "title": "Issues"
+          },
+          "participants": {
+            "items": {
+              "$ref": "#/components/schemas/FactParticipantModel"
+            },
+            "type": "array",
+            "maxItems": 200,
+            "title": "Participants"
+          },
+          "evidence": {
+            "items": {
+              "$ref": "#/components/schemas/FactEvidenceCreate"
+            },
+            "type": "array",
+            "maxItems": 50,
+            "minItems": 1,
+            "title": "Evidence"
+          },
+          "key_fact": {
+            "type": "boolean",
+            "title": "Key Fact",
+            "default": false
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "summary",
+          "issues",
+          "evidence"
+        ],
+        "title": "MatterFactCreate"
+      },
+      "MatterFactDetailRead": {
+        "properties": {
+          "id": {
+            "type": "string",
+            "format": "uuid",
+            "title": "Id"
+          },
+          "matter_id": {
+            "type": "string",
+            "format": "uuid",
+            "title": "Matter Id"
+          },
+          "status": {
+            "type": "string",
+            "enum": [
+              "WORKING",
+              "CONFIRMED",
+              "REJECTED",
+              "MERGED"
+            ],
+            "title": "Status"
+          },
+          "summary": {
+            "type": "string",
+            "title": "Summary"
+          },
+          "event_date_start": {
+            "anyOf": [
+              {
+                "type": "string",
+                "format": "date"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Event Date Start"
+          },
+          "event_date_end": {
+            "anyOf": [
+              {
+                "type": "string",
+                "format": "date"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Event Date End"
+          },
+          "date_precision": {
+            "type": "string",
+            "enum": [
+              "DAY",
+              "MONTH",
+              "QUARTER",
+              "YEAR",
+              "RANGE",
+              "UNKNOWN"
+            ],
+            "title": "Date Precision"
+          },
+          "date_basis": {
+            "anyOf": [
+              {
+                "type": "string",
+                "enum": [
+                  "STATED_IN_TEXT",
+                  "DOCUMENT_DATE",
+                  "INFERRED"
+                ]
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Date Basis"
+          },
+          "owner": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/MatterFactEntityRef"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "participants": {
+            "items": {
+              "$ref": "#/components/schemas/MatterFactEntityRef"
+            },
+            "type": "array",
+            "title": "Participants"
+          },
+          "issues": {
+            "items": {
+              "$ref": "#/components/schemas/FactIssueRefModel"
+            },
+            "type": "array",
+            "title": "Issues"
+          },
+          "key_fact": {
+            "type": "boolean",
+            "title": "Key Fact"
+          },
+          "has_contradiction": {
+            "type": "boolean",
+            "title": "Has Contradiction"
+          },
+          "evidence_count": {
+            "type": "integer",
+            "title": "Evidence Count"
+          },
+          "document_count": {
+            "type": "integer",
+            "title": "Document Count"
+          },
+          "merged_into_fact_id": {
+            "anyOf": [
+              {
+                "type": "string",
+                "format": "uuid"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Merged Into Fact Id"
+          },
+          "confirmed_by_user_id": {
+            "anyOf": [
+              {
+                "type": "string",
+                "format": "uuid"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Confirmed By User Id"
+          },
+          "confirmed_at": {
+            "anyOf": [
+              {
+                "type": "string",
+                "format": "date-time"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Confirmed At"
+          },
+          "created_by_user_id": {
+            "anyOf": [
+              {
+                "type": "string",
+                "format": "uuid"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Created By User Id"
+          },
+          "origin_workflow_run_id": {
+            "anyOf": [
+              {
+                "type": "string",
+                "format": "uuid"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Origin Workflow Run Id"
+          },
+          "current_revision": {
+            "type": "integer",
+            "title": "Current Revision"
+          },
+          "lock_version": {
+            "type": "integer",
+            "title": "Lock Version"
+          },
+          "created_at": {
+            "type": "string",
+            "format": "date-time",
+            "title": "Created At"
+          },
+          "updated_at": {
+            "type": "string",
+            "format": "date-time",
+            "title": "Updated At"
+          },
+          "evidence": {
+            "items": {
+              "$ref": "#/components/schemas/MatterFactEvidenceRead"
+            },
+            "type": "array",
+            "title": "Evidence"
+          },
+          "revisions": {
+            "items": {
+              "$ref": "#/components/schemas/MatterFactRevisionRead"
+            },
+            "type": "array",
+            "title": "Revisions"
+          },
+          "events": {
+            "items": {
+              "$ref": "#/components/schemas/MatterFactEventRead"
+            },
+            "type": "array",
+            "title": "Events"
+          }
+        },
+        "type": "object",
+        "required": [
+          "id",
+          "matter_id",
+          "status",
+          "summary",
+          "event_date_start",
+          "event_date_end",
+          "date_precision",
+          "date_basis",
+          "owner",
+          "participants",
+          "issues",
+          "key_fact",
+          "has_contradiction",
+          "evidence_count",
+          "document_count",
+          "merged_into_fact_id",
+          "confirmed_by_user_id",
+          "confirmed_at",
+          "created_by_user_id",
+          "origin_workflow_run_id",
+          "current_revision",
+          "lock_version",
+          "created_at",
+          "updated_at",
+          "evidence",
+          "revisions",
+          "events"
+        ],
+        "title": "MatterFactDetailRead"
+      },
+      "MatterFactEntityRef": {
+        "properties": {
+          "entity_id": {
+            "type": "string",
+            "format": "uuid",
+            "title": "Entity Id"
+          },
+          "canonical_entity_id": {
+            "type": "string",
+            "format": "uuid",
+            "title": "Canonical Entity Id"
+          },
+          "display_name": {
+            "type": "string",
+            "title": "Display Name"
+          },
+          "canonical_display_name": {
+            "type": "string",
+            "title": "Canonical Display Name"
+          },
+          "entity_type": {
+            "type": "string",
+            "enum": [
+              "PERSON",
+              "ORGANIZATION"
+            ],
+            "title": "Entity Type"
+          },
+          "role": {
+            "anyOf": [
+              {
+                "type": "string",
+                "enum": [
+                  "PARTICIPANT_ACTOR",
+                  "PARTICIPANT_RECIPIENT"
+                ]
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Role"
+          }
+        },
+        "type": "object",
+        "required": [
+          "entity_id",
+          "canonical_entity_id",
+          "display_name",
+          "canonical_display_name",
+          "entity_type"
+        ],
+        "title": "MatterFactEntityRef"
+      },
+      "MatterFactEventRead": {
+        "properties": {
+          "id": {
+            "type": "string",
+            "format": "uuid",
+            "title": "Id"
+          },
+          "event_type": {
+            "type": "string",
+            "title": "Event Type"
+          },
+          "payload": {
+            "additionalProperties": true,
+            "type": "object",
+            "title": "Payload"
+          },
+          "actor_type": {
+            "type": "string",
+            "enum": [
+              "HUMAN",
+              "AGENT",
+              "SYSTEM"
+            ],
+            "title": "Actor Type"
+          },
+          "actor_user_id": {
+            "anyOf": [
+              {
+                "type": "string",
+                "format": "uuid"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Actor User Id"
+          },
+          "workflow_run_id": {
+            "anyOf": [
+              {
+                "type": "string",
+                "format": "uuid"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Workflow Run Id"
+          },
+          "created_at": {
+            "type": "string",
+            "format": "date-time",
+            "title": "Created At"
+          }
+        },
+        "type": "object",
+        "required": [
+          "id",
+          "event_type",
+          "payload",
+          "actor_type",
+          "actor_user_id",
+          "workflow_run_id",
+          "created_at"
+        ],
+        "title": "MatterFactEventRead"
+      },
+      "MatterFactEvidenceAdd": {
+        "properties": {
+          "lock_version": {
+            "type": "integer",
+            "minimum": 1.0,
+            "title": "Lock Version"
+          },
+          "evidence": {
+            "$ref": "#/components/schemas/FactEvidenceCreate"
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "lock_version",
+          "evidence"
+        ],
+        "title": "MatterFactEvidenceAdd"
+      },
+      "MatterFactEvidenceRead": {
+        "properties": {
+          "id": {
+            "type": "string",
+            "format": "uuid",
+            "title": "Id"
+          },
+          "matter_document_id": {
+            "type": "string",
+            "format": "uuid",
+            "title": "Matter Document Id"
+          },
+          "control_number": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Control Number"
+          },
+          "source_artifact_id": {
+            "type": "string",
+            "format": "uuid",
+            "title": "Source Artifact Id"
+          },
+          "source_content_hash": {
+            "type": "string",
+            "title": "Source Content Hash"
+          },
+          "paragraph_map_version": {
+            "type": "string",
+            "title": "Paragraph Map Version"
+          },
+          "paragraph_id": {
+            "type": "string",
+            "title": "Paragraph Id"
+          },
+          "char_start": {
+            "type": "integer",
+            "title": "Char Start"
+          },
+          "char_end": {
+            "type": "integer",
+            "title": "Char End"
+          },
+          "quote": {
+            "type": "string",
+            "title": "Quote"
+          },
+          "stance": {
+            "type": "string",
+            "enum": [
+              "SUPPORTS",
+              "CONTRADICTS"
+            ],
+            "title": "Stance"
+          },
+          "status": {
+            "type": "string",
+            "enum": [
+              "ACTIVE",
+              "REMOVED"
+            ],
+            "title": "Status"
+          },
+          "added_by_user_id": {
+            "anyOf": [
+              {
+                "type": "string",
+                "format": "uuid"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Added By User Id"
+          },
+          "workflow_run_id": {
+            "anyOf": [
+              {
+                "type": "string",
+                "format": "uuid"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Workflow Run Id"
+          },
+          "created_at": {
+            "type": "string",
+            "format": "date-time",
+            "title": "Created At"
+          },
+          "removed_at": {
+            "anyOf": [
+              {
+                "type": "string",
+                "format": "date-time"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Removed At"
+          }
+        },
+        "type": "object",
+        "required": [
+          "id",
+          "matter_document_id",
+          "source_artifact_id",
+          "source_content_hash",
+          "paragraph_map_version",
+          "paragraph_id",
+          "char_start",
+          "char_end",
+          "quote",
+          "stance",
+          "status",
+          "added_by_user_id",
+          "workflow_run_id",
+          "created_at",
+          "removed_at"
+        ],
+        "title": "MatterFactEvidenceRead"
+      },
+      "MatterFactMerge": {
+        "properties": {
+          "lock_version": {
+            "type": "integer",
+            "minimum": 1.0,
+            "title": "Lock Version"
+          },
+          "target_fact_id": {
+            "type": "string",
+            "format": "uuid",
+            "title": "Target Fact Id"
+          },
+          "target_lock_version": {
+            "type": "integer",
+            "minimum": 1.0,
+            "title": "Target Lock Version"
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "lock_version",
+          "target_fact_id",
+          "target_lock_version"
+        ],
+        "title": "MatterFactMerge"
+      },
+      "MatterFactPage": {
+        "properties": {
+          "items": {
+            "items": {
+              "$ref": "#/components/schemas/MatterFactRead"
+            },
+            "type": "array",
+            "title": "Items"
+          },
+          "total": {
+            "type": "integer",
+            "title": "Total"
+          }
+        },
+        "type": "object",
+        "required": [
+          "items",
+          "total"
+        ],
+        "title": "MatterFactPage"
+      },
+      "MatterFactRead": {
+        "properties": {
+          "id": {
+            "type": "string",
+            "format": "uuid",
+            "title": "Id"
+          },
+          "matter_id": {
+            "type": "string",
+            "format": "uuid",
+            "title": "Matter Id"
+          },
+          "status": {
+            "type": "string",
+            "enum": [
+              "WORKING",
+              "CONFIRMED",
+              "REJECTED",
+              "MERGED"
+            ],
+            "title": "Status"
+          },
+          "summary": {
+            "type": "string",
+            "title": "Summary"
+          },
+          "event_date_start": {
+            "anyOf": [
+              {
+                "type": "string",
+                "format": "date"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Event Date Start"
+          },
+          "event_date_end": {
+            "anyOf": [
+              {
+                "type": "string",
+                "format": "date"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Event Date End"
+          },
+          "date_precision": {
+            "type": "string",
+            "enum": [
+              "DAY",
+              "MONTH",
+              "QUARTER",
+              "YEAR",
+              "RANGE",
+              "UNKNOWN"
+            ],
+            "title": "Date Precision"
+          },
+          "date_basis": {
+            "anyOf": [
+              {
+                "type": "string",
+                "enum": [
+                  "STATED_IN_TEXT",
+                  "DOCUMENT_DATE",
+                  "INFERRED"
+                ]
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Date Basis"
+          },
+          "owner": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/MatterFactEntityRef"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "participants": {
+            "items": {
+              "$ref": "#/components/schemas/MatterFactEntityRef"
+            },
+            "type": "array",
+            "title": "Participants"
+          },
+          "issues": {
+            "items": {
+              "$ref": "#/components/schemas/FactIssueRefModel"
+            },
+            "type": "array",
+            "title": "Issues"
+          },
+          "key_fact": {
+            "type": "boolean",
+            "title": "Key Fact"
+          },
+          "has_contradiction": {
+            "type": "boolean",
+            "title": "Has Contradiction"
+          },
+          "evidence_count": {
+            "type": "integer",
+            "title": "Evidence Count"
+          },
+          "document_count": {
+            "type": "integer",
+            "title": "Document Count"
+          },
+          "merged_into_fact_id": {
+            "anyOf": [
+              {
+                "type": "string",
+                "format": "uuid"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Merged Into Fact Id"
+          },
+          "confirmed_by_user_id": {
+            "anyOf": [
+              {
+                "type": "string",
+                "format": "uuid"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Confirmed By User Id"
+          },
+          "confirmed_at": {
+            "anyOf": [
+              {
+                "type": "string",
+                "format": "date-time"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Confirmed At"
+          },
+          "created_by_user_id": {
+            "anyOf": [
+              {
+                "type": "string",
+                "format": "uuid"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Created By User Id"
+          },
+          "origin_workflow_run_id": {
+            "anyOf": [
+              {
+                "type": "string",
+                "format": "uuid"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Origin Workflow Run Id"
+          },
+          "current_revision": {
+            "type": "integer",
+            "title": "Current Revision"
+          },
+          "lock_version": {
+            "type": "integer",
+            "title": "Lock Version"
+          },
+          "created_at": {
+            "type": "string",
+            "format": "date-time",
+            "title": "Created At"
+          },
+          "updated_at": {
+            "type": "string",
+            "format": "date-time",
+            "title": "Updated At"
+          }
+        },
+        "type": "object",
+        "required": [
+          "id",
+          "matter_id",
+          "status",
+          "summary",
+          "event_date_start",
+          "event_date_end",
+          "date_precision",
+          "date_basis",
+          "owner",
+          "participants",
+          "issues",
+          "key_fact",
+          "has_contradiction",
+          "evidence_count",
+          "document_count",
+          "merged_into_fact_id",
+          "confirmed_by_user_id",
+          "confirmed_at",
+          "created_by_user_id",
+          "origin_workflow_run_id",
+          "current_revision",
+          "lock_version",
+          "created_at",
+          "updated_at"
+        ],
+        "title": "MatterFactRead"
+      },
+      "MatterFactRevisionRead": {
+        "properties": {
+          "revision": {
+            "type": "integer",
+            "title": "Revision"
+          },
+          "summary": {
+            "type": "string",
+            "title": "Summary"
+          },
+          "event_date_start": {
+            "anyOf": [
+              {
+                "type": "string",
+                "format": "date"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Event Date Start"
+          },
+          "event_date_end": {
+            "anyOf": [
+              {
+                "type": "string",
+                "format": "date"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Event Date End"
+          },
+          "date_precision": {
+            "type": "string",
+            "enum": [
+              "DAY",
+              "MONTH",
+              "QUARTER",
+              "YEAR",
+              "RANGE",
+              "UNKNOWN"
+            ],
+            "title": "Date Precision"
+          },
+          "date_basis": {
+            "anyOf": [
+              {
+                "type": "string",
+                "enum": [
+                  "STATED_IN_TEXT",
+                  "DOCUMENT_DATE",
+                  "INFERRED"
+                ]
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Date Basis"
+          },
+          "owner_entity_id": {
+            "anyOf": [
+              {
+                "type": "string",
+                "format": "uuid"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Owner Entity Id"
+          },
+          "issues": {
+            "items": {
+              "additionalProperties": true,
+              "type": "object"
+            },
+            "type": "array",
+            "title": "Issues"
+          },
+          "participants": {
+            "items": {
+              "additionalProperties": true,
+              "type": "object"
+            },
+            "type": "array",
+            "title": "Participants"
+          },
+          "author_type": {
+            "type": "string",
+            "enum": [
+              "HUMAN",
+              "AGENT"
+            ],
+            "title": "Author Type"
+          },
+          "author_user_id": {
+            "anyOf": [
+              {
+                "type": "string",
+                "format": "uuid"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Author User Id"
+          },
+          "workflow_run_id": {
+            "anyOf": [
+              {
+                "type": "string",
+                "format": "uuid"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Workflow Run Id"
+          },
+          "reason": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Reason"
+          },
+          "created_at": {
+            "type": "string",
+            "format": "date-time",
+            "title": "Created At"
+          }
+        },
+        "type": "object",
+        "required": [
+          "revision",
+          "summary",
+          "event_date_start",
+          "event_date_end",
+          "date_precision",
+          "date_basis",
+          "owner_entity_id",
+          "issues",
+          "participants",
+          "author_type",
+          "author_user_id",
+          "workflow_run_id",
+          "reason",
+          "created_at"
+        ],
+        "title": "MatterFactRevisionRead"
+      },
+      "MatterFactUpdate": {
+        "properties": {
+          "lock_version": {
+            "type": "integer",
+            "minimum": 1.0,
+            "title": "Lock Version"
+          },
+          "reason": {
+            "anyOf": [
+              {
+                "type": "string",
+                "maxLength": 4000
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Reason"
+          },
+          "summary": {
+            "anyOf": [
+              {
+                "type": "string",
+                "maxLength": 4000,
+                "minLength": 1
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Summary"
+          },
+          "date_precision": {
+            "anyOf": [
+              {
+                "type": "string",
+                "enum": [
+                  "DAY",
+                  "MONTH",
+                  "QUARTER",
+                  "YEAR",
+                  "RANGE",
+                  "UNKNOWN"
+                ]
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Date Precision"
+          },
+          "event_date_start": {
+            "anyOf": [
+              {
+                "type": "string",
+                "format": "date"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Event Date Start"
+          },
+          "event_date_end": {
+            "anyOf": [
+              {
+                "type": "string",
+                "format": "date"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Event Date End"
+          },
+          "date_basis": {
+            "anyOf": [
+              {
+                "type": "string",
+                "enum": [
+                  "STATED_IN_TEXT",
+                  "DOCUMENT_DATE",
+                  "INFERRED"
+                ]
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Date Basis"
+          },
+          "owner_entity_id": {
+            "anyOf": [
+              {
+                "type": "string",
+                "format": "uuid"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Owner Entity Id"
+          },
+          "issues": {
+            "anyOf": [
+              {
+                "items": {
+                  "$ref": "#/components/schemas/FactIssueRefModel"
+                },
+                "type": "array",
+                "maxItems": 100,
+                "minItems": 1
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Issues"
+          },
+          "participants": {
+            "anyOf": [
+              {
+                "items": {
+                  "$ref": "#/components/schemas/FactParticipantModel"
+                },
+                "type": "array",
+                "maxItems": 200
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Participants"
+          },
+          "key_fact": {
+            "anyOf": [
+              {
+                "type": "boolean"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Key Fact"
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "lock_version"
+        ],
+        "title": "MatterFactUpdate",
+        "description": "Only fields present in the request are changed; each content change appends a revision."
       },
       "MatterOverviewCounts": {
         "properties": {

@@ -41,6 +41,7 @@ def main() -> None:
         classification_scoring,
         collection_deletion,
         collection_text_processing,
+        fact_specification_compilation,
         matter_definition_assessments,
         matter_embeddings,
         matter_import,

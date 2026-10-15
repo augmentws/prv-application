@@ -193,6 +193,22 @@ Numeric metadata needs two storage categories:
 - Core owns Matter Definitions and immutable Markdown revisions. The Artifact Service will own uploaded source files and normalized source artifacts. Agent edits use the same Matter Definition command service as direct user edits and record `agent_run_id` provenance.
 - Publishing a Matter Definition remains an explicit matter-admin UI/API action; agents cannot silently publish it.
 
+### Fact Development
+
+The full design and delivery slices are in `docs/fact-development-plan.md`. The task-definition layer, the entity store, and the fact ledger with its API are implemented; fact export, the extraction workflow, the facts index, and the Facts/Entities UI are planned.
+
+- `FACT_DEVELOPMENT` is a distinct Matter Analysis Task type with workflow key `fact_development_v1`. It is generative and stateful across documents; it does not use the Decision Specification, the JEV/decision-provider path, destination coding fields, or `review_decision_result`/`review_batch_run_value`.
+- Every fact-development task version pins one Review Guidance profile, the exact revision that was published when pinned, and that revision's content hash. The pin never follows the guidance's moving `published_revision`; a newer published revision marks the pin stale, and adopting it creates a new draft task version that must be recompiled and republished.
+- The version carries a Fact Development Specification (`fact_development_specification`): an issue catalog in which each issue cites exact source excerpts from the pinned guidance or the task definition and maps to the active, matter-owned ENUM, BOOLEAN, TEXT, or LONG_TEXT coding field and value that hold that issue's coding. Hierarchical enum mappings include descendants unless disabled.
+- A managed compiler skill drafts the catalog through the durable `fact_development_specification_compilation_v1` workflow. Every candidate is validated deterministically (exact source hashes, field existence and type, active enum values), and reviewers may replace it through the specification endpoint, which applies the same validation. Publication revalidates against current coding fields; the compiler can never publish.
+- Issue membership is deterministic: a document belongs to an issue when any mapping matches its coding, read from `document_metadata_current` (resolved `VALUE` rows only) or from one reviewer's batch coding pinned at a revision so later edits cannot change a prepared run.
+- The matter entity store holds people and organizations only, in one `matter_entity` table: a canonical row (`parent_id` null) or a variant row holding another name and/or one email address. A partial unique index enforces one email per matter. Merging sets `parent_id` on the source and its variants (never chains); unmerging clears it. Status, title, organization, and custodian live only on canonical rows. Every change goes through `app/matter_entities.py` and appends `matter_entity_event`.
+- Facts are a Core-owned ledger: `matter_fact_event` is authoritative; `matter_fact` and its issue, participant, and evidence rows are the current projection, and every content change appends an immutable `matter_fact_revision`. `app/facts.py` is the only write path for people and agents. Human mutations carry the loaded `lock_version`.
+- Facts link to the matched entity row (canonical or variant) and are displayed and filtered by its canonical entity, so entity merges never rewrite facts. Rejecting an entity removes it from facts as new revisions.
+- Evidence quotes are verified by code against the document's current faithful text: an exact substring of one paragraph of the `paragraph-v1` map, with offsets computed by code and the source artifact and content hash recorded. Quotes never span paragraphs.
+- Facts start `WORKING`. Only a person can confirm or reject; confirming is what places a fact on the timeline, with no separate publish step. Merged facts are immutable until unmerged; unmerge restores the moved evidence and the issues and participants the merge added.
+- Permissions: `fact.view`, `fact.review`, `fact.export`, `entity.view`, `entity.manage`. Every fact endpoint also requires `document.view` because facts contain document quotes. `fact.export` is administrator-only (tenant, client, and matter administrators). Reviewers can review facts and manage entities; Analysis Operator and Read-only can view.
+
 ## Existing Phase-One API
 
 Preserve the current versioned API shape unless a deliberate contract change is requested:
