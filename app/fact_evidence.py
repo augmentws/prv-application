@@ -56,6 +56,24 @@ class DocumentText:
     paragraph_map: ParagraphMap
 
 
+def document_text_from_source(
+    *,
+    matter_document_id: uuid.UUID,
+    source_artifact_id: uuid.UUID,
+    source_content_hash: str,
+    text: str,
+) -> DocumentText:
+    """Text already read from a pinned source artifact, such as one frozen in an analysis input manifest."""
+
+    return DocumentText(
+        matter_document_id=matter_document_id,
+        source_artifact_id=source_artifact_id,
+        source_content_hash=source_content_hash,
+        text=text,
+        paragraph_map=segment_paragraphs(text),
+    )
+
+
 def load_document_text(
     db: Session,
     *,

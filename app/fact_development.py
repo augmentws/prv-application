@@ -23,19 +23,34 @@ from dataclasses import dataclass
 from datetime import datetime, timezone
 from typing import Any
 
+import httpx
 from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
 from app.agent_models import resolve_agent_model
-from app.artifact_gateway import get_search_item_snapshot
+from app.analysis_input_manifests import (
+    AnalysisInputContract,
+    AnalysisInputDocument,
+    AnalysisInputExtensionField,
+    AnalysisInputManifestError,
+    AnalysisInputManifestReader,
+    prepare_analysis_input_manifest,
+    publish_analysis_input_manifest,
+)
+from app.artifact_gateway import (
+    AnalysisInputItemSnapshot,
+    TextSourceReference,
+    get_collection_item_analysis_input_snapshots,
+    read_text_source,
+)
 from app.audit import record_audit
 from app.authorization import ResourceRef, user_can
 from app.config import Settings, get_settings
 from app.database import SessionLocal
-from app.document_evidence import render_model_document
+from app.document_evidence import PARAGRAPH_MAP_VERSION, render_model_document
 from app.embeddings.configuration import canonical_hash
 from app.fact_development_skills import FACT_EXTRACTION_ROLE
-from app.fact_evidence import DocumentText, FactEvidenceError, load_document_text
+from app.fact_evidence import DocumentText, document_text_from_source
 from app.fact_extraction import (
     ExtractionContext,
     apply_extraction,
@@ -72,12 +87,14 @@ from app.job_outcomes import (
     register_job_outcome_adapter,
 )
 from app.models import (
+    AnalysisInputManifest,
     Matter,
     MatterAnalysisTask,
     MatterAnalysisTaskRun,
     MatterAnalysisTaskRunChunk,
     MatterAnalysisTaskVersion,
     MatterDocument,
+    MatterDocumentCustodian,
     MatterEntity,
     MatterFact,
     MatterFactIssue,
@@ -95,6 +112,9 @@ from app.workflow_specs import FACT_DEVELOPMENT_SPEC, binding_snapshot, resolve_
 logger = logging.getLogger(__name__)
 
 OUTCOME_FILENAME_PREFIX = "fact-development"
+INPUT_MANIFEST_OWNER_TYPE = "MATTER_ANALYSIS_TASK_RUN"
+INPUT_CONTRACT_KEY = "fact-development.population"
+INPUT_RESOLVER_VERSION = "fact-development-population-resolver-v1"
 REPORT_SAMPLE_LIMIT = 50
 RECALL_TEXT_CHARACTERS = 4_000
 MAX_RECALLED_FACTS = 100
@@ -397,13 +417,39 @@ def _outcome_scope(db: Session, run: MatterAnalysisTaskRun) -> OutcomeScope:
     )
 
 
-def _outcome_chunk(chunk: MatterAnalysisTaskRunChunk) -> OutcomeChunk:
+def _outcome_chunk(chunk: MatterAnalysisTaskRunChunk, rows: list[dict[str, Any]]) -> OutcomeChunk:
     return OutcomeChunk(
         chunk_id=str(chunk.id),
         chunk_number=chunk.chunk_number,
         ordinal_start=chunk.ordinal_start,
-        document_ids=tuple(chunk.document_ids),
+        document_ids=tuple(row["matter_document_id"] for row in rows),
     )
+
+
+def _manifest_reader(db: Session, run: MatterAnalysisTaskRun) -> AnalysisInputManifestReader:
+    manifest = db.get(AnalysisInputManifest, run.analysis_input_manifest_id) if run.analysis_input_manifest_id else None
+    if (
+        manifest is None
+        or manifest.owner_type != INPUT_MANIFEST_OWNER_TYPE
+        or manifest.owner_id != run.id
+        or manifest.matter_id != run.matter_id
+        or manifest.item_count != run.population_document_count
+    ):
+        raise FactDevelopmentRunError(
+            "The run's input manifest does not match the run",
+            code="INPUT_MANIFEST_IDENTITY_MISMATCH",
+        )
+    try:
+        return AnalysisInputManifestReader(manifest, actor_user_id=run.created_by_user_id)
+    except AnalysisInputManifestError as exc:
+        raise FactDevelopmentRunError(str(exc), code="INPUT_MANIFEST_INVALID") from exc
+
+
+def _chunk_rows(reader: AnalysisInputManifestReader, chunk: MatterAnalysisTaskRunChunk) -> list[dict[str, Any]]:
+    try:
+        return reader.rows(chunk.ordinal_start, chunk.item_count)
+    except AnalysisInputManifestError as exc:
+        raise FactDevelopmentRunError(str(exc), code="INPUT_MANIFEST_INVALID") from exc
 
 
 def _chunks(db: Session, run_id: uuid.UUID) -> list[MatterAnalysisTaskRunChunk]:
@@ -471,7 +517,7 @@ def _cancel_requested(db: Session, run_id: uuid.UUID) -> bool:
 
 
 def prepare_fact_development_run(db: Session, run_id: uuid.UUID) -> list[str]:
-    """Freeze the documents and their matched issues into chunks; return chunk IDs that still need processing."""
+    """Freeze the population into the run's input manifest and plan chunks; return chunk IDs still to process."""
 
     run = _lock_run(db, run_id)
     if _cancel_requested(db, run.id):
@@ -499,19 +545,118 @@ def prepare_fact_development_run(db: Session, run_id: uuid.UUID) -> list[str]:
     if step is not None and step.status == "QUEUED":
         step.status = "RUNNING"
         step.started_at = step.started_at or utcnow()
+    if run.analysis_input_manifest_id is None:
+        _freeze_input_manifest(db, run)
     chunks = _chunks(db, run.id)
     if not chunks:
-        chunks = _freeze_chunks(db, run)
+        chunks = _plan_chunks(db, run)
     _refresh_progress(db, run, stage="EXTRACTING")
     ensure_outcome_manifest(db, _outcome_scope(db, run))
     db.commit()
     return [str(chunk.id) for chunk in chunks if chunk.status not in {"COMPLETED", "COMPLETED_WITH_ERRORS"}]
 
 
-def _freeze_chunks(db: Session, run: MatterAnalysisTaskRun) -> list[MatterAnalysisTaskRunChunk]:
+def extraction_fingerprint(
+    *,
+    matter_document_id: str,
+    source_content_hash: str,
+    specification_hash: str,
+    issue_keys: list[str],
+) -> str:
+    """What makes a document's extraction reusable: the document, its exact text, the catalog and its coded issues.
+
+    The skill version and model are deliberately excluded so a platform prompt or model update does not re-extract
+    (and duplicate) reviewed work across a matter.
+    """
+
+    return canonical_hash(
+        {
+            "contract": "fact-extraction-fingerprint-v2",
+            "matter_document_id": matter_document_id,
+            "source_content_hash": source_content_hash,
+            "paragraph_map_version": PARAGRAPH_MAP_VERSION,
+            "specification_hash": specification_hash,
+            "issue_keys": sorted(issue_keys),
+        }
+    )
+
+
+def _input_contract(run: MatterAnalysisTaskRun) -> AnalysisInputContract:
     configuration = run.configuration_snapshot
+    return AnalysisInputContract(
+        key=INPUT_CONTRACT_KEY,
+        version=1,
+        resolver_version=INPUT_RESOLVER_VERSION,
+        required_input_paths=["issue_keys", "fingerprint", "metadata"],
+        source_artifact_required=True,
+        extension_fields=[
+            AnalysisInputExtensionField(name="family_id", type="STRING"),
+            AnalysisInputExtensionField(name="file_date", type="STRING"),
+        ],
+        options={
+            "specification_hash": configuration["specification_hash"],
+            "coding_source": configuration["coding_source"],
+            "reviewer_coding_revision": configuration.get("reviewer_coding_revision"),
+            "paragraph_map_version": PARAGRAPH_MAP_VERSION,
+        },
+    )
+
+
+def _finished_fingerprints(db: Session, run: MatterAnalysisTaskRun) -> set[str]:
+    """Fingerprints of documents that earlier runs of the same task finished."""
+
+    finished: set[str] = set()
+    for fingerprints in db.scalars(
+        select(MatterAnalysisTaskRunChunk.fingerprints)
+        .join(MatterAnalysisTaskRun, MatterAnalysisTaskRun.id == MatterAnalysisTaskRunChunk.run_id)
+        .where(
+            MatterAnalysisTaskRun.matter_analysis_task_id == run.matter_analysis_task_id,
+            MatterAnalysisTaskRun.run_kind == "FACT_DEVELOPMENT",
+            MatterAnalysisTaskRun.id != run.id,
+        )
+    ):
+        finished.update(fingerprints or [])
+    return finished
+
+
+def _document_metadata(
+    snapshot: AnalysisInputItemSnapshot,
+    custodian_ids: list[str],
+) -> dict[str, Any]:
+    return {
+        "file_date": snapshot.file_date.isoformat() if snapshot.file_date else None,
+        "original_filename": snapshot.original_filename,
+        "record_type": snapshot.record_type,
+        "family_id": str(snapshot.family_id) if snapshot.family_id else None,
+        "custodian_ids": custodian_ids,
+        "email_from": snapshot.email_sender,
+        "email_to": snapshot.email_recipients.get("TO", []),
+        "email_cc": snapshot.email_recipients.get("CC", []),
+        "email_bcc": snapshot.email_recipients.get("BCC", []),
+        "email_subject": snapshot.email_subject,
+        "email_sent_at": snapshot.email_sent_at.isoformat() if snapshot.email_sent_at else None,
+    }
+
+
+def _chronological_key(
+    sequence: int,
+    snapshot: AnalysisInputItemSnapshot | None,
+    item_id: uuid.UUID,
+) -> tuple[Any, ...]:
+    # Oldest File Date first and undated last. Attachments take their parent's File Date, so grouping ties by
+    # family keeps a family together; batch order breaks any remaining tie.
+    file_date = snapshot.file_date if snapshot is not None else None
+    family = str(snapshot.family_id) if snapshot is not None and snapshot.family_id else str(item_id)
+    return (file_date is None, file_date.isoformat() if file_date else "", family, sequence)
+
+
+def _freeze_input_manifest(db: Session, run: MatterAnalysisTaskRun) -> AnalysisInputManifest:
+    """Resolve every batch document once, in chronological order, into the run's immutable input manifest."""
+
+    configuration = run.configuration_snapshot
+    matter = db.get(Matter, run.matter_id)
     task_version = db.get(MatterAnalysisTaskVersion, run.matter_analysis_task_version_id)
-    if task_version is None:
+    if matter is None or task_version is None:
         raise FactDevelopmentRunError("The pinned fact-development task version is unavailable")
     try:
         specification = parse_fact_development_specification(task_version.fact_development_specification)
@@ -519,15 +664,15 @@ def _freeze_chunks(db: Session, run: MatterAnalysisTaskRun) -> list[MatterAnalys
         raise FactDevelopmentRunError(str(exc), code="FACT_SPECIFICATION_INVALID") from exc
     if canonical_hash(specification.model_dump(mode="json")) != configuration["specification_hash"]:
         raise FactDevelopmentRunError("The pinned issue catalog changed after the run was launched")
-    document_ids = list(
-        db.scalars(
-            select(ReviewBatchDocument.matter_document_id)
-            .where(ReviewBatchDocument.review_batch_id == run.scope_id)
-            .order_by(ReviewBatchDocument.sequence_number)
-        )
-    )
-    if len(document_ids) != run.population_document_count:
+    members = db.execute(
+        select(MatterDocument, ReviewBatchDocument.sequence_number)
+        .join(ReviewBatchDocument, ReviewBatchDocument.matter_document_id == MatterDocument.id)
+        .where(ReviewBatchDocument.review_batch_id == run.scope_id, MatterDocument.matter_id == run.matter_id)
+        .order_by(ReviewBatchDocument.sequence_number)
+    ).all()
+    if len(members) != run.population_document_count:
         raise FactDevelopmentRunError("The review batch's documents changed after the run was launched")
+    document_ids = [document.id for document, _ in members]
     reviewer_coding_id = configuration.get("reviewer_coding_id")
     try:
         membership = evaluate_issue_membership(
@@ -541,20 +686,138 @@ def _freeze_chunks(db: Session, run: MatterAnalysisTaskRun) -> list[MatterAnalys
         )
     except FactIssueMembershipError as exc:
         raise FactDevelopmentRunError(str(exc), code="FACT_ISSUE_MEMBERSHIP_FAILED") from exc
-    prior = _prior_fingerprints(db, run)
-    chunk_size = int(configuration["chunk_size"])
-    chunks: list[MatterAnalysisTaskRunChunk] = []
-    for number, start in enumerate(range(0, len(document_ids), chunk_size)):
-        slice_ids = document_ids[start : start + chunk_size]
+    try:
+        snapshots = get_collection_item_analysis_input_snapshots(
+            item_ids=[document.collection_item_id for document, _ in members],
+            actor_user_id=run.created_by_user_id,
+            tenant_id=run.tenant_id,
+            client_id=matter.client_id,
+        )
+    except (httpx.HTTPError, PermissionError, ValueError) as exc:
+        raise FactDevelopmentRunError(f"Document inputs are unavailable: {exc}", code="INPUT_RESOLUTION_FAILED") from exc
+    custodians: dict[uuid.UUID, list[str]] = {}
+    for document_id, custodian_id in db.execute(
+        select(MatterDocumentCustodian.matter_document_id, MatterDocumentCustodian.custodian_id)
+        .where(MatterDocumentCustodian.matter_document_id.in_(document_ids))
+        .order_by(MatterDocumentCustodian.matter_document_id, MatterDocumentCustodian.custodian_id)
+    ):
+        custodians.setdefault(document_id, []).append(str(custodian_id))
+    finished = _finished_fingerprints(db, run)
+    ordered = sorted(
+        members,
+        key=lambda member: _chronological_key(
+            member[1], snapshots.get(member[0].collection_item_id), member[0].collection_item_id
+        ),
+    )
+    rows: list[AnalysisInputDocument] = []
+    status_counts: Counter[str] = Counter()
+    reused = 0
+    for position, (document, _) in enumerate(ordered, start=1):
+        snapshot = snapshots.get(document.collection_item_id)
+        issue_keys = membership.get(document.id, [])
+        extensions = {
+            "family_id": str(snapshot.family_id) if snapshot is not None and snapshot.family_id else None,
+            "file_date": snapshot.file_date.isoformat() if snapshot is not None and snapshot.file_date else None,
+        }
+        base = {
+            "matter_document_id": document.id,
+            "collection_item_id": document.collection_item_id,
+            "source_collection_id": document.source_collection_id,
+            "scope_ordinal": position,
+            "extensions": extensions,
+        }
+        if not issue_keys:
+            row = AnalysisInputDocument(**base, input_status="EXCLUDED", failure_code="fact.no_matching_issue")
+        elif snapshot is None:
+            row = AnalysisInputDocument(
+                **base,
+                input_status="MISSING",
+                failure_code="fact.item_unavailable",
+                resolved_inputs={"issue_keys": issue_keys},
+            )
+        elif snapshot.text_source is None:
+            row = AnalysisInputDocument(
+                **base,
+                input_status="MISSING",
+                failure_code="fact.no_text_source",
+                resolved_inputs={"issue_keys": issue_keys},
+            )
+        else:
+            fingerprint = extraction_fingerprint(
+                matter_document_id=str(document.id),
+                source_content_hash=snapshot.text_source.content_hash,
+                specification_hash=configuration["specification_hash"],
+                issue_keys=issue_keys,
+            )
+            prior_extraction = fingerprint in finished
+            reused += prior_extraction
+            row = AnalysisInputDocument(
+                **base,
+                source_artifact_id=snapshot.text_source.artifact_id,
+                source_content_hash=snapshot.text_source.content_hash,
+                resolved_inputs={
+                    "issue_keys": issue_keys,
+                    "fingerprint": fingerprint,
+                    "prior_extraction": prior_extraction,
+                    "metadata": _document_metadata(snapshot, custodians.get(document.id, [])),
+                    "text_source": {
+                        "role": snapshot.text_source.role,
+                        "media_type": snapshot.text_source.media_type,
+                        "original_filename": snapshot.text_source.original_filename,
+                        "byte_length": snapshot.text_source.byte_length,
+                        "record_type": snapshot.record_type,
+                    },
+                },
+            )
+        status_counts[row.input_status] += 1
+        rows.append(row)
+    try:
+        prepared = prepare_analysis_input_manifest(
+            rows,
+            contract=_input_contract(run),
+            scope_type="REVIEW_BATCH",
+            scope_id=run.scope_id,
+        )
+        manifest, _ = publish_analysis_input_manifest(
+            db,
+            prepared=prepared,
+            tenant_id=run.tenant_id,
+            client_id=matter.client_id,
+            matter_id=run.matter_id,
+            owner_type=INPUT_MANIFEST_OWNER_TYPE,
+            owner_id=run.id,
+            producer_kind="CORE",
+            producer_run_id=run.id,
+            actor_user_id=run.created_by_user_id,
+        )
+    except AnalysisInputManifestError as exc:
+        raise FactDevelopmentRunError(str(exc), code="INPUT_MANIFEST_INVALID") from exc
+    run.analysis_input_manifest_id = manifest.id
+    issue_counts: Counter[str] = Counter(key for keys in membership.values() for key in keys)
+    run.report = {
+        "matched_document_count": len(membership),
+        "unmatched_document_count": len(document_ids) - len(membership),
+        "input_status_counts": dict(status_counts),
+        "previously_extracted_count": reused,
+        "issue_document_counts": [
+            {"issue_key": issue.key, "name": issue.name, "document_count": issue_counts.get(issue.key, 0)}
+            for issue in specification.issues
+        ],
+    }
+    db.flush()
+    return manifest
+
+
+def _plan_chunks(db: Session, run: MatterAnalysisTaskRun) -> list[MatterAnalysisTaskRunChunk]:
+    chunk_size = int(run.configuration_snapshot["chunk_size"])
+    chunks = []
+    for number, start in enumerate(range(0, run.population_document_count, chunk_size)):
         chunk = MatterAnalysisTaskRunChunk(
             run_id=run.id,
             chunk_number=number,
             ordinal_start=start,
-            document_ids=[str(value) for value in slice_ids],
-            issue_keys=[membership.get(value, []) for value in slice_ids],
-            fingerprints=[None] * len(slice_ids),
-            prior_fingerprints=[sorted(prior.get(str(value), ())) for value in slice_ids],
-            item_count=len(slice_ids),
+            item_count=min(chunk_size, run.population_document_count - start),
+            fingerprints=[],
             status="QUEUED",
             processed_count=0,
             failed_count=0,
@@ -562,15 +825,6 @@ def _freeze_chunks(db: Session, run: MatterAnalysisTaskRun) -> list[MatterAnalys
         )
         db.add(chunk)
         chunks.append(chunk)
-    issue_counts: Counter[str] = Counter(key for keys in membership.values() for key in keys)
-    run.report = {
-        "matched_document_count": len(membership),
-        "unmatched_document_count": len(document_ids) - len(membership),
-        "issue_document_counts": [
-            {"issue_key": issue.key, "name": issue.name, "document_count": issue_counts.get(issue.key, 0)}
-            for issue in specification.issues
-        ],
-    }
     db.flush()
     return chunks
 
@@ -637,86 +891,9 @@ def _run_context(db: Session, run: MatterAnalysisTaskRun, model: Any | None) -> 
     )
 
 
-def _prior_fingerprints(db: Session, run: MatterAnalysisTaskRun) -> dict[str, set[str]]:
-    """Fingerprints that earlier runs of the same task recorded for documents they finished, by document ID."""
-
-    prior: dict[str, set[str]] = {}
-    rows = db.execute(
-        select(MatterAnalysisTaskRunChunk.document_ids, MatterAnalysisTaskRunChunk.fingerprints)
-        .join(MatterAnalysisTaskRun, MatterAnalysisTaskRun.id == MatterAnalysisTaskRunChunk.run_id)
-        .where(
-            MatterAnalysisTaskRun.matter_analysis_task_id == run.matter_analysis_task_id,
-            MatterAnalysisTaskRun.run_kind == "FACT_DEVELOPMENT",
-            MatterAnalysisTaskRun.id != run.id,
-        )
-    )
-    for document_ids, fingerprints in rows:
-        for document_id, fingerprint in zip(document_ids, fingerprints or [], strict=False):
-            if fingerprint:
-                prior.setdefault(document_id, set()).add(fingerprint)
-    return prior
-
-
-def extraction_fingerprint(context: _RunContext, text: DocumentText, issues: list[str]) -> str:
-    """What makes a document's extraction reusable: its exact text, paragraph map, issue catalog and coded issues.
-
-    The skill version and model are deliberately excluded so a platform prompt or model update does not re-extract
-    (and duplicate) reviewed work across a matter.
-    """
-
-    return canonical_hash(
-        {
-            "contract": "fact-extraction-fingerprint-v1",
-            "source_content_hash": text.source_content_hash,
-            "paragraph_map_version": text.paragraph_map.version,
-            "specification_hash": context.configuration["specification_hash"],
-            "issue_keys": sorted(issues),
-        }
-    )
-
-
-@dataclass(frozen=True)
-class _DocumentSlot:
-    """One document's position in its chunk, for reading prior fingerprints and recording its own."""
-
-    chunk: MatterAnalysisTaskRunChunk
-    index: int
-
-    def known(self) -> set[str]:
-        known = set(self.chunk.prior_fingerprints[self.index]) if self.index < len(self.chunk.prior_fingerprints) else set()
-        if self.index < len(self.chunk.fingerprints) and self.chunk.fingerprints[self.index]:
-            known.add(self.chunk.fingerprints[self.index])
-        return known
-
-    def record(self, fingerprint: str) -> None:
-        fingerprints = list(self.chunk.fingerprints or [])
-        fingerprints.extend([None] * (len(self.chunk.document_ids) - len(fingerprints)))
-        fingerprints[self.index] = fingerprint
-        self.chunk.fingerprints = fingerprints
-
-
-def _document_metadata(db: Session, context: _RunContext, document: MatterDocument) -> dict[str, Any]:
-    """Read File Date and email headers through Core's Artifact gateway, as the search projection does."""
-
-    snapshot = get_search_item_snapshot(
-        collection_item_id=document.collection_item_id,
-        actor_user_id=context.run.created_by_user_id,
-        tenant_id=context.matter.client.tenant_id,
-        client_id=context.matter.client_id,
-    )
-    return {
-        "file_date": snapshot.file_date.isoformat() if snapshot.file_date else None,
-        "original_filename": snapshot.original_filename,
-        "record_type": snapshot.record_type,
-        "family_id": str(snapshot.family_id) if snapshot.family_id else None,
-        "custodian_ids": [str(value) for value in snapshot.custodian_ids],
-        "email_from": snapshot.email_sender,
-        "email_to": snapshot.email_recipients.get("TO", []),
-        "email_cc": snapshot.email_recipients.get("CC", []),
-        "email_bcc": snapshot.email_recipients.get("BCC", []),
-        "email_subject": snapshot.email_subject,
-        "email_sent_at": snapshot.email_sent_at.isoformat() if snapshot.email_sent_at else None,
-    }
+def _record_fingerprint(chunk: MatterAnalysisTaskRunChunk, fingerprint: str) -> None:
+    if fingerprint not in (chunk.fingerprints or []):
+        chunk.fingerprints = [*(chunk.fingerprints or []), fingerprint]
 
 
 def _known_entities(db: Session, context: _RunContext, metadata: dict[str, Any]) -> list[dict[str, Any]]:
@@ -824,33 +1001,22 @@ def _outcome(document_id: str, status: str, reason: str, message: str | None = N
 def _process_document(
     db: Session,
     context: _RunContext,
-    slot: _DocumentSlot,
-    document_id: str,
-    issues: list[str],
+    chunk: MatterAnalysisTaskRunChunk,
+    row: dict[str, Any],
     counts: Counter[str],
 ) -> JobItemOutcome:
     started_at = utcnow()
-    if not issues:
-        return _outcome(document_id, "EXCLUDED", "fact.no_matching_issue", "The document is not coded to any issue")
-    parsed_id = uuid.UUID(document_id)
-    document = db.scalar(
-        select(MatterDocument).where(MatterDocument.id == parsed_id, MatterDocument.matter_id == context.matter.id)
-    )
-    if document is None:
-        return _outcome(document_id, "SKIPPED", "fact.document_unavailable", "The document is no longer in the matter")
-    try:
-        text = load_document_text(
-            db,
-            matter=context.matter,
-            matter_document_id=parsed_id,
-            actor_user_id=context.run.created_by_user_id,
-        )
-    except FactEvidenceError as exc:
-        return _outcome(document_id, "SKIPPED", "fact.no_text_source", str(exc))
-    fingerprint = extraction_fingerprint(context, text, issues)
-    if fingerprint in slot.known():
-        # The same text, catalog and coding were already extracted by an earlier run or attempt.
-        slot.record(fingerprint)
+    document_id = row["matter_document_id"]
+    inputs = row["resolved_inputs"]
+    if row["input_status"] == "EXCLUDED":
+        return _outcome(document_id, "EXCLUDED", row["failure_code"], "The document is not coded to any issue")
+    if row["input_status"] != "READY":
+        return _outcome(document_id, "SKIPPED", row["failure_code"], "The document had no usable text when frozen")
+    issues = list(inputs["issue_keys"])
+    fingerprint = inputs["fingerprint"]
+    if inputs.get("prior_extraction") or fingerprint in (chunk.fingerprints or []):
+        # The same document, text, catalog and coding were already extracted by an earlier run or attempt.
+        _record_fingerprint(chunk, fingerprint)
         counts["reused"] += 1
         return _outcome(
             document_id,
@@ -859,19 +1025,43 @@ def _process_document(
             "This document was already extracted with the same text, issue catalog and coding",
             input_fingerprint=fingerprint,
         )
+    source = inputs["text_source"]
     max_characters = int(context.configuration["max_document_characters"])
-    if len(text.text) > max_characters:
+    try:
+        raw_text = read_text_source(
+            TextSourceReference(
+                artifact_id=uuid.UUID(row["source_artifact_id"]),
+                role=source["role"],
+                media_type=source["media_type"],
+                original_filename=source["original_filename"],
+                content_hash=row["source_content_hash"],
+                byte_length=int(source["byte_length"]),
+            ),
+            record_type=source["record_type"],
+            actor_user_id=context.run.created_by_user_id,
+            tenant_id=context.run.tenant_id,
+            client_id=context.matter.client_id,
+        )
+    except (httpx.HTTPError, PermissionError, ValueError) as exc:
+        return _outcome(document_id, "FAILED", "fact.text_unavailable", str(exc)[:1000], input_fingerprint=fingerprint)
+    if raw_text is None:
+        return _outcome(document_id, "SKIPPED", "fact.no_text_source", "The pinned text source has no text")
+    if len(raw_text) > max_characters:
         return _outcome(
             document_id,
             "SKIPPED",
             "fact.text_too_large",
-            f"The document text has {len(text.text):,} characters; the limit is {max_characters:,}",
-            metrics={"characters": len(text.text)},
+            f"The document text has {len(raw_text):,} characters; the limit is {max_characters:,}",
+            metrics={"characters": len(raw_text)},
         )
-    try:
-        metadata = _document_metadata(db, context, document)
-    except (ValueError, PermissionError) as exc:
-        return _outcome(document_id, "FAILED", "fact.metadata_unavailable", str(exc))
+    text = document_text_from_source(
+        matter_document_id=uuid.UUID(document_id),
+        source_artifact_id=uuid.UUID(row["source_artifact_id"]),
+        source_content_hash=row["source_content_hash"],
+        text=raw_text,
+    )
+    parsed_id = uuid.UUID(document_id)
+    metadata = inputs["metadata"]
     recall_unavailable = False
     try:
         recalled = _recalled_facts(db, context, text, issues, metadata)
@@ -947,7 +1137,7 @@ def _process_document(
         status, reason, message = "SUCCEEDED", "fact.no_fact", None
     if status == "SUCCEEDED":
         # Recorded in the same transaction as the document's facts, so a crash can never separate them.
-        slot.record(fingerprint)
+        _record_fingerprint(chunk, fingerprint)
     db.commit()
     counts["facts_created"] += len(result.created_fact_ids)
     counts["evidence_added"] += len(result.evidence_fact_ids)
@@ -998,7 +1188,8 @@ def process_fact_development_chunk(
         if run is None:
             raise FactDevelopmentRunError("Fact-development run was not found")
         scope = _outcome_scope(db, run)
-        outcome_chunk = _outcome_chunk(chunk)
+        rows = _chunk_rows(_manifest_reader(db, run), chunk)
+        outcome_chunk = _outcome_chunk(chunk, rows)
         if find_outcome_fragment(scope, outcome_chunk) is not None:
             if chunk.status not in {"COMPLETED", "COMPLETED_WITH_ERRORS"}:
                 chunk.status = "COMPLETED_WITH_ERRORS" if chunk.failed_count else "COMPLETED"
@@ -1016,21 +1207,19 @@ def process_fact_development_chunk(
         counts: Counter[str] = Counter()
         outcomes: list[JobItemOutcome] = []
         canceled = False
-        for index, (document_id, issues) in enumerate(zip(chunk.document_ids, chunk.issue_keys, strict=True)):
+        for row in rows:
             if canceled or _cancel_requested(db, run.id):
                 canceled = True
                 outcomes.append(
-                    _outcome(document_id, "CANCELED", "fact.run_canceled", "The run was canceled before this document")
+                    _outcome(
+                        row["matter_document_id"],
+                        "CANCELED",
+                        "fact.run_canceled",
+                        "The run was canceled before this document",
+                    )
                 )
                 continue
-            outcome = _process_document(
-                db,
-                context,
-                _DocumentSlot(chunk, index),
-                document_id,
-                list(issues),
-                counts,
-            )
+            outcome = _process_document(db, context, chunk, row, counts)
             outcomes.append(outcome)
             chunk.processed_count += 1
             if outcome.outcome_status == "FAILED":
@@ -1051,10 +1240,10 @@ def process_fact_development_chunk(
 # Finalize
 
 
-def _canceled_outcomes(chunk: MatterAnalysisTaskRunChunk) -> list[JobItemOutcome]:
+def _canceled_outcomes(rows: list[dict[str, Any]]) -> list[JobItemOutcome]:
     return [
-        _outcome(document_id, "CANCELED", "fact.run_canceled", "The run was canceled before this document")
-        for document_id in chunk.document_ids
+        _outcome(row["matter_document_id"], "CANCELED", "fact.run_canceled", "The run was canceled before this document")
+        for row in rows
     ]
 
 
@@ -1122,10 +1311,11 @@ def finalize_fact_development_run(db: Session, run_id: uuid.UUID) -> MatterAnaly
         job_id=run.id,
         current_stage="FINALIZING",
     )
+    reader = _manifest_reader(db, run)
     manifest = finalize_outcome_manifest(
         db,
         scope=_outcome_scope(db, run),
-        chunks=[_outcome_chunk(chunk) for chunk in chunks],
+        chunks=[_outcome_chunk(chunk, _chunk_rows(reader, chunk)) for chunk in chunks],
     )
     run.report = _report(db, run, _execution_ids(db, run.id), manifest)
     failed = int(manifest.status_counts.get("FAILED", 0))
@@ -1163,16 +1353,22 @@ def finalize_canceled_fact_development_run(db: Session, run: MatterAnalysisTaskR
 
     scope = _outcome_scope(db, run)
     chunks = _chunks(db, run.id)
+    if run.analysis_input_manifest_id is None or not chunks:
+        return  # Canceled before the population was frozen: there are no documents to report.
     manifest = ensure_outcome_manifest(db, scope)
     if manifest.manifest_status == "FINALIZED":
         return
+    reader = _manifest_reader(db, run)
+    outcome_chunks = []
     for chunk in chunks:
-        outcome_chunk = _outcome_chunk(chunk)
+        rows = _chunk_rows(reader, chunk)
+        outcome_chunk = _outcome_chunk(chunk, rows)
+        outcome_chunks.append(outcome_chunk)
         if find_outcome_fragment(scope, outcome_chunk) is not None:
             continue
-        publish_outcome_fragment(db, scope=scope, chunk=outcome_chunk, outcomes=_canceled_outcomes(chunk))
+        publish_outcome_fragment(db, scope=scope, chunk=outcome_chunk, outcomes=_canceled_outcomes(rows))
         chunk.status = "CANCELED"
-    manifest = finalize_outcome_manifest(db, scope=scope, chunks=[_outcome_chunk(chunk) for chunk in chunks])
+    manifest = finalize_outcome_manifest(db, scope=scope, chunks=outcome_chunks)
     run.report = _report(db, run, _execution_ids(db, run.id), manifest)
     db.commit()
 

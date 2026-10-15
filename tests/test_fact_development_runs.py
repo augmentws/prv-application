@@ -1,7 +1,6 @@
 import hashlib
 import uuid
 from datetime import datetime, timezone
-from types import SimpleNamespace
 
 import pytest
 from conftest import TestingSessionLocal
@@ -9,7 +8,8 @@ from fastapi.testclient import TestClient
 from pydantic_ai.models.test import TestModel
 from sqlalchemy import select
 
-from app.artifact_gateway import WorkflowArtifactReference
+from app.analysis_input_manifests import AnalysisInputManifestReader
+from app.artifact_gateway import AnalysisInputItemSnapshot, TextSourceReference, WorkflowArtifactReference
 from app.document_metadata import apply_metadata_values
 from app.fact_development import (
     fail_fact_development_run,
@@ -20,9 +20,11 @@ from app.fact_development import (
 from app.fact_development_skills import ensure_standard_fact_development_skills
 from app.fact_recall import RecalledFact
 from app.models import (
+    AnalysisInputManifest,
     JobOutcomeManifest,
     MatterAnalysisTaskRun,
     MatterAnalysisTaskRunChunk,
+    MatterDocument,
     MatterEntity,
     MatterFact,
     MatterFactEvidence,
@@ -59,21 +61,48 @@ def _operation(**overrides) -> dict:
 
 
 @pytest.fixture(autouse=True)
-def snapshots(monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.setattr(
-        "app.fact_development.get_search_item_snapshot",
-        lambda **_: SimpleNamespace(
-            file_date=datetime(2021, 3, 4, tzinfo=timezone.utc),
-            original_filename="pricing.msg",
-            record_type="EMAIL",
-            family_id=None,
-            custodian_ids=[],
-            email_sender="jane@acme.com",
-            email_recipients={"TO": ["bob@acme.com"], "CC": [], "BCC": []},
-            email_subject="Price increase",
-            email_sent_at=datetime(2021, 3, 4, tzinfo=timezone.utc),
-        ),
-    )
+def inputs(monkeypatch: pytest.MonkeyPatch) -> dict:
+    """Fake Artifact inputs, keyed by matter document ID: File Dates, the text hash, and documents without text."""
+
+    state: dict = {"item_documents": {}, "file_dates": {}, "content_hash": "a" * 64, "no_text": set(), "text_reads": 0}
+
+    def snapshots(*, item_ids, **_):
+        result = {}
+        for item_id in item_ids:
+            document_id = state["item_documents"].get(item_id)
+            result[item_id] = AnalysisInputItemSnapshot(
+                item_id=item_id,
+                family_id=None,
+                record_type="EMAIL",
+                original_filename="pricing.msg",
+                file_date=state["file_dates"].get(document_id),
+                email_sender="jane@acme.com",
+                email_subject="Price increase",
+                email_sent_at=state["file_dates"].get(document_id),
+                email_recipients={"TO": ["bob@acme.com"], "CC": [], "BCC": []},
+                text_source=(
+                    None
+                    if document_id in state["no_text"]
+                    else TextSourceReference(
+                        artifact_id=uuid.uuid5(item_id, "text"),
+                        role="EXTRACTED_TEXT",
+                        media_type="text/plain",
+                        original_filename="pricing.txt",
+                        content_hash=state["content_hash"],
+                        byte_length=len(DOCUMENT_TEXT),
+                    )
+                ),
+            )
+        return result
+
+    def read_text(reference, **_):
+        state["text_reads"] += 1
+        assert reference.content_hash == state["content_hash"]
+        return DOCUMENT_TEXT
+
+    monkeypatch.setattr("app.fact_development.get_collection_item_analysis_input_snapshots", snapshots)
+    monkeypatch.setattr("app.fact_development.read_text_source", read_text)
+    return state
 
 
 @pytest.fixture
@@ -124,11 +153,17 @@ def artifacts(monkeypatch: pytest.MonkeyPatch) -> dict:
     )
     monkeypatch.setattr("app.job_outcomes.get_workflow_artifact_reference", lambda **kwargs: by_id[kwargs["artifact_id"]])
     monkeypatch.setattr("app.job_outcomes.copy_workflow_artifact_content", copy)
+    monkeypatch.setattr("app.analysis_input_manifests.store_workflow_artifact", store)
+    monkeypatch.setattr(
+        "app.analysis_input_manifests.get_workflow_artifact_reference",
+        lambda **kwargs: by_id[kwargs["artifact_id"]],
+    )
+    monkeypatch.setattr("app.analysis_input_manifests.copy_workflow_artifact_content", copy)
     return by_derivation
 
 
 @pytest.fixture
-def run_ctx(client: TestClient, root_token: str, root_admin) -> dict:
+def run_ctx(client: TestClient, root_token: str, root_admin, inputs: dict) -> dict:
     with TestingSessionLocal() as db:
         root = db.get(Tenant, root_admin.tenant_id)
         ensure_standard_fact_development_skills(db, root, root_admin)
@@ -157,6 +192,13 @@ def run_ctx(client: TestClient, root_token: str, root_admin) -> dict:
         batch = _ready_batch(db, ctx["matter_id"], user_id, ctx["documents"])
         db.commit()
         ctx["batch_id"] = str(batch.id)
+        for document_id in ctx["documents"]:
+            inputs["item_documents"][db.get(MatterDocument, uuid.UUID(document_id)).collection_item_id] = document_id
+    # Batch order is pricing, safety, uncoded; chronological order puts the 2020 safety document first.
+    inputs["file_dates"] = {
+        ctx["documents"][0]: datetime(2021, 3, 4, tzinfo=timezone.utc),
+        ctx["documents"][1]: datetime(2020, 1, 1, tzinfo=timezone.utc),
+    }
     ctx["user_id"] = user_id
     return ctx
 
@@ -253,8 +295,9 @@ def test_run_extracts_verified_facts_and_publishes_outcomes(
     )
     assert items.status_code == 200, items.text
     rows = items.json()["items"]
-    assert [row["item_id"] for row in rows] == ctx["documents"]
-    first_payload = rows[0]["payload"]
+    # Outcomes follow the frozen chronological order: 2020 safety, 2021 pricing, then the undated document.
+    assert [row["item_id"] for row in rows] == [ctx["documents"][1], ctx["documents"][0], ctx["documents"][2]]
+    first_payload = rows[1]["payload"]
     assert len(first_payload["errors"]) == 2
     assert "does not appear verbatim" in first_payload["errors"][0]["error"]
     assert "not coded to" in first_payload["errors"][1]["error"]
@@ -425,7 +468,7 @@ def test_changed_coding_or_text_is_extracted_again(
     client: TestClient,
     run_ctx: dict,
     artifacts: dict,
-    monkeypatch: pytest.MonkeyPatch,
+    inputs: dict,
 ) -> None:
     ctx = run_ctx
     model = TestModel(custom_output_args=_extraction_output())
@@ -458,17 +501,50 @@ def test_changed_coding_or_text_is_extracted_again(
     assert reasons["fact.facts_proposed"] == 1
 
     # New text for every document (a reprocessed text source) invalidates every earlier extraction.
-    monkeypatch.setattr(
-        "app.fact_evidence.get_preferred_text_source",
-        lambda **_: SimpleNamespace(
-            artifact_id=uuid.UUID("00000000-0000-0000-0000-00000000a002"),
-            content_hash="b" * 64,
-            text=DOCUMENT_TEXT,
-        ),
-    )
+    inputs["content_hash"] = "b" * 64
     retexted = _launch(client, ctx, key="retexted")
     _run_all(retexted["id"], model)
     assert "fact.reused_prior_extraction" not in _reasons(retexted["id"])
+
+
+def test_population_is_frozen_in_a_chronological_input_manifest(
+    client: TestClient,
+    run_ctx: dict,
+    artifacts: dict,
+    inputs: dict,
+) -> None:
+    ctx = run_ctx
+    inputs["no_text"].add(ctx["documents"][1])
+    run = _launch(client, ctx)
+    _run_all(run["id"], TestModel(custom_output_args=_extraction_output()))
+
+    with TestingSessionLocal() as db:
+        run_row = db.get(MatterAnalysisTaskRun, uuid.UUID(run["id"]))
+        manifest = db.get(AnalysisInputManifest, run_row.analysis_input_manifest_id)
+        assert manifest.manifest_status == "FINALIZED"
+        assert (manifest.owner_type, manifest.owner_id) == ("MATTER_ANALYSIS_TASK_RUN", run_row.id)
+        assert (manifest.scope_type, manifest.scope_id) == ("REVIEW_BATCH", uuid.UUID(ctx["batch_id"]))
+        assert manifest.input_contract["key"] == "fact-development.population"
+        assert manifest.item_count == 3
+        rows = AnalysisInputManifestReader(manifest, actor_user_id=run_row.created_by_user_id).rows(0, 3)
+        assert [(row["matter_document_id"], row["input_status"], row["failure_code"]) for row in rows] == [
+            (ctx["documents"][1], "MISSING", "fact.no_text_source"),
+            (ctx["documents"][0], "READY", None),
+            (ctx["documents"][2], "EXCLUDED", "fact.no_matching_issue"),
+        ]
+        ready = rows[1]
+        assert ready["source_content_hash"] == "a" * 64
+        assert ready["file_date"] == "2021-03-04T00:00:00+00:00"
+        assert ready["resolved_inputs"]["issue_keys"] == ["pricing"]
+        assert ready["resolved_inputs"]["metadata"]["email_from"] == "jane@acme.com"
+        assert run_row.report["input_status_counts"] == {"MISSING": 1, "READY": 1, "EXCLUDED": 1}
+        assert run_row.report["reason_counts"] == {
+            "fact.facts_proposed": 1,
+            "fact.no_matching_issue": 1,
+            "fact.no_text_source": 1,
+        }
+    # Only the one ready document's pinned text was read; nothing was re-resolved at execution time.
+    assert inputs["text_reads"] == 1
 
 
 def test_fact_runs_require_the_run_permission(client: TestClient, run_ctx: dict) -> None:

@@ -4,7 +4,9 @@ import hashlib
 import io
 import json
 import re
+import threading
 import uuid
+from collections import OrderedDict
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from typing import Any, Literal
@@ -460,11 +462,7 @@ def publish_analysis_input_manifest(
     return manifest, reference
 
 
-def read_analysis_input_manifest_table(
-    manifest: AnalysisInputManifest,
-    *,
-    actor_user_id: uuid.UUID,
-) -> pa.Table:
+def _verified_manifest_content(manifest: AnalysisInputManifest, *, actor_user_id: uuid.UUID) -> bytes:
     if manifest.manifest_status != "FINALIZED" or manifest.artifact_id is None:
         raise AnalysisInputManifestError("analysis input manifest is not finalized")
     reference = get_workflow_artifact_reference(
@@ -493,11 +491,11 @@ def read_analysis_input_manifest_table(
     content = destination.getvalue()
     if hashlib.sha256(content).hexdigest() != manifest.artifact_content_hash:
         raise AnalysisInputManifestError("analysis input manifest content hash does not match Core")
-    try:
-        table = pq.read_table(io.BytesIO(content))
-    except (OSError, ValueError, pa.ArrowException) as exc:
-        raise AnalysisInputManifestError("analysis input manifest is not readable Parquet") from exc
-    metadata = table.schema.metadata or {}
+    return content
+
+
+def _validate_manifest_schema(schema: pa.Schema, row_count: int, manifest: AnalysisInputManifest) -> None:
+    metadata = schema.metadata or {}
     expected_metadata = {
         b"pvr.schema": manifest.manifest_schema.encode(),
         b"pvr.schema_version": str(manifest.manifest_schema_version).encode(),
@@ -508,12 +506,78 @@ def read_analysis_input_manifest_table(
     }
     if any(metadata.get(key) != value for key, value in expected_metadata.items()):
         raise AnalysisInputManifestError("analysis input manifest Parquet metadata does not match Core")
-    if not BASE_COLUMN_NAMES.issubset(table.schema.names):
+    if not BASE_COLUMN_NAMES.issubset(schema.names):
         raise AnalysisInputManifestError("analysis input manifest is missing required base columns")
     contract = AnalysisInputContract.model_validate(manifest.input_contract)
     extension_names = {item.name for item in contract.extension_fields}
-    if not extension_names.issubset(table.schema.names):
+    if not extension_names.issubset(schema.names):
         raise AnalysisInputManifestError("analysis input manifest is missing contract extension columns")
-    if table.num_rows != manifest.item_count:
+    if row_count != manifest.item_count:
         raise AnalysisInputManifestError("analysis input manifest row count does not match Core")
+
+
+def read_analysis_input_manifest_table(
+    manifest: AnalysisInputManifest,
+    *,
+    actor_user_id: uuid.UUID,
+) -> pa.Table:
+    content = _verified_manifest_content(manifest, actor_user_id=actor_user_id)
+    try:
+        table = pq.read_table(io.BytesIO(content))
+    except (OSError, ValueError, pa.ArrowException) as exc:
+        raise AnalysisInputManifestError("analysis input manifest is not readable Parquet") from exc
+    _validate_manifest_schema(table.schema, table.num_rows, manifest)
     return table
+
+
+_VERIFIED_CONTENT_CACHE: OrderedDict[tuple[uuid.UUID, str], bytes] = OrderedDict()
+_VERIFIED_CONTENT_CACHE_SIZE = 2
+_VERIFIED_CONTENT_LOCK = threading.Lock()
+
+
+class AnalysisInputManifestReader:
+    """Verified, bounded access to a finalized manifest's rows by position (rows are stored in ordinal order).
+
+    The manifest is downloaded and verified once per process and content hash, then each call reads only the
+    Parquet row groups that overlap the requested range, so many chunk workers can share one large manifest.
+    """
+
+    def __init__(self, manifest: AnalysisInputManifest, *, actor_user_id: uuid.UUID) -> None:
+        key = (manifest.id, manifest.artifact_content_hash or "")
+        with _VERIFIED_CONTENT_LOCK:
+            content = _VERIFIED_CONTENT_CACHE.get(key)
+            if content is not None:
+                _VERIFIED_CONTENT_CACHE.move_to_end(key)
+        if content is None:
+            content = _verified_manifest_content(manifest, actor_user_id=actor_user_id)
+            with _VERIFIED_CONTENT_LOCK:
+                _VERIFIED_CONTENT_CACHE[key] = content
+                while len(_VERIFIED_CONTENT_CACHE) > _VERIFIED_CONTENT_CACHE_SIZE:
+                    _VERIFIED_CONTENT_CACHE.popitem(last=False)
+        try:
+            self._file = pq.ParquetFile(io.BytesIO(content))
+        except (OSError, ValueError, pa.ArrowException) as exc:
+            raise AnalysisInputManifestError("analysis input manifest is not readable Parquet") from exc
+        _validate_manifest_schema(self._file.schema_arrow, self._file.metadata.num_rows, manifest)
+        self.contract = AnalysisInputContract.model_validate(manifest.input_contract)
+        self.item_count = manifest.item_count
+
+    def rows(self, start: int, count: int) -> list[dict[str, Any]]:
+        """Rows ``start`` to ``start + count`` (zero-based positions), with JSON columns decoded."""
+
+        if start < 0 or count < 0 or start + count > self.item_count:
+            raise AnalysisInputManifestError("requested manifest rows are outside the frozen population")
+        selected: list[dict[str, Any]] = []
+        position = 0
+        for index in range(self._file.metadata.num_row_groups):
+            group_rows = self._file.metadata.row_group(index).num_rows
+            if position + group_rows > start and position < start + count:
+                for offset, row in enumerate(self._file.read_row_group(index).to_pylist()):
+                    if start <= position + offset < start + count:
+                        row["resolved_inputs"] = json.loads(row.pop("resolved_inputs_json"))
+                        row["artifact_references"] = json.loads(row.pop("artifact_references_json"))
+                        selected.append(row)
+            position += group_rows
+            if position >= start + count:
+                break
+        return selected

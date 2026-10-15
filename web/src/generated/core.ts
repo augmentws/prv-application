@@ -88,6 +88,8 @@ import type {
   CollectionDateHistogramResponse,
   CollectionDateHistogramV1CollectionsCollectionIdDateHistogramGetParams,
   CollectionDeletionJobRead,
+  CollectionItemAnalysisInputSnapshot,
+  CollectionItemAnalysisInputSnapshotsRequest,
   CollectionItemGroupingSnapshot,
   CollectionItemGroupingSnapshotsRequest,
   CollectionItemRead,
@@ -17763,6 +17765,70 @@ const res = await fetch(getGetCollectionItemGroupingSnapshotsV1CollectionItemsGr
 
   const data: getCollectionItemGroupingSnapshotsV1CollectionItemsGroupingSnapshotsPostResponse['data'] = body ? JSON.parse(body) : {}
   return { data, status: res.status, headers: res.headers } as getCollectionItemGroupingSnapshotsV1CollectionItemsGroupingSnapshotsPostResponse
+}
+
+
+
+export type getCollectionItemAnalysisInputSnapshotsV1CollectionItemsAnalysisInputSnapshotsPostResponse200 = {
+  data: CollectionItemAnalysisInputSnapshot[]
+  status: 200
+}
+
+export type getCollectionItemAnalysisInputSnapshotsV1CollectionItemsAnalysisInputSnapshotsPostResponse422 = {
+  data: HTTPValidationError
+  status: 422
+}
+
+export type getCollectionItemAnalysisInputSnapshotsV1CollectionItemsAnalysisInputSnapshotsPostResponseSuccess = (getCollectionItemAnalysisInputSnapshotsV1CollectionItemsAnalysisInputSnapshotsPostResponse200) & {
+  headers: Headers;
+};
+export type getCollectionItemAnalysisInputSnapshotsV1CollectionItemsAnalysisInputSnapshotsPostResponseError = (getCollectionItemAnalysisInputSnapshotsV1CollectionItemsAnalysisInputSnapshotsPostResponse422) & {
+  headers: Headers;
+};
+
+export type getCollectionItemAnalysisInputSnapshotsV1CollectionItemsAnalysisInputSnapshotsPostResponse = (getCollectionItemAnalysisInputSnapshotsV1CollectionItemsAnalysisInputSnapshotsPostResponseSuccess | getCollectionItemAnalysisInputSnapshotsV1CollectionItemsAnalysisInputSnapshotsPostResponseError)
+
+export const getGetCollectionItemAnalysisInputSnapshotsV1CollectionItemsAnalysisInputSnapshotsPostUrl = () => {
+
+
+
+
+  return `/api/core/v1/collection-items/analysis-input-snapshots`
+}
+
+/**
+ * @summary Get Collection Item Analysis Input Snapshots
+ */
+export const getCollectionItemAnalysisInputSnapshotsV1CollectionItemsAnalysisInputSnapshotsPost = async (collectionItemAnalysisInputSnapshotsRequest: CollectionItemAnalysisInputSnapshotsRequest, options?: RequestInit): Promise<getCollectionItemAnalysisInputSnapshotsV1CollectionItemsAnalysisInputSnapshotsPostResponse> => {
+
+    const getHeaders = (h?: NonNullable<RequestInit['headers']>): Record<string, string | readonly string[]> => {
+    if (!h) return {};
+    if (h instanceof Headers) return Object.fromEntries(h.entries());
+    if (Symbol.iterator in h) {
+      return Object.fromEntries(
+        Array.from(h as Iterable<Iterable<string>>, (entry) => Array.from(entry) as [string, string]),
+      );
+    }
+    const headers: Record<string, string | readonly string[]> = {};
+    for (const [name, value] of Object.entries<string | readonly string[] | undefined>(h)) {
+      if (value !== undefined) headers[name] = value;
+    }
+    return headers;
+  };
+const res = await fetch(getGetCollectionItemAnalysisInputSnapshotsV1CollectionItemsAnalysisInputSnapshotsPostUrl(),
+  {
+    ...options,
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json', ...getHeaders(options?.headers) },
+    body: JSON.stringify(collectionItemAnalysisInputSnapshotsRequest)
+  }
+)
+
+
+  const body = [204, 205, 304].includes(res.status) ? null : await res.text();
+
+  const data: getCollectionItemAnalysisInputSnapshotsV1CollectionItemsAnalysisInputSnapshotsPostResponse['data'] = body ? JSON.parse(body) : {}
+  return { data, status: res.status, headers: res.headers } as getCollectionItemAnalysisInputSnapshotsV1CollectionItemsAnalysisInputSnapshotsPostResponse
 }
 
 

@@ -19220,6 +19220,56 @@
         ]
       }
     },
+    "/v1/collection-items/analysis-input-snapshots": {
+      "post": {
+        "tags": [
+          "artifacts"
+        ],
+        "summary": "Get Collection Item Analysis Input Snapshots",
+        "operationId": "get_collection_item_analysis_input_snapshots_v1_collection_items_analysis_input_snapshots_post",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/CollectionItemAnalysisInputSnapshotsRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "items": {
+                    "$ref": "#/components/schemas/CollectionItemAnalysisInputSnapshot"
+                  },
+                  "type": "array",
+                  "title": "Response Get Collection Item Analysis Input Snapshots V1 Collection Items Analysis Input Snapshots Post"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ]
+      }
+    },
     "/v1/collection-items/{collection_item_id}/artifacts": {
       "get": {
         "tags": [
@@ -23944,6 +23994,62 @@
           "model_key"
         ],
         "title": "AgentVersionCreate"
+      },
+      "AnalysisInputEmail": {
+        "properties": {
+          "sender": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Sender"
+          },
+          "subject": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Subject"
+          },
+          "sent_at": {
+            "anyOf": [
+              {
+                "type": "string",
+                "format": "date-time"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Sent At"
+          },
+          "recipients": {
+            "additionalProperties": {
+              "items": {
+                "type": "string"
+              },
+              "type": "array"
+            },
+            "type": "object",
+            "title": "Recipients"
+          }
+        },
+        "type": "object",
+        "required": [
+          "sender",
+          "subject",
+          "sent_at",
+          "recipients"
+        ],
+        "title": "AnalysisInputEmail"
       },
       "ArtifactLineageRead": {
         "properties": {
@@ -29242,6 +29348,115 @@
           "updated_at"
         ],
         "title": "CollectionDeletionJobRead"
+      },
+      "CollectionItemAnalysisInputSnapshot": {
+        "properties": {
+          "item_id": {
+            "type": "string",
+            "format": "uuid",
+            "title": "Item Id"
+          },
+          "family_id": {
+            "anyOf": [
+              {
+                "type": "string",
+                "format": "uuid"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Family Id"
+          },
+          "record_type": {
+            "type": "string",
+            "enum": [
+              "EMAIL",
+              "FILE",
+              "CHAT",
+              "TRANSCRIPT",
+              "OTHER"
+            ],
+            "title": "Record Type"
+          },
+          "original_filename": {
+            "type": "string",
+            "title": "Original Filename"
+          },
+          "file_date": {
+            "anyOf": [
+              {
+                "type": "string",
+                "format": "date-time"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "File Date"
+          },
+          "email": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/AnalysisInputEmail"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "text_candidates": {
+            "items": {
+              "$ref": "#/components/schemas/TextSourceCandidate"
+            },
+            "type": "array",
+            "title": "Text Candidates"
+          }
+        },
+        "type": "object",
+        "required": [
+          "item_id",
+          "family_id",
+          "record_type",
+          "original_filename",
+          "file_date",
+          "email",
+          "text_candidates"
+        ],
+        "title": "CollectionItemAnalysisInputSnapshot",
+        "description": "Scalar inputs and immutable text-artifact references for freezing an analysis input manifest.\n\nNever carries document content, so a whole review batch can be resolved in bounded pages."
+      },
+      "CollectionItemAnalysisInputSnapshotsRequest": {
+        "properties": {
+          "tenant_id": {
+            "type": "string",
+            "format": "uuid",
+            "title": "Tenant Id"
+          },
+          "client_id": {
+            "type": "string",
+            "format": "uuid",
+            "title": "Client Id"
+          },
+          "item_ids": {
+            "items": {
+              "type": "string",
+              "format": "uuid"
+            },
+            "type": "array",
+            "maxItems": 5000,
+            "minItems": 1,
+            "title": "Item Ids"
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "tenant_id",
+          "client_id",
+          "item_ids"
+        ],
+        "title": "CollectionItemAnalysisInputSnapshotsRequest"
       },
       "CollectionItemGroupingSnapshot": {
         "properties": {
@@ -48624,6 +48839,47 @@
           "pattern"
         ],
         "title": "TextProcessingRule"
+      },
+      "TextSourceCandidate": {
+        "properties": {
+          "artifact_id": {
+            "type": "string",
+            "format": "uuid",
+            "title": "Artifact Id"
+          },
+          "role": {
+            "type": "string",
+            "title": "Role"
+          },
+          "media_type": {
+            "type": "string",
+            "title": "Media Type"
+          },
+          "original_filename": {
+            "type": "string",
+            "title": "Original Filename"
+          },
+          "content_hash": {
+            "type": "string",
+            "pattern": "^[0-9a-f]{64}$",
+            "title": "Content Hash"
+          },
+          "byte_length": {
+            "type": "integer",
+            "title": "Byte Length"
+          }
+        },
+        "type": "object",
+        "required": [
+          "artifact_id",
+          "role",
+          "media_type",
+          "original_filename",
+          "content_hash",
+          "byte_length"
+        ],
+        "title": "TextSourceCandidate",
+        "description": "A finalized artifact that may supply an item's text; Core chooses among them by its own precedence."
       },
       "TokenPair": {
         "properties": {

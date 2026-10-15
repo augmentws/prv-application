@@ -388,6 +388,54 @@ class CollectionItemGroupingSnapshot(BaseModel):
     native_content_hash: Sha256 | None
 
 
+class CollectionItemAnalysisInputSnapshotsRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    tenant_id: uuid.UUID
+    client_id: uuid.UUID
+    item_ids: list[uuid.UUID] = Field(min_length=1, max_length=5000)
+
+    @field_validator("item_ids")
+    @classmethod
+    def validate_unique_item_ids(cls, values: list[uuid.UUID]) -> list[uuid.UUID]:
+        if len(values) != len(set(values)):
+            raise ValueError("Collection item IDs must be unique")
+        return values
+
+
+class TextSourceCandidate(BaseModel):
+    """A finalized artifact that may supply an item's text; Core chooses among them by its own precedence."""
+
+    artifact_id: uuid.UUID
+    role: str
+    media_type: str
+    original_filename: str
+    content_hash: Sha256
+    byte_length: int
+
+
+class AnalysisInputEmail(BaseModel):
+    sender: str | None
+    subject: str | None
+    sent_at: datetime | None
+    recipients: dict[str, list[str]]
+
+
+class CollectionItemAnalysisInputSnapshot(BaseModel):
+    """Scalar inputs and immutable text-artifact references for freezing an analysis input manifest.
+
+    Never carries document content, so a whole review batch can be resolved in bounded pages.
+    """
+
+    item_id: uuid.UUID
+    family_id: uuid.UUID | None
+    record_type: RecordType
+    original_filename: str
+    file_date: datetime | None
+    email: AnalysisInputEmail | None
+    text_candidates: list[TextSourceCandidate]
+
+
 class FacetValue(BaseModel):
     value: str
     count: int = Field(ge=1)

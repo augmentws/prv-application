@@ -4218,6 +4218,13 @@ class MatterAnalysisTaskRun(TimestampMixin, Base):
     )
     # Frozen configuration and aggregate report for non-classification runs (fact development).
     configuration_snapshot: Mapped[dict[str, Any]] = mapped_column(JSON, default=dict)
+    # The frozen population of a fact-development run (classification runs freeze theirs on the dataset snapshot).
+    analysis_input_manifest_id: Mapped[uuid.UUID | None] = mapped_column(
+        Uuid,
+        ForeignKey("analysis_input_manifest.id", ondelete="RESTRICT"),
+        nullable=True,
+        index=True,
+    )
     report: Mapped[dict[str, Any]] = mapped_column(JSON, default=dict)
     dataset_snapshot_id: Mapped[uuid.UUID | None] = mapped_column(
         Uuid,
@@ -4275,10 +4282,11 @@ class MatterAnalysisTaskRun(TimestampMixin, Base):
 
 
 class MatterAnalysisTaskRunChunk(TimestampMixin, Base):
-    """A frozen, fixed-size slice of a fact-development run's documents and the issues each one matched.
+    """Execution state for one fixed-size range of a fact-development run's input manifest.
 
-    One row per chunk (never per document): ``document_ids`` and ``issue_keys`` are parallel lists in review-batch
-    order, snapshotted when the run is prepared so later coding changes do not alter the run.
+    One row per chunk (never per document). The documents, their issues and pinned text live in the run's
+    Artifact-owned analysis input manifest; the chunk covers manifest rows ``ordinal_start`` (zero-based) through
+    ``ordinal_start + item_count - 1`` and records the extraction fingerprints of the documents it finished.
     """
 
     __tablename__ = "matter_analysis_task_run_chunk"
@@ -4301,12 +4309,9 @@ class MatterAnalysisTaskRunChunk(TimestampMixin, Base):
     )
     chunk_number: Mapped[int] = mapped_column(Integer)
     ordinal_start: Mapped[int] = mapped_column(Integer)
-    document_ids: Mapped[list[str]] = mapped_column(JSON)
-    issue_keys: Mapped[list[list[str]]] = mapped_column(JSON)
-    # Parallel to document_ids: the extraction fingerprint of each document this chunk completed (null otherwise),
-    # and the fingerprints earlier runs of the same task recorded for it. A match means the document is reused.
-    fingerprints: Mapped[list[str | None]] = mapped_column(JSON, default=list)
-    prior_fingerprints: Mapped[list[list[str]]] = mapped_column(JSON, default=list)
+    # Fingerprints of the documents this chunk finished, written with each document's facts. Later attempts and
+    # later runs of the same task reuse any document whose fingerprint appears here.
+    fingerprints: Mapped[list[str]] = mapped_column(JSON, default=list)
     item_count: Mapped[int] = mapped_column(Integer)
     status: Mapped[str] = mapped_column(String(30), default="QUEUED")
     processed_count: Mapped[int] = mapped_column(Integer, default=0)

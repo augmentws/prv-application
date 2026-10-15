@@ -1,6 +1,6 @@
 # Fact Development and Timeline Plan
 
-Status: slices 1 and 2 (task type, entities, fact ledger, permissions, API, CSV export job) implemented on `feature/fact-backend`; slice 3 (Postgres search, facets, histogram, recall) implemented; slice 4 (single-pass extraction runs on `matter_analysis_task_run`, frozen chunks, job outcomes) implemented; slice 5 (consolidation and waves) next
+Status: slices 1 and 2 (task type, entities, fact ledger, permissions, API, CSV export job) implemented on `feature/fact-backend`; slice 3 (Postgres search, facets, histogram, recall) implemented; slice 4 (single-pass extraction runs on `matter_analysis_task_run`, frozen in an analysis input manifest, job outcomes) implemented; slice 5 (consolidation and waves) next
 
 ## Objective
 
@@ -295,14 +295,16 @@ matter_analysis_task_run   (existing, generalized) run_kind (CLASSIFICATION|FACT
                            configuration_snapshot (task version, issue-catalog hash, coding source and pinned
                            reviewer-coding revision, chunk size, skill version, model), report, status, progress;
                            classification-only columns are required only when run_kind = CLASSIFICATION
-matter_analysis_task_run_chunk  run_id, chunk_number, ordinal_start, document_ids (JSON), issue_keys (JSON, parallel),
-                           fingerprints (JSON, parallel), prior_fingerprints (JSON, parallel),
-                           status, processed_count, failed_count, counts   -- one row per chunk, never per document
+analysis_input_manifest    (generic platform) one per run, owner MATTER_ANALYSIS_TASK_RUN; the Artifact-owned Parquet
+                           holds one chronological row per batch document: status (READY|MISSING|EXCLUDED), issue
+                           keys, File Date, email headers, fingerprint, pinned source text artifact and hash
+matter_analysis_task_run_chunk  run_id, chunk_number, ordinal_start, item_count, fingerprints (finished, JSON),
+                           status, processed_count, failed_count, counts   -- execution state only, one row per chunk
 
-Reuse mirrors embeddings: a document's extraction fingerprint is the hash of its source text content hash,
-paragraph-map version, issue-catalog hash and coded issues (not the skill version or model). Finished documents
-record it with their facts; a later attempt or run of the same task reuses any document whose fingerprint matches,
-so relaunching after a cancel continues instead of duplicating facts.
+Reuse mirrors embeddings: a document's extraction fingerprint hashes the document, its pinned source text hash, the
+paragraph-map version, the issue-catalog hash and its coded issues (not the skill version or model). It is computed
+when the manifest is frozen, so documents finished by earlier runs of the task are marked before any text is read.
+Finished documents record it with their facts, so relaunching after a cancel continues instead of duplicating facts.
 
 Per-document results are job outcomes (Artifact-owned Parquet fragments plus a final manifest), not Core rows.
 Operations are validated and applied inline; invalid ones are recorded in the document's outcome payload.

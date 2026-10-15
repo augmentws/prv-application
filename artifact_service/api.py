@@ -13,6 +13,7 @@ from sqlalchemy import and_, case, func, select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
+from artifact_service.analysis_inputs import collection_item_analysis_input_snapshots
 from artifact_service.auth import ArtifactPrincipal, require_client, require_tenant
 from artifact_service.config import ArtifactSettings, get_artifact_settings
 from artifact_service.database import get_artifact_db
@@ -46,6 +47,8 @@ from artifact_service.schemas import (
     CollectionDeletionFailure,
     CollectionDeletionJobRead,
     CollectionFacetKey,
+    CollectionItemAnalysisInputSnapshot,
+    CollectionItemAnalysisInputSnapshotsRequest,
     CollectionItemGroupingSnapshot,
     CollectionItemGroupingSnapshotsRequest,
     CollectionItemRead,
@@ -1455,6 +1458,23 @@ def build_router(
             for item_id, family_id, record_type, content_hash in rows
         }
         return [by_id[item_id] for item_id in payload.item_ids if item_id in by_id]
+
+    @router.post(
+        "/collection-items/analysis-input-snapshots",
+        response_model=list[CollectionItemAnalysisInputSnapshot],
+    )
+    def get_collection_item_analysis_input_snapshots(
+        payload: CollectionItemAnalysisInputSnapshotsRequest,
+        principal: ArtifactPrincipal = Depends(principal_dependency),
+        db: Session = Depends(get_artifact_db),
+    ) -> list[CollectionItemAnalysisInputSnapshot]:
+        require_client(principal, payload.tenant_id, payload.client_id)
+        return collection_item_analysis_input_snapshots(
+            db,
+            tenant_id=payload.tenant_id,
+            client_id=payload.client_id,
+            item_ids=payload.item_ids,
+        )
 
     @router.get("/collection-items/{collection_item_id}/artifacts", response_model=list[ArtifactRead])
     def list_collection_item_artifacts(
