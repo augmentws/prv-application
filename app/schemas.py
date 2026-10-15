@@ -3488,6 +3488,7 @@ class ClassificationDatasetSnapshotRead(BaseModel):
     training_scope: TrainingScopeSpecification
     target_field_snapshot: TargetFieldSnapshot
     label_policy_snapshot: LabelPolicy
+    analysis_input_manifest_id: uuid.UUID | None
     population_artifact_id: uuid.UUID | None
     population_content_hash: Sha256 | None
     label_artifact_id: uuid.UUID | None

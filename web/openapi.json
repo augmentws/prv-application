@@ -15124,6 +15124,7 @@
                   "enum": [
                     "MATTER",
                     "REVIEW_BATCH",
+                    "ANALYSIS_INPUT_MANIFEST",
                     "CLASSIFICATION_MODEL",
                     "CLASSIFICATION_CONFIGURATION",
                     "CLASSIFICATION_DATASET_SNAPSHOT",
@@ -21854,6 +21855,7 @@
       "ArtifactType": {
         "type": "string",
         "enum": [
+          "ANALYSIS_INPUT_MANIFEST",
           "CLASSIFICATION_POPULATION",
           "CLASSIFICATION_FEATURES",
           "CLASSIFICATION_LABELS",
@@ -23111,6 +23113,18 @@
           "label_policy_snapshot": {
             "$ref": "#/components/schemas/LabelPolicy"
           },
+          "analysis_input_manifest_id": {
+            "anyOf": [
+              {
+                "type": "string",
+                "format": "uuid"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Analysis Input Manifest Id"
+          },
           "population_artifact_id": {
             "anyOf": [
               {
@@ -23433,6 +23447,7 @@
           "training_scope",
           "target_field_snapshot",
           "label_policy_snapshot",
+          "analysis_input_manifest_id",
           "population_artifact_id",
           "population_content_hash",
           "label_artifact_id",
@@ -43267,6 +43282,7 @@
             "enum": [
               "MATTER",
               "REVIEW_BATCH",
+              "ANALYSIS_INPUT_MANIFEST",
               "CLASSIFICATION_MODEL",
               "CLASSIFICATION_CONFIGURATION",
               "CLASSIFICATION_DATASET_SNAPSHOT",

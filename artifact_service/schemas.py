@@ -475,6 +475,7 @@ class CollectionItemUploadResponse(BaseModel):
 WorkflowArtifactScopeKind = Literal[
     "MATTER",
     "REVIEW_BATCH",
+    "ANALYSIS_INPUT_MANIFEST",
     "CLASSIFICATION_MODEL",
     "CLASSIFICATION_CONFIGURATION",
     "CLASSIFICATION_DATASET_SNAPSHOT",

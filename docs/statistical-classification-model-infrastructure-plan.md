@@ -561,8 +561,12 @@ The snapshot builder freezes:
 - Family, duplicate, and near-duplicate grouping identifiers when available.
 - Cohort attributes required for evaluation.
 
-The population artifact must make later reproduction possible even if matter
-membership, batch metadata, content, or coding subsequently changes.
+The population is now stored through the generic
+[Analysis Input Manifest platform](analysis-input-manifest-platform.md). The
+manifest must make later reproduction possible even if matter membership,
+batch metadata, content, or coding subsequently changes. Classification adds
+typed grouping extension columns while using the shared identity, contract,
+hashing, publication, and verification rules.
 
 ### 5.2 Target field and classification strategy
 

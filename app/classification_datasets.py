@@ -14,6 +14,14 @@ from pydantic import ValidationError
 from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
+from app.analysis_input_manifests import (
+    AnalysisInputContract,
+    AnalysisInputDocument,
+    AnalysisInputExtensionField,
+    PreparedAnalysisInputManifest,
+    prepare_analysis_input_manifest,
+    publish_analysis_input_manifest,
+)
 from app.artifact_gateway import (
     CollectionItemGroupingSnapshot,
     WorkflowArtifactReference,
@@ -70,7 +78,6 @@ from classification_service.schemas import (
 )
 
 PARQUET_MEDIA_TYPE = "application/vnd.apache.parquet"
-POPULATION_SCHEMA_VERSION = 1
 LABEL_SCHEMA_VERSION = 1
 AUTHORITY_RANK = {
     LabelAuthority.SILVER: 1,
@@ -141,7 +148,7 @@ class PreparedDatasetSnapshot:
     request: ClassificationDatasetSnapshotRequest
     population_rows: list[PopulationRow]
     label_rows: list[ResolvedLabel]
-    population_bytes: bytes
+    population_manifest: PreparedAnalysisInputManifest
     label_bytes: bytes | None
     preview: ClassificationDatasetSnapshotPreview
 
@@ -187,57 +194,45 @@ def _metadata(values: dict[str, Any]) -> dict[bytes, bytes]:
     }
 
 
+def _classification_input_contract(*, configuration_hash: str) -> AnalysisInputContract:
+    return AnalysisInputContract(
+        key="statistical-classification.population",
+        version=1,
+        resolver_version="classification-population-resolver-v1",
+        extension_fields=[
+            AnalysisInputExtensionField(name="family_id", type="STRING"),
+            AnalysisInputExtensionField(name="exact_duplicate_group_id", type="STRING"),
+            AnalysisInputExtensionField(name="record_type", type="STRING"),
+        ],
+        options={"configuration_hash": configuration_hash},
+    )
+
+
 def _write_population_parquet(
     rows: list[PopulationRow],
     *,
     configuration_hash: str,
     scope: TrainingScopeSpecification,
-) -> bytes:
-    schema = pa.schema(
+) -> PreparedAnalysisInputManifest:
+    return prepare_analysis_input_manifest(
         [
-            ("matter_document_id", pa.string()),
-            ("collection_item_id", pa.string()),
-            ("source_collection_id", pa.string()),
-            ("scope_ordinal", pa.int64()),
-            ("family_id", pa.string()),
-            ("exact_duplicate_group_id", pa.string()),
-            ("record_type", pa.string()),
-        ],
-        metadata=_metadata(
-            {
-                "schema": "classification-population",
-                "schema_version": POPULATION_SCHEMA_VERSION,
-                "configuration_hash": configuration_hash,
-                "scope_type": scope.scope_type.value,
-                "scope_id": scope.scope_id,
-            }
-        ),
-    )
-    table = pa.Table.from_pylist(
-        [
-            {
-                "matter_document_id": str(row.matter_document_id),
-                "collection_item_id": str(row.collection_item_id),
-                "source_collection_id": str(row.source_collection_id),
-                "scope_ordinal": row.scope_ordinal,
-                "family_id": str(row.family_id) if row.family_id else None,
-                "exact_duplicate_group_id": row.exact_duplicate_group_id,
-                "record_type": row.record_type,
-            }
+            AnalysisInputDocument(
+                matter_document_id=row.matter_document_id,
+                collection_item_id=row.collection_item_id,
+                source_collection_id=row.source_collection_id,
+                scope_ordinal=row.scope_ordinal,
+                extensions={
+                    "family_id": str(row.family_id) if row.family_id else None,
+                    "exact_duplicate_group_id": row.exact_duplicate_group_id,
+                    "record_type": row.record_type,
+                },
+            )
             for row in rows
         ],
-        schema=schema,
+        contract=_classification_input_contract(configuration_hash=configuration_hash),
+        scope_type=scope.scope_type.value,
+        scope_id=scope.scope_id,
     )
-    output = io.BytesIO()
-    pq.write_table(
-        table,
-        output,
-        compression="zstd",
-        use_dictionary=False,
-        write_statistics=True,
-        data_page_version="2.0",
-    )
-    return output.getvalue()
 
 
 def _write_label_parquet(
@@ -1408,12 +1403,12 @@ def prepare_dataset_snapshot(
         )
 
     if request.purpose == "SCORING":
-        population_bytes = _write_population_parquet(
+        population_manifest = _write_population_parquet(
             population_rows,
             configuration_hash=configuration.configuration_hash,
             scope=request.training_scope,
         )
-        population_hash = _sha256(population_bytes)
+        population_hash = population_manifest.content_hash
         aggregate_hash = _sha256(
             _canonical_json(
                 {
@@ -1461,7 +1456,7 @@ def prepare_dataset_snapshot(
             request=request,
             population_rows=population_rows,
             label_rows=[],
-            population_bytes=population_bytes,
+            population_manifest=population_manifest,
             label_bytes=None,
             preview=preview,
         )
@@ -1578,7 +1573,7 @@ def prepare_dataset_snapshot(
             message="The selected scope has no usable labels",
         )
 
-    population_bytes = _write_population_parquet(
+    population_manifest = _write_population_parquet(
         population_rows,
         configuration_hash=configuration.configuration_hash,
         scope=request.training_scope,
@@ -1590,7 +1585,7 @@ def prepare_dataset_snapshot(
         ordered_class_keys=ordered_class_keys,
     )
     frozen_target = target.model_copy(update={"discovered_class_keys": ordered_class_keys})
-    population_hash = _sha256(population_bytes)
+    population_hash = population_manifest.content_hash
     label_hash = _sha256(label_bytes)
     aggregate_hash = _sha256(
         _canonical_json(
@@ -1645,7 +1640,7 @@ def prepare_dataset_snapshot(
         request=request,
         population_rows=population_rows,
         label_rows=label_rows,
-        population_bytes=population_bytes,
+        population_manifest=population_manifest,
         label_bytes=label_bytes,
         preview=preview,
     )
@@ -1732,34 +1727,17 @@ def materialize_dataset_snapshot(
     prepared: PreparedDatasetSnapshot,
     actor_user_id: uuid.UUID,
 ) -> ClassificationDatasetSnapshot:
-    population_reference, _ = store_classification_workflow_artifact(
-        content=io.BytesIO(prepared.population_bytes),
-        artifact_type=ArtifactType.CLASSIFICATION_POPULATION,
-        core_scope_kind="CLASSIFICATION_DATASET_SNAPSHOT",
-        core_scope_id=snapshot.id,
-        schema_version=POPULATION_SCHEMA_VERSION,
-        derivation_key=_derivation_key(
-            snapshot_id=snapshot.id,
-            artifact_type=ArtifactType.CLASSIFICATION_POPULATION,
-            content_hash=prepared.preview.population_content_hash,
-        ),
-        content_hash=prepared.preview.population_content_hash,
-        byte_length=len(prepared.population_bytes),
-        media_type=PARQUET_MEDIA_TYPE,
-        producer_kind="CORE",
-        producer_run_id=snapshot.id,
-        artifact_metadata={
-            "snapshot_aggregate_hash": snapshot.aggregate_hash,
-            "configuration_hash": prepared.configuration.configuration_hash,
-            "scope_type": snapshot.scope_type,
-            "scope_id": str(snapshot.scope_id),
-            "row_count": snapshot.population_count,
-        },
-        lineage=[],
-        actor_user_id=actor_user_id,
+    input_manifest, population_reference = publish_analysis_input_manifest(
+        db,
+        prepared=prepared.population_manifest,
         tenant_id=snapshot.tenant_id,
         client_id=prepared.model.matter.client_id,
-        filename="classification-population.parquet",
+        matter_id=snapshot.matter_id,
+        owner_type="CLASSIFICATION_DATASET_SNAPSHOT",
+        owner_id=snapshot.id,
+        producer_kind="CORE",
+        producer_run_id=snapshot.id,
+        actor_user_id=actor_user_id,
     )
     label_reference: WorkflowArtifactReference | None = None
     if prepared.label_bytes is not None and prepared.preview.label_content_hash is not None:
@@ -1800,6 +1778,7 @@ def materialize_dataset_snapshot(
         )
     _finalize_snapshot(
         snapshot,
+        input_manifest_id=input_manifest.id,
         population_reference=population_reference,
         label_reference=label_reference,
     )
@@ -1828,9 +1807,11 @@ def materialize_dataset_snapshot(
 def _finalize_snapshot(
     snapshot: ClassificationDatasetSnapshot,
     *,
+    input_manifest_id: uuid.UUID,
     population_reference: WorkflowArtifactReference,
     label_reference: WorkflowArtifactReference | None,
 ) -> None:
+    snapshot.analysis_input_manifest_id = input_manifest_id
     snapshot.population_artifact_id = population_reference.artifact_id
     snapshot.population_content_hash = population_reference.content_hash
     snapshot.label_artifact_id = label_reference.artifact_id if label_reference else None

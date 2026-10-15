@@ -15,6 +15,10 @@ import pyarrow.parquet as pq
 from pydantic import ValidationError
 from sqlalchemy.orm import Session
 
+from app.analysis_input_manifests import (
+    AnalysisInputManifestError,
+    read_analysis_input_manifest_table,
+)
 from app.artifact_gateway import (
     ChunkVectorArtifactSnapshot,
     WorkflowArtifactReference,
@@ -25,6 +29,7 @@ from app.artifact_gateway import (
 from app.audit import record_audit
 from app.classification_datasets import ClassificationDatasetConflictError
 from app.models import (
+    AnalysisInputManifest,
     ClassificationDatasetSnapshot,
     ClassificationModelConfiguration,
     Matter,
@@ -195,6 +200,52 @@ def _validate_base_artifact(
             code="BASE_ARTIFACT_INVALID",
         )
     return table
+
+
+def _read_population_table(
+    db: Session,
+    *,
+    snapshot: ClassificationDatasetSnapshot,
+    actor_user_id: uuid.UUID,
+    client_id: uuid.UUID,
+) -> pa.Table:
+    """Read a generic input manifest, with a compatibility path for legacy snapshots."""
+
+    if snapshot.analysis_input_manifest_id is not None:
+        manifest = db.get(AnalysisInputManifest, snapshot.analysis_input_manifest_id)
+        if (
+            manifest is None
+            or manifest.owner_type != "CLASSIFICATION_DATASET_SNAPSHOT"
+            or manifest.owner_id != snapshot.id
+            or manifest.matter_id != snapshot.matter_id
+            or manifest.artifact_id != snapshot.population_artifact_id
+            or manifest.artifact_content_hash != snapshot.population_content_hash
+        ):
+            raise ClassificationFeatureSplitError(
+                "Classification input manifest identity does not match the dataset snapshot",
+                code="INPUT_MANIFEST_IDENTITY_MISMATCH",
+            )
+        try:
+            return read_analysis_input_manifest_table(manifest, actor_user_id=actor_user_id)
+        except AnalysisInputManifestError as exc:
+            raise ClassificationFeatureSplitError(str(exc), code="INPUT_MANIFEST_INVALID") from exc
+
+    if snapshot.population_artifact_id is None:
+        raise ClassificationFeatureSplitError(
+            "Dataset snapshot has no population artifact",
+            code="BASE_ARTIFACT_INVALID",
+        )
+    population_content = _read_workflow_bytes(
+        snapshot.population_artifact_id,
+        actor_user_id=actor_user_id,
+        snapshot=snapshot,
+        client_id=client_id,
+    )
+    return _validate_base_artifact(
+        population_content,
+        expected_hash=snapshot.population_content_hash,
+        expected_schema="classification-population",
+    )
 
 
 def _feature_specification(
@@ -1147,22 +1198,17 @@ def prepare_feature_split(
     except ValidationError as exc:
         raise ClassificationFeatureSplitError("Classification feature contract is invalid") from exc
     feature_specification, feature_specification_hash = _feature_specification(contract, job)
-    population_content = _read_workflow_bytes(
-        snapshot.population_artifact_id,
-        actor_user_id=actor_user_id,
-        snapshot=snapshot,
-        client_id=matter.client_id,
-    )
     label_content = _read_workflow_bytes(
         snapshot.label_artifact_id,
         actor_user_id=actor_user_id,
         snapshot=snapshot,
         client_id=matter.client_id,
     )
-    population_table = _validate_base_artifact(
-        population_content,
-        expected_hash=snapshot.population_content_hash,
-        expected_schema="classification-population",
+    population_table = _read_population_table(
+        db,
+        snapshot=snapshot,
+        actor_user_id=actor_user_id,
+        client_id=matter.client_id,
     )
     label_table = _validate_base_artifact(
         label_content,
@@ -1306,16 +1352,11 @@ def prepare_scoring_features(
     except ValidationError as exc:
         raise ClassificationFeatureSplitError("Classification feature contract is invalid") from exc
     feature_specification, feature_specification_hash = _feature_specification(contract, job)
-    population_content = _read_workflow_bytes(
-        snapshot.population_artifact_id,
-        actor_user_id=actor_user_id,
+    population_table = _read_population_table(
+        db,
         snapshot=snapshot,
+        actor_user_id=actor_user_id,
         client_id=matter.client_id,
-    )
-    population_table = _validate_base_artifact(
-        population_content,
-        expected_hash=snapshot.population_content_hash,
-        expected_schema="classification-population",
     )
     population = population_table.to_pylist()
     if len(population) != snapshot.population_count:
