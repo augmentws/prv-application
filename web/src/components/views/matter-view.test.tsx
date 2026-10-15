@@ -399,14 +399,16 @@ describe("MatterView metadata navigation", () => {
     expect(screen.getByRole("tab", { name: "Analysis" })).toBeInTheDocument();
     expect(screen.queryByRole("tab", { name: "Analysis tasks" })).not.toBeInTheDocument();
     expect(screen.getAllByRole("link", { name: "Search & Review" })).toHaveLength(1);
+    expect(within(screen.getByRole("banner", { name: "Matter header" })).getByRole("link", { name: "Search & Review" })).toBeInTheDocument();
     expect(screen.queryByRole("heading", { name: "Matter" })).not.toBeInTheDocument();
     expect(screen.queryByRole("button", { name: "Clone configuration" })).not.toBeInTheDocument();
     expect(screen.queryByRole("button", { name: "Save as template" })).not.toBeInTheDocument();
 
     rerender(<QueryClientProvider client={client}><MatterView clientId="client-1" matterId="matter-1" requestedTab="overview" /></QueryClientProvider>);
 
-    expect(await screen.findByRole("button", { name: "Clone configuration" })).toBeInTheDocument();
-    expect(screen.getByRole("button", { name: "Save as template" })).toBeInTheDocument();
+    const overviewActions = await screen.findByLabelText("Overview actions");
+    expect(within(overviewActions).getByRole("button", { name: "Clone configuration" })).toBeInTheDocument();
+    expect(within(overviewActions).getByRole("button", { name: "Save as template" })).toBeInTheDocument();
   });
 
   it("does not expose a manual Email Domain update action", async () => {

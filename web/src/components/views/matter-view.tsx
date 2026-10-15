@@ -639,12 +639,14 @@ export function MatterView({ clientId, matterId, requestedTab, requestedMetadata
           </div>
           <div className="flex shrink-0 flex-wrap items-center gap-2 pb-2">
             <HelpLink topic={tab === "classification" ? "classification" : tab === "jobs" ? "matterJobs" : tab === "usage" ? "tokenUsage" : tab === "search" ? "matterSearch" : tab === "definition" ? "matterDefinition" : "metadata"} />
-            {tab === "overview" ? <><CloneMatterDialog sourceName={matter.data.name} onClone={cloneMatter} /><SaveMatterTemplateDialog onCreate={saveTemplate} /></> : null}
           </div>
         </div>
       </div>
       <div className={tab === "definition" ? "matter-definition-page-content" : undefined}>
-        {tab === "metadata" ? <div className="mb-5 flex items-end justify-between gap-3 border-b">
+        {tab === "overview" ? <div className="mb-5 flex items-center justify-end gap-2 border-b pb-2" aria-label="Overview actions">
+          <CloneMatterDialog sourceName={matter.data.name} onClone={cloneMatter} />
+          <SaveMatterTemplateDialog onCreate={saveTemplate} />
+        </div> : tab === "metadata" ? <div className="mb-5 flex items-end justify-between gap-3 border-b">
           <div className="flex" role="tablist" aria-label="Metadata sections">
             <button type="button" role="tab" aria-selected={metadataTab === "definitions"} onClick={() => openMetadataTab("definitions")} className={subtabClass(metadataTab === "definitions")}>Definitions</button>
             <button type="button" role="tab" aria-selected={metadataTab === "groups"} onClick={() => openMetadataTab("groups")} className={subtabClass(metadataTab === "groups")}>Groups</button>
