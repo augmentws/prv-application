@@ -398,6 +398,8 @@ describe("MatterView metadata navigation", () => {
     expect(await screen.findByRole("tab", { name: "Definitions" })).toHaveAttribute("aria-selected", "true");
     expect(screen.getByRole("tab", { name: "Analysis" })).toBeInTheDocument();
     expect(screen.queryByRole("tab", { name: "Analysis tasks" })).not.toBeInTheDocument();
+    expect(screen.getAllByRole("link", { name: "Search & Review" })).toHaveLength(1);
+    expect(screen.queryByRole("heading", { name: "Matter" })).not.toBeInTheDocument();
     expect(screen.queryByRole("button", { name: "Clone configuration" })).not.toBeInTheDocument();
     expect(screen.queryByRole("button", { name: "Save as template" })).not.toBeInTheDocument();
 
