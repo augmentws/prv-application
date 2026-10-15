@@ -15,6 +15,7 @@ from pydantic import (
 
 from app.decision_engine import DecisionAnswer
 from app.decision_specifications import DecisionSpecification
+from app.fact_queries import FacetName, FactFilters, FactSort
 from app.fact_specifications import FactDevelopmentSpecification
 from classification_service.schemas import (
     BinaryClassMapping,
@@ -4188,21 +4189,10 @@ class MatterFactPage(BaseModel):
     total: int
 
 
-class MatterFactExportFilters(BaseModel):
-    """The same filter the fact list accepts; an export contains exactly the facts it lists."""
-
-    model_config = ConfigDict(extra="forbid")
-
-    status: list[FactStatus] = Field(default_factory=list, max_length=4)
-    issue_key: list[str] = Field(default_factory=list, max_length=200)
-    entity_id: uuid.UUID | None = None
-    matter_document_id: uuid.UUID | None = None
-
-
 class MatterFactExportCreate(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
-    filters: MatterFactExportFilters = Field(default_factory=MatterFactExportFilters)
+    filters: FactFilters = Field(default_factory=FactFilters)
     requested_filename: str = Field(default="facts", min_length=1, max_length=150)
     spreadsheet_safe: bool = True
     idempotency_key: str = Field(min_length=1, max_length=200)
@@ -4241,3 +4231,49 @@ class MatterFactExportRead(ORMModel):
     completed_at: datetime | None
     canceled_at: datetime | None
     execution: JobExecutionRead | None = None
+
+
+class MatterFactSearchRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    filters: FactFilters = Field(default_factory=FactFilters)
+    sort: FactSort = "DATE_ASC"
+    limit: int = Field(default=100, ge=1, le=500)
+    offset: int = Field(default=0, ge=0)
+
+
+class MatterFactFacetRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    filters: FactFilters = Field(default_factory=FactFilters)
+    facet: FacetName
+    size: int = Field(default=50, ge=1, le=500)
+
+
+class MatterFactFacetBucket(BaseModel):
+    value: str | bool | uuid.UUID
+    label: str
+    count: int
+
+
+class MatterFactFacetRead(BaseModel):
+    facet: str
+    buckets: list[MatterFactFacetBucket]
+
+
+class MatterFactHistogramRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    filters: FactFilters = Field(default_factory=FactFilters)
+    interval: Literal["YEAR", "QUARTER", "MONTH"] = "MONTH"
+
+
+class MatterFactHistogramBucket(BaseModel):
+    start: date
+    count: int
+
+
+class MatterFactHistogramRead(BaseModel):
+    interval: Literal["YEAR", "QUARTER", "MONTH"]
+    buckets: list[MatterFactHistogramBucket]
+    undated_count: int

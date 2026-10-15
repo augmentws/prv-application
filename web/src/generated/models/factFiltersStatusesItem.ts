@@ -6,10 +6,10 @@
  * OpenAPI spec version: 0.1.0
  */
 
-export type MatterFactExportFiltersStatusItem = typeof MatterFactExportFiltersStatusItem[keyof typeof MatterFactExportFiltersStatusItem];
+export type FactFiltersStatusesItem = typeof FactFiltersStatusesItem[keyof typeof FactFiltersStatusesItem];
 
 
-export const MatterFactExportFiltersStatusItem = {
+export const FactFiltersStatusesItem = {
   WORKING: 'WORKING',
   CONFIRMED: 'CONFIRMED',
   REJECTED: 'REJECTED',

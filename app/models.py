@@ -4756,6 +4756,10 @@ class MatterFact(TimestampMixin, Base):
         Uuid, ForeignKey("workflow_run.id", ondelete="RESTRICT"), nullable=True, index=True
     )
     lock_version: Mapped[int] = mapped_column(Integer, default=1)
+    # Recall cache: valid only while summary_embedding_hash matches the current summary and embedding model.
+    summary_embedding: Mapped[list[float] | None] = mapped_column(JSON, nullable=True)
+    summary_embedding_model: Mapped[str | None] = mapped_column(String(300), nullable=True)
+    summary_embedding_hash: Mapped[str | None] = mapped_column(String(64), nullable=True)
 
 
 class MatterFactRevision(Base):
@@ -4800,7 +4804,7 @@ class MatterFactIssue(Base):
     matter_analysis_task_id: Mapped[uuid.UUID] = mapped_column(
         Uuid, ForeignKey("matter_analysis_task.id", ondelete="RESTRICT"), primary_key=True, index=True
     )
-    issue_key: Mapped[str] = mapped_column(String(100), primary_key=True)
+    issue_key: Mapped[str] = mapped_column(String(100), primary_key=True, index=True)
 
 
 class MatterFactEntity(Base):

@@ -14885,6 +14885,182 @@
         }
       }
     },
+    "/v1/matters/{matter_id}/facts/search": {
+      "post": {
+        "tags": [
+          "matter facts"
+        ],
+        "summary": "Search Facts",
+        "description": "Filter facts on every field; the same filter drives facets, the histogram, and export.",
+        "operationId": "search_facts_v1_matters__matter_id__facts_search_post",
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "matter_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid",
+              "title": "Matter Id"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/MatterFactSearchRequest"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/MatterFactPage"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v1/matters/{matter_id}/facts/facets": {
+      "post": {
+        "tags": [
+          "matter facts"
+        ],
+        "summary": "Facet Facts",
+        "description": "Distinct-fact counts for one facet; the facet's own selection is ignored so its counts stay useful.",
+        "operationId": "facet_facts_v1_matters__matter_id__facts_facets_post",
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "matter_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid",
+              "title": "Matter Id"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/MatterFactFacetRequest"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/MatterFactFacetRead"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v1/matters/{matter_id}/facts/date-histogram": {
+      "post": {
+        "tags": [
+          "matter facts"
+        ],
+        "summary": "Fact Histogram",
+        "operationId": "fact_histogram_v1_matters__matter_id__facts_date_histogram_post",
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "matter_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid",
+              "title": "Matter Id"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/MatterFactHistogramRequest"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/MatterFactHistogramRead"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/v1/matters/{matter_id}/facts/{fact_id}": {
       "get": {
         "tags": [
@@ -30644,6 +30820,83 @@
         ],
         "title": "EnumValue"
       },
+      "EvidenceMetadataFilter": {
+        "properties": {
+          "field_key": {
+            "type": "string",
+            "pattern": "^[a-z][a-z0-9_]{0,99}$",
+            "title": "Field Key"
+          },
+          "values": {
+            "items": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "boolean"
+                }
+              ]
+            },
+            "type": "array",
+            "maxItems": 200,
+            "title": "Values"
+          },
+          "date_from": {
+            "anyOf": [
+              {
+                "type": "string",
+                "format": "date"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Date From"
+          },
+          "date_to": {
+            "anyOf": [
+              {
+                "type": "string",
+                "format": "date"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Date To"
+          },
+          "number_from": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Number From"
+          },
+          "number_to": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Number To"
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "field_key"
+        ],
+        "title": "EvidenceMetadataFilter",
+        "description": "Match facts with an active quote from a document whose Core metadata field matches."
+      },
       "ExternalProviderUsageRead": {
         "properties": {
           "id": {
@@ -30934,6 +31187,367 @@
           "quote"
         ],
         "title": "FactEvidenceCreate"
+      },
+      "FactFilters": {
+        "properties": {
+          "query": {
+            "anyOf": [
+              {
+                "type": "string",
+                "maxLength": 500
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Query"
+          },
+          "statuses": {
+            "items": {
+              "type": "string",
+              "enum": [
+                "WORKING",
+                "CONFIRMED",
+                "REJECTED",
+                "MERGED"
+              ]
+            },
+            "type": "array",
+            "maxItems": 4,
+            "title": "Statuses"
+          },
+          "issue_keys": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array",
+            "maxItems": 200,
+            "title": "Issue Keys"
+          },
+          "entity_id": {
+            "anyOf": [
+              {
+                "type": "string",
+                "format": "uuid"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Entity Id"
+          },
+          "owner_entity_ids": {
+            "items": {
+              "type": "string",
+              "format": "uuid"
+            },
+            "type": "array",
+            "maxItems": 500,
+            "title": "Owner Entity Ids"
+          },
+          "participant_entity_ids": {
+            "items": {
+              "type": "string",
+              "format": "uuid"
+            },
+            "type": "array",
+            "maxItems": 500,
+            "title": "Participant Entity Ids"
+          },
+          "participant_role": {
+            "anyOf": [
+              {
+                "type": "string",
+                "enum": [
+                  "PARTICIPANT_ACTOR",
+                  "PARTICIPANT_RECIPIENT"
+                ]
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Participant Role"
+          },
+          "entity_types": {
+            "items": {
+              "type": "string",
+              "enum": [
+                "PERSON",
+                "ORGANIZATION"
+              ]
+            },
+            "type": "array",
+            "maxItems": 2,
+            "title": "Entity Types"
+          },
+          "event_date_from": {
+            "anyOf": [
+              {
+                "type": "string",
+                "format": "date"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Event Date From"
+          },
+          "event_date_to": {
+            "anyOf": [
+              {
+                "type": "string",
+                "format": "date"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Event Date To"
+          },
+          "date_precisions": {
+            "items": {
+              "type": "string",
+              "enum": [
+                "DAY",
+                "MONTH",
+                "QUARTER",
+                "YEAR",
+                "RANGE",
+                "UNKNOWN"
+              ]
+            },
+            "type": "array",
+            "maxItems": 6,
+            "title": "Date Precisions"
+          },
+          "date_bases": {
+            "items": {
+              "type": "string",
+              "enum": [
+                "STATED_IN_TEXT",
+                "DOCUMENT_DATE",
+                "INFERRED"
+              ]
+            },
+            "type": "array",
+            "maxItems": 3,
+            "title": "Date Bases"
+          },
+          "undated": {
+            "anyOf": [
+              {
+                "type": "boolean"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Undated"
+          },
+          "key_fact": {
+            "anyOf": [
+              {
+                "type": "boolean"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Key Fact"
+          },
+          "has_contradiction": {
+            "anyOf": [
+              {
+                "type": "boolean"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Has Contradiction"
+          },
+          "author_types": {
+            "items": {
+              "type": "string",
+              "enum": [
+                "HUMAN",
+                "AGENT"
+              ]
+            },
+            "type": "array",
+            "maxItems": 2,
+            "title": "Author Types"
+          },
+          "origin_workflow_run_ids": {
+            "items": {
+              "type": "string",
+              "format": "uuid"
+            },
+            "type": "array",
+            "maxItems": 500,
+            "title": "Origin Workflow Run Ids"
+          },
+          "confirmed_by_user_ids": {
+            "items": {
+              "type": "string",
+              "format": "uuid"
+            },
+            "type": "array",
+            "maxItems": 500,
+            "title": "Confirmed By User Ids"
+          },
+          "confirmed_from": {
+            "anyOf": [
+              {
+                "type": "string",
+                "format": "date-time"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Confirmed From"
+          },
+          "confirmed_to": {
+            "anyOf": [
+              {
+                "type": "string",
+                "format": "date-time"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Confirmed To"
+          },
+          "created_from": {
+            "anyOf": [
+              {
+                "type": "string",
+                "format": "date-time"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Created From"
+          },
+          "created_to": {
+            "anyOf": [
+              {
+                "type": "string",
+                "format": "date-time"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Created To"
+          },
+          "updated_since": {
+            "anyOf": [
+              {
+                "type": "string",
+                "format": "date-time"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Updated Since"
+          },
+          "evidence_count_min": {
+            "anyOf": [
+              {
+                "type": "integer",
+                "minimum": 0.0
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Evidence Count Min"
+          },
+          "evidence_count_max": {
+            "anyOf": [
+              {
+                "type": "integer",
+                "minimum": 0.0
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Evidence Count Max"
+          },
+          "document_count_min": {
+            "anyOf": [
+              {
+                "type": "integer",
+                "minimum": 0.0
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Document Count Min"
+          },
+          "document_count_max": {
+            "anyOf": [
+              {
+                "type": "integer",
+                "minimum": 0.0
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Document Count Max"
+          },
+          "stances": {
+            "items": {
+              "type": "string",
+              "enum": [
+                "SUPPORTS",
+                "CONTRADICTS"
+              ]
+            },
+            "type": "array",
+            "maxItems": 2,
+            "title": "Stances"
+          },
+          "matter_document_ids": {
+            "items": {
+              "type": "string",
+              "format": "uuid"
+            },
+            "type": "array",
+            "maxItems": 500,
+            "title": "Matter Document Ids"
+          },
+          "evidence_custodian_ids": {
+            "items": {
+              "type": "string",
+              "format": "uuid"
+            },
+            "type": "array",
+            "maxItems": 500,
+            "title": "Evidence Custodian Ids"
+          },
+          "evidence_metadata": {
+            "items": {
+              "$ref": "#/components/schemas/EvidenceMetadataFilter"
+            },
+            "type": "array",
+            "maxItems": 20,
+            "title": "Evidence Metadata"
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "title": "FactFilters",
+        "description": "Every fact filter. Empty lists and ``None`` mean \"no restriction\"; lists are ORed, fields are ANDed."
       },
       "FactIssue": {
         "properties": {
@@ -36625,7 +37239,7 @@
       "MatterFactExportCreate": {
         "properties": {
           "filters": {
-            "$ref": "#/components/schemas/MatterFactExportFilters"
+            "$ref": "#/components/schemas/FactFilters"
           },
           "requested_filename": {
             "type": "string",
@@ -36652,60 +37266,6 @@
           "idempotency_key"
         ],
         "title": "MatterFactExportCreate"
-      },
-      "MatterFactExportFilters": {
-        "properties": {
-          "status": {
-            "items": {
-              "type": "string",
-              "enum": [
-                "WORKING",
-                "CONFIRMED",
-                "REJECTED",
-                "MERGED"
-              ]
-            },
-            "type": "array",
-            "maxItems": 4,
-            "title": "Status"
-          },
-          "issue_key": {
-            "items": {
-              "type": "string"
-            },
-            "type": "array",
-            "maxItems": 200,
-            "title": "Issue Key"
-          },
-          "entity_id": {
-            "anyOf": [
-              {
-                "type": "string",
-                "format": "uuid"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "title": "Entity Id"
-          },
-          "matter_document_id": {
-            "anyOf": [
-              {
-                "type": "string",
-                "format": "uuid"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "title": "Matter Document Id"
-          }
-        },
-        "additionalProperties": false,
-        "type": "object",
-        "title": "MatterFactExportFilters",
-        "description": "The same filter the fact list accepts; an export contains exactly the facts it lists."
       },
       "MatterFactExportRead": {
         "properties": {
@@ -36934,6 +37494,156 @@
           "canceled_at"
         ],
         "title": "MatterFactExportRead"
+      },
+      "MatterFactFacetBucket": {
+        "properties": {
+          "value": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "boolean"
+              },
+              {
+                "type": "string",
+                "format": "uuid"
+              }
+            ],
+            "title": "Value"
+          },
+          "label": {
+            "type": "string",
+            "title": "Label"
+          },
+          "count": {
+            "type": "integer",
+            "title": "Count"
+          }
+        },
+        "type": "object",
+        "required": [
+          "value",
+          "label",
+          "count"
+        ],
+        "title": "MatterFactFacetBucket"
+      },
+      "MatterFactFacetRead": {
+        "properties": {
+          "facet": {
+            "type": "string",
+            "title": "Facet"
+          },
+          "buckets": {
+            "items": {
+              "$ref": "#/components/schemas/MatterFactFacetBucket"
+            },
+            "type": "array",
+            "title": "Buckets"
+          }
+        },
+        "type": "object",
+        "required": [
+          "facet",
+          "buckets"
+        ],
+        "title": "MatterFactFacetRead"
+      },
+      "MatterFactFacetRequest": {
+        "properties": {
+          "filters": {
+            "$ref": "#/components/schemas/FactFilters"
+          },
+          "facet": {
+            "type": "string",
+            "pattern": "^(status|issue_key|owner|participant|entity_type|date_precision|date_basis|key_fact|has_contradiction|author_type|confirmed_by|stance|evidence_custodian|evidence_metadata:[a-z][a-z0-9_]{0,99})$",
+            "title": "Facet"
+          },
+          "size": {
+            "type": "integer",
+            "maximum": 500.0,
+            "minimum": 1.0,
+            "title": "Size",
+            "default": 50
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "facet"
+        ],
+        "title": "MatterFactFacetRequest"
+      },
+      "MatterFactHistogramBucket": {
+        "properties": {
+          "start": {
+            "type": "string",
+            "format": "date",
+            "title": "Start"
+          },
+          "count": {
+            "type": "integer",
+            "title": "Count"
+          }
+        },
+        "type": "object",
+        "required": [
+          "start",
+          "count"
+        ],
+        "title": "MatterFactHistogramBucket"
+      },
+      "MatterFactHistogramRead": {
+        "properties": {
+          "interval": {
+            "type": "string",
+            "enum": [
+              "YEAR",
+              "QUARTER",
+              "MONTH"
+            ],
+            "title": "Interval"
+          },
+          "buckets": {
+            "items": {
+              "$ref": "#/components/schemas/MatterFactHistogramBucket"
+            },
+            "type": "array",
+            "title": "Buckets"
+          },
+          "undated_count": {
+            "type": "integer",
+            "title": "Undated Count"
+          }
+        },
+        "type": "object",
+        "required": [
+          "interval",
+          "buckets",
+          "undated_count"
+        ],
+        "title": "MatterFactHistogramRead"
+      },
+      "MatterFactHistogramRequest": {
+        "properties": {
+          "filters": {
+            "$ref": "#/components/schemas/FactFilters"
+          },
+          "interval": {
+            "type": "string",
+            "enum": [
+              "YEAR",
+              "QUARTER",
+              "MONTH"
+            ],
+            "title": "Interval",
+            "default": "MONTH"
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "title": "MatterFactHistogramRequest"
       },
       "MatterFactMerge": {
         "properties": {
@@ -37366,6 +38076,40 @@
           "created_at"
         ],
         "title": "MatterFactRevisionRead"
+      },
+      "MatterFactSearchRequest": {
+        "properties": {
+          "filters": {
+            "$ref": "#/components/schemas/FactFilters"
+          },
+          "sort": {
+            "type": "string",
+            "enum": [
+              "DATE_ASC",
+              "DATE_DESC",
+              "UPDATED_DESC",
+              "EVIDENCE_COUNT_DESC"
+            ],
+            "title": "Sort",
+            "default": "DATE_ASC"
+          },
+          "limit": {
+            "type": "integer",
+            "maximum": 500.0,
+            "minimum": 1.0,
+            "title": "Limit",
+            "default": 100
+          },
+          "offset": {
+            "type": "integer",
+            "minimum": 0.0,
+            "title": "Offset",
+            "default": 0
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "title": "MatterFactSearchRequest"
       },
       "MatterFactUpdate": {
         "properties": {

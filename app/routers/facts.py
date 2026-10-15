@@ -12,10 +12,12 @@ from app.database import get_db
 from app.dependencies import Principal, get_principal
 from app.fact_evidence import FactEvidenceError, verify_evidence
 from app.fact_queries import (
-    FACT_DATE_ORDER,
+    FACT_SORTS,
     FactFilterError,
     FactFilterNotFound,
     FactFilters,
+    fact_date_histogram,
+    fact_facet,
     fact_filter_statement,
 )
 from app.facts import (
@@ -58,10 +60,15 @@ from app.schemas import (
     MatterFactEventRead,
     MatterFactEvidenceAdd,
     MatterFactEvidenceRead,
+    MatterFactFacetRead,
+    MatterFactFacetRequest,
+    MatterFactHistogramRead,
+    MatterFactHistogramRequest,
     MatterFactMerge,
     MatterFactPage,
     MatterFactRead,
     MatterFactRevisionRead,
+    MatterFactSearchRequest,
     MatterFactUpdate,
 )
 
@@ -278,23 +285,77 @@ def list_facts(
     """
 
     _matter(db, principal, matter_id, "fact.view")
-    filters = FactFilters(
-        statuses=tuple(fact_status),
-        issue_keys=tuple(issue_key),
-        entity_id=entity_id,
-        matter_document_id=matter_document_id,
-        updated_since=updated_since,
-    )
+    try:
+        filters = FactFilters(
+            statuses=fact_status,
+            issue_keys=issue_key,
+            entity_id=entity_id,
+            matter_document_ids=[matter_document_id] if matter_document_id else [],
+            updated_since=updated_since,
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_CONTENT, detail=str(exc)) from exc
+    return _page(db, matter_id, filters, sort="DATE_ASC", limit=limit, offset=offset)
+
+
+def _filter_error(exc: FactFilterError) -> HTTPException:
+    status_code = status.HTTP_404_NOT_FOUND if isinstance(exc, FactFilterNotFound) else status.HTTP_422_UNPROCESSABLE_CONTENT
+    return HTTPException(status_code=status_code, detail=str(exc))
+
+
+def _page(db: Session, matter_id: uuid.UUID, filters: FactFilters, *, sort: str, limit: int, offset: int) -> MatterFactPage:
     try:
         statement = fact_filter_statement(db, matter_id=matter_id, filters=filters)
     except FactFilterError as exc:
-        status_code = (
-            status.HTTP_404_NOT_FOUND if isinstance(exc, FactFilterNotFound) else status.HTTP_422_UNPROCESSABLE_CONTENT
-        )
-        raise HTTPException(status_code=status_code, detail=str(exc)) from exc
+        raise _filter_error(exc) from exc
     total = db.scalar(select(func.count()).select_from(statement.subquery())) or 0
-    facts = list(db.scalars(statement.order_by(*FACT_DATE_ORDER).limit(limit).offset(offset)))
+    facts = list(db.scalars(statement.order_by(*FACT_SORTS[sort]).limit(limit).offset(offset)))
     return MatterFactPage(items=_reads(db, facts), total=total)
+
+
+@router.post("/search", response_model=MatterFactPage)
+def search_facts(
+    matter_id: uuid.UUID,
+    payload: MatterFactSearchRequest,
+    principal: Principal = Depends(get_principal),
+    db: Session = Depends(get_db),
+) -> MatterFactPage:
+    """Filter facts on every field; the same filter drives facets, the histogram, and export."""
+
+    _matter(db, principal, matter_id, "fact.view")
+    return _page(db, matter_id, payload.filters, sort=payload.sort, limit=payload.limit, offset=payload.offset)
+
+
+@router.post("/facets", response_model=MatterFactFacetRead)
+def facet_facts(
+    matter_id: uuid.UUID,
+    payload: MatterFactFacetRequest,
+    principal: Principal = Depends(get_principal),
+    db: Session = Depends(get_db),
+) -> MatterFactFacetRead:
+    """Distinct-fact counts for one facet; the facet's own selection is ignored so its counts stay useful."""
+
+    _matter(db, principal, matter_id, "fact.view")
+    try:
+        buckets = fact_facet(db, matter_id=matter_id, filters=payload.filters, facet=payload.facet, size=payload.size)
+    except FactFilterError as exc:
+        raise _filter_error(exc) from exc
+    return MatterFactFacetRead(facet=payload.facet, buckets=buckets)
+
+
+@router.post("/date-histogram", response_model=MatterFactHistogramRead)
+def fact_histogram(
+    matter_id: uuid.UUID,
+    payload: MatterFactHistogramRequest,
+    principal: Principal = Depends(get_principal),
+    db: Session = Depends(get_db),
+) -> MatterFactHistogramRead:
+    _matter(db, principal, matter_id, "fact.view")
+    try:
+        result = fact_date_histogram(db, matter_id=matter_id, filters=payload.filters, interval=payload.interval)
+    except FactFilterError as exc:
+        raise _filter_error(exc) from exc
+    return MatterFactHistogramRead.model_validate(result)
 
 
 @router.post("", response_model=MatterFactDetailRead, status_code=status.HTTP_201_CREATED)

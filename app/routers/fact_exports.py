@@ -14,7 +14,7 @@ from app.authorization import ResourceRef, can
 from app.database import get_db
 from app.dependencies import Principal, get_principal
 from app.fact_exports import as_utc, create_fact_export_job
-from app.fact_queries import FactFilterError, FactFilters
+from app.fact_queries import FactFilterError
 from app.job_archives import job_not_archived
 from app.job_executions import MATTER_FACT_EXPORT_JOB_TYPE, JobExecutionConflict
 from app.models import Matter, MatterFactExportJob
@@ -59,17 +59,11 @@ def create_fact_export(
     db: Session = Depends(get_db),
 ) -> MatterFactExportJob:
     matter = _export_matter(db, matter_id, principal)
-    filters = FactFilters(
-        statuses=tuple(payload.filters.status),
-        issue_keys=tuple(payload.filters.issue_key),
-        entity_id=payload.filters.entity_id,
-        matter_document_id=payload.filters.matter_document_id,
-    )
     try:
         job, created = create_fact_export_job(
             db,
             matter,
-            filters=filters,
+            filters=payload.filters,
             requested_filename=payload.requested_filename,
             idempotency_key=payload.idempotency_key,
             spreadsheet_safe=payload.spreadsheet_safe,

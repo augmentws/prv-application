@@ -1,6 +1,6 @@
 # Fact Development and Timeline Plan
 
-Status: slices 1 and 2 (task type, entities, fact ledger, permissions, API, CSV export job) implemented on `feature/fact-backend`; slice 3 (facts index) next
+Status: slices 1 and 2 (task type, entities, fact ledger, permissions, API, CSV export job) implemented on `feature/fact-backend`; slice 3 (Postgres search, facets, histogram, recall) implemented; slice 4 (extraction) next
 
 ## Objective
 
@@ -191,14 +191,14 @@ one request model. A filtered export contains exactly the filtered facts.
 
 | Group | Filters and facets |
 | --- | --- |
-| Content | Keyword, semantic, and hybrid search over the summary and evidence quotes |
+| Content | Keyword search over the summary and evidence quotes (semantic search deferred) |
 | Issues | Issue key (multi-select, OR within the facet), task, task version |
 | Entities | Owner; participant, optionally restricted to a role; entity type (person or organization) |
 | Dates | Event date range; date histogram (year, quarter, month); precision; basis; undated |
 | Review state | Status; key fact; has contradiction; has a suggested revision; confirmed by; confirmed at |
 | Provenance | Author type (agent or human); created by run; created and updated time |
 | Evidence | Evidence count range; document count range; stance |
-| Evidence documents | Custodian, record type, document date range, email from or to, family. These are denormalized from the cited documents into the fact projection. |
+| Evidence documents | Custodian, and any document field held in Core (email from/to, sent date, family, file extension, control number, coding fields). Read from Core tables at query time. |
 
 **Default order: by event date, oldest first**, everywhere facts are listed: the Facts list, the timeline, an
 entity's facts, a document's Facts tab, and exports.
@@ -265,7 +265,7 @@ later slice.
 | Dispatcher | `app/workflows/dispatcher.py`: `enqueue_fact_development`, `cancel_fact_development` |
 | Workflow spec | `app/workflow_specs.py`: `FACT_DEVELOPMENT_SPEC` with `fact_extraction` and `fact_consolidation` roles, and `FACT_SPECIFICATION_COMPILATION_SPEC` with a `fact_specification_compiler` role |
 | Managed skills | `app/standard_skills.py`: bootstrapped `compile-fact-development-specification`, `fact-extraction` and `fact-consolidation` skills and their schemas |
-| Fact search projection | `app/search/fact_mappings.py`, `app/search/fact_service.py` (new) |
+| Fact search and recall | `app/fact_queries.py` (shared filter, facets, histogram) and `app/fact_recall.py` (new) |
 | Exports | `app/fact_exports.py` and `app/workflows/fact_exports.py` (new): a `MATTER_FACT_EXPORT` job following `app/search_exports.py` |
 | Job execution | `app/job_executions.py`: `FactDevelopmentRunExecutionAdapter` and `MatterFactExportExecutionAdapter`, so both appear in Jobs with the common progress, cancel and failure fields |
 | Permissions | `app/rbac_manifest.py`: new permission keys and system-role assignments (see Authorization) |
@@ -330,35 +330,26 @@ are flagged for reviewer reassignment. Keys are never silently re-pointed.
 service in the same transaction, following the `metadata_event` / `document_metadata_current` pattern. Projections
 are never updated directly.
 
-### Search projection
+### Search and recall (Postgres only for the MVP)
 
-- A per-matter facts index behind a stable alias. It follows the existing generation, alias, and reindex rules in
-  `AGENTS.md`, and it is rebuildable from Core.
-- Each fact document contains:
-  - summary text and its embedding (through `embedding_gateway`), plus evidence quote text;
-  - issue keys and task IDs;
-  - owner and participant (with role) **canonical** entity IDs, plus entity types. A merge or unmerge reindexes
-    only the facts linked to the moved rows;
-  - the date range, date histogram field, precision and basis;
-  - status, flags, provenance and review fields;
-  - counts;
-  - **denormalized evidence-document attributes**: custodian IDs, record types, document date range, email
-    addresses and family IDs.
-- Every filter in the slice-and-dice table maps to a keyword, date, numeric or nested field.
-- Evidence-document attributes are refreshed when evidence changes. Changes to document metadata do not cascade
-  automatically; a facts reindex recomputes them.
-- Uses:
-  - agent recall, as a hybrid query filtered by issue and participants with a date window;
-  - consolidator duplicate-candidate search;
-  - reviewer search and facets.
-- Fact upserts are enqueued as durable DBOS operations from the command service, in the same transaction, as
-  document upserts are.
-- Fact projection work is serialized with a PostgreSQL advisory transaction lock keyed by matter, never by locking
-  the `matter` row.
-- Reviewer-driven fact updates use higher DBOS priority than agent consolidation upserts. Full fact-index rebuilds
-  use the lowest priority.
-- Schema changes to the facts index follow the same classification as the document index: compatible additive
-  changes apply in place, and anything else pauses in `AWAITING_USER` for a confirmed reindex.
+Facts are **not** projected into OpenSearch for the MVP. The ledger tables answer every query directly; fact volume
+(thousands to tens of thousands per matter) is well within what indexed SQL handles. An OpenSearch projection can be
+added later as a rebuildable copy without changing the ledger or the API.
+
+- **One filter model** (`app/fact_queries.py`) is shared by the fact list, search, facets, the date histogram, and
+  CSV export, so all of them always agree.
+- **Keyword search** matches summaries and active evidence quotes (case-insensitive substring). Semantic search in
+  the UI is deferred.
+- **Facets** are SQL counts of distinct facts per value. Each facet's counts exclude that facet's own selection.
+- **Date histogram** buckets confirmed facts by year, quarter, or month, plus an undated count.
+- **Evidence-document attributes come from Core only:** custodians from `matter_document_custodian`, and any document
+  field from `document_metadata_current` (control number, email from/to/cc/bcc/subject, sent and received dates,
+  family, file extension, and matter coding fields). A fact matches when any of its active quotes comes from a
+  matching document. No Artifact or OpenSearch calls.
+- **Recall for the agent** (`recall_facts`): SQL selects candidates (same issues, optional participant overlap, a
+  date window, excluding merged facts, rejected facts flagged as tombstones); summary embeddings are compared in
+  code. Embeddings are computed on first use through `embedding_gateway` and cached on the fact with the model and a
+  hash of the summary, so editing a summary never waits on the embedding model and a stale embedding is recomputed.
 
 ### API
 
@@ -610,9 +601,10 @@ Each slice ends with:
    Quote validation. The `MATTER_FACT_EXPORT` job. *Acceptance:* a fact can be created by hand, confirmed, and
    exported. Every change is recorded in the event history. Merging and then unmerging an entity restores its facts'
    canonical owner and participants.
-3. **Facts search projection, slice-and-dice API, and recall.** Index lifecycle, upserts, rebuild, the controlled
-   filter request, self-excluding facets, the date histogram, hybrid recall. *Acceptance:* every field in the
-   filter table can be filtered and faceted. Counts are fact counts. Export matches the filter exactly.
+3. **Search, facets, histogram, and recall (Postgres only).** The shared filter model covering every field
+   (including Core evidence-document attributes), keyword search, self-excluding facets, the date histogram, cached
+   summary embeddings, and `recall_facts`. *Acceptance:* every field in the filter table can be filtered and faceted.
+   Counts are fact counts. Export matches the filter exactly.
 4. **Extraction.** The `fact-extraction` skill and the workflow with a single wave and no duplicate
    consolidation, tested on a small batch. *Acceptance:* every applied evidence quote is verbatim, and invalid
    operations are recorded with errors.

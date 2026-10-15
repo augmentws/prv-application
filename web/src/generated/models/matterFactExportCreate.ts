@@ -5,10 +5,10 @@
  * Phase-one Core API for authentication, hierarchical tenants, clients, matters, and matter metadata definitions.
  * OpenAPI spec version: 0.1.0
  */
-import type { MatterFactExportFilters } from './matterFactExportFilters';
+import type { FactFilters } from './factFilters';
 
 export interface MatterFactExportCreate {
-  filters?: MatterFactExportFilters;
+  filters?: FactFilters;
   /**
      * @minLength 1
      * @maxLength 150

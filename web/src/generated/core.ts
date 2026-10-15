@@ -203,8 +203,13 @@ import type {
   MatterFactEvidenceAdd,
   MatterFactExportCreate,
   MatterFactExportRead,
+  MatterFactFacetRead,
+  MatterFactFacetRequest,
+  MatterFactHistogramRead,
+  MatterFactHistogramRequest,
   MatterFactMerge,
   MatterFactPage,
+  MatterFactSearchRequest,
   MatterFactUpdate,
   MatterOverviewCounts,
   MatterProviderUsageReportRead,
@@ -14227,6 +14232,203 @@ const res = await fetch(getCreateMatterFactV1MattersMatterIdFactsPostUrl(matterI
 
   const data: createMatterFactV1MattersMatterIdFactsPostResponse['data'] = body ? JSON.parse(body) : {}
   return { data, status: res.status, headers: res.headers } as createMatterFactV1MattersMatterIdFactsPostResponse
+}
+
+
+
+export type searchFactsV1MattersMatterIdFactsSearchPostResponse200 = {
+  data: MatterFactPage
+  status: 200
+}
+
+export type searchFactsV1MattersMatterIdFactsSearchPostResponse422 = {
+  data: HTTPValidationError
+  status: 422
+}
+
+export type searchFactsV1MattersMatterIdFactsSearchPostResponseSuccess = (searchFactsV1MattersMatterIdFactsSearchPostResponse200) & {
+  headers: Headers;
+};
+export type searchFactsV1MattersMatterIdFactsSearchPostResponseError = (searchFactsV1MattersMatterIdFactsSearchPostResponse422) & {
+  headers: Headers;
+};
+
+export type searchFactsV1MattersMatterIdFactsSearchPostResponse = (searchFactsV1MattersMatterIdFactsSearchPostResponseSuccess | searchFactsV1MattersMatterIdFactsSearchPostResponseError)
+
+export const getSearchFactsV1MattersMatterIdFactsSearchPostUrl = (matterId: string,) => {
+
+
+
+
+  return `/api/core/v1/matters/${matterId}/facts/search`
+}
+
+/**
+ * Filter facts on every field; the same filter drives facets, the histogram, and export.
+ * @summary Search Facts
+ */
+export const searchFactsV1MattersMatterIdFactsSearchPost = async (matterId: string,
+    matterFactSearchRequest: MatterFactSearchRequest, options?: RequestInit): Promise<searchFactsV1MattersMatterIdFactsSearchPostResponse> => {
+
+    const getHeaders = (h?: NonNullable<RequestInit['headers']>): Record<string, string | readonly string[]> => {
+    if (!h) return {};
+    if (h instanceof Headers) return Object.fromEntries(h.entries());
+    if (Symbol.iterator in h) {
+      return Object.fromEntries(
+        Array.from(h as Iterable<Iterable<string>>, (entry) => Array.from(entry) as [string, string]),
+      );
+    }
+    const headers: Record<string, string | readonly string[]> = {};
+    for (const [name, value] of Object.entries<string | readonly string[] | undefined>(h)) {
+      if (value !== undefined) headers[name] = value;
+    }
+    return headers;
+  };
+const res = await fetch(getSearchFactsV1MattersMatterIdFactsSearchPostUrl(matterId),
+  {
+    ...options,
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json', ...getHeaders(options?.headers) },
+    body: JSON.stringify(matterFactSearchRequest)
+  }
+)
+
+
+  const body = [204, 205, 304].includes(res.status) ? null : await res.text();
+
+  const data: searchFactsV1MattersMatterIdFactsSearchPostResponse['data'] = body ? JSON.parse(body) : {}
+  return { data, status: res.status, headers: res.headers } as searchFactsV1MattersMatterIdFactsSearchPostResponse
+}
+
+
+
+export type facetFactsV1MattersMatterIdFactsFacetsPostResponse200 = {
+  data: MatterFactFacetRead
+  status: 200
+}
+
+export type facetFactsV1MattersMatterIdFactsFacetsPostResponse422 = {
+  data: HTTPValidationError
+  status: 422
+}
+
+export type facetFactsV1MattersMatterIdFactsFacetsPostResponseSuccess = (facetFactsV1MattersMatterIdFactsFacetsPostResponse200) & {
+  headers: Headers;
+};
+export type facetFactsV1MattersMatterIdFactsFacetsPostResponseError = (facetFactsV1MattersMatterIdFactsFacetsPostResponse422) & {
+  headers: Headers;
+};
+
+export type facetFactsV1MattersMatterIdFactsFacetsPostResponse = (facetFactsV1MattersMatterIdFactsFacetsPostResponseSuccess | facetFactsV1MattersMatterIdFactsFacetsPostResponseError)
+
+export const getFacetFactsV1MattersMatterIdFactsFacetsPostUrl = (matterId: string,) => {
+
+
+
+
+  return `/api/core/v1/matters/${matterId}/facts/facets`
+}
+
+/**
+ * Distinct-fact counts for one facet; the facet's own selection is ignored so its counts stay useful.
+ * @summary Facet Facts
+ */
+export const facetFactsV1MattersMatterIdFactsFacetsPost = async (matterId: string,
+    matterFactFacetRequest: MatterFactFacetRequest, options?: RequestInit): Promise<facetFactsV1MattersMatterIdFactsFacetsPostResponse> => {
+
+    const getHeaders = (h?: NonNullable<RequestInit['headers']>): Record<string, string | readonly string[]> => {
+    if (!h) return {};
+    if (h instanceof Headers) return Object.fromEntries(h.entries());
+    if (Symbol.iterator in h) {
+      return Object.fromEntries(
+        Array.from(h as Iterable<Iterable<string>>, (entry) => Array.from(entry) as [string, string]),
+      );
+    }
+    const headers: Record<string, string | readonly string[]> = {};
+    for (const [name, value] of Object.entries<string | readonly string[] | undefined>(h)) {
+      if (value !== undefined) headers[name] = value;
+    }
+    return headers;
+  };
+const res = await fetch(getFacetFactsV1MattersMatterIdFactsFacetsPostUrl(matterId),
+  {
+    ...options,
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json', ...getHeaders(options?.headers) },
+    body: JSON.stringify(matterFactFacetRequest)
+  }
+)
+
+
+  const body = [204, 205, 304].includes(res.status) ? null : await res.text();
+
+  const data: facetFactsV1MattersMatterIdFactsFacetsPostResponse['data'] = body ? JSON.parse(body) : {}
+  return { data, status: res.status, headers: res.headers } as facetFactsV1MattersMatterIdFactsFacetsPostResponse
+}
+
+
+
+export type factHistogramV1MattersMatterIdFactsDateHistogramPostResponse200 = {
+  data: MatterFactHistogramRead
+  status: 200
+}
+
+export type factHistogramV1MattersMatterIdFactsDateHistogramPostResponse422 = {
+  data: HTTPValidationError
+  status: 422
+}
+
+export type factHistogramV1MattersMatterIdFactsDateHistogramPostResponseSuccess = (factHistogramV1MattersMatterIdFactsDateHistogramPostResponse200) & {
+  headers: Headers;
+};
+export type factHistogramV1MattersMatterIdFactsDateHistogramPostResponseError = (factHistogramV1MattersMatterIdFactsDateHistogramPostResponse422) & {
+  headers: Headers;
+};
+
+export type factHistogramV1MattersMatterIdFactsDateHistogramPostResponse = (factHistogramV1MattersMatterIdFactsDateHistogramPostResponseSuccess | factHistogramV1MattersMatterIdFactsDateHistogramPostResponseError)
+
+export const getFactHistogramV1MattersMatterIdFactsDateHistogramPostUrl = (matterId: string,) => {
+
+
+
+
+  return `/api/core/v1/matters/${matterId}/facts/date-histogram`
+}
+
+/**
+ * @summary Fact Histogram
+ */
+export const factHistogramV1MattersMatterIdFactsDateHistogramPost = async (matterId: string,
+    matterFactHistogramRequest: MatterFactHistogramRequest, options?: RequestInit): Promise<factHistogramV1MattersMatterIdFactsDateHistogramPostResponse> => {
+
+    const getHeaders = (h?: NonNullable<RequestInit['headers']>): Record<string, string | readonly string[]> => {
+    if (!h) return {};
+    if (h instanceof Headers) return Object.fromEntries(h.entries());
+    if (Symbol.iterator in h) {
+      return Object.fromEntries(
+        Array.from(h as Iterable<Iterable<string>>, (entry) => Array.from(entry) as [string, string]),
+      );
+    }
+    const headers: Record<string, string | readonly string[]> = {};
+    for (const [name, value] of Object.entries<string | readonly string[] | undefined>(h)) {
+      if (value !== undefined) headers[name] = value;
+    }
+    return headers;
+  };
+const res = await fetch(getFactHistogramV1MattersMatterIdFactsDateHistogramPostUrl(matterId),
+  {
+    ...options,
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json', ...getHeaders(options?.headers) },
+    body: JSON.stringify(matterFactHistogramRequest)
+  }
+)
+
+
+  const body = [204, 205, 304].includes(res.status) ? null : await res.text();
+
+  const data: factHistogramV1MattersMatterIdFactsDateHistogramPostResponse['data'] = body ? JSON.parse(body) : {}
+  return { data, status: res.status, headers: res.headers } as factHistogramV1MattersMatterIdFactsDateHistogramPostResponse
 }
 
 
