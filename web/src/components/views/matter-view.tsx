@@ -640,14 +640,16 @@ export function MatterView({ clientId, matterId, requestedTab, requestedMetadata
             <Button asChild><Link href={`/review/matters/${matterId}`}><FileSearch />Search & Review</Link></Button>
             <HelpLink topic={tab === "classification" ? "classification" : tab === "jobs" ? "matterJobs" : tab === "usage" ? "tokenUsage" : tab === "search" ? "matterSearch" : tab === "definition" ? "matterDefinition" : "metadata"} />
             {tab === "overview" ? <><CloneMatterDialog sourceName={matter.data.name} onClone={cloneMatter} /><SaveMatterTemplateDialog onCreate={saveTemplate} /></> : null}
-            {tab === "metadata" && metadataTab === "definitions" ? <CreateMetadataDialog onCreate={createDefinition} /> : null}
           </div>
         </div>
       </div>
       <div className={tab === "definition" ? "matter-definition-page-content" : undefined}>
-        {tab === "metadata" ? <div className="mb-5 flex border-b" role="tablist" aria-label="Metadata sections">
-          <button type="button" role="tab" aria-selected={metadataTab === "definitions"} onClick={() => openMetadataTab("definitions")} className={subtabClass(metadataTab === "definitions")}>Definitions</button>
-          <button type="button" role="tab" aria-selected={metadataTab === "groups"} onClick={() => openMetadataTab("groups")} className={subtabClass(metadataTab === "groups")}>Groups</button>
+        {tab === "metadata" ? <div className="mb-5 flex items-end justify-between gap-3 border-b">
+          <div className="flex" role="tablist" aria-label="Metadata sections">
+            <button type="button" role="tab" aria-selected={metadataTab === "definitions"} onClick={() => openMetadataTab("definitions")} className={subtabClass(metadataTab === "definitions")}>Definitions</button>
+            <button type="button" role="tab" aria-selected={metadataTab === "groups"} onClick={() => openMetadataTab("groups")} className={subtabClass(metadataTab === "groups")}>Groups</button>
+          </div>
+          {metadataTab === "definitions" ? <div className="pb-2"><CreateMetadataDialog onCreate={createDefinition} /></div> : null}
         </div> : null}
         {tab === "overview" ? overviewCounts.error ? <QueryError message={overviewCounts.error.message} /> : <div className="grid gap-4 sm:grid-cols-2 xl:grid-cols-5"><Summary icon={FileText} label="Documents" value={overviewCounts.data?.document_count ?? "—"} /><Summary icon={UsersRound} label="Custodians" value={overviewCounts.data?.custodian_count ?? "—"} /><Summary icon={Database} label="Metadata fields" value={definitions.data?.length ?? 0} /><Summary icon={Search} label="Searchable fields" value={definitions.data?.filter((item) => item.searchable).length ?? 0} /><Summary icon={Sparkles} label="Agent assignable" value={definitions.data?.filter((item) => item.ai_assignable).length ?? 0} /></div>
         : tab === "metadata" && metadataTab === "definitions" ? definitions.isPending ? <TableLoading /> : definitions.error ? <QueryError message={definitions.error.message} /> : <DataTable columns={columns} data={definitions.data} emptyMessage="No metadata fields yet. Add the first field definition for this matter." />

@@ -1,5 +1,5 @@
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
-import { cleanup, render, screen, waitFor } from "@testing-library/react";
+import { cleanup, render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import type { ReactNode } from "react";
 import { afterEach, describe, expect, it, vi } from "vitest";
@@ -419,6 +419,8 @@ describe("MatterView metadata navigation", () => {
 
     expect(await screen.findByRole("tab", { name: "Definitions" })).toHaveAttribute("aria-selected", "true");
     expect(screen.queryByRole("button", { name: "Update email domains" })).not.toBeInTheDocument();
+    const metadataSubtabs = screen.getByRole("tablist", { name: "Metadata sections" });
+    expect(within(metadataSubtabs.parentElement!).getByRole("button", { name: "Add field" })).toBeInTheDocument();
   });
 
   it("shows one Metadata tab with Definitions and Groups subtabs and preserves the legacy groups link", async () => {
@@ -439,6 +441,7 @@ describe("MatterView metadata navigation", () => {
     expect(screen.getByRole("tab", { name: "Groups" })).toHaveAttribute("aria-selected", "true");
     expect(screen.queryByRole("tab", { name: "Metadata definitions" })).not.toBeInTheDocument();
     expect(screen.queryByRole("tab", { name: "Metadata groups" })).not.toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "Add field" })).not.toBeInTheDocument();
   });
 
   it("allows an administrator to make an asserted field AI-assignable", async () => {
