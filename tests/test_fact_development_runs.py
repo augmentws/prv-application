@@ -8,10 +8,12 @@ from fastapi.testclient import TestClient
 from pydantic_ai.models.test import TestModel
 from sqlalchemy import select
 
+from app import fact_development
 from app.analysis_input_manifests import AnalysisInputManifestReader
 from app.artifact_gateway import AnalysisInputItemSnapshot, TextSourceReference, WorkflowArtifactReference
 from app.document_metadata import apply_metadata_values
 from app.fact_development import (
+    FactDevelopmentRunError,
     fail_fact_development_run,
     finalize_fact_development_run,
     prepare_fact_development_run,
@@ -42,6 +44,7 @@ PRICING_QUOTE = "Jane Smith approved the 5% price increase"
 def _operation(**overrides) -> dict:
     operation = {
         "op": "CREATE",
+        "refine_fields": [],
         "issue_keys": ["pricing"],
         "fact_id": None,
         "summary": "Jane Smith approved a 5% price increase for Acme customers.",
@@ -545,6 +548,66 @@ def test_population_is_frozen_in_a_chronological_input_manifest(
         }
     # Only the one ready document's pinned text was read; nothing was re-resolved at execution time.
     assert inputs["text_reads"] == 1
+
+
+def test_chunks_refuse_a_mismatched_or_unsupported_input_manifest(
+    client: TestClient,
+    run_ctx: dict,
+    artifacts: dict,
+) -> None:
+    run = _launch(client, run_ctx)
+    with TestingSessionLocal() as db:
+        (chunk_id,) = prepare_fact_development_run(db, uuid.UUID(run["id"]))
+        manifest_id = db.get(MatterAnalysisTaskRun, uuid.UUID(run["id"])).analysis_input_manifest_id
+
+    def expect(code: str, **changes) -> None:
+        with TestingSessionLocal() as db:
+            manifest = db.get(AnalysisInputManifest, manifest_id)
+            original = {key: getattr(manifest, key) for key in changes}
+            for key, value in changes.items():
+                setattr(manifest, key, value)
+            db.commit()
+        with pytest.raises(FactDevelopmentRunError) as raised:
+            process_fact_development_chunk(uuid.UUID(chunk_id), session_factory=TestingSessionLocal, model=TestModel())
+        assert raised.value.code == code
+        with TestingSessionLocal() as db:
+            manifest = db.get(AnalysisInputManifest, manifest_id)
+            for key, value in original.items():
+                setattr(manifest, key, value)
+            db.commit()
+
+    expect("INPUT_MANIFEST_IDENTITY_MISMATCH", owner_id=uuid.uuid4())
+    expect("INPUT_MANIFEST_IDENTITY_MISMATCH", scope_id=uuid.uuid4())
+    with TestingSessionLocal() as db:
+        contract = dict(db.get(AnalysisInputManifest, manifest_id).input_contract)
+    expect("INPUT_CONTRACT_UNSUPPORTED", input_contract={**contract, "version": 2})
+    expect("INPUT_MANIFEST_INVALID", artifact_content_hash="0" * 64)
+    expect("INPUT_MANIFEST_IDENTITY_MISMATCH", item_count=99)
+
+
+def test_cancel_while_freezing_publishes_no_manifest(
+    client: TestClient,
+    run_ctx: dict,
+    artifacts: dict,
+    inputs: dict,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    run = _launch(client, run_ctx)
+    resolve = fact_development.get_collection_item_analysis_input_snapshots
+
+    def resolve_then_cancel(**kwargs):
+        canceled = client.post(f"/v1/jobs/FACT_DEVELOPMENT_ANALYSIS_TASK/{run['id']}/cancel", headers=auth(run_ctx["token"]))
+        assert canceled.status_code == 200, canceled.text
+        return resolve(**kwargs)
+
+    monkeypatch.setattr(fact_development, "get_collection_item_analysis_input_snapshots", resolve_then_cancel)
+    with TestingSessionLocal() as db, pytest.raises(FactDevelopmentRunError) as raised:
+        prepare_fact_development_run(db, uuid.UUID(run["id"]))
+    assert raised.value.code == "CANCELED"
+    with TestingSessionLocal() as db:
+        assert db.query(AnalysisInputManifest).count() == 0
+        run_row = db.get(MatterAnalysisTaskRun, uuid.UUID(run["id"]))
+        assert (run_row.status, run_row.analysis_input_manifest_id) == ("CANCELED", None)
 
 
 def test_fact_runs_require_the_run_permission(client: TestClient, run_ctx: dict) -> None:

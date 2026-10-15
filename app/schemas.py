@@ -4318,6 +4318,29 @@ class MatterFactDetailRead(MatterFactRead):
     events: list[MatterFactEventRead]
 
 
+class MatterFactSuggestionRead(ORMModel):
+    id: uuid.UUID
+    fact_id: uuid.UUID
+    kind: Literal["REVISION", "MERGE"]
+    status: Literal["PENDING", "ACCEPTED", "DISMISSED"]
+    base_revision: int
+    changes: dict[str, Any]
+    evidence: list[dict[str, Any]]
+    target_fact_id: uuid.UUID | None
+    rationale: str | None
+    created_by_workflow_run_id: uuid.UUID | None
+    resolved_by_user_id: uuid.UUID | None
+    resolved_at: datetime | None
+    resolution_note: str | None
+    created_at: datetime
+
+
+class MatterFactSuggestionDismiss(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    note: str | None = Field(default=None, max_length=4_000)
+
+
 class MatterFactPage(BaseModel):
     items: list[MatterFactRead]
     total: int

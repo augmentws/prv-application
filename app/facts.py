@@ -31,6 +31,7 @@ from app.models import (
     MatterFactEvidence,
     MatterFactIssue,
     MatterFactRevision,
+    MatterFactSuggestion,
     utcnow,
 )
 
@@ -783,3 +784,181 @@ def detach_entities_from_facts(
             actor,
         )
     return sorted(fact_ids, key=str)
+
+
+# Suggested revisions: agent changes to reviewer-owned facts wait for a reviewer.
+
+
+def _serialize_changes(changes: dict[str, Any]) -> dict[str, Any]:
+    snapshot = _content_snapshot(FactContent(**{**FactContent(summary="").__dict__, **changes}))
+    return {key: snapshot[key] for key in changes}
+
+
+def _deserialize_changes(changes: dict[str, Any]) -> dict[str, Any]:
+    values: dict[str, Any] = {}
+    for key, value in changes.items():
+        if key in {"event_date_start", "event_date_end"}:
+            values[key] = date.fromisoformat(value) if value else None
+        elif key == "owner_entity_id":
+            values[key] = uuid.UUID(value) if value else None
+        elif key == "issues":
+            values[key] = [FactIssueRef(uuid.UUID(item["matter_analysis_task_id"]), item["issue_key"]) for item in value]
+        elif key == "participants":
+            values[key] = [FactParticipantRef(uuid.UUID(item["entity_id"]), item["role"]) for item in value]
+        else:
+            values[key] = value
+    return values
+
+
+def _verified_evidence_payload(item: VerifiedEvidence) -> dict[str, Any]:
+    return {
+        "matter_document_id": str(item.matter_document_id),
+        "source_artifact_id": str(item.source_artifact_id),
+        "source_content_hash": item.source_content_hash,
+        "paragraph_map_version": item.paragraph_map_version,
+        "paragraph_id": item.paragraph_id,
+        "char_start": item.char_start,
+        "char_end": item.char_end,
+        "quote": item.quote,
+        "quote_hash": item.quote_hash,
+        "stance": item.stance,
+    }
+
+
+def _verified_evidence_from_payload(value: dict[str, Any]) -> VerifiedEvidence:
+    return VerifiedEvidence(
+        matter_document_id=uuid.UUID(value["matter_document_id"]),
+        source_artifact_id=uuid.UUID(value["source_artifact_id"]),
+        source_content_hash=value["source_content_hash"],
+        paragraph_map_version=value["paragraph_map_version"],
+        paragraph_id=value["paragraph_id"],
+        char_start=int(value["char_start"]),
+        char_end=int(value["char_end"]),
+        quote=value["quote"],
+        quote_hash=value["quote_hash"],
+        stance=value["stance"],
+    )
+
+
+def suggest_revision(
+    db: Session,
+    *,
+    fact: MatterFact,
+    changes: dict[str, Any],
+    evidence: Sequence[VerifiedEvidence],
+    rationale: str | None,
+    actor: Actor,
+) -> MatterFactSuggestion:
+    """Record a proposed content change to a confirmed fact without changing the fact."""
+
+    _require_not_merged(fact)
+    if fact.status != "CONFIRMED":
+        raise FactConflict("Only confirmed facts receive suggestions; working facts are revised directly")
+    unknown = set(changes) - CONTENT_FIELDS
+    if unknown or not changes:
+        raise FactError("A suggestion needs one or more known fact fields")
+    # Validate now so reviewers only ever see suggestions that could be applied to the current fact.
+    before = current_content(db, fact)
+    _validated_content(db, matter_id=fact.matter_id, content=FactContent(**{**before.__dict__, **changes}))
+    suggestion = MatterFactSuggestion(
+        matter_id=fact.matter_id,
+        fact_id=fact.id,
+        kind="REVISION",
+        status="PENDING",
+        base_revision=fact.current_revision,
+        changes=_serialize_changes(changes),
+        evidence=[_verified_evidence_payload(item) for item in evidence],
+        rationale=rationale,
+        created_by_workflow_run_id=actor.workflow_run_id,
+    )
+    db.add(suggestion)
+    db.flush()
+    _record(
+        db,
+        fact,
+        "SUGGESTION_CREATED",
+        {"suggestion_id": str(suggestion.id), "kind": suggestion.kind, "changes": suggestion.changes},
+        actor,
+    )
+    return suggestion
+
+
+def _pending_suggestion(db: Session, fact: MatterFact, suggestion_id: uuid.UUID) -> MatterFactSuggestion:
+    suggestion = db.scalar(
+        select(MatterFactSuggestion)
+        .where(MatterFactSuggestion.id == suggestion_id, MatterFactSuggestion.fact_id == fact.id)
+        .with_for_update()
+    )
+    if suggestion is None:
+        raise FactNotFound("Suggestion not found")
+    if suggestion.status != "PENDING":
+        raise FactConflict(f"The suggestion is already {suggestion.status.lower()}")
+    return suggestion
+
+
+def accept_suggestion(
+    db: Session,
+    *,
+    fact: MatterFact,
+    suggestion_id: uuid.UUID,
+    lock_version: int,
+    actor: Actor,
+) -> MatterFact:
+    """Apply a pending suggestion as the reviewer's own revision, with its supporting quotes."""
+
+    if actor.actor_type != "HUMAN":
+        raise FactConflict("Only a person can accept a suggestion")
+    suggestion = _pending_suggestion(db, fact, suggestion_id)
+    if suggestion.kind != "REVISION":
+        raise FactConflict("Merge suggestions are accepted by merging the facts")
+    _require_not_merged(fact)
+    _check_version(fact, lock_version)
+    revise_fact(
+        db,
+        fact=fact,
+        lock_version=lock_version,
+        changes=_deserialize_changes(suggestion.changes),
+        actor=actor,
+        reason=f"Accepted suggestion {suggestion.id}",
+    )
+    for payload in suggestion.evidence:
+        item = _verified_evidence_from_payload(payload)
+        duplicate = db.scalar(
+            select(MatterFactEvidence.id).where(
+                MatterFactEvidence.fact_id == fact.id,
+                MatterFactEvidence.status == "ACTIVE",
+                MatterFactEvidence.matter_document_id == item.matter_document_id,
+                MatterFactEvidence.char_start == item.char_start,
+                MatterFactEvidence.char_end == item.char_end,
+            )
+        )
+        if duplicate is None:
+            row = _evidence_row(fact, item, actor)
+            db.add(row)
+            db.flush()
+            _record(db, fact, "EVIDENCE_ADDED", _evidence_payload(row), actor)
+    _refresh_evidence_counts(db, fact)
+    suggestion.status = "ACCEPTED"
+    suggestion.resolved_by_user_id = actor.user_id
+    suggestion.resolved_at = utcnow()
+    _record(db, fact, "SUGGESTION_ACCEPTED", {"suggestion_id": str(suggestion.id)}, actor)
+    return fact
+
+
+def dismiss_suggestion(
+    db: Session,
+    *,
+    fact: MatterFact,
+    suggestion_id: uuid.UUID,
+    note: str | None,
+    actor: Actor,
+) -> MatterFactSuggestion:
+    if actor.actor_type != "HUMAN":
+        raise FactConflict("Only a person can dismiss a suggestion")
+    suggestion = _pending_suggestion(db, fact, suggestion_id)
+    suggestion.status = "DISMISSED"
+    suggestion.resolved_by_user_id = actor.user_id
+    suggestion.resolved_at = utcnow()
+    suggestion.resolution_note = note
+    _record(db, fact, "SUGGESTION_DISMISSED", {"suggestion_id": str(suggestion.id), "note": note}, actor)
+    return suggestion

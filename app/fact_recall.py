@@ -13,7 +13,7 @@ import math
 import uuid
 from collections.abc import Sequence
 from dataclasses import dataclass
-from datetime import date, timedelta
+from datetime import date, datetime, timedelta
 
 from sqlalchemy import or_, select
 from sqlalchemy.orm import Session
@@ -74,6 +74,7 @@ def recall_facts(
     limit: int = 20,
     candidate_limit: int = 500,
     include_rejected: bool = True,
+    created_after: datetime | None = None,
     gateway: EmbeddingGateway | None = None,
 ) -> list[RecalledFact]:
     """Return up to ``limit`` facts most similar to ``text`` among facts sharing an issue.
@@ -99,6 +100,8 @@ def recall_facts(
                 MatterFact.event_date_start.between(event_date - window, event_date + window),
             )
         )
+    if created_after is not None:
+        statement = statement.where(MatterFact.created_at > created_after)
     candidates = list(db.scalars(statement.order_by(*FACT_DATE_ORDER).limit(candidate_limit)))
     if not candidates:
         return []

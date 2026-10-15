@@ -49,10 +49,19 @@ from app.config import Settings, get_settings
 from app.database import SessionLocal
 from app.document_evidence import PARAGRAPH_MAP_VERSION, render_model_document
 from app.embeddings.configuration import canonical_hash
-from app.fact_development_skills import FACT_EXTRACTION_ROLE
+from app.fact_consolidation import (
+    ConsolidationSettings,
+    consolidation_validator,
+    decide,
+    late_candidates,
+    lock_issue_partitions,
+)
+from app.fact_development_skills import FACT_CONSOLIDATION_ROLE, FACT_EXTRACTION_ROLE
 from app.fact_evidence import DocumentText, document_text_from_source
 from app.fact_extraction import (
+    CreateDecision,
     ExtractionContext,
+    ExtractionOperation,
     apply_extraction,
     extraction_output_validator,
     parse_extraction_output,
@@ -114,6 +123,7 @@ logger = logging.getLogger(__name__)
 OUTCOME_FILENAME_PREFIX = "fact-development"
 INPUT_MANIFEST_OWNER_TYPE = "MATTER_ANALYSIS_TASK_RUN"
 INPUT_CONTRACT_KEY = "fact-development.population"
+INPUT_CONTRACT_VERSION = 1
 INPUT_RESOLVER_VERSION = "fact-development-population-resolver-v1"
 REPORT_SAMPLE_LIMIT = 50
 RECALL_TEXT_CHARACTERS = 4_000
@@ -128,7 +138,14 @@ COUNT_KEYS = (
     "proposed_entities",
     "recall_unavailable",
     "reused",
+    "merged_into_existing",
+    "blocked_by_rejected",
+    "refined",
+    "suggestions_created",
+    "duplicate_check_unavailable",
+    "duplicate_rechecks",
 )
+MAX_DUPLICATE_RECHECKS = 2
 
 
 class FactDevelopmentRunError(ValueError):
@@ -213,6 +230,7 @@ def create_fact_development_run(
     except ValueError as exc:
         raise FactDevelopmentRunError(f"Fact extraction is not configured: {exc}") from exc
     skill_version = resolved[FACT_EXTRACTION_ROLE][2]
+    consolidation_version = resolved[FACT_CONSOLIDATION_ROLE][2]
     configuration = {
         "task_version_id": str(task_version.id),
         "task_version": task_version.version,
@@ -224,8 +242,12 @@ def create_fact_development_run(
         "chunk_size": settings.fact_development_chunk_size,
         "max_document_characters": settings.fact_development_max_document_characters,
         "recall_window_days": settings.fact_development_recall_window_days,
+        "chunk_window": settings.fact_development_chunk_window,
+        "duplicate_threshold": settings.fact_duplicate_threshold,
         "skill_definition_version_id": str(skill_version.id),
         "resolved_model": resolve_agent_model(skill_version.model_key, settings),
+        "consolidation_skill_definition_version_id": str(consolidation_version.id),
+        "consolidation_model": resolve_agent_model(consolidation_version.model_key, settings),
         "binding_snapshot": binding_snapshot(resolved),
     }
     configuration["configuration_hash"] = canonical_hash(
@@ -306,17 +328,31 @@ def _create_execution(
             "reviewer_coding_revision": configuration["reviewer_coding_revision"],
         },
         binding_snapshot=configuration["binding_snapshot"],
-        configuration_snapshot={"resolved_models": {FACT_EXTRACTION_ROLE: configuration["resolved_model"]}},
+        configuration_snapshot={
+            "resolved_models": {
+                FACT_EXTRACTION_ROLE: configuration["resolved_model"],
+                FACT_CONSOLIDATION_ROLE: configuration["consolidation_model"],
+            }
+        },
         retry_of=retry_of,
     )
-    db.add(
-        WorkflowStepRun(
-            workflow_run_id=execution.id,
-            role_key=FACT_EXTRACTION_ROLE,
-            ordinal=1,
-            status="QUEUED",
-            total_count=run.population_document_count,
-        )
+    db.add_all(
+        [
+            WorkflowStepRun(
+                workflow_run_id=execution.id,
+                role_key=FACT_EXTRACTION_ROLE,
+                ordinal=1,
+                status="QUEUED",
+                total_count=run.population_document_count,
+            ),
+            WorkflowStepRun(
+                workflow_run_id=execution.id,
+                role_key=FACT_CONSOLIDATION_ROLE,
+                ordinal=2,
+                status="QUEUED",
+                total_count=0,
+            ),
+        ]
     )
     db.flush()
     return execution
@@ -434,10 +470,22 @@ def _manifest_reader(db: Session, run: MatterAnalysisTaskRun) -> AnalysisInputMa
         or manifest.owner_id != run.id
         or manifest.matter_id != run.matter_id
         or manifest.item_count != run.population_document_count
+        or manifest.scope_type != "REVIEW_BATCH"
+        or manifest.scope_id != run.scope_id
     ):
         raise FactDevelopmentRunError(
             "The run's input manifest does not match the run",
             code="INPUT_MANIFEST_IDENTITY_MISMATCH",
+        )
+    contract = manifest.input_contract or {}
+    if (
+        contract.get("key") != INPUT_CONTRACT_KEY
+        or contract.get("version") != INPUT_CONTRACT_VERSION
+        or manifest.resolver_version != INPUT_RESOLVER_VERSION
+    ):
+        raise FactDevelopmentRunError(
+            "This worker does not support the run's input contract version",
+            code="INPUT_CONTRACT_UNSUPPORTED",
         )
     try:
         return AnalysisInputManifestReader(manifest, actor_user_id=run.created_by_user_id)
@@ -546,14 +594,49 @@ def prepare_fact_development_run(db: Session, run_id: uuid.UUID) -> list[str]:
         step.status = "RUNNING"
         step.started_at = step.started_at or utcnow()
     if run.analysis_input_manifest_id is None:
+        # Release the run lock while the batch is resolved so a cancel request is not blocked behind the freeze.
+        db.commit()
+        run = db.get(MatterAnalysisTaskRun, run_id)
         _freeze_input_manifest(db, run)
+        db.commit()
+        run = _lock_run(db, run_id)
+        if _cancel_requested(db, run.id):
+            return []
     chunks = _chunks(db, run.id)
     if not chunks:
         chunks = _plan_chunks(db, run)
     _refresh_progress(db, run, stage="EXTRACTING")
     ensure_outcome_manifest(db, _outcome_scope(db, run))
     db.commit()
+    # Chunks are returned in manifest (chronological) order; the workflow dispatches them in this order.
     return [str(chunk.id) for chunk in chunks if chunk.status not in {"COMPLETED", "COMPLETED_WITH_ERRORS"}]
+
+
+def run_ordered_window(
+    chunk_ids: list[str],
+    window: int,
+    start: Callable[[str], Any],
+    wait: Callable[[Any], Any],
+) -> None:
+    """Start chunks in order with at most ``window`` in flight; the next starts when the oldest in flight finishes.
+
+    Earlier (chronologically older) chunks therefore always finish before much later ones begin, so later documents
+    can recall facts created from earlier ones, without a barrier that idles workers between groups.
+    """
+
+    handles = [start(chunk_id) for chunk_id in chunk_ids[:window]]
+    for position in range(len(chunk_ids)):
+        wait(handles[position])
+        following = position + window
+        if following < len(chunk_ids):
+            handles.append(start(chunk_ids[following]))
+
+
+def chunk_window(db: Session, run_id: uuid.UUID) -> int:
+    run = db.get(MatterAnalysisTaskRun, run_id)
+    if run is None:
+        raise FactDevelopmentRunError("Fact-development run was not found")
+    return max(1, int(run.configuration_snapshot.get("chunk_window", 1)))
 
 
 def extraction_fingerprint(
@@ -585,7 +668,7 @@ def _input_contract(run: MatterAnalysisTaskRun) -> AnalysisInputContract:
     configuration = run.configuration_snapshot
     return AnalysisInputContract(
         key=INPUT_CONTRACT_KEY,
-        version=1,
+        version=INPUT_CONTRACT_VERSION,
         resolver_version=INPUT_RESOLVER_VERSION,
         required_input_paths=["issue_keys", "fingerprint", "metadata"],
         source_artifact_required=True,
@@ -771,6 +854,10 @@ def _freeze_input_manifest(db: Session, run: MatterAnalysisTaskRun) -> AnalysisI
             )
         status_counts[row.input_status] += 1
         rows.append(row)
+    db.expire_all()  # Observe a cancel committed while the batch was being resolved.
+    if _cancel_requested(db, run.id):
+        # Resolution can take a while for a large batch; do not publish a manifest for a canceled run.
+        raise FactDevelopmentRunError("The run was canceled while its population was being frozen", code="CANCELED")
     try:
         prepared = prepare_analysis_input_manifest(
             rows,
@@ -862,13 +949,21 @@ class _RunContext:
     step: WorkflowStepRun
     skill_version: SkillDefinitionVersion
     model: Any
+    consolidation_step: WorkflowStepRun
+    consolidation_skill_version: SkillDefinitionVersion
+    consolidation_model: Any
 
     @property
     def configuration(self) -> dict[str, Any]:
         return self.run.configuration_snapshot
 
 
-def _run_context(db: Session, run: MatterAnalysisTaskRun, model: Any | None) -> _RunContext:
+def _run_context(
+    db: Session,
+    run: MatterAnalysisTaskRun,
+    model: Any | None,
+    consolidation_model: Any | None = None,
+) -> _RunContext:
     matter = db.get(Matter, run.matter_id)
     task_version = db.get(MatterAnalysisTaskVersion, run.matter_analysis_task_version_id)
     workflow = current_job_execution(db, job_type=FACT_DEVELOPMENT_ANALYSIS_TASK_JOB_TYPE, job_id=run.id)
@@ -878,8 +973,15 @@ def _run_context(db: Session, run: MatterAnalysisTaskRun, model: Any | None) -> 
         select(WorkflowStepRun).where(WorkflowStepRun.workflow_run_id == workflow.id, WorkflowStepRun.ordinal == 1)
     )
     skill_version = db.get(SkillDefinitionVersion, uuid.UUID(run.configuration_snapshot["skill_definition_version_id"]))
-    if step is None or skill_version is None:
-        raise FactDevelopmentRunError("The pinned fact-extraction skill is unavailable")
+    consolidation_step = db.scalar(
+        select(WorkflowStepRun).where(WorkflowStepRun.workflow_run_id == workflow.id, WorkflowStepRun.ordinal == 2)
+    )
+    consolidation_version = db.get(
+        SkillDefinitionVersion,
+        uuid.UUID(run.configuration_snapshot["consolidation_skill_definition_version_id"]),
+    )
+    if step is None or skill_version is None or consolidation_step is None or consolidation_version is None:
+        raise FactDevelopmentRunError("The pinned fact-extraction skills are unavailable")
     return _RunContext(
         run=run,
         matter=matter,
@@ -888,6 +990,11 @@ def _run_context(db: Session, run: MatterAnalysisTaskRun, model: Any | None) -> 
         step=step,
         skill_version=skill_version,
         model=model if model is not None else run.configuration_snapshot["resolved_model"],
+        consolidation_step=consolidation_step,
+        consolidation_skill_version=consolidation_version,
+        consolidation_model=(
+            consolidation_model if consolidation_model is not None else run.configuration_snapshot["consolidation_model"]
+        ),
     )
 
 
@@ -996,6 +1103,108 @@ def _outcome(document_id: str, status: str, reason: str, message: str | None = N
         completed_at=utcnow(),
         **kwargs,
     )
+
+
+def _ask_consolidator(
+    db: Session,
+    context: _RunContext,
+    document_id: str,
+    proposed: dict[str, Any],
+    candidates: list[dict[str, Any]],
+) -> dict[str, Any]:
+    output, _ = asyncio.run(
+        execute_skill_run(
+            db,
+            workflow=context.workflow,
+            step=context.consolidation_step,
+            skill_version=context.consolidation_skill_version,
+            scope_type="MATTER_DOCUMENT",
+            scope_id=uuid.UUID(document_id),
+            stable_context={},
+            dynamic_input={"proposed": proposed, "candidates": candidates},
+            cache_identity={
+                "tenant_id": str(context.run.tenant_id),
+                "matter_id": str(context.matter.id),
+                "skill_version_id": str(context.consolidation_skill_version.id),
+            },
+            output_validators=(consolidation_validator,),
+            usage_job_type=FACT_DEVELOPMENT_ANALYSIS_TASK_JOB_TYPE,
+            model=context.consolidation_model,
+        )
+    )
+    return output
+
+
+def _consolidate_creates(
+    db: Session,
+    context: _RunContext,
+    document_id: str,
+    operations: list[ExtractionOperation],
+    issues: list[str],
+    counts: Counter[str],
+) -> dict[int, CreateDecision]:
+    """Rule on every CREATE, then lock its issues and recheck for facts created concurrently since the ruling.
+
+    Model calls happen without locks held. If a close fact appeared after a ruling, the locks are released and that
+    CREATE is ruled again; after the bounded retries it is ruled while the locks are held. The locks stay held until
+    the caller commits the document's writes.
+    """
+
+    settings = ConsolidationSettings(
+        matter_id=context.matter.id,
+        task_id=context.run.matter_analysis_task_id,
+        threshold=float(context.configuration.get("duplicate_threshold", 0.85)),
+        window_days=int(context.configuration["recall_window_days"]),
+    )
+    # Only CREATEs that could apply are ruled on; ones outside the document's coding fail validation anyway.
+    creates = {
+        index: operation
+        for index, operation in enumerate(operations)
+        if operation.op == "CREATE"
+        and operation.summary
+        and operation.evidence
+        and operation.issue_keys
+        and set(operation.issue_keys) <= set(issues)
+    }
+    if not creates:
+        return {}
+
+    def ask(proposed: dict[str, Any], candidates: list[dict[str, Any]]) -> dict[str, Any]:
+        return _ask_consolidator(db, context, document_id, proposed, candidates)
+
+    def rule(operation: ExtractionOperation) -> CreateDecision:
+        try:
+            return decide(db, settings, operation, ask)
+        except Exception as exc:  # noqa: BLE001 - an unavailable duplicate check must not lose the fact
+            logger.warning("Duplicate check failed run_id=%s document_id=%s: %s", context.run.id, document_id, exc)
+            db.rollback()
+            counts["duplicate_check_unavailable"] += 1
+            return CreateDecision("CREATE", rationale="Duplicate check unavailable")
+
+    decided_at = utcnow()
+    decisions = {index: rule(operation) for index, operation in creates.items()}
+    db.commit()  # Keep consolidation skill runs; nothing else is pending.
+    for attempt in range(MAX_DUPLICATE_RECHECKS + 1):
+        to_create = {index: creates[index] for index, decision in decisions.items() if decision.action == "CREATE"}
+        lock_issue_partitions(db, settings, (key for operation in to_create.values() for key in operation.issue_keys))
+        late = [
+            index
+            for index, operation in to_create.items()
+            if late_candidates(db, settings, operation, decisions[index], decided_at=decided_at)
+        ]
+        if not late:
+            break
+        counts["duplicate_rechecks"] += 1
+        if attempt == MAX_DUPLICATE_RECHECKS:
+            for index in late:
+                decisions[index] = rule(creates[index])
+            break
+        db.commit()  # Release the locks before calling the model again.
+        decided_at = utcnow()
+        for index in late:
+            decisions[index] = rule(creates[index])
+        db.commit()
+    return decisions
 
 
 def _process_document(
@@ -1117,6 +1326,7 @@ def _process_document(
             started_at=started_at,
         )
     extraction = parse_extraction_output(output, max_operations=max_operations)
+    decisions = _consolidate_creates(db, context, document_id, extraction.operations, issues, counts)
     result = apply_extraction(
         db,
         ExtractionContext(
@@ -1128,10 +1338,11 @@ def _process_document(
             actor=Actor(actor_type="AGENT", workflow_run_id=context.workflow.id),
         ),
         extraction,
+        decisions,
     )
     if result.applied_count:
         status, reason, message = "SUCCEEDED", "fact.facts_proposed", None
-    elif result.invalid_count and not result.no_fact_issue_keys:
+    elif result.invalid_count and not result.no_fact_issue_keys and not result.blocked_count:
         status, reason, message = "FAILED", "fact.operations_invalid", "Every proposed operation failed validation"
     else:
         status, reason, message = "SUCCEEDED", "fact.no_fact", None
@@ -1144,6 +1355,10 @@ def _process_document(
     counts["no_fact"] += len(result.no_fact_issue_keys)
     counts["invalid_operations"] += result.invalid_count
     counts["proposed_entities"] += len(result.proposed_entity_ids)
+    counts["merged_into_existing"] += len(result.merged_fact_ids)
+    counts["blocked_by_rejected"] += result.blocked_count
+    counts["refined"] += len(result.refined_fact_ids)
+    counts["suggestions_created"] += len(result.suggestion_ids)
     if result.applied_count:
         counts["documents_with_facts"] += 1
     metrics = {
@@ -1152,6 +1367,10 @@ def _process_document(
         "evidence_added": len(result.evidence_fact_ids),
         "invalid_operations": result.invalid_count,
         "proposed_entities": len(result.proposed_entity_ids),
+        "merged_into_existing": len(result.merged_fact_ids),
+        "blocked_by_rejected": result.blocked_count,
+        "refined": len(result.refined_fact_ids),
+        "suggestions_created": len(result.suggestion_ids),
         "recalled_facts": len(recalled),
         "recall_unavailable": recall_unavailable,
     }
@@ -1159,6 +1378,9 @@ def _process_document(
         "skill_run_id": str(skill_run.id),
         "created_fact_ids": [str(value) for value in result.created_fact_ids[:REPORT_SAMPLE_LIMIT]],
         "evidence_fact_ids": [str(value) for value in result.evidence_fact_ids[:REPORT_SAMPLE_LIMIT]],
+        "merged_fact_ids": [str(value) for value in result.merged_fact_ids[:REPORT_SAMPLE_LIMIT]],
+        "refined_fact_ids": [str(value) for value in result.refined_fact_ids[:REPORT_SAMPLE_LIMIT]],
+        "suggestion_ids": [str(value) for value in result.suggestion_ids[:REPORT_SAMPLE_LIMIT]],
         "no_fact_issue_keys": result.no_fact_issue_keys,
         "errors": result.errors,
     }
@@ -1179,6 +1401,7 @@ def process_fact_development_chunk(
     *,
     session_factory: Callable[[], Session] = SessionLocal,
     model: Any | None = None,
+    consolidation_model: Any | None = None,
 ) -> dict[str, Any]:
     with session_factory() as db:
         chunk = db.get(MatterAnalysisTaskRunChunk, chunk_id)
@@ -1203,7 +1426,7 @@ def process_fact_development_chunk(
         chunk.counts = {}
         db.commit()
 
-        context = _run_context(db, run, model)
+        context = _run_context(db, run, model, consolidation_model)
         counts: Counter[str] = Counter()
         outcomes: list[JobItemOutcome] = []
         canceled = False

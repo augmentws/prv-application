@@ -1,6 +1,6 @@
 # Fact Development and Timeline Plan
 
-Status: slices 1 and 2 (task type, entities, fact ledger, permissions, API, CSV export job) implemented on `feature/fact-backend`; slice 3 (Postgres search, facets, histogram, recall) implemented; slice 4 (single-pass extraction runs on `matter_analysis_task_run`, frozen in an analysis input manifest, job outcomes) implemented; slice 5 (consolidation and waves) next
+Status: slices 1 and 2 (task type, entities, fact ledger, permissions, API, CSV export job) implemented on `feature/fact-backend`; slice 3 (Postgres search, facets, histogram, recall) implemented; slice 4 (single-pass extraction runs on `matter_analysis_task_run`, frozen in an analysis input manifest, job outcomes) implemented; slice 5a (ordered chunk window, duplicate consolidation, confirmed-fact suggestions) implemented; slice 5b (final duplicate sweep, launch estimate) next
 
 ## Objective
 
@@ -300,6 +300,8 @@ analysis_input_manifest    (generic platform) one per run, owner MATTER_ANALYSIS
                            keys, File Date, email headers, fingerprint, pinned source text artifact and hash
 matter_analysis_task_run_chunk  run_id, chunk_number, ordinal_start, item_count, fingerprints (finished, JSON),
                            status, processed_count, failed_count, counts   -- execution state only, one row per chunk
+
+Input manifest retention: the run's `ANALYSIS_INPUT_MANIFEST` is kept for the life of the run so its population, pinned text and outcomes stay reproducible; unlike fact exports, no expiry is applied. Workers verify the manifest's owner, scope, contract key and version, and resolver before reading rows, and a cancel during freezing publishes no manifest.
 
 Reuse mirrors embeddings: a document's extraction fingerprint hashes the document, its pinned source text hash, the
 paragraph-map version, the issue-catalog hash and its coded issues (not the skill version or model). It is computed
@@ -616,9 +618,13 @@ Each slice ends with:
 4. **Extraction.** The `fact-extraction` skill and the workflow with a single wave and no duplicate
    consolidation, tested on a small batch. *Acceptance:* every applied evidence quote is verbatim, and invalid
    operations are recorded with errors.
-5. **Consolidation and waves.** Partition locks, duplicate checks with the `fact-consolidation` skill, waves,
-   confirmed-fact protection, tombstones, entity resolution, final sweep, run report, cancel and resume, launch
-   estimate.
+5. **Consolidation and ordering.**
+   - **5a (done):** chunks dispatched in chronological manifest order through an ordered window (no wave
+     barriers), duplicate checks with the `fact_consolidation` skill and per-issue advisory locks with a bounded
+     recheck, tombstones (rejected matches block re-creation), `REFINE`, and confirmed-fact suggestions with
+     accept and dismiss.
+   - **5b:** final duplicate sweep (auto-merge only agent-authored working pairs within strict limits, otherwise
+     merge suggestions) and the launch estimate.
 6. **Matter tabs and detail pages.** Task authoring in Analysis. The **Facts** tab (List sub-tab) with live
    review, facets and bulk actions. The fact detail page. The **Entities** tab (Directory and Proposed) and the
    entity detail page. The run job type in Jobs. Overview tiles.

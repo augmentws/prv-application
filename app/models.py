@@ -5069,6 +5069,47 @@ class MatterFactEvent(Base):
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
 
 
+class MatterFactSuggestion(TimestampMixin, Base):
+    """An agent's proposed change to a reviewer-owned (confirmed) fact, applied only when a reviewer accepts it.
+
+    ``REVISION`` carries content changes in ``changes`` (the same field shapes as a fact revision) with the quotes
+    that justify them. ``MERGE`` (used by the final duplicate sweep) proposes merging into ``target_fact_id``.
+    """
+
+    __tablename__ = "matter_fact_suggestion"
+    __table_args__ = (
+        CheckConstraint("kind IN ('REVISION', 'MERGE')", name="ck_matter_fact_suggestion_kind"),
+        CheckConstraint("status IN ('PENDING', 'ACCEPTED', 'DISMISSED')", name="ck_matter_fact_suggestion_status"),
+        CheckConstraint(
+            "(kind = 'MERGE') = (target_fact_id IS NOT NULL)",
+            name="ck_matter_fact_suggestion_merge_target",
+        ),
+        Index("ix_matter_fact_suggestion_fact_status", "fact_id", "status"),
+        Index("ix_matter_fact_suggestion_matter_status", "matter_id", "status"),
+    )
+
+    id: Mapped[uuid.UUID] = mapped_column(Uuid, primary_key=True, default=uuid.uuid4)
+    matter_id: Mapped[uuid.UUID] = mapped_column(Uuid, ForeignKey("matter.id", ondelete="CASCADE"))
+    fact_id: Mapped[uuid.UUID] = mapped_column(Uuid, ForeignKey("matter_fact.id", ondelete="CASCADE"))
+    kind: Mapped[str] = mapped_column(String(20))
+    status: Mapped[str] = mapped_column(String(20), default="PENDING")
+    base_revision: Mapped[int] = mapped_column(Integer)
+    changes: Mapped[dict[str, Any]] = mapped_column(JSON, default=dict)
+    evidence: Mapped[list[dict[str, Any]]] = mapped_column(JSON, default=list)
+    target_fact_id: Mapped[uuid.UUID | None] = mapped_column(
+        Uuid, ForeignKey("matter_fact.id", ondelete="CASCADE"), nullable=True
+    )
+    rationale: Mapped[str | None] = mapped_column(Text, nullable=True)
+    created_by_workflow_run_id: Mapped[uuid.UUID | None] = mapped_column(
+        Uuid, ForeignKey("workflow_run.id", ondelete="RESTRICT"), nullable=True, index=True
+    )
+    resolved_by_user_id: Mapped[uuid.UUID | None] = mapped_column(
+        Uuid, ForeignKey("app_user.id", ondelete="RESTRICT"), nullable=True
+    )
+    resolved_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    resolution_note: Mapped[str | None] = mapped_column(Text, nullable=True)
+
+
 class MatterFactExportJob(TimestampMixin, Base):
     """One CSV export of filtered facts: a facts file and an evidence file, stored by the Artifact Service."""
 

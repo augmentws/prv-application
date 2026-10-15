@@ -28,9 +28,11 @@ from app.facts import (
     FactIssueRef,
     FactNotFound,
     FactParticipantRef,
+    accept_suggestion,
     add_evidence,
     confirm_fact,
     create_fact,
+    dismiss_suggestion,
     get_fact,
     merge_facts,
     reject_fact,
@@ -48,6 +50,7 @@ from app.models import (
     MatterFactEvidence,
     MatterFactIssue,
     MatterFactRevision,
+    MatterFactSuggestion,
     MetadataDefinition,
 )
 from app.schemas import (
@@ -69,6 +72,8 @@ from app.schemas import (
     MatterFactRead,
     MatterFactRevisionRead,
     MatterFactSearchRequest,
+    MatterFactSuggestionDismiss,
+    MatterFactSuggestionRead,
     MatterFactUpdate,
 )
 
@@ -594,3 +599,82 @@ def unmerge_matter_fact(
     db.commit()
     db.refresh(source)
     return _detail(db, source)
+
+
+@router.get("/{fact_id}/suggestions", response_model=list[MatterFactSuggestionRead])
+def list_matter_fact_suggestions(
+    matter_id: uuid.UUID,
+    fact_id: uuid.UUID,
+    principal: Principal = Depends(get_principal),
+    db: Session = Depends(get_db),
+) -> list[MatterFactSuggestion]:
+    _matter(db, principal, matter_id, "fact.view")
+    try:
+        fact = get_fact(db, matter_id=matter_id, fact_id=fact_id)
+    except FactError as exc:
+        _raise(exc)
+    return list(
+        db.scalars(
+            select(MatterFactSuggestion)
+            .where(MatterFactSuggestion.fact_id == fact.id)
+            .order_by(MatterFactSuggestion.created_at.desc(), MatterFactSuggestion.id)
+        )
+    )
+
+
+@router.post("/{fact_id}/suggestions/{suggestion_id}/accept", response_model=MatterFactDetailRead)
+def accept_matter_fact_suggestion(
+    matter_id: uuid.UUID,
+    fact_id: uuid.UUID,
+    suggestion_id: uuid.UUID,
+    payload: MatterFactAction,
+    principal: Principal = Depends(get_principal),
+    db: Session = Depends(get_db),
+) -> MatterFactDetailRead:
+    """Apply an agent's suggested revision to a confirmed fact as the reviewer's own revision."""
+
+    matter = _matter(db, principal, matter_id, "fact.review")
+    try:
+        fact = get_fact(db, matter_id=matter_id, fact_id=fact_id, for_update=True)
+        accept_suggestion(
+            db,
+            fact=fact,
+            suggestion_id=suggestion_id,
+            lock_version=payload.lock_version,
+            actor=_actor(principal),
+        )
+    except FactError as exc:
+        db.rollback()
+        _raise(exc)
+    _audit(db, matter, principal, "suggestion_accepted", fact, {"suggestion_id": str(suggestion_id)})
+    db.commit()
+    db.refresh(fact)
+    return _detail(db, fact)
+
+
+@router.post("/{fact_id}/suggestions/{suggestion_id}/dismiss", response_model=MatterFactSuggestionRead)
+def dismiss_matter_fact_suggestion(
+    matter_id: uuid.UUID,
+    fact_id: uuid.UUID,
+    suggestion_id: uuid.UUID,
+    payload: MatterFactSuggestionDismiss,
+    principal: Principal = Depends(get_principal),
+    db: Session = Depends(get_db),
+) -> MatterFactSuggestion:
+    matter = _matter(db, principal, matter_id, "fact.review")
+    try:
+        fact = get_fact(db, matter_id=matter_id, fact_id=fact_id)
+        suggestion = dismiss_suggestion(
+            db,
+            fact=fact,
+            suggestion_id=suggestion_id,
+            note=payload.note,
+            actor=_actor(principal),
+        )
+    except FactError as exc:
+        db.rollback()
+        _raise(exc)
+    _audit(db, matter, principal, "suggestion_dismissed", fact, {"suggestion_id": str(suggestion_id)})
+    db.commit()
+    db.refresh(suggestion)
+    return suggestion

@@ -29,7 +29,10 @@ from app.facts import (
     FactParticipantRef,
     add_evidence,
     create_fact,
+    current_content,
     normalize_fact_dates,
+    revise_fact,
+    suggest_revision,
 )
 from app.matter_entities import (
     MatterEntityError,
@@ -71,7 +74,8 @@ class ExtractionEvidence(BaseModel):
 class ExtractionOperation(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
-    op: Literal["CREATE", "ADD_EVIDENCE", "NO_FACT"]
+    op: Literal["CREATE", "ADD_EVIDENCE", "REFINE", "NO_FACT"]
+    refine_fields: list[Literal["summary", "date", "owner", "participants", "issues"]] = Field(default_factory=list)
     issue_keys: list[str] = Field(default_factory=list)
     fact_id: str | None = None
     summary: str | None = Field(default=None, max_length=2_000)
@@ -124,10 +128,26 @@ class ExtractionContext:
     actor: Actor
 
 
+@dataclass(frozen=True)
+class CreateDecision:
+    """The consolidator's ruling on one CREATE: create it, add its quotes to an existing fact, or block it."""
+
+    action: Literal["CREATE", "ADD_TO_EXISTING", "BLOCKED_BY_REJECTED"]
+    fact_id: uuid.UUID | None = None
+    similarity: float | None = None
+    rationale: str | None = None
+    # Facts the ruling already compared against; a recheck only reconsiders facts outside this set.
+    considered_fact_ids: frozenset[uuid.UUID] = frozenset()
+
+
 @dataclass
 class ExtractionResult:
     created_fact_ids: list[uuid.UUID] = field(default_factory=list)
     evidence_fact_ids: list[uuid.UUID] = field(default_factory=list)
+    merged_fact_ids: list[uuid.UUID] = field(default_factory=list)
+    blocked_count: int = 0
+    refined_fact_ids: list[uuid.UUID] = field(default_factory=list)
+    suggestion_ids: list[uuid.UUID] = field(default_factory=list)
     no_fact_issue_keys: list[str] = field(default_factory=list)
     proposed_entity_ids: list[uuid.UUID] = field(default_factory=list)
     invalid_count: int = 0
@@ -135,7 +155,13 @@ class ExtractionResult:
 
     @property
     def applied_count(self) -> int:
-        return len(self.created_fact_ids) + len(self.evidence_fact_ids)
+        return (
+            len(self.created_fact_ids)
+            + len(self.evidence_fact_ids)
+            + len(self.merged_fact_ids)
+            + len(self.refined_fact_ids)
+            + len(self.suggestion_ids)
+        )
 
     def record_error(self, index: int, operation: ExtractionOperation, error: str) -> None:
         self.invalid_count += 1
@@ -328,19 +354,17 @@ def _apply_create(
     result.created_fact_ids.append(fact.id)
 
 
-def _apply_add_evidence(
-    db: Session,
-    context: ExtractionContext,
-    operation: ExtractionOperation,
-    result: ExtractionResult,
-) -> None:
+def _recalled_target(context: ExtractionContext, operation: ExtractionOperation) -> uuid.UUID:
     try:
         fact_id = uuid.UUID(operation.fact_id or "")
     except ValueError as exc:
-        raise ExtractionOperationError("ADD_EVIDENCE needs the fact_id of a recalled fact") from exc
+        raise ExtractionOperationError(f"{operation.op} needs the fact_id of a recalled fact") from exc
     if fact_id not in context.recalled_fact_ids:
-        raise ExtractionOperationError("ADD_EVIDENCE can only target a fact recalled for this document")
-    issue_keys = {ref.issue_key for ref in _issue_refs(context, operation)}
+        raise ExtractionOperationError(f"{operation.op} can only target a fact recalled for this document")
+    return fact_id
+
+
+def _shared_issue_check(db: Session, context: ExtractionContext, fact_id: uuid.UUID, issue_keys: set[str]) -> None:
     fact_issue_keys = set(
         db.scalars(
             select(MatterFactIssue.issue_key).where(
@@ -351,31 +375,159 @@ def _apply_add_evidence(
     )
     if not issue_keys & fact_issue_keys:
         raise ExtractionOperationError("The fact does not support any issue this document is coded to")
+
+
+def _locked_fact(db: Session, context: ExtractionContext, fact_id: uuid.UUID) -> MatterFact:
+    fact = db.scalar(
+        select(MatterFact)
+        .where(MatterFact.id == fact_id, MatterFact.matter_id == context.matter.id)
+        .with_for_update()
+    )
+    if fact is None:
+        raise ExtractionOperationError("The fact no longer exists")
+    return fact
+
+
+def _add_quotes(db: Session, context: ExtractionContext, fact: MatterFact, evidence: list[VerifiedEvidence]) -> int:
+    if fact.status not in {"WORKING", "CONFIRMED"}:
+        # Rejected facts are tombstones and merged facts are frozen; agents never extend them.
+        raise ExtractionOperationError(f"Evidence cannot be added to a {fact.status.lower()} fact")
+    added = 0
+    for item in evidence:
+        try:
+            with db.begin_nested():
+                add_evidence(db, fact=fact, lock_version=fact.lock_version, evidence=item, actor=context.actor)
+            added += 1
+        except FactError:
+            continue  # Already cited for this fact.
+    return added
+
+
+def _apply_add_evidence(
+    db: Session,
+    context: ExtractionContext,
+    operation: ExtractionOperation,
+    result: ExtractionResult,
+) -> None:
+    fact_id = _recalled_target(context, operation)
+    issue_keys = {ref.issue_key for ref in _issue_refs(context, operation)}
+    _shared_issue_check(db, context, fact_id, issue_keys)
     evidence = _verified_evidence(context, operation)
     with db.begin_nested():
-        fact = db.scalar(
-            select(MatterFact)
-            .where(MatterFact.id == fact_id, MatterFact.matter_id == context.matter.id)
-            .with_for_update()
-        )
-        if fact is None or fact.status != "WORKING":
-            # Confirmed and rejected facts are reviewer-owned; agents only extend working facts in this release.
-            raise ExtractionOperationError("ADD_EVIDENCE can only extend a working fact")
-        added = 0
-        for item in evidence:
-            try:
-                with db.begin_nested():
-                    add_evidence(db, fact=fact, lock_version=fact.lock_version, evidence=item, actor=context.actor)
-                added += 1
-            except FactError:
-                continue  # Already cited for this fact.
-        if added == 0:
+        fact = _locked_fact(db, context, fact_id)
+        if _add_quotes(db, context, fact, evidence) == 0:
             raise ExtractionOperationError("Every quote is already evidence for the fact")
     result.evidence_fact_ids.append(fact.id)
 
 
-def apply_extraction(db: Session, context: ExtractionContext, output: ExtractionOutput) -> ExtractionResult:
-    """Apply valid operations in order; record invalid ones. The caller owns the transaction."""
+def _refine_changes(
+    db: Session,
+    context: ExtractionContext,
+    resolver: EntityResolver,
+    operation: ExtractionOperation,
+    fact: MatterFact,
+) -> dict[str, Any]:
+    if not operation.refine_fields:
+        raise ExtractionOperationError("REFINE needs refine_fields naming the corrected fields")
+    changes: dict[str, Any] = {}
+    fields = set(operation.refine_fields)
+    if "summary" in fields:
+        if not operation.summary or not operation.summary.strip():
+            raise ExtractionOperationError("A summary refinement needs the corrected summary")
+        changes["summary"] = operation.summary
+    if "date" in fields:
+        start, end, basis = _dates(operation)
+        changes.update(
+            date_precision=operation.date_precision,
+            event_date_start=start,
+            event_date_end=end,
+            date_basis=basis,
+        )
+    if "owner" in fields:
+        if operation.owner is None:
+            raise ExtractionOperationError("An owner refinement needs the corrected owner")
+        changes["owner_entity_id"] = resolver.resolve(operation.owner)
+    if "participants" in fields:
+        changes["participants"] = _participants(resolver, operation)
+    if "issues" in fields:
+        # Refinement adds issues this document is coded to; it never removes issues other documents support.
+        current = current_content(db, fact).issues
+        added = [ref for ref in _issue_refs(context, operation) if ref not in current]
+        changes["issues"] = [*current, *added]
+    return changes
+
+
+def _apply_refine(
+    db: Session,
+    context: ExtractionContext,
+    resolver: EntityResolver,
+    operation: ExtractionOperation,
+    result: ExtractionResult,
+) -> None:
+    fact_id = _recalled_target(context, operation)
+    issue_keys = {ref.issue_key for ref in _issue_refs(context, operation)}
+    _shared_issue_check(db, context, fact_id, issue_keys)
+    evidence = _verified_evidence(context, operation)
+    proposed_mark = len(result.proposed_entity_ids)
+    try:
+        with db.begin_nested():
+            fact = _locked_fact(db, context, fact_id)
+            if fact.status not in {"WORKING", "CONFIRMED"}:
+                raise ExtractionOperationError(f"A {fact.status.lower()} fact cannot be refined")
+            changes = _refine_changes(db, context, resolver, operation, fact)
+            if fact.status == "WORKING":
+                revise_fact(
+                    db,
+                    fact=fact,
+                    lock_version=fact.lock_version,
+                    changes=changes,
+                    actor=context.actor,
+                    reason=operation.reason or "Refined from a later document",
+                )
+                _add_quotes(db, context, fact, evidence)
+                result.refined_fact_ids.append(fact.id)
+            else:
+                suggestion = suggest_revision(
+                    db,
+                    fact=fact,
+                    changes=changes,
+                    evidence=evidence,
+                    rationale=operation.reason,
+                    actor=context.actor,
+                )
+                result.suggestion_ids.append(suggestion.id)
+    except Exception:
+        del result.proposed_entity_ids[proposed_mark:]
+        raise
+
+
+def _apply_merge_into(
+    db: Session,
+    context: ExtractionContext,
+    operation: ExtractionOperation,
+    decision: CreateDecision,
+    result: ExtractionResult,
+) -> None:
+    """A CREATE the consolidator judged to be an existing fact: attach its quotes to that fact instead."""
+
+    evidence = _verified_evidence(context, operation)
+    with db.begin_nested():
+        fact = _locked_fact(db, context, decision.fact_id)  # type: ignore[arg-type]
+        _add_quotes(db, context, fact, evidence)
+    result.merged_fact_ids.append(fact.id)
+
+
+def apply_extraction(
+    db: Session,
+    context: ExtractionContext,
+    output: ExtractionOutput,
+    decisions: dict[int, CreateDecision] | None = None,
+) -> ExtractionResult:
+    """Apply valid operations in order; record invalid ones. The caller owns the transaction.
+
+    ``decisions`` holds the consolidator's ruling for each CREATE, keyed by operation index; a CREATE without one
+    is created.
+    """
 
     result = ExtractionResult()
     resolver = EntityResolver(db, context, result)
@@ -386,7 +538,16 @@ def apply_extraction(db: Session, context: ExtractionContext, output: Extraction
                     key for key in _issue_refs_keys(context, operation) if key not in result.no_fact_issue_keys
                 )
             elif operation.op == "CREATE":
-                _apply_create(db, context, resolver, operation, result)
+                decision = (decisions or {}).get(index, CreateDecision("CREATE"))
+                if decision.action == "BLOCKED_BY_REJECTED":
+                    # Not an agent error: the consolidator matched a fact a reviewer already rejected.
+                    result.blocked_count += 1
+                elif decision.action == "ADD_TO_EXISTING":
+                    _apply_merge_into(db, context, operation, decision, result)
+                else:
+                    _apply_create(db, context, resolver, operation, result)
+            elif operation.op == "REFINE":
+                _apply_refine(db, context, resolver, operation, result)
             else:
                 _apply_add_evidence(db, context, operation, result)
         except (ExtractionOperationError, FactError, MatterEntityError) as exc:
