@@ -1,7 +1,7 @@
 """Cache fact summary embeddings for agent recall.
 
-Revision ID: 0090_fact_summary_embeddings
-Revises: 0089_fact_exports
+Revision ID: 0091_fact_summary_embeddings
+Revises: 0090_fact_exports
 """
 
 from collections.abc import Sequence
@@ -10,8 +10,8 @@ import sqlalchemy as sa
 
 from alembic import op
 
-revision: str = "0090_fact_summary_embeddings"
-down_revision: str | None = "0089_fact_exports"
+revision: str = "0091_fact_summary_embeddings"
+down_revision: str | None = "0090_fact_exports"
 branch_labels: str | Sequence[str] | None = None
 depends_on: str | Sequence[str] | None = None
 

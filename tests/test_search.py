@@ -1176,6 +1176,7 @@ def test_document_projection_includes_artifact_body_text(monkeypatch: pytest.Mon
         original_source_path="mailbox/email-1.eml",
         source_created_at=None,
         source_modified_at=None,
+        file_date=datetime(2001, 5, 14, 23, 39, tzinfo=timezone.utc),
         family_id=None,
         processing_status="READY",
         custodian_ids=[],
@@ -1209,6 +1210,7 @@ def test_document_projection_includes_artifact_body_text(monkeypatch: pytest.Mon
         definition("email_from", "TEXT", facetable=True, normalize_to_lowercase=True),
         definition("email_to", "TEXT", facetable=True, normalize_to_lowercase=True),
         definition("email_domain", "TEXT", facetable=True, normalize_to_lowercase=True),
+        definition("file_date", "DATETIME", facetable=True),
         definition("initiative", "TEXT", facetable=True, hierarchy_separator="/"),
     ]
     definitions[1].cardinality = "MULTIPLE"
@@ -1223,6 +1225,7 @@ def test_document_projection_includes_artifact_body_text(monkeypatch: pytest.Mon
     assert projection["metadata"]["email_from"] == "sender@example.com"
     assert projection["metadata"]["email_to"] == ["recipient@example.com"]
     assert projection["metadata"]["email_domain"] == ["example.com"]
+    assert projection["metadata"]["file_date"] == "2001-05-14T23:39:00+00:00"
     assert projection["metadata"]["initiative"] == "Initiatives/344"
     assert projection["hierarchy_facets"] == [
         {
@@ -1270,6 +1273,7 @@ def test_document_projection_attaches_nested_chunk_vectors(monkeypatch: pytest.M
         original_source_path=None,
         source_created_at=None,
         source_modified_at=None,
+        file_date=None,
         family_id=None,
         processing_status="READY",
         custodian_ids=[],
@@ -2290,7 +2294,7 @@ def test_reindex_confirmation_requeues_the_schema_operation(
     assert installed.cardinality == "MULTIPLE"
 
 
-def test_explicit_rebuild_installs_missing_email_domain_definition(
+def test_explicit_rebuild_installs_missing_default_system_definitions(
     client: TestClient,
     root_token: str,
     db: Session,
@@ -2308,19 +2312,22 @@ def test_explicit_rebuild_installs_missing_email_domain_definition(
         json={"name": "Legacy Email Domain Matter"},
     ).json()
     matter_id = uuid.UUID(matter["id"])
-    email_domain = db.scalar(
-        select(MetadataDefinition).where(
-            MetadataDefinition.matter_id == matter_id,
-            MetadataDefinition.key == "email_domain",
+    missing_definitions = list(
+        db.scalars(
+            select(MetadataDefinition).where(
+                MetadataDefinition.matter_id == matter_id,
+                MetadataDefinition.key.in_(["email_domain", "file_date"]),
+            )
         )
     )
-    assert email_domain is not None
+    assert {definition.key for definition in missing_definitions} == {"email_domain", "file_date"}
     db.execute(
         delete(MetadataGroupField).where(
-            MetadataGroupField.metadata_definition_id == email_domain.id
+            MetadataGroupField.metadata_definition_id.in_([definition.id for definition in missing_definitions])
         )
     )
-    db.delete(email_domain)
+    for definition in missing_definitions:
+        db.delete(definition)
     db.commit()
 
     response = client.post(
@@ -2330,14 +2337,16 @@ def test_explicit_rebuild_installs_missing_email_domain_definition(
 
     assert response.status_code == 202, response.text
     assert response.json()["kind"] == "REBUILD"
-    installed = db.scalar(
-        select(MetadataDefinition).where(
-            MetadataDefinition.matter_id == matter_id,
-            MetadataDefinition.key == "email_domain",
+    installed = list(
+        db.scalars(
+            select(MetadataDefinition).where(
+                MetadataDefinition.matter_id == matter_id,
+                MetadataDefinition.key.in_(["email_domain", "file_date"]),
+            )
         )
     )
-    assert installed is not None
-    assert installed.value_source == "SYSTEM"
+    assert {definition.key for definition in installed} == {"email_domain", "file_date"}
+    assert all(definition.value_source == "SYSTEM" for definition in installed)
 
 
 def test_failed_document_upserts_can_be_requeued_in_bulk(

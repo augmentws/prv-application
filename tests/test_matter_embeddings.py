@@ -11,7 +11,7 @@ from sqlalchemy.orm import Session
 from app.artifact_gateway import DerivedArtifactReference, EmbeddingTextSource
 from app.embeddings.chunking import semantic_chunks
 from app.embeddings.parquet import read_chunk_set, read_vector_set, write_chunk_set, write_vector_set
-from app.matter_embeddings import process_document, process_documents
+from app.matter_embeddings import EmbeddingJobRuntime, _prepare_document, process_document, process_documents
 from app.models import MatterEmbeddingBatch, MatterEmbeddingJob, SearchProjectionOperation, User
 from app.provider_usage import record_external_provider_usage
 from embedding_service.schemas import EmbeddingResponse
@@ -46,6 +46,87 @@ def test_sentence_aware_chunks_and_parquet_round_trip() -> None:
     vector_content = write_vector_set(chunks, vectors, dimensions=32, metadata={"model": "test"})
     loaded_vectors = read_vector_set(vector_content, dimensions=32)
     assert loaded_vectors[chunks[-1].chunk_id] == vectors[-1]
+
+
+def test_embedding_preparation_distinguishes_missing_text_from_reused_vectors(monkeypatch) -> None:
+    collection_item_id = uuid.uuid4()
+    runtime = EmbeddingJobRuntime(
+        id=uuid.uuid4(),
+        tenant_id=uuid.uuid4(),
+        client_id=uuid.uuid4(),
+        created_by_user_id=uuid.uuid4(),
+        configuration={
+            "chunking": {
+                "name": "sentence-aware",
+                "version": 1,
+                "target_characters": 200,
+                "max_characters": 300,
+                "overlap_characters": 20,
+            },
+            "embedding": {
+                "provider": "sentence_transformers",
+                "model": "test-model",
+                "model_revision": "revision-1",
+                "dimensions": 32,
+                "normalized": True,
+            },
+        },
+        configuration_hash="f" * 64,
+        embedding_model="test-model",
+        embedding_model_revision="revision-1",
+        embedding_dimensions=32,
+        embedding_normalized=True,
+    )
+    monkeypatch.setattr(
+        "app.matter_embeddings.get_settings",
+        lambda: SimpleNamespace(embedding_text_max_bytes=1024),
+    )
+    monkeypatch.setattr("app.matter_embeddings.get_embedding_text_source", lambda **_: None)
+
+    missing = _prepare_document(runtime, collection_item_id)
+
+    assert missing.outcome == "SKIPPED"
+    assert missing.reason_code == "embedding.no_text_source"
+
+    source = EmbeddingTextSource(
+        artifact_id=uuid.uuid4(),
+        content_hash="a" * 64,
+        text="A document with reusable sentence embeddings.",
+    )
+    chunks = semantic_chunks(
+        source.text,
+        source_hash=source.content_hash,
+        target_characters=200,
+        max_characters=300,
+        overlap_characters=20,
+    )
+    chunk_ref = DerivedArtifactReference(
+        artifact_id=uuid.uuid4(),
+        content_hash="b" * 64,
+        derivation_key="c" * 64,
+        metadata={},
+    )
+    vector_ref = DerivedArtifactReference(
+        artifact_id=uuid.uuid4(),
+        content_hash="d" * 64,
+        derivation_key="e" * 64,
+        metadata={},
+    )
+    monkeypatch.setattr("app.matter_embeddings.get_embedding_text_source", lambda **_: source)
+    monkeypatch.setattr(
+        "app.matter_embeddings.find_derived_artifact_reference",
+        lambda **kwargs: chunk_ref if kwargs["artifact_role"] == "CHUNK_SET" else vector_ref,
+    )
+    monkeypatch.setattr(
+        "app.matter_embeddings.read_artifact_bytes",
+        lambda **_: write_chunk_set(chunks, {"source_content_hash": source.content_hash}),
+    )
+
+    reused = _prepare_document(runtime, collection_item_id)
+
+    assert reused.outcome == "REUSED"
+    assert reused.reason_code == "embedding.reused_existing_vector"
+    assert reused.output_references[0]["artifact_id"] == str(vector_ref.artifact_id)
 
 
 def test_create_list_and_cancel_embedding_job(

@@ -56,7 +56,7 @@ def enum_option(key: str, label: str, description: str | None = None) -> dict[st
 
 DEFAULT_MATTER_METADATA_PROFILE = MetadataProfile(
     key="edrm-core",
-    version=3,
+    version=4,
     definitions=(
         MetadataDefinitionTemplate(
             "control_number", "Control number", "Unique control identifier supplied with or assigned to the document.", "TEXT", "IMPORTED"
@@ -135,6 +135,14 @@ DEFAULT_MATTER_METADATA_PROFILE = MetadataProfile(
         ),
         MetadataDefinitionTemplate(
             "source_modified_at", "Source modified at", "Last-modified timestamp reported by the source system.", "DATETIME", "IMPORTED", facetable=True
+        ),
+        MetadataDefinitionTemplate(
+            "file_date",
+            "File date",
+            "Canonical document date derived from the email sent date, the parent email date for an attachment, or the source-modified date for a standalone file.",
+            "DATETIME",
+            "SYSTEM",
+            facetable=True,
         ),
         MetadataDefinitionTemplate(
             "responsiveness",
@@ -229,8 +237,8 @@ DEFAULT_MATTER_METADATA_PROFILE = MetadataProfile(
         MetadataGroupTemplate(
             "source_dates",
             "Source Dates",
-            "Creation and modification dates reported by the source system.",
-            ("source_created_at", "source_modified_at"),
+            "Canonical document date plus creation and modification dates reported by the source system.",
+            ("file_date", "source_created_at", "source_modified_at"),
             60,
             False,
             True,

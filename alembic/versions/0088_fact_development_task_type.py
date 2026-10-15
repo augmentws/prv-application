@@ -1,7 +1,7 @@
 """Add the Fact Development analysis-task type and its Review Guidance pin.
 
-Revision ID: 0087_fact_development_task
-Revises: 0086_reviewer_coding_history
+Revision ID: 0088_fact_development_task
+Revises: 0087_job_outcomes
 """
 
 from collections.abc import Sequence
@@ -10,8 +10,8 @@ import sqlalchemy as sa
 
 from alembic import op
 
-revision: str = "0087_fact_development_task"
-down_revision: str | None = "0086_reviewer_coding_history"
+revision: str = "0088_fact_development_task"
+down_revision: str | None = "0087_job_outcomes"
 branch_labels: str | Sequence[str] | None = None
 depends_on: str | Sequence[str] | None = None
 

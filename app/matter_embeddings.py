@@ -5,7 +5,7 @@ import time
 import uuid
 from collections.abc import Callable, Sequence
 from concurrent.futures import ThreadPoolExecutor, as_completed
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
@@ -38,7 +38,14 @@ from app.job_executions import (
     execution_cancel_requested,
     transition_job_execution,
 )
+from app.job_outcomes import (
+    JobItemOutcome,
+    ensure_embedding_outcome_manifest,
+    finalize_embedding_outcome_manifest,
+    publish_embedding_outcome_fragment,
+)
 from app.models import (
+    JobOutcomeManifest,
     MatterDocument,
     MatterEmbeddingBatch,
     MatterEmbeddingJob,
@@ -82,6 +89,15 @@ def _heartbeat_embedding_execution(
 class DocumentEmbeddingResult:
     outcome: str
     chunk_count: int
+    reason_code: str
+    output_references: list[dict[str, Any]] = field(default_factory=list)
+    payload: dict[str, Any] = field(default_factory=dict)
+
+
+class EmbeddingDocumentFailure(RuntimeError):
+    def __init__(self, reason_code: str, message: str) -> None:
+        super().__init__(message)
+        self.reason_code = reason_code
 
 
 @dataclass(frozen=True)
@@ -90,6 +106,8 @@ class PreparedDocumentEmbedding:
     chunks: list[TextChunk]
     chunk_ref: DerivedArtifactReference
     vector_key: str
+    source_artifact_id: uuid.UUID | None = None
+    source_content_hash: str | None = None
 
 
 @dataclass(frozen=True)
@@ -121,6 +139,50 @@ class EmbeddingProcessingMetrics:
     inference_seconds: float = 0.0
     persistence_seconds: float = 0.0
     total_seconds: float = 0.0
+
+
+def _job_item_outcome(
+    *,
+    document_id: uuid.UUID,
+    collection_item_id: uuid.UUID | None,
+    outcome: DocumentEmbeddingResult | Exception,
+    job: MatterEmbeddingJob | EmbeddingJobRuntime,
+) -> JobItemOutcome:
+    base_payload: dict[str, Any] = {
+        "matter_document_id": str(document_id),
+        "embedding_model": job.embedding_model,
+        "embedding_model_revision": job.embedding_model_revision,
+        "embedding_dimensions": job.embedding_dimensions,
+    }
+    if collection_item_id is not None:
+        base_payload["collection_item_id"] = str(collection_item_id)
+    if isinstance(outcome, DocumentEmbeddingResult):
+        status = {
+            "EMBEDDED": "SUCCEEDED",
+            "REUSED": "REUSED",
+            "SKIPPED": "SKIPPED",
+        }[outcome.outcome]
+        return JobItemOutcome(
+            item_id=str(document_id),
+            outcome_status=status,  # type: ignore[arg-type]
+            reason_code=outcome.reason_code,
+            input_fingerprint=outcome.payload.get("source_content_hash"),
+            output_references=outcome.output_references,
+            metrics={"chunk_count": outcome.chunk_count},
+            payload={**base_payload, **outcome.payload},
+        )
+    reason_code = (
+        outcome.reason_code
+        if isinstance(outcome, EmbeddingDocumentFailure)
+        else "embedding.chunk_preparation_failed"
+    )
+    return JobItemOutcome(
+        item_id=str(document_id),
+        outcome_status="FAILED",
+        reason_code=reason_code,
+        message=str(outcome),
+        payload=base_payload,
+    )
 
 
 EmbeddingMetricsCallback = Callable[[EmbeddingProcessingMetrics], None]
@@ -206,15 +268,23 @@ def _prepare_document(
     collection_item_id: uuid.UUID,
 ) -> DocumentEmbeddingResult | PreparedDocumentEmbedding:
     settings = get_settings()
-    source = get_embedding_text_source(
-        collection_item_id=collection_item_id,
-        actor_user_id=job.created_by_user_id,
-        tenant_id=job.tenant_id,
-        client_id=job.client_id,
-        max_bytes=settings.embedding_text_max_bytes,
-    )
+    try:
+        source = get_embedding_text_source(
+            collection_item_id=collection_item_id,
+            actor_user_id=job.created_by_user_id,
+            tenant_id=job.tenant_id,
+            client_id=job.client_id,
+            max_bytes=settings.embedding_text_max_bytes,
+        )
+    except Exception as exc:
+        raise EmbeddingDocumentFailure("embedding.source_read_failed", str(exc)) from exc
     if source is None:
-        return DocumentEmbeddingResult("SKIPPED", 0)
+        return DocumentEmbeddingResult(
+            "SKIPPED",
+            0,
+            "embedding.no_text_source",
+            payload={"collection_item_id": str(collection_item_id)},
+        )
 
     input_configuration = job.configuration.get("input")
     input_text, input_hash = _embedding_input(source, input_configuration)
@@ -245,7 +315,16 @@ def _prepare_document(
             overlap_characters=int(chunking["overlap_characters"]),
         )
         if not chunks:
-            return DocumentEmbeddingResult("SKIPPED", 0)
+            return DocumentEmbeddingResult(
+                "SKIPPED",
+                0,
+                "embedding.empty_after_chunking",
+                payload={
+                    "collection_item_id": str(collection_item_id),
+                    "source_artifact_id": str(source.artifact_id),
+                    "source_content_hash": source.content_hash,
+                },
+            )
         chunk_metadata = {
             "schema_version": 1,
             "chunking": chunking,
@@ -295,13 +374,35 @@ def _prepare_document(
         client_id=job.client_id,
     )
     if vector_ref is not None:
-        return DocumentEmbeddingResult("SKIPPED", len(chunks))
+        return DocumentEmbeddingResult(
+            "REUSED",
+            len(chunks),
+            "embedding.reused_existing_vector",
+            output_references=[
+                {
+                    "artifact_id": str(vector_ref.artifact_id),
+                    "content_hash": vector_ref.content_hash,
+                    "artifact_role": "CHUNK_VECTOR_SET",
+                }
+            ],
+            payload={
+                "collection_item_id": str(collection_item_id),
+                "source_artifact_id": str(source.artifact_id),
+                "source_content_hash": source.content_hash,
+                "chunk_set_artifact_id": str(chunk_ref.artifact_id),
+                "chunk_set_content_hash": chunk_ref.content_hash,
+                "vector_artifact_id": str(vector_ref.artifact_id),
+                "vector_content_hash": vector_ref.content_hash,
+            },
+        )
 
     return PreparedDocumentEmbedding(
         collection_item_id=collection_item_id,
         chunks=chunks,
         chunk_ref=chunk_ref,
         vector_key=vector_key,
+        source_artifact_id=source.artifact_id,
+        source_content_hash=source.content_hash,
     )
 
 
@@ -399,35 +500,55 @@ def _persist_prepared_document(
         "configuration_hash": job.configuration_hash,
         "embedding": job.configuration["embedding"],
     }
-    _, created = store_derived_artifact(
-        collection_item_id=prepared.collection_item_id,
-        content=write_vector_set(
-            prepared.chunks,
-            vectors,
-            dimensions=job.embedding_dimensions,
-            metadata={
-                "model": job.embedding_model,
-                "configuration_hash": job.configuration_hash,
+    try:
+        vector_ref, created = store_derived_artifact(
+            collection_item_id=prepared.collection_item_id,
+            content=write_vector_set(
+                prepared.chunks,
+                vectors,
+                dimensions=job.embedding_dimensions,
+                metadata={
+                    "model": job.embedding_model,
+                    "configuration_hash": job.configuration_hash,
+                },
+            ),
+            artifact_type="CHUNK_VECTOR_SET",
+            source_artifact_id=prepared.chunk_ref.artifact_id,
+            relationship="EMBEDDED_FROM",
+            processing_run_id=job.id,
+            derivation_key=prepared.vector_key,
+            artifact_metadata={
+                **metadata,
+                "chunk_set_artifact_id": str(prepared.chunk_ref.artifact_id),
+                "chunk_set_content_hash": prepared.chunk_ref.content_hash,
+                "chunk_count": len(prepared.chunks),
             },
-        ),
-        artifact_type="CHUNK_VECTOR_SET",
-        source_artifact_id=prepared.chunk_ref.artifact_id,
-        relationship="EMBEDDED_FROM",
-        processing_run_id=job.id,
-        derivation_key=prepared.vector_key,
-        artifact_metadata={
-            **metadata,
+            actor_user_id=job.created_by_user_id,
+            tenant_id=job.tenant_id,
+            client_id=job.client_id,
+        )
+    except Exception as exc:
+        raise EmbeddingDocumentFailure("embedding.vector_persistence_failed", str(exc)) from exc
+    return DocumentEmbeddingResult(
+        "EMBEDDED" if created else "REUSED",
+        len(prepared.chunks),
+        "embedding.generated" if created else "embedding.reused_existing_vector",
+        output_references=[
+            {
+                "artifact_id": str(vector_ref.artifact_id),
+                "content_hash": vector_ref.content_hash,
+                "artifact_role": "CHUNK_VECTOR_SET",
+            }
+        ],
+        payload={
+            "collection_item_id": str(prepared.collection_item_id),
+            "source_artifact_id": str(prepared.source_artifact_id) if prepared.source_artifact_id else None,
+            "source_content_hash": prepared.source_content_hash,
             "chunk_set_artifact_id": str(prepared.chunk_ref.artifact_id),
             "chunk_set_content_hash": prepared.chunk_ref.content_hash,
-            "chunk_count": len(prepared.chunks),
+            "vector_artifact_id": str(vector_ref.artifact_id),
+            "vector_content_hash": vector_ref.content_hash,
         },
-        actor_user_id=job.created_by_user_id,
-        tenant_id=job.tenant_id,
-        client_id=job.client_id,
-    )
-    return DocumentEmbeddingResult(
-        "EMBEDDED" if created else "SKIPPED",
-        len(prepared.chunks),
     )
 
 
@@ -480,14 +601,24 @@ def process_documents(
         ) -> None:
             record_outcome(current[local_index][0], outcome)
 
-        _embed_prepared_documents(
-            runtime,
-            [prepared for _, prepared in pending],
-            gateway,
-            executor,
-            metrics,
-            persisted,
-        )
+        try:
+            _embed_prepared_documents(
+                runtime,
+                [prepared for _, prepared in pending],
+                gateway,
+                executor,
+                metrics,
+                persisted,
+            )
+        except Exception as exc:  # noqa: BLE001
+            reason = (
+                "embedding.response_invalid"
+                if isinstance(exc, RuntimeError) and "response" in str(exc).lower()
+                else "embedding.provider_failed"
+            )
+            for document_index, _ in current:
+                if outcomes[document_index] is None:
+                    record_outcome(document_index, EmbeddingDocumentFailure(reason, str(exc)))
         pending.clear()
         pending_chunk_count = 0
 
@@ -617,6 +748,7 @@ def _prepare_voyage_batch(
                 {
                     "document_id": document_id_value,
                     "state": "FAILED",
+                    "reason_code": "embedding.document_not_found",
                     "error": "matter document not found",
                     "chunk_count": 0,
                 }
@@ -628,7 +760,10 @@ def _prepare_voyage_batch(
                     "document_id": str(document.id),
                     "collection_item_id": str(document.collection_item_id),
                     "state": outcome.outcome,
+                    "reason_code": outcome.reason_code,
                     "chunk_count": outcome.chunk_count,
+                    "output_references": outcome.output_references,
+                    "payload": outcome.payload,
                 }
             )
             continue
@@ -638,6 +773,11 @@ def _prepare_voyage_batch(
                     "document_id": str(document.id),
                     "collection_item_id": str(document.collection_item_id),
                     "state": "FAILED",
+                    "reason_code": (
+                        outcome.reason_code
+                        if isinstance(outcome, EmbeddingDocumentFailure)
+                        else "embedding.chunk_preparation_failed"
+                    ),
                     "error": str(outcome or "document preparation produced no result")[:2000],
                     "chunk_count": 0,
                 }
@@ -664,6 +804,8 @@ def _prepare_voyage_batch(
                 "chunk_artifact_id": str(outcome.chunk_ref.artifact_id),
                 "chunk_content_hash": outcome.chunk_ref.content_hash,
                 "vector_key": outcome.vector_key,
+                "source_artifact_id": str(outcome.source_artifact_id) if outcome.source_artifact_id else None,
+                "source_content_hash": outcome.source_content_hash,
                 "requests": request_manifest,
             }
         )
@@ -679,8 +821,8 @@ def _prepare_voyage_batch(
     )
 
 
-def _manifest_counts(manifest: dict) -> tuple[int, int, int, int, int, list[str]]:
-    processed = embedded = skipped = failed = chunk_count = 0
+def _manifest_counts(manifest: dict) -> tuple[int, int, int, int, int, int, list[str]]:
+    processed = embedded = reused = skipped = failed = chunk_count = 0
     errors: list[str] = []
     for document in manifest.get("documents", []):
         state = document.get("state")
@@ -689,6 +831,9 @@ def _manifest_counts(manifest: dict) -> tuple[int, int, int, int, int, list[str]
         processed += 1
         if state == "EMBEDDED":
             embedded += 1
+        elif state == "REUSED":
+            reused += 1
+            chunk_count += int(document.get("chunk_count", 0))
         elif state == "SKIPPED":
             skipped += 1
             chunk_count += int(document.get("chunk_count", 0))
@@ -697,7 +842,45 @@ def _manifest_counts(manifest: dict) -> tuple[int, int, int, int, int, list[str]
             errors.append(
                 f"{document.get('document_id', 'unknown')}: {document.get('error', 'document preparation failed')}"
             )
-    return processed, embedded, skipped, failed, chunk_count, errors
+    return processed, embedded, reused, skipped, failed, chunk_count, errors
+
+
+def _voyage_outcomes(job: MatterEmbeddingJob, manifest: dict) -> list[JobItemOutcome]:
+    outcomes: list[JobItemOutcome] = []
+    for document in manifest.get("documents", []):
+        state = document.get("state")
+        if state == "PENDING":
+            raise RuntimeError("Voyage manifest still contains pending document outcomes")
+        status = {
+            "EMBEDDED": "SUCCEEDED",
+            "REUSED": "REUSED",
+            "SKIPPED": "SKIPPED",
+            "FAILED": "FAILED",
+        }.get(state)
+        if status is None:
+            raise RuntimeError(f"Voyage manifest contains an unsupported state: {state}")
+        payload = {
+            "matter_document_id": document["document_id"],
+            "embedding_model": job.embedding_model,
+            "embedding_model_revision": job.embedding_model_revision,
+            "embedding_dimensions": job.embedding_dimensions,
+            **(document.get("payload") or {}),
+        }
+        if document.get("collection_item_id"):
+            payload["collection_item_id"] = document["collection_item_id"]
+        outcomes.append(
+            JobItemOutcome(
+                item_id=document["document_id"],
+                outcome_status=status,  # type: ignore[arg-type]
+                reason_code=document.get("reason_code") or "embedding.provider_failed",
+                message=document.get("error"),
+                input_fingerprint=(document.get("payload") or {}).get("source_content_hash"),
+                output_references=document.get("output_references") or [],
+                metrics={"chunk_count": int(document.get("chunk_count", 0))},
+                payload=payload,
+            )
+        )
+    return outcomes
 
 
 def submit_voyage_batch(batch_id: uuid.UUID) -> dict[str, str | int | None]:
@@ -750,10 +933,17 @@ def submit_voyage_batch(batch_id: uuid.UUID) -> dict[str, str | int | None]:
         db.commit()
 
         if not requests:
-            processed, embedded, skipped, failed, chunk_count, errors = _manifest_counts(manifest)
+            processed, embedded, reused, skipped, failed, chunk_count, errors = _manifest_counts(manifest)
+            publish_embedding_outcome_fragment(
+                db,
+                job=job,
+                batch=batch,
+                outcomes=_voyage_outcomes(job, manifest),
+            )
             batch.status = "COMPLETED"
             batch.processed_count = processed
             batch.embedded_count = embedded
+            batch.reused_count = reused
             batch.skipped_count = skipped
             batch.failed_count = failed
             batch.chunk_count = chunk_count
@@ -955,13 +1145,22 @@ def finalize_voyage_batch(batch_id: uuid.UUID) -> dict[str, int]:
             return {
                 "processed_count": batch.processed_count,
                 "embedded_count": batch.embedded_count,
+                "reused_count": batch.reused_count,
                 "skipped_count": batch.skipped_count,
                 "failed_count": batch.failed_count,
                 "chunk_count": batch.chunk_count,
             }
         if job.status == "CANCELED" or batch.status == "CANCELED":
             return {
-                key: 0 for key in ("processed_count", "embedded_count", "skipped_count", "failed_count", "chunk_count")
+                key: 0
+                for key in (
+                    "processed_count",
+                    "embedded_count",
+                    "reused_count",
+                    "skipped_count",
+                    "failed_count",
+                    "chunk_count",
+                )
             }
         if batch.provider_status not in {"completed", "partially_completed"}:
             raise RuntimeError(f"Voyage batch is not ready: {batch.provider_status}")
@@ -985,7 +1184,7 @@ def finalize_voyage_batch(batch_id: uuid.UUID) -> dict[str, int]:
                 request_errors.update(_read_voyage_errors(error_path))
 
         runtime = _runtime(job)
-        processed, embedded, skipped, failed, chunk_count, errors = _manifest_counts(batch.provider_manifest)
+        processed, embedded, reused, skipped, failed, chunk_count, errors = _manifest_counts(batch.provider_manifest)
         pending: list[tuple[dict, PreparedDocumentEmbedding, list[list[float]]]] = []
         for document in batch.provider_manifest.get("documents", []):
             if document.get("state") != "PENDING":
@@ -998,6 +1197,9 @@ def finalize_voyage_batch(batch_id: uuid.UUID) -> dict[str, int]:
                 failed += 1
                 detail = document_errors[0] if document_errors else f"missing results: {', '.join(missing[:3])}"
                 errors.append(f"{document['document_id']}: {detail}")
+                document["state"] = "FAILED"
+                document["reason_code"] = "embedding.provider_failed"
+                document["error"] = detail
                 continue
             vectors = [vector for custom_id in custom_ids for vector in vectors_by_request[custom_id]]
             chunk_ref = DerivedArtifactReference(
@@ -1017,6 +1219,9 @@ def finalize_voyage_batch(batch_id: uuid.UUID) -> dict[str, int]:
             if len(chunks) != int(document["chunk_count"]) or len(vectors) != len(chunks):
                 failed += 1
                 errors.append(f"{document['document_id']}: provider result count does not match chunks")
+                document["state"] = "FAILED"
+                document["reason_code"] = "embedding.response_invalid"
+                document["error"] = "Provider result count does not match chunks"
                 continue
             pending.append(
                 (
@@ -1026,6 +1231,12 @@ def finalize_voyage_batch(batch_id: uuid.UUID) -> dict[str, int]:
                         chunks=chunks,
                         chunk_ref=chunk_ref,
                         vector_key=document["vector_key"],
+                        source_artifact_id=(
+                            uuid.UUID(document["source_artifact_id"])
+                            if document.get("source_artifact_id")
+                            else None
+                        ),
+                        source_content_hash=document.get("source_content_hash"),
                     ),
                     vectors,
                 )
@@ -1047,14 +1258,34 @@ def finalize_voyage_batch(batch_id: uuid.UUID) -> dict[str, int]:
                     except Exception as exc:  # noqa: BLE001
                         failed += 1
                         errors.append(f"{document['document_id']}: {exc}")
+                        document["state"] = "FAILED"
+                        document["reason_code"] = (
+                            exc.reason_code
+                            if isinstance(exc, EmbeddingDocumentFailure)
+                            else "embedding.vector_persistence_failed"
+                        )
+                        document["error"] = str(exc)[:2000]
                         continue
                     embedded += int(result.outcome == "EMBEDDED")
+                    reused += int(result.outcome == "REUSED")
                     skipped += int(result.outcome == "SKIPPED")
                     chunk_count += result.chunk_count
+                    document["state"] = result.outcome
+                    document["reason_code"] = result.reason_code
+                    document["output_references"] = result.output_references
+                    document["payload"] = result.payload
+
+        publish_embedding_outcome_fragment(
+            db,
+            job=job,
+            batch=batch,
+            outcomes=_voyage_outcomes(job, batch.provider_manifest),
+        )
 
         batch.status = "COMPLETED"
         batch.processed_count = processed
         batch.embedded_count = embedded
+        batch.reused_count = reused
         batch.skipped_count = skipped
         batch.failed_count = failed
         batch.chunk_count = chunk_count
@@ -1098,6 +1329,7 @@ def finalize_voyage_batch(batch_id: uuid.UUID) -> dict[str, int]:
         return {
             "processed_count": processed,
             "embedded_count": embedded,
+            "reused_count": reused,
             "skipped_count": skipped,
             "failed_count": failed,
             "chunk_count": chunk_count,
@@ -1214,6 +1446,7 @@ def plan_job(job_id: uuid.UUID) -> list[uuid.UUID]:
             )
         )
         job.batch_count = len(batch_ids)
+        ensure_embedding_outcome_manifest(db, job)
         transition_job_execution(
             db,
             job_type=MATTER_EMBEDDING_JOB_TYPE,
@@ -1287,6 +1520,7 @@ def process_batch(batch_id: uuid.UUID) -> dict[str, int]:
             return {
                 "processed_count": batch.processed_count,
                 "embedded_count": batch.embedded_count,
+                "reused_count": batch.reused_count,
                 "skipped_count": batch.skipped_count,
                 "failed_count": batch.failed_count,
                 "chunk_count": batch.chunk_count,
@@ -1299,22 +1533,32 @@ def process_batch(batch_id: uuid.UUID) -> dict[str, int]:
             batch.status = "CANCELED"
             db.commit()
             return {
-                key: 0 for key in ("processed_count", "embedded_count", "skipped_count", "failed_count", "chunk_count")
+                key: 0 for key in ("processed_count", "embedded_count", "reused_count", "skipped_count", "failed_count", "chunk_count")
             }
         _assert_worker_configuration(job)
         batch.status = "RUNNING"
-        processed = embedded = skipped = failed = chunk_count = 0
+        processed = embedded = reused = skipped = failed = chunk_count = 0
         errors: list[str] = []
         documents: list[MatterDocument] = []
-        for value in batch.document_ids:
+        document_positions: list[int] = []
+        item_outcomes: list[JobItemOutcome | None] = [None] * len(batch.document_ids)
+        for position, value in enumerate(batch.document_ids):
             document_id = uuid.UUID(value)
             document = db.get(MatterDocument, document_id)
             if document is None or document.matter_id != job.matter_id:
                 failed += 1
                 processed += 1
                 errors.append(f"{document_id}: matter document not found")
+                item_outcomes[position] = JobItemOutcome(
+                    item_id=str(document_id),
+                    outcome_status="FAILED",
+                    reason_code="embedding.document_not_found",
+                    message="Matter document not found",
+                    payload={"matter_document_id": str(document_id)},
+                )
                 continue
             documents.append(document)
+            document_positions.append(position)
         runtime = _runtime(job)
         db.commit()
         logger.info(
@@ -1403,10 +1647,11 @@ def process_batch(batch_id: uuid.UUID) -> dict[str, int]:
             progress_callback=log_progress,
             metrics_callback=log_metrics,
         )
-        for document, outcome in zip(documents, outcomes, strict=True):
+        for position, document, outcome in zip(document_positions, documents, outcomes, strict=True):
             if isinstance(outcome, DocumentEmbeddingResult):
                 result = outcome
                 embedded += int(result.outcome == "EMBEDDED")
+                reused += int(result.outcome == "REUSED")
                 skipped += int(result.outcome == "SKIPPED")
                 chunk_count += result.chunk_count
             else:
@@ -1420,11 +1665,27 @@ def process_batch(batch_id: uuid.UUID) -> dict[str, int]:
                     document.id,
                     exc,
                 )
+            item_outcomes[position] = _job_item_outcome(
+                document_id=document.id,
+                collection_item_id=document.collection_item_id,
+                outcome=outcome,
+                job=job,
+            )
             processed += 1
+
+        if any(outcome is None for outcome in item_outcomes):
+            raise RuntimeError("Embedding batch did not produce one outcome for every frozen document")
+        publish_embedding_outcome_fragment(
+            db,
+            job=job,
+            batch=batch,
+            outcomes=[outcome for outcome in item_outcomes if outcome is not None],
+        )
 
         batch.status = "COMPLETED"
         batch.processed_count = processed
         batch.embedded_count = embedded
+        batch.reused_count = reused
         batch.skipped_count = skipped
         batch.failed_count = failed
         batch.chunk_count = chunk_count
@@ -1467,6 +1728,7 @@ def process_batch(batch_id: uuid.UUID) -> dict[str, int]:
         return {
             "processed_count": processed,
             "embedded_count": embedded,
+            "reused_count": reused,
             "skipped_count": skipped,
             "failed_count": failed,
             "chunk_count": chunk_count,
@@ -1482,6 +1744,7 @@ def refresh_job(job_id: uuid.UUID) -> None:
             select(
                 func.coalesce(func.sum(MatterEmbeddingBatch.processed_count), 0),
                 func.coalesce(func.sum(MatterEmbeddingBatch.embedded_count), 0),
+                func.coalesce(func.sum(MatterEmbeddingBatch.reused_count), 0),
                 func.coalesce(func.sum(MatterEmbeddingBatch.skipped_count), 0),
                 func.coalesce(func.sum(MatterEmbeddingBatch.failed_count), 0),
                 func.coalesce(func.sum(MatterEmbeddingBatch.chunk_count), 0),
@@ -1490,6 +1753,7 @@ def refresh_job(job_id: uuid.UUID) -> None:
         (
             job.processed_count,
             job.embedded_count,
+            job.reused_count,
             job.skipped_count,
             job.failed_count,
             job.chunk_count,
@@ -1506,6 +1770,7 @@ def refresh_job(job_id: uuid.UUID) -> None:
                 progress={
                     "batch_count": job.batch_count,
                     "embedded_count": job.embedded_count,
+                    "reused_count": job.reused_count,
                     "skipped_count": job.skipped_count,
                     "failed_count": job.failed_count,
                     "chunk_count": job.chunk_count,
@@ -1522,6 +1787,16 @@ def complete_job(job_id: uuid.UUID) -> None:
     with SessionLocal() as db:
         job = db.get(MatterEmbeddingJob, job_id)
         if job is not None and job.status != "CANCELED":
+            manifest = db.scalar(
+                select(JobOutcomeManifest).where(
+                    JobOutcomeManifest.job_type == MATTER_EMBEDDING_JOB_TYPE,
+                    JobOutcomeManifest.job_id == job.id,
+                )
+            )
+            # Jobs planned before item-outcome manifests were introduced remain
+            # valid legacy jobs; they cannot truthfully reconstruct exact rows.
+            if manifest is not None:
+                finalize_embedding_outcome_manifest(db, job)
             batch_errors = list(
                 db.scalars(
                     select(MatterEmbeddingBatch.error_message)
@@ -1545,6 +1820,7 @@ def complete_job(job_id: uuid.UUID) -> None:
                 progress={
                     "batch_count": job.batch_count,
                     "embedded_count": job.embedded_count,
+                    "reused_count": job.reused_count,
                     "skipped_count": job.skipped_count,
                     "failed_count": job.failed_count,
                     "chunk_count": job.chunk_count,
@@ -1579,6 +1855,7 @@ def fail_job(job_id: uuid.UUID, message: str) -> None:
                     progress={
                         "batch_count": job.batch_count,
                         "embedded_count": job.embedded_count,
+                        "reused_count": job.reused_count,
                         "skipped_count": job.skipped_count,
                         "failed_count": job.failed_count,
                         "chunk_count": job.chunk_count,
@@ -1591,4 +1868,13 @@ def fail_job(job_id: uuid.UUID, message: str) -> None:
                 job.status = "FAILED"
                 job.error_message = message[:4000]
                 job.completed_at = utcnow()
+            manifest = db.scalar(
+                select(JobOutcomeManifest).where(
+                    JobOutcomeManifest.job_type == MATTER_EMBEDDING_JOB_TYPE,
+                    JobOutcomeManifest.job_id == job.id,
+                )
+            )
+            if manifest is not None and manifest.manifest_status != "FINALIZED":
+                manifest.manifest_status = "FAILED"
+                manifest.failure_summary = " ".join(message.replace("\x00", "").split())[:1000]
             db.commit()

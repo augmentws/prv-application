@@ -53,6 +53,7 @@ from artifact_service.selections import (
     get_collection_selection_batch_unmapped_metadata,
 )
 from artifact_service.storage import get_storage
+from artifact_service.workflow_artifact_types import ArtifactType
 from artifact_service.workflow_artifacts import (
     find_matching_workflow_artifact,
     find_workflow_artifact,
@@ -60,7 +61,6 @@ from artifact_service.workflow_artifacts import (
     workflow_artifact_max_bytes,
 )
 from artifact_service.workflow_artifacts import store_workflow_artifact as persist_workflow_artifact
-from classification_service.schemas import ArtifactType
 
 REMOTE_GROUPING_SNAPSHOT_BATCH_SIZE = 5000
 
@@ -127,6 +127,7 @@ class SearchItemSnapshot:
     original_source_path: str | None
     source_created_at: datetime | None
     source_modified_at: datetime | None
+    file_date: datetime | None
     family_id: uuid.UUID | None
     processing_status: str
     custodian_ids: list[uuid.UUID]
@@ -926,6 +927,7 @@ def get_search_item_snapshot(
                 original_source_path=item.original_source_path,
                 source_created_at=item.source_created_at,
                 source_modified_at=item.source_modified_at,
+                file_date=item.file_date,
                 family_id=item.family_id,
                 processing_status=item.processing_status,
                 custodian_ids=custodian_ids,
@@ -990,6 +992,7 @@ def get_search_item_snapshot(
             source_modified_at=(
                 datetime.fromisoformat(data["source_modified_at"]) if data.get("source_modified_at") else None
             ),
+            file_date=datetime.fromisoformat(data["file_date"]) if data.get("file_date") else None,
             family_id=uuid.UUID(data["family_id"]) if data.get("family_id") else None,
             processing_status=data["processing_status"],
             custodian_ids=[uuid.UUID(value) for value in data.get("custodian_ids", [])],

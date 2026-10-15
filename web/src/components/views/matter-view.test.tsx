@@ -429,6 +429,44 @@ describe("MatterView metadata navigation", () => {
     expect(within(metadataSubtabs.parentElement!).getByRole("button", { name: "Add field" })).toBeInTheDocument();
   });
 
+  it("shows a metadata field description on hover", async () => {
+    vi.mocked(coreApi).mockImplementation(async (path) => {
+      if (path === "/v1/clients/client-1") return { id: "client-1", tenant_id: "tenant-1", name: "Client" } as never;
+      if (path === "/v1/matters/matter-1") return { id: "matter-1", name: "Matter" } as never;
+      if (path === "/v1/matters/matter-1/metadata-definitions") return [{
+        id: "definition-1",
+        matter_id: "matter-1",
+        key: "source_created_at",
+        display_name: "Source created at",
+        description: "Creation timestamp reported by the source system.",
+        type: "DATETIME",
+        cardinality: "SINGLE",
+        allowed_values: null,
+        value_source: "IMPORTED",
+        reference_target: null,
+        template_key: "edrm-core",
+        template_version: 4,
+        assertion_policy: "IMMEDIATE",
+        resolution_policy: "EXPLICIT_ONLY",
+        searchable: true,
+        facetable: true,
+        normalize_to_lowercase: false,
+        hierarchy_separator: null,
+        reviewable: true,
+        ai_assignable: false,
+        status: "ACTIVE",
+      }] as never;
+      if (path === "/v1/matters/matter-1/metadata-groups") return [] as never;
+      throw new Error(`Unexpected API request: ${path}`);
+    });
+    const client = new QueryClient({ defaultOptions: { queries: { retry: false }, mutations: { retry: false } } });
+
+    render(<QueryClientProvider client={client}><MatterView clientId="client-1" matterId="matter-1" requestedTab="metadata" /></QueryClientProvider>);
+
+    const field = await screen.findByText("Source created at");
+    expect(field.parentElement).toHaveAttribute("title", "Creation timestamp reported by the source system.");
+  });
+
   it("shows one Metadata tab with Definitions and Groups subtabs and preserves the legacy groups link", async () => {
     vi.mocked(coreApi).mockImplementation(async (path) => {
       if (path === "/v1/clients/client-1") return { id: "client-1", tenant_id: "tenant-1", name: "Client" } as never;

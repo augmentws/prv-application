@@ -1,15 +1,15 @@
 """Allow matter-scoped fact export workflow artifacts.
 
-Revision ID: 0010_fact_exports
-Revises: 0009_search_result_exports
+Revision ID: 0011_fact_exports
+Revises: 0010_job_outcomes
 """
 
 from collections.abc import Sequence
 
 from alembic import op
 
-revision: str = "0010_fact_exports"
-down_revision: str | None = "0009_search_result_exports"
+revision: str = "0011_fact_exports"
+down_revision: str | None = "0010_job_outcomes"
 branch_labels: str | Sequence[str] | None = None
 depends_on: str | Sequence[str] | None = None
 
@@ -17,7 +17,8 @@ PRIOR_TYPES = (
     "'CLASSIFICATION_POPULATION', 'CLASSIFICATION_FEATURES', "
     "'CLASSIFICATION_LABELS', 'CLASSIFICATION_SPLITS', 'CLASSIFICATION_MODEL_PACKAGE', "
     "'CLASSIFICATION_PREDICTIONS', 'CLASSIFICATION_EVALUATION', "
-    "'CLASSIFICATION_RESULT_MANIFEST', 'SEARCH_RESULT_EXPORT'"
+    "'CLASSIFICATION_RESULT_MANIFEST', 'SEARCH_RESULT_EXPORT', "
+    "'JOB_ITEM_OUTCOME_FRAGMENT', 'JOB_ITEM_OUTCOMES'"
 )
 
 

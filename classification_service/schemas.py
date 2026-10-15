@@ -4,12 +4,13 @@ from typing import Annotated, Any, Literal
 
 from pydantic import BaseModel, ConfigDict, Field, StringConstraints, field_validator, model_validator
 
+from artifact_service.workflow_artifact_types import ArtifactType, Sha256
+
 StableKey = Annotated[
     str,
     StringConstraints(strip_whitespace=True, pattern=r"^[A-Za-z][A-Za-z0-9_-]{0,127}$"),
 ]
 ClassValue = Annotated[str, StringConstraints(min_length=1, max_length=20_000)]
-Sha256 = Annotated[str, StringConstraints(to_lower=True, pattern=r"^[0-9a-f]{64}$")]
 
 
 class StrictModel(BaseModel):
@@ -81,19 +82,6 @@ class FeatureNormalization(StrEnum):
 
 class FeaturePooling(StrEnum):
     MEAN = "MEAN"
-
-
-class ArtifactType(StrEnum):
-    CLASSIFICATION_POPULATION = "CLASSIFICATION_POPULATION"
-    CLASSIFICATION_FEATURES = "CLASSIFICATION_FEATURES"
-    CLASSIFICATION_LABELS = "CLASSIFICATION_LABELS"
-    CLASSIFICATION_SPLITS = "CLASSIFICATION_SPLITS"
-    CLASSIFICATION_MODEL_PACKAGE = "CLASSIFICATION_MODEL_PACKAGE"
-    CLASSIFICATION_PREDICTIONS = "CLASSIFICATION_PREDICTIONS"
-    CLASSIFICATION_EVALUATION = "CLASSIFICATION_EVALUATION"
-    CLASSIFICATION_RESULT_MANIFEST = "CLASSIFICATION_RESULT_MANIFEST"
-    SEARCH_RESULT_EXPORT = "SEARCH_RESULT_EXPORT"
-    FACT_EXPORT = "FACT_EXPORT"
 
 
 class TrainingScopeSpecification(StrictModel):

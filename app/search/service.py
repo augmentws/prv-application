@@ -246,6 +246,7 @@ def build_document_projection(
         "sha256_hash": snapshot.native_sha256,
         "source_created_at": snapshot.source_created_at,
         "source_modified_at": snapshot.source_modified_at,
+        "file_date": snapshot.file_date,
     }
     values.update(current_metadata_values(db, document.id, definitions))
     indexed_values = {

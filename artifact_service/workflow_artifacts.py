@@ -18,7 +18,7 @@ from artifact_service.models import (
 from artifact_service.schemas import WorkflowArtifactLineageInput, WorkflowArtifactUploadMetadata
 from artifact_service.service import get_or_create_blob, require_tenant_storage
 from artifact_service.storage import BlobStorage
-from classification_service.schemas import ArtifactType
+from artifact_service.workflow_artifact_types import ArtifactType
 
 COLUMNAR_ARTIFACT_TYPES = {
     ArtifactType.CLASSIFICATION_POPULATION,
@@ -26,6 +26,8 @@ COLUMNAR_ARTIFACT_TYPES = {
     ArtifactType.CLASSIFICATION_LABELS,
     ArtifactType.CLASSIFICATION_SPLITS,
     ArtifactType.CLASSIFICATION_PREDICTIONS,
+    ArtifactType.JOB_ITEM_OUTCOME_FRAGMENT,
+    ArtifactType.JOB_ITEM_OUTCOMES,
 }
 JSON_ARTIFACT_TYPES = {
     ArtifactType.CLASSIFICATION_EVALUATION,
@@ -53,6 +55,8 @@ WORKFLOW_ARTIFACT_MAX_BYTES = {
     ArtifactType.CLASSIFICATION_EVALUATION: 50 * 1024**2,
     ArtifactType.CLASSIFICATION_RESULT_MANIFEST: 50 * 1024**2,
     ArtifactType.SEARCH_RESULT_EXPORT: 20 * 1024**3,
+    ArtifactType.JOB_ITEM_OUTCOME_FRAGMENT: 5 * 1024**3,
+    ArtifactType.JOB_ITEM_OUTCOMES: 20 * 1024**3,
     ArtifactType.FACT_EXPORT: 5 * 1024**3,
 }
 

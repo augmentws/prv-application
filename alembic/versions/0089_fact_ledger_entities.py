@@ -1,7 +1,7 @@
 """Add the matter entity store, the fact ledger, and fact/entity permissions.
 
-Revision ID: 0088_fact_ledger_entities
-Revises: 0087_fact_development_task
+Revision ID: 0089_fact_ledger_entities
+Revises: 0088_fact_development_task
 """
 
 import json
@@ -13,8 +13,8 @@ import sqlalchemy as sa
 
 from alembic import op
 
-revision: str = "0088_fact_ledger_entities"
-down_revision: str | None = "0087_fact_development_task"
+revision: str = "0089_fact_ledger_entities"
+down_revision: str | None = "0088_fact_development_task"
 branch_labels: str | Sequence[str] | None = None
 depends_on: str | Sequence[str] | None = None
 

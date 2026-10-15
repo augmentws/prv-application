@@ -7993,6 +7993,276 @@
         }
       }
     },
+    "/v1/matters/{matter_id}/job-outcomes/{job_type}/{job_id}": {
+      "get": {
+        "tags": [
+          "matter jobs"
+        ],
+        "summary": "Get Job Outcome Summary",
+        "operationId": "get_job_outcome_summary_v1_matters__matter_id__job_outcomes__job_type___job_id__get",
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "matter_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid",
+              "title": "Matter Id"
+            }
+          },
+          {
+            "name": "job_type",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Job Type"
+            }
+          },
+          {
+            "name": "job_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid",
+              "title": "Job Id"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/JobOutcomeManifestRead"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v1/matters/{matter_id}/job-outcomes/{job_type}/{job_id}/items": {
+      "get": {
+        "tags": [
+          "matter jobs"
+        ],
+        "summary": "List Job Outcome Items",
+        "operationId": "list_job_outcome_items_v1_matters__matter_id__job_outcomes__job_type___job_id__items_get",
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "matter_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid",
+              "title": "Matter Id"
+            }
+          },
+          {
+            "name": "job_type",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Job Type"
+            }
+          },
+          {
+            "name": "job_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid",
+              "title": "Job Id"
+            }
+          },
+          {
+            "name": "status",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Status"
+            }
+          },
+          {
+            "name": "reason_code",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string",
+                  "minLength": 1,
+                  "maxLength": 200
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Reason Code"
+            }
+          },
+          {
+            "name": "offset",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "integer",
+              "minimum": 0,
+              "default": 0,
+              "title": "Offset"
+            }
+          },
+          {
+            "name": "limit",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "integer",
+              "maximum": 200,
+              "minimum": 1,
+              "default": 100,
+              "title": "Limit"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/JobOutcomeItemPage"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v1/matters/{matter_id}/job-outcomes/{job_type}/{job_id}/download": {
+      "get": {
+        "tags": [
+          "matter jobs"
+        ],
+        "summary": "Download Job Outcomes",
+        "operationId": "download_job_outcomes_v1_matters__matter_id__job_outcomes__job_type___job_id__download_get",
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "matter_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid",
+              "title": "Matter Id"
+            }
+          },
+          {
+            "name": "job_type",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Job Type"
+            }
+          },
+          {
+            "name": "job_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid",
+              "title": "Job Id"
+            }
+          },
+          {
+            "name": "format",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "enum": [
+                "csv",
+                "parquet"
+              ],
+              "type": "string",
+              "default": "csv",
+              "title": "Format"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/v1/matters/{matter_id}/metadata-definitions": {
       "post": {
         "tags": [
@@ -23523,6 +23793,8 @@
           "CLASSIFICATION_EVALUATION",
           "CLASSIFICATION_RESULT_MANIFEST",
           "SEARCH_RESULT_EXPORT",
+          "JOB_ITEM_OUTCOME_FRAGMENT",
+          "JOB_ITEM_OUTCOMES",
           "FACT_EXPORT"
         ],
         "title": "ArtifactType"
@@ -32404,6 +32676,324 @@
         "type": "object",
         "title": "JobFailedDocumentRetryRequest"
       },
+      "JobOutcomeItemPage": {
+        "properties": {
+          "total": {
+            "type": "integer",
+            "title": "Total"
+          },
+          "offset": {
+            "type": "integer",
+            "title": "Offset"
+          },
+          "limit": {
+            "type": "integer",
+            "title": "Limit"
+          },
+          "items": {
+            "items": {
+              "$ref": "#/components/schemas/JobOutcomeItemRead"
+            },
+            "type": "array",
+            "title": "Items"
+          }
+        },
+        "type": "object",
+        "required": [
+          "total",
+          "offset",
+          "limit",
+          "items"
+        ],
+        "title": "JobOutcomeItemPage"
+      },
+      "JobOutcomeItemRead": {
+        "properties": {
+          "ordinal": {
+            "type": "integer",
+            "title": "Ordinal"
+          },
+          "item_kind": {
+            "type": "string",
+            "title": "Item Kind"
+          },
+          "item_id": {
+            "type": "string",
+            "title": "Item Id"
+          },
+          "outcome_status": {
+            "type": "string",
+            "enum": [
+              "SUCCEEDED",
+              "REUSED",
+              "SKIPPED",
+              "FAILED",
+              "EXCLUDED",
+              "CANCELED"
+            ],
+            "title": "Outcome Status"
+          },
+          "reason_code": {
+            "type": "string",
+            "title": "Reason Code"
+          },
+          "message": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Message"
+          },
+          "batch_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Batch Id"
+          },
+          "attempt_number": {
+            "type": "integer",
+            "title": "Attempt Number"
+          },
+          "input_fingerprint": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Input Fingerprint"
+          },
+          "output_references": {
+            "items": {
+              "additionalProperties": true,
+              "type": "object"
+            },
+            "type": "array",
+            "title": "Output References"
+          },
+          "metrics": {
+            "additionalProperties": true,
+            "type": "object",
+            "title": "Metrics"
+          },
+          "payload": {
+            "additionalProperties": true,
+            "type": "object",
+            "title": "Payload"
+          },
+          "started_at": {
+            "anyOf": [
+              {
+                "type": "string",
+                "format": "date-time"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Started At"
+          },
+          "completed_at": {
+            "anyOf": [
+              {
+                "type": "string",
+                "format": "date-time"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Completed At"
+          }
+        },
+        "type": "object",
+        "required": [
+          "ordinal",
+          "item_kind",
+          "item_id",
+          "outcome_status",
+          "reason_code",
+          "message",
+          "batch_id",
+          "attempt_number",
+          "input_fingerprint",
+          "output_references",
+          "metrics",
+          "payload",
+          "started_at",
+          "completed_at"
+        ],
+        "title": "JobOutcomeItemRead"
+      },
+      "JobOutcomeManifestRead": {
+        "properties": {
+          "id": {
+            "anyOf": [
+              {
+                "type": "string",
+                "format": "uuid"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Id"
+          },
+          "job_type": {
+            "type": "string",
+            "title": "Job Type"
+          },
+          "job_id": {
+            "type": "string",
+            "format": "uuid",
+            "title": "Job Id"
+          },
+          "manifest_status": {
+            "type": "string",
+            "enum": [
+              "BUILDING",
+              "FINALIZED",
+              "FAILED",
+              "UNAVAILABLE"
+            ],
+            "title": "Manifest Status"
+          },
+          "outcome_schema": {
+            "type": "string",
+            "title": "Outcome Schema"
+          },
+          "outcome_schema_version": {
+            "type": "integer",
+            "title": "Outcome Schema Version"
+          },
+          "item_count": {
+            "type": "integer",
+            "title": "Item Count"
+          },
+          "status_counts": {
+            "additionalProperties": {
+              "type": "integer"
+            },
+            "type": "object",
+            "title": "Status Counts"
+          },
+          "reason_counts": {
+            "additionalProperties": {
+              "type": "integer"
+            },
+            "type": "object",
+            "title": "Reason Counts"
+          },
+          "artifact_id": {
+            "anyOf": [
+              {
+                "type": "string",
+                "format": "uuid"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Artifact Id"
+          },
+          "artifact_content_hash": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Artifact Content Hash"
+          },
+          "artifact_byte_length": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Artifact Byte Length"
+          },
+          "finalized_at": {
+            "anyOf": [
+              {
+                "type": "string",
+                "format": "date-time"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Finalized At"
+          },
+          "failure_summary": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Failure Summary"
+          },
+          "item_details_available": {
+            "type": "boolean",
+            "title": "Item Details Available"
+          },
+          "legacy": {
+            "type": "boolean",
+            "title": "Legacy",
+            "default": false
+          },
+          "created_at": {
+            "type": "string",
+            "format": "date-time",
+            "title": "Created At"
+          },
+          "updated_at": {
+            "type": "string",
+            "format": "date-time",
+            "title": "Updated At"
+          }
+        },
+        "type": "object",
+        "required": [
+          "id",
+          "job_type",
+          "job_id",
+          "manifest_status",
+          "outcome_schema",
+          "outcome_schema_version",
+          "item_count",
+          "status_counts",
+          "reason_counts",
+          "artifact_id",
+          "artifact_content_hash",
+          "artifact_byte_length",
+          "finalized_at",
+          "failure_summary",
+          "item_details_available",
+          "created_at",
+          "updated_at"
+        ],
+        "title": "JobOutcomeManifestRead"
+      },
       "LabelAuthority": {
         "type": "string",
         "enum": [
@@ -35710,6 +36300,10 @@
             "type": "integer",
             "title": "Embedded Count"
           },
+          "reused_count": {
+            "type": "integer",
+            "title": "Reused Count"
+          },
           "skipped_count": {
             "type": "integer",
             "title": "Skipped Count"
@@ -35791,6 +36385,7 @@
           "item_count",
           "processed_count",
           "embedded_count",
+          "reused_count",
           "skipped_count",
           "failed_count",
           "chunk_count",
@@ -35875,6 +36470,10 @@
           "embedded_count": {
             "type": "integer",
             "title": "Embedded Count"
+          },
+          "reused_count": {
+            "type": "integer",
+            "title": "Reused Count"
           },
           "skipped_count": {
             "type": "integer",
@@ -35992,6 +36591,7 @@
           "batch_count",
           "processed_count",
           "embedded_count",
+          "reused_count",
           "skipped_count",
           "failed_count",
           "chunk_count",
