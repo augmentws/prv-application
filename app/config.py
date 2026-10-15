@@ -49,6 +49,8 @@ class Settings(BaseSettings):
     search_export_retry_hours: int = Field(default=24, ge=1, le=168)
     search_export_max_columns: int = Field(default=250, ge=1, le=1000)
     search_export_max_bytes: int = Field(default=20 * 1024**3, ge=1024, le=20 * 1024**3)
+    fact_export_retention_days: int = Field(default=7, ge=1, le=365)
+    fact_export_max_bytes: int = Field(default=5 * 1024**3, ge=1024, le=5 * 1024**3)
     agent_default_model: str | None = None
     agent_turn_queue_concurrency: int = Field(default=4, ge=1, le=100)
     agent_approval_timeout_seconds: int = Field(default=7 * 24 * 60 * 60, ge=60, le=30 * 24 * 60 * 60)

@@ -16088,6 +16088,255 @@
         }
       }
     },
+    "/v1/matters/{matter_id}/fact-exports": {
+      "post": {
+        "tags": [
+          "matter fact exports"
+        ],
+        "summary": "Create Fact Export",
+        "operationId": "create_fact_export_v1_matters__matter_id__fact_exports_post",
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "matter_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid",
+              "title": "Matter Id"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/MatterFactExportCreate"
+              }
+            }
+          }
+        },
+        "responses": {
+          "202": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/MatterFactExportRead"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      },
+      "get": {
+        "tags": [
+          "matter fact exports"
+        ],
+        "summary": "List Fact Exports",
+        "operationId": "list_fact_exports_v1_matters__matter_id__fact_exports_get",
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "matter_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid",
+              "title": "Matter Id"
+            }
+          },
+          {
+            "name": "limit",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "integer",
+              "maximum": 500,
+              "minimum": 1,
+              "default": 100,
+              "title": "Limit"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "array",
+                  "items": {
+                    "$ref": "#/components/schemas/MatterFactExportRead"
+                  },
+                  "title": "Response List Fact Exports V1 Matters  Matter Id  Fact Exports Get"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v1/matters/{matter_id}/fact-exports/{export_id}": {
+      "get": {
+        "tags": [
+          "matter fact exports"
+        ],
+        "summary": "Get Fact Export",
+        "operationId": "get_fact_export_v1_matters__matter_id__fact_exports__export_id__get",
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "matter_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid",
+              "title": "Matter Id"
+            }
+          },
+          {
+            "name": "export_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid",
+              "title": "Export Id"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/MatterFactExportRead"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v1/matters/{matter_id}/fact-exports/{export_id}/download": {
+      "get": {
+        "tags": [
+          "matter fact exports"
+        ],
+        "summary": "Download Fact Export",
+        "description": "Stream one of the export's two CSV files through Core after fresh authorization.",
+        "operationId": "download_fact_export_v1_matters__matter_id__fact_exports__export_id__download_get",
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "matter_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid",
+              "title": "Matter Id"
+            }
+          },
+          {
+            "name": "export_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid",
+              "title": "Export Id"
+            }
+          },
+          {
+            "name": "file",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "enum": [
+                "facts",
+                "evidence"
+              ],
+              "type": "string",
+              "default": "facts",
+              "title": "File"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/v1/tenants/{tenant_id}/artifact-storage/ensure": {
       "post": {
         "tags": [
@@ -23097,7 +23346,8 @@
           "CLASSIFICATION_PREDICTIONS",
           "CLASSIFICATION_EVALUATION",
           "CLASSIFICATION_RESULT_MANIFEST",
-          "SEARCH_RESULT_EXPORT"
+          "SEARCH_RESULT_EXPORT",
+          "FACT_EXPORT"
         ],
         "title": "ArtifactType"
       },
@@ -36371,6 +36621,319 @@
           "removed_at"
         ],
         "title": "MatterFactEvidenceRead"
+      },
+      "MatterFactExportCreate": {
+        "properties": {
+          "filters": {
+            "$ref": "#/components/schemas/MatterFactExportFilters"
+          },
+          "requested_filename": {
+            "type": "string",
+            "maxLength": 150,
+            "minLength": 1,
+            "title": "Requested Filename",
+            "default": "facts"
+          },
+          "spreadsheet_safe": {
+            "type": "boolean",
+            "title": "Spreadsheet Safe",
+            "default": true
+          },
+          "idempotency_key": {
+            "type": "string",
+            "maxLength": 200,
+            "minLength": 1,
+            "title": "Idempotency Key"
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "idempotency_key"
+        ],
+        "title": "MatterFactExportCreate"
+      },
+      "MatterFactExportFilters": {
+        "properties": {
+          "status": {
+            "items": {
+              "type": "string",
+              "enum": [
+                "WORKING",
+                "CONFIRMED",
+                "REJECTED",
+                "MERGED"
+              ]
+            },
+            "type": "array",
+            "maxItems": 4,
+            "title": "Status"
+          },
+          "issue_key": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array",
+            "maxItems": 200,
+            "title": "Issue Key"
+          },
+          "entity_id": {
+            "anyOf": [
+              {
+                "type": "string",
+                "format": "uuid"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Entity Id"
+          },
+          "matter_document_id": {
+            "anyOf": [
+              {
+                "type": "string",
+                "format": "uuid"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Matter Document Id"
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "title": "MatterFactExportFilters",
+        "description": "The same filter the fact list accepts; an export contains exactly the facts it lists."
+      },
+      "MatterFactExportRead": {
+        "properties": {
+          "id": {
+            "type": "string",
+            "format": "uuid",
+            "title": "Id"
+          },
+          "matter_id": {
+            "type": "string",
+            "format": "uuid",
+            "title": "Matter Id"
+          },
+          "filter_snapshot": {
+            "additionalProperties": true,
+            "type": "object",
+            "title": "Filter Snapshot"
+          },
+          "csv_policy_snapshot": {
+            "additionalProperties": true,
+            "type": "object",
+            "title": "Csv Policy Snapshot"
+          },
+          "requested_filename": {
+            "type": "string",
+            "title": "Requested Filename"
+          },
+          "status": {
+            "type": "string",
+            "enum": [
+              "QUEUED",
+              "RUNNING",
+              "COMPLETED",
+              "FAILED",
+              "CANCELED"
+            ],
+            "title": "Status"
+          },
+          "current_stage": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Current Stage"
+          },
+          "fact_count": {
+            "type": "integer",
+            "title": "Fact Count"
+          },
+          "evidence_count": {
+            "type": "integer",
+            "title": "Evidence Count"
+          },
+          "facts_filename": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Facts Filename"
+          },
+          "facts_byte_length": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Facts Byte Length"
+          },
+          "evidence_filename": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Evidence Filename"
+          },
+          "evidence_byte_length": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Evidence Byte Length"
+          },
+          "snapshot_started_at": {
+            "anyOf": [
+              {
+                "type": "string",
+                "format": "date-time"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Snapshot Started At"
+          },
+          "expires_at": {
+            "anyOf": [
+              {
+                "type": "string",
+                "format": "date-time"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Expires At"
+          },
+          "failure_code": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Failure Code"
+          },
+          "failure_summary": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Failure Summary"
+          },
+          "failure_retriable": {
+            "type": "boolean",
+            "title": "Failure Retriable"
+          },
+          "created_by_user_id": {
+            "type": "string",
+            "format": "uuid",
+            "title": "Created By User Id"
+          },
+          "created_at": {
+            "type": "string",
+            "format": "date-time",
+            "title": "Created At"
+          },
+          "updated_at": {
+            "type": "string",
+            "format": "date-time",
+            "title": "Updated At"
+          },
+          "completed_at": {
+            "anyOf": [
+              {
+                "type": "string",
+                "format": "date-time"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Completed At"
+          },
+          "canceled_at": {
+            "anyOf": [
+              {
+                "type": "string",
+                "format": "date-time"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Canceled At"
+          },
+          "execution": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/JobExecutionRead"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          }
+        },
+        "type": "object",
+        "required": [
+          "id",
+          "matter_id",
+          "filter_snapshot",
+          "csv_policy_snapshot",
+          "requested_filename",
+          "status",
+          "current_stage",
+          "fact_count",
+          "evidence_count",
+          "facts_filename",
+          "facts_byte_length",
+          "evidence_filename",
+          "evidence_byte_length",
+          "snapshot_started_at",
+          "expires_at",
+          "failure_code",
+          "failure_summary",
+          "failure_retriable",
+          "created_by_user_id",
+          "created_at",
+          "updated_at",
+          "completed_at",
+          "canceled_at"
+        ],
+        "title": "MatterFactExportRead"
       },
       "MatterFactMerge": {
         "properties": {

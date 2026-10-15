@@ -1,6 +1,6 @@
 # Fact Development and Timeline Plan
 
-Status: slice 1 and slice 2a (entities, fact ledger, permissions, API) implemented on `feature/fact-backend` (uncommitted); slice 2b (export job) next
+Status: slices 1 and 2 (task type, entities, fact ledger, permissions, API, CSV export job) implemented on `feature/fact-backend`; slice 3 (facts index) next
 
 ## Objective
 

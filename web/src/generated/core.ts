@@ -111,6 +111,7 @@ import type {
   DerivedArtifactUploadResponse,
   DocumentCodingHistoryRead,
   DocumentMetadataFieldRead,
+  DownloadFactExportV1MattersMatterIdFactExportsExportIdDownloadGetParams,
   EffectivePermissionsRead,
   EmailDomainUpdateRead,
   ExplainAuthorizationV1AuthorizationExplainGetParams,
@@ -141,6 +142,7 @@ import type {
   ListEmbeddingJobsV1MattersMatterIdEmbeddingJobsGetParams,
   ListEntitiesV1MattersMatterIdEntitiesGetParams,
   ListExternalProviderUsageV1TenantsTenantIdProviderUsageGetParams,
+  ListFactExportsV1MattersMatterIdFactExportsGetParams,
   ListFactsV1MattersMatterIdFactsGetParams,
   ListFailedJobDocumentsV1JobsJobTypeJobIdFailedDocumentsGetParams,
   ListGuidanceV1MattersMatterIdGuidanceGetParams,
@@ -199,6 +201,8 @@ import type {
   MatterFactCreate,
   MatterFactDetailRead,
   MatterFactEvidenceAdd,
+  MatterFactExportCreate,
+  MatterFactExportRead,
   MatterFactMerge,
   MatterFactPage,
   MatterFactUpdate,
@@ -15332,6 +15336,244 @@ const res = await fetch(getUnmergeMatterEntityV1MattersMatterIdEntitiesEntityIdU
 
   const data: unmergeMatterEntityV1MattersMatterIdEntitiesEntityIdUnmergePostResponse['data'] = body ? JSON.parse(body) : {}
   return { data, status: res.status, headers: res.headers } as unmergeMatterEntityV1MattersMatterIdEntitiesEntityIdUnmergePostResponse
+}
+
+
+
+export type createFactExportV1MattersMatterIdFactExportsPostResponse202 = {
+  data: MatterFactExportRead
+  status: 202
+}
+
+export type createFactExportV1MattersMatterIdFactExportsPostResponse422 = {
+  data: HTTPValidationError
+  status: 422
+}
+
+export type createFactExportV1MattersMatterIdFactExportsPostResponseSuccess = (createFactExportV1MattersMatterIdFactExportsPostResponse202) & {
+  headers: Headers;
+};
+export type createFactExportV1MattersMatterIdFactExportsPostResponseError = (createFactExportV1MattersMatterIdFactExportsPostResponse422) & {
+  headers: Headers;
+};
+
+export type createFactExportV1MattersMatterIdFactExportsPostResponse = (createFactExportV1MattersMatterIdFactExportsPostResponseSuccess | createFactExportV1MattersMatterIdFactExportsPostResponseError)
+
+export const getCreateFactExportV1MattersMatterIdFactExportsPostUrl = (matterId: string,) => {
+
+
+
+
+  return `/api/core/v1/matters/${matterId}/fact-exports`
+}
+
+/**
+ * @summary Create Fact Export
+ */
+export const createFactExportV1MattersMatterIdFactExportsPost = async (matterId: string,
+    matterFactExportCreate: MatterFactExportCreate, options?: RequestInit): Promise<createFactExportV1MattersMatterIdFactExportsPostResponse> => {
+
+    const getHeaders = (h?: NonNullable<RequestInit['headers']>): Record<string, string | readonly string[]> => {
+    if (!h) return {};
+    if (h instanceof Headers) return Object.fromEntries(h.entries());
+    if (Symbol.iterator in h) {
+      return Object.fromEntries(
+        Array.from(h as Iterable<Iterable<string>>, (entry) => Array.from(entry) as [string, string]),
+      );
+    }
+    const headers: Record<string, string | readonly string[]> = {};
+    for (const [name, value] of Object.entries<string | readonly string[] | undefined>(h)) {
+      if (value !== undefined) headers[name] = value;
+    }
+    return headers;
+  };
+const res = await fetch(getCreateFactExportV1MattersMatterIdFactExportsPostUrl(matterId),
+  {
+    ...options,
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json', ...getHeaders(options?.headers) },
+    body: JSON.stringify(matterFactExportCreate)
+  }
+)
+
+
+  const body = [204, 205, 304].includes(res.status) ? null : await res.text();
+
+  const data: createFactExportV1MattersMatterIdFactExportsPostResponse['data'] = body ? JSON.parse(body) : {}
+  return { data, status: res.status, headers: res.headers } as createFactExportV1MattersMatterIdFactExportsPostResponse
+}
+
+
+
+export type listFactExportsV1MattersMatterIdFactExportsGetResponse200 = {
+  data: MatterFactExportRead[]
+  status: 200
+}
+
+export type listFactExportsV1MattersMatterIdFactExportsGetResponse422 = {
+  data: HTTPValidationError
+  status: 422
+}
+
+export type listFactExportsV1MattersMatterIdFactExportsGetResponseSuccess = (listFactExportsV1MattersMatterIdFactExportsGetResponse200) & {
+  headers: Headers;
+};
+export type listFactExportsV1MattersMatterIdFactExportsGetResponseError = (listFactExportsV1MattersMatterIdFactExportsGetResponse422) & {
+  headers: Headers;
+};
+
+export type listFactExportsV1MattersMatterIdFactExportsGetResponse = (listFactExportsV1MattersMatterIdFactExportsGetResponseSuccess | listFactExportsV1MattersMatterIdFactExportsGetResponseError)
+
+export const getListFactExportsV1MattersMatterIdFactExportsGetUrl = (matterId: string,
+    params?: ListFactExportsV1MattersMatterIdFactExportsGetParams,) => {
+  const normalizedParams = new URLSearchParams();
+
+  Object.entries(params || {}).forEach(([key, value]) => {
+
+    if (value !== undefined) {
+      normalizedParams.append(key, value === null ? 'null' : String(value))
+    }
+  });
+
+  const stringifiedParams = normalizedParams.toString();
+
+  return stringifiedParams.length > 0 ? `/api/core/v1/matters/${matterId}/fact-exports?${stringifiedParams}` : `/api/core/v1/matters/${matterId}/fact-exports`
+}
+
+/**
+ * @summary List Fact Exports
+ */
+export const listFactExportsV1MattersMatterIdFactExportsGet = async (matterId: string,
+    params?: ListFactExportsV1MattersMatterIdFactExportsGetParams, options?: RequestInit): Promise<listFactExportsV1MattersMatterIdFactExportsGetResponse> => {
+
+  const res = await fetch(getListFactExportsV1MattersMatterIdFactExportsGetUrl(matterId,params),
+  {
+    ...options,
+    method: 'GET'
+
+
+  }
+)
+
+
+  const body = [204, 205, 304].includes(res.status) ? null : await res.text();
+
+  const data: listFactExportsV1MattersMatterIdFactExportsGetResponse['data'] = body ? JSON.parse(body) : {}
+  return { data, status: res.status, headers: res.headers } as listFactExportsV1MattersMatterIdFactExportsGetResponse
+}
+
+
+
+export type getFactExportV1MattersMatterIdFactExportsExportIdGetResponse200 = {
+  data: MatterFactExportRead
+  status: 200
+}
+
+export type getFactExportV1MattersMatterIdFactExportsExportIdGetResponse422 = {
+  data: HTTPValidationError
+  status: 422
+}
+
+export type getFactExportV1MattersMatterIdFactExportsExportIdGetResponseSuccess = (getFactExportV1MattersMatterIdFactExportsExportIdGetResponse200) & {
+  headers: Headers;
+};
+export type getFactExportV1MattersMatterIdFactExportsExportIdGetResponseError = (getFactExportV1MattersMatterIdFactExportsExportIdGetResponse422) & {
+  headers: Headers;
+};
+
+export type getFactExportV1MattersMatterIdFactExportsExportIdGetResponse = (getFactExportV1MattersMatterIdFactExportsExportIdGetResponseSuccess | getFactExportV1MattersMatterIdFactExportsExportIdGetResponseError)
+
+export const getGetFactExportV1MattersMatterIdFactExportsExportIdGetUrl = (matterId: string,
+    exportId: string,) => {
+
+
+
+
+  return `/api/core/v1/matters/${matterId}/fact-exports/${exportId}`
+}
+
+/**
+ * @summary Get Fact Export
+ */
+export const getFactExportV1MattersMatterIdFactExportsExportIdGet = async (matterId: string,
+    exportId: string, options?: RequestInit): Promise<getFactExportV1MattersMatterIdFactExportsExportIdGetResponse> => {
+
+  const res = await fetch(getGetFactExportV1MattersMatterIdFactExportsExportIdGetUrl(matterId,exportId),
+  {
+    ...options,
+    method: 'GET'
+
+
+  }
+)
+
+
+  const body = [204, 205, 304].includes(res.status) ? null : await res.text();
+
+  const data: getFactExportV1MattersMatterIdFactExportsExportIdGetResponse['data'] = body ? JSON.parse(body) : {}
+  return { data, status: res.status, headers: res.headers } as getFactExportV1MattersMatterIdFactExportsExportIdGetResponse
+}
+
+
+
+export type downloadFactExportV1MattersMatterIdFactExportsExportIdDownloadGetResponse200 = {
+  data: unknown
+  status: 200
+}
+
+export type downloadFactExportV1MattersMatterIdFactExportsExportIdDownloadGetResponse422 = {
+  data: HTTPValidationError
+  status: 422
+}
+
+export type downloadFactExportV1MattersMatterIdFactExportsExportIdDownloadGetResponseSuccess = (downloadFactExportV1MattersMatterIdFactExportsExportIdDownloadGetResponse200) & {
+  headers: Headers;
+};
+export type downloadFactExportV1MattersMatterIdFactExportsExportIdDownloadGetResponseError = (downloadFactExportV1MattersMatterIdFactExportsExportIdDownloadGetResponse422) & {
+  headers: Headers;
+};
+
+export type downloadFactExportV1MattersMatterIdFactExportsExportIdDownloadGetResponse = (downloadFactExportV1MattersMatterIdFactExportsExportIdDownloadGetResponseSuccess | downloadFactExportV1MattersMatterIdFactExportsExportIdDownloadGetResponseError)
+
+export const getDownloadFactExportV1MattersMatterIdFactExportsExportIdDownloadGetUrl = (matterId: string,
+    exportId: string,
+    params?: DownloadFactExportV1MattersMatterIdFactExportsExportIdDownloadGetParams,) => {
+  const normalizedParams = new URLSearchParams();
+
+  Object.entries(params || {}).forEach(([key, value]) => {
+
+    if (value !== undefined) {
+      normalizedParams.append(key, value === null ? 'null' : String(value))
+    }
+  });
+
+  const stringifiedParams = normalizedParams.toString();
+
+  return stringifiedParams.length > 0 ? `/api/core/v1/matters/${matterId}/fact-exports/${exportId}/download?${stringifiedParams}` : `/api/core/v1/matters/${matterId}/fact-exports/${exportId}/download`
+}
+
+/**
+ * Stream one of the export's two CSV files through Core after fresh authorization.
+ * @summary Download Fact Export
+ */
+export const downloadFactExportV1MattersMatterIdFactExportsExportIdDownloadGet = async (matterId: string,
+    exportId: string,
+    params?: DownloadFactExportV1MattersMatterIdFactExportsExportIdDownloadGetParams, options?: RequestInit): Promise<downloadFactExportV1MattersMatterIdFactExportsExportIdDownloadGetResponse> => {
+
+  const res = await fetch(getDownloadFactExportV1MattersMatterIdFactExportsExportIdDownloadGetUrl(matterId,exportId,params),
+  {
+    ...options,
+    method: 'GET'
+
+
+  }
+)
+
+
+  const body = [204, 205, 304].includes(res.status) ? null : await res.text();
+
+  const data: downloadFactExportV1MattersMatterIdFactExportsExportIdDownloadGetResponse['data'] = body ? JSON.parse(body) : {}
+  return { data, status: res.status, headers: res.headers } as downloadFactExportV1MattersMatterIdFactExportsExportIdDownloadGetResponse
 }
 
 

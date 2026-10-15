@@ -3,7 +3,7 @@ from datetime import datetime
 from typing import Never
 
 from fastapi import APIRouter, Depends, HTTPException, Query, status
-from sqlalchemy import case, func, or_, select
+from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
 from app.audit import record_audit
@@ -11,6 +11,13 @@ from app.authorization import ResourceRef, can
 from app.database import get_db
 from app.dependencies import Principal, get_principal
 from app.fact_evidence import FactEvidenceError, verify_evidence
+from app.fact_queries import (
+    FACT_DATE_ORDER,
+    FactFilterError,
+    FactFilterNotFound,
+    FactFilters,
+    fact_filter_statement,
+)
 from app.facts import (
     Actor,
     FactConflict,
@@ -59,14 +66,6 @@ from app.schemas import (
 )
 
 router = APIRouter(prefix="/v1/matters/{matter_id}/facts", tags=["matter facts"])
-
-# Oldest first; within a date, coarser precision first; undated facts last.
-PRECISION_ORDER = case(
-    {"YEAR": 0, "QUARTER": 1, "MONTH": 2, "RANGE": 3, "DAY": 4},
-    value=MatterFact.date_precision,
-    else_=5,
-)
-
 
 def _matter(db: Session, principal: Principal, matter_id: uuid.UUID, *permission_keys: str) -> Matter:
     """Facts quote documents, so every fact permission also requires ``document.view``."""
@@ -279,52 +278,22 @@ def list_facts(
     """
 
     _matter(db, principal, matter_id, "fact.view")
-    statement = select(MatterFact).where(MatterFact.matter_id == matter_id)
-    if fact_status:
-        statement = statement.where(MatterFact.status.in_(fact_status))
-    else:
-        statement = statement.where(MatterFact.status != "MERGED")
-    if issue_key:
-        statement = statement.where(
-            MatterFact.id.in_(select(MatterFactIssue.fact_id).where(MatterFactIssue.issue_key.in_(issue_key)))
-        )
-    if entity_id is not None:
-        anchor = db.get(MatterEntity, entity_id)
-        if anchor is None or anchor.matter_id != matter_id:
-            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Entity not found")
-        canonical = anchor.parent_id or anchor.id
-        group = select(MatterEntity.id).where(or_(MatterEntity.id == canonical, MatterEntity.parent_id == canonical))
-        statement = statement.where(
-            or_(
-                MatterFact.owner_entity_id.in_(group),
-                MatterFact.id.in_(select(MatterFactEntity.fact_id).where(MatterFactEntity.entity_id.in_(group))),
-            )
-        )
-    if matter_document_id is not None:
-        statement = statement.where(
-            MatterFact.id.in_(
-                select(MatterFactEvidence.fact_id).where(
-                    MatterFactEvidence.matter_document_id == matter_document_id,
-                    MatterFactEvidence.status == "ACTIVE",
-                )
-            )
-        )
-    if updated_since is not None:
-        statement = statement.where(MatterFact.updated_at > updated_since)
-    total = db.scalar(select(func.count()).select_from(statement.subquery())) or 0
-    facts = list(
-        db.scalars(
-            statement.order_by(
-                MatterFact.event_date_start.is_(None),
-                MatterFact.event_date_start,
-                PRECISION_ORDER,
-                MatterFact.created_at,
-                MatterFact.id,
-            )
-            .limit(limit)
-            .offset(offset)
-        )
+    filters = FactFilters(
+        statuses=tuple(fact_status),
+        issue_keys=tuple(issue_key),
+        entity_id=entity_id,
+        matter_document_id=matter_document_id,
+        updated_since=updated_since,
     )
+    try:
+        statement = fact_filter_statement(db, matter_id=matter_id, filters=filters)
+    except FactFilterError as exc:
+        status_code = (
+            status.HTTP_404_NOT_FOUND if isinstance(exc, FactFilterNotFound) else status.HTTP_422_UNPROCESSABLE_CONTENT
+        )
+        raise HTTPException(status_code=status_code, detail=str(exc)) from exc
+    total = db.scalar(select(func.count()).select_from(statement.subquery())) or 0
+    facts = list(db.scalars(statement.order_by(*FACT_DATE_ORDER).limit(limit).offset(offset)))
     return MatterFactPage(items=_reads(db, facts), total=total)
 
 

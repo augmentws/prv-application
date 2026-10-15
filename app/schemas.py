@@ -4186,3 +4186,58 @@ class MatterFactDetailRead(MatterFactRead):
 class MatterFactPage(BaseModel):
     items: list[MatterFactRead]
     total: int
+
+
+class MatterFactExportFilters(BaseModel):
+    """The same filter the fact list accepts; an export contains exactly the facts it lists."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    status: list[FactStatus] = Field(default_factory=list, max_length=4)
+    issue_key: list[str] = Field(default_factory=list, max_length=200)
+    entity_id: uuid.UUID | None = None
+    matter_document_id: uuid.UUID | None = None
+
+
+class MatterFactExportCreate(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    filters: MatterFactExportFilters = Field(default_factory=MatterFactExportFilters)
+    requested_filename: str = Field(default="facts", min_length=1, max_length=150)
+    spreadsheet_safe: bool = True
+    idempotency_key: str = Field(min_length=1, max_length=200)
+
+    @field_validator("idempotency_key")
+    @classmethod
+    def normalize_fact_export_idempotency_key(cls, value: str) -> str:
+        normalized = value.strip()
+        if not normalized:
+            raise ValueError("idempotency_key must not be blank")
+        return normalized
+
+
+class MatterFactExportRead(ORMModel):
+    id: uuid.UUID
+    matter_id: uuid.UUID
+    filter_snapshot: dict[str, Any]
+    csv_policy_snapshot: dict[str, Any]
+    requested_filename: str
+    status: Literal["QUEUED", "RUNNING", "COMPLETED", "FAILED", "CANCELED"]
+    current_stage: str | None
+    fact_count: int
+    evidence_count: int
+    facts_filename: str | None
+    facts_byte_length: int | None
+    evidence_filename: str | None
+    evidence_byte_length: int | None
+    snapshot_started_at: datetime | None
+    expires_at: datetime | None
+    failure_code: str | None
+    failure_summary: str | None
+    failure_retriable: bool
+    created_by_user_id: uuid.UUID
+    created_at: datetime
+    updated_at: datetime
+    completed_at: datetime | None
+    canceled_at: datetime | None
+    execution: JobExecutionRead | None = None
