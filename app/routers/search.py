@@ -20,8 +20,8 @@ from app.config import Settings, get_settings
 from app.database import get_db
 from app.dependencies import Principal, get_principal
 from app.email_domains import EmailDomainUpdateConflict, ensure_email_domain_metadata
-from app.file_dates import FileDateUpdateConflict, ensure_file_date_metadata
 from app.embedding_gateway import get_query_embedding_gateway
+from app.file_dates import FileDateUpdateConflict, ensure_file_date_metadata
 from app.job_archives import job_not_archived
 from app.job_executions import MATTER_SEARCH_EXPORT_JOB_TYPE, JobExecutionConflict
 from app.models import (

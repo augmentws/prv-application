@@ -5,7 +5,7 @@ from typing import Annotated, Any, Literal
 
 from pydantic import BaseModel, ConfigDict, Field, StringConstraints, field_validator, model_validator
 
-from classification_service.schemas import ArtifactType, Sha256
+from artifact_service.workflow_artifact_types import ArtifactType, Sha256
 
 CollectionStatus = Literal["OPEN", "SEALED", "ARCHIVED", "DELETING"]
 RecordType = Literal["EMAIL", "FILE", "CHAT", "TRANSCRIPT", "OTHER"]

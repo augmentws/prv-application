@@ -27,6 +27,7 @@ from app.job_executions import (
     current_job_execution,
     transition_job_execution,
 )
+from app.job_outcomes import finalize_canceled_embedding_outcome_manifest
 from app.matter_embeddings import cancel_voyage_batches
 from app.models import (
     ExternalProviderUsage,
@@ -111,6 +112,7 @@ def _refresh_job_totals_from_batches(
             func.coalesce(func.sum(MatterEmbeddingBatch.item_count), 0),
             func.coalesce(func.sum(MatterEmbeddingBatch.processed_count), 0),
             func.coalesce(func.sum(MatterEmbeddingBatch.embedded_count), 0),
+            func.coalesce(func.sum(MatterEmbeddingBatch.reused_count), 0),
             func.coalesce(func.sum(MatterEmbeddingBatch.skipped_count), 0),
             func.coalesce(func.sum(MatterEmbeddingBatch.failed_count), 0),
             func.coalesce(func.sum(MatterEmbeddingBatch.chunk_count), 0),
@@ -132,6 +134,7 @@ def _refresh_job_totals_from_batches(
             job.total_count,
             job.processed_count,
             job.embedded_count,
+            job.reused_count,
             job.skipped_count,
             job.failed_count,
             job.chunk_count,
@@ -143,6 +146,7 @@ def _refresh_job_totals_from_batches(
             job.total_count,
             job.processed_count,
             job.embedded_count,
+            job.reused_count,
             job.skipped_count,
             job.failed_count,
             job.chunk_count,
@@ -210,6 +214,7 @@ def _synchronize_embedding_jobs(
                 progress={
                     "batch_count": job.batch_count,
                     "embedded_count": job.embedded_count,
+                    "reused_count": job.reused_count,
                     "skipped_count": job.skipped_count,
                     "failed_count": job.failed_count,
                     "chunk_count": job.chunk_count,
@@ -270,6 +275,7 @@ def _synchronize_embedding_jobs(
                     progress_total=job.total_count or None,
                     progress={
                         "embedded_count": job.embedded_count,
+                        "reused_count": job.reused_count,
                         "skipped_count": job.skipped_count,
                         "failed_count": job.failed_count,
                         "chunk_count": job.chunk_count,
@@ -602,6 +608,7 @@ def retry_embedding_index(
         progress={
             "batch_count": job.batch_count,
             "embedded_count": job.embedded_count,
+            "reused_count": job.reused_count,
             "skipped_count": job.skipped_count,
             "failed_count": job.failed_count,
             "chunk_count": job.chunk_count,
@@ -645,6 +652,16 @@ def cancel_embedding_job(
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Embedding job not found")
     totals_changed = _refresh_job_totals_from_batches(db, [job])
     if job.status not in ACTIVE_STATUSES:
+        if job.status == "CANCELED":
+            try:
+                finalize_canceled_embedding_outcome_manifest(db, job)
+                totals_changed = True
+            except Exception:
+                db.rollback()
+                logger.exception(
+                    "Canceled embedding job outcome reconciliation failed job_id=%s",
+                    job.id,
+                )
         if totals_changed:
             db.commit()
         return _jobs_with_provider_usage(db, [job])[0]
@@ -670,6 +687,7 @@ def cancel_embedding_job(
             progress={
                 "batch_count": job.batch_count,
                 "embedded_count": job.embedded_count,
+                "reused_count": job.reused_count,
                 "skipped_count": job.skipped_count,
                 "failed_count": job.failed_count,
                 "chunk_count": job.chunk_count,
@@ -700,5 +718,14 @@ def cancel_embedding_job(
     except Exception as exc:  # noqa: BLE001
         logger.warning("DBOS cancellation request failed for %s: %s", job.workflow_id, exc)
     cancel_voyage_batches(job.id, db=db)
+    try:
+        finalize_canceled_embedding_outcome_manifest(db, job)
+        db.commit()
+    except Exception:
+        db.rollback()
+        logger.exception(
+            "Canceled embedding job outcome finalization will require reconciliation job_id=%s",
+            job.id,
+        )
     db.refresh(job)
     return _jobs_with_provider_usage(db, [job])[0]

@@ -109,6 +109,7 @@ from artifact_service.text_processing import (
     process_text,
     validate_rules,
 )
+from artifact_service.workflow_artifact_types import ArtifactType
 from artifact_service.workflow_artifacts import (
     WorkflowArtifactConflictError,
     WorkflowArtifactError,
@@ -118,7 +119,6 @@ from artifact_service.workflow_artifacts import (
     store_workflow_artifact,
     workflow_artifact_max_bytes,
 )
-from classification_service.schemas import ArtifactType
 
 
 def _date_bucket_start(value: datetime, interval: DateHistogramInterval) -> datetime:

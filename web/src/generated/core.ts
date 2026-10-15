@@ -111,6 +111,7 @@ import type {
   DerivedArtifactUploadResponse,
   DocumentCodingHistoryRead,
   DocumentMetadataFieldRead,
+  DownloadJobOutcomesV1MattersMatterIdJobOutcomesJobTypeJobIdDownloadGetParams,
   EffectivePermissionsRead,
   EmailDomainUpdateRead,
   ExplainAuthorizationV1AuthorizationExplainGetParams,
@@ -127,6 +128,8 @@ import type {
   JobExecutionRead,
   JobFailedDocumentPage,
   JobFailedDocumentRetryRequest,
+  JobOutcomeItemPage,
+  JobOutcomeManifestRead,
   ListAgentConversationsV1MattersMatterIdAgentConversationsGetParams,
   ListAgentPackagesV1AgentPackagesGetParams,
   ListAuditRecordsV1TenantsTenantIdAuditRecordsGetParams,
@@ -139,6 +142,7 @@ import type {
   ListExternalProviderUsageV1TenantsTenantIdProviderUsageGetParams,
   ListFailedJobDocumentsV1JobsJobTypeJobIdFailedDocumentsGetParams,
   ListGuidanceV1MattersMatterIdGuidanceGetParams,
+  ListJobOutcomeItemsV1MattersMatterIdJobOutcomesJobTypeJobIdItemsGetParams,
   ListMatterAccessUsersV1MattersMatterIdAccessUsersGetParams,
   ListMatterDocumentsV1MattersMatterIdDocumentsGetParams,
   ListReviewBatchDocumentsV1MattersMatterIdReviewBatchesBatchIdDocumentsGetParams,
@@ -7799,6 +7803,186 @@ export const retryJobV1JobsJobTypeJobIdRetryPost = async (jobType: string,
 
   const data: retryJobV1JobsJobTypeJobIdRetryPostResponse['data'] = body ? JSON.parse(body) : {}
   return { data, status: res.status, headers: res.headers } as retryJobV1JobsJobTypeJobIdRetryPostResponse
+}
+
+
+
+export type getJobOutcomeSummaryV1MattersMatterIdJobOutcomesJobTypeJobIdGetResponse200 = {
+  data: JobOutcomeManifestRead
+  status: 200
+}
+
+export type getJobOutcomeSummaryV1MattersMatterIdJobOutcomesJobTypeJobIdGetResponse422 = {
+  data: HTTPValidationError
+  status: 422
+}
+
+export type getJobOutcomeSummaryV1MattersMatterIdJobOutcomesJobTypeJobIdGetResponseSuccess = (getJobOutcomeSummaryV1MattersMatterIdJobOutcomesJobTypeJobIdGetResponse200) & {
+  headers: Headers;
+};
+export type getJobOutcomeSummaryV1MattersMatterIdJobOutcomesJobTypeJobIdGetResponseError = (getJobOutcomeSummaryV1MattersMatterIdJobOutcomesJobTypeJobIdGetResponse422) & {
+  headers: Headers;
+};
+
+export type getJobOutcomeSummaryV1MattersMatterIdJobOutcomesJobTypeJobIdGetResponse = (getJobOutcomeSummaryV1MattersMatterIdJobOutcomesJobTypeJobIdGetResponseSuccess | getJobOutcomeSummaryV1MattersMatterIdJobOutcomesJobTypeJobIdGetResponseError)
+
+export const getGetJobOutcomeSummaryV1MattersMatterIdJobOutcomesJobTypeJobIdGetUrl = (matterId: string,
+    jobType: string,
+    jobId: string,) => {
+
+
+
+
+  return `/api/core/v1/matters/${matterId}/job-outcomes/${jobType}/${jobId}`
+}
+
+/**
+ * @summary Get Job Outcome Summary
+ */
+export const getJobOutcomeSummaryV1MattersMatterIdJobOutcomesJobTypeJobIdGet = async (matterId: string,
+    jobType: string,
+    jobId: string, options?: RequestInit): Promise<getJobOutcomeSummaryV1MattersMatterIdJobOutcomesJobTypeJobIdGetResponse> => {
+
+  const res = await fetch(getGetJobOutcomeSummaryV1MattersMatterIdJobOutcomesJobTypeJobIdGetUrl(matterId,jobType,jobId),
+  {
+    ...options,
+    method: 'GET'
+
+
+  }
+)
+
+
+  const body = [204, 205, 304].includes(res.status) ? null : await res.text();
+
+  const data: getJobOutcomeSummaryV1MattersMatterIdJobOutcomesJobTypeJobIdGetResponse['data'] = body ? JSON.parse(body) : {}
+  return { data, status: res.status, headers: res.headers } as getJobOutcomeSummaryV1MattersMatterIdJobOutcomesJobTypeJobIdGetResponse
+}
+
+
+
+export type listJobOutcomeItemsV1MattersMatterIdJobOutcomesJobTypeJobIdItemsGetResponse200 = {
+  data: JobOutcomeItemPage
+  status: 200
+}
+
+export type listJobOutcomeItemsV1MattersMatterIdJobOutcomesJobTypeJobIdItemsGetResponse422 = {
+  data: HTTPValidationError
+  status: 422
+}
+
+export type listJobOutcomeItemsV1MattersMatterIdJobOutcomesJobTypeJobIdItemsGetResponseSuccess = (listJobOutcomeItemsV1MattersMatterIdJobOutcomesJobTypeJobIdItemsGetResponse200) & {
+  headers: Headers;
+};
+export type listJobOutcomeItemsV1MattersMatterIdJobOutcomesJobTypeJobIdItemsGetResponseError = (listJobOutcomeItemsV1MattersMatterIdJobOutcomesJobTypeJobIdItemsGetResponse422) & {
+  headers: Headers;
+};
+
+export type listJobOutcomeItemsV1MattersMatterIdJobOutcomesJobTypeJobIdItemsGetResponse = (listJobOutcomeItemsV1MattersMatterIdJobOutcomesJobTypeJobIdItemsGetResponseSuccess | listJobOutcomeItemsV1MattersMatterIdJobOutcomesJobTypeJobIdItemsGetResponseError)
+
+export const getListJobOutcomeItemsV1MattersMatterIdJobOutcomesJobTypeJobIdItemsGetUrl = (matterId: string,
+    jobType: string,
+    jobId: string,
+    params?: ListJobOutcomeItemsV1MattersMatterIdJobOutcomesJobTypeJobIdItemsGetParams,) => {
+  const normalizedParams = new URLSearchParams();
+
+  Object.entries(params || {}).forEach(([key, value]) => {
+
+    if (value !== undefined) {
+      normalizedParams.append(key, value === null ? 'null' : String(value))
+    }
+  });
+
+  const stringifiedParams = normalizedParams.toString();
+
+  return stringifiedParams.length > 0 ? `/api/core/v1/matters/${matterId}/job-outcomes/${jobType}/${jobId}/items?${stringifiedParams}` : `/api/core/v1/matters/${matterId}/job-outcomes/${jobType}/${jobId}/items`
+}
+
+/**
+ * @summary List Job Outcome Items
+ */
+export const listJobOutcomeItemsV1MattersMatterIdJobOutcomesJobTypeJobIdItemsGet = async (matterId: string,
+    jobType: string,
+    jobId: string,
+    params?: ListJobOutcomeItemsV1MattersMatterIdJobOutcomesJobTypeJobIdItemsGetParams, options?: RequestInit): Promise<listJobOutcomeItemsV1MattersMatterIdJobOutcomesJobTypeJobIdItemsGetResponse> => {
+
+  const res = await fetch(getListJobOutcomeItemsV1MattersMatterIdJobOutcomesJobTypeJobIdItemsGetUrl(matterId,jobType,jobId,params),
+  {
+    ...options,
+    method: 'GET'
+
+
+  }
+)
+
+
+  const body = [204, 205, 304].includes(res.status) ? null : await res.text();
+
+  const data: listJobOutcomeItemsV1MattersMatterIdJobOutcomesJobTypeJobIdItemsGetResponse['data'] = body ? JSON.parse(body) : {}
+  return { data, status: res.status, headers: res.headers } as listJobOutcomeItemsV1MattersMatterIdJobOutcomesJobTypeJobIdItemsGetResponse
+}
+
+
+
+export type downloadJobOutcomesV1MattersMatterIdJobOutcomesJobTypeJobIdDownloadGetResponse200 = {
+  data: unknown
+  status: 200
+}
+
+export type downloadJobOutcomesV1MattersMatterIdJobOutcomesJobTypeJobIdDownloadGetResponse422 = {
+  data: HTTPValidationError
+  status: 422
+}
+
+export type downloadJobOutcomesV1MattersMatterIdJobOutcomesJobTypeJobIdDownloadGetResponseSuccess = (downloadJobOutcomesV1MattersMatterIdJobOutcomesJobTypeJobIdDownloadGetResponse200) & {
+  headers: Headers;
+};
+export type downloadJobOutcomesV1MattersMatterIdJobOutcomesJobTypeJobIdDownloadGetResponseError = (downloadJobOutcomesV1MattersMatterIdJobOutcomesJobTypeJobIdDownloadGetResponse422) & {
+  headers: Headers;
+};
+
+export type downloadJobOutcomesV1MattersMatterIdJobOutcomesJobTypeJobIdDownloadGetResponse = (downloadJobOutcomesV1MattersMatterIdJobOutcomesJobTypeJobIdDownloadGetResponseSuccess | downloadJobOutcomesV1MattersMatterIdJobOutcomesJobTypeJobIdDownloadGetResponseError)
+
+export const getDownloadJobOutcomesV1MattersMatterIdJobOutcomesJobTypeJobIdDownloadGetUrl = (matterId: string,
+    jobType: string,
+    jobId: string,
+    params?: DownloadJobOutcomesV1MattersMatterIdJobOutcomesJobTypeJobIdDownloadGetParams,) => {
+  const normalizedParams = new URLSearchParams();
+
+  Object.entries(params || {}).forEach(([key, value]) => {
+
+    if (value !== undefined) {
+      normalizedParams.append(key, value === null ? 'null' : String(value))
+    }
+  });
+
+  const stringifiedParams = normalizedParams.toString();
+
+  return stringifiedParams.length > 0 ? `/api/core/v1/matters/${matterId}/job-outcomes/${jobType}/${jobId}/download?${stringifiedParams}` : `/api/core/v1/matters/${matterId}/job-outcomes/${jobType}/${jobId}/download`
+}
+
+/**
+ * @summary Download Job Outcomes
+ */
+export const downloadJobOutcomesV1MattersMatterIdJobOutcomesJobTypeJobIdDownloadGet = async (matterId: string,
+    jobType: string,
+    jobId: string,
+    params?: DownloadJobOutcomesV1MattersMatterIdJobOutcomesJobTypeJobIdDownloadGetParams, options?: RequestInit): Promise<downloadJobOutcomesV1MattersMatterIdJobOutcomesJobTypeJobIdDownloadGetResponse> => {
+
+  const res = await fetch(getDownloadJobOutcomesV1MattersMatterIdJobOutcomesJobTypeJobIdDownloadGetUrl(matterId,jobType,jobId,params),
+  {
+    ...options,
+    method: 'GET'
+
+
+  }
+)
+
+
+  const body = [204, 205, 304].includes(res.status) ? null : await res.text();
+
+  const data: downloadJobOutcomesV1MattersMatterIdJobOutcomesJobTypeJobIdDownloadGetResponse['data'] = body ? JSON.parse(body) : {}
+  return { data, status: res.status, headers: res.headers } as downloadJobOutcomesV1MattersMatterIdJobOutcomesJobTypeJobIdDownloadGetResponse
 }
 
 

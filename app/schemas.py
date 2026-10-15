@@ -597,6 +597,7 @@ class MatterEmbeddingJobRead(ORMModel):
     batch_count: int
     processed_count: int
     embedded_count: int
+    reused_count: int
     skipped_count: int
     failed_count: int
     chunk_count: int
@@ -622,6 +623,7 @@ class MatterEmbeddingBatchRead(ORMModel):
     item_count: int
     processed_count: int
     embedded_count: int
+    reused_count: int
     skipped_count: int
     failed_count: int
     chunk_count: int
@@ -632,6 +634,54 @@ class MatterEmbeddingBatchRead(ORMModel):
     provider_last_polled_at: datetime | None
     created_at: datetime
     updated_at: datetime
+
+
+JobOutcomeStatus = Literal["SUCCEEDED", "REUSED", "SKIPPED", "FAILED", "EXCLUDED", "CANCELED"]
+
+
+class JobOutcomeManifestRead(ORMModel):
+    id: uuid.UUID | None
+    job_type: str
+    job_id: uuid.UUID
+    manifest_status: Literal["BUILDING", "FINALIZED", "FAILED", "UNAVAILABLE"]
+    outcome_schema: str
+    outcome_schema_version: int
+    item_count: int
+    status_counts: dict[str, int]
+    reason_counts: dict[str, int]
+    artifact_id: uuid.UUID | None
+    artifact_content_hash: str | None
+    artifact_byte_length: int | None
+    finalized_at: datetime | None
+    failure_summary: str | None
+    item_details_available: bool
+    legacy: bool = False
+    created_at: datetime
+    updated_at: datetime
+
+
+class JobOutcomeItemRead(BaseModel):
+    ordinal: int
+    item_kind: str
+    item_id: str
+    outcome_status: JobOutcomeStatus
+    reason_code: str
+    message: str | None
+    batch_id: str | None
+    attempt_number: int
+    input_fingerprint: str | None
+    output_references: list[dict[str, Any]]
+    metrics: dict[str, Any]
+    payload: dict[str, Any]
+    started_at: datetime | None
+    completed_at: datetime | None
+
+
+class JobOutcomeItemPage(BaseModel):
+    total: int
+    offset: int
+    limit: int
+    items: list[JobOutcomeItemRead]
 
 
 class MatterTopicJobCreate(BaseModel):

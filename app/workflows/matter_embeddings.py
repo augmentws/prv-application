@@ -76,13 +76,31 @@ def matter_embedding_voyage_batch(
     submission = submit_voyage(batch_id)
     status = str(submission["status"])
     if status == "cancelled":
-        return {key: 0 for key in ("processed_count", "embedded_count", "skipped_count", "failed_count", "chunk_count")}
+        return {
+            key: 0
+            for key in (
+                "processed_count",
+                "embedded_count",
+                "reused_count",
+                "skipped_count",
+                "failed_count",
+                "chunk_count",
+            )
+        }
     while status not in {"completed", "partially_completed", "not_required"}:
         DBOS.sleep(poll_seconds)
         status = poll_voyage(batch_id)
         if status == "cancelled":
             return {
-                key: 0 for key in ("processed_count", "embedded_count", "skipped_count", "failed_count", "chunk_count")
+                key: 0
+                for key in (
+                    "processed_count",
+                    "embedded_count",
+                    "reused_count",
+                    "skipped_count",
+                    "failed_count",
+                    "chunk_count",
+                )
             }
     return finalize_voyage(batch_id)
 

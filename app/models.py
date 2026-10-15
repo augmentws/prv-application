@@ -596,7 +596,8 @@ class MatterEmbeddingJob(TimestampMixin, Base):
         ),
         CheckConstraint(
             "total_count >= 0 AND batch_count >= 0 AND processed_count >= 0 AND "
-            "embedded_count >= 0 AND skipped_count >= 0 AND failed_count >= 0 AND chunk_count >= 0",
+            "embedded_count >= 0 AND reused_count >= 0 AND skipped_count >= 0 AND "
+            "failed_count >= 0 AND chunk_count >= 0",
             name="ck_matter_embedding_job_counts",
         ),
         Index("ix_matter_embedding_job_matter_created", "matter_id", "created_at"),
@@ -629,6 +630,7 @@ class MatterEmbeddingJob(TimestampMixin, Base):
     batch_count: Mapped[int] = mapped_column(Integer, default=0)
     processed_count: Mapped[int] = mapped_column(Integer, default=0)
     embedded_count: Mapped[int] = mapped_column(Integer, default=0)
+    reused_count: Mapped[int] = mapped_column(Integer, default=0)
     skipped_count: Mapped[int] = mapped_column(Integer, default=0)
     failed_count: Mapped[int] = mapped_column(Integer, default=0)
     chunk_count: Mapped[int] = mapped_column(Integer, default=0)
@@ -679,7 +681,7 @@ class MatterEmbeddingBatch(TimestampMixin, Base):
         ),
         CheckConstraint(
             "item_count >= 0 AND processed_count >= 0 AND embedded_count >= 0 AND "
-            "skipped_count >= 0 AND failed_count >= 0 AND chunk_count >= 0",
+            "reused_count >= 0 AND skipped_count >= 0 AND failed_count >= 0 AND chunk_count >= 0",
             name="ck_matter_embedding_batch_counts",
         ),
         CheckConstraint(
@@ -698,6 +700,7 @@ class MatterEmbeddingBatch(TimestampMixin, Base):
     item_count: Mapped[int] = mapped_column(Integer)
     processed_count: Mapped[int] = mapped_column(Integer, default=0)
     embedded_count: Mapped[int] = mapped_column(Integer, default=0)
+    reused_count: Mapped[int] = mapped_column(Integer, default=0)
     skipped_count: Mapped[int] = mapped_column(Integer, default=0)
     failed_count: Mapped[int] = mapped_column(Integer, default=0)
     chunk_count: Mapped[int] = mapped_column(Integer, default=0)
@@ -710,6 +713,56 @@ class MatterEmbeddingBatch(TimestampMixin, Base):
     provider_request_count: Mapped[int] = mapped_column(Integer, default=0)
     provider_manifest: Mapped[dict[str, Any] | None] = mapped_column(JSON)
     provider_last_polled_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+
+
+class JobOutcomeManifest(TimestampMixin, Base):
+    __tablename__ = "job_outcome_manifest"
+    __table_args__ = (
+        UniqueConstraint("job_type", "job_id", name="uq_job_outcome_manifest_job"),
+        CheckConstraint(
+            "manifest_status IN ('BUILDING', 'FINALIZED', 'FAILED')",
+            name="ck_job_outcome_manifest_status",
+        ),
+        CheckConstraint("outcome_schema_version > 0", name="ck_job_outcome_manifest_schema_version"),
+        CheckConstraint("item_count >= 0", name="ck_job_outcome_manifest_item_count"),
+        CheckConstraint(
+            "(artifact_id IS NULL AND artifact_content_hash IS NULL AND artifact_byte_length IS NULL) OR "
+            "(artifact_id IS NOT NULL AND artifact_content_hash IS NOT NULL AND artifact_byte_length IS NOT NULL)",
+            name="ck_job_outcome_manifest_artifact_tuple",
+        ),
+        CheckConstraint(
+            "manifest_status != 'FINALIZED' OR (artifact_id IS NOT NULL AND finalized_at IS NOT NULL)",
+            name="ck_job_outcome_manifest_finalized",
+        ),
+        Index("ix_job_outcome_manifest_scope", "tenant_id", "client_id", "matter_id"),
+    )
+
+    id: Mapped[uuid.UUID] = mapped_column(Uuid, primary_key=True, default=uuid.uuid4)
+    tenant_id: Mapped[uuid.UUID] = mapped_column(Uuid, ForeignKey("tenant.id", ondelete="RESTRICT"), index=True)
+    client_id: Mapped[uuid.UUID | None] = mapped_column(
+        Uuid, ForeignKey("client.id", ondelete="RESTRICT"), nullable=True, index=True
+    )
+    matter_id: Mapped[uuid.UUID | None] = mapped_column(
+        Uuid, ForeignKey("matter.id", ondelete="CASCADE"), nullable=True, index=True
+    )
+    job_type: Mapped[str] = mapped_column(String(80))
+    job_id: Mapped[uuid.UUID] = mapped_column(Uuid)
+    manifest_status: Mapped[str] = mapped_column(String(20), default="BUILDING")
+    outcome_schema: Mapped[str] = mapped_column(String(100))
+    outcome_schema_version: Mapped[int] = mapped_column(Integer)
+    artifact_id: Mapped[uuid.UUID | None] = mapped_column(Uuid, nullable=True)
+    artifact_content_hash: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    artifact_byte_length: Mapped[int | None] = mapped_column(BigInteger, nullable=True)
+    derivation_key: Mapped[str] = mapped_column(String(64))
+    item_count: Mapped[int] = mapped_column(BigInteger, default=0)
+    status_counts: Mapped[dict[str, Any]] = mapped_column(JSON, default=dict)
+    reason_counts: Mapped[dict[str, Any]] = mapped_column(JSON, default=dict)
+    producer_kind: Mapped[str] = mapped_column(String(50))
+    producer_run_id: Mapped[uuid.UUID] = mapped_column(
+        Uuid, ForeignKey("workflow_run.id", ondelete="RESTRICT"), index=True
+    )
+    finalized_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    failure_summary: Mapped[str | None] = mapped_column(Text, nullable=True)
 
 
 class MatterTopicJob(TimestampMixin, Base):

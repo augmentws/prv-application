@@ -23,6 +23,7 @@ import { SaveMatterTemplateDialog, type SaveMatterTemplateValues } from "@/compo
 import { CreateTopicJobDialog } from "@/components/forms/create-topic-job-dialog";
 import { HelpLink } from "@/components/help-link";
 import { JobFailedDocumentsDialog } from "@/components/job-failed-documents-dialog";
+import { JobOutcomesDialog } from "@/components/job-outcomes-dialog";
 import { MatterDefinitionPanel } from "@/components/matter-definition-panel";
 import { MatterTokenUsagePanel } from "@/components/matter-token-usage-panel";
 import { MetadataGroupsPanel } from "@/components/metadata-groups-panel";
@@ -475,22 +476,24 @@ export function MatterView({ clientId, matterId, requestedTab, requestedMetadata
     { accessorKey: "embedding_model", header: "Model", cell: ({ row }) => <div><p className="max-w-64 truncate font-semibold">{row.original.embedding_model}</p><p className="text-xs text-muted-foreground">{row.original.embedding_dimensions.toLocaleString()} dimensions</p>{row.original.error_message ? <p className="mt-1 max-w-80 truncate text-xs text-destructive" title={row.original.error_message}>{row.original.error_message}</p> : null}</div> },
     { accessorKey: "status", header: "Status", cell: ({ row }) => <div className="space-y-1"><StatusBadge status={row.original.status} />{row.original.execution ? <p className="whitespace-nowrap text-xs text-muted-foreground">{row.original.execution.stage_label} · attempt {row.original.execution.attempt_number}</p> : null}</div> },
     { id: "progress", header: "Progress", cell: ({ row }) => <EmbeddingProgress job={row.original} /> },
-    { accessorKey: "embedded_count", header: "Generated", cell: ({ row }) => <span className="tabular-nums">{row.original.embedded_count.toLocaleString()}</span> },
-    { accessorKey: "skipped_count", header: "Skipped", cell: ({ row }) => <span className="tabular-nums text-muted-foreground">{row.original.skipped_count.toLocaleString()}</span> },
+    { accessorKey: "embedded_count", header: "Generated", cell: ({ row }) => <EmbeddingOutcomeCount matterId={matterId} job={row.original} status="SUCCEEDED" count={row.original.embedded_count} /> },
+    { accessorKey: "reused_count", header: "Reused", cell: ({ row }) => <EmbeddingOutcomeCount matterId={matterId} job={row.original} status="REUSED" count={row.original.reused_count} muted /> },
+    { accessorKey: "skipped_count", header: "Skipped", cell: ({ row }) => <EmbeddingOutcomeCount matterId={matterId} job={row.original} status="SKIPPED" count={row.original.skipped_count} muted /> },
+    { accessorKey: "failed_count", header: "Failed", cell: ({ row }) => <EmbeddingOutcomeCount matterId={matterId} job={row.original} status="FAILED" count={row.original.failed_count} destructive={row.original.failed_count > 0} /> },
     { accessorKey: "chunk_count", header: "Chunks", cell: ({ row }) => <span className="tabular-nums">{row.original.chunk_count.toLocaleString()}</span> },
     { id: "provider_usage", header: "Token usage", cell: ({ row }) => <EmbeddingTokenUsage job={row.original} /> },
     { accessorKey: "created_at", header: "Created", cell: ({ row }) => <span className="whitespace-nowrap text-muted-foreground">{formatDate(row.original.created_at)}</span> },
     { id: "actions", header: "", cell: ({ row }) => (row.original.execution?.available_actions.includes("CANCEL") ?? ["QUEUED", "PLANNING", "RUNNING"].includes(row.original.status))
       ? <Button size="sm" variant="outline" onClick={() => cancelEmbeddingJobMutation.mutate(row.original.id)}><Ban />Cancel</Button>
-      : <DeletableJobActions
+      : <EmbeddingJobActions
+          matterId={matterId}
+          job={row.original}
           canDelete={canDeleteJobs}
-          jobType="MATTER_EMBEDDING_JOB"
-          jobId={row.original.id}
-          jobName={`${row.original.embedding_model} embedding job`}
           onDelete={deleteJob}
-          primary={row.original.status === "FAILED" ? <button type="button" disabled={retryEmbeddingIndexMutation.isPending} onClick={() => retryEmbeddingIndexMutation.mutate(row.original.id)}><RotateCcw />Retry indexing</button> : undefined}
+          onRetryIndex={() => retryEmbeddingIndexMutation.mutate(row.original.id)}
+          retryingIndex={retryEmbeddingIndexMutation.isPending}
         /> },
-  ], [canDeleteJobs, cancelEmbeddingJobMutation, deleteJob, retryEmbeddingIndexMutation]);
+  ], [canDeleteJobs, cancelEmbeddingJobMutation, deleteJob, matterId, retryEmbeddingIndexMutation]);
   const topicJobColumns = useMemo<ColumnDef<MatterTopicJobRead>[]>(() => [
     { accessorKey: "operating_mode", header: "Mode", cell: ({ row }) => {
       const scope = row.original.scope_mode === "INCLUDE_SAVED_SEARCH"
@@ -818,6 +821,63 @@ function DeletableJobActions({ canDelete, jobType, jobId, jobName, onDelete, pri
       }]}
     /> : <Button type="button" size="sm" variant="outline" onClick={() => setOpen(true)}><Trash2 />Delete job</Button>}
     <SoftDeleteDialog open={open} onOpenChange={setOpen} resourceType="job" resourceName={jobName} onDelete={() => onDelete(jobType, jobId)} />
+  </>;
+}
+
+function EmbeddingOutcomeCount({ matterId, job, status, count, muted = false, destructive = false }: {
+  matterId: string;
+  job: MatterEmbeddingJobRead;
+  status: "SUCCEEDED" | "REUSED" | "SKIPPED" | "FAILED";
+  count: number;
+  muted?: boolean;
+  destructive?: boolean;
+}) {
+  const terminal = ["COMPLETED", "COMPLETED_WITH_ERRORS", "FAILED", "CANCELED"].includes(job.status);
+  const label = { SUCCEEDED: "generated", REUSED: "reused", SKIPPED: "skipped", FAILED: "failed" }[status];
+  const classes = `tabular-nums ${destructive ? "text-destructive" : muted ? "text-muted-foreground" : ""}`;
+  if (!terminal) return <span className={classes}>{count.toLocaleString()}</span>;
+  return <JobOutcomesDialog
+    matterId={matterId}
+    jobType="MATTER_EMBEDDING_JOB"
+    jobId={job.id}
+    jobName={`${job.embedding_model} embedding job`}
+    initialStatus={status}
+    trigger={<button type="button" className={`${classes} underline-offset-4 hover:text-primary hover:underline`} aria-label={`View ${label} outcomes`}>{count.toLocaleString()}</button>}
+  />;
+}
+
+function EmbeddingJobActions({ matterId, job, canDelete, onDelete, onRetryIndex, retryingIndex }: {
+  matterId: string;
+  job: MatterEmbeddingJobRead;
+  canDelete: boolean;
+  onDelete: (jobType: string, jobId: string) => Promise<void>;
+  onRetryIndex: () => void;
+  retryingIndex: boolean;
+}) {
+  const [outcomesOpen, setOutcomesOpen] = useState(false);
+  const [deleteOpen, setDeleteOpen] = useState(false);
+  const jobName = `${job.embedding_model} embedding job`;
+  const actions = [
+    ...(job.status === "FAILED" ? [{
+      id: "retry-index",
+      label: "Retry indexing",
+      icon: <RotateCcw aria-hidden="true" className="size-4" />,
+      disabled: retryingIndex,
+      onSelect: onRetryIndex,
+    }] : []),
+    ...(canDelete ? [{
+      id: "delete",
+      label: "Delete job",
+      icon: <Trash2 aria-hidden="true" className="size-4" />,
+      destructive: true,
+      onSelect: () => setDeleteOpen(true),
+    }] : []),
+  ];
+  const primary = <button type="button" onClick={() => setOutcomesOpen(true)}><FileSearch />View outcomes</button>;
+  return <>
+    {actions.length ? <SplitActionButton label={jobName} primary={primary} variant="outline" actions={actions} /> : <Button type="button" size="sm" variant="outline" onClick={() => setOutcomesOpen(true)}><FileSearch />View outcomes</Button>}
+    <JobOutcomesDialog matterId={matterId} jobType="MATTER_EMBEDDING_JOB" jobId={job.id} jobName={jobName} open={outcomesOpen} onOpenChange={setOutcomesOpen} trigger={null} />
+    <SoftDeleteDialog open={deleteOpen} onOpenChange={setDeleteOpen} resourceType="job" resourceName={jobName} onDelete={() => onDelete("MATTER_EMBEDDING_JOB", job.id)} />
   </>;
 }
 

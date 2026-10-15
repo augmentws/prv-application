@@ -19,6 +19,7 @@ from app.routers import (
     collection_deletions,
     document_metadata,
     job_executions,
+    job_outcomes,
     managed_skills,
     matter_definition_assessments,
     matter_definitions,
@@ -88,6 +89,7 @@ app.include_router(matter_topics.router)
 app.include_router(coding_history.router)
 app.include_router(document_metadata.router)
 app.include_router(job_executions.router)
+app.include_router(job_outcomes.router)
 app.include_router(metadata.router)
 app.include_router(metadata_groups.router)
 app.include_router(provider_usage.router)

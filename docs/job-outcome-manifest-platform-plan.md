@@ -23,6 +23,29 @@ finding no usable text.
 This plan adds a reusable item-level outcome facility for document-oriented
 jobs without putting millions of outcome rows in the Core PostgreSQL database.
 
+## Implementation status
+
+Phases 0 through 4 are implemented by the initial embedding vertical slice:
+
+- Artifact owns the neutral workflow-artifact type contract and the immutable
+  `JOB_ITEM_OUTCOME_FRAGMENT` and `JOB_ITEM_OUTCOMES` Parquet artifacts.
+- Core stores one `job_outcome_manifest` row per logical embedding job and no
+  per-document outcome rows.
+- Newly planned realtime and Voyage embedding jobs publish exact, ordered batch
+  fragments and finalize one verified outcome artifact before completion.
+- Generated, reused, skipped, failed, and canceled results have distinct stable
+  statuses and reason codes. Cancellation fills batches without a published
+  fragment with canceled outcomes while preserving completed fragments.
+- Matter-admin APIs expose the summary, bounded status/reason pages, and audited
+  CSV or Parquet downloads. The Jobs and Classification screens use the shared
+  viewer.
+- Historical jobs without exact retained outcomes remain available as explicitly
+  partial legacy summaries; the implementation does not fabricate detail rows.
+
+Phase 5 adapters and Phase 6 retention, integrity-scanning, and million-row
+performance hardening remain planned. Classification predictions continue to use
+their existing complete prediction artifact until a compatible adapter is added.
+
 ## 2. Architectural decision
 
 Use two layers:
