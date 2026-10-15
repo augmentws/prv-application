@@ -1502,6 +1502,7 @@ class WorkflowRun(TimestampMixin, Base):
                 "ANALYSIS_TASK_BATCH_RUN",
                 "MATTER_SEARCH_EXPORT",
                 "MATTER_FACT_EXPORT",
+                "FACT_DEVELOPMENT_ANALYSIS_TASK",
             }
             and self.status not in {"COMPLETED", "COMPLETED_WITH_ERRORS", "FAILED", "CANCELED"}
             and self.cancel_requested_at is None
@@ -1516,6 +1517,9 @@ class WorkflowRun(TimestampMixin, Base):
             "MATTER_SEARCH_EXPORT",
             "MATTER_FACT_EXPORT",
         } and (self.status == "CANCELED" or (self.status == "FAILED" and self.failure_retriable)):
+            actions.append("RETRY")
+        elif self.job_type == "FACT_DEVELOPMENT_ANALYSIS_TASK" and self.status == "FAILED" and self.failure_retriable:
+            # Cancellation finalizes the run's outcomes, so only a failed run can resume.
             actions.append("RETRY")
         return actions
 
@@ -4100,9 +4104,15 @@ class MatterAnalysisTaskRun(TimestampMixin, Base):
             name="ck_analysis_task_run_scope_type",
         ),
         CheckConstraint(
-            "status IN ('QUEUED', 'SNAPSHOTTING', 'PREPARING_FEATURES', 'SCORING', "
+            "status IN ('QUEUED', 'SNAPSHOTTING', 'PREPARING_FEATURES', 'SCORING', 'PREPARING', 'EXTRACTING', "
             "'COMPLETED', 'COMPLETED_WITH_ERRORS', 'FAILED', 'CANCELED')",
             name="ck_analysis_task_run_status",
+        ),
+        CheckConstraint("run_kind IN ('CLASSIFICATION', 'FACT_DEVELOPMENT')", name="ck_analysis_task_run_kind"),
+        CheckConstraint(
+            "run_kind <> 'CLASSIFICATION' OR (classification_model_id IS NOT NULL "
+            "AND classification_model_version_id IS NOT NULL AND embedding_job_id IS NOT NULL)",
+            name="ck_analysis_task_run_classification_inputs",
         ),
         CheckConstraint(
             "progress_completed >= 0 AND progress_total > 0 AND progress_completed <= progress_total",
@@ -4127,17 +4137,21 @@ class MatterAnalysisTaskRun(TimestampMixin, Base):
     matter_analysis_task_version_id: Mapped[uuid.UUID] = mapped_column(
         Uuid, ForeignKey("matter_analysis_task_version.id", ondelete="RESTRICT")
     )
+    run_kind: Mapped[str] = mapped_column(String(30), default="CLASSIFICATION", server_default="CLASSIFICATION")
     scope_type: Mapped[str] = mapped_column(String(30))
     scope_id: Mapped[uuid.UUID] = mapped_column(Uuid)
-    classification_model_id: Mapped[uuid.UUID] = mapped_column(
-        Uuid, ForeignKey("classification_model.id", ondelete="RESTRICT")
+    classification_model_id: Mapped[uuid.UUID | None] = mapped_column(
+        Uuid, ForeignKey("classification_model.id", ondelete="RESTRICT"), nullable=True
     )
-    classification_model_version_id: Mapped[uuid.UUID] = mapped_column(
-        Uuid, ForeignKey("classification_model_version.id", ondelete="RESTRICT")
+    classification_model_version_id: Mapped[uuid.UUID | None] = mapped_column(
+        Uuid, ForeignKey("classification_model_version.id", ondelete="RESTRICT"), nullable=True
     )
-    embedding_job_id: Mapped[uuid.UUID] = mapped_column(
-        Uuid, ForeignKey("matter_embedding_job.id", ondelete="RESTRICT")
+    embedding_job_id: Mapped[uuid.UUID | None] = mapped_column(
+        Uuid, ForeignKey("matter_embedding_job.id", ondelete="RESTRICT"), nullable=True
     )
+    # Frozen configuration and aggregate report for non-classification runs (fact development).
+    configuration_snapshot: Mapped[dict[str, Any]] = mapped_column(JSON, default=dict)
+    report: Mapped[dict[str, Any]] = mapped_column(JSON, default=dict)
     dataset_snapshot_id: Mapped[uuid.UUID | None] = mapped_column(
         Uuid,
         ForeignKey("classification_dataset_snapshot.id", ondelete="RESTRICT"),
@@ -4191,6 +4205,42 @@ class MatterAnalysisTaskRun(TimestampMixin, Base):
     @property
     def feature_processed_count(self) -> int:
         return self.feature_ready_count + self.feature_missing_count + self.feature_failed_count
+
+
+class MatterAnalysisTaskRunChunk(TimestampMixin, Base):
+    """A frozen, fixed-size slice of a fact-development run's documents and the issues each one matched.
+
+    One row per chunk (never per document): ``document_ids`` and ``issue_keys`` are parallel lists in review-batch
+    order, snapshotted when the run is prepared so later coding changes do not alter the run.
+    """
+
+    __tablename__ = "matter_analysis_task_run_chunk"
+    __table_args__ = (
+        UniqueConstraint("run_id", "chunk_number", name="uq_analysis_task_run_chunk_number"),
+        CheckConstraint(
+            "status IN ('QUEUED', 'RUNNING', 'COMPLETED', 'COMPLETED_WITH_ERRORS', 'CANCELED')",
+            name="ck_analysis_task_run_chunk_status",
+        ),
+        CheckConstraint(
+            "chunk_number >= 0 AND ordinal_start >= 0 AND item_count >= 0 AND processed_count >= 0 "
+            "AND failed_count >= 0",
+            name="ck_analysis_task_run_chunk_counts",
+        ),
+    )
+
+    id: Mapped[uuid.UUID] = mapped_column(Uuid, primary_key=True, default=uuid.uuid4)
+    run_id: Mapped[uuid.UUID] = mapped_column(
+        Uuid, ForeignKey("matter_analysis_task_run.id", ondelete="CASCADE"), index=True
+    )
+    chunk_number: Mapped[int] = mapped_column(Integer)
+    ordinal_start: Mapped[int] = mapped_column(Integer)
+    document_ids: Mapped[list[str]] = mapped_column(JSON)
+    issue_keys: Mapped[list[list[str]]] = mapped_column(JSON)
+    item_count: Mapped[int] = mapped_column(Integer)
+    status: Mapped[str] = mapped_column(String(30), default="QUEUED")
+    processed_count: Mapped[int] = mapped_column(Integer, default=0)
+    failed_count: Mapped[int] = mapped_column(Integer, default=0)
+    counts: Mapped[dict[str, Any]] = mapped_column(JSON, default=dict)
 
 
 class MatterAnalysisTaskVersionDependency(Base):

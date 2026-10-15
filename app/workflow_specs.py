@@ -136,12 +136,29 @@ FACT_SPECIFICATION_COMPILATION_SPEC = WorkflowSpec(
     ),
 )
 
+FACT_DEVELOPMENT_SPEC = WorkflowSpec(
+    key="fact_development_v1",
+    code_version="1",
+    name="Fact development",
+    description="Reads coded documents and proposes dated, sourced facts for reviewers to confirm.",
+    roles=(
+        WorkflowRoleSpec(
+            key="fact_extraction",
+            input_schema_key="fact_extraction_input_v1",
+            output_schema_key="fact_extraction_output_v1",
+            allowed_capabilities=frozenset({"structured_output", "prompt_caching", "long_context"}),
+            allowed_tool_keys=frozenset(),
+        ),
+    ),
+)
+
 WORKFLOW_SPECS = {
     MATTER_DEFINITION_ASSESSMENT_SPEC.key: MATTER_DEFINITION_ASSESSMENT_SPEC,
     MATTER_ANALYSIS_TASK_COMPILATION_SPEC.key: MATTER_ANALYSIS_TASK_COMPILATION_SPEC,
     MATTER_ANALYSIS_TASK_PLAYGROUND_SPEC.key: MATTER_ANALYSIS_TASK_PLAYGROUND_SPEC,
     MATTER_ANALYSIS_TASK_BATCH_SPEC.key: MATTER_ANALYSIS_TASK_BATCH_SPEC,
     FACT_SPECIFICATION_COMPILATION_SPEC.key: FACT_SPECIFICATION_COMPILATION_SPEC,
+    FACT_DEVELOPMENT_SPEC.key: FACT_DEVELOPMENT_SPEC,
 }
 
 

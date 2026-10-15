@@ -1868,6 +1868,7 @@ def list_review_batch_analysis_runs(
             MatterAnalysisTaskRun.matter_id == matter_id,
             MatterAnalysisTaskRun.scope_type == "REVIEW_BATCH",
             MatterAnalysisTaskRun.scope_id == batch.id,
+            MatterAnalysisTaskRun.run_kind == "CLASSIFICATION",
             job_not_archived(CLASSIFICATION_ANALYSIS_TASK_JOB_TYPE, MatterAnalysisTaskRun.id),
         )
         .options(

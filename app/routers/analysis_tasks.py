@@ -19,6 +19,7 @@ from app.analysis_tasks import (
     set_fact_development_specification,
 )
 from app.audit import record_audit
+from app.authorization import ResourceRef, can
 from app.classification_analysis_tasks import (
     ClassificationAnalysisTaskError,
     cancel_classification_analysis_run,
@@ -26,11 +27,21 @@ from app.classification_analysis_tasks import (
 )
 from app.database import get_db
 from app.dependencies import Principal, can_admin_matter, get_principal
+from app.fact_development import (
+    FactDevelopmentRunError,
+    cancel_fact_development_run,
+    create_fact_development_run,
+    finalize_canceled_fact_development_run,
+)
 from app.fact_issue_membership import FactIssueMembershipError, evaluate_issue_membership, issue_document_counts
 from app.fact_specification_compilation import queue_fact_specification_compilation
 from app.fact_specifications import FactSpecificationError, parse_fact_development_specification
 from app.job_archives import job_not_archived
-from app.job_executions import ANALYSIS_TASK_BATCH_RUN_JOB_TYPE, CLASSIFICATION_ANALYSIS_TASK_JOB_TYPE
+from app.job_executions import (
+    ANALYSIS_TASK_BATCH_RUN_JOB_TYPE,
+    CLASSIFICATION_ANALYSIS_TASK_JOB_TYPE,
+    FACT_DEVELOPMENT_ANALYSIS_TASK_JOB_TYPE,
+)
 from app.models import (
     ClassificationModelVersion,
     Matter,
@@ -50,6 +61,8 @@ from app.models import (
     WorkflowRun,
 )
 from app.schemas import (
+    FactDevelopmentRunCreate,
+    FactDevelopmentRunRead,
     FactDevelopmentSpecificationUpdate,
     FactIssueMembershipPreviewCreate,
     FactIssueMembershipPreviewRead,
@@ -69,7 +82,9 @@ from app.workflow_specs import MATTER_ANALYSIS_TASK_PLAYGROUND_SPEC
 from app.workflows.dispatcher import (
     cancel_classification_analysis_task,
     cancel_classification_model_scoring,
+    cancel_fact_development_run_workflow,
     enqueue_classification_analysis_task,
+    enqueue_fact_development_run,
 )
 
 router = APIRouter(prefix="/v1/matters/{matter_id}/analysis-tasks", tags=["matter analysis tasks"])
@@ -423,6 +438,7 @@ def list_analysis_task_runs(
             select(MatterAnalysisTaskRun)
             .where(
                 MatterAnalysisTaskRun.matter_analysis_task_id == task.id,
+                MatterAnalysisTaskRun.run_kind == "CLASSIFICATION",
                 job_not_archived(CLASSIFICATION_ANALYSIS_TASK_JOB_TYPE, MatterAnalysisTaskRun.id),
             )
             .options(
@@ -489,6 +505,7 @@ def cancel_analysis_task_run(
             MatterAnalysisTaskRun.id == run_id,
             MatterAnalysisTaskRun.matter_id == matter_id,
             MatterAnalysisTaskRun.matter_analysis_task_id == task.id,
+            MatterAnalysisTaskRun.run_kind == "CLASSIFICATION",
         )
         .with_for_update()
     )
@@ -936,3 +953,145 @@ def publish_analysis_task(
     db.refresh(task)
     db.refresh(task_version)
     return _task_read(db, task, task_version)
+
+
+def _require_fact_runner(db: Session, principal: Principal, matter_id: uuid.UUID) -> Matter:
+    matter = db.scalar(select(Matter).where(Matter.id == matter_id))
+    if matter is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Matter not found")
+    if not can(db, principal, "analysis_task.run", ResourceRef.matter(matter.id)):
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Permission required to run Analysis Tasks")
+    return matter
+
+
+def _fact_run(
+    db: Session,
+    *,
+    matter_id: uuid.UUID,
+    task_id: uuid.UUID,
+    run_id: uuid.UUID,
+    for_update: bool = False,
+) -> MatterAnalysisTaskRun:
+    statement = select(MatterAnalysisTaskRun).where(
+        MatterAnalysisTaskRun.id == run_id,
+        MatterAnalysisTaskRun.matter_id == matter_id,
+        MatterAnalysisTaskRun.matter_analysis_task_id == task_id,
+        MatterAnalysisTaskRun.run_kind == "FACT_DEVELOPMENT",
+    )
+    if for_update:
+        statement = statement.with_for_update()
+    run = db.scalar(statement)
+    if run is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Fact-development run not found")
+    return run
+
+
+@router.get("/{task_id}/fact-runs", response_model=list[FactDevelopmentRunRead])
+def list_fact_development_runs(
+    matter_id: uuid.UUID,
+    task_id: uuid.UUID,
+    principal: Principal = Depends(get_principal),
+    db: Session = Depends(get_db),
+) -> list[MatterAnalysisTaskRun]:
+    _require_fact_runner(db, principal, matter_id)
+    task = _require_task(db, matter_id=matter_id, task_id=task_id)
+    return list(
+        db.scalars(
+            select(MatterAnalysisTaskRun)
+            .where(
+                MatterAnalysisTaskRun.matter_analysis_task_id == task.id,
+                MatterAnalysisTaskRun.run_kind == "FACT_DEVELOPMENT",
+                job_not_archived(FACT_DEVELOPMENT_ANALYSIS_TASK_JOB_TYPE, MatterAnalysisTaskRun.id),
+            )
+            .options(selectinload(MatterAnalysisTaskRun.current_workflow_run))
+            .order_by(MatterAnalysisTaskRun.created_at.desc(), MatterAnalysisTaskRun.id.desc())
+        )
+    )
+
+
+@router.post(
+    "/{task_id}/fact-runs",
+    response_model=FactDevelopmentRunRead,
+    status_code=status.HTTP_202_ACCEPTED,
+)
+def start_fact_development_run(
+    matter_id: uuid.UUID,
+    task_id: uuid.UUID,
+    payload: FactDevelopmentRunCreate,
+    principal: Principal = Depends(get_principal),
+    db: Session = Depends(get_db),
+) -> MatterAnalysisTaskRun:
+    """Launch a fact-development run over one ready review batch, using the task's published issue catalog."""
+
+    matter = _require_fact_runner(db, principal, matter_id)
+    task = _require_task(db, matter_id=matter_id, task_id=task_id)
+    try:
+        run, created = create_fact_development_run(
+            db,
+            matter=matter,
+            task=task,
+            review_batch_id=payload.review_batch_id,
+            coding_source=payload.coding_source,
+            reviewer_coding_id=payload.reviewer_coding_id,
+            idempotency_key=payload.idempotency_key,
+            actor_user_id=principal.user.id,
+        )
+        if created:
+            enqueue_fact_development_run(db, run.workflow_id, str(run.id))
+        db.commit()
+        db.refresh(run)
+        return run
+    except FactDevelopmentRunError as exc:
+        db.rollback()
+        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=str(exc)) from exc
+    except IntegrityError as exc:
+        db.rollback()
+        existing = db.scalar(
+            select(MatterAnalysisTaskRun).where(
+                MatterAnalysisTaskRun.matter_analysis_task_id == task.id,
+                MatterAnalysisTaskRun.idempotency_key == payload.idempotency_key,
+                MatterAnalysisTaskRun.run_kind == "FACT_DEVELOPMENT",
+            )
+        )
+        if existing is not None:
+            return existing
+        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="Fact-development run conflicted") from exc
+
+
+@router.get("/{task_id}/fact-runs/{run_id}", response_model=FactDevelopmentRunRead)
+def get_fact_development_run(
+    matter_id: uuid.UUID,
+    task_id: uuid.UUID,
+    run_id: uuid.UUID,
+    principal: Principal = Depends(get_principal),
+    db: Session = Depends(get_db),
+) -> MatterAnalysisTaskRun:
+    _require_fact_runner(db, principal, matter_id)
+    return _fact_run(db, matter_id=matter_id, task_id=task_id, run_id=run_id)
+
+
+@router.post("/{task_id}/fact-runs/{run_id}/cancel", response_model=FactDevelopmentRunRead)
+def cancel_fact_development_run_endpoint(
+    matter_id: uuid.UUID,
+    task_id: uuid.UUID,
+    run_id: uuid.UUID,
+    principal: Principal = Depends(get_principal),
+    db: Session = Depends(get_db),
+) -> MatterAnalysisTaskRun:
+    _require_fact_runner(db, principal, matter_id)
+    run = _fact_run(db, matter_id=matter_id, task_id=task_id, run_id=run_id, for_update=True)
+    _, canceled = cancel_fact_development_run(db, run, actor_user_id=principal.user.id)
+    workflow_id = run.workflow_id
+    db.commit()
+    if canceled:
+        try:
+            cancel_fact_development_run_workflow(workflow_id)
+        except Exception as exc:  # noqa: BLE001 - cancellation is already durable
+            logger.warning("DBOS cancellation request failed for %s: %s", workflow_id, exc)
+        try:
+            finalize_canceled_fact_development_run(db, run)
+        except Exception:
+            db.rollback()
+            logger.exception("Canceled fact-development run outcome finalization failed run_id=%s", run.id)
+    db.refresh(run)
+    return run

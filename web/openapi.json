@@ -5271,6 +5271,271 @@
         }
       }
     },
+    "/v1/matters/{matter_id}/analysis-tasks/{task_id}/fact-runs": {
+      "get": {
+        "tags": [
+          "matter analysis tasks"
+        ],
+        "summary": "List Fact Development Runs",
+        "operationId": "list_fact_development_runs_v1_matters__matter_id__analysis_tasks__task_id__fact_runs_get",
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "matter_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid",
+              "title": "Matter Id"
+            }
+          },
+          {
+            "name": "task_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid",
+              "title": "Task Id"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "array",
+                  "items": {
+                    "$ref": "#/components/schemas/FactDevelopmentRunRead"
+                  },
+                  "title": "Response List Fact Development Runs V1 Matters  Matter Id  Analysis Tasks  Task Id  Fact Runs Get"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      },
+      "post": {
+        "tags": [
+          "matter analysis tasks"
+        ],
+        "summary": "Start Fact Development Run",
+        "description": "Launch a fact-development run over one ready review batch, using the task's published issue catalog.",
+        "operationId": "start_fact_development_run_v1_matters__matter_id__analysis_tasks__task_id__fact_runs_post",
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "matter_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid",
+              "title": "Matter Id"
+            }
+          },
+          {
+            "name": "task_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid",
+              "title": "Task Id"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/FactDevelopmentRunCreate"
+              }
+            }
+          }
+        },
+        "responses": {
+          "202": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/FactDevelopmentRunRead"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v1/matters/{matter_id}/analysis-tasks/{task_id}/fact-runs/{run_id}": {
+      "get": {
+        "tags": [
+          "matter analysis tasks"
+        ],
+        "summary": "Get Fact Development Run",
+        "operationId": "get_fact_development_run_v1_matters__matter_id__analysis_tasks__task_id__fact_runs__run_id__get",
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "matter_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid",
+              "title": "Matter Id"
+            }
+          },
+          {
+            "name": "task_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid",
+              "title": "Task Id"
+            }
+          },
+          {
+            "name": "run_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid",
+              "title": "Run Id"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/FactDevelopmentRunRead"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v1/matters/{matter_id}/analysis-tasks/{task_id}/fact-runs/{run_id}/cancel": {
+      "post": {
+        "tags": [
+          "matter analysis tasks"
+        ],
+        "summary": "Cancel Fact Development Run Endpoint",
+        "operationId": "cancel_fact_development_run_endpoint_v1_matters__matter_id__analysis_tasks__task_id__fact_runs__run_id__cancel_post",
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "matter_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid",
+              "title": "Matter Id"
+            }
+          },
+          {
+            "name": "task_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid",
+              "title": "Task Id"
+            }
+          },
+          {
+            "name": "run_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid",
+              "title": "Run Id"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/FactDevelopmentRunRead"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/v1/matters/{matter_id}/guidance": {
       "get": {
         "tags": [
@@ -31352,6 +31617,241 @@
         "additionalProperties": false,
         "type": "object",
         "title": "FactDevelopmentLimits"
+      },
+      "FactDevelopmentRunCreate": {
+        "properties": {
+          "review_batch_id": {
+            "type": "string",
+            "format": "uuid",
+            "title": "Review Batch Id"
+          },
+          "coding_source": {
+            "type": "string",
+            "enum": [
+              "MATTER_METADATA",
+              "REVIEWER_CODING"
+            ],
+            "title": "Coding Source",
+            "default": "MATTER_METADATA"
+          },
+          "reviewer_coding_id": {
+            "anyOf": [
+              {
+                "type": "string",
+                "format": "uuid"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Reviewer Coding Id"
+          },
+          "idempotency_key": {
+            "type": "string",
+            "maxLength": 200,
+            "minLength": 1,
+            "title": "Idempotency Key"
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "review_batch_id",
+          "idempotency_key"
+        ],
+        "title": "FactDevelopmentRunCreate"
+      },
+      "FactDevelopmentRunRead": {
+        "properties": {
+          "id": {
+            "type": "string",
+            "format": "uuid",
+            "title": "Id"
+          },
+          "matter_id": {
+            "type": "string",
+            "format": "uuid",
+            "title": "Matter Id"
+          },
+          "matter_analysis_task_id": {
+            "type": "string",
+            "format": "uuid",
+            "title": "Matter Analysis Task Id"
+          },
+          "matter_analysis_task_version_id": {
+            "type": "string",
+            "format": "uuid",
+            "title": "Matter Analysis Task Version Id"
+          },
+          "run_kind": {
+            "type": "string",
+            "const": "FACT_DEVELOPMENT",
+            "title": "Run Kind"
+          },
+          "scope_type": {
+            "type": "string",
+            "const": "REVIEW_BATCH",
+            "title": "Scope Type"
+          },
+          "scope_id": {
+            "type": "string",
+            "format": "uuid",
+            "title": "Scope Id"
+          },
+          "status": {
+            "type": "string",
+            "enum": [
+              "QUEUED",
+              "PREPARING",
+              "EXTRACTING",
+              "COMPLETED",
+              "COMPLETED_WITH_ERRORS",
+              "FAILED",
+              "CANCELED"
+            ],
+            "title": "Status"
+          },
+          "current_stage": {
+            "type": "string",
+            "title": "Current Stage"
+          },
+          "progress_completed": {
+            "type": "integer",
+            "title": "Progress Completed"
+          },
+          "progress_total": {
+            "type": "integer",
+            "title": "Progress Total"
+          },
+          "population_document_count": {
+            "type": "integer",
+            "title": "Population Document Count"
+          },
+          "configuration_snapshot": {
+            "additionalProperties": true,
+            "type": "object",
+            "title": "Configuration Snapshot"
+          },
+          "report": {
+            "additionalProperties": true,
+            "type": "object",
+            "title": "Report"
+          },
+          "failure_code": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Failure Code"
+          },
+          "failure_summary": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Failure Summary"
+          },
+          "failure_retriable": {
+            "type": "boolean",
+            "title": "Failure Retriable"
+          },
+          "created_by_user_id": {
+            "type": "string",
+            "format": "uuid",
+            "title": "Created By User Id"
+          },
+          "started_at": {
+            "anyOf": [
+              {
+                "type": "string",
+                "format": "date-time"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Started At"
+          },
+          "completed_at": {
+            "anyOf": [
+              {
+                "type": "string",
+                "format": "date-time"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Completed At"
+          },
+          "canceled_at": {
+            "anyOf": [
+              {
+                "type": "string",
+                "format": "date-time"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Canceled At"
+          },
+          "created_at": {
+            "type": "string",
+            "format": "date-time",
+            "title": "Created At"
+          },
+          "updated_at": {
+            "type": "string",
+            "format": "date-time",
+            "title": "Updated At"
+          },
+          "execution": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/JobExecutionRead"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          }
+        },
+        "type": "object",
+        "required": [
+          "id",
+          "matter_id",
+          "matter_analysis_task_id",
+          "matter_analysis_task_version_id",
+          "run_kind",
+          "scope_type",
+          "scope_id",
+          "status",
+          "current_stage",
+          "progress_completed",
+          "progress_total",
+          "population_document_count",
+          "configuration_snapshot",
+          "report",
+          "failure_code",
+          "failure_summary",
+          "failure_retriable",
+          "created_by_user_id",
+          "started_at",
+          "completed_at",
+          "canceled_at",
+          "created_at",
+          "updated_at"
+        ],
+        "title": "FactDevelopmentRunRead"
       },
       "FactDevelopmentSpecification": {
         "properties": {

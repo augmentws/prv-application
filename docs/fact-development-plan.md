@@ -1,6 +1,6 @@
 # Fact Development and Timeline Plan
 
-Status: slices 1 and 2 (task type, entities, fact ledger, permissions, API, CSV export job) implemented on `feature/fact-backend`; slice 3 (Postgres search, facets, histogram, recall) implemented; slice 4 (extraction) next
+Status: slices 1 and 2 (task type, entities, fact ledger, permissions, API, CSV export job) implemented on `feature/fact-backend`; slice 3 (Postgres search, facets, histogram, recall) implemented; slice 4 (single-pass extraction runs on `matter_analysis_task_run`, frozen chunks, job outcomes) implemented; slice 5 (consolidation and waves) next
 
 ## Objective
 
@@ -291,17 +291,17 @@ matter_entity_event        id, entity_id, event_type, payload, actor_user_id?, r
 matter_entity_relationship (later slice) from_entity_id, to_entity_id, relationship_type, valid_from?, valid_to?,
                            evidence refs, status
 
-matter_fact_run            id, matter_id, task_version_id, review_guidance_revision_id (copied for reporting),
-                           review_batch_id, coding_source (MATTER_METADATA|REVIEWER_CODING),
-                           reviewer_coding_id?, reviewer_coding_revision?,
-                           workflow_run_id, status, wave_count, current_wave, configuration_snapshot, progress,
-                           report, initiated_by, timestamps
-matter_fact_run_document   run_id, matter_document_id, wave, sequence, issue_snapshot (JSON), family_id,
-                           status (QUEUED|IN_PROGRESS|COMPLETED|NO_FACT|SKIPPED|FAILED), skill_run_id?, error
+matter_analysis_task_run   (existing, generalized) run_kind (CLASSIFICATION|FACT_DEVELOPMENT), scope REVIEW_BATCH,
+                           configuration_snapshot (task version, issue-catalog hash, coding source and pinned
+                           reviewer-coding revision, chunk size, skill version, model), report, status, progress;
+                           classification-only columns are required only when run_kind = CLASSIFICATION
+matter_analysis_task_run_chunk  run_id, chunk_number, ordinal_start, document_ids (JSON), issue_keys (JSON, parallel),
+                           status, processed_count, failed_count, counts   -- one row per chunk, never per document
 
-matter_fact_operation      id, run_id, matter_document_id, ordinal, op (CREATE|ADD_EVIDENCE|REFINE|CONTRADICT|NO_FACT),
-                           target_fact_id?, payload (JSON), status (PENDING|APPLIED|REJECTED|SUGGESTED),
-                           validation_errors, applied_event_id?, skill_run_id
+Per-document results are job outcomes (Artifact-owned Parquet fragments plus a final manifest), not Core rows.
+Operations are validated and applied inline; invalid ones are recorded in the document's outcome payload.
+(`matter_fact_run`, `matter_fact_run_document`, and `matter_fact_operation` from the first draft were dropped in
+favour of the unified job framework and job outcomes.)
 
 matter_fact                id, matter_id, status, current_revision_id, merged_into_fact_id?, key_fact,
                            has_contradiction, evidence_count, document_count, origin_run_id?, lock_version, timestamps
@@ -513,7 +513,7 @@ launch ── prepare ── plan waves ─┬─ wave 1: extract (parallel) ─
 1. **Launch.** The user selects a published `FACT_DEVELOPMENT` task version (which pins its Review Guidance
    revision), a ready review batch, and the coding source: current matter coding (the default), or one reviewer's
    batch coding pinned at its current revision. The API shows how many documents match each issue and returns a cost and volume
-   estimate. Launching requires confirmation. Launch creates `WorkflowRun` and `matter_fact_run` and enqueues the
+   estimate. Launching requires confirmation. Launch creates `WorkflowRun` and a `FACT_DEVELOPMENT` `matter_analysis_task_run` and enqueues the
    workflow.
 2. **Prepare.** Freeze the documents. Evaluate each issue's coding mappings against the chosen coding source and
    snapshot the issues each document matches. Skip documents that match no issue. Group documents by family.
@@ -528,8 +528,8 @@ launch ── prepare ── plan waves ─┬─ wave 1: extract (parallel) ─
    - **recalled facts**: top-k per issue from the facts index as of the wave snapshot, including confirmed and
      rejected markers.
 
-   The output is a list of operations with cited paragraphs and quotes. Operations are validated and stored as
-   `matter_fact_operation` rows. The guidance and issue catalog form a cache-friendly prefix (`prompt_caching`).
+   The output is a list of operations with cited paragraphs and quotes. Operations are validated and applied
+   inline; invalid ones are recorded in the document's job outcome. The guidance and issue catalog form a cache-friendly prefix (`prompt_caching`).
 4. **Consolidate, serialized per partition.** A partition is a run plus a primary issue, protected by a
    `pg_advisory_xact_lock`, the same mechanism `app/search/service.py` uses for projection work. Operations are applied in
    document order:

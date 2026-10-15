@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import uuid
-from typing import Literal
+from typing import Any, Literal
 
 from fastapi import APIRouter, Depends, HTTPException, Query, status
 from fastapi.responses import StreamingResponse
@@ -12,15 +12,18 @@ from sqlalchemy.orm import Session
 
 from app.audit import record_audit
 from app.database import get_db
-from app.dependencies import Principal, can_admin_matter, get_principal
+from app.dependencies import Principal, get_principal
 from app.job_outcomes import (
+    OUTCOME_SCHEMA,
+    OUTCOME_SCHEMA_VERSION,
+    JobOutcomeAdapter,
     JobOutcomeError,
     get_job_outcome_adapter,
     iter_job_outcome_artifact,
     iter_job_outcomes_csv,
     page_job_outcomes,
 )
-from app.models import JobOutcomeManifest, MatterEmbeddingJob
+from app.models import JobOutcomeManifest
 from app.schemas import JobOutcomeItemPage, JobOutcomeManifestRead
 
 router = APIRouter(prefix="/v1/matters/{matter_id}/job-outcomes", tags=["matter jobs"])
@@ -33,7 +36,7 @@ def _authorized(
     matter_id: uuid.UUID,
     job_type: str,
     job_id: uuid.UUID,
-) -> tuple[MatterEmbeddingJob, JobOutcomeManifest | None]:
+) -> tuple[JobOutcomeAdapter, Any, JobOutcomeManifest | None]:
     try:
         adapter = get_job_outcome_adapter(job_type)
     except JobOutcomeError as exc:
@@ -44,8 +47,8 @@ def _authorized(
     matter = adapter.matter(db, job)
     if matter is None or matter.id != matter_id:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Job not found")
-    if not can_admin_matter(db, principal, matter):
-        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Matter ADMIN required")
+    if not adapter.can_read(db, principal, matter):
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Permission required to read job outcomes")
     manifest = db.scalar(
         select(JobOutcomeManifest).where(
             JobOutcomeManifest.job_type == adapter.job_type,
@@ -58,36 +61,36 @@ def _authorized(
         or manifest.matter_id != matter.id
     ):
         raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="Job outcome scope does not match the job")
-    return job, manifest
+    return adapter, job, manifest
 
 
-def _summary(job: MatterEmbeddingJob, manifest: JobOutcomeManifest | None) -> JobOutcomeManifestRead:
+def _summary(
+    adapter: JobOutcomeAdapter,
+    job: Any,
+    manifest: JobOutcomeManifest | None,
+) -> JobOutcomeManifestRead:
     if manifest is None:
-        status_counts = {
-            key: value
-            for key, value in {
-                "SUCCEEDED": job.embedded_count,
-                "REUSED": job.reused_count,
-                "SKIPPED": job.skipped_count,
-                "FAILED": job.failed_count,
-            }.items()
-            if value
-        }
+        legacy = adapter.legacy_summary(job)
+        if legacy is None:
+            raise HTTPException(
+                status_code=status.HTTP_409_CONFLICT,
+                detail="Item outcomes are not available for this job yet",
+            )
         return JobOutcomeManifestRead(
             id=None,
-            job_type="MATTER_EMBEDDING_JOB",
+            job_type=adapter.job_type,
             job_id=job.id,
             manifest_status="UNAVAILABLE",
-            outcome_schema="priv-view.job-item-outcomes",
-            outcome_schema_version=1,
-            item_count=job.total_count,
-            status_counts=status_counts,
+            outcome_schema=OUTCOME_SCHEMA,
+            outcome_schema_version=OUTCOME_SCHEMA_VERSION,
+            item_count=legacy["item_count"],
+            status_counts=legacy["status_counts"],
             reason_counts={},
             artifact_id=None,
             artifact_content_hash=None,
             artifact_byte_length=None,
             finalized_at=None,
-            failure_summary="This historical job predates complete per-document outcome retention.",
+            failure_summary=legacy["failure_summary"],
             item_details_available=False,
             legacy=True,
             created_at=job.created_at,
@@ -128,14 +131,14 @@ def get_job_outcome_summary(
     principal: Principal = Depends(get_principal),
     db: Session = Depends(get_db),
 ) -> JobOutcomeManifestRead:
-    job, manifest = _authorized(
+    adapter, job, manifest = _authorized(
         db,
         principal,
         matter_id=matter_id,
         job_type=job_type,
         job_id=job_id,
     )
-    return _summary(job, manifest)
+    return _summary(adapter, job, manifest)
 
 
 @router.get("/{job_type}/{job_id}/items", response_model=JobOutcomeItemPage)
@@ -150,7 +153,7 @@ def list_job_outcome_items(
     principal: Principal = Depends(get_principal),
     db: Session = Depends(get_db),
 ) -> JobOutcomeItemPage:
-    _, manifest = _authorized(
+    _, _, manifest = _authorized(
         db,
         principal,
         matter_id=matter_id,
@@ -182,7 +185,7 @@ def download_job_outcomes(
     principal: Principal = Depends(get_principal),
     db: Session = Depends(get_db),
 ) -> StreamingResponse:
-    _, manifest = _authorized(
+    _, _, manifest = _authorized(
         db,
         principal,
         matter_id=matter_id,

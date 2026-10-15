@@ -119,6 +119,8 @@ import type {
   ExportReviewBatchCodingComparisonV1MattersMatterIdReviewBatchesBatchIdCodingComparisonExportGetParams,
   ExternalProviderUsageRead,
   FacetValue,
+  FactDevelopmentRunCreate,
+  FactDevelopmentRunRead,
   FactDevelopmentSpecificationUpdate,
   FactIssueMembershipPreviewCreate,
   FactIssueMembershipPreviewRead,
@@ -5447,6 +5449,234 @@ export const publishAnalysisTaskV1MattersMatterIdAnalysisTasksTaskIdVersionsVers
 
   const data: publishAnalysisTaskV1MattersMatterIdAnalysisTasksTaskIdVersionsVersionNumberPublishPostResponse['data'] = body ? JSON.parse(body) : {}
   return { data, status: res.status, headers: res.headers } as publishAnalysisTaskV1MattersMatterIdAnalysisTasksTaskIdVersionsVersionNumberPublishPostResponse
+}
+
+
+
+export type listFactDevelopmentRunsV1MattersMatterIdAnalysisTasksTaskIdFactRunsGetResponse200 = {
+  data: FactDevelopmentRunRead[]
+  status: 200
+}
+
+export type listFactDevelopmentRunsV1MattersMatterIdAnalysisTasksTaskIdFactRunsGetResponse422 = {
+  data: HTTPValidationError
+  status: 422
+}
+
+export type listFactDevelopmentRunsV1MattersMatterIdAnalysisTasksTaskIdFactRunsGetResponseSuccess = (listFactDevelopmentRunsV1MattersMatterIdAnalysisTasksTaskIdFactRunsGetResponse200) & {
+  headers: Headers;
+};
+export type listFactDevelopmentRunsV1MattersMatterIdAnalysisTasksTaskIdFactRunsGetResponseError = (listFactDevelopmentRunsV1MattersMatterIdAnalysisTasksTaskIdFactRunsGetResponse422) & {
+  headers: Headers;
+};
+
+export type listFactDevelopmentRunsV1MattersMatterIdAnalysisTasksTaskIdFactRunsGetResponse = (listFactDevelopmentRunsV1MattersMatterIdAnalysisTasksTaskIdFactRunsGetResponseSuccess | listFactDevelopmentRunsV1MattersMatterIdAnalysisTasksTaskIdFactRunsGetResponseError)
+
+export const getListFactDevelopmentRunsV1MattersMatterIdAnalysisTasksTaskIdFactRunsGetUrl = (matterId: string,
+    taskId: string,) => {
+
+
+
+
+  return `/api/core/v1/matters/${matterId}/analysis-tasks/${taskId}/fact-runs`
+}
+
+/**
+ * @summary List Fact Development Runs
+ */
+export const listFactDevelopmentRunsV1MattersMatterIdAnalysisTasksTaskIdFactRunsGet = async (matterId: string,
+    taskId: string, options?: RequestInit): Promise<listFactDevelopmentRunsV1MattersMatterIdAnalysisTasksTaskIdFactRunsGetResponse> => {
+
+  const res = await fetch(getListFactDevelopmentRunsV1MattersMatterIdAnalysisTasksTaskIdFactRunsGetUrl(matterId,taskId),
+  {
+    ...options,
+    method: 'GET'
+
+
+  }
+)
+
+
+  const body = [204, 205, 304].includes(res.status) ? null : await res.text();
+
+  const data: listFactDevelopmentRunsV1MattersMatterIdAnalysisTasksTaskIdFactRunsGetResponse['data'] = body ? JSON.parse(body) : {}
+  return { data, status: res.status, headers: res.headers } as listFactDevelopmentRunsV1MattersMatterIdAnalysisTasksTaskIdFactRunsGetResponse
+}
+
+
+
+export type startFactDevelopmentRunV1MattersMatterIdAnalysisTasksTaskIdFactRunsPostResponse202 = {
+  data: FactDevelopmentRunRead
+  status: 202
+}
+
+export type startFactDevelopmentRunV1MattersMatterIdAnalysisTasksTaskIdFactRunsPostResponse422 = {
+  data: HTTPValidationError
+  status: 422
+}
+
+export type startFactDevelopmentRunV1MattersMatterIdAnalysisTasksTaskIdFactRunsPostResponseSuccess = (startFactDevelopmentRunV1MattersMatterIdAnalysisTasksTaskIdFactRunsPostResponse202) & {
+  headers: Headers;
+};
+export type startFactDevelopmentRunV1MattersMatterIdAnalysisTasksTaskIdFactRunsPostResponseError = (startFactDevelopmentRunV1MattersMatterIdAnalysisTasksTaskIdFactRunsPostResponse422) & {
+  headers: Headers;
+};
+
+export type startFactDevelopmentRunV1MattersMatterIdAnalysisTasksTaskIdFactRunsPostResponse = (startFactDevelopmentRunV1MattersMatterIdAnalysisTasksTaskIdFactRunsPostResponseSuccess | startFactDevelopmentRunV1MattersMatterIdAnalysisTasksTaskIdFactRunsPostResponseError)
+
+export const getStartFactDevelopmentRunV1MattersMatterIdAnalysisTasksTaskIdFactRunsPostUrl = (matterId: string,
+    taskId: string,) => {
+
+
+
+
+  return `/api/core/v1/matters/${matterId}/analysis-tasks/${taskId}/fact-runs`
+}
+
+/**
+ * Launch a fact-development run over one ready review batch, using the task's published issue catalog.
+ * @summary Start Fact Development Run
+ */
+export const startFactDevelopmentRunV1MattersMatterIdAnalysisTasksTaskIdFactRunsPost = async (matterId: string,
+    taskId: string,
+    factDevelopmentRunCreate: FactDevelopmentRunCreate, options?: RequestInit): Promise<startFactDevelopmentRunV1MattersMatterIdAnalysisTasksTaskIdFactRunsPostResponse> => {
+
+    const getHeaders = (h?: NonNullable<RequestInit['headers']>): Record<string, string | readonly string[]> => {
+    if (!h) return {};
+    if (h instanceof Headers) return Object.fromEntries(h.entries());
+    if (Symbol.iterator in h) {
+      return Object.fromEntries(
+        Array.from(h as Iterable<Iterable<string>>, (entry) => Array.from(entry) as [string, string]),
+      );
+    }
+    const headers: Record<string, string | readonly string[]> = {};
+    for (const [name, value] of Object.entries<string | readonly string[] | undefined>(h)) {
+      if (value !== undefined) headers[name] = value;
+    }
+    return headers;
+  };
+const res = await fetch(getStartFactDevelopmentRunV1MattersMatterIdAnalysisTasksTaskIdFactRunsPostUrl(matterId,taskId),
+  {
+    ...options,
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json', ...getHeaders(options?.headers) },
+    body: JSON.stringify(factDevelopmentRunCreate)
+  }
+)
+
+
+  const body = [204, 205, 304].includes(res.status) ? null : await res.text();
+
+  const data: startFactDevelopmentRunV1MattersMatterIdAnalysisTasksTaskIdFactRunsPostResponse['data'] = body ? JSON.parse(body) : {}
+  return { data, status: res.status, headers: res.headers } as startFactDevelopmentRunV1MattersMatterIdAnalysisTasksTaskIdFactRunsPostResponse
+}
+
+
+
+export type getFactDevelopmentRunV1MattersMatterIdAnalysisTasksTaskIdFactRunsRunIdGetResponse200 = {
+  data: FactDevelopmentRunRead
+  status: 200
+}
+
+export type getFactDevelopmentRunV1MattersMatterIdAnalysisTasksTaskIdFactRunsRunIdGetResponse422 = {
+  data: HTTPValidationError
+  status: 422
+}
+
+export type getFactDevelopmentRunV1MattersMatterIdAnalysisTasksTaskIdFactRunsRunIdGetResponseSuccess = (getFactDevelopmentRunV1MattersMatterIdAnalysisTasksTaskIdFactRunsRunIdGetResponse200) & {
+  headers: Headers;
+};
+export type getFactDevelopmentRunV1MattersMatterIdAnalysisTasksTaskIdFactRunsRunIdGetResponseError = (getFactDevelopmentRunV1MattersMatterIdAnalysisTasksTaskIdFactRunsRunIdGetResponse422) & {
+  headers: Headers;
+};
+
+export type getFactDevelopmentRunV1MattersMatterIdAnalysisTasksTaskIdFactRunsRunIdGetResponse = (getFactDevelopmentRunV1MattersMatterIdAnalysisTasksTaskIdFactRunsRunIdGetResponseSuccess | getFactDevelopmentRunV1MattersMatterIdAnalysisTasksTaskIdFactRunsRunIdGetResponseError)
+
+export const getGetFactDevelopmentRunV1MattersMatterIdAnalysisTasksTaskIdFactRunsRunIdGetUrl = (matterId: string,
+    taskId: string,
+    runId: string,) => {
+
+
+
+
+  return `/api/core/v1/matters/${matterId}/analysis-tasks/${taskId}/fact-runs/${runId}`
+}
+
+/**
+ * @summary Get Fact Development Run
+ */
+export const getFactDevelopmentRunV1MattersMatterIdAnalysisTasksTaskIdFactRunsRunIdGet = async (matterId: string,
+    taskId: string,
+    runId: string, options?: RequestInit): Promise<getFactDevelopmentRunV1MattersMatterIdAnalysisTasksTaskIdFactRunsRunIdGetResponse> => {
+
+  const res = await fetch(getGetFactDevelopmentRunV1MattersMatterIdAnalysisTasksTaskIdFactRunsRunIdGetUrl(matterId,taskId,runId),
+  {
+    ...options,
+    method: 'GET'
+
+
+  }
+)
+
+
+  const body = [204, 205, 304].includes(res.status) ? null : await res.text();
+
+  const data: getFactDevelopmentRunV1MattersMatterIdAnalysisTasksTaskIdFactRunsRunIdGetResponse['data'] = body ? JSON.parse(body) : {}
+  return { data, status: res.status, headers: res.headers } as getFactDevelopmentRunV1MattersMatterIdAnalysisTasksTaskIdFactRunsRunIdGetResponse
+}
+
+
+
+export type cancelFactDevelopmentRunEndpointV1MattersMatterIdAnalysisTasksTaskIdFactRunsRunIdCancelPostResponse200 = {
+  data: FactDevelopmentRunRead
+  status: 200
+}
+
+export type cancelFactDevelopmentRunEndpointV1MattersMatterIdAnalysisTasksTaskIdFactRunsRunIdCancelPostResponse422 = {
+  data: HTTPValidationError
+  status: 422
+}
+
+export type cancelFactDevelopmentRunEndpointV1MattersMatterIdAnalysisTasksTaskIdFactRunsRunIdCancelPostResponseSuccess = (cancelFactDevelopmentRunEndpointV1MattersMatterIdAnalysisTasksTaskIdFactRunsRunIdCancelPostResponse200) & {
+  headers: Headers;
+};
+export type cancelFactDevelopmentRunEndpointV1MattersMatterIdAnalysisTasksTaskIdFactRunsRunIdCancelPostResponseError = (cancelFactDevelopmentRunEndpointV1MattersMatterIdAnalysisTasksTaskIdFactRunsRunIdCancelPostResponse422) & {
+  headers: Headers;
+};
+
+export type cancelFactDevelopmentRunEndpointV1MattersMatterIdAnalysisTasksTaskIdFactRunsRunIdCancelPostResponse = (cancelFactDevelopmentRunEndpointV1MattersMatterIdAnalysisTasksTaskIdFactRunsRunIdCancelPostResponseSuccess | cancelFactDevelopmentRunEndpointV1MattersMatterIdAnalysisTasksTaskIdFactRunsRunIdCancelPostResponseError)
+
+export const getCancelFactDevelopmentRunEndpointV1MattersMatterIdAnalysisTasksTaskIdFactRunsRunIdCancelPostUrl = (matterId: string,
+    taskId: string,
+    runId: string,) => {
+
+
+
+
+  return `/api/core/v1/matters/${matterId}/analysis-tasks/${taskId}/fact-runs/${runId}/cancel`
+}
+
+/**
+ * @summary Cancel Fact Development Run Endpoint
+ */
+export const cancelFactDevelopmentRunEndpointV1MattersMatterIdAnalysisTasksTaskIdFactRunsRunIdCancelPost = async (matterId: string,
+    taskId: string,
+    runId: string, options?: RequestInit): Promise<cancelFactDevelopmentRunEndpointV1MattersMatterIdAnalysisTasksTaskIdFactRunsRunIdCancelPostResponse> => {
+
+  const res = await fetch(getCancelFactDevelopmentRunEndpointV1MattersMatterIdAnalysisTasksTaskIdFactRunsRunIdCancelPostUrl(matterId,taskId,runId),
+  {
+    ...options,
+    method: 'POST'
+
+
+  }
+)
+
+
+  const body = [204, 205, 304].includes(res.status) ? null : await res.text();
+
+  const data: cancelFactDevelopmentRunEndpointV1MattersMatterIdAnalysisTasksTaskIdFactRunsRunIdCancelPostResponse['data'] = body ? JSON.parse(body) : {}
+  return { data, status: res.status, headers: res.headers } as cancelFactDevelopmentRunEndpointV1MattersMatterIdAnalysisTasksTaskIdFactRunsRunIdCancelPostResponse
 }
 
 

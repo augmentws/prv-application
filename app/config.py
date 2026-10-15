@@ -51,6 +51,10 @@ class Settings(BaseSettings):
     search_export_max_bytes: int = Field(default=20 * 1024**3, ge=1024, le=20 * 1024**3)
     fact_export_retention_days: int = Field(default=7, ge=1, le=365)
     fact_export_max_bytes: int = Field(default=5 * 1024**3, ge=1024, le=5 * 1024**3)
+    fact_development_chunk_size: int = Field(default=50, ge=1, le=1_000)
+    fact_development_document_concurrency: int = Field(default=4, ge=1, le=64)
+    fact_development_max_document_characters: int = Field(default=200_000, ge=1_000, le=2_000_000)
+    fact_development_recall_window_days: int = Field(default=365, ge=1, le=36_500)
     agent_default_model: str | None = None
     agent_turn_queue_concurrency: int = Field(default=4, ge=1, le=100)
     agent_approval_timeout_seconds: int = Field(default=7 * 24 * 60 * 60, ge=60, le=30 * 24 * 60 * 60)

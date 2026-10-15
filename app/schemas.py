@@ -2755,6 +2755,58 @@ class JobExecutionHistoryRead(BaseModel):
     attempts: list[JobExecutionRead]
 
 
+class FactDevelopmentRunCreate(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    review_batch_id: uuid.UUID
+    coding_source: Literal["MATTER_METADATA", "REVIEWER_CODING"] = "MATTER_METADATA"
+    reviewer_coding_id: uuid.UUID | None = None
+    idempotency_key: str = Field(min_length=1, max_length=200)
+
+    @field_validator("idempotency_key")
+    @classmethod
+    def normalize_fact_run_idempotency_key(cls, value: str) -> str:
+        normalized = value.strip()
+        if not normalized:
+            raise ValueError("idempotency_key cannot be blank")
+        return normalized
+
+
+class FactDevelopmentRunRead(ORMModel):
+    id: uuid.UUID
+    matter_id: uuid.UUID
+    matter_analysis_task_id: uuid.UUID
+    matter_analysis_task_version_id: uuid.UUID
+    run_kind: Literal["FACT_DEVELOPMENT"]
+    scope_type: Literal["REVIEW_BATCH"]
+    scope_id: uuid.UUID
+    status: Literal[
+        "QUEUED",
+        "PREPARING",
+        "EXTRACTING",
+        "COMPLETED",
+        "COMPLETED_WITH_ERRORS",
+        "FAILED",
+        "CANCELED",
+    ]
+    current_stage: str
+    progress_completed: int
+    progress_total: int
+    population_document_count: int
+    configuration_snapshot: dict[str, Any]
+    report: dict[str, Any]
+    failure_code: str | None
+    failure_summary: str | None
+    failure_retriable: bool
+    created_by_user_id: uuid.UUID
+    started_at: datetime | None
+    completed_at: datetime | None
+    canceled_at: datetime | None
+    created_at: datetime
+    updated_at: datetime
+    execution: JobExecutionRead | None = None
+
+
 class MatterAnalysisTaskRunRead(ORMModel):
     id: uuid.UUID
     tenant_id: uuid.UUID

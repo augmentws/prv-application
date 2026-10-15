@@ -433,6 +433,24 @@ def cancel_fact_export(workflow_id: str) -> None:
         get_dbos_client().cancel_workflow(workflow_id, cancel_children=True)
 
 
+def enqueue_fact_development_run(db: Session, workflow_id: str, run_id: str) -> None:
+    settings = get_settings()
+    if not settings.dbos_enabled:
+        return
+    options: EnqueueOptions = {
+        "workflow_name": "fact_development_v1",
+        "queue_name": "fact-development-runs",
+        "workflow_id": workflow_id,
+        "application_name": settings.dbos_application_name,
+    }
+    get_dbos_client().enqueue_in_transaction(db, options, run_id)
+
+
+def cancel_fact_development_run_workflow(workflow_id: str) -> None:
+    if get_settings().dbos_enabled:
+        get_dbos_client().cancel_workflow(workflow_id, cancel_children=True)
+
+
 def enqueue_bulk_tag(db: Session, workflow_id: str, job_id: str) -> None:
     settings = get_settings()
     if not settings.dbos_enabled:

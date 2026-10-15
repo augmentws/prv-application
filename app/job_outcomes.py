@@ -13,7 +13,7 @@ from collections import Counter
 from collections.abc import Iterator
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
-from typing import Any, BinaryIO, Literal
+from typing import Any, BinaryIO, Literal, Protocol
 
 import pyarrow as pa
 import pyarrow.compute as pc
@@ -81,27 +81,87 @@ class JobItemOutcome:
 
 
 @dataclass(frozen=True)
-class JobOutcomeAdapter:
+class OutcomeScope:
+    """The frozen identity of one logical job whose item outcomes are retained."""
+
     job_type: str
-    outcome_schema: str
+    job_id: uuid.UUID
+    tenant_id: uuid.UUID
+    client_id: uuid.UUID
+    matter_id: uuid.UUID
+    actor_user_id: uuid.UUID
+    configuration_hash: str
+    total_count: int
+    chunk_count: int
     item_kind: str
+    filename_prefix: str
+
+
+@dataclass(frozen=True)
+class OutcomeChunk:
+    """One frozen, ordered slice of the job population; each chunk publishes one fragment."""
+
+    chunk_id: str
+    chunk_number: int
+    ordinal_start: int
+    document_ids: tuple[str, ...]
+
+
+class JobOutcomeAdapter(Protocol):
+    """Code-owned description of a job type that retains per-item outcomes."""
+
+    job_type: str
+
+    def load(self, db: Session, job_id: uuid.UUID) -> Any | None: ...
+
+    def matter(self, db: Session, job: Any) -> Matter | None: ...
+
+    def can_read(self, db: Session, principal: Any, matter: Matter) -> bool: ...
+
+    def legacy_summary(self, job: Any) -> dict[str, Any] | None: ...
+
+
+class _EmbeddingOutcomeAdapter:
+    job_type = MATTER_EMBEDDING_JOB_TYPE
 
     def load(self, db: Session, job_id: uuid.UUID) -> MatterEmbeddingJob | None:
-        if self.job_type == MATTER_EMBEDDING_JOB_TYPE:
-            return db.get(MatterEmbeddingJob, job_id)
-        raise JobOutcomeError(f"Unsupported outcome job type: {self.job_type}")
+        return db.get(MatterEmbeddingJob, job_id)
 
     def matter(self, db: Session, job: MatterEmbeddingJob) -> Matter | None:
         return db.get(Matter, job.matter_id)
 
+    def can_read(self, db: Session, principal: Any, matter: Matter) -> bool:
+        from app.dependencies import can_admin_matter
 
-_ADAPTERS = {
-    MATTER_EMBEDDING_JOB_TYPE: JobOutcomeAdapter(
-        job_type=MATTER_EMBEDDING_JOB_TYPE,
-        outcome_schema=OUTCOME_SCHEMA,
-        item_kind="MATTER_DOCUMENT",
-    )
-}
+        return can_admin_matter(db, principal, matter)
+
+    def legacy_summary(self, job: MatterEmbeddingJob) -> dict[str, Any] | None:
+        return {
+            "item_count": job.total_count,
+            "status_counts": {
+                key: value
+                for key, value in {
+                    "SUCCEEDED": job.embedded_count,
+                    "REUSED": job.reused_count,
+                    "SKIPPED": job.skipped_count,
+                    "FAILED": job.failed_count,
+                }.items()
+                if value
+            },
+            "failure_summary": "This historical job predates complete per-document outcome retention.",
+        }
+
+
+_ADAPTERS: dict[str, JobOutcomeAdapter] = {MATTER_EMBEDDING_JOB_TYPE: _EmbeddingOutcomeAdapter()}
+
+
+def register_job_outcome_adapter(adapter: JobOutcomeAdapter) -> None:
+    """Register a job type's outcome adapter; called by the owning domain module at import time."""
+
+    existing = _ADAPTERS.get(adapter.job_type)
+    if existing is not None and type(existing) is not type(adapter):
+        raise JobOutcomeError(f"Job type {adapter.job_type} already has an outcome adapter")
+    _ADAPTERS[adapter.job_type] = adapter
 
 
 def get_job_outcome_adapter(job_type: str) -> JobOutcomeAdapter:
@@ -140,7 +200,7 @@ def _row(
     *,
     ordinal: int,
     item_kind: str,
-    batch_id: uuid.UUID,
+    batch_id: str,
     attempt_number: int,
 ) -> dict[str, Any]:
     if outcome.outcome_status not in OUTCOME_STATUSES:
@@ -179,41 +239,41 @@ def _hash_file(content: BinaryIO) -> tuple[str, int]:
     return digest.hexdigest(), length
 
 
-def _manifest_derivation(job: MatterEmbeddingJob) -> str:
+def _manifest_derivation(scope: OutcomeScope) -> str:
     return canonical_hash(
         {
             "contract": f"{OUTCOME_SCHEMA}-v{OUTCOME_SCHEMA_VERSION}",
-            "job_type": MATTER_EMBEDDING_JOB_TYPE,
-            "job_id": str(job.id),
-            "configuration_hash": job.configuration_hash,
-            "population": [job.total_count, job.batch_count],
+            "job_type": scope.job_type,
+            "job_id": str(scope.job_id),
+            "configuration_hash": scope.configuration_hash,
+            "population": [scope.total_count, scope.chunk_count],
         }
     )
 
 
-def ensure_embedding_outcome_manifest(db: Session, job: MatterEmbeddingJob) -> JobOutcomeManifest:
-    execution = current_job_execution(db, job_type=MATTER_EMBEDDING_JOB_TYPE, job_id=job.id)
+def ensure_outcome_manifest(db: Session, scope: OutcomeScope) -> JobOutcomeManifest:
+    execution = current_job_execution(db, job_type=scope.job_type, job_id=scope.job_id)
     if execution is None:
-        raise JobOutcomeError("Embedding job has no common execution attempt")
+        raise JobOutcomeError("Job has no common execution attempt")
     manifest = db.scalar(
         select(JobOutcomeManifest).where(
-            JobOutcomeManifest.job_type == MATTER_EMBEDDING_JOB_TYPE,
-            JobOutcomeManifest.job_id == job.id,
+            JobOutcomeManifest.job_type == scope.job_type,
+            JobOutcomeManifest.job_id == scope.job_id,
         )
     )
-    derivation = _manifest_derivation(job)
+    derivation = _manifest_derivation(scope)
     if manifest is None:
         manifest = JobOutcomeManifest(
-            tenant_id=job.matter.client.tenant_id,
-            client_id=job.matter.client_id,
-            matter_id=job.matter_id,
-            job_type=MATTER_EMBEDDING_JOB_TYPE,
-            job_id=job.id,
+            tenant_id=scope.tenant_id,
+            client_id=scope.client_id,
+            matter_id=scope.matter_id,
+            job_type=scope.job_type,
+            job_id=scope.job_id,
             manifest_status="BUILDING",
             outcome_schema=OUTCOME_SCHEMA,
             outcome_schema_version=OUTCOME_SCHEMA_VERSION,
             derivation_key=derivation,
-            item_count=job.total_count,
+            item_count=scope.total_count,
             status_counts={},
             reason_counts={},
             producer_kind="CORE",
@@ -221,76 +281,64 @@ def ensure_embedding_outcome_manifest(db: Session, job: MatterEmbeddingJob) -> J
         )
         db.add(manifest)
         db.flush()
-    elif (
-        manifest.derivation_key != derivation
-        or manifest.item_count != job.total_count
-    ):
-        raise JobOutcomeError("Embedding outcome manifest identity does not match its frozen job")
+    elif manifest.derivation_key != derivation or manifest.item_count != scope.total_count:
+        raise JobOutcomeError("Job outcome manifest identity does not match its frozen job")
     return manifest
 
 
-def embedding_fragment_derivation(job: MatterEmbeddingJob, batch: MatterEmbeddingBatch) -> str:
+def outcome_fragment_derivation(scope: OutcomeScope, chunk: OutcomeChunk) -> str:
     return canonical_hash(
         {
             "contract": f"{OUTCOME_SCHEMA}-fragment-v{OUTCOME_SCHEMA_VERSION}",
-            "job_id": str(job.id),
-            "batch_id": str(batch.id),
-            "batch_number": batch.batch_number,
-            "configuration_hash": job.configuration_hash,
-            "document_ids": batch.document_ids,
+            "job_id": str(scope.job_id),
+            "batch_id": chunk.chunk_id,
+            "batch_number": chunk.chunk_number,
+            "configuration_hash": scope.configuration_hash,
+            "document_ids": list(chunk.document_ids),
         }
     )
 
 
-def publish_embedding_outcome_fragment(
+def publish_outcome_fragment(
     db: Session,
     *,
-    job: MatterEmbeddingJob,
-    batch: MatterEmbeddingBatch,
+    scope: OutcomeScope,
+    chunk: OutcomeChunk,
     outcomes: list[JobItemOutcome],
 ) -> WorkflowArtifactReference:
-    manifest = ensure_embedding_outcome_manifest(db, job)
+    """Publish one chunk's outcomes, in frozen order, as an Artifact-owned Parquet fragment."""
+
+    manifest = ensure_outcome_manifest(db, scope)
     if manifest.manifest_status == "FINALIZED":
-        raise JobOutcomeError("Embedding outcome manifest is already finalized")
-    if len(outcomes) != len(batch.document_ids):
-        raise JobOutcomeError("Embedding batch outcomes do not cover the frozen batch")
-    if [outcome.item_id for outcome in outcomes] != batch.document_ids:
-        raise JobOutcomeError("Embedding batch outcomes do not preserve frozen document order")
-    ordinal_start = int(
-        db.scalar(
-            select(func.coalesce(func.sum(MatterEmbeddingBatch.item_count), 0)).where(
-                MatterEmbeddingBatch.job_id == job.id,
-                MatterEmbeddingBatch.batch_number < batch.batch_number,
-            )
-        )
-        or 0
-    )
+        raise JobOutcomeError("Job outcome manifest is already finalized")
+    if [outcome.item_id for outcome in outcomes] != list(chunk.document_ids):
+        raise JobOutcomeError("Chunk outcomes do not cover the frozen chunk in order")
     execution = db.get(WorkflowRun, manifest.producer_run_id)
     if execution is None:
-        raise JobOutcomeError("Embedding job has no common execution attempt")
-    fragment_derivation = embedding_fragment_derivation(job, batch)
+        raise JobOutcomeError("Job has no common execution attempt")
+    fragment_derivation = outcome_fragment_derivation(scope, chunk)
     metadata = {
         "outcome_schema": OUTCOME_SCHEMA,
         "outcome_schema_version": OUTCOME_SCHEMA_VERSION,
-        "job_type": MATTER_EMBEDDING_JOB_TYPE,
-        "job_id": str(job.id),
-        "batch_id": str(batch.id),
-        "batch_number": batch.batch_number,
-        "ordinal_start": ordinal_start,
+        "job_type": scope.job_type,
+        "job_id": str(scope.job_id),
+        "batch_id": chunk.chunk_id,
+        "batch_number": chunk.chunk_number,
+        "ordinal_start": chunk.ordinal_start,
         "item_count": len(outcomes),
         "producer_run_id": str(execution.id),
-        "tenant_id": str(job.matter.client.tenant_id),
-        "client_id": str(job.matter.client_id),
-        "matter_id": str(job.matter_id),
-        "configuration_hash": job.configuration_hash,
+        "tenant_id": str(scope.tenant_id),
+        "client_id": str(scope.client_id),
+        "matter_id": str(scope.matter_id),
+        "configuration_hash": scope.configuration_hash,
         "derivation_key": fragment_derivation,
     }
     rows = [
         _row(
             outcome,
-            ordinal=ordinal_start + index,
-            item_kind="MATTER_DOCUMENT",
-            batch_id=batch.id,
+            ordinal=chunk.ordinal_start + index,
+            item_kind=scope.item_kind,
+            batch_id=chunk.chunk_id,
             attempt_number=execution.attempt_number,
         )
         for index, outcome in enumerate(outcomes)
@@ -309,7 +357,7 @@ def publish_embedding_outcome_fragment(
             content=content,
             artifact_type=ArtifactType.JOB_ITEM_OUTCOME_FRAGMENT,
             core_scope_kind="MATTER",
-            core_scope_id=job.matter_id,
+            core_scope_id=scope.matter_id,
             schema_version=OUTCOME_SCHEMA_VERSION,
             derivation_key=fragment_derivation,
             content_hash=content_hash,
@@ -319,24 +367,34 @@ def publish_embedding_outcome_fragment(
             producer_run_id=execution.id,
             artifact_metadata=metadata,
             lineage=[],
-            actor_user_id=job.created_by_user_id,
-            tenant_id=job.matter.client.tenant_id,
-            client_id=job.matter.client_id,
-            filename=f"embedding-outcomes-{batch.id}.parquet",
+            actor_user_id=scope.actor_user_id,
+            tenant_id=scope.tenant_id,
+            client_id=scope.client_id,
+            filename=f"{scope.filename_prefix}-outcomes-{chunk.chunk_id}.parquet",
         )
         return reference
     finally:
         content.close()
 
 
-def _copy_verified(reference: WorkflowArtifactReference, job: MatterEmbeddingJob) -> BinaryIO:
+def find_outcome_fragment(scope: OutcomeScope, chunk: OutcomeChunk) -> WorkflowArtifactReference | None:
+    return find_workflow_artifact_reference(
+        artifact_type=ArtifactType.JOB_ITEM_OUTCOME_FRAGMENT,
+        derivation_key=outcome_fragment_derivation(scope, chunk),
+        actor_user_id=scope.actor_user_id,
+        tenant_id=scope.tenant_id,
+        client_id=scope.client_id,
+    )
+
+
+def _copy_verified(reference: WorkflowArtifactReference, scope: OutcomeScope) -> BinaryIO:
     output = tempfile.SpooledTemporaryFile(max_size=64 * 1024 * 1024, mode="w+b")  # noqa: SIM115
     copy_workflow_artifact_content(
         artifact_id=reference.artifact_id,
         destination=output,
-        actor_user_id=job.created_by_user_id,
-        tenant_id=job.matter.client.tenant_id,
-        client_id=job.matter.client_id,
+        actor_user_id=scope.actor_user_id,
+        tenant_id=scope.tenant_id,
+        client_id=scope.client_id,
     )
     content_hash, byte_length = _hash_file(output)
     if content_hash != reference.content_hash or byte_length != reference.byte_length:
@@ -348,8 +406,8 @@ def _copy_verified(reference: WorkflowArtifactReference, job: MatterEmbeddingJob
 def _validate_fragment(
     parquet: pq.ParquetFile,
     *,
-    job: MatterEmbeddingJob,
-    batch: MatterEmbeddingBatch,
+    scope: OutcomeScope,
+    chunk: OutcomeChunk,
     expected_ordinal: int,
 ) -> list[dict[str, Any]]:
     if parquet.schema_arrow.remove_metadata() != OUTCOME_ARROW_SCHEMA:
@@ -362,62 +420,62 @@ def _validate_fragment(
     expected_metadata = {
         "outcome_schema": OUTCOME_SCHEMA,
         "outcome_schema_version": str(OUTCOME_SCHEMA_VERSION),
-        "job_type": MATTER_EMBEDDING_JOB_TYPE,
-        "job_id": str(job.id),
-        "batch_id": str(batch.id),
-        "batch_number": str(batch.batch_number),
+        "job_type": scope.job_type,
+        "job_id": str(scope.job_id),
+        "batch_id": chunk.chunk_id,
+        "batch_number": str(chunk.chunk_number),
         "ordinal_start": str(expected_ordinal),
-        "item_count": str(batch.item_count),
-        "tenant_id": str(job.matter.client.tenant_id),
-        "client_id": str(job.matter.client_id),
-        "matter_id": str(job.matter_id),
-        "configuration_hash": job.configuration_hash,
-        "derivation_key": embedding_fragment_derivation(job, batch),
+        "item_count": str(len(chunk.document_ids)),
+        "tenant_id": str(scope.tenant_id),
+        "client_id": str(scope.client_id),
+        "matter_id": str(scope.matter_id),
+        "configuration_hash": scope.configuration_hash,
+        "derivation_key": outcome_fragment_derivation(scope, chunk),
     }
     if any(metadata.get(key) != value for key, value in expected_metadata.items()):
-        raise JobOutcomeError("Job outcome fragment metadata does not match its frozen batch")
+        raise JobOutcomeError("Job outcome fragment metadata does not match its frozen chunk")
     rows: list[dict[str, Any]] = []
     for record_batch in parquet.iter_batches(batch_size=OUTCOME_ROW_GROUP_SIZE):
         rows.extend(pa.Table.from_batches([record_batch]).to_pylist())
-    if len(rows) != batch.item_count:
-        raise JobOutcomeError("Job outcome fragment row count does not match its batch")
-    if [row["ordinal"] for row in rows] != list(range(expected_ordinal, expected_ordinal + batch.item_count)):
+    if len(rows) != len(chunk.document_ids):
+        raise JobOutcomeError("Job outcome fragment row count does not match its chunk")
+    if [row["ordinal"] for row in rows] != list(range(expected_ordinal, expected_ordinal + len(rows))):
         raise JobOutcomeError("Job outcome fragment ordinals are missing, duplicated, or out of order")
-    if [row["item_id"] for row in rows] != batch.document_ids:
-        raise JobOutcomeError("Job outcome fragment items do not match the frozen batch")
+    if [row["item_id"] for row in rows] != list(chunk.document_ids):
+        raise JobOutcomeError("Job outcome fragment items do not match the frozen chunk")
     if any(row["outcome_status"] not in OUTCOME_STATUSES for row in rows):
         raise JobOutcomeError("Job outcome fragment contains an unsupported status")
     return rows
 
 
-def finalize_embedding_outcome_manifest(db: Session, job: MatterEmbeddingJob) -> JobOutcomeManifest:
-    manifest = ensure_embedding_outcome_manifest(db, job)
+def finalize_outcome_manifest(
+    db: Session,
+    *,
+    scope: OutcomeScope,
+    chunks: list[OutcomeChunk],
+) -> JobOutcomeManifest:
+    """Verify every chunk's fragment and publish the final, ordered item-outcome artifact."""
+
+    manifest = ensure_outcome_manifest(db, scope)
     if manifest.manifest_status == "FINALIZED":
         return manifest
-    batches = list(
-        db.scalars(
-            select(MatterEmbeddingBatch)
-            .where(MatterEmbeddingBatch.job_id == job.id)
-            .order_by(MatterEmbeddingBatch.batch_number)
-        )
-    )
     execution = db.get(WorkflowRun, manifest.producer_run_id)
     if execution is None:
-        raise JobOutcomeError("Embedding job has no common execution attempt")
+        raise JobOutcomeError("Job has no common execution attempt")
     references: list[WorkflowArtifactReference] = []
     status_counts: Counter[str] = Counter()
     reason_counts: Counter[str] = Counter()
     final_metadata = {
         "outcome_schema": OUTCOME_SCHEMA,
         "outcome_schema_version": OUTCOME_SCHEMA_VERSION,
-        "job_type": MATTER_EMBEDDING_JOB_TYPE,
-        "job_id": str(job.id),
-        "item_count": job.total_count,
+        "job_type": scope.job_type,
+        "job_id": str(scope.job_id),
+        "item_count": scope.total_count,
         "producer_run_id": str(execution.id),
-        "tenant_id": str(job.matter.client.tenant_id),
-        "client_id": str(job.matter.client_id),
-        "matter_id": str(job.matter_id),
-        "configuration_hash": job.configuration_hash,
+        "tenant_id": str(scope.tenant_id),
+        "client_id": str(scope.client_id),
+        "matter_id": str(scope.matter_id),
+        "configuration_hash": scope.configuration_hash,
     }
     output = tempfile.SpooledTemporaryFile(max_size=128 * 1024 * 1024, mode="w+b")  # noqa: SIM115
     writer = pq.ParquetWriter(
@@ -428,34 +486,28 @@ def finalize_embedding_outcome_manifest(db: Session, job: MatterEmbeddingJob) ->
     )
     ordinal = 0
     try:
-        for batch in batches:
-            reference = find_workflow_artifact_reference(
-                artifact_type=ArtifactType.JOB_ITEM_OUTCOME_FRAGMENT,
-                derivation_key=embedding_fragment_derivation(job, batch),
-                actor_user_id=job.created_by_user_id,
-                tenant_id=job.matter.client.tenant_id,
-                client_id=job.matter.client_id,
-            )
+        for chunk in chunks:
+            reference = find_outcome_fragment(scope, chunk)
             if reference is None:
-                raise JobOutcomeError(f"Embedding outcome fragment is missing for batch {batch.batch_number}")
+                raise JobOutcomeError(f"Job outcome fragment is missing for chunk {chunk.chunk_number}")
             if (
-                reference.tenant_id != job.matter.client.tenant_id
-                or reference.client_id != job.matter.client_id
+                reference.tenant_id != scope.tenant_id
+                or reference.client_id != scope.client_id
                 or reference.artifact_type != ArtifactType.JOB_ITEM_OUTCOME_FRAGMENT
                 or reference.schema_version != OUTCOME_SCHEMA_VERSION
-                or reference.derivation_key != embedding_fragment_derivation(job, batch)
+                or reference.derivation_key != outcome_fragment_derivation(scope, chunk)
                 or reference.core_scope_kind != "MATTER"
-                or reference.core_scope_id != job.matter_id
+                or reference.core_scope_id != scope.matter_id
                 or reference.producer_kind != "CORE"
                 or reference.producer_run_id != execution.id
             ):
-                raise JobOutcomeError("Embedding outcome fragment scope or producer does not match the job")
-            fragment_file = _copy_verified(reference, job)
+                raise JobOutcomeError("Job outcome fragment scope or producer does not match the job")
+            fragment_file = _copy_verified(reference, scope)
             try:
                 rows = _validate_fragment(
                     pq.ParquetFile(fragment_file),
-                    job=job,
-                    batch=batch,
+                    scope=scope,
+                    chunk=chunk,
                     expected_ordinal=ordinal,
                 )
             finally:
@@ -468,10 +520,10 @@ def finalize_embedding_outcome_manifest(db: Session, job: MatterEmbeddingJob) ->
             references.append(reference)
     finally:
         writer.close()
-    if ordinal != job.total_count:
+    if ordinal != scope.total_count:
         output.close()
         raise JobOutcomeError("Final job outcome row count does not match the frozen population")
-    if sum(status_counts.values()) != job.total_count or any(
+    if sum(status_counts.values()) != scope.total_count or any(
         status not in OUTCOME_STATUSES for status in status_counts
     ):
         output.close()
@@ -491,7 +543,7 @@ def finalize_embedding_outcome_manifest(db: Session, job: MatterEmbeddingJob) ->
     final_metadata["derivation_key"] = final_derivation
     final_metadata["summary_hash"] = canonical_hash(
         {
-            "item_count": job.total_count,
+            "item_count": scope.total_count,
             "status_counts": dict(sorted(status_counts.items())),
             "reason_counts": dict(sorted(reason_counts.items())),
         }
@@ -518,7 +570,7 @@ def finalize_embedding_outcome_manifest(db: Session, job: MatterEmbeddingJob) ->
             content=rewritten,
             artifact_type=ArtifactType.JOB_ITEM_OUTCOMES,
             core_scope_kind="MATTER",
-            core_scope_id=job.matter_id,
+            core_scope_id=scope.matter_id,
             schema_version=OUTCOME_SCHEMA_VERSION,
             derivation_key=final_derivation,
             content_hash=content_hash,
@@ -534,24 +586,24 @@ def finalize_embedding_outcome_manifest(db: Session, job: MatterEmbeddingJob) ->
                 )
                 for reference in references
             ],
-            actor_user_id=job.created_by_user_id,
-            tenant_id=job.matter.client.tenant_id,
-            client_id=job.matter.client_id,
-            filename=f"embedding-job-outcomes-{job.id}.parquet",
+            actor_user_id=scope.actor_user_id,
+            tenant_id=scope.tenant_id,
+            client_id=scope.client_id,
+            filename=f"{scope.filename_prefix}-job-outcomes-{scope.job_id}.parquet",
         )
     finally:
         rewritten.close()
     verified = get_workflow_artifact_reference(
         artifact_id=final_reference.artifact_id,
-        actor_user_id=job.created_by_user_id,
-        tenant_id=job.matter.client.tenant_id,
-        client_id=job.matter.client_id,
+        actor_user_id=scope.actor_user_id,
+        tenant_id=scope.tenant_id,
+        client_id=scope.client_id,
     )
     if (
-        verified.tenant_id != job.matter.client.tenant_id
-        or verified.client_id != job.matter.client_id
+        verified.tenant_id != scope.tenant_id
+        or verified.client_id != scope.client_id
         or verified.core_scope_kind != "MATTER"
-        or verified.core_scope_id != job.matter_id
+        or verified.core_scope_id != scope.matter_id
         or verified.artifact_type != ArtifactType.JOB_ITEM_OUTCOMES
         or verified.schema_version != OUTCOME_SCHEMA_VERSION
         or verified.derivation_key != final_derivation
@@ -573,19 +625,102 @@ def finalize_embedding_outcome_manifest(db: Session, job: MatterEmbeddingJob) ->
     record_audit(
         db,
         tenant_id=manifest.tenant_id,
-        actor_user_id=job.created_by_user_id,
+        actor_user_id=scope.actor_user_id,
         action="job_outcome_manifest.finalized",
         target_type="job_outcome_manifest",
         target_id=manifest.id,
         details={
             "job_type": manifest.job_type,
-            "job_id": str(job.id),
+            "job_id": str(scope.job_id),
             "artifact_id": str(verified.artifact_id),
             "item_count": manifest.item_count,
         },
     )
     db.flush()
     return manifest
+
+
+# Matter embedding jobs: the first adopter. Batches are the frozen chunks.
+
+
+def _embedding_scope(job: MatterEmbeddingJob) -> OutcomeScope:
+    return OutcomeScope(
+        job_type=MATTER_EMBEDDING_JOB_TYPE,
+        job_id=job.id,
+        tenant_id=job.matter.client.tenant_id,
+        client_id=job.matter.client_id,
+        matter_id=job.matter_id,
+        actor_user_id=job.created_by_user_id,
+        configuration_hash=job.configuration_hash,
+        total_count=job.total_count,
+        chunk_count=job.batch_count,
+        item_kind="MATTER_DOCUMENT",
+        filename_prefix="embedding",
+    )
+
+
+def _embedding_chunk(batch: MatterEmbeddingBatch, ordinal_start: int) -> OutcomeChunk:
+    return OutcomeChunk(
+        chunk_id=str(batch.id),
+        chunk_number=batch.batch_number,
+        ordinal_start=ordinal_start,
+        document_ids=tuple(batch.document_ids),
+    )
+
+
+def ensure_embedding_outcome_manifest(db: Session, job: MatterEmbeddingJob) -> JobOutcomeManifest:
+    return ensure_outcome_manifest(db, _embedding_scope(job))
+
+
+def embedding_fragment_derivation(job: MatterEmbeddingJob, batch: MatterEmbeddingBatch) -> str:
+    return outcome_fragment_derivation(_embedding_scope(job), _embedding_chunk(batch, 0))
+
+
+def publish_embedding_outcome_fragment(
+    db: Session,
+    *,
+    job: MatterEmbeddingJob,
+    batch: MatterEmbeddingBatch,
+    outcomes: list[JobItemOutcome],
+) -> WorkflowArtifactReference:
+    if len(outcomes) != len(batch.document_ids):
+        raise JobOutcomeError("Embedding batch outcomes do not cover the frozen batch")
+    ordinal_start = int(
+        db.scalar(
+            select(func.coalesce(func.sum(MatterEmbeddingBatch.item_count), 0)).where(
+                MatterEmbeddingBatch.job_id == job.id,
+                MatterEmbeddingBatch.batch_number < batch.batch_number,
+            )
+        )
+        or 0
+    )
+    return publish_outcome_fragment(
+        db,
+        scope=_embedding_scope(job),
+        chunk=_embedding_chunk(batch, ordinal_start),
+        outcomes=outcomes,
+    )
+
+
+def _embedding_chunks(db: Session, job: MatterEmbeddingJob) -> list[tuple[MatterEmbeddingBatch, OutcomeChunk]]:
+    chunks: list[tuple[MatterEmbeddingBatch, OutcomeChunk]] = []
+    ordinal = 0
+    for batch in db.scalars(
+        select(MatterEmbeddingBatch)
+        .where(MatterEmbeddingBatch.job_id == job.id)
+        .order_by(MatterEmbeddingBatch.batch_number)
+    ):
+        chunks.append((batch, _embedding_chunk(batch, ordinal)))
+        ordinal += len(batch.document_ids)
+    return chunks
+
+
+def finalize_embedding_outcome_manifest(db: Session, job: MatterEmbeddingJob) -> JobOutcomeManifest:
+    return finalize_outcome_manifest(
+        db,
+        scope=_embedding_scope(job),
+        chunks=[chunk for _, chunk in _embedding_chunks(db, job)],
+    )
 
 
 def finalize_canceled_embedding_outcome_manifest(
@@ -601,22 +736,9 @@ def finalize_canceled_embedding_outcome_manifest(
     )
     if manifest is None or manifest.manifest_status == "FINALIZED":
         return manifest
-    batches = list(
-        db.scalars(
-            select(MatterEmbeddingBatch)
-            .where(MatterEmbeddingBatch.job_id == job.id)
-            .order_by(MatterEmbeddingBatch.batch_number)
-        )
-    )
-    for batch in batches:
-        reference = find_workflow_artifact_reference(
-            artifact_type=ArtifactType.JOB_ITEM_OUTCOME_FRAGMENT,
-            derivation_key=embedding_fragment_derivation(job, batch),
-            actor_user_id=job.created_by_user_id,
-            tenant_id=job.matter.client.tenant_id,
-            client_id=job.matter.client_id,
-        )
-        if reference is not None:
+    scope = _embedding_scope(job)
+    for batch, chunk in _embedding_chunks(db, job):
+        if find_outcome_fragment(scope, chunk) is not None:
             continue
         publish_embedding_outcome_fragment(
             db,
