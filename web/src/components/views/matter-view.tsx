@@ -2,7 +2,7 @@
 
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import type { ColumnDef } from "@tanstack/react-table";
-import { AlertTriangle, Ban, BarChart3, BrainCircuit, BriefcaseBusiness, CheckCircle2, ChevronRight, Database, Download, FileDown, FileSearch, FileText, ListChecks, Play, RefreshCw, RotateCcw, Search, Sparkles, Tags, Trash2, UsersRound } from "lucide-react";
+import { AlertTriangle, Ban, BarChart3, BrainCircuit, BriefcaseBusiness, CheckCircle2, ChevronRight, Database, Download, FileDown, FileSearch, FileText, ListChecks, Play, RotateCcw, Search, Sparkles, Tags, Trash2, UsersRound } from "lucide-react";
 import Link from "next/link";
 import { useRouter } from "next/navigation";
 import { type ReactElement, useCallback, useMemo, useState, useSyncExternalStore } from "react";
@@ -36,7 +36,7 @@ import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Label } from "@/components/ui/label";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { SplitActionButton } from "@/components/ui/split-action-button";
-import type { ClientRead, EffectivePermissionsRead, EmailDomainUpdateRead, JobExecutionRead, MatterAnalysisTaskRead, MatterAnalysisTaskRunRead, MatterBulkTagJobRead, MatterDefinitionAssessmentRead, MatterDocumentImportRead, MatterEmbeddingJobRead, MatterOverviewCounts, MatterProviderUsageReportRead, MatterQuestionAnsweringJobRead, MatterRead, MatterSavedSearchRead, MatterSearchExportRead, MatterTemplateRead, MatterTopicJobCreate, MatterTopicJobRead, MetadataDefinitionCreate, MetadataDefinitionRead, MetadataGroupRead, ReviewBatchCreate, ReviewBatchRead, SearchIndexGenerationRead, SearchProjectionOperationRead, SearchProjectionRetryResponse, UserRead } from "@/generated/models";
+import type { ClientRead, EffectivePermissionsRead, JobExecutionRead, MatterAnalysisTaskRead, MatterAnalysisTaskRunRead, MatterBulkTagJobRead, MatterDefinitionAssessmentRead, MatterDocumentImportRead, MatterEmbeddingJobRead, MatterOverviewCounts, MatterProviderUsageReportRead, MatterQuestionAnsweringJobRead, MatterRead, MatterSavedSearchRead, MatterSearchExportRead, MatterTemplateRead, MatterTopicJobCreate, MatterTopicJobRead, MetadataDefinitionCreate, MetadataDefinitionRead, MetadataGroupRead, ReviewBatchCreate, ReviewBatchRead, SearchIndexGenerationRead, SearchProjectionOperationRead, SearchProjectionRetryResponse, UserRead } from "@/generated/models";
 import { coreApi } from "@/lib/api-client";
 import { bulkTagDisplayStatus, bulkTagIsWaiting } from "@/lib/bulk-tag-jobs";
 import { formatDate } from "@/lib/format";
@@ -218,16 +218,6 @@ export function MatterView({ clientId, matterId, requestedTab, requestedMetadata
     onSuccess: (definition) => { void queryClient.invalidateQueries({ queryKey: ["metadata-definitions", matterId] }); toast.success(`${definition.display_name} was created.`); },
   });
   const createDefinition = useCallback((values: MetadataDefinitionCreate) => mutation.mutateAsync(values).then(() => undefined), [mutation]);
-  const updateEmailDomainsMutation = useMutation({
-    mutationFn: () => coreApi<EmailDomainUpdateRead>(`/v1/matters/${matterId}/metadata-definitions/email-domain/update`, { method: "POST" }),
-    onSuccess: (result) => {
-      void queryClient.invalidateQueries({ queryKey: ["metadata-definitions", matterId] });
-      void queryClient.invalidateQueries({ queryKey: ["metadata-groups", matterId] });
-      void queryClient.invalidateQueries({ queryKey: ["search-operations", matterId] });
-      toast.success(result.definition_created ? "Email Domain was added and its update was queued." : "The Email Domain update was queued.");
-    },
-    onError: (error) => toast.error(error instanceof Error ? error.message : "Email domains could not be updated."),
-  });
   const groupMutation = useMutation({
     mutationFn: (values: CreateMetadataGroupValues) => coreApi<MetadataGroupRead>(`/v1/matters/${matterId}/metadata-groups`, { method: "POST", body: JSON.stringify(values) }),
     onSuccess: (group) => { void queryClient.invalidateQueries({ queryKey: ["metadata-groups", matterId] }); toast.success(`${group.display_name} was created.`); },
@@ -651,7 +641,7 @@ export function MatterView({ clientId, matterId, requestedTab, requestedMetadata
             <HelpLink topic={tab === "classification" ? "classification" : tab === "jobs" ? "matterJobs" : tab === "usage" ? "tokenUsage" : tab === "search" ? "matterSearch" : tab === "definition" ? "matterDefinition" : "metadata"} />
             <CloneMatterDialog sourceName={matter.data.name} onClone={cloneMatter} />
             <SaveMatterTemplateDialog onCreate={saveTemplate} />
-            {tab === "metadata" && metadataTab === "definitions" ? <><Button type="button" variant="outline" disabled={updateEmailDomainsMutation.isPending} onClick={() => updateEmailDomainsMutation.mutate()}><RefreshCw className={updateEmailDomainsMutation.isPending ? "animate-spin" : undefined} />{updateEmailDomainsMutation.isPending ? "Queuing…" : "Update email domains"}</Button><CreateMetadataDialog onCreate={createDefinition} /></> : null}
+            {tab === "metadata" && metadataTab === "definitions" ? <CreateMetadataDialog onCreate={createDefinition} /> : null}
           </div>
         </div>
       </div>

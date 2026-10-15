@@ -60,7 +60,7 @@ Responsiveness options are **Responsive**, **Not responsive**, and **Needs revie
 
 **Email Domain** is a read-only, multi-value system field. For each document, Priv-View parses the structured From, To, CC, and BCC participants, lowercases and IDNA-normalizes their domains, removes duplicates, and sorts the result. A non-email document or an email without a usable address has zero values; Priv-View does not write a synthetic **No value** tag.
 
-New matters receive the field automatically and populate it during normal indexing. A full search-index rebuild installs a missing Email Domain definition and Email-group membership for a matter created from an older profile, then derives the field while rebuilding every document projection. Publishing documents does not perform this profile upgrade. To install or refresh the field without a full rebuild, open **Metadata → Definitions** and select **Update email domains**. The durable bounded update reads only Artifact's structured email participants and partially updates `metadata.email_domain`; it does not reread document bodies or embeddings and does not append per-document metadata events. The operation is safe to run again. Progress and failures appear under **Search index → Operations**.
+New matters receive the field automatically and populate it during normal indexing. A full search-index rebuild installs a missing Email Domain definition and Email-group membership for a matter created from an older profile, then derives the field while rebuilding every document projection. Publishing documents does not perform this profile upgrade. Rebuilding the index is also the supported way to refresh this derived field across the complete matter.
 
 ## Add a field
 

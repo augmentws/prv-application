@@ -383,30 +383,20 @@ describe("MatterView batches", () => {
 });
 
 describe("MatterView metadata navigation", () => {
-  it("queues the derived Email Domain update for an existing matter", async () => {
-    vi.mocked(coreApi).mockImplementation(async (path, init) => {
+  it("does not expose a manual Email Domain update action", async () => {
+    vi.mocked(coreApi).mockImplementation(async (path) => {
       if (path === "/v1/clients/client-1") return { id: "client-1", tenant_id: "tenant-1", name: "Client" } as never;
       if (path === "/v1/matters/matter-1") return { id: "matter-1", name: "Matter" } as never;
-      if (path === "/v1/matters/matter-1/metadata-definitions/email-domain/update" && init?.method === "POST") return {
-        metadata_definition_id: "definition-email-domain",
-        definition_created: true,
-        search_operation_id: "operation-1",
-        status: "QUEUED",
-      } as never;
       if (path === "/v1/matters/matter-1/metadata-definitions") return [] as never;
       if (path === "/v1/matters/matter-1/metadata-groups") return [] as never;
       throw new Error(`Unexpected API request: ${path}`);
     });
     const client = new QueryClient({ defaultOptions: { queries: { retry: false }, mutations: { retry: false } } });
-    const user = userEvent.setup();
 
     render(<QueryClientProvider client={client}><MatterView clientId="client-1" matterId="matter-1" requestedTab="metadata" /></QueryClientProvider>);
 
-    await user.click(await screen.findByRole("button", { name: "Update email domains" }));
-    await waitFor(() => expect(coreApi).toHaveBeenCalledWith(
-      "/v1/matters/matter-1/metadata-definitions/email-domain/update",
-      { method: "POST" },
-    ));
+    expect(await screen.findByRole("tab", { name: "Definitions" })).toHaveAttribute("aria-selected", "true");
+    expect(screen.queryByRole("button", { name: "Update email domains" })).not.toBeInTheDocument();
   });
 
   it("shows one Metadata tab with Definitions and Groups subtabs and preserves the legacy groups link", async () => {
