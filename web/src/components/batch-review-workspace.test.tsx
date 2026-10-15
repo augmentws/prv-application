@@ -297,8 +297,7 @@ describe("BatchReviewWorkspace", () => {
     expect(onSelectRun).toHaveBeenCalledWith("assessment-run");
   });
 
-  it("projects a completed classification run into Batch Coding", async () => {
-    const onProjectionChanged = vi.fn();
+  it("creates a review batch from any completed classification run", async () => {
     const user = userEvent.setup();
     vi.mocked(coreApi).mockImplementation(async (path, init) => {
       if (path.endsWith("/classification-models/classification-model-1/scoring-runs/scoring-run-1")) return {
@@ -330,17 +329,14 @@ describe("BatchReviewWorkspace", () => {
           { class_key: "topic_402", label: "Topic 402", document_count: 35 },
         ],
       } as never;
-      if (path.endsWith("/review-batches/batch-1/classifier-runs") && init?.method === "POST") return {
-        id: "classifier-projection-1",
-        review_batch_id: "batch-1",
-        run_type: "CLASSIFIER",
-        purpose: "CANDIDATE",
+      if (path.endsWith("/review-batches/from-classification-run") && init?.method === "POST") return {
+        id: "classification-review-batch-1",
+        matter_id: "matter-1",
+        name: "High-confidence issue review",
         status: "QUEUED",
-        result_policy: "ISOLATED",
-        classification_scoring_run_id: "scoring-run-1",
-        configuration_snapshot: {},
-        initiated_by_user_id: "user-1",
-        processed_document_count: 0,
+        selection_type: "CLASSIFICATION_PREDICTIONS",
+        selection_definition: {},
+        document_count: 0,
         created_at: "2026-09-28T12:10:00Z",
         updated_at: "2026-09-28T12:10:00Z",
       } as never;
@@ -351,26 +347,31 @@ describe("BatchReviewWorkspace", () => {
       clientId="client-1"
       matterId="matter-1"
       run={{ ...classificationAnalysisRun, task_name: "Issue classifier" }}
-      batchProjection={{ batchId: "batch-1", onProjectionChanged, onViewFilters: vi.fn() }}
     /></QueryClientProvider>);
 
-    await user.click(await screen.findByRole("button", { name: "Project to batch" }));
-    expect(screen.getByRole("heading", { name: "Project classifier values to this batch" })).toBeInTheDocument();
+    await user.click(await screen.findByRole("button", { name: "Create review batch" }));
+    expect(screen.getByRole("heading", { name: "Create review batch from classifier values" })).toBeInTheDocument();
+    await user.clear(screen.getByLabelText("Batch name"));
+    await user.type(screen.getByLabelText("Batch name"), "High-confidence issue review");
     expect(screen.getByLabelText("Minimum confidence %")).toHaveValue(80);
     await user.clear(screen.getByLabelText("Maximum confidence %"));
     await user.type(screen.getByLabelText("Maximum confidence %"), "90");
     await user.click(await screen.findByRole("checkbox", { name: /Topic 401/ }));
-    await user.click(screen.getByRole("button", { name: "Project values" }));
+    await user.click(screen.getByRole("button", { name: "Create batch" }));
 
     await waitFor(() => {
-      const call = vi.mocked(coreApi).mock.calls.find(([path, init]) => path.endsWith("/review-batches/batch-1/classifier-runs") && init?.method === "POST");
+      const call = vi.mocked(coreApi).mock.calls.find(([path, init]) => path.endsWith("/review-batches/from-classification-run") && init?.method === "POST");
       expect(JSON.parse(String(call?.[1]?.body))).toMatchObject({
-        classification_scoring_run_id: "scoring-run-1",
+        classification_analysis_run_id: classificationAnalysisRun.id,
+        name: "High-confidence issue review",
         minimum_confidence: 0.8,
         maximum_confidence: 0.9,
         selected_class_keys: ["topic_401"],
       });
-      expect(onProjectionChanged).toHaveBeenCalledWith(expect.objectContaining({ id: "classifier-projection-1" }));
+      expect(screen.getByRole("link", { name: "Open batch" })).toHaveAttribute(
+        "href",
+        "/review/matters/matter-1?batch=classification-review-batch-1",
+      );
     });
   });
 

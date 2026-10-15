@@ -201,7 +201,11 @@ def _sample_document_ids(ids: list[uuid.UUID], batch: ReviewBatch) -> list[uuid.
 
 
 def _database_document_ids(db: Session, batch: ReviewBatch) -> list[uuid.UUID]:
-    if batch.selection_type == "RANDOM_BATCH":
+    if batch.selection_type == "CLASSIFICATION_PREDICTIONS":
+        from app.classification_projections import classification_projection_document_ids
+
+        ids = classification_projection_document_ids(db, batch)
+    elif batch.selection_type == "RANDOM_BATCH":
         ids = list(
             db.scalars(
                 select(ReviewBatchDocument.matter_document_id)

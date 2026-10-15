@@ -20,7 +20,7 @@ import type {
   ClassificationPredictionSummaryRead,
   ClassificationScoringRunRead,
   MatterAnalysisTaskRunRead,
-  ReviewBatchClassifierRunCreate,
+  ReviewBatchRead,
   ReviewBatchRunRead,
 } from "@/generated/models";
 import { coreApi } from "@/lib/api-client";
@@ -56,6 +56,8 @@ export function ClassificationAnalysisJobDetail({
   const [minimumConfidence, setMinimumConfidence] = useState("");
   const [maximumConfidence, setMaximumConfidence] = useState("");
   const [selectedClassKeys, setSelectedClassKeys] = useState<string[]>([]);
+  const [batchName, setBatchName] = useState("");
+  const [createdBatch, setCreatedBatch] = useState<ReviewBatchRead | null>(null);
   const scoringRunId = run.classification_scoring_run_id;
   const scoring = useQuery({
     queryKey: ["classification-scoring-run", matterId, run.classification_model_id, scoringRunId],
@@ -85,7 +87,6 @@ export function ClassificationAnalysisJobDetail({
       ? `${Math.round(policyThreshold * 100)}% confidence threshold`
       : "Model prediction policy";
   const projectionRun = batchProjection?.projectionRun;
-  const projectionActive = ["QUEUED", "RUNNING"].includes(projectionRun?.status ?? "");
   const projectionSearchReady = Boolean(
     projectionRun
     && batchProjection?.searchableRunId === projectionRun.id
@@ -96,11 +97,14 @@ export function ClassificationAnalysisJobDetail({
     setMinimumConfidence(String(Math.round(defaultMinimum * 100)));
     setMaximumConfidence("");
     setSelectedClassKeys([]);
+    setBatchName(`${run.task_name ?? "Classification review"} · ≥${Math.round(defaultMinimum * 100)}%`);
+    setCreatedBatch(null);
     setProjectionDialogOpen(true);
   };
   const createProjection = useMutation({
     mutationFn: async () => {
-      if (!batchProjection || !scoringResult) throw new Error("Completed classification output is required.");
+      if (!scoringResult) throw new Error("Completed classification output is required.");
+      if (!batchName.trim()) throw new Error("Batch name is required.");
       const minimum = Number(minimumConfidence) / 100;
       const maximum = maximumConfidence.trim() ? Number(maximumConfidence) / 100 : null;
       if (!Number.isFinite(minimum) || minimum < 0 || minimum > 1) {
@@ -109,24 +113,23 @@ export function ClassificationAnalysisJobDetail({
       if (maximum !== null && (!Number.isFinite(maximum) || maximum <= minimum || maximum > 1)) {
         throw new Error("Maximum confidence must be greater than the minimum and no more than 100%.");
       }
-      const payload: ReviewBatchClassifierRunCreate = {
-        classification_scoring_run_id: scoringResult.id,
-        minimum_confidence: minimum,
-        maximum_confidence: maximum,
-        selected_class_keys: selectedClassKeys,
-        idempotency_key: `classifier-projection:${scoringResult.id}:${crypto.randomUUID()}`,
-      };
-      return coreApi<ReviewBatchRunRead>(`/v1/matters/${matterId}/review-batches/${batchProjection.batchId}/classifier-runs`, {
+      return coreApi<ReviewBatchRead>(`/v1/matters/${matterId}/review-batches/from-classification-run`, {
         method: "POST",
-        body: JSON.stringify(payload),
+        body: JSON.stringify({
+          classification_analysis_run_id: run.id,
+          name: batchName.trim(),
+          minimum_confidence: minimum,
+          maximum_confidence: maximum,
+          selected_class_keys: selectedClassKeys,
+          idempotency_key: `classification-review-batch:${run.id}:${crypto.randomUUID()}`,
+        }),
       });
     },
-    onSuccess: (projection) => {
-      batchProjection?.onProjectionChanged(projection);
-      setProjectionDialogOpen(false);
-      toast.success("Classifier values are being projected to Batch Coding.");
+    onSuccess: (batch) => {
+      setCreatedBatch(batch);
+      toast.success("The classification review batch is being created.");
     },
-    onError: (error) => toast.error(error instanceof Error ? error.message : "Classifier values could not be projected."),
+    onError: (error) => toast.error(error instanceof Error ? error.message : "The classification review batch could not be created."),
   });
   const classOptions = predictionSummary.data?.class_counts ?? [];
 
@@ -158,7 +161,7 @@ export function ClassificationAnalysisJobDetail({
       {scoringResult ? <div className="rounded-md border bg-muted/20 p-3">
         <div className="flex flex-wrap items-start justify-between gap-2">
           <div><p className="text-sm font-semibold">Scoring output</p><p className="mt-0.5 text-xs text-muted-foreground">{policy} · isolated analysis output; matter coding was not changed.</p></div>
-          <div className="flex flex-wrap items-center gap-2"><Badge variant="outline">{friendly(scoringResult.status)}</Badge>{batchProjection && predictionsSaved && ["COMPLETED", "COMPLETED_WITH_ERRORS"].includes(scoringResult.status) ? <Button type="button" size="sm" variant="outline" disabled={projectionActive} onClick={openProjectionDialog}>{projectionActive ? <LoaderCircle className="animate-spin" /> : <Layers3 />}{projectionActive ? "Projecting…" : projectionRun ? "Project another range" : "Project to batch"}</Button> : null}</div>
+          <div className="flex flex-wrap items-center gap-2"><Badge variant="outline">{friendly(scoringResult.status)}</Badge>{predictionsSaved && ["COMPLETED", "COMPLETED_WITH_ERRORS"].includes(scoringResult.status) ? <Button type="button" size="sm" variant="outline" onClick={openProjectionDialog}><Layers3 />Create review batch</Button> : null}</div>
         </div>
         <div className="mt-3 grid grid-cols-2 gap-2 sm:grid-cols-4">
           <OutcomeMetric label="Evaluated" value={scoringResult.scored_document_count} />
@@ -184,16 +187,17 @@ export function ClassificationAnalysisJobDetail({
   </Card>
   <Dialog open={projectionDialogOpen} onOpenChange={(open) => { if (!createProjection.isPending) setProjectionDialogOpen(open); }}>
     <DialogContent className="sm:max-w-xl">
-      <DialogHeader><DialogTitle>Project classifier values to this batch</DialogTitle><DialogDescription>Create isolated Batch Coding values from the saved predictions. This does not rerun the classifier or update matter coding.</DialogDescription></DialogHeader>
-      <div className="space-y-4">
+      <DialogHeader><DialogTitle>Create review batch from classifier values</DialogTitle><DialogDescription>Freeze documents matching this confidence range and expose their predicted values as isolated Batch Coding. Matter coding is not changed.</DialogDescription></DialogHeader>
+      {createdBatch ? <div className="space-y-4"><div className="rounded-md border bg-muted/20 p-3"><p className="font-medium">{createdBatch.name}</p><p className="mt-1 text-sm text-muted-foreground">The batch is resolving matching predictions and preparing Batch Coding.</p></div></div> : <div className="space-y-4">
+        <div className="space-y-2"><Label htmlFor="classification-batch-name">Batch name</Label><Input id="classification-batch-name" value={batchName} onChange={(event) => setBatchName(event.target.value)} /></div>
         <div className="grid grid-cols-2 gap-3">
           <div className="space-y-2"><Label htmlFor="batch-projection-minimum">Minimum confidence %</Label><Input id="batch-projection-minimum" type="number" min="0" max="100" step="1" value={minimumConfidence} onChange={(event) => setMinimumConfidence(event.target.value)} /></div>
           <div className="space-y-2"><Label htmlFor="batch-projection-maximum">Maximum confidence %</Label><Input id="batch-projection-maximum" type="number" min="0" max="100" step="1" placeholder="100" value={maximumConfidence} onChange={(event) => setMaximumConfidence(event.target.value)} /></div>
         </div>
         <p className="text-xs text-muted-foreground">The minimum is inclusive and the optional maximum is exclusive. You can project another non-overlapping confidence range later from the same saved predictions.</p>
         {classOptions.length ? <fieldset className="space-y-2"><legend className="text-sm font-medium">Classes</legend><p className="text-xs text-muted-foreground">Leave every class unselected to include all resolved classes.</p><div className="max-h-48 space-y-1 overflow-y-auto rounded-md border p-2">{classOptions.map((option) => <label key={option.class_key} className="flex items-center gap-2 rounded px-1.5 py-1 text-sm hover:bg-muted"><input type="checkbox" checked={selectedClassKeys.includes(option.class_key)} onChange={() => setSelectedClassKeys((current) => current.includes(option.class_key) ? current.filter((item) => item !== option.class_key) : [...current, option.class_key])} className="size-4 accent-primary" /><span className="min-w-0 flex-1 truncate" title={option.class_key}>{option.label}</span><span className="font-mono text-xs text-muted-foreground">{option.document_count.toLocaleString()}</span></label>)}</div></fieldset> : predictionSummary.isPending ? <p className="text-sm text-muted-foreground">Loading available classes…</p> : null}
-      </div>
-      <DialogFooter><Button type="button" variant="outline" onClick={() => setProjectionDialogOpen(false)} disabled={createProjection.isPending}>Cancel</Button><Button type="button" onClick={() => createProjection.mutate()} disabled={createProjection.isPending || !minimumConfidence.trim()}>{createProjection.isPending ? <LoaderCircle className="animate-spin" /> : <Layers3 />}{createProjection.isPending ? "Projecting…" : "Project values"}</Button></DialogFooter>
+      </div>}
+      <DialogFooter>{createdBatch ? <><Button type="button" variant="outline" onClick={() => setProjectionDialogOpen(false)}>Close</Button><Button asChild><Link href={`/review/matters/${matterId}?batch=${createdBatch.id}`}>Open batch</Link></Button></> : <><Button type="button" variant="outline" onClick={() => setProjectionDialogOpen(false)} disabled={createProjection.isPending}>Cancel</Button><Button type="button" onClick={() => createProjection.mutate()} disabled={createProjection.isPending || !minimumConfidence.trim() || !batchName.trim()}>{createProjection.isPending ? <LoaderCircle className="animate-spin" /> : <Layers3 />}{createProjection.isPending ? "Creating…" : "Create batch"}</Button></>}</DialogFooter>
     </DialogContent>
   </Dialog></>;
 }

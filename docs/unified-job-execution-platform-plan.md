@@ -548,6 +548,12 @@ depends on the other.
 
 See [Reusable Job Outcome Manifest Platform Plan](job-outcome-manifest-platform-plan.md).
 
+Frozen document inputs use the separate
+[Generic Analysis Input Manifest Platform](analysis-input-manifest-platform.md).
+That platform is implemented for new statistical-classification dataset
+snapshots. Q&A adoption remains deferred; execution normalization and input
+materialization are related but independent concerns.
+
 ## 11. API contract
 
 ### 11.1 Shared response

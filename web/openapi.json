@@ -9574,6 +9574,65 @@
         }
       }
     },
+    "/v1/matters/{matter_id}/review-batches/from-classification-run": {
+      "post": {
+        "tags": [
+          "review batches"
+        ],
+        "summary": "Create Classification Review Batch",
+        "description": "Freeze prediction matches and attach their isolated classifier coding.",
+        "operationId": "create_classification_review_batch_v1_matters__matter_id__review_batches_from_classification_run_post",
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "matter_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid",
+              "title": "Matter Id"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ClassificationReviewBatchCreate"
+              }
+            }
+          }
+        },
+        "responses": {
+          "202": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ReviewBatchRead"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/v1/matters/{matter_id}/review-batches/{batch_id}": {
       "delete": {
         "tags": [
@@ -15065,6 +15124,7 @@
                   "enum": [
                     "MATTER",
                     "REVIEW_BATCH",
+                    "ANALYSIS_INPUT_MANIFEST",
                     "CLASSIFICATION_MODEL",
                     "CLASSIFICATION_CONFIGURATION",
                     "CLASSIFICATION_DATASET_SNAPSHOT",
@@ -21795,6 +21855,7 @@
       "ArtifactType": {
         "type": "string",
         "enum": [
+          "ANALYSIS_INPUT_MANIFEST",
           "CLASSIFICATION_POPULATION",
           "CLASSIFICATION_FEATURES",
           "CLASSIFICATION_LABELS",
@@ -23052,6 +23113,18 @@
           "label_policy_snapshot": {
             "$ref": "#/components/schemas/LabelPolicy"
           },
+          "analysis_input_manifest_id": {
+            "anyOf": [
+              {
+                "type": "string",
+                "format": "uuid"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Analysis Input Manifest Id"
+          },
           "population_artifact_id": {
             "anyOf": [
               {
@@ -23374,6 +23447,7 @@
           "training_scope",
           "target_field_snapshot",
           "label_policy_snapshot",
+          "analysis_input_manifest_id",
           "population_artifact_id",
           "population_content_hash",
           "label_artifact_id",
@@ -25182,6 +25256,99 @@
           "model_version_id"
         ],
         "title": "ClassificationPromotionResponse"
+      },
+      "ClassificationReviewBatchCreate": {
+        "properties": {
+          "classification_analysis_run_id": {
+            "type": "string",
+            "format": "uuid",
+            "title": "Classification Analysis Run Id"
+          },
+          "name": {
+            "type": "string",
+            "maxLength": 200,
+            "minLength": 1,
+            "title": "Name"
+          },
+          "description": {
+            "anyOf": [
+              {
+                "type": "string",
+                "maxLength": 4000
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Description"
+          },
+          "minimum_confidence": {
+            "type": "number",
+            "maximum": 1.0,
+            "minimum": 0.0,
+            "title": "Minimum Confidence"
+          },
+          "maximum_confidence": {
+            "anyOf": [
+              {
+                "type": "number",
+                "maximum": 1.0,
+                "minimum": 0.0
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Maximum Confidence"
+          },
+          "selected_class_keys": {
+            "items": {
+              "type": "string",
+              "maxLength": 20000,
+              "minLength": 1
+            },
+            "type": "array",
+            "maxItems": 1000,
+            "title": "Selected Class Keys"
+          },
+          "assigned_user_id": {
+            "anyOf": [
+              {
+                "type": "string",
+                "format": "uuid"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Assigned User Id"
+          },
+          "reviewer_value_visibility": {
+            "type": "string",
+            "enum": [
+              "OWN_VALUES",
+              "ALL_REVIEWER_VALUES"
+            ],
+            "title": "Reviewer Value Visibility",
+            "default": "OWN_VALUES"
+          },
+          "idempotency_key": {
+            "type": "string",
+            "maxLength": 200,
+            "minLength": 1,
+            "title": "Idempotency Key"
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "classification_analysis_run_id",
+          "name",
+          "minimum_confidence",
+          "idempotency_key"
+        ],
+        "title": "ClassificationReviewBatchCreate",
+        "description": "Create a review batch from one completed classification analysis output."
       },
       "ClassificationScoringCreate": {
         "properties": {
@@ -39243,7 +39410,8 @@
               "RANDOM_BATCH",
               "RANDOM_SAVED_SEARCH",
               "RANDOM_ASSESSMENT",
-              "DEFINITION_ASSESSMENT"
+              "DEFINITION_ASSESSMENT",
+              "CLASSIFICATION_PREDICTIONS"
             ],
             "title": "Selection Type"
           },
@@ -43114,6 +43282,7 @@
             "enum": [
               "MATTER",
               "REVIEW_BATCH",
+              "ANALYSIS_INPUT_MANIFEST",
               "CLASSIFICATION_MODEL",
               "CLASSIFICATION_CONFIGURATION",
               "CLASSIFICATION_DATASET_SNAPSHOT",

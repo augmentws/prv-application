@@ -27,6 +27,7 @@ export interface ClassificationDatasetSnapshotRead {
   training_scope: TrainingScopeSpecification;
   target_field_snapshot: TargetFieldSnapshot;
   label_policy_snapshot: LabelPolicy;
+  analysis_input_manifest_id: string | null;
   population_artifact_id: string | null;
   population_content_hash: string | null;
   label_artifact_id: string | null;

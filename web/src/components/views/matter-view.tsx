@@ -897,6 +897,14 @@ function batchSelectionLabel(batch: ReviewBatchRead) {
       ? `${name}${typeof revision === "number" ? ` · r${revision}` : ""}`
       : "Review Guidance assessment";
   }
+  if (batch.selection_type === "CLASSIFICATION_PREDICTIONS") {
+    const minimum = batch.selection_definition.minimum_confidence;
+    const maximum = batch.selection_definition.maximum_confidence;
+    const range = typeof minimum === "number"
+      ? `${Math.round(minimum * 100)}%${typeof maximum === "number" ? `–${Math.round(maximum * 100)}%` : "+"}`
+      : "selected";
+    return `Classifier predictions · ${range}`;
+  }
   return { ALL_MATTER: "All matter documents", SEARCH_QUERY: "Keyword search", RANDOM_MATTER: "Random matter sample", RANDOM_BATCH: "Random batch sample", RANDOM_ASSESSMENT: "Random assessment-candidate sample", DEFINITION_ASSESSMENT: "Matter Definition assessment" }[batch.selection_type];
 }
 
