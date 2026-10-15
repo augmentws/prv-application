@@ -64,7 +64,7 @@ def test_core_phase_one_flow(client: TestClient, root_token: str) -> None:
     )
     assert default_definitions.status_code == 200, default_definitions.text
     definitions_by_key = {definition["key"]: definition for definition in default_definitions.json()}
-    assert len(definitions_by_key) == 25
+    assert len(definitions_by_key) == 26
     assert {
         key: definitions_by_key["custodian"][key]
         for key in ("value_source", "reference_target", "cardinality", "facetable")
@@ -77,6 +77,15 @@ def test_core_phase_one_flow(client: TestClient, root_token: str) -> None:
     assert definitions_by_key["family_id"]["value_source"] == "SYSTEM"
     assert definitions_by_key["family_id"]["facetable"] is True
     assert definitions_by_key["file_size"]["type"] == "INTEGER"
+    assert {
+        key: definitions_by_key["file_date"][key]
+        for key in ("display_name", "type", "value_source", "facetable")
+    } == {
+        "display_name": "File date",
+        "type": "DATETIME",
+        "value_source": "SYSTEM",
+        "facetable": True,
+    }
     assert definitions_by_key["email_from"]["normalize_to_lowercase"] is True
     assert definitions_by_key["email_to"]["normalize_to_lowercase"] is True
     assert definitions_by_key["email_cc"]["normalize_to_lowercase"] is True
@@ -96,7 +105,7 @@ def test_core_phase_one_flow(client: TestClient, root_token: str) -> None:
     assert definitions_by_key["email_subject"]["normalize_to_lowercase"] is False
     assert definitions_by_key["responsiveness"]["value_source"] == "ASSERTED"
     assert definitions_by_key["responsiveness"]["template_key"] == "edrm-core"
-    assert definitions_by_key["responsiveness"]["template_version"] == 3
+    assert definitions_by_key["responsiveness"]["template_version"] == 4
 
     update_domains = client.post(
         f"/v1/matters/{matter_id}/metadata-definitions/email-domain/update",
@@ -502,7 +511,7 @@ def test_metadata_groups_preferences_templates_and_clone(client: TestClient, roo
     )
     assert template_response.status_code == 201, template_response.text
     template = template_response.json()
-    assert template["definition_count"] == 26
+    assert template["definition_count"] == 27
     assert template["group_count"] == 8
 
     available_templates = client.get(

@@ -427,7 +427,7 @@ export function MatterView({ clientId, matterId, requestedTab, requestedMetadata
     queryClient.setQueryData<MetadataDefinitionRead[]>(["metadata-definitions", matterId], (current) => current?.map((definition) => definition.id === updated.id ? updated : definition));
   }, [matterId, queryClient]);
   const columns = useMemo<ColumnDef<MetadataDefinitionRead>[]>(() => [
-    { accessorKey: "display_name", header: "Field", cell: ({ row }) => <div><p className="font-semibold">{row.original.display_name}</p><code className="text-xs text-muted-foreground">{row.original.key}</code></div> },
+    { accessorKey: "display_name", header: "Field", cell: ({ row }) => <div className="cursor-help" title={row.original.description ?? "No description has been provided for this field."}><p className="font-semibold">{row.original.display_name}</p><code className="text-xs text-muted-foreground">{row.original.key}</code></div> },
     { accessorKey: "type", header: "Type", cell: ({ row }) => <Badge>{row.original.type.toLowerCase().replace("_", " ")}</Badge> },
     { id: "allowed_values", header: "Enum values", size: 220, cell: ({ row }) => row.original.type === "ENUM" ? <span className="text-muted-foreground">{(row.original.allowed_values ?? []).filter((value) => value.active !== false).length} active · {(row.original.allowed_values ?? []).filter((value) => value.active === false).length} inactive</span> : <span className="text-muted-foreground">—</span> },
     { accessorKey: "value_source", header: "Source", cell: ({ row }) => <Badge variant="outline">{row.original.value_source.toLowerCase()}</Badge> },

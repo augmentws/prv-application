@@ -7,11 +7,11 @@ A metadata definition describes a field available within one matter. Every new m
 
 ## Default matter profile
 
-Matter creation automatically adds 25 definitions covering:
+Matter creation automatically adds 26 definitions covering:
 
 - identification, including control number, original filename, and document title;
 - family and custodian relationships;
-- source path and source-system timestamps;
+- source path, a canonical document date, and source-system timestamps;
 - email sender, recipients, unique participant domains, subject, sent date, and received date;
 - file extension, size, page count, MD5, and SHA-256; and
 - responsiveness, privilege, key-document coding, and review notes.
@@ -26,35 +26,46 @@ The profile is copied into the matter as ordinary database rows, so later matter
 
 ### Complete default field catalog
 
-| Group | Field key | Type | Values | Source |
-| --- | --- | --- | --- | --- |
-| Identification | `control_number` | Text | Single | Imported |
-| Identification | `original_filename` | Text | Single | Imported |
-| Identification | `document_title` | Text | Single | Imported |
-| Family | `family_id` | Text | Single | System |
-| Custodian & Source | `custodian` | Text | Multiple | System reference |
-| Custodian & Source | `source_path` | Long text | Single | Imported |
-| Email | `email_from` | Text | Single | Imported |
-| Email | `email_to` | Text | Multiple | Imported |
-| Email | `email_cc` | Text | Multiple | Imported |
-| Email | `email_bcc` | Text | Multiple | Imported |
-| Email | `email_domain` | Text | Multiple | System |
-| Email | `email_subject` | Text | Single | Imported |
-| Email | `email_sent_at` | Datetime | Single | Imported |
-| Email | `email_received_at` | Datetime | Single | Imported |
-| File Details | `file_extension` | Text | Single | Imported |
-| File Details | `file_size` | Integer | Single | Imported |
-| File Details | `page_count` | Integer | Single | Imported |
-| File Details | `md5_hash` | Text | Single | Imported |
-| File Details | `sha256_hash` | Text | Single | Imported |
-| Source Dates | `source_created_at` | Datetime | Single | Imported |
-| Source Dates | `source_modified_at` | Datetime | Single | Imported |
-| Review Coding | `responsiveness` | Enum | Single | Asserted |
-| Review Coding | `privilege` | Enum | Single | Asserted |
-| Review Coding | `key_document` | Boolean | Single | Asserted |
-| Review Coding | `review_notes` | Long text | Single | Asserted |
+| Group | Field | Type | Values | Source | Description |
+| --- | --- | --- | --- | --- | --- |
+| Identification | **Control number** (`control_number`) | Text | Single | Imported | Unique control identifier supplied with or assigned to the document. |
+| Identification | **Original filename** (`original_filename`) | Text | Single | Imported | Filename recorded for the source item before import. |
+| Identification | **Document title** (`document_title`) | Text | Single | Imported | Source-system document title when one is available. |
+| Family | **Family ID** (`family_id`) | Text | Single | System | Stable identifier shared by a parent document and all members of its family. |
+| Custodian & Source | **Custodian** (`custodian`) | Text | Multiple | System reference | Client-scoped person, account, device, or source from which the document was collected. |
+| Custodian & Source | **Source path** (`source_path`) | Long text | Single | Imported | Original folder path or source-system location of the collected item. |
+| Email | **Email from** (`email_from`) | Text | Single | Imported | Sender address or display value recorded on an email. |
+| Email | **Email to** (`email_to`) | Text | Multiple | Imported | Primary email recipients. |
+| Email | **Email CC** (`email_cc`) | Text | Multiple | Imported | Carbon-copy email recipients. |
+| Email | **Email BCC** (`email_bcc`) | Text | Multiple | Imported | Blind-carbon-copy email recipients. |
+| Email | **Email Domain** (`email_domain`) | Text | Multiple | System | Unique sender and recipient domains derived from the email From, To, CC, and BCC participants. |
+| Email | **Email subject** (`email_subject`) | Text | Single | Imported | Subject line recorded on an email. |
+| Email | **Email sent at** (`email_sent_at`) | Datetime | Single | Imported | Date and time the email was transmitted, normalized to an unambiguous instant. |
+| Email | **Email received at** (`email_received_at`) | Datetime | Single | Imported | Date and time the email was received, normalized to an unambiguous instant. |
+| File Details | **File extension** (`file_extension`) | Text | Single | Imported | Original filename extension without changing the source filename. |
+| File Details | **File size** (`file_size`) | Integer | Single | Imported | Size of the native file in bytes. |
+| File Details | **Page count** (`page_count`) | Integer | Single | Imported | Number of pages when a reliable page count is available. |
+| File Details | **MD5 hash** (`md5_hash`) | Text | Single | Imported | MD5 digest supplied for source identification or legacy comparison. |
+| File Details | **SHA-256 hash** (`sha256_hash`) | Text | Single | Imported | SHA-256 digest used to verify native content integrity. |
+| Source Dates | **File date** (`file_date`) | Datetime | Single | System | Canonical document date derived from the email sent date, the parent email date for an attachment, or the source-modified date for a standalone file. |
+| Source Dates | **Source created at** (`source_created_at`) | Datetime | Single | Imported | Creation timestamp reported by the source system. |
+| Source Dates | **Source modified at** (`source_modified_at`) | Datetime | Single | Imported | Last-modified timestamp reported by the source system. |
+| Review Coding | **Responsiveness** (`responsiveness`) | Enum | Single | Asserted | Review decision describing whether the document is responsive to the matter. |
+| Review Coding | **Privilege** (`privilege`) | Enum | Single | Asserted | Review decision describing whether the document may contain privileged material. |
+| Review Coding | **Key document** (`key_document`) | Boolean | Single | Asserted | Marks a document as important to the matter. |
+| Review Coding | **Review notes** (`review_notes`) | Long text | Single | Asserted | Reviewer or agent narrative notes about the document. |
 
 Responsiveness options are **Responsive**, **Not responsive**, and **Needs review**. Privilege options are **Privileged**, **Not privileged**, and **Needs review**.
+
+### File date and source dates
+
+**File date** is the normalized date intended for consistent chronology, filtering, and review. The Artifact Service calculates it when a collection item is created: an email uses its sent date, an attachment inherits its parent email's File date, and a standalone file uses Source modified at. If the applicable source timestamp is absent, File date is empty.
+
+**Source created at** and **Source modified at** preserve timestamps reported by the original source or importer. They do not represent when Priv-View collected, published, indexed, or coded the document. Source formats may omit them or provide only one timestamp; for example, a ZIP entry may supply the same available timestamp for both fields.
+
+The collection item remains authoritative for all three values. Publishing or rebuilding a matter copies them into the matter search projection without changing the stored collection values.
+
+New matters receive File date automatically. When an older matter does not have the definition, confirming a full search-index rebuild installs File date in the Source Dates group before rebuilding the document projections.
 
 ### Email Domain
 
