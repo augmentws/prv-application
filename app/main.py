@@ -9,12 +9,16 @@ from app.routers import (
     agent_conversations,
     agents,
     analysis_tasks,
+    audit_records,
     auth,
+    authorization,
     bulk_tags,
+    classification_models,
     clients,
     coding_history,
     collection_deletions,
     document_metadata,
+    job_executions,
     managed_skills,
     matter_definition_assessments,
     matter_definitions,
@@ -67,6 +71,8 @@ def health() -> dict[str, str]:
 
 
 app.include_router(auth.router)
+app.include_router(audit_records.router)
+app.include_router(authorization.router)
 app.include_router(bulk_tags.router)
 app.include_router(agents.router)
 app.include_router(agent_conversations.router)
@@ -81,6 +87,7 @@ app.include_router(matter_embeddings.router)
 app.include_router(matter_topics.router)
 app.include_router(coding_history.router)
 app.include_router(document_metadata.router)
+app.include_router(job_executions.router)
 app.include_router(metadata.router)
 app.include_router(metadata_groups.router)
 app.include_router(provider_usage.router)
@@ -100,3 +107,4 @@ elif get_settings().artifact_mode == "remote":
     app.include_router(artifact_proxy.router)
 else:
     raise RuntimeError("ARTIFACT_MODE must be 'embedded' or 'remote'")
+app.include_router(classification_models.router)

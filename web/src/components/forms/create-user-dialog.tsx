@@ -29,7 +29,7 @@ export function CreateUserDialog({ onCreate }: { onCreate: (values: CreateUserVa
     <Dialog open={open} onOpenChange={setOpen}>
       <DialogTrigger asChild><Button><UserPlus />Add user</Button></DialogTrigger>
       <DialogContent>
-        <DialogHeader><DialogTitle>Add user</DialogTitle><DialogDescription>Create an administrator in the active tenant.</DialogDescription></DialogHeader>
+        <DialogHeader><DialogTitle>Add user</DialogTitle><DialogDescription>Create a user in the active tenant. Assign access from the Access control page.</DialogDescription></DialogHeader>
         <form className="space-y-4" onSubmit={handleSubmit(submit)}>
           <div className="space-y-2"><Label htmlFor="user-name">Name</Label><Input id="user-name" autoFocus {...register("display_name")} />{errors.display_name ? <p className="text-sm text-destructive">{errors.display_name.message}</p> : null}</div>
           <div className="space-y-2"><Label htmlFor="user-email">Email</Label><Input id="user-email" type="email" {...register("email")} />{errors.email ? <p className="text-sm text-destructive">{errors.email.message}</p> : null}</div>

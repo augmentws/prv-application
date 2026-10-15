@@ -15,4 +15,5 @@ export interface ReviewBatchCodingSearchFilter {
      */
   values: unknown[];
   minimum_confidence?: number | null;
+  maximum_confidence?: number | null;
 }

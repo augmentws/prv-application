@@ -1,4 +1,6 @@
+import json
 import uuid
+from typing import Any
 
 from sqlalchemy import delete, func, insert, literal, select
 from sqlalchemy.orm import Session
@@ -12,6 +14,9 @@ from artifact_service.models import (
 )
 from artifact_service.schemas import CollectionSelectionCreate
 from artifact_service.search import collection_item_ids, normalize_extensions
+
+MAX_SELECTION_METADATA_KEYS = 200
+MAX_SELECTION_ITEM_METADATA_BYTES = 256_000
 
 
 def create_collection_selection(
@@ -103,6 +108,41 @@ def get_collection_selection_batch_custodians(
     ):
         custodians[item_id].append((custodian_id, relationship_type))
     return custodians
+
+
+def get_collection_selection_batch_unmapped_metadata(
+    db: Session,
+    item_ids: list[uuid.UUID],
+    metadata_keys: list[str],
+) -> dict[uuid.UUID, dict[str, Any]]:
+    requested = list(dict.fromkeys(key.strip() for key in metadata_keys if key.strip()))
+    if len(requested) > MAX_SELECTION_METADATA_KEYS:
+        raise ValueError(f"At most {MAX_SELECTION_METADATA_KEYS} metadata keys may be requested")
+    if any(len(key) > 100 for key in requested):
+        raise ValueError("Metadata keys cannot exceed 100 characters")
+    values = {item_id: {} for item_id in item_ids}
+    if not item_ids or not requested:
+        return values
+    requested_by_folded = {key.casefold(): key for key in requested}
+    rows = db.execute(
+        select(CollectionItem.id, CollectionItem.unmapped_metadata).where(CollectionItem.id.in_(item_ids))
+    )
+    for item_id, unmapped_metadata in rows:
+        source = {
+            str(key).casefold(): value
+            for key, value in (unmapped_metadata or {}).items()
+        }
+        selected = {
+            canonical: source[folded]
+            for folded, canonical in requested_by_folded.items()
+            if folded in source and source[folded] not in (None, "", [])
+        }
+        if len(json.dumps(selected, ensure_ascii=False, separators=(",", ":")).encode("utf-8")) > (
+            MAX_SELECTION_ITEM_METADATA_BYTES
+        ):
+            raise ValueError("Requested item metadata exceeds the selection payload limit")
+        values[item_id] = selected
+    return values
 
 
 def delete_collection_selection(db: Session, selection: CollectionSelection) -> None:

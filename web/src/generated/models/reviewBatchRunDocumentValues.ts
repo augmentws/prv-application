@@ -5,10 +5,13 @@
  * Phase-one Core API for authentication, hierarchical tenants, clients, matters, and matter metadata definitions.
  * OpenAPI spec version: 0.1.0
  */
+import type { ReviewBatchRunDocumentValuesOrigin } from './reviewBatchRunDocumentValuesOrigin';
 import type { ReviewBatchRunFieldValue } from './reviewBatchRunFieldValue';
 
 export interface ReviewBatchRunDocumentValues {
   matter_document_id: string;
   /** @maxItems 100 */
   fields: ReviewBatchRunFieldValue[];
+  origin?: ReviewBatchRunDocumentValuesOrigin;
+  request_key?: string | null;
 }

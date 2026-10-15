@@ -4,6 +4,7 @@ from typing import Any
 
 from app.decision_engine import ChoiceDecisionAnswer, DecisionAnswer, NoulDecisionAnswer, ScoreDecisionAnswer
 from app.decision_specifications import (
+    DecisionMappedValueRecommendation,
     DecisionPolicy,
     DecisionPolicyExpression,
     DecisionPredicate,
@@ -107,10 +108,38 @@ def _evaluate_selected_option_recommendation(
         "value": mapping.option_value_map.get(answer.choice) if matched else None,
         "selected_option": answer.choice,
         "probability": probability,
+        "confidence": probability,
+        "confidence_kind": "SELECTED_PROBABILITY",
         "minimum_probability": recommendation.minimum_probability,
         "metadata_definition_key": mapping.metadata_definition_key,
         "question_key": recommendation.question_key,
         "reason": reason,
+        "policy_version": policy_version,
+    }
+
+
+def _evaluate_mapped_value_recommendation(
+    recommendation: DecisionMappedValueRecommendation,
+    answers: dict[str, DecisionAnswer],
+    policy_version: str,
+) -> dict[str, Any]:
+    measure_value = _measure(recommendation.predicate, answers)
+    matched = _predicate_matches(recommendation.predicate, answers)
+    confidence_kind = {
+        "noul": "DERIVED_PROBABILITY",
+        "probability": "SELECTED_PROBABILITY",
+        "confidence": "PROVIDER_CONFIDENCE",
+        "score": "NONE",
+    }[recommendation.predicate.measure]
+    confidence = measure_value if confidence_kind != "NONE" else None
+    return {
+        "matched": matched,
+        "value": recommendation.value if matched else None,
+        "confidence": confidence,
+        "confidence_kind": confidence_kind,
+        "metadata_definition_key": recommendation.metadata_definition_key,
+        "question_key": recommendation.predicate.question_key,
+        "reason": "MATCHED" if matched else "PREDICATE_NOT_MATCHED",
         "policy_version": policy_version,
     }
 
@@ -124,6 +153,8 @@ def evaluate_decision_policy(
         key: (
             _evaluate_selected_option_recommendation(expression, answers, questions, policy.version)
             if isinstance(expression, DecisionSelectedOptionRecommendation)
+            else _evaluate_mapped_value_recommendation(expression, answers, policy.version)
+            if isinstance(expression, DecisionMappedValueRecommendation)
             else {"matched": expression_matches(expression, answers), "policy_version": policy.version}
         )
         for key, expression in policy.recommendations.items()

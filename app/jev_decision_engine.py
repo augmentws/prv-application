@@ -37,6 +37,7 @@ from app.decision_engine import (
 )
 from app.decision_specifications import ChoiceDecisionQuestion, NoulDecisionQuestion, ScoreDecisionQuestion
 from app.model_rate_limits import ProviderModelRateLimiter
+from app.openai_decision_engine import OpenAIDecisionsEngine
 
 
 class _SystemOneClient(Protocol):
@@ -326,6 +327,7 @@ def build_decision_engine_registry(settings: Settings) -> DecisionEngineRegistry
 
     registry = DecisionEngineRegistry()
     registry.register("jev", TypeSafeJevDecisionEngine(settings))
+    registry.register("openai_decisions", OpenAIDecisionsEngine(settings))
     return registry
 
 
@@ -360,6 +362,15 @@ def _shared_registry_key(settings: Settings) -> tuple[object, ...]:
         settings.typesafe_max_retries,
         settings.typesafe_retry_base_seconds,
         settings.typesafe_retry_max_seconds,
+        settings.openai_api_key,
+        settings.openai_base_url,
+        settings.openai_decisions_timeout_seconds,
+        settings.openai_decisions_concurrency,
+        settings.openai_decisions_requests_per_minute,
+        settings.openai_decisions_input_tokens_per_minute,
+        settings.openai_decisions_max_retries,
+        settings.openai_decisions_retry_base_seconds,
+        settings.openai_decisions_retry_max_seconds,
         settings.model_rate_limit_characters_per_token,
     )
 

@@ -5,9 +5,11 @@
  * Phase-one Core API for authentication, hierarchical tenants, clients, matters, and matter metadata definitions.
  * OpenAPI spec version: 0.1.0
  */
+import type { JobExecutionRead } from './jobExecutionRead';
 import type { ReviewBatchRunReadConfigurationSnapshot } from './reviewBatchRunReadConfigurationSnapshot';
 import type { ReviewBatchRunReadPurpose } from './reviewBatchRunReadPurpose';
 import type { ReviewBatchRunReadResultPolicy } from './reviewBatchRunReadResultPolicy';
+import type { ReviewBatchRunReadResultSummary } from './reviewBatchRunReadResultSummary';
 import type { ReviewBatchRunReadRunType } from './reviewBatchRunReadRunType';
 import type { ReviewBatchRunReadStatus } from './reviewBatchRunReadStatus';
 
@@ -22,7 +24,11 @@ export interface ReviewBatchRunRead {
   actor_user_id: string | null;
   agent_definition_version_id: string | null;
   workflow_run_record_id: string | null;
+  classification_scoring_run_id?: string | null;
+  derivation_key?: string | null;
+  idempotency_key?: string | null;
   configuration_snapshot: ReviewBatchRunReadConfigurationSnapshot;
+  result_summary?: ReviewBatchRunReadResultSummary;
   initiated_by_user_id: string;
   processed_document_count: number;
   error_message: string | null;
@@ -30,4 +36,7 @@ export interface ReviewBatchRunRead {
   completed_at: string | null;
   created_at: string;
   updated_at: string;
+  archived?: boolean;
+  archived_at?: string | null;
+  execution?: JobExecutionRead | null;
 }

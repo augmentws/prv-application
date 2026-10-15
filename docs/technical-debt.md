@@ -83,6 +83,39 @@ distinct from low-confidence matches, missing-document limitations, and general 
 - The UI labels the value as criterion-level occurrences and also shows the distinct-document count.
 - Synthesis groups recurring occurrences before proposing questions and does not treat the raw count as a finding.
 
+## Analysis tasks
+
+### Support provider-bounded evaluation of large documents
+
+**Current state:** Question Answering Analysis Tasks build one complete document state and reject it when its
+serialized character count exceeds the configured single-request ceiling. Increasing that ceiling can send a request
+that exceeds the selected provider/model token budget, such as Jev's state-plus-longest-question limit. The existing
+Matter Definition assessment workflow has a specialized paragraph map/reduce path, but it is not a reusable Analysis
+Task execution facility. Statistical Classification uses its separate feature/scoring pipeline.
+
+**Risk:** Long email threads, OCR output, dense identifiers, and large extracted documents either fail permanently or
+encourage unsafe limit increases. Provider-specific fixes would produce inconsistent coverage, retry, evidence, and
+combination semantics between task types. Silent truncation or incomplete negative decisions would create a material
+review-quality and auditability risk.
+
+**Desired state:** Add a provider-aware, task-neutral execution layer that plans the complete serialized request,
+uses a deterministic versioned paragraph-window splitter where required, evaluates units durably, combines typed
+outputs only through reviewed code-owned operators, localizes evidence in contributing windows, and records exact
+coverage and immutable provenance. Task types whose inputs are already bounded, including the current statistical
+classifier, participate through the same adapter boundary without being forced through text splitting.
+
+The architecture, phases, persistence model, testing strategy, and acceptance criteria are documented in the
+[Large-Document Analysis Workflow Implementation Plan](large-document-analysis-workflow-plan.md).
+
+**Completion criteria:**
+
+- Jev and OpenAI Decisions use versioned provider/model capability profiles and complete-request preflight.
+- Oversized but supported documents run through deterministic windows without silent truncation.
+- Every output has a validated combination rule and every result reports complete, partial, or insufficient coverage.
+- Successful windows survive worker restart and targeted retry; unchanged oversized requests are not retried.
+- Core stores one logical document result while complete window plans/results use verified Artifact-owned Parquet.
+- Playground, review-batch, and whole-matter executions share the same evaluation semantics.
+
 ## Agent conversations
 
 ### Replace chatbot polling with server streaming

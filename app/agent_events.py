@@ -21,6 +21,7 @@ from app.models import AgentConversation, AgentConversationEvent, AgentConversat
 
 logger = logging.getLogger(__name__)
 NOTIFY_CHANNEL = "agent_conversation_events"
+BACKGROUND_TASK_SHUTDOWN_TIMEOUT_SECONDS = 5.0
 
 
 def _bounded_payload(payload: dict[str, Any]) -> dict[str, Any]:
@@ -139,6 +140,7 @@ class AgentEventHub:
         self._subscribers: dict[uuid.UUID, set[AgentEventSubscription]] = defaultdict(set)
         self._task: asyncio.Task[None] | None = None
         self._cleanup_task: asyncio.Task[None] | None = None
+        self._listener_connection: psycopg.AsyncConnection[Any] | None = None
         self._settings: Settings | None = None
 
     async def start(self, settings: Settings) -> None:
@@ -154,13 +156,39 @@ class AgentEventHub:
         task, self._task = self._task, None
         if task is not None:
             task.cancel()
-            with contextlib.suppress(asyncio.CancelledError):
-                await task
+        connection, self._listener_connection = self._listener_connection, None
+        if connection is not None and not connection.closed:
+            try:
+                await asyncio.wait_for(
+                    connection.close(),
+                    timeout=BACKGROUND_TASK_SHUTDOWN_TIMEOUT_SECONDS,
+                )
+            except TimeoutError:
+                logger.warning("Timed out closing the agent event listener connection")
+            except Exception:
+                logger.exception("Failed to close the agent event listener connection")
+        if task is not None:
+            try:
+                await asyncio.wait_for(
+                    task,
+                    timeout=BACKGROUND_TASK_SHUTDOWN_TIMEOUT_SECONDS,
+                )
+            except asyncio.CancelledError:
+                pass
+            except TimeoutError:
+                logger.warning("Timed out stopping the agent event listener task")
         cleanup_task, self._cleanup_task = self._cleanup_task, None
         if cleanup_task is not None:
             cleanup_task.cancel()
-            with contextlib.suppress(asyncio.CancelledError):
-                await cleanup_task
+            try:
+                await asyncio.wait_for(
+                    cleanup_task,
+                    timeout=BACKGROUND_TASK_SHUTDOWN_TIMEOUT_SECONDS,
+                )
+            except asyncio.CancelledError:
+                pass
+            except TimeoutError:
+                logger.warning("Timed out stopping the agent event cleanup task")
 
     def subscribe(self, matter_id: uuid.UUID) -> AgentEventSubscription:
         size = (self._settings or get_settings()).agent_stream_subscriber_queue_size
@@ -192,18 +220,23 @@ class AgentEventHub:
         while True:
             try:
                 connection = await psycopg.AsyncConnection.connect(conninfo, autocommit=True)
-                async with connection:
-                    async with connection.cursor() as cursor:
-                        await cursor.execute(f"LISTEN {NOTIFY_CHANNEL}")
-                    backoff = 1.0
-                    for matter_id in tuple(self._subscribers):
-                        self.wake(matter_id)
-                    async for notification in connection.notifies():
-                        try:
-                            payload = json.loads(notification.payload)
-                            self.wake(uuid.UUID(payload["matter_id"]))
-                        except (KeyError, TypeError, ValueError, json.JSONDecodeError):
-                            logger.warning("Ignored malformed agent event notification")
+                self._listener_connection = connection
+                try:
+                    async with connection:
+                        async with connection.cursor() as cursor:
+                            await cursor.execute(f"LISTEN {NOTIFY_CHANNEL}")
+                        backoff = 1.0
+                        for matter_id in tuple(self._subscribers):
+                            self.wake(matter_id)
+                        async for notification in connection.notifies():
+                            try:
+                                payload = json.loads(notification.payload)
+                                self.wake(uuid.UUID(payload["matter_id"]))
+                            except (KeyError, TypeError, ValueError, json.JSONDecodeError):
+                                logger.warning("Ignored malformed agent event notification")
+                finally:
+                    if self._listener_connection is connection:
+                        self._listener_connection = None
             except asyncio.CancelledError:
                 raise
             except Exception:

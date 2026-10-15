@@ -1,4 +1,5 @@
 from functools import lru_cache
+from typing import Literal
 
 from pydantic import Field, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
@@ -12,6 +13,21 @@ class Settings(BaseSettings):
     database_url: str = "postgresql+psycopg://postgres:postgres@localhost:5432/pvr-core"
     artifact_mode: str = "embedded"
     artifact_base_url: str = "http://localhost:8001"
+    classification_mode: Literal["embedded", "remote"] = "embedded"
+    classification_base_url: str = "http://localhost:8003"
+    classification_service_token: str = Field(
+        default="development-classification-service-token",
+        min_length=16,
+    )
+    classification_request_timeout_seconds: float = Field(default=120.0, gt=0, le=3600)
+    classification_max_concurrency: int = Field(default=2, ge=1, le=64)
+    classification_runtime_image_digest: str = Field(default="development-runtime", min_length=1, max_length=500)
+    classification_source_revision: str = Field(default="development", min_length=1, max_length=255)
+    classification_package_max_bytes: int = Field(
+        default=512 * 1024 * 1024,
+        ge=1024,
+        le=2 * 1024 * 1024 * 1024,
+    )
     dbos_enabled: bool = True
     dbos_system_database_url: str | None = None
     dbos_system_schema: str = "dbos"
@@ -28,6 +44,11 @@ class Settings(BaseSettings):
     search_bulk_batch_size: int = Field(default=500, ge=1, le=5000)
     search_projection_document_concurrency: int = Field(default=8, ge=1, le=32)
     search_body_text_max_bytes: int = Field(default=10 * 1024 * 1024, ge=1024, le=100 * 1024 * 1024)
+    search_export_page_size: int = Field(default=1000, ge=100, le=5000)
+    search_export_retention_days: int = Field(default=7, ge=1, le=365)
+    search_export_retry_hours: int = Field(default=24, ge=1, le=168)
+    search_export_max_columns: int = Field(default=250, ge=1, le=1000)
+    search_export_max_bytes: int = Field(default=20 * 1024**3, ge=1024, le=20 * 1024**3)
     agent_default_model: str | None = None
     agent_turn_queue_concurrency: int = Field(default=4, ge=1, le=100)
     agent_approval_timeout_seconds: int = Field(default=7 * 24 * 60 * 60, ge=60, le=30 * 24 * 60 * 60)
@@ -58,6 +79,15 @@ class Settings(BaseSettings):
     typesafe_max_retries: int = Field(default=5, ge=0, le=20)
     typesafe_retry_base_seconds: float = Field(default=1.0, gt=0, le=300)
     typesafe_retry_max_seconds: float = Field(default=120.0, gt=0, le=3600)
+    openai_api_key: str | None = None
+    openai_base_url: str = "https://api.openai.com/v1"
+    openai_decisions_timeout_seconds: float = Field(default=60.0, gt=0, le=600)
+    openai_decisions_concurrency: int = Field(default=4, ge=1, le=100)
+    openai_decisions_requests_per_minute: int = Field(default=60, ge=1, le=100_000)
+    openai_decisions_input_tokens_per_minute: int = Field(default=500_000, ge=1, le=1_000_000_000)
+    openai_decisions_max_retries: int = Field(default=5, ge=0, le=20)
+    openai_decisions_retry_base_seconds: float = Field(default=1.0, gt=0, le=300)
+    openai_decisions_retry_max_seconds: float = Field(default=120.0, gt=0, le=3600)
     analysis_task_decision_max_characters: int = Field(default=100_000, ge=10_000, le=2_000_000)
     matter_embedding_batch_size: int = Field(default=250, ge=1, le=500)
     matter_embedding_document_concurrency: int = Field(default=8, ge=1, le=32)
@@ -98,6 +128,10 @@ class Settings(BaseSettings):
             raise ValueError("MODEL_RATE_LIMIT_RETRY_BASE_SECONDS must not exceed MODEL_RATE_LIMIT_RETRY_MAX_SECONDS")
         if self.typesafe_retry_base_seconds > self.typesafe_retry_max_seconds:
             raise ValueError("TYPESAFE_RETRY_BASE_SECONDS must not exceed TYPESAFE_RETRY_MAX_SECONDS")
+        if self.openai_decisions_retry_base_seconds > self.openai_decisions_retry_max_seconds:
+            raise ValueError(
+                "OPENAI_DECISIONS_RETRY_BASE_SECONDS must not exceed OPENAI_DECISIONS_RETRY_MAX_SECONDS"
+            )
         if self.agent_stream_replay_page_size > self.agent_stream_replay_limit:
             raise ValueError("AGENT_STREAM_REPLAY_PAGE_SIZE must not exceed AGENT_STREAM_REPLAY_LIMIT")
         return self

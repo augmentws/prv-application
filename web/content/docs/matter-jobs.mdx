@@ -1,15 +1,15 @@
 ---
 title: Matter jobs
-description: Add large collection selections to a matter and follow durable background progress.
+description: Follow durable imports, embeddings, topic processing, classification analysis, and other matter work.
 ---
 
 Matter jobs add collection documents and run durable document processing. The matter stores a link to each source collection item; the Artifact Service continues to own native files and derived artifacts.
 
-Use the **Job type** picker on the matter's **Jobs** tab to switch between bulk tagging, document embeddings, topic clustering, and document imports. Only the selected job type is displayed. The browser remembers the last selection and restores it when you return to the Jobs tab. Opening a specific document-import job automatically selects **Document imports**.
+Use the **Job type** picker on the matter's **Jobs** tab to switch between bulk tagging, document embeddings, topic clustering, document imports, question answering, classification analysis, and search exports. Only the selected job type is displayed. The browser remembers the last selection and restores it when you return to the Jobs tab. Opening a specific document-import job automatically selects **Document imports**; following **Open job** from a classification run selects **Classification analysis** and opens that run's results.
 
 The **Jobs** tab also shows bulk tag jobs started from matter search. Each row identifies the target field and value, the frozen query or filter scope, current status and progress, tagged and failed counts, and any available error. A snapshotted job with no completed document batches displays **Waiting** and **Waiting for capacity** until its first batch reports progress. Active bulk tag jobs refresh automatically, so you can close the original progress dialog and follow them here.
 
-Matter **ADMIN** users can start and cancel these jobs. The source collection and destination matter must belong to the same client, and the matter must be active.
+Matter **ADMIN** users can start this work and can cancel a job when its row offers that action. The source collection and destination matter must belong to the same client, and the matter must be active.
 
 ## Start from collection documents
 
@@ -19,6 +19,13 @@ Matter **ADMIN** users can start and cancel these jobs. The source collection an
 4. Choose an active destination matter and select **Start job**.
 
 The application redirects to the matter's **Jobs** tab. The job freezes the matching IDs before processing, so an upload or metadata change made after that point does not silently change the running selection.
+
+Every publication job has a durable execution attempt. The Jobs table shows
+the current execution stage and attempt number, while the progress bar uses
+the frozen selection size and the count committed by completed publication
+batches. Loading the job reconciles those counters from its durable batches
+and reconciles a terminal DBOS outcome if a worker stopped before updating the
+parent job record.
 
 ## Start from custodians
 
@@ -41,6 +48,20 @@ Documents associated with any selected custodian are included. A document associ
 
 During import, source custodian relationships are copied into Core-owned matter-document associations. The matter **Overview** uses those associations to show a distinct custodian count alongside the document count.
 
+For matters with the standard **Email Domain** system field, newly added or republished documents receive their unique normalized From/To/CC/BCC domains through the normal `DOCUMENT_UPSERT` search projection. Document publication does not install or upgrade search-derived system fields. A full index rebuild is the lifecycle boundary that installs a missing Email Domain definition for an older matter and derives the field for the complete matter population.
+
+## Publish unmapped metadata as matter labels
+
+Collection items can contain external fields in `unmapped_metadata`, such as coding columns supplied by a load file. When documents are published to a matter, Priv-View compares those external keys with the matter's active asserted metadata definitions. A case-insensitive key match publishes the external value through the normal matter metadata ledger with source **Import**.
+
+For example, if a collection item contains `tr2016_facets` and the destination matter has an active field whose key is `tr2016_facets`, each valid imported value becomes a matter label. Single-value fields create one imported `SET`; multi-value fields create one imported `ADD` per distinct value. Values must satisfy the destination field's type, cardinality, and allowed enum options. Unknown fields remain unmapped, empty values create no label, and invalid values are counted as import warnings.
+
+Imported labels are not a separate projection. They appear in document coding history with source **Import** and participate in the field's existing confirmation and resolution policies. Search is updated from the resolved current value after the import batch commits.
+
+Publishing is retry-safe. Each imported value receives a deterministic source identity based on the collection item and field, so retrying a batch or publishing the same item again does not append duplicate labels. Republishing also reconciles existing matter documents, which allows an older matter to receive labels that were not published by an earlier version of the workflow.
+
+Document-import status distinguishes matter links from label publication: **Added** and **Already present** describe document links, while the imported-label counters report affected documents, events created, and invalid-value warnings. A missing external value is implicit and does not create a placeholder label or warning.
+
 ## Generate document embeddings
 
 Open the matter's **Jobs** tab and select **Generate embeddings**. The job freezes the matter's current document list, then processes it in durable batches. Documents added after planning begins are handled by a later job.
@@ -53,6 +74,8 @@ The embedding job reports:
 - **Skipped** for documents whose matching artifacts already exist or that have no usable text;
 - **Chunks** for the total chunks represented by processed documents;
 - **Failed** for individual documents that could not be processed.
+
+The displayed document and chunk counts are reconciled from the job's durable batch records whenever the job is loaded. If a worker interruption leaves the application record active after its durable workflow has already succeeded, failed, or been canceled, loading the job reconciles that terminal state and stops unnecessary status polling. Canceling a job also reports the latest completed batch totals rather than the last progress snapshot written by the parent workflow.
 
 Rerunning a job is safe. Priv-View reuses artifacts when the source content, subject, filename, embedding-input format, chunking settings, model revision, dimensions, and normalization configuration match. Changing any of those inputs produces a distinct derivation without overwriting earlier artifacts.
 
@@ -101,9 +124,56 @@ Discovery alone does not create or modify a metadata field. When the selected de
 
 Topic names are generated from the strongest terms in representative sample chunks. Renaming a proposal does not change its learned centroid. During assignment, every available chunk is compared with the approved topic centroids, and a document receives its strongest qualifying topics. Documents without a qualifying topic are counted as unassigned. Published values are written through the same metadata ledger and search-projection path as other agent-authored metadata, so they are searchable and facetable after their batch finishes.
 
+## Run classification analysis
+
+Create and start classifier-backed work from the matter's **Analysis** tab. The Analysis Task is the reusable definition: it pins the approved model version and destination field and lets an administrator select either a ready review batch or the whole matter. Prediction output does not live on the task definition.
+
+Every execution appears under **Classification analysis** in the **Jobs** tab. Each row identifies the task and whether it used a review batch or the whole matter, displays its durable stage, attempt, progress, and frozen document count, and provides the available cancel or retry action. Select **View job**, or follow **Open job** from the task's compact run history, to review the execution.
+
+The job result contains:
+
+- the frozen population and selected scope;
+- feature-ready, feature-missing, and feature-failed counts;
+- evaluated, abstained, excluded, and failed scoring counts;
+- the model's pinned prediction policy and version provenance; and
+- a per-class prediction chart derived from the immutable prediction artifact.
+
+The class chart initially shows the model's resolved predictions. Use its probability selector to recalculate counts at a minimum such as **Probability ≥ 80%**. The threshold is inclusive. For a multi-label one-vs-rest model, every class at or above the selected probability counts, so a document can contribute to more than one class. Documents for which no class reaches the selected threshold are reported as evaluated with no prediction. Changing this control is read-only: it neither reruns scoring nor changes the destination coding field.
+
+Batch- and whole-matter scopes use the same job-result view. A whole-matter classification run evaluates its Artifact-backed frozen population without creating one review-batch membership row per document. Both scopes keep predictions as isolated analysis output and do not update the destination coding field. Creating searchable batch coding or changing matter coding remains a separate, explicit operation.
+
+## Run question answering
+
+Question-answering Analysis Tasks run against a ready review batch from the batch review workspace. Every accepted run appears under **Question answering** in the matter's **Jobs** tab, whether it uses the Jev provider or OpenAI Decisions.
+
+Each row shows the pinned task version, review batch, provider and model, durable status, attempt, and document progress. Select **Open batch** to inspect the run's document-level answers and evidence. Results remain isolated batch output until a matter administrator explicitly publishes the configured destination fields.
+
+Question answering currently uses review-batch scope. The Jobs view is for monitoring, canceling an active run, locating output, and inspecting document failures; starting a run still happens from the review batch after the task version is published. Select the batch name to open that batch. When a run finishes with document failures, select its **Completed with errors** status to open the failure dialog. The dialog shows each failed document, its stable failure code, the retained human-readable reason, the execution attempt, and whether the failure is safe to retry; the Jobs row does not repeat that diagnostic text.
+
+Retry either selected retryable documents or every retryable failure. A retry creates a new durable execution attempt for the same logical run and frozen batch, and schedules only the chosen failed documents. Previously successful documents and their isolated results are not evaluated again. Non-retryable failures remain visible for correction or investigation. Historical runs created before per-document diagnostics were added identify the affected documents but may report that their original reason is unavailable. Those unknown legacy failures are retryable because the isolated analysis workflow can safely rerun them without changing successful document results.
+
+The active run can also be canceled from the batch Analysis panel. Cancellation stops the durable parent workflow and its document child workflows, preserves completed and failed results, and marks documents that had not finished as skipped.
+
+OpenAI Decisions tasks require `OPENAI_API_KEY` in the API and worker environment. The API checks this before creating the batch run so a missing provider credential cannot fan out into one failure per document.
+
+## Export search results
+
+Start a search export from **Search & Review → Export results**, then select **Search exports** on the matter's **Jobs** tab. Each row shows the requested filename, selected column count, creator, durable stage, exported rows over matched rows, output size, expiration, and available actions.
+
+- **Preparing** reauthorizes the initiating user and resolves the frozen field and index contract.
+- **Exporting** reads the pinned OpenSearch generation through one point-in-time snapshot and updates document progress after every page.
+- **Uploading** publishes the complete CSV to the Artifact Service.
+- **Completed** enables **Download CSV** after another current-access check.
+- **Failed** shows the retained reason and offers **Retry** when the dependency failure is transient and the pinned index generation is still retained.
+- **Canceled** means no CSV was published. A later retry starts the deterministic export again from the beginning.
+
+Search export retries create a new common job execution attempt while retaining the original frozen query, ordered field contract, CSV policy, and physical index generation. Core does not create one database row per exported document, and CSV bytes are never stored in the Core database. The Artifact Service inventory is the authoritative list of immutable output files for the matter; the Core job is the control and audit record.
+
 ## Reliability and cleanup
 
-Jobs use a durable workflow worker and can resume after an application or worker restart. Import selections are removed after their deterministic batches have been durably queued. Embedding and topic jobs retain compact batch snapshots containing the document IDs so their scope cannot drift. Core job records remain available for progress and audit history.
+Jobs use a durable workflow worker and can resume after an application or worker restart. Import selections are removed after their deterministic batches have been durably queued. Document-import and embedding jobs retain a common execution attempt with stage, progress, heartbeat, cancellation, structured failure, and attempt history. Embedding and topic jobs retain compact batch snapshots containing the document IDs so their scope cannot drift. Core job records remain available for progress and audit history.
+
+Users with **Delete jobs** permission can delete a completed, completed-with-errors, failed, or canceled job from its row action menu. Active work must be canceled or allowed to complete first. Job deletion is soft: the logical job disappears from the normal Jobs lists while its domain record, execution attempts, document failures, outputs, artifacts, and audit history remain intact. This operation does not delete documents or reverse coding that the job already published.
 
 The **Jobs** tab refreshes while work is active; it is safe to close the browser. Canceling is best effort for work already executing, so the final added count can include a batch that completed at the same time as the cancellation request.
 

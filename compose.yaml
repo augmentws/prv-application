@@ -113,6 +113,29 @@ services:
     ports:
       - "8001:8001"
 
+  classification-api:
+    profiles: ["split", "classification"]
+    build: .
+    command: uvicorn classification_service.main:app --host 0.0.0.0 --port 8003
+    environment:
+      CLASSIFICATION_SERVICE_TOKEN: development-classification-service-token
+      CLASSIFICATION_REQUEST_TIMEOUT_SECONDS: 120
+      CLASSIFICATION_MAX_CONCURRENCY: 2
+      CLASSIFICATION_RUNTIME_IMAGE_DIGEST: development-runtime
+      CLASSIFICATION_SOURCE_REVISION: development
+      CLASSIFICATION_PACKAGE_MAX_BYTES: 536870912
+      ARTIFACT_BASE_URL: http://artifact-api:8001
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8003/health')"]
+      interval: 10s
+      timeout: 5s
+      retries: 20
+    depends_on:
+      artifact-api:
+        condition: service_started
+    ports:
+      - "8003:8003"
+
   core-api:
     profiles: ["split"]
     build: .
@@ -129,6 +152,9 @@ services:
       ARTIFACT_DELEGATION_SECRET: development-artifact-delegation-secret
       ARTIFACT_DELEGATION_ISSUER: priv-view-core
       ARTIFACT_DELEGATION_AUDIENCE: priv-view-artifact
+      CLASSIFICATION_MODE: remote
+      CLASSIFICATION_BASE_URL: http://classification-api:8003
+      CLASSIFICATION_SERVICE_TOKEN: development-classification-service-token
       DBOS_ENABLED: "true"
       DBOS_SYSTEM_DATABASE_URL: postgresql+psycopg://postgres:postgres@postgres:5432/pvr-core
       DBOS_SYSTEM_SCHEMA: dbos
@@ -185,6 +211,8 @@ services:
         condition: service_healthy
       embedding-api:
         condition: service_healthy
+      classification-api:
+        condition: service_healthy
     ports:
       - "8000:8000"
 
@@ -202,6 +230,9 @@ services:
       ARTIFACT_DELEGATION_SECRET: development-artifact-delegation-secret
       ARTIFACT_DELEGATION_ISSUER: priv-view-core
       ARTIFACT_DELEGATION_AUDIENCE: priv-view-artifact
+      CLASSIFICATION_MODE: remote
+      CLASSIFICATION_BASE_URL: http://classification-api:8003
+      CLASSIFICATION_SERVICE_TOKEN: development-classification-service-token
       DBOS_ENABLED: "true"
       DBOS_SYSTEM_DATABASE_URL: postgresql+psycopg://postgres:postgres@postgres:5432/pvr-core
       DBOS_SYSTEM_SCHEMA: dbos
@@ -250,6 +281,8 @@ services:
       opensearch:
         condition: service_healthy
       embedding-api:
+        condition: service_healthy
+      classification-api:
         condition: service_healthy
 
 volumes:

@@ -1,6 +1,7 @@
 import json
 import threading
 import uuid
+from datetime import datetime, timezone
 from types import SimpleNamespace
 from unittest.mock import Mock
 
@@ -73,6 +74,10 @@ def test_create_list_and_cancel_embedding_job(
     assert created.json()["embedding_dimensions"] == 1024
     assert created.json()["total_tokens"] == 0
     assert created.json()["provider_request_count"] == 0
+    assert created.json()["execution"]["job_type"] == "MATTER_EMBEDDING_JOB"
+    assert created.json()["execution"]["attempt_number"] == 1
+    assert created.json()["execution"]["current_stage"] == "QUEUED"
+    assert created.json()["execution"]["available_actions"] == ["CANCEL"]
 
     duplicate = client.post(f"/v1/matters/{matter['id']}/embedding-jobs", headers=headers)
     assert duplicate.status_code == 409
@@ -122,12 +127,123 @@ def test_create_list_and_cancel_embedding_job(
     assert batches.status_code == 200
     assert batches.json() == []
 
+    job = db.get(MatterEmbeddingJob, uuid.UUID(created.json()["id"]))
+    assert job is not None
+    job.status = "RUNNING"
+    job.total_count = 100
+    job.processed_count = 25
+    db.add(
+        MatterEmbeddingBatch(
+            job_id=job.id,
+            batch_number=0,
+            document_ids=[str(uuid.uuid4()) for _ in range(100)],
+            status="COMPLETED",
+            item_count=100,
+            processed_count=100,
+            embedded_count=99,
+            failed_count=1,
+            chunk_count=250,
+        )
+    )
+    db.commit()
+
     canceled = client.post(
         f"/v1/matters/{matter['id']}/embedding-jobs/{created.json()['id']}/cancel",
         headers=headers,
     )
     assert canceled.status_code == 200
     assert canceled.json()["status"] == "CANCELED"
+    assert canceled.json()["processed_count"] == 100
+    assert canceled.json()["failed_count"] == 1
+    assert canceled.json()["chunk_count"] == 250
+    assert canceled.json()["execution"]["status"] == "CANCELED"
+    assert canceled.json()["execution"]["progress_completed"] == 100
+
+    history = client.get(
+        f"/v1/jobs/MATTER_EMBEDDING_JOB/{created.json()['id']}/execution",
+        headers=headers,
+    )
+    assert history.status_code == 200, history.text
+    assert history.json()["current_execution"]["status"] == "CANCELED"
+    assert len(history.json()["attempts"]) == 1
+
+    second = client.post(f"/v1/matters/{matter['id']}/embedding-jobs", headers=headers)
+    assert second.status_code == 202, second.text
+    common_cancel = client.post(
+        f"/v1/jobs/MATTER_EMBEDDING_JOB/{second.json()['id']}/cancel",
+        headers=headers,
+    )
+    assert common_cancel.status_code == 200, common_cancel.text
+    assert common_cancel.json()["status"] == "CANCELED"
+
+
+def test_embedding_job_read_reconciles_durable_failure_and_batch_totals(
+    client: TestClient,
+    root_token: str,
+    db: Session,
+    monkeypatch,
+) -> None:
+    headers = auth(root_token)
+    tenant_id = client.get("/v1/auth/me", headers=headers).json()["tenant_id"]
+    client_record = client.post(
+        f"/v1/tenants/{tenant_id}/clients",
+        headers=headers,
+        json={"name": "Embedding Reconciliation Client"},
+    ).json()
+    matter = client.post(
+        f"/v1/clients/{client_record['id']}/matters",
+        headers=headers,
+        json={"name": "Embedding Reconciliation Matter"},
+    ).json()
+    created = client.post(f"/v1/matters/{matter['id']}/embedding-jobs", headers=headers).json()
+    job = db.get(MatterEmbeddingJob, uuid.UUID(created["id"]))
+    assert job is not None
+    job.status = "RUNNING"
+    job.total_count = 20
+    job.processed_count = 10
+    db.add_all(
+        [
+            MatterEmbeddingBatch(
+                job_id=job.id,
+                batch_number=batch_number,
+                document_ids=[str(uuid.uuid4()) for _ in range(10)],
+                status="COMPLETED",
+                item_count=10,
+                processed_count=10,
+                embedded_count=10 - batch_number,
+                failed_count=batch_number,
+                chunk_count=25,
+            )
+            for batch_number in range(2)
+        ]
+    )
+    db.commit()
+    completed_at = datetime(2026, 10, 2, 1, 28, 25, tzinfo=timezone.utc)
+    monkeypatch.setattr(
+        "app.routers.matter_embeddings._durable_terminal_workflows",
+        lambda _settings, workflow_ids: {
+            workflow_id: ("ERROR", "QueuePool connection timed out", completed_at)
+            for workflow_id in workflow_ids
+        },
+    )
+
+    response = client.get(
+        f"/v1/matters/{matter['id']}/embedding-jobs/{job.id}",
+        headers=headers,
+    )
+
+    assert response.status_code == 200, response.text
+    assert response.json()["status"] == "FAILED"
+    assert response.json()["processed_count"] == 20
+    assert response.json()["embedded_count"] == 19
+    assert response.json()["failed_count"] == 1
+    assert response.json()["chunk_count"] == 50
+    assert response.json()["error_message"] == "QueuePool connection timed out"
+    db.expire_all()
+    reconciled = db.get(MatterEmbeddingJob, job.id)
+    assert reconciled is not None
+    assert reconciled.status == "FAILED"
+    assert reconciled.completed_at.replace(tzinfo=timezone.utc) == completed_at
 
 
 def test_retry_embedding_index_reuses_completed_batches(
@@ -188,6 +304,9 @@ def test_retry_embedding_index_reuses_completed_batches(
 
     assert response.status_code == 202, response.text
     assert response.json()["status"] == "QUEUED"
+    assert response.json()["execution"]["attempt_number"] == 2
+    assert response.json()["execution"]["retry_of_workflow_run_id"] is not None
+    assert response.json()["execution"]["progress_completed"] == 10
     db.expire_all()
     retried = db.get(MatterEmbeddingJob, job.id)
     assert retried is not None

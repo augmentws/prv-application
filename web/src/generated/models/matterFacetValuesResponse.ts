@@ -13,4 +13,7 @@ export interface MatterFacetValuesResponse {
   values: MatterSearchFacetValue[];
   /** @minimum 0 */
   missing_count?: number;
+  /** @minimum 0 */
+  total_count?: number;
+  has_more?: boolean;
 }

@@ -18,5 +18,4 @@ export interface UserCreate {
      * @maxLength 1024
      */
   password: string;
-  role?: 'ADMIN';
 }

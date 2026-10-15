@@ -14,6 +14,8 @@ The schema planner compares the active generation's complete `schema_snapshot` w
 
 In-place changes are allowlisted rather than inferred optimistically. Additive root fields such as `batch_ids` use their bounded partial-update paths. A newly searchable field below `metadata` is also added to the active mapping in place; the worker refreshes only documents that already have a current asserted value for that field. A new field with no values therefore requires only a mapping update.
 
+Derived system fields can request an explicit bounded backfill in the same `SCHEMA_SYNC` operation. The Email Domain profile update uses this path: it checkpoints the last matter document after each page, reads only structured From/To/CC/BCC participants from Artifact, and sends partial OpenSearch updates for `metadata.email_domain`. Documents with no derived domains receive an empty array so a rerun also removes stale values. A complete rebuild derives the same values while reconstructing the full document projection.
+
 ## Changes requiring confirmation
 
 A full reindex is required when a change affects existing indexed content or cannot be proven compatible. This includes:
@@ -27,6 +29,8 @@ A full reindex is required when a change affects existing indexed content or can
 - any schema difference the planner does not explicitly recognize.
 
 An initial index is created automatically because there is no prior index to reprocess. A manually requested full rebuild is already an explicit confirmation. For an automatic schema sync, the UI displays the stored reasons and calls `POST /v1/matters/{matter_id}/search-operations/{operation_id}/confirm-reindex`. Confirmation records the actor and time in the operation payload, converts the operation to `REBUILD`, assigns a fresh workflow ID, and queues it at rebuild priority.
+
+Activating a completed full rebuild also completes every older `AWAITING_USER` schema operation for that matter. The rebuild rereads the authoritative document population, so those earlier document or schema projections are already represented by the new generation. Newly resolved operations record the replacement generation in `payload.schema_change_resolution`; an operation that began waiting after the generation was activated remains open. Migration `0085_resolve_search_ops` applies the same completion rule to legacy pending operations without starting another rebuild.
 
 ## Replacement and cleanup
 
@@ -43,6 +47,12 @@ pipenv run python scripts/cleanup_search_indexes.py --matter-id <matter-uuid>
 ```
 
 Search-query review batches copy the generation number, physical name, schema hash, and activation time into their immutable selection definition. Their provenance therefore remains available after the generation tracking row is removed.
+
+## Batch coding projections
+
+Searchable run coding uses the shared nested `batch_coding` mapping rather than a classifier-specific root field. Each entry carries the batch ID, selected run ID, metadata-definition ID and key, typed value, optional confidence, confidence kind, and optional question key. `BATCH_CODING_SYNC` replaces the selected batch projection from authoritative `review_batch_run_value` rows. A full matter-index rebuild reconstructs only the run currently selected by `review_batch_search_coding_run`.
+
+Confidence filtering keeps the lower-inclusive and upper-exclusive range in the same nested query as the field and value. This prevents a document with several run values from satisfying the value predicate with one entry and the confidence predicate with another. Facet aggregation uses the same range so displayed counts match search results.
 
 ## Pressure recovery
 

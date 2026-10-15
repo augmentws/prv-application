@@ -201,9 +201,70 @@ def test_selected_option_recommendation_emits_mapped_issue_value() -> None:
         "value": "issue_2_hurricane_losses",
         "selected_option": "issue_2_hurricane_losses",
         "probability": 0.91,
+        "confidence": 0.91,
+        "confidence_kind": "SELECTED_PROBABILITY",
         "minimum_probability": 0.7,
         "metadata_definition_key": "issue_tag",
         "question_key": "topic.primary_issue",
+        "reason": "MATCHED",
+        "policy_version": "decision-policy-v1",
+    }
+
+
+def test_mapped_value_recommendation_emits_static_value_from_noul_predicate() -> None:
+    specification = DecisionSpecification.model_validate(
+        {
+            "questions": {
+                "issues.topic_401": {
+                    "type": "noul",
+                    "instructions": "Does the document concern the Olympics?",
+                    "criteria": {"true": "It concerns the Olympics", "false": "It does not"},
+                    "source_refs": [
+                        {
+                            "task_version_id": "56d6dd2c-41ad-4854-b696-a7b34c31becb",
+                            "heading": "Issues",
+                            "excerpt_hash": "a" * 64,
+                        }
+                    ],
+                    "aggregation": {"operator": "ANY_WINDOW"},
+                    "field_mapping": None,
+                }
+            },
+            "decision_policy": {
+                "recommendations": {
+                    "issue_coding.topic_401": {
+                        "operator": "MAPPED_VALUE",
+                        "predicate": {
+                            "question_key": "issues.topic_401",
+                            "measure": "noul",
+                            "comparator": "GTE",
+                            "threshold": 0.7,
+                        },
+                        "metadata_definition_key": "issue_coding",
+                        "value": "topic_401",
+                    }
+                }
+            },
+            "state_contract": {
+                "builder_version": "document-review-state-v1",
+                "required_paths": ["document.text"],
+            },
+        }
+    )
+
+    recommendations, _ = evaluate_decision_policy(
+        specification.decision_policy,
+        {"issues.topic_401": NoulDecisionAnswer(type="noul", noul=0.91)},
+        specification.questions,
+    )
+
+    assert recommendations["issue_coding.topic_401"] == {
+        "matched": True,
+        "value": "topic_401",
+        "confidence": 0.91,
+        "confidence_kind": "DERIVED_PROBABILITY",
+        "metadata_definition_key": "issue_coding",
+        "question_key": "issues.topic_401",
         "reason": "MATCHED",
         "policy_version": "decision-policy-v1",
     }

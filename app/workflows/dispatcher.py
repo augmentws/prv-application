@@ -52,6 +52,157 @@ def cancel_matter_embedding(workflow_id: str) -> None:
         get_dbos_client().cancel_workflow(workflow_id, cancel_children=True)
 
 
+def enqueue_classification_model_build(
+    db: Session,
+    workflow_id: str,
+    training_run_id: str,
+) -> None:
+    settings = get_settings()
+    if not settings.dbos_enabled:
+        return
+    options: EnqueueOptions = {
+        "workflow_name": "classification_model_build_v1",
+        "queue_name": "classification-model-builds",
+        "workflow_id": workflow_id,
+        "application_name": settings.dbos_application_name,
+    }
+    get_dbos_client().enqueue_in_transaction(db, options, training_run_id)
+
+
+def cancel_classification_model_build(workflow_id: str) -> None:
+    if get_settings().dbos_enabled:
+        get_dbos_client().cancel_workflow(workflow_id, cancel_children=True)
+
+
+def enqueue_classification_training_job(
+    db: Session,
+    workflow_id: str,
+    training_job_id: str,
+) -> None:
+    settings = get_settings()
+    if not settings.dbos_enabled:
+        return
+    options: EnqueueOptions = {
+        "workflow_name": "classification_training_job_v1",
+        "queue_name": "classification-training-jobs",
+        "workflow_id": workflow_id,
+        "application_name": settings.dbos_application_name,
+    }
+    get_dbos_client().enqueue_in_transaction(db, options, training_job_id)
+
+
+def cancel_classification_training_job(workflow_id: str) -> None:
+    if get_settings().dbos_enabled:
+        get_dbos_client().cancel_workflow(workflow_id, cancel_children=True)
+
+
+def enqueue_classification_model_scoring(
+    db: Session,
+    workflow_id: str,
+    scoring_run_id: str,
+) -> None:
+    settings = get_settings()
+    if not settings.dbos_enabled:
+        return
+    options: EnqueueOptions = {
+        "workflow_name": "classification_model_score_v1",
+        "queue_name": "classification-model-scoring",
+        "workflow_id": workflow_id,
+        "application_name": settings.dbos_application_name,
+    }
+    get_dbos_client().enqueue_in_transaction(db, options, scoring_run_id)
+
+
+def enqueue_classification_analysis_task(
+    db: Session,
+    workflow_id: str,
+    run_id: str,
+) -> None:
+    settings = get_settings()
+    if not settings.dbos_enabled:
+        return
+    options: EnqueueOptions = {
+        "workflow_name": "classification_analysis_task_v1",
+        "queue_name": "classification-analysis-tasks",
+        "workflow_id": workflow_id,
+        "application_name": settings.dbos_application_name,
+    }
+    get_dbos_client().enqueue_in_transaction(db, options, run_id)
+
+
+def cancel_classification_analysis_task(workflow_id: str) -> None:
+    if get_settings().dbos_enabled:
+        get_dbos_client().cancel_workflow(workflow_id, cancel_children=True)
+
+
+def cancel_classification_model_scoring(workflow_id: str) -> None:
+    if get_settings().dbos_enabled:
+        get_dbos_client().cancel_workflow(workflow_id, cancel_children=True)
+
+
+def enqueue_classification_projection(db: Session, workflow_id: str, run_id: str) -> None:
+    settings = get_settings()
+    if not settings.dbos_enabled:
+        return
+    options: EnqueueOptions = {
+        "workflow_name": "classification_prediction_project_v1",
+        "queue_name": "classification-projections",
+        "workflow_id": workflow_id,
+        "application_name": settings.dbos_application_name,
+    }
+    get_dbos_client().enqueue_in_transaction(db, options, run_id)
+
+
+def enqueue_analysis_task_promotion(db: Session, workflow_id: str, promotion_id: str) -> None:
+    settings = get_settings()
+    if not settings.dbos_enabled:
+        return
+    options: EnqueueOptions = {
+        "workflow_name": "analysis_task_run_promotion_v1",
+        "queue_name": "analysis-task-promotions",
+        "workflow_id": workflow_id,
+        "application_name": settings.dbos_application_name,
+    }
+    get_dbos_client().enqueue_in_transaction(db, options, promotion_id)
+
+
+def enqueue_classification_model_promotion(
+    db: Session,
+    workflow_id: str,
+    *,
+    matter_id: str,
+    classification_model_id: str,
+    model_version_id: str,
+    action: str,
+    expected_model_row_version: int,
+    preview_token: str,
+    reason: str,
+    actor_user_id: str,
+) -> None:
+    settings = get_settings()
+    if not settings.dbos_enabled:
+        return
+    options: EnqueueOptions = {
+        "workflow_name": "classification_model_promote_v1",
+        "queue_name": "classification-model-promotions",
+        "workflow_id": workflow_id,
+        "application_name": settings.dbos_application_name,
+    }
+    get_dbos_client().enqueue_in_transaction(
+        db,
+        options,
+        workflow_id,
+        matter_id,
+        classification_model_id,
+        model_version_id,
+        action,
+        expected_model_row_version,
+        preview_token,
+        reason,
+        actor_user_id,
+    )
+
+
 def enqueue_matter_topics(db: Session, workflow_id: str, job_id: str) -> None:
     settings = get_settings()
     if not settings.dbos_enabled:
@@ -201,6 +352,11 @@ def enqueue_analysis_task_batch(db: Session, workflow_id: str, workflow_run_id: 
     get_dbos_client().enqueue_in_transaction(db, options, workflow_run_id)
 
 
+def cancel_analysis_task_batch(workflow_id: str) -> None:
+    if get_settings().dbos_enabled:
+        get_dbos_client().cancel_workflow(workflow_id, cancel_children=True)
+
+
 def cancel_definition_assessment(workflow_id: str) -> None:
     if get_settings().dbos_enabled:
         get_dbos_client().cancel_workflow(workflow_id, cancel_children=True)
@@ -217,6 +373,29 @@ def enqueue_review_batch(db: Session, workflow_id: str, batch_id: str) -> None:
         "application_name": settings.dbos_application_name,
     }
     get_dbos_client().enqueue_in_transaction(db, options, batch_id)
+
+
+def cancel_review_batch(workflow_id: str) -> None:
+    if get_settings().dbos_enabled:
+        get_dbos_client().cancel_workflow(workflow_id, cancel_children=True)
+
+
+def enqueue_search_export(db: Session, workflow_id: str, job_id: str) -> None:
+    settings = get_settings()
+    if not settings.dbos_enabled:
+        return
+    options: EnqueueOptions = {
+        "workflow_name": "matter_search_export_v1",
+        "queue_name": "matter-search-exports",
+        "workflow_id": workflow_id,
+        "application_name": settings.dbos_application_name,
+    }
+    get_dbos_client().enqueue_in_transaction(db, options, job_id)
+
+
+def cancel_search_export(workflow_id: str) -> None:
+    if get_settings().dbos_enabled:
+        get_dbos_client().cancel_workflow(workflow_id, cancel_children=True)
 
 
 def enqueue_bulk_tag(db: Session, workflow_id: str, job_id: str) -> None:

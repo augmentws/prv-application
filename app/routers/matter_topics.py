@@ -10,6 +10,7 @@ from app.audit import record_audit
 from app.database import get_db
 from app.dependencies import Principal, can_admin_matter, get_principal
 from app.embeddings.configuration import canonical_hash
+from app.job_archives import MATTER_TOPIC_JOB_TYPE, job_not_archived
 from app.models import Matter, MatterEmbeddingJob, MatterTopicJob, MetadataDefinition, SearchIndexGeneration
 from app.routers.saved_searches import _saved_search
 from app.schemas import MatterSearchRequest, MatterTopicApplyRequest, MatterTopicJobCreate, MatterTopicJobRead
@@ -232,7 +233,14 @@ def list_topic_jobs(
     db: Session = Depends(get_db),
 ) -> list[MatterTopicJob]:
     _matter(db, matter_id, principal)
-    return list(db.scalars(_job_query(matter_id).order_by(MatterTopicJob.created_at.desc()).limit(limit)))
+    return list(
+        db.scalars(
+            _job_query(matter_id)
+            .where(job_not_archived(MATTER_TOPIC_JOB_TYPE, MatterTopicJob.id))
+            .order_by(MatterTopicJob.created_at.desc())
+            .limit(limit)
+        )
+    )
 
 
 @router.get("/{job_id}", response_model=MatterTopicJobRead)

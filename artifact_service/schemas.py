@@ -1,8 +1,11 @@
+import json
 import uuid
 from datetime import datetime
 from typing import Annotated, Any, Literal
 
 from pydantic import BaseModel, ConfigDict, Field, StringConstraints, field_validator, model_validator
+
+from classification_service.schemas import ArtifactType, Sha256
 
 CollectionStatus = Literal["OPEN", "SEALED", "ARCHIVED", "DELETING"]
 RecordType = Literal["EMAIL", "FILE", "CHAT", "TRANSCRIPT", "OTHER"]
@@ -363,6 +366,28 @@ class CollectionItemRead(BaseModel):
     created_at: datetime
 
 
+class CollectionItemGroupingSnapshotsRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    tenant_id: uuid.UUID
+    client_id: uuid.UUID
+    item_ids: list[uuid.UUID] = Field(min_length=1, max_length=5000)
+
+    @field_validator("item_ids")
+    @classmethod
+    def validate_unique_item_ids(cls, values: list[uuid.UUID]) -> list[uuid.UUID]:
+        if len(values) != len(set(values)):
+            raise ValueError("Collection item IDs must be unique")
+        return values
+
+
+class CollectionItemGroupingSnapshot(BaseModel):
+    item_id: uuid.UUID
+    family_id: uuid.UUID | None
+    record_type: RecordType
+    native_content_hash: Sha256 | None
+
+
 class FacetValue(BaseModel):
     value: str
     count: int = Field(ge=1)
@@ -431,6 +456,7 @@ class CollectionSelectionBatchItem(BaseModel):
     item_id: uuid.UUID
     custodian_ids: list[uuid.UUID]
     custodians: list[CollectionSelectionBatchCustodian]
+    unmapped_metadata: dict[str, Any] = Field(default_factory=dict)
 
 
 class CollectionSelectionBatch(BaseModel):
@@ -444,3 +470,89 @@ class CollectionSelectionBatch(BaseModel):
 class CollectionItemUploadResponse(BaseModel):
     item: CollectionItemRead
     created: bool
+
+
+WorkflowArtifactScopeKind = Literal[
+    "MATTER",
+    "REVIEW_BATCH",
+    "CLASSIFICATION_MODEL",
+    "CLASSIFICATION_CONFIGURATION",
+    "CLASSIFICATION_DATASET_SNAPSHOT",
+    "CLASSIFICATION_TRAINING_RUN",
+    "CLASSIFICATION_SCORING_RUN",
+]
+WorkflowArtifactProducerKind = Literal["CORE", "CLASSIFICATION_WORKER", "CLASSIFICATION_RUNTIME"]
+WorkflowArtifactLineageSourceKind = Literal["WORKFLOW_ARTIFACT", "ARTIFACT"]
+
+
+class WorkflowArtifactLineageInput(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    source_kind: WorkflowArtifactLineageSourceKind
+    source_artifact_id: uuid.UUID
+    relationship: Literal["DERIVED_FROM"] = "DERIVED_FROM"
+
+
+class WorkflowArtifactUploadMetadata(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    tenant_id: uuid.UUID
+    client_id: uuid.UUID
+    core_scope_kind: WorkflowArtifactScopeKind
+    core_scope_id: uuid.UUID
+    artifact_type: ArtifactType
+    schema_version: Literal[1] = 1
+    derivation_key: Sha256
+    content_hash: Sha256
+    byte_length: int = Field(gt=0)
+    media_type: str = Field(min_length=1, max_length=255)
+    producer_kind: WorkflowArtifactProducerKind
+    producer_run_id: uuid.UUID
+    metadata: dict[str, Any] = Field(default_factory=dict)
+    lineage: list[WorkflowArtifactLineageInput] = Field(default_factory=list, max_length=1000)
+
+    @model_validator(mode="after")
+    def validate_metadata_and_lineage(self) -> "WorkflowArtifactUploadMetadata":
+        encoded_metadata = json.dumps(
+            self.metadata,
+            ensure_ascii=False,
+            separators=(",", ":"),
+        ).encode("utf-8")
+        if len(encoded_metadata) > 65_536:
+            raise ValueError("Workflow artifact metadata must not exceed 64 KiB")
+        sources = [(item.source_kind, item.source_artifact_id) for item in self.lineage]
+        if len(sources) != len(set(sources)):
+            raise ValueError("Workflow artifact lineage sources must be unique")
+        return self
+
+
+class WorkflowArtifactRead(BaseModel):
+    id: uuid.UUID
+    tenant_id: uuid.UUID
+    client_id: uuid.UUID
+    core_scope_kind: WorkflowArtifactScopeKind
+    core_scope_id: uuid.UUID
+    artifact_type: ArtifactType
+    schema_version: int
+    derivation_key: Sha256
+    content_hash: Sha256
+    media_type: str
+    byte_length: int
+    producer_kind: WorkflowArtifactProducerKind
+    producer_run_id: uuid.UUID
+    metadata: dict[str, Any]
+    created_by_user_id: uuid.UUID
+    created_at: datetime
+
+
+class WorkflowArtifactUploadResponse(BaseModel):
+    artifact: WorkflowArtifactRead
+    created: bool
+
+
+class WorkflowArtifactLineageRead(BaseModel):
+    workflow_artifact_id: uuid.UUID
+    source_kind: WorkflowArtifactLineageSourceKind
+    source_artifact_id: uuid.UUID
+    relationship: Literal["DERIVED_FROM"]
+    created_at: datetime

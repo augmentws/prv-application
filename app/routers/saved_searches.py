@@ -7,9 +7,10 @@ from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session, selectinload
 
 from app.audit import record_audit
+from app.authorization import ResourceRef, can, user_can
 from app.config import Settings, get_settings
 from app.database import get_db
-from app.dependencies import Principal, can_admin_matter, get_principal
+from app.dependencies import Principal, get_principal
 from app.models import Matter, MatterSavedSearch, MatterSavedSearchUserShare, User
 from app.routers.search import execute_matter_search
 from app.schemas import (
@@ -29,8 +30,8 @@ def _matter(db: Session, matter_id: uuid.UUID, principal: Principal) -> Matter:
     matter = db.get(Matter, matter_id)
     if matter is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Matter not found")
-    if not can_admin_matter(db, principal, matter):
-        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Matter access required")
+    if not can(db, principal, "document.view", ResourceRef.matter(matter.id)):
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Permission required: document.view")
     return matter
 
 
@@ -107,6 +108,14 @@ def _shared_users(
         raise HTTPException(
             status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
             detail="Every shared user must be an active user in the matter tenant",
+        )
+    if any(
+        not user_can(db, user, "document.view", ResourceRef.matter(matter.id))
+        for user in users
+    ):
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
+            detail="Every shared user must have document access to this matter",
         )
     return users
 

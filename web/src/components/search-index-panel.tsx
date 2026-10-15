@@ -120,10 +120,10 @@ export function SearchIndexPanel({ coreDocumentCount, indexes, operations, onReb
         <MetricCard icon={Activity} label="Status"><HealthBadge health={health} /><p className="mt-3 text-sm text-muted-foreground">{healthDescription(health, countDelta)}</p></MetricCard>
         <MetricCard icon={Database} label="Indexed documents"><p className="text-3xl font-semibold tabular-nums">{indexedDocumentCount.toLocaleString()} <span className="text-lg font-medium text-muted-foreground">/ {coreDocumentCount.toLocaleString()}</span></p><p className="mt-2 text-sm text-muted-foreground">{indexCountDescription(activeIndex, countDelta)}</p></MetricCard>
         <MetricCard icon={RefreshCw} label="Active generation"><p className="text-3xl font-semibold tabular-nums">{activeIndex ? `#${activeIndex.generation}` : "—"}</p><p className="mt-2 text-sm text-muted-foreground">{latestIndex && !activeIndex ? `Generation #${latestIndex.generation} is ${friendlyStatus(latestIndex.status)}.` : "Only the active generation is searched."}</p></MetricCard>
-        <MetricCard icon={Clock3} label="Last synchronized"><p className="text-2xl font-semibold">{activeIndex ? formatDate(activeIndex.activated_at ?? activeIndex.updated_at) : "—"}</p><p className="mt-2 text-sm text-muted-foreground">{activeOperation ? `${operationLabel(activeOperation.kind)} is ${friendlyStatus(activeOperation.status)}.` : failedOperations.length ? `${failedOperations.length} failed ${failedOperations.length === 1 ? "operation" : "operations"} in recent history.` : "No indexing work is currently running."}</p></MetricCard>
+        <MetricCard icon={Clock3} label="Last synchronized"><p className="text-2xl font-semibold">{activeIndex ? formatDate(activeIndex.activated_at ?? activeIndex.updated_at) : "—"}</p><p className="mt-2 text-sm text-muted-foreground">{activeOperation ? `${operationLabel(activeOperation)} is ${friendlyStatus(activeOperation.status)}.` : failedOperations.length ? `${failedOperations.length} failed ${failedOperations.length === 1 ? "operation" : "operations"} in recent history.` : "No indexing work is currently running."}</p></MetricCard>
       </div>
 
-      {activeOperation ? <Card className="border-accent/50 bg-accent/5 p-4"><div className="flex items-start gap-3"><LoaderCircle className="mt-0.5 size-4 shrink-0 animate-spin text-accent-foreground" /><div className="min-w-0 flex-1"><p className="font-semibold">{operationLabel(activeOperation.kind)} {friendlyStatus(activeOperation.status)}</p>{rebuildProgress ? <RebuildProgressView progress={rebuildProgress} observedDocumentsPerSecond={observedDocumentsPerSecond} /> : <p className="mt-1 text-sm text-muted-foreground">Started {formatDate(activeOperation.started_at ?? activeOperation.created_at)} · attempt {activeOperation.attempt_count.toLocaleString()}</p>}</div></div></Card> : null}
+      {activeOperation ? <Card className="border-accent/50 bg-accent/5 p-4"><div className="flex items-start gap-3"><LoaderCircle className="mt-0.5 size-4 shrink-0 animate-spin text-accent-foreground" /><div className="min-w-0 flex-1"><p className="font-semibold">{operationLabel(activeOperation)} {friendlyStatus(activeOperation.status)}</p>{rebuildProgress ? <RebuildProgressView progress={rebuildProgress} observedDocumentsPerSecond={observedDocumentsPerSecond} /> : <p className="mt-1 text-sm text-muted-foreground">Started {formatDate(activeOperation.started_at ?? activeOperation.created_at)} · attempt {activeOperation.attempt_count.toLocaleString()}</p>}</div></div></Card> : null}
       {health === "MISSING" ? <Card className="border-destructive/30 bg-destructive/5 p-4"><div className="flex items-start gap-3"><AlertTriangle className="mt-0.5 size-5 text-destructive" /><div><p className="font-semibold">The active index is missing from OpenSearch</p><p className="mt-1 text-sm text-muted-foreground">Core still has generation history, but the configured OpenSearch server does not have the physical index and active alias. Start a full rebuild to recreate it.</p></div></div></Card> : null}
       {health === "UNAVAILABLE" ? <Card className="border-accent/50 bg-accent/5 p-4"><div className="flex items-start gap-3"><AlertTriangle className="mt-0.5 size-5 text-accent-foreground" /><div><p className="font-semibold">OpenSearch status could not be verified</p><p className="mt-1 text-sm text-muted-foreground">{activeIndex?.verification_error ?? "The configured OpenSearch server is unavailable."}</p></div></div></Card> : null}
       {awaitingOperation ? <ReindexConfirmationCard operation={awaitingOperation} onConfirm={onConfirmReindex} confirming={confirmingReindex} /> : null}
@@ -146,7 +146,7 @@ export function SearchIndexPanel({ coreDocumentCount, indexes, operations, onReb
           <Table>
             <TableHeader><TableRow><TableHead>Operation</TableHead><TableHead>Status</TableHead><TableHead>Attempts</TableHead><TableHead>Created</TableHead><TableHead>Details</TableHead></TableRow></TableHeader>
             <TableBody>
-              {operations.length ? operations.slice(0, 10).map((operation) => <TableRow key={operation.id}><TableCell className="font-semibold">{operationLabel(operation.kind)}</TableCell><TableCell><OperationStatusBadge status={operation.status} /></TableCell><TableCell className="tabular-nums">{operation.attempt_count.toLocaleString()}</TableCell><TableCell className="whitespace-nowrap text-muted-foreground">{formatDate(operation.created_at)}</TableCell><TableCell className="max-w-sm text-sm text-muted-foreground">{operation.error_message ?? (operation.completed_at ? `Completed ${formatDate(operation.completed_at)}` : "—")}</TableCell></TableRow>) : <TableRow><TableCell colSpan={5} className="h-24 text-center text-muted-foreground">No search operations have been recorded.</TableCell></TableRow>}
+              {operations.length ? operations.slice(0, 10).map((operation) => <TableRow key={operation.id}><TableCell className="font-semibold">{operationLabel(operation)}</TableCell><TableCell><OperationStatusBadge status={operation.status} /></TableCell><TableCell className="tabular-nums">{operation.attempt_count.toLocaleString()}</TableCell><TableCell className="whitespace-nowrap text-muted-foreground">{formatDate(operation.created_at)}</TableCell><TableCell className="max-w-sm text-sm text-muted-foreground">{operationDetails(operation)}</TableCell></TableRow>) : <TableRow><TableCell colSpan={5} className="h-24 text-center text-muted-foreground">No search operations have been recorded.</TableCell></TableRow>}
             </TableBody>
           </Table>
         </Card>
@@ -347,7 +347,8 @@ function indexCountDescription(index: SearchIndexGenerationRead | undefined, del
   return countDescription(delta);
 }
 
-function operationLabel(kind: SearchProjectionOperationRead["kind"]) {
+function operationLabel(operation: SearchProjectionOperationRead) {
+  if (operation.kind === "SCHEMA_SYNC" && operation.payload.reason === "EMAIL_DOMAIN_UPDATE") return "Email domain update";
   const labels: Record<SearchProjectionOperationRead["kind"], string> = {
     SCHEMA_SYNC: "Schema sync",
     REBUILD: "Full rebuild",
@@ -355,7 +356,16 @@ function operationLabel(kind: SearchProjectionOperationRead["kind"]) {
     DOCUMENT_DELETE: "Document removal",
     BATCH_CODING_SYNC: "Batch coding sync",
   };
-  return labels[kind];
+  return labels[operation.kind];
+}
+
+function operationDetails(operation: SearchProjectionOperationRead) {
+  if (operation.error_message) return operation.error_message;
+  const progress = parseRebuildProgress(operation.payload.progress);
+  if (progress && operation.payload.reason === "EMAIL_DOMAIN_UPDATE") {
+    return `${progress.processedDocuments.toLocaleString()} / ${progress.totalDocuments.toLocaleString()} documents`;
+  }
+  return operation.completed_at ? `Completed ${formatDate(operation.completed_at)}` : "—";
 }
 
 function parseRebuildProgress(value: unknown): RebuildProgress | undefined {

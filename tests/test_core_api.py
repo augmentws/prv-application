@@ -64,7 +64,7 @@ def test_core_phase_one_flow(client: TestClient, root_token: str) -> None:
     )
     assert default_definitions.status_code == 200, default_definitions.text
     definitions_by_key = {definition["key"]: definition for definition in default_definitions.json()}
-    assert len(definitions_by_key) == 24
+    assert len(definitions_by_key) == 25
     assert {
         key: definitions_by_key["custodian"][key]
         for key in ("value_source", "reference_target", "cardinality", "facetable")
@@ -81,10 +81,38 @@ def test_core_phase_one_flow(client: TestClient, root_token: str) -> None:
     assert definitions_by_key["email_to"]["normalize_to_lowercase"] is True
     assert definitions_by_key["email_cc"]["normalize_to_lowercase"] is True
     assert definitions_by_key["email_bcc"]["normalize_to_lowercase"] is True
+    assert {
+        key: definitions_by_key["email_domain"][key]
+        for key in ("display_name", "type", "cardinality", "value_source", "facetable", "normalize_to_lowercase", "reviewable")
+    } == {
+        "display_name": "Email Domain",
+        "type": "TEXT",
+        "cardinality": "MULTIPLE",
+        "value_source": "SYSTEM",
+        "facetable": True,
+        "normalize_to_lowercase": True,
+        "reviewable": False,
+    }
     assert definitions_by_key["email_subject"]["normalize_to_lowercase"] is False
     assert definitions_by_key["responsiveness"]["value_source"] == "ASSERTED"
     assert definitions_by_key["responsiveness"]["template_key"] == "edrm-core"
-    assert definitions_by_key["responsiveness"]["template_version"] == 2
+    assert definitions_by_key["responsiveness"]["template_version"] == 3
+
+    update_domains = client.post(
+        f"/v1/matters/{matter_id}/metadata-definitions/email-domain/update",
+        headers=auth(tenant_token),
+    )
+    assert update_domains.status_code == 202, update_domains.text
+    assert update_domains.json()["metadata_definition_id"] == definitions_by_key["email_domain"]["id"]
+    assert update_domains.json()["definition_created"] is False
+    assert update_domains.json()["status"] == "QUEUED"
+
+    groups_response = client.get(
+        f"/v1/matters/{matter_id}/metadata-groups",
+        headers=auth(tenant_token),
+    )
+    email_group = next(group for group in groups_response.json() if group["key"] == "email")
+    assert definitions_by_key["email_domain"]["id"] in email_group["definition_ids"]
 
     definition_response = client.post(
         f"/v1/matters/{matter_id}/metadata-definitions",
@@ -432,6 +460,24 @@ def test_metadata_groups_preferences_templates_and_clone(client: TestClient, roo
         },
     )
     assert second_user_response.status_code == 201, second_user_response.text
+    matter_admin_role = next(
+        role
+        for role in client.get(
+            f"/v1/tenants/{me['tenant_id']}/roles",
+            headers=auth(root_token),
+        ).json()
+        if role["key"] == "MATTER_ADMINISTRATOR"
+    )
+    grant_response = client.post(
+        f"/v1/tenants/{me['tenant_id']}/authorization-grants",
+        headers=auth(root_token),
+        json={
+            "subject": {"type": "USER", "id": second_user_response.json()["id"]},
+            "role_id": matter_admin_role["id"],
+            "scope": {"type": "MATTER", "id": matter_id},
+        },
+    )
+    assert grant_response.status_code == 201, grant_response.text
     second_login = client.post(
         "/v1/auth/login",
         json={
@@ -456,7 +502,7 @@ def test_metadata_groups_preferences_templates_and_clone(client: TestClient, roo
     )
     assert template_response.status_code == 201, template_response.text
     template = template_response.json()
-    assert template["definition_count"] == 25
+    assert template["definition_count"] == 26
     assert template["group_count"] == 8
 
     available_templates = client.get(

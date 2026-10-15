@@ -6,8 +6,10 @@
  * OpenAPI spec version: 0.1.0
  */
 import type { DecisionSpecification } from './decisionSpecification';
+import type { MatterAnalysisTaskVersionReadCompilationProgress } from './matterAnalysisTaskVersionReadCompilationProgress';
 import type { MatterAnalysisTaskVersionReadCompilationStatus } from './matterAnalysisTaskVersionReadCompilationStatus';
 import type { MatterAnalysisTaskVersionReadCompilerModelConfiguration } from './matterAnalysisTaskVersionReadCompilerModelConfiguration';
+import type { MatterAnalysisTaskVersionReadDecisionProvider } from './matterAnalysisTaskVersionReadDecisionProvider';
 import type { MatterAnalysisTaskVersionReadEvidencePolicy } from './matterAnalysisTaskVersionReadEvidencePolicy';
 import type { MatterAnalysisTaskVersionReadInputContract } from './matterAnalysisTaskVersionReadInputContract';
 import type { MatterAnalysisTaskVersionReadOutputContract } from './matterAnalysisTaskVersionReadOutputContract';
@@ -24,6 +26,12 @@ export interface MatterAnalysisTaskVersionRead {
   compilation_status: MatterAnalysisTaskVersionReadCompilationStatus;
   definition_markdown: string;
   definition_content_hash: string;
+  destination_metadata_definition_ids: string[] | null;
+  decision_provider: MatterAnalysisTaskVersionReadDecisionProvider;
+  decision_model: string | null;
+  classification_model_id: string | null;
+  classification_model_version_id: string | null;
+  classification_embedding_job_id?: string | null;
   decision_specification: DecisionSpecification | null;
   specification_content_hash: string | null;
   input_contract: MatterAnalysisTaskVersionReadInputContract;
@@ -33,6 +41,7 @@ export interface MatterAnalysisTaskVersionRead {
   compiler_skill_definition_version_id: string | null;
   compiler_skill_run_id: string | null;
   compiler_workflow_run_id: string | null;
+  compilation_progress?: MatterAnalysisTaskVersionReadCompilationProgress;
   compiler_model_configuration: MatterAnalysisTaskVersionReadCompilerModelConfiguration;
   validation_report: MatterAnalysisTaskVersionReadValidationReport;
   source_provenance: MatterAnalysisTaskVersionReadSourceProvenance;

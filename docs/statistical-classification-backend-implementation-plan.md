@@ -1,11 +1,19 @@
 # Statistical Classification Backend Implementation Plan
 
-Status: Proposed phased implementation plan
+Status: Phases 0 through 7 implemented; Phase 8 is next
+
+Classification training is normalized through the common job execution
+platform as of migration `0074`. `ClassificationTrainingJob` is the logical
+top-level job and owns the execution attempt. Dataset snapshots and
+`ClassificationTrainingRun`/model versions remain immutable domain inputs and
+outputs rather than competing top-level job statuses. The model page shows the
+common stage and attempt and offers cancel or safe retry when permitted.
 
 Related documents:
 
 - `docs/statistical-classification-model-infrastructure-plan.md`
 - `docs/jev-cal-review-program-workflow.md`
+- `docs/classification-coding-projection-implementation-plan.md`
 
 ## 1. Outcome and boundary
 
@@ -79,6 +87,7 @@ an API request handler.
 | 7 | Durable model-build workflow | 1-6 |
 | 8 | Candidate decisions, activation, and rollback | 7 |
 | 9 | Durable batch scoring | 6-8 |
+| 9.5 | Admin validation workspace and bounded prediction preview | 9 |
 | 10 | CAL scoring/queue integration | 9 |
 | 11 | Operational hardening | 1-10 |
 
@@ -126,9 +135,9 @@ output_derivation_key
 ### Contract rules
 
 - Binary requires non-empty, disjoint positive and negative value-key sets.
-- Multiclass requires a single-cardinality target and at least two selected
-  mutually exclusive values.
-- One-vs-rest requires at least two class keys.
+- Multiclass requires a single-cardinality target and at least two classes in
+  the frozen training snapshot.
+- One-vs-rest requires at least two classes in the frozen training snapshot.
 - Multi-valued fields reject native multiclass.
 - Single-valued one-vs-rest requires conflict/abstention policy.
 - Unknown trainer kinds/parameters and incompatible input roles are rejected.
@@ -200,8 +209,13 @@ created_at / created_by_user_id
 - Revision and configuration hash are unique per classifier.
 - Matter and target field are required and immutable.
 - The command service verifies that the field belongs to the same matter and
-  tenant and is active, reviewable, and Boolean or enum.
-- Enum values use stable keys.
+  tenant, is an asserted coding field, and is active and Boolean, enum, text, or
+  long text. System and imported metadata are not classification targets;
+  `reviewable` does not affect classifier eligibility.
+- Configuration may leave `ordered_class_keys` empty for dynamic discovery.
+  Dataset creation resolves labels, freezes the observed class order in the
+  snapshot, and copies it to model versions. Existing explicit class lists and
+  binary collapse mappings remain supported.
 - A used configuration cannot be edited or deleted.
 - `current_configuration_id` must belong to the same classifier.
 - `active_model_version_id` is added with the model-version table in Phase 7.
@@ -232,6 +246,14 @@ Exit when an administrator can create and retrieve a valid configuration and
 it cannot be attached to the wrong tenant, matter, field, or value keys.
 
 ## 6. Phase 2: Classification Runtime boundary
+
+Implementation status: complete. Core uses `ClassificationGateway` for both
+embedded and remote invocation. The private runtime exposes authenticated
+capabilities, package validation, training, and scoring endpoints. Remote
+requests carry a runtime service token plus a bounded-lifetime, tenant/client-
+scoped Artifact delegation token. The split Compose profile runs the stateless
+runtime as `classification-api` on port `8003`; it has no authoritative
+database.
 
 ### Goal
 
@@ -387,6 +409,17 @@ including exact provenance and raw source weights.
 
 ## 9. Phase 5: Feature and split snapshotting
 
+Implementation status: complete. An authorized matter administrator selects an
+exact completed matter-embedding job and materializes both artifacts through:
+
+```text
+POST /v1/matters/{matter_id}/classification-models/{model_id}/dataset-snapshots/{snapshot_id}/features-and-splits
+```
+
+The request pins the embedding job, validation policy, fold count, minimum
+support, and random seed. Ready snapshots are immutable and identical retries
+return the already-materialized artifacts.
+
 ### Goal
 
 Produce the deterministic model input matrix and group-aware folds.
@@ -406,10 +439,28 @@ Produce the deterministic model input matrix and group-aware folds.
 - Use family, exact-duplicate, and available near-duplicate group IDs.
 - Keep each group entirely within one fold.
 - Pin deterministic seed and algorithm version.
-- Validate minimum labeled support per class/fold.
+- Validate minimum labeled support per class/fold. Binary and native multiclass
+  fail the build when support is insufficient. One-vs-rest preserves the full
+  observed class order but iteratively excludes a child classifier when its
+  feature-ready positive or negative examples cannot satisfy the document,
+  connected-group, or deterministic per-fold minimum. Recompute the complete
+  group allocation after each exclusion until the remaining set is stable.
+- Persist `trained_class_keys` and structured `excluded_classes` on both the
+  dataset snapshot and model version. Label artifacts retain the complete
+  observed vectors; the runtime projects them to the trained class indices.
+- For delimited hierarchical Text targets, freeze an optional 1-based
+  hierarchy level in the target snapshot. Project label paths to the prefix at
+  that level before class discovery; preserve full source coding, and exclude
+  paths that do not reach the selected level.
 - Write immutable split assignments.
 - Normalize source weights to mean `1.0` within each training fold while
   retaining raw values.
+
+The implemented split schema includes a reserved `near_duplicate_group_id`.
+The current platform has no authoritative near-duplicate grouping source, so
+Phase 5 uses transitive family and exact-content groups and records the stable
+`NEAR_DUPLICATE_GROUPING_UNAVAILABLE` warning. Near-duplicate identities can be
+added later without changing the family/exact grouping semantics.
 
 ### Tests and exit criteria
 
@@ -421,6 +472,38 @@ Exit when a dataset is `READY_FOR_TRAINING` only after population, labels,
 features, and splits align exactly by document ID and content hashes.
 
 ## 10. Phase 6: Trainer, evaluation, and safe package
+
+Implementation status: complete. The runtime now:
+
+- Trains deterministic source-weighted L2 logistic regression for binary,
+  native multiclass, and atomic one-vs-rest configurations.
+- Selects `C` from the pinned candidate set using group-aware cross-fit
+  PR-AUC with a deterministic smaller-`C` tie break, then refits on all
+  eligible rows. Automatic class balancing remains unavailable by contract.
+- Revalidates artifact hashes, row alignment, unique document IDs, feature
+  contracts, group isolation, fold weights, and minimum per-fold class
+  support before fitting.
+- Packages and scores only the snapshot's trained one-vs-rest class subset, so
+  an excluded class can never be emitted by that model version. Training fails
+  if fewer than two viable one-vs-rest classifiers remain.
+- Emits out-of-fold predictions, binary/per-class and macro/micro metrics,
+  calibration bins, confusion data, fold-cohort metrics, coverage counts,
+  selected-candidate evidence, and explicit development-evidence warnings.
+- Builds the fixed nine-file package below with deterministic ZIP/NPZ bytes,
+  reloads it using `allow_pickle=False`, and verifies reproduced probabilities
+  within `1e-12` before publishing it.
+- Validates package allowlists, paths, expanded sizes, hashes, array names,
+  finite numeric arrays, feature/class/policy consistency, and complete target
+  field identity. Scoring loads coefficients directly; it never imports or
+  executes package-provided code.
+- Writes model package, cross-fit prediction, evaluation, and result-manifest
+  artifacts through Artifact Service. The authenticated `/v1/train`,
+  `/v1/score`, and `/v1/packages/validate` operations accept references rather
+  than inline matrices.
+
+Probability calibration is deliberately `IDENTITY_V1` in this phase. The
+evaluation report records that limitation; learned calibration can be added as
+a later trainer/package revision without changing the safe loader boundary.
 
 ### Goal
 
@@ -560,6 +643,7 @@ POST /v1/matters/{matter_id}/classification-models/{model_id}/builds
 GET  /v1/matters/{matter_id}/classification-models/{model_id}/builds
 GET  /v1/matters/{matter_id}/classification-models/{model_id}/builds/{run_id}
 POST /v1/matters/{matter_id}/classification-models/{model_id}/builds/{run_id}/cancel
+POST /v1/matters/{matter_id}/classification-models/{model_id}/builds/{run_id}/retry
 POST /v1/matters/{matter_id}/classification-models/{model_id}/builds/{run_id}/reconcile
 ```
 
@@ -576,6 +660,19 @@ cross-scope result rejection.
 
 Exit when one launch yields exactly one candidate or one explicit terminal or
 reconcilable failure, never duplicate logical versions.
+
+Implementation status: complete. Core now owns idempotent training-run,
+candidate-version, and evaluation records; `classification_model_build_v1`
+reauthorizes and validates frozen inputs before runtime dispatch; returned
+packages and their authoritative result manifests are scope, identity,
+reference, and hash checked before transactional finalization; and explicit
+reconciliation uses the same verification path to recover outputs published
+before an ambiguous timeout. Concurrent duplicate launches resolve to the one
+logical run. A retriable failure may be requeued on that same run and
+derivation with an incremented attempt number, a fresh DBOS workflow ID, and
+execution-time authorization of the user who requested the retry. Workflow
+exceptions remain failed in DBOS after Core records the structured failure.
+Candidate builds never change the active model pointer.
 
 ## 12. Phase 8: Decisions, activation, and rollback
 
@@ -621,6 +718,7 @@ POST /v1/matters/{matter_id}/classification-models/{model_id}/activation
 POST /v1/matters/{matter_id}/classification-models/{model_id}/rollback/preview
 POST /v1/matters/{matter_id}/classification-models/{model_id}/rollback
 POST /v1/matters/{matter_id}/classification-models/{model_id}/versions/{version_id}/retire
+GET  /v1/matters/{matter_id}/classification-models/{model_id}/decisions
 ```
 
 ### Tests and exit criteria
@@ -632,7 +730,30 @@ field deactivation.
 Exit when Core can always identify the exact active version and reconstruct
 every activation interval from append-only decisions.
 
+Implementation status: complete. Candidate approval and rejection require an
+audited reason and persist immutable policy, evaluation, metric, and
+authorization snapshots. Signed activation and rollback previews bind the
+target version, current active pointer, classifier row version, compatibility
+results, and evidence snapshot. `classification_model_promote_v1` reauthorizes
+the requesting administrator and atomically appends the decision while moving
+the active pointer. The version remains `APPROVED`; active state exists only on
+the classifier. Rollback is limited to a previously active compatible version,
+and retirement rejects the active version. Until scoring references are added
+in Phase 9, the active pointer is the only implemented retention blocker.
+
 ## 13. Phase 9: Durable batch scoring
+
+Implementation status: complete. Core now persists immutable scoring-run
+provenance and executes `classification_model_score_v1` through DBOS. Preview
+resolves the active model only once and returns its version ID; launch stores
+that exact version, so later activation changes cannot redirect a run. An
+administrator may instead select any compatible approved non-active version.
+The runtime validates the package and feature contract before inference and
+writes one prediction row for every population document, including explicit
+feature exclusions and row failures. Core verifies authoritative Artifact
+scope, producer, derivation, hashes, references, manifest identity, and
+reconciled counts before completion. Nonterminal scoring references block
+retirement; completed historical provenance does not.
 
 ### Goal
 
@@ -668,6 +789,7 @@ POST /v1/matters/{matter_id}/classification-models/{model_id}/scoring-runs
 GET  /v1/matters/{matter_id}/classification-models/{model_id}/scoring-runs
 GET  /v1/matters/{matter_id}/classification-models/{model_id}/scoring-runs/{run_id}
 POST /v1/matters/{matter_id}/classification-models/{model_id}/scoring-runs/{run_id}/cancel
+POST /v1/matters/{matter_id}/classification-models/{model_id}/scoring-runs/{run_id}/reconcile
 ```
 
 ### Tests and exit criteria
@@ -679,7 +801,89 @@ row failure, and idempotent output reuse.
 Exit when a run is reproducible from its pinned model, features, policy, and
 prediction artifact without consulting mutable active state.
 
-## 14. Phase 10: CAL integration
+## 14. Phase 9.5: Administrator training workspace
+
+Implementation status: complete for new-model training. The admin-only matter
+Classification tab starts with asserted coding fields. Selecting a field shows
+its existing models and one `Train a new model` form for matter or review-batch
+scope, strategy, train/validation ratio, seed, trainer settings, and embedding
+selection. One Train action creates the model and configuration, freezes its
+dataset and discovered classes, materializes features and validation folds,
+and launches the durable build. Each model has a detail page for build status,
+overall and per-class quality, and confusion matrices.
+
+Retraining is deliberately absent from this MVP surface. Approval, activation,
+and scoring launch remain governed backend capabilities rather than part of
+the initial Train action. The model-detail page now lists scoring runs and lets
+an administrator create an isolated review-batch projection from a completed
+run; it still does not publish predictions to matter metadata or expose model
+management controls to reviewers.
+
+Core provides a bounded prediction-preview API over the Artifact-owned Parquet
+output. Each request reauthorizes matter administration, requires a completed
+run, streams the artifact, verifies its SHA-256 hash and embedded run/version
+identity, validates required columns, and reads only the row groups needed for
+the requested page. Future scoring UI should use this endpoint rather than
+downloading or parsing the complete artifact in the browser.
+
+### Added API
+
+```text
+GET /v1/matters/{matter_id}/classification-models/{model_id}/scoring-runs/{run_id}/predictions
+GET /v1/matters/{matter_id}/classification-models/{model_id}/versions/{version_id}/evaluation
+POST /v1/matters/{matter_id}/classification-models/targets/{field_id}/distribution
+POST /v1/matters/{matter_id}/review-batches/{batch_id}/classifier-runs
+```
+
+The classifier-run endpoint creates a durable `CLASSIFIER` batch run for a
+selected class set and lower-inclusive, upper-exclusive confidence interval.
+It validates exact scoring-population/batch membership in the worker, streams
+and verifies the prediction Artifact, materializes only resolved values in the
+interval, and reuses the existing selected-run `BATCH_CODING_SYNC` projection.
+Successive intervals reuse inference output and remain isolated from matter
+coding. See `docs/classification-coding-projection-implementation-plan.md`.
+
+The evaluation endpoint reauthorizes matter administration, verifies the
+artifact content hash and embedded model identity, and returns the validated
+evaluation contract used by the model-detail page.
+
+The target-distribution endpoint reads authoritative current matter coding for
+the selected matter or review-batch scope. It returns document counts per class
+plus labeled, unlabeled, and conflicting totals without requiring a classifier
+or dataset snapshot to exist first.
+
+The training workspace first requests the existing facet-values API using the
+same complete search-state shape as the Filter panel. The facet compiler then
+forces the OpenSearch document-hit size to zero and returns only aggregation
+buckets. This keeps pre-training class counts consistent with the Filter
+surface. A `422` response identifying a non-facetable target is the only case
+that falls back to the database target-distribution endpoint; search readiness
+or availability failures remain visible instead of silently switching sources.
+
+Exit when a matter administrator can select a coding field, configure and
+launch a reproducible first training run, then follow its status and inspect
+its model-quality output without direct database, artifact, or runtime access.
+
+## 14.1 Classification Analysis Tasks
+
+Implementation status: complete for durable batch and whole-matter scoring.
+`CLASSIFICATION` is a first-class Matter Analysis Task type. Its published task
+version pins one approved classification model version and the model's target
+metadata definition. The Classification tab continues to own model training
+and governance; the Analysis tab owns selecting a document scope and running
+the approved engine.
+
+Each `matter_analysis_task_run` pins the published task version, model version,
+embedding job, and either a ready review batch or the matter itself. The DBOS
+parent workflow freezes an immutable `SCORING` dataset snapshot, materializes a
+feature row for every population document without resolving labels or building
+validation folds, and runs the existing classification scoring workflow. A
+whole-matter population is stored in Artifact-owned Parquet and does not create
+one Core membership row per document. The run retains the resulting scoring-run
+identity, status, progress, counts, and failure details. Predictions remain
+isolated and never update matter coding automatically.
+
+## 15. Phase 10: CAL integration
 
 ### Goal
 
@@ -718,7 +922,7 @@ label precedence.
 Exit when an active model can produce an explainable CAL queue whose reviewed
 results can deliberately feed a later snapshot.
 
-## 15. Phase 11: Operational hardening
+## 16. Phase 11: Operational hardening
 
 ### Security
 
@@ -761,7 +965,7 @@ pipenv run alembic check
 Exit when operators can diagnose, reconcile, retry, cancel, activate, roll
 back, and clean up supported workflows without direct DB/object-store edits.
 
-## 16. Recommended pull-request sequence
+## 17. Recommended pull-request sequence
 
 1. Shared contracts, fixtures, and safe-package schemas.
 2. Core classifier/configuration migration, services, router, and tests.
@@ -775,13 +979,15 @@ back, and clean up supported workflows without direct DB/object-store edits.
 10. Candidate/evaluation/decision tables and approval APIs.
 11. Activation/rollback workflow and concurrency tests.
 12. Batch scoring workflow and prediction artifacts.
-13. CAL queue integration.
-14. Security, observability, retention, scale, and release hardening.
+13. Administrator first-training workspace, model-quality page, and bounded
+    prediction/evaluation reads.
+14. CAL queue integration.
+15. Security, observability, retention, scale, and release hardening.
 
 Each PR includes its migration, domain/service tests, API tests, and contract
 documentation. Avoid landing orphan tables without a command service or tests.
 
-## 17. Deferred work
+## 18. Deferred work
 
 - Automatic class balancing.
 - Automatic retraining or activation.
@@ -795,7 +1001,7 @@ documentation. Avoid landing orphan tables without a command service or tests.
 - Saved-search scope; create a frozen review batch instead.
 - Cross-matter or cross-tenant model reuse.
 
-## 18. Backend MVP completion criteria
+## 19. Backend MVP completion criteria
 
 An authorized matter administrator can:
 

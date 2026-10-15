@@ -6,11 +6,11 @@
  * OpenAPI spec version: 0.1.0
  */
 
-export type ReviewBatchCodingHistoryEntryReadRunType = typeof ReviewBatchCodingHistoryEntryReadRunType[keyof typeof ReviewBatchCodingHistoryEntryReadRunType];
+export type ReviewBatchCodingHistoryEntryReadRunType = typeof ReviewBatchCodingHistoryEntryReadRunType[keyof typeof ReviewBatchCodingHistoryEntryReadRunType] | null;
 
 
 export const ReviewBatchCodingHistoryEntryReadRunType = {
-  HUMAN: 'HUMAN',
   AGENT: 'AGENT',
   WORKFLOW: 'WORKFLOW',
+  CLASSIFIER: 'CLASSIFIER',
 } as const;

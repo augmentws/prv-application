@@ -1,4 +1,5 @@
 import logging
+import re
 import uuid
 
 from dbos import DBOS, Queue, SetWorkflowID
@@ -11,9 +12,10 @@ from app.analysis_task_batch import (
     refresh_analysis_task_batch_progress,
 )
 from app.analysis_task_playground import execute_analysis_task_document
-from app.analysis_tasks import MatterAnalysisTaskConflict
+from app.analysis_tasks import MatterAnalysisTaskConflict, MatterAnalysisTaskInputTooLarge
 from app.config import get_settings
 from app.database import SessionLocal
+from app.decision_engine import DecisionEngineProviderError
 
 logger = logging.getLogger(__name__)
 
@@ -30,14 +32,42 @@ DOCUMENT_QUEUE = Queue(
 
 
 def _should_retry_document(error: BaseException) -> bool:
-    return not isinstance(error, MatterAnalysisTaskConflict)
+    if isinstance(error, MatterAnalysisTaskConflict):
+        return False
+    if isinstance(error, DecisionEngineProviderError):
+        return error.retryable
+    return True
+
+
+def _failure_is_retryable(error: BaseException) -> bool:
+    # Retrying an unchanged size limit inside the same DBOS step cannot help, but a user may
+    # raise the configured limit and explicitly retry this document in a later job attempt.
+    if isinstance(error, MatterAnalysisTaskInputTooLarge):
+        return True
+    return _should_retry_document(error)
 
 
 def _failure_message(error: BaseException) -> str:
     errors = getattr(error, "errors", None)
     if isinstance(errors, list) and errors:
-        return str(errors[-1])
-    return str(error)
+        message = str(errors[-1])
+    else:
+        message = str(error)
+    return " ".join(message.split())[:4000] or "Document evaluation failed"
+
+
+def _failure_code(error: BaseException) -> str:
+    if isinstance(error, MatterAnalysisTaskInputTooLarge):
+        raw = error.code
+    elif isinstance(error, DecisionEngineProviderError):
+        raw = f"{error.provider}_{error.code}"
+    elif isinstance(error, MatterAnalysisTaskConflict):
+        raw = "ANALYSIS_DOCUMENT_CONFLICT"
+    elif isinstance(error, ValueError):
+        raw = "INVALID_DOCUMENT_OUTPUT"
+    else:
+        raw = "ANALYSIS_DOCUMENT_FAILURE"
+    return re.sub(r"[^A-Z0-9_]+", "_", raw.upper()).strip("_")[:100]
 
 
 @DBOS.step(name="prepare_analysis_task_batch")
@@ -68,13 +98,21 @@ def evaluate_document(workflow_run_id: str, document_id: str) -> dict:
 
 
 @DBOS.step(name="fail_analysis_task_batch_document")
-def mark_document_failed(workflow_run_id: str, document_id: str, message: str) -> None:
+def mark_document_failed(
+    workflow_run_id: str,
+    document_id: str,
+    message: str,
+    failure_code: str,
+    retryable: bool,
+) -> None:
     with SessionLocal() as db:
         fail_analysis_task_batch_document(
             db,
             uuid.UUID(workflow_run_id),
             uuid.UUID(document_id),
             message,
+            failure_code=failure_code,
+            retryable=retryable,
         )
 
 
@@ -89,7 +127,14 @@ def document_workflow(workflow_run_id: str, document_id: str) -> dict:
             document_id,
         )
         message = _failure_message(exc)
-        mark_document_failed(workflow_run_id, document_id, message)
+        retryable = _failure_is_retryable(exc)
+        mark_document_failed(
+            workflow_run_id,
+            document_id,
+            message,
+            _failure_code(exc),
+            retryable,
+        )
         return {"status": "FAILED", "error": message[:4000]}
 
 

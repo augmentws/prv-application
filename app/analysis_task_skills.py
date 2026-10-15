@@ -26,7 +26,8 @@ Do not create open-ended generation questions, executable expressions, Python, J
 configuration. Put deterministic facts in state paths or call them out as warnings instead of asking the model to
 infer them.
 
-Create decision_context as the concise, self-contained matter guidance Jev needs while evaluating every document.
+Create decision_context as the concise, self-contained matter guidance the selected decision provider needs while
+evaluating every document.
 Derive it only from the reviewed Task Definition. Preserve the controlling meaning, but do not copy the entire
 definition verbatim. Populate summary and the applicable structured sections for controlling guidance,
 responsiveness scope, inclusion and exclusion criteria, issue definitions, key entities, date scope, terminology,
@@ -51,14 +52,24 @@ what does not. Use only the supplied aggregation operators. Require evidence for
 that are not exhaustive must include an explicit other, unclear, or insufficient_evidence option.
 
 Field mappings may reference only active, AI-assignable metadata definitions supplied in metadata_definitions. Match
-the mapped value to the field type and allowed enum values. Use value_source STATIC with value for a fixed assertion.
-For a Choice question whose selected option should become the coding value, use value_source SELECTED_OPTION, set
-value to null, and provide an explicit option_value_map from assignable Choice options to valid destination values.
-Omit fallback options such as other, unclear, insufficient_evidence, and needs_review from option_value_map so they
-fail closed. Such a mapping must use
-SELECTED_PROBABILITY uncertainty. Choice and score static mappings may use provider confidence or selected-option
-probability. Noul has no separate provider confidence: map it only as derived boolean probability or do not project
-scalar uncertainty. Leave field_mapping null when no valid destination exists.
+every mapped value to the destination type and, for enums, to an active allowed-value key. Apply these destination
+rules before designing questions:
+- A SINGLE enum is one mutually exclusive Choice question. Its assignable options use value_source SELECTED_OPTION
+  and an explicit option_value_map. Omit fallback options such as other, unclear, insufficient_evidence, and
+  needs_review from that map so they fail closed.
+- A MULTIPLE enum is not one Choice question. Create one independent Noul question for each active value that the
+  guidance supports, because zero, one, or many values may apply to the same document. Leave the question's
+  field_mapping null and put the destination, static value, and uncertainty-producing predicate in its MAPPED_VALUE
+  recommendation.
+- A SINGLE boolean is normally one Noul proposition with a MAPPED_VALUE true assertion. Assign false only when the
+  reviewed guidance explicitly makes negative coding an output rather than leaving the field unassigned.
+- A text, long-text, numeric, date, datetime, or JSON destination may be mapped only when the reviewed definition
+  supplies an exact bounded static value and an independently testable MAPPED_VALUE predicate. These primitives do
+  not support open-ended value generation. Document unsupported selected destinations as omissions.
+For a Choice question whose selected option should become the coding value, set value to null and use
+SELECTED_PROBABILITY/SELECTED_OPTION_PROBABILITY uncertainty. Choice and score STATIC mappings may use provider
+confidence or selected-option probability. Noul has no separate provider confidence: use derived boolean probability.
+Leave field_mapping null when no valid destination exists.
 
 Create bounded decision-policy predicates only from declared questions and measures supported by their primitive.
 For a noul question use measure noul, a threshold from 0 to 1, and no option. For a choice question use measure
@@ -66,28 +77,77 @@ probability with an option that exactly matches one criteria key, or use confide
 question use measure score with a numeric threshold and no option, or confidence with no option. The option field is
 invalid for noul, score, and confidence predicates. Probability, noul, and confidence measures are continuous: never
 compare them with EQ at an interior threshold such as 0.7. Use GTE for a positive threshold or LTE for an inverse
-threshold. For a multi-class Choice question that uses a SELECTED_OPTION field mapping, create a recommendation with
+threshold. For a SINGLE-enum Choice question that uses a SELECTED_OPTION field mapping, create a recommendation with
 operator SELECTED_OPTION, that question_key, and a minimum_probability. This recommendation emits the mapped selected
 value only when the selected option is mapped and meets the threshold; otherwise it fails closed for human review.
 Key that recommendation exactly by the destination metadata_definition_key. Every SELECTED_OPTION field mapping must
 have this corresponding recommendation; do not leave any mapped Choice question without one. SELECTED_OPTION is
-valid only in recommendations, never routes. A boolean recommendation such as is_responsive is not an assignment:
+valid only in recommendations, never routes.
+For every fixed-value assignment, create a recommendation with operator MAPPED_VALUE. It must contain the bounded
+predicate, metadata_definition_key, and static value. The recommendation is the authoritative assignment mapping;
+leave its question's field_mapping null rather than duplicating the destination and value. Key it uniquely; for enum
+values use destination_key.value_key, for example issue_coding.topic_401. A
+MAPPED_VALUE recommendation emits that one value only when its predicate matches. Multiple matched recommendations
+may therefore emit multiple distinct values for a MULTIPLE destination. They remain conflicting for a SINGLE
+destination. MAPPED_VALUE is valid only in recommendations, never routes.
+
+Use this exact structural pattern for every non-omitted value of a MULTIPLE enum; repeat the pair rather than
+combining values into one question:
+questions["issue.topic_401"] = {
+  "type": "noul",
+  "instructions": "Does the document satisfy Topic 401?",
+  "criteria": {"true": "Topic 401 applies.", "false": "Topic 401 does not apply."},
+  "source_refs": [a supplied source reference],
+  "aggregation": {"operator": "ANY_WINDOW"},
+  "evidence": {"required": true, "minimum_exists_probability": 0.7},
+  "field_mapping": null
+};
+decision_policy.recommendations["issue_coding.topic_401"] = {
+  "operator": "MAPPED_VALUE",
+  "predicate": {
+    "question_key": "issue.topic_401",
+    "measure": "noul",
+    "comparator": "GTE",
+    "threshold": 0.7,
+    "option": null
+  },
+  "metadata_definition_key": "issue_coding",
+  "value": "topic_401"
+}.
+The Noul question and recommendation are an atomic pair joined by predicate.question_key. Never create an umbrella
+Choice question such as topic.issue_coding for a MULTIPLE enum. Never use SELECTED_OPTION for a MULTIPLE enum. Never
+key its recommendation only as issue_coding. When repairing this structure, replace both the old question and its
+old recommendation so no Choice mapping or destination-only recommendation survives.
+
+A boolean recommendation such as is_responsive without a destination mapping is not an assignment:
 keep it as a PREDICATE over the responsive option and use GTE for its positive probability threshold. When the Task
 Definition is unchanged, preserve every prior recommendation's purpose, key, predicate question, measure, option,
-and threshold. Repair a prior continuous EQ interior-threshold comparator to GTE; do not replace that predicate with
-SELECTED_OPTION. Omit a recommendation or route when no valid rule is useful and no prior rule or selected mapping
-requires it.
+threshold, mapped destination, and static value. Repair a prior continuous EQ interior-threshold comparator to GTE;
+do not replace that predicate with SELECTED_OPTION or MAPPED_VALUE. Omit a recommendation or route when no valid rule
+is useful and no prior rule or selected mapping requires it.
 Use task runtime state paths, never a hard-coded current date. For topic generation, compile only bounded evaluation
 or assignment questions; candidate taxonomy creation remains a generative stage. For data exploration, compile typed
 questions whose collected answers can later be synthesized rather than attempting open-ended synthesis here.
 
-Compile only questions supported by the reviewed Task Definition. Only create questions, field mappings,
-recommendations, or routes for metadata fields explicitly identified as included, enabled, YES, or assignable in
-the reviewed Task Definition. If the Task Definition marks a field NO, false, disabled, excluded, or out of scope,
-do not create a question, field mapping, recommendation, or route for it. Treat fields not explicitly referenced by
-the Task Definition as unavailable, even when they appear in metadata_definitions. metadata_definitions provides
-validation information for explicitly referenced destinations; it is not an allowlist by itself. Do not add
-privilege, responsiveness, topic, or other questions merely because a matching metadata field exists.
+Compile only questions supported by the reviewed Task Definition. When task.destination_selection_mode is EXPLICIT,
+task.destination_metadata_definition_keys is the administrator-selected, authoritative output allowlist. Treat every
+listed field as enabled for this task even when the prose does not use the words enabled, YES, or assignable. Create
+the questions and field mappings needed to produce each selected destination when the reviewed definition supplies
+enough decision guidance. Never map an output to an unselected field. If a selected destination cannot be compiled
+because its guidance is missing, contradictory, or unsupported by the available primitives, omit it and state the
+specific reason in omissions and warnings. Set omission.metadata_definition_key for a selected-field omission. For
+every active allowed value of a selected enum, either create a question that maps that value or add a distinct
+documented omission with both metadata_definition_key and metadata_value_key. This is required even for fallback-like
+destination values: if they should not be AI-assigned, document that omission rather than silently skipping them.
+For a MULTIPLE enum, every non-omitted value must have its own Noul question and matching MAPPED_VALUE
+recommendation. If the Task Definition explicitly marks a selected field disabled,
+excluded, or out of scope, that explicit prohibition controls and must be surfaced as a warning.
+
+When task.destination_selection_mode is LEGACY_TASK_DEFINITION, preserve the legacy behavior: only create questions,
+field mappings, recommendations, or routes for metadata fields explicitly identified as included, enabled, YES, or
+assignable in the reviewed Task Definition. Treat other fields as unavailable even when they appear in
+metadata_definitions. Do not add privilege, responsiveness, topic, or other questions merely because a matching
+metadata field exists.
 
 Provide one non-empty rationale for every question key. List deliberate omissions and ambiguities explicitly. Surface
 warnings when the definition is internally ambiguous, asks for unavailable state, cannot map to metadata, or requires
@@ -153,8 +213,9 @@ ANALYSIS_TASK_DECISION_INPUT_SCHEMA = {
 ANALYSIS_TASK_DECISION_OUTPUT_SCHEMA = DecisionEnvelope.model_json_schema(mode="validation")
 ANALYSIS_TASK_DECISION_INSTRUCTIONS = """Evaluate the supplied provider-neutral typed questions against only the
 supplied structured document state. Preserve the primitive semantics and return one typed answer for every question.
-This managed skill uses the code-owned Jev adapter; it does not authorize generative output, tools, arbitrary
-endpoints, field publication, or changes to the reviewed task version."""
+This managed skill uses the code-owned decision-provider adapter selected by the pinned task version; it does not
+authorize generative output, tools, arbitrary endpoints, field publication, or changes to the reviewed task
+version."""
 
 
 def ensure_standard_analysis_task_skills(db: Session, root: Tenant, actor: User) -> bool:
@@ -178,7 +239,8 @@ def ensure_standard_analysis_task_skills(db: Session, root: Tenant, actor: User)
                 "compiled_output_schema",
             ],
         },
-        "limits": {"max_requests": 3, "max_output_tokens": 32_000, "max_output_retries": 2},
+        # Pydantic AI applies this output budget cumulatively across the initial response and repairs.
+        "limits": {"max_requests": 5, "max_output_tokens": 128_000, "max_output_retries": 4},
     }
     changed = False
     skill = db.scalar(
@@ -248,7 +310,7 @@ def ensure_standard_analysis_task_skills(db: Session, root: Tenant, actor: User)
     decision_spec = {
         "key": "evaluate_analysis_task_decision_specification",
         "name": "Evaluate Analysis Task Decision Specification",
-        "description": "Evaluates reviewed typed questions through the code-owned Jev decision adapter.",
+        "description": "Evaluates reviewed typed questions through a code-owned decision-provider adapter.",
         "instructions": ANALYSIS_TASK_DECISION_INSTRUCTIONS,
         "input_schema_key": "matter_analysis_task_decision_input_v1",
         "input_schema": ANALYSIS_TASK_DECISION_INPUT_SCHEMA,

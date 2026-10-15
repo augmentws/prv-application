@@ -3,7 +3,7 @@ import userEvent from "@testing-library/user-event";
 import { afterEach, describe, expect, it, vi } from "vitest";
 
 import { CreateReviewBatchDialog } from "@/components/forms/create-review-batch-dialog";
-import type { MatterSavedSearchRead } from "@/generated/models";
+import type { MatterDefinitionAssessmentRead, MatterSavedSearchRead } from "@/generated/models";
 
 afterEach(cleanup);
 
@@ -22,6 +22,7 @@ describe("CreateReviewBatchDialog", () => {
         groups={[]}
         batches={[]}
         savedSearches={savedSearches}
+        assessments={[]}
         onCreate={onCreate}
       />,
     );
@@ -40,6 +41,43 @@ describe("CreateReviewBatchDialog", () => {
       selection_type: "RANDOM_SAVED_SEARCH",
       saved_search_id: "saved-search-1",
       sample_size: 25,
+    })));
+  });
+
+  it("samples the full persisted candidate pool from an assessment", async () => {
+    const onCreate = vi.fn().mockResolvedValue(undefined);
+    const user = userEvent.setup();
+    const assessments = [{
+      id: "assessment-1",
+      name: "Responsiveness coverage",
+      candidate_count: 2750,
+      selected_count: 1000,
+    }] as unknown as MatterDefinitionAssessmentRead[];
+
+    render(
+      <CreateReviewBatchDialog
+        groups={[]}
+        batches={[]}
+        savedSearches={[]}
+        assessments={assessments}
+        onCreate={onCreate}
+      />,
+    );
+
+    await user.click(screen.getByRole("button", { name: "Create batch" }));
+    await user.type(screen.getByLabelText("Name"), "Assessment pool sample");
+    await user.click(screen.getByRole("combobox", { name: "Document source" }));
+    await user.click(screen.getByRole("option", { name: "Random sample from assessment" }));
+    await user.click(screen.getByRole("combobox", { name: "Assessment" }));
+    await user.click(screen.getByRole("option", { name: /Responsiveness coverage/ }));
+    await user.type(screen.getByLabelText("Sample size"), "125");
+    await user.click(screen.getByRole("button", { name: "Create batch" }));
+
+    await waitFor(() => expect(onCreate).toHaveBeenCalledWith(expect.objectContaining({
+      name: "Assessment pool sample",
+      selection_type: "RANDOM_ASSESSMENT",
+      assessment_run_id: "assessment-1",
+      sample_size: 125,
     })));
   });
 });

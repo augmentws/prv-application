@@ -183,3 +183,33 @@ class OpenSearchClient:
     ) -> dict[str, Any]:
         params = {"search_pipeline": search_pipeline} if search_pipeline else None
         return self._request("POST", f"/{index}/_search", json=body, params=params)
+
+    def open_point_in_time(self, index: str, *, keep_alive: str = "10m") -> str:
+        result = self._request(
+            "POST",
+            f"/{index}/_search/point_in_time",
+            params={"keep_alive": keep_alive},
+        )
+        pit_id = result.get("pit_id") or result.get("id")
+        if not pit_id:
+            raise OpenSearchError("OpenSearch did not return a point-in-time identifier")
+        return str(pit_id)
+
+    def search_point_in_time(
+        self,
+        pit_id: str,
+        body: dict[str, Any],
+        *,
+        keep_alive: str = "10m",
+        search_pipeline: str | None = None,
+    ) -> dict[str, Any]:
+        request = {**body, "pit": {"id": pit_id, "keep_alive": keep_alive}}
+        params = {"search_pipeline": search_pipeline} if search_pipeline else None
+        return self._request("POST", "/_search", json=request, params=params)
+
+    def close_point_in_time(self, pit_id: str) -> None:
+        try:
+            self._request("DELETE", "/_search/point_in_time", json={"pit_id": [pit_id]})
+        except OpenSearchError as exc:
+            if exc.status_code != 404:
+                raise

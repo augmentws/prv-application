@@ -6,6 +6,7 @@ import {
   CSRF_COOKIE,
   isSameOrigin,
   REFRESH_COOKIE,
+  refreshCoreSession,
   requestCore,
   setCsrfCookie,
   setSessionCookies,
@@ -13,20 +14,6 @@ import {
 } from "@/lib/server/core-api";
 
 const safeMethods = new Set(["GET", "HEAD", "OPTIONS"]);
-
-async function refreshSession(request: NextRequest) {
-  const refreshToken = request.cookies.get(REFRESH_COOKIE)?.value;
-  if (!refreshToken) return null;
-
-  const response = await requestCore("/v1/auth/refresh", {
-    method: "POST",
-    headers: { "content-type": "application/json" },
-    body: JSON.stringify({ refresh_token: refreshToken }),
-  }).catch(() => null);
-
-  if (!response?.ok) return null;
-  return (await response.json()) as TokenPair;
-}
 
 function validateMutation(request: NextRequest) {
   if (safeMethods.has(request.method)) return true;
@@ -65,7 +52,7 @@ async function handler(request: NextRequest, context: RouteContext<"/api/core/[.
   try {
     coreResponse = await forward(request.cookies.get(ACCESS_COOKIE)?.value);
     if (coreResponse.status === 401) {
-      pair = await refreshSession(request);
+      pair = await refreshCoreSession(request.cookies.get(REFRESH_COOKIE)?.value);
       if (pair) coreResponse = await forward(pair.access_token);
     }
   } catch {

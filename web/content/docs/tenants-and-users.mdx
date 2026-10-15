@@ -26,16 +26,63 @@ The slug is the tenant's stable, URL-safe identifier for administration and stor
 ## Create a user
 
 1. Select the tenant the user should belong to.
-2. Open **Users**.
+2. Open **Access control**, then select **Users**.
 3. Select **Create user**.
 4. Enter the user's display name, email address, and initial password.
+5. Select **Assignments** to assign the user directly, or select **Groups** to add the user to an access group that already has an assignment.
 
 Users sign in with their email address and password. Priv-View resolves their tenant from the authenticated account on the server. Each user belongs to one tenant in the current release, and email addresses must be unique across Priv-View.
 
-## Roles and status
+Creating a user does not make that user an administrator and does not grant access to tenant content.
 
-The current authorization model uses an **ADMIN** role at tenant, client, and matter scope. Administrators can perform all available actions within their authorized scope. More granular roles are planned but are not implemented.
+## Roles, groups, and assignments
+
+Select **Access control** in the workspace sidebar to manage authorization:
+
+- **Users** lists accounts belonging to the selected tenant and provides the action for creating a user.
+- **Roles** bundle stable permissions. System roles are supplied by Priv-View and cannot be changed. Tenant administrators can create custom roles and select their permissions.
+- **Groups** organize users who should receive the same access. Group membership alone grants nothing.
+- **Assignments** bind one role to one user or group at tenant, client, collection, or matter scope.
+
+Tenant assignments may apply to descendant clients, collections, and matters. Client assignments may apply to that client's collections and matters. Collection and matter access remain separate: a collection assignment does not grant general matter access, and a matter assignment does not grant general access to its source collections.
+
+Permissions from all applicable direct and group assignments are combined. The initial implementation is allow-only and has no explicit deny assignment. Removing an assignment removes its current access while the Audit Log retains the security change history.
+
+Priv-View supplies these initial system roles:
+
+- Tenant Administrator
+- Client Administrator
+- Collection Manager
+- Matter Administrator
+- Reviewer
+- Analysis Operator
+- Classification Manager
+- Read Only
+
+The system prevents removal of the last effective, active Tenant Administrator. Every role, group-membership, and assignment change is recorded in the Audit Log.
+
+## Legacy access and status
+
+Existing `ADMIN` accounts and client or matter administrator memberships remain compatible during the RBAC rollout. The **Legacy access** column on the **Users** section of Access Control distinguishes those accounts from users governed only by RBAC assignments. New users use RBAC.
 
 Resources can use the statuses **ACTIVE**, **SUSPENDED**, and **ARCHIVED**. The UI displays the current status where it is relevant.
+
+## Audit Log
+
+Tenant administrators can select **Audit log** in the workspace sidebar to
+inspect the actions recorded for the active tenant. Root administrators can
+switch tenants first and then inspect that tenant's log.
+
+The page initially shows the 50 most recent actions, ordered from newest to
+oldest. Use the **From date**, **To date**, **User**, and **Action** filters to
+narrow the results. The Action filter matches the beginning of the stable
+action key, so `classification.` returns classification-related actions. Use
+**Older** and **Newer** to move through the ledger without loading the complete
+history.
+
+Select a row to inspect its exact timestamp, actor, action key, target, and
+event-specific details. A **System** actor means a workflow or service recorded
+the action without an acting user. The Audit Log is read-only; records cannot
+be changed or deleted through the application.
 
 External identity providers are anticipated by the account model, but sign-in currently uses local passwords.

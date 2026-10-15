@@ -5,6 +5,7 @@
  * Phase-one Core API for authentication, hierarchical tenants, clients, matters, and matter metadata definitions.
  * OpenAPI spec version: 0.1.0
  */
+import type { JobExecutionRead } from './jobExecutionRead';
 import type { MatterDocumentImportReadSelection } from './matterDocumentImportReadSelection';
 import type { MatterDocumentImportReadSelectionType } from './matterDocumentImportReadSelectionType';
 import type { MatterDocumentImportReadStatus } from './matterDocumentImportReadStatus';
@@ -25,6 +26,9 @@ export interface MatterDocumentImportRead {
   added_count: number;
   duplicate_count: number;
   failed_count: number;
+  imported_label_document_count: number;
+  imported_label_event_count: number;
+  imported_label_warning_count: number;
   error_message: string | null;
   created_by_user_id: string;
   started_at: string | null;
@@ -32,4 +36,5 @@ export interface MatterDocumentImportRead {
   canceled_at: string | null;
   created_at: string;
   updated_at: string;
+  execution?: JobExecutionRead | null;
 }

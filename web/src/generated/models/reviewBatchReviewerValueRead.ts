@@ -8,7 +8,7 @@
 import type { MatterSavedSearchUserRead } from './matterSavedSearchUserRead';
 
 export interface ReviewBatchReviewerValueRead {
-  review_batch_run_id: string;
+  reviewer_coding_id: string;
   actor_user_id: string;
   actor_user: MatterSavedSearchUserRead;
   metadata_definition_id: string;

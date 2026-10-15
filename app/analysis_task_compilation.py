@@ -23,12 +23,14 @@ from app.decision_specifications import (
     DOCUMENT_REVIEW_STATE_BUILDER_VERSION,
     DOCUMENT_REVIEW_STATE_PATHS,
     ChoiceDecisionQuestion,
+    DecisionMappedValueRecommendation,
     DecisionPolicyExpression,
     DecisionSelectedOptionRecommendation,
     DecisionSpecification,
     DecisionSpecificationCompilationOutput,
     MatterDecisionContext,
     validate_decision_policy_semantics,
+    validate_mapped_value_policy_semantics,
     validate_selected_option_policy_semantics,
 )
 from app.models import (
@@ -51,6 +53,17 @@ from app.workflows.dispatcher import enqueue_analysis_task_compilation
 
 HEADING_PATTERN = re.compile(r"^#{1,6}\s+(.+?)\s*#*\s*$")
 FALLBACK_OPTION_KEYS = frozenset({"other", "unclear", "insufficient_evidence"})
+COMPILER_REPAIR_RULES = (
+    "compiler repair rules: question keys require at least one dotted namespace "
+    "(for example responsiveness.overall); state_contract.required_paths may contain only document builder "
+    "input paths, never question or metadata keys; decision_context must contain concise matter guidance and "
+    "matter.decision_context must be required; predicate option is permitted only with measure probability and "
+    "must match a Choice criteria key. For a MULTIPLE enum, replace any umbrella Choice question with one Noul "
+    "question per active value. Leave each question's field_mapping null and create one MAPPED_VALUE recommendation "
+    "whose predicate question_key references that question and whose metadata_definition_key and value identify "
+    "exactly one active enum value. Do not retain an old SELECTED_OPTION or destination-only recommendation while "
+    "repairing the question."
+)
 
 
 def utcnow() -> datetime:
@@ -118,16 +131,36 @@ def attach_decision_context_source_material(
     )
 
 
-def metadata_definition_snapshot(db: Session, matter_id: uuid.UUID) -> list[dict[str, Any]]:
-    definitions = db.scalars(
+def metadata_definition_snapshot(
+    db: Session,
+    matter_id: uuid.UUID,
+    destination_metadata_definition_ids: list[str] | None = None,
+) -> list[dict[str, Any]]:
+    statement = (
         select(MetadataDefinition)
         .where(
             MetadataDefinition.matter_id == matter_id,
             MetadataDefinition.status == "ACTIVE",
+            MetadataDefinition.value_source == "ASSERTED",
             MetadataDefinition.ai_assignable.is_(True),
         )
         .order_by(MetadataDefinition.key)
-    ).all()
+    )
+    requested_ids: list[uuid.UUID] | None = None
+    if destination_metadata_definition_ids is not None:
+        requested_ids = [uuid.UUID(value) for value in destination_metadata_definition_ids]
+        if not requested_ids:
+            return []
+        statement = statement.where(MetadataDefinition.id.in_(requested_ids))
+    definitions = list(db.scalars(statement))
+    if requested_ids is not None:
+        by_id = {definition.id: definition for definition in definitions}
+        unavailable = [str(definition_id) for definition_id in requested_ids if definition_id not in by_id]
+        if unavailable:
+            raise MatterAnalysisTaskConflict(
+                "One or more selected destination fields are no longer active, matter-owned, and AI-assignable"
+            )
+        definitions = [by_id[definition_id] for definition_id in requested_ids]
     return [
         {
             "id": str(definition.id),
@@ -139,9 +172,52 @@ def metadata_definition_snapshot(db: Session, matter_id: uuid.UUID) -> list[dict
             "allowed_values": definition.allowed_values,
             "assertion_policy": definition.assertion_policy,
             "resolution_policy": definition.resolution_policy,
+            "selected_destination": destination_metadata_definition_ids is not None,
+            "compiler_pattern": _destination_compiler_pattern(definition.type, definition.cardinality),
+            "active_allowed_value_keys": [
+                str(value["key"])
+                for value in definition.allowed_values or []
+                if isinstance(value, dict) and value.get("key") and value.get("active", True) is not False
+            ],
         }
         for definition in definitions
     ]
+
+
+def _destination_compiler_pattern(field_type: str, cardinality: str) -> str:
+    if field_type == "ENUM" and cardinality == "MULTIPLE":
+        return "INDEPENDENT_NOUL_MAPPED_VALUE_PER_ACTIVE_VALUE"
+    if field_type == "ENUM" and cardinality == "SINGLE":
+        return "CHOICE_SELECTED_OPTION"
+    if field_type == "BOOLEAN" and cardinality == "SINGLE":
+        return "NOUL_MAPPED_VALUE"
+    return "BOUNDED_STATIC_MAPPED_VALUE_OR_OMISSION"
+
+
+def _compilation_progress_context(
+    references: list[dict[str, Any]],
+    metadata_definitions: list[dict[str, Any]],
+) -> dict[str, Any]:
+    return {
+        "source_reference_count": len(references),
+        "destination_count": len(metadata_definitions),
+        "destinations": [
+            {
+                "key": definition["key"],
+                "display_name": definition["display_name"],
+                "type": definition["type"],
+                "cardinality": definition["cardinality"],
+                "compiler_pattern": definition["compiler_pattern"],
+                "active_value_count": len(definition["active_allowed_value_keys"]),
+            }
+            for definition in metadata_definitions
+        ],
+    }
+
+
+def _progress_error(exc: ValueError) -> str:
+    message = " ".join(str(exc).split())
+    return message[:1200] + ("…" if len(message) > 1200 else "")
 
 
 def dependency_snapshot(
@@ -216,6 +292,11 @@ def queue_analysis_task_compilation(
     references = build_source_reference_catalog(task_version.id, task_version.definition_markdown)
     if not references:
         raise MatterAnalysisTaskConflict("The Task Definition must contain substantive guidance")
+    metadata_definitions = metadata_definition_snapshot(
+        db,
+        matter.id,
+        task_version.destination_metadata_definition_ids,
+    )
     try:
         resolved = resolve_workflow_skill_bindings(
             db,
@@ -241,13 +322,20 @@ def queue_analysis_task_compilation(
             "task_version_id": str(task_version.id),
             "version": task_version.version,
             "definition_content_hash": task_version.definition_content_hash,
+            "destination_metadata_definition_ids": task_version.destination_metadata_definition_ids,
             "source_reference_catalog_hash": json_content_hash(references),
         },
         binding_snapshot=bindings,
         configuration_snapshot={
             "resolved_models": {"decision_specification_compiler": resolved_model},
         },
-        progress={"stage": "QUEUED"},
+        progress={
+            "stage": "QUEUED",
+            "message": "Compilation is queued for the workflow worker.",
+            "validation_attempt": 0,
+            "validation_failures": [],
+            **_compilation_progress_context(references, metadata_definitions),
+        },
         initiated_by_user_id=initiated_by_user_id,
     )
     db.add(workflow)
@@ -302,7 +390,16 @@ def compile_analysis_task_version(
         raise MatterAnalysisTaskConflict("Pinned compiler workflow configuration is unavailable")
 
     references = build_source_reference_catalog(task_version.id, task_version.definition_markdown)
-    metadata_definitions = metadata_definition_snapshot(db, matter.id)
+    metadata_definitions = metadata_definition_snapshot(
+        db,
+        matter.id,
+        task_version.destination_metadata_definition_ids,
+    )
+    destination_selection_mode = (
+        "LEGACY_TASK_DEFINITION"
+        if task_version.destination_metadata_definition_ids is None
+        else "EXPLICIT"
+    )
     dependencies = dependency_snapshot(db, task_version.id)
     prior = _prior_published_specification(db, task)
     preserve_prior_policy = _definition_matches_published_version(db, task, task_version)
@@ -316,9 +413,55 @@ def compile_analysis_task_version(
     now = utcnow()
     workflow.status = "RUNNING"
     workflow.started_at = workflow.started_at or now
-    workflow.progress = {"stage": "COMPILING"}
+    workflow.progress = {
+        **_compilation_progress_context(references, metadata_definitions),
+        "stage": "REQUESTING_MODEL",
+        "message": "The compiler is generating a candidate Decision Specification.",
+        "validation_attempt": 0,
+        "validation_failures": [],
+    }
     step.status = "RUNNING"
     step.started_at = step.started_at or now
+    db.commit()
+
+    validation_attempt = 0
+    validation_failures: list[dict[str, Any]] = []
+
+    def validate_with_progress(output: dict[str, Any]) -> None:
+        nonlocal validation_attempt
+        validation_attempt += 1
+        workflow.progress = {
+            **workflow.progress,
+            "stage": "VALIDATING_OUTPUT",
+            "message": f"Validating candidate {validation_attempt} against the specification contract.",
+            "validation_attempt": validation_attempt,
+            "validation_failures": validation_failures,
+        }
+        db.commit()
+        try:
+            validator(output)
+        except ValueError as exc:
+            validation_failures.append(
+                {"attempt": validation_attempt, "message": _progress_error(exc)}
+            )
+            workflow.progress = {
+                **workflow.progress,
+                "stage": "REPAIRING_OUTPUT",
+                "message": (
+                    f"Candidate {validation_attempt} failed validation; the compiler is repairing its output."
+                ),
+                "validation_failures": validation_failures[-4:],
+            }
+            db.commit()
+            raise
+        workflow.progress = {
+            **workflow.progress,
+            "stage": "FINALIZING",
+            "message": f"Candidate {validation_attempt} passed validation; saving the specification.",
+            "validation_failures": validation_failures,
+        }
+        db.commit()
+
     pinned_model = workflow.configuration_snapshot.get("resolved_models", {}).get("decision_specification_compiler")
     output, skill_run = asyncio.run(
         execute_skill_run(
@@ -347,6 +490,13 @@ def compile_analysis_task_version(
                     "task_type": task.task_type,
                     "workflow_key": task.workflow_key,
                     "definition_content_hash": task_version.definition_content_hash,
+                    "destination_selection_mode": destination_selection_mode,
+                    "destination_metadata_definition_ids": (
+                        task_version.destination_metadata_definition_ids or []
+                    ),
+                    "destination_metadata_definition_keys": [
+                        definition["key"] for definition in metadata_definitions
+                    ],
                 },
                 "prior_published_specification": prior,
             },
@@ -356,10 +506,11 @@ def compile_analysis_task_version(
                 "task_id": str(task.id),
                 "task_version_id": str(task_version.id),
                 "definition_content_hash": task_version.definition_content_hash,
+                "destination_metadata_definition_ids": task_version.destination_metadata_definition_ids,
                 "skill_version_id": str(skill_version.id),
                 "output_schema_key": skill_version.output_schema_key,
             },
-            output_validators=(validator,),
+            output_validators=(validate_with_progress,),
             usage_job_type="MATTER_ANALYSIS_TASK_COMPILATION",
             model=model if model is not None else pinned_model,
         )
@@ -415,6 +566,7 @@ def compile_analysis_task_version(
         source_provenance={
             "compiler_workflow_run_id": str(workflow.id),
             "definition_content_hash": task_version.definition_content_hash,
+            "destination_metadata_definition_ids": task_version.destination_metadata_definition_ids,
             "source_reference_catalog_hash": json_content_hash(references),
         },
     )
@@ -422,7 +574,20 @@ def compile_analysis_task_version(
     step.completed_count = 1
     step.completed_at = utcnow()
     workflow.status = "COMPLETED"
-    workflow.progress = {"stage": "COMPLETED", "question_count": len(specification.questions)}
+    mapped_recommendation_count = sum(
+        isinstance(recommendation, DecisionMappedValueRecommendation)
+        for recommendation in specification.decision_policy.recommendations.values()
+    )
+    workflow.progress = {
+        **workflow.progress,
+        "stage": "COMPLETED",
+        "message": "The Decision Specification passed validation and was saved.",
+        "question_count": len(specification.questions),
+        "recommendation_count": len(specification.decision_policy.recommendations),
+        "mapped_recommendation_count": mapped_recommendation_count,
+        "warning_count": len(validation_report["warnings"]),
+        "omission_count": len(compiled.omissions),
+    }
     workflow.completed_at = utcnow()
     db.commit()
     return specification.model_dump(mode="json")
@@ -440,7 +605,12 @@ def fail_analysis_task_compilation(
     if workflow is not None:
         workflow.status = "FAILED"
         workflow.error_message = message[:4000]
-        workflow.progress = {"stage": "FAILED"}
+        workflow.progress = {
+            **(workflow.progress or {}),
+            "stage": "FAILED",
+            "message": "Decision Specification compilation failed.",
+            "error": " ".join(message.split())[:1200],
+        }
         workflow.completed_at = utcnow()
         step = db.scalar(
             select(WorkflowStepRun).where(
@@ -496,7 +666,11 @@ def _definition_matches_published_version(
             MatterAnalysisTaskVersion.version == task.published_version,
         )
     )
-    return prior is not None and prior.definition_content_hash == task_version.definition_content_hash
+    return (
+        prior is not None
+        and prior.definition_content_hash == task_version.definition_content_hash
+        and prior.destination_metadata_definition_ids == task_version.destination_metadata_definition_ids
+    )
 
 
 def _compiler_output_validator(
@@ -516,6 +690,7 @@ def _compiler_output_validator(
         for check in (
             lambda: validate_decision_policy_semantics(specification.decision_policy),
             lambda: validate_selected_option_policy_semantics(specification),
+            lambda: validate_mapped_value_policy_semantics(specification),
             lambda: (
                 _validate_preserved_recommendations(specification, prior_published_specification)
                 if prior_published_specification is not None
@@ -567,6 +742,7 @@ def _compiler_output_validator(
                     raise ValueError(
                         f"Omission {omission.subject} cites a source reference outside the supplied catalog"
                     )
+        _validate_selected_destination_mappings(compiled, definitions)
 
     return validate
 
@@ -584,13 +760,7 @@ def parse_compiler_wire_output(output: dict[str, Any]) -> DecisionSpecificationC
     try:
         return DecisionSpecificationCompilationOutput.model_validate(parsed)
     except ValueError as exc:
-        raise ValueError(
-            f"{exc}; compiler repair rules: question keys require at least one dotted namespace "
-            "(for example responsiveness.overall); state_contract.required_paths may contain only document builder "
-            "input paths, never question or metadata keys; decision_context must contain concise matter guidance "
-            "and matter.decision_context must be required; predicate option is permitted only with measure "
-            "probability and must match a Choice criteria key"
-        ) from exc
+        raise ValueError(f"{exc}; {COMPILER_REPAIR_RULES}") from exc
 
 
 def _compiler_wire_output_validator(
@@ -608,8 +778,14 @@ def _compiler_wire_output_validator(
     )
 
     def validate(output: dict[str, Any]) -> None:
-        compiled = parse_compiler_wire_output(output)
-        validate_compiled(compiled.model_dump(mode="json"))
+        try:
+            compiled = parse_compiler_wire_output(output)
+            validate_compiled(compiled.model_dump(mode="json"))
+        except ValueError as exc:
+            message = str(exc)
+            if COMPILER_REPAIR_RULES not in message:
+                message = f"{message}; {COMPILER_REPAIR_RULES}"
+            raise ValueError(message) from exc
 
     return validate
 
@@ -632,6 +808,35 @@ def _validate_preserved_recommendations(
         if current_rule is None:
             raise ValueError(f"decision_policy must preserve prior recommendation {key}")
         prior_operator = prior_rule.get("operator")
+        if prior_operator == "MAPPED_VALUE":
+            if not isinstance(current_rule, DecisionMappedValueRecommendation):
+                raise ValueError(
+                    f"decision_policy.recommendations.{key} must preserve its MAPPED_VALUE form"
+                )
+            prior_predicate = prior_rule.get("predicate")
+            if not isinstance(prior_predicate, dict):
+                continue
+            if current_rule.metadata_definition_key != prior_rule.get("metadata_definition_key"):
+                raise ValueError(
+                    f"decision_policy.recommendations.{key} must preserve its destination"
+                )
+            if current_rule.value != prior_rule.get("value"):
+                raise ValueError(f"decision_policy.recommendations.{key} must preserve its value")
+            for field in ("question_key", "measure", "option", "threshold"):
+                if getattr(current_rule.predicate, field) != prior_predicate.get(field):
+                    raise ValueError(
+                        f"decision_policy.recommendations.{key} must preserve predicate {field}"
+                    )
+            if (
+                prior_predicate.get("comparator") == "EQ"
+                and prior_predicate.get("measure") in {"noul", "confidence", "probability"}
+                and prior_predicate.get("threshold") not in {0, 1}
+                and current_rule.predicate.comparator != "GTE"
+            ):
+                raise ValueError(
+                    f"decision_policy.recommendations.{key} must repair the prior interior EQ comparator to GTE"
+                )
+            continue
         if prior_operator != "SELECTED_OPTION" and isinstance(
             current_rule,
             DecisionSelectedOptionRecommendation,
@@ -671,11 +876,137 @@ def _validate_mapped_value(question_key: str, value: Any, definition: dict[str, 
         allowed = {
             str(item.get("key"))
             for item in definition.get("allowed_values") or []
-            if isinstance(item, dict) and item.get("status", "ACTIVE") == "ACTIVE" and item.get("key")
+            if isinstance(item, dict) and item.get("active", True) is not False and item.get("key")
         }
         values = value if isinstance(value, list) else [value]
         if any(str(item) not in allowed for item in values):
             raise ValueError(f"{question_key} maps an unknown enum value to {definition['key']}")
+
+
+def _validate_selected_destination_mappings(
+    compiled: DecisionSpecificationCompilationOutput,
+    definitions: dict[str, dict[str, Any]],
+) -> None:
+    """Require executable mappings and complete, explicit coverage of selected enums."""
+
+    specification = compiled.decision_specification
+    mapped_recommendations = [
+        recommendation
+        for recommendation in specification.decision_policy.recommendations.values()
+        if isinstance(recommendation, DecisionMappedValueRecommendation)
+    ]
+    covered: dict[str, set[str]] = {}
+    for question_key, question in specification.questions.items():
+        mapping = question.field_mapping
+        if mapping is None:
+            continue
+        definition = definitions.get(mapping.metadata_definition_key)
+        if definition is None or not definition.get("selected_destination"):
+            continue
+        if mapping.value_source == "STATIC":
+            has_recommendation = any(
+                recommendation.predicate.question_key == question_key
+                and recommendation.metadata_definition_key == mapping.metadata_definition_key
+                and recommendation.value == mapping.value
+                for recommendation in mapped_recommendations
+            )
+            if not has_recommendation:
+                raise ValueError(
+                    f"{question_key} STATIC field mapping requires a matching MAPPED_VALUE recommendation"
+                )
+        if definition["type"] != "ENUM":
+            continue
+        if definition["cardinality"] == "MULTIPLE":
+            if mapping.value_source != "STATIC" or question.type != "noul":
+                raise ValueError(
+                    f"{question_key} cannot use a Choice or SELECTED_OPTION mapping for MULTIPLE enum "
+                    f"destination {mapping.metadata_definition_key}; use an independent Noul question with "
+                    "field_mapping null and a MAPPED_VALUE recommendation per active value"
+                )
+            if isinstance(mapping.value, list):
+                raise ValueError(
+                    f"{question_key} must map exactly one enum value for MULTIPLE destination "
+                    f"{mapping.metadata_definition_key}"
+                )
+        if mapping.value_source == "SELECTED_OPTION":
+            destination_coverage = covered.setdefault(mapping.metadata_definition_key, set())
+            for value in mapping.option_value_map.values():
+                if isinstance(value, list):
+                    destination_coverage.update(str(item) for item in value)
+                else:
+                    destination_coverage.add(str(value))
+
+    for recommendation in mapped_recommendations:
+        definition = definitions.get(recommendation.metadata_definition_key)
+        if definition is None:
+            raise ValueError(
+                "MAPPED_VALUE recommendation targets an unavailable metadata definition: "
+                f"{recommendation.metadata_definition_key}"
+            )
+        _validate_mapped_value(
+            recommendation.predicate.question_key,
+            recommendation.value,
+            definition,
+        )
+        if definition["type"] != "ENUM":
+            continue
+        if definition["cardinality"] == "MULTIPLE":
+            question = specification.questions[recommendation.predicate.question_key]
+            if question.type != "noul":
+                raise ValueError(
+                    f"{recommendation.predicate.question_key} must be a Noul question for MULTIPLE enum "
+                    f"destination {recommendation.metadata_definition_key}"
+                )
+            if isinstance(recommendation.value, list):
+                raise ValueError(
+                    f"{recommendation.predicate.question_key} must recommend exactly one enum value for "
+                    f"MULTIPLE destination {recommendation.metadata_definition_key}"
+                )
+        if definition.get("selected_destination"):
+            covered.setdefault(recommendation.metadata_definition_key, set()).add(
+                str(recommendation.value)
+            )
+
+    omitted: dict[str, set[str]] = {}
+    for omission in compiled.omissions:
+        definition_key = omission.metadata_definition_key
+        value_key = omission.metadata_value_key
+        if definition_key is None:
+            continue
+        definition = definitions.get(definition_key)
+        if definition is None or not definition.get("selected_destination"):
+            raise ValueError(f"Omission {omission.subject} references an unavailable selected destination")
+        if value_key is None:
+            continue
+        if definition["type"] != "ENUM":
+            raise ValueError(f"Omission {omission.subject} identifies a value for a non-enum destination")
+        active_values = _active_enum_value_keys(definition)
+        if value_key not in active_values:
+            raise ValueError(f"Omission {omission.subject} references an inactive or unknown enum value")
+        omitted.setdefault(definition_key, set()).add(value_key)
+
+    missing: list[str] = []
+    for definition_key, definition in definitions.items():
+        if not definition.get("selected_destination") or definition["type"] != "ENUM":
+            continue
+        accounted_for = covered.get(definition_key, set()) | omitted.get(definition_key, set())
+        missing.extend(
+            f"{definition_key}.{value_key}"
+            for value_key in sorted(_active_enum_value_keys(definition) - accounted_for)
+        )
+    if missing:
+        raise ValueError(
+            "Every active selected enum value requires a mapped question or documented omission; missing: "
+            + ", ".join(missing)
+        )
+
+
+def _active_enum_value_keys(definition: dict[str, Any]) -> set[str]:
+    return {
+        str(item["key"])
+        for item in definition.get("allowed_values") or []
+        if isinstance(item, dict) and item.get("key") and item.get("active", True) is not False
+    }
 
 
 def _deterministic_warnings(specification: DecisionSpecification) -> list[dict[str, Any]]:

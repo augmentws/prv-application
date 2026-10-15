@@ -63,6 +63,23 @@ def create_context(client: TestClient, root_token: str) -> tuple[str, str, dict[
         json={"name": "Saved Search Matter"},
     )
     assert matter.status_code == 201, matter.text
+    roles = client.get(
+        f"/v1/tenants/{tenant_id}/roles",
+        headers=auth(owner_token),
+    )
+    assert roles.status_code == 200, roles.text
+    matter_admin_role = next(role for role in roles.json() if role["key"] == "MATTER_ADMINISTRATOR")
+    for label in ("shared", "other"):
+        grant = client.post(
+            f"/v1/tenants/{tenant_id}/authorization-grants",
+            headers=auth(owner_token),
+            json={
+                "subject": {"type": "USER", "id": users[label]},
+                "role_id": matter_admin_role["id"],
+                "scope": {"type": "MATTER", "id": matter.json()["id"]},
+            },
+        )
+        assert grant.status_code == 201, grant.text
     return matter.json()["id"], owner_token, users
 
 

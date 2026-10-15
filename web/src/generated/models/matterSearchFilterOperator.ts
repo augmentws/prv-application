@@ -12,6 +12,7 @@ export type MatterSearchFilterOperator = typeof MatterSearchFilterOperator[keyof
 export const MatterSearchFilterOperator = {
   EQ: 'EQ',
   IN: 'IN',
+  NOT_IN: 'NOT_IN',
   RANGE: 'RANGE',
   EXISTS: 'EXISTS',
   NOT_EXISTS: 'NOT_EXISTS',

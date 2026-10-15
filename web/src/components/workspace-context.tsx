@@ -3,13 +3,14 @@
 import { useQuery } from "@tanstack/react-query";
 import { createContext, useContext, useState, type ReactNode } from "react";
 
-import type { TenantRead, UserRead } from "@/generated/models";
+import type { EffectivePermissionsRead, TenantRead, UserRead } from "@/generated/models";
 import { coreApi } from "@/lib/api-client";
 
 interface WorkspaceValue {
   user: UserRead;
   tenant: TenantRead;
   tenants: TenantRead[];
+  permissionKeys: string[];
   selectedTenantId: string;
   setSelectedTenantId: (tenantId: string) => void;
 }
@@ -36,8 +37,13 @@ export function WorkspaceProvider({ children }: { children: ReactNode }) {
     queryFn: () => coreApi<TenantRead[]>("/v1/tenants"),
     enabled: Boolean(user?.is_superuser),
   });
+  const permissionsQuery = useQuery({
+    queryKey: ["effective-permissions", "TENANT", selectedTenantId],
+    queryFn: () => coreApi<EffectivePermissionsRead>(`/v1/authorization/effective?resource_type=TENANT&resource_id=${selectedTenantId}`),
+    enabled: Boolean(selectedTenantId),
+  });
 
-  if (userQuery.error || tenantQuery.error) {
+  if (userQuery.error || tenantQuery.error || permissionsQuery.error) {
     return (
       <main id="main-content" className="grid min-h-screen place-items-center p-6">
         <div className="max-w-md rounded-xl border bg-card p-6 text-center">
@@ -49,7 +55,7 @@ export function WorkspaceProvider({ children }: { children: ReactNode }) {
     );
   }
 
-  if (userQuery.isPending || userQuery.isFetching || !user || tenantQuery.isPending || !tenantQuery.data) {
+  if (userQuery.isPending || userQuery.isFetching || !user || tenantQuery.isPending || !tenantQuery.data || permissionsQuery.isPending) {
     return (
       <div className="grid min-h-screen place-items-center bg-background">
         <div className="flex items-center gap-3 text-sm font-medium text-muted-foreground">
@@ -66,6 +72,7 @@ export function WorkspaceProvider({ children }: { children: ReactNode }) {
         user,
         tenant: tenantQuery.data,
         tenants: user.is_superuser ? (tenantsQuery.data ?? [tenantQuery.data]) : [tenantQuery.data],
+        permissionKeys: permissionsQuery.data?.permission_keys ?? [],
         selectedTenantId,
         setSelectedTenantId: setSelection,
       }}

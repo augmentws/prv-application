@@ -1,6 +1,6 @@
 import uuid
 from datetime import date, datetime, timezone
-from typing import Any
+from typing import Any, ClassVar
 
 from sqlalchemy import (
     JSON,
@@ -11,6 +11,7 @@ from sqlalchemy import (
     DateTime,
     Float,
     ForeignKey,
+    ForeignKeyConstraint,
     Index,
     Integer,
     String,
@@ -19,9 +20,12 @@ from sqlalchemy import (
     Uuid,
     text,
 )
+from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from app.database import Base
+
+JSON_DOCUMENT = JSON().with_variant(JSONB(), "postgresql")
 
 
 def utcnow() -> datetime:
@@ -58,6 +62,7 @@ class Tenant(TimestampMixin, Base):
     name: Mapped[str] = mapped_column(String(200))
     status: Mapped[str] = mapped_column(String(20), default="ACTIVE")
     is_root: Mapped[bool] = mapped_column(Boolean, default=False)
+    authorization_revision: Mapped[int] = mapped_column(BigInteger, default=1)
 
     parent: Mapped["Tenant | None"] = relationship(remote_side="Tenant.id", back_populates="children")
     children: Mapped[list["Tenant"]] = relationship(back_populates="parent")
@@ -68,7 +73,7 @@ class User(TimestampMixin, Base):
     __table_args__ = (
         UniqueConstraint("normalized_email", name="uq_user_normalized_email"),
         CheckConstraint("status IN ('ACTIVE', 'SUSPENDED', 'ARCHIVED')", name="ck_user_status"),
-        CheckConstraint("tenant_role = 'ADMIN'", name="ck_user_tenant_role"),
+        CheckConstraint("tenant_role IN ('ADMIN', 'USER')", name="ck_user_tenant_role"),
     )
 
     id: Mapped[uuid.UUID] = mapped_column(Uuid, primary_key=True, default=uuid.uuid4)
@@ -77,7 +82,7 @@ class User(TimestampMixin, Base):
     normalized_email: Mapped[str] = mapped_column(String(320))
     display_name: Mapped[str] = mapped_column(String(200))
     status: Mapped[str] = mapped_column(String(20), default="ACTIVE")
-    tenant_role: Mapped[str] = mapped_column(String(20), default="ADMIN")
+    tenant_role: Mapped[str] = mapped_column(String(20), default="USER")
     is_superuser: Mapped[bool] = mapped_column(Boolean, default=False)
     last_authenticated_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
 
@@ -192,6 +197,229 @@ class MatterMembership(Base):
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
 
 
+class Permission(TimestampMixin, Base):
+    __tablename__ = "permission"
+    __table_args__ = (
+        CheckConstraint("status IN ('ACTIVE', 'ARCHIVED')", name="ck_permission_status"),
+        CheckConstraint(
+            "resource_type IN ('TENANT', 'CLIENT', 'COLLECTION', 'MATTER')",
+            name="ck_permission_resource_type",
+        ),
+    )
+
+    id: Mapped[uuid.UUID] = mapped_column(Uuid, primary_key=True, default=uuid.uuid4)
+    key: Mapped[str] = mapped_column(String(120), unique=True, index=True)
+    display_name: Mapped[str] = mapped_column(String(200))
+    description: Mapped[str] = mapped_column(Text)
+    category: Mapped[str] = mapped_column(String(50), index=True)
+    resource_type: Mapped[str] = mapped_column(String(30), index=True)
+    dangerous: Mapped[bool] = mapped_column(Boolean, default=False)
+    status: Mapped[str] = mapped_column(String(20), default="ACTIVE")
+
+
+class Role(TimestampMixin, Base):
+    __tablename__ = "role"
+    __table_args__ = (
+        CheckConstraint("role_kind IN ('SYSTEM', 'CUSTOM')", name="ck_role_kind"),
+        CheckConstraint("status IN ('ACTIVE', 'ARCHIVED')", name="ck_role_status"),
+        CheckConstraint(
+            "(role_kind = 'SYSTEM' AND tenant_id IS NULL) OR (role_kind = 'CUSTOM' AND tenant_id IS NOT NULL)",
+            name="ck_role_kind_tenant",
+        ),
+        Index(
+            "uq_system_role_key",
+            "key",
+            unique=True,
+            postgresql_where=text("tenant_id IS NULL"),
+            sqlite_where=text("tenant_id IS NULL"),
+        ),
+        Index(
+            "uq_tenant_role_key",
+            "tenant_id",
+            "key",
+            unique=True,
+            postgresql_where=text("tenant_id IS NOT NULL"),
+            sqlite_where=text("tenant_id IS NOT NULL"),
+        ),
+    )
+
+    id: Mapped[uuid.UUID] = mapped_column(Uuid, primary_key=True, default=uuid.uuid4)
+    tenant_id: Mapped[uuid.UUID | None] = mapped_column(
+        Uuid, ForeignKey("tenant.id", ondelete="CASCADE"), nullable=True, index=True
+    )
+    key: Mapped[str] = mapped_column(String(100))
+    display_name: Mapped[str] = mapped_column(String(200))
+    description: Mapped[str | None] = mapped_column(Text)
+    role_kind: Mapped[str] = mapped_column(String(20))
+    status: Mapped[str] = mapped_column(String(20), default="ACTIVE")
+    row_version: Mapped[int] = mapped_column(Integer, default=1)
+    created_by_user_id: Mapped[uuid.UUID | None] = mapped_column(
+        Uuid, ForeignKey("app_user.id", ondelete="SET NULL"), nullable=True
+    )
+
+
+class RolePermission(Base):
+    __tablename__ = "role_permission"
+
+    role_id: Mapped[uuid.UUID] = mapped_column(Uuid, ForeignKey("role.id", ondelete="CASCADE"), primary_key=True)
+    permission_id: Mapped[uuid.UUID] = mapped_column(
+        Uuid, ForeignKey("permission.id", ondelete="RESTRICT"), primary_key=True
+    )
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+
+
+class AccessGroup(TimestampMixin, Base):
+    __tablename__ = "access_group"
+    __table_args__ = (
+        UniqueConstraint("tenant_id", "key", name="uq_access_group_tenant_key"),
+        CheckConstraint("group_kind IN ('LOCAL')", name="ck_access_group_kind"),
+        CheckConstraint("status IN ('ACTIVE', 'ARCHIVED')", name="ck_access_group_status"),
+    )
+
+    id: Mapped[uuid.UUID] = mapped_column(Uuid, primary_key=True, default=uuid.uuid4)
+    tenant_id: Mapped[uuid.UUID] = mapped_column(Uuid, ForeignKey("tenant.id", ondelete="CASCADE"), index=True)
+    key: Mapped[str] = mapped_column(String(100))
+    display_name: Mapped[str] = mapped_column(String(200))
+    description: Mapped[str | None] = mapped_column(Text)
+    group_kind: Mapped[str] = mapped_column(String(20), default="LOCAL")
+    external_reference: Mapped[str | None] = mapped_column(String(500))
+    status: Mapped[str] = mapped_column(String(20), default="ACTIVE")
+    row_version: Mapped[int] = mapped_column(Integer, default=1)
+    created_by_user_id: Mapped[uuid.UUID] = mapped_column(Uuid, ForeignKey("app_user.id", ondelete="RESTRICT"))
+
+
+class AccessGroupMember(Base):
+    __tablename__ = "access_group_member"
+
+    access_group_id: Mapped[uuid.UUID] = mapped_column(
+        Uuid, ForeignKey("access_group.id", ondelete="CASCADE"), primary_key=True
+    )
+    user_id: Mapped[uuid.UUID] = mapped_column(Uuid, ForeignKey("app_user.id", ondelete="CASCADE"), primary_key=True)
+    added_by_user_id: Mapped[uuid.UUID] = mapped_column(Uuid, ForeignKey("app_user.id", ondelete="RESTRICT"))
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+
+
+class AuthorizationGrant(TimestampMixin, Base):
+    __tablename__ = "authorization_grant"
+    __table_args__ = (
+        CheckConstraint(
+            "(user_id IS NOT NULL AND access_group_id IS NULL) OR (user_id IS NULL AND access_group_id IS NOT NULL)",
+            name="ck_authorization_grant_subject",
+        ),
+        CheckConstraint(
+            "(scope_type = 'TENANT' AND tenant_scope_id IS NOT NULL AND client_id IS NULL "
+            "AND matter_id IS NULL AND collection_id IS NULL) OR "
+            "(scope_type = 'CLIENT' AND tenant_scope_id IS NULL AND client_id IS NOT NULL "
+            "AND matter_id IS NULL AND collection_id IS NULL) OR "
+            "(scope_type = 'MATTER' AND tenant_scope_id IS NULL AND client_id IS NULL "
+            "AND matter_id IS NOT NULL AND collection_id IS NULL) OR "
+            "(scope_type = 'COLLECTION' AND tenant_scope_id IS NULL AND client_id IS NULL "
+            "AND matter_id IS NULL AND collection_id IS NOT NULL)",
+            name="ck_authorization_grant_scope",
+        ),
+        Index("ix_authorization_grant_tenant_scope", "tenant_id", "scope_type"),
+        Index("ix_authorization_grant_client", "client_id"),
+        Index("ix_authorization_grant_matter", "matter_id"),
+        Index("ix_authorization_grant_collection", "collection_id"),
+        Index(
+            "uq_authorization_grant_user_tenant",
+            "user_id",
+            "role_id",
+            "tenant_scope_id",
+            unique=True,
+            postgresql_where=text("scope_type = 'TENANT' AND user_id IS NOT NULL"),
+            sqlite_where=text("scope_type = 'TENANT' AND user_id IS NOT NULL"),
+        ),
+        Index(
+            "uq_authorization_grant_group_tenant",
+            "access_group_id",
+            "role_id",
+            "tenant_scope_id",
+            unique=True,
+            postgresql_where=text("scope_type = 'TENANT' AND access_group_id IS NOT NULL"),
+            sqlite_where=text("scope_type = 'TENANT' AND access_group_id IS NOT NULL"),
+        ),
+        Index(
+            "uq_authorization_grant_user_client",
+            "user_id",
+            "role_id",
+            "client_id",
+            unique=True,
+            postgresql_where=text("scope_type = 'CLIENT' AND user_id IS NOT NULL"),
+            sqlite_where=text("scope_type = 'CLIENT' AND user_id IS NOT NULL"),
+        ),
+        Index(
+            "uq_authorization_grant_group_client",
+            "access_group_id",
+            "role_id",
+            "client_id",
+            unique=True,
+            postgresql_where=text("scope_type = 'CLIENT' AND access_group_id IS NOT NULL"),
+            sqlite_where=text("scope_type = 'CLIENT' AND access_group_id IS NOT NULL"),
+        ),
+        Index(
+            "uq_authorization_grant_user_matter",
+            "user_id",
+            "role_id",
+            "matter_id",
+            unique=True,
+            postgresql_where=text("scope_type = 'MATTER' AND user_id IS NOT NULL"),
+            sqlite_where=text("scope_type = 'MATTER' AND user_id IS NOT NULL"),
+        ),
+        Index(
+            "uq_authorization_grant_group_matter",
+            "access_group_id",
+            "role_id",
+            "matter_id",
+            unique=True,
+            postgresql_where=text("scope_type = 'MATTER' AND access_group_id IS NOT NULL"),
+            sqlite_where=text("scope_type = 'MATTER' AND access_group_id IS NOT NULL"),
+        ),
+        Index(
+            "uq_authorization_grant_user_collection",
+            "user_id",
+            "role_id",
+            "collection_id",
+            unique=True,
+            postgresql_where=text("scope_type = 'COLLECTION' AND user_id IS NOT NULL"),
+            sqlite_where=text("scope_type = 'COLLECTION' AND user_id IS NOT NULL"),
+        ),
+        Index(
+            "uq_authorization_grant_group_collection",
+            "access_group_id",
+            "role_id",
+            "collection_id",
+            unique=True,
+            postgresql_where=text("scope_type = 'COLLECTION' AND access_group_id IS NOT NULL"),
+            sqlite_where=text("scope_type = 'COLLECTION' AND access_group_id IS NOT NULL"),
+        ),
+    )
+
+    id: Mapped[uuid.UUID] = mapped_column(Uuid, primary_key=True, default=uuid.uuid4)
+    tenant_id: Mapped[uuid.UUID] = mapped_column(Uuid, ForeignKey("tenant.id", ondelete="CASCADE"), index=True)
+    user_id: Mapped[uuid.UUID | None] = mapped_column(
+        Uuid, ForeignKey("app_user.id", ondelete="CASCADE"), nullable=True, index=True
+    )
+    access_group_id: Mapped[uuid.UUID | None] = mapped_column(
+        Uuid, ForeignKey("access_group.id", ondelete="CASCADE"), nullable=True, index=True
+    )
+    role_id: Mapped[uuid.UUID] = mapped_column(Uuid, ForeignKey("role.id", ondelete="RESTRICT"), index=True)
+    scope_type: Mapped[str] = mapped_column(String(20))
+    tenant_scope_id: Mapped[uuid.UUID | None] = mapped_column(
+        Uuid, ForeignKey("tenant.id", ondelete="CASCADE"), nullable=True
+    )
+    client_id: Mapped[uuid.UUID | None] = mapped_column(
+        Uuid, ForeignKey("client.id", ondelete="CASCADE"), nullable=True
+    )
+    matter_id: Mapped[uuid.UUID | None] = mapped_column(
+        Uuid, ForeignKey("matter.id", ondelete="CASCADE"), nullable=True
+    )
+    collection_id: Mapped[uuid.UUID | None] = mapped_column(Uuid, nullable=True)
+    created_by_user_id: Mapped[uuid.UUID] = mapped_column(Uuid, ForeignKey("app_user.id", ondelete="RESTRICT"))
+    updated_by_user_id: Mapped[uuid.UUID] = mapped_column(Uuid, ForeignKey("app_user.id", ondelete="RESTRICT"))
+    row_version: Mapped[int] = mapped_column(Integer, default=1)
+
+
 class ExternalProviderUsage(Base):
     """Immutable token-usage ledger for billable external provider calls."""
 
@@ -265,7 +493,9 @@ class MatterDocumentImportJob(TimestampMixin, Base):
         ),
         CheckConstraint(
             "matched_count >= 0 AND batch_count >= 0 AND processed_count >= 0 AND "
-            "added_count >= 0 AND duplicate_count >= 0 AND failed_count >= 0",
+            "added_count >= 0 AND duplicate_count >= 0 AND failed_count >= 0 AND "
+            "imported_label_document_count >= 0 AND imported_label_event_count >= 0 AND "
+            "imported_label_warning_count >= 0",
             name="ck_matter_import_counts",
         ),
         Index("ix_matter_import_matter_created", "matter_id", "created_at"),
@@ -279,6 +509,12 @@ class MatterDocumentImportJob(TimestampMixin, Base):
     selection_summary: Mapped[str] = mapped_column(String(1000))
     status: Mapped[str] = mapped_column(String(30), default="QUEUED", index=True)
     workflow_id: Mapped[str] = mapped_column(String(255), unique=True)
+    current_workflow_run_id: Mapped[uuid.UUID | None] = mapped_column(
+        Uuid,
+        ForeignKey("workflow_run.id", ondelete="SET NULL"),
+        nullable=True,
+        index=True,
+    )
     artifact_selection_id: Mapped[uuid.UUID | None] = mapped_column(Uuid)
     matched_count: Mapped[int] = mapped_column(Integer, default=0)
     batch_count: Mapped[int] = mapped_column(Integer, default=0)
@@ -286,6 +522,9 @@ class MatterDocumentImportJob(TimestampMixin, Base):
     added_count: Mapped[int] = mapped_column(Integer, default=0)
     duplicate_count: Mapped[int] = mapped_column(Integer, default=0)
     failed_count: Mapped[int] = mapped_column(Integer, default=0)
+    imported_label_document_count: Mapped[int] = mapped_column(Integer, default=0)
+    imported_label_event_count: Mapped[int] = mapped_column(Integer, default=0)
+    imported_label_warning_count: Mapped[int] = mapped_column(Integer, default=0)
     error_message: Mapped[str | None] = mapped_column(Text)
     created_by_user_id: Mapped[uuid.UUID] = mapped_column(
         Uuid, ForeignKey("app_user.id", ondelete="RESTRICT"), index=True
@@ -296,7 +535,11 @@ class MatterDocumentImportJob(TimestampMixin, Base):
 
     matter: Mapped[Matter] = relationship()
     created_by: Mapped[User] = relationship()
+    current_workflow_run: Mapped["WorkflowRun | None"] = relationship(foreign_keys=[current_workflow_run_id])
 
+    @property
+    def execution(self) -> "WorkflowRun | None":
+        return self.current_workflow_run
 
 class MatterDocumentImportBatch(TimestampMixin, Base):
     __tablename__ = "matter_document_import_batch"
@@ -304,7 +547,9 @@ class MatterDocumentImportBatch(TimestampMixin, Base):
         UniqueConstraint("job_id", "batch_number", name="uq_matter_import_batch_number"),
         CheckConstraint("status IN ('QUEUED', 'COMPLETED', 'FAILED')", name="ck_matter_import_batch_status"),
         CheckConstraint(
-            "item_count >= 0 AND added_count >= 0 AND duplicate_count >= 0 AND failed_count >= 0",
+            "item_count >= 0 AND added_count >= 0 AND duplicate_count >= 0 AND failed_count >= 0 AND "
+            "imported_label_document_count >= 0 AND imported_label_event_count >= 0 AND "
+            "imported_label_warning_count >= 0",
             name="ck_matter_import_batch_counts",
         ),
     )
@@ -319,6 +564,9 @@ class MatterDocumentImportBatch(TimestampMixin, Base):
     added_count: Mapped[int] = mapped_column(Integer, default=0)
     duplicate_count: Mapped[int] = mapped_column(Integer, default=0)
     failed_count: Mapped[int] = mapped_column(Integer, default=0)
+    imported_label_document_count: Mapped[int] = mapped_column(Integer, default=0)
+    imported_label_event_count: Mapped[int] = mapped_column(Integer, default=0)
+    imported_label_warning_count: Mapped[int] = mapped_column(Integer, default=0)
     error_message: Mapped[str | None] = mapped_column(Text)
 
 
@@ -365,6 +613,12 @@ class MatterEmbeddingJob(TimestampMixin, Base):
     matter_id: Mapped[uuid.UUID] = mapped_column(Uuid, ForeignKey("matter.id", ondelete="CASCADE"), index=True)
     status: Mapped[str] = mapped_column(String(30), default="QUEUED", index=True)
     workflow_id: Mapped[str] = mapped_column(String(255), unique=True)
+    current_workflow_run_id: Mapped[uuid.UUID | None] = mapped_column(
+        Uuid,
+        ForeignKey("workflow_run.id", ondelete="SET NULL"),
+        nullable=True,
+        index=True,
+    )
     configuration_hash: Mapped[str] = mapped_column(String(64), index=True)
     configuration: Mapped[dict[str, Any]] = mapped_column(JSON)
     embedding_model: Mapped[str] = mapped_column(String(500))
@@ -388,6 +642,11 @@ class MatterEmbeddingJob(TimestampMixin, Base):
 
     matter: Mapped[Matter] = relationship()
     created_by: Mapped[User] = relationship()
+    current_workflow_run: Mapped["WorkflowRun | None"] = relationship(foreign_keys=[current_workflow_run_id])
+
+    @property
+    def execution(self) -> "WorkflowRun | None":
+        return self.current_workflow_run
 
     # API reporting fields are aggregated from the immutable provider-usage
     # ledger; these defaults let the ORM object validate before the router
@@ -688,13 +947,103 @@ class SearchIndexGeneration(TimestampMixin, Base):
     activated_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
 
 
+class MatterSearchExportJob(TimestampMixin, Base):
+    __tablename__ = "matter_search_export_job"
+    __table_args__ = (
+        CheckConstraint(
+            "status IN ('QUEUED', 'RUNNING', 'COMPLETED', 'FAILED', 'CANCELED')",
+            name="ck_matter_search_export_status",
+        ),
+        CheckConstraint(
+            "matched_count >= 0 AND exported_count >= 0 AND page_count >= 0 "
+            "AND (output_byte_length IS NULL OR output_byte_length >= 0)",
+            name="ck_matter_search_export_counts",
+        ),
+        UniqueConstraint(
+            "matter_id",
+            "created_by_user_id",
+            "idempotency_key",
+            name="uq_matter_search_export_idempotency",
+        ),
+        Index("ix_matter_search_export_matter_created", "matter_id", "created_at"),
+        Index("ix_matter_search_export_matter_status_created", "matter_id", "status", "created_at"),
+    )
+
+    id: Mapped[uuid.UUID] = mapped_column(Uuid, primary_key=True, default=uuid.uuid4)
+    tenant_id: Mapped[uuid.UUID] = mapped_column(Uuid, ForeignKey("tenant.id", ondelete="RESTRICT"), index=True)
+    matter_id: Mapped[uuid.UUID] = mapped_column(Uuid, ForeignKey("matter.id", ondelete="CASCADE"), index=True)
+    search_index_generation_id: Mapped[uuid.UUID | None] = mapped_column(
+        Uuid,
+        ForeignKey("search_index_generation.id", ondelete="SET NULL"),
+        nullable=True,
+        index=True,
+    )
+    search_definition: Mapped[dict[str, Any]] = mapped_column(JSON)
+    search_definition_hash: Mapped[str] = mapped_column(String(64), index=True)
+    search_index_snapshot: Mapped[dict[str, Any]] = mapped_column(JSON)
+    field_snapshot: Mapped[list[dict[str, Any]]] = mapped_column(JSON)
+    field_snapshot_hash: Mapped[str] = mapped_column(String(64), index=True)
+    csv_policy_snapshot: Mapped[dict[str, Any]] = mapped_column(JSON)
+    idempotency_key: Mapped[str] = mapped_column(String(200))
+    requested_filename: Mapped[str] = mapped_column(String(255))
+    status: Mapped[str] = mapped_column(String(30), default="QUEUED", index=True)
+    current_workflow_run_id: Mapped[uuid.UUID | None] = mapped_column(
+        Uuid,
+        ForeignKey("workflow_run.id", ondelete="SET NULL"),
+        nullable=True,
+        index=True,
+    )
+    workflow_id: Mapped[str] = mapped_column(String(255), unique=True)
+    current_stage: Mapped[str | None] = mapped_column(String(100))
+    matched_count: Mapped[int] = mapped_column(BigInteger, default=0)
+    exported_count: Mapped[int] = mapped_column(BigInteger, default=0)
+    page_count: Mapped[int] = mapped_column(Integer, default=0)
+    output_artifact_id: Mapped[uuid.UUID | None] = mapped_column(Uuid, nullable=True, index=True)
+    output_content_hash: Mapped[str | None] = mapped_column(String(64))
+    output_byte_length: Mapped[int | None] = mapped_column(BigInteger)
+    output_filename: Mapped[str | None] = mapped_column(String(255))
+    snapshot_started_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    expires_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), index=True)
+    retry_until: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    failure_code: Mapped[str | None] = mapped_column(String(100))
+    failure_summary: Mapped[str | None] = mapped_column(Text)
+    failure_retriable: Mapped[bool] = mapped_column(Boolean, default=False)
+    created_by_user_id: Mapped[uuid.UUID] = mapped_column(
+        Uuid,
+        ForeignKey("app_user.id", ondelete="RESTRICT"),
+        index=True,
+    )
+    started_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    completed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    canceled_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+
+    matter: Mapped["Matter"] = relationship()
+    created_by: Mapped["User"] = relationship(foreign_keys=[created_by_user_id])
+    current_workflow_run: Mapped["WorkflowRun | None"] = relationship(foreign_keys=[current_workflow_run_id])
+
+    @property
+    def execution(self) -> "WorkflowRun | None":
+        return self.current_workflow_run
+
+    @property
+    def selected_field_count(self) -> int:
+        return len(self.field_snapshot or [])
+
+    @property
+    def created_by_display_name(self) -> str:
+        return self.created_by.display_name
+
+    @property
+    def created_by_email(self) -> str:
+        return self.created_by.email
+
+
 class SearchProjectionOperation(TimestampMixin, Base):
     __tablename__ = "search_projection_operation"
     __table_args__ = (
         UniqueConstraint("workflow_id", name="uq_search_projection_workflow"),
         CheckConstraint(
-            "kind IN ('SCHEMA_SYNC', 'REBUILD', 'DOCUMENT_UPSERT', 'DOCUMENT_DELETE', "
-            "'BATCH_CODING_SYNC')",
+            "kind IN ('SCHEMA_SYNC', 'REBUILD', 'DOCUMENT_UPSERT', 'DOCUMENT_DELETE', 'BATCH_CODING_SYNC')",
             name="ck_search_projection_kind",
         ),
         CheckConstraint(
@@ -777,8 +1126,7 @@ class MatterBulkTagJob(TimestampMixin, Base):
     __tablename__ = "matter_bulk_tag_job"
     __table_args__ = (
         CheckConstraint(
-            "status IN ('QUEUED', 'SNAPSHOTTING', 'RUNNING', 'COMPLETED', "
-            "'COMPLETED_WITH_ERRORS', 'FAILED')",
+            "status IN ('QUEUED', 'SNAPSHOTTING', 'RUNNING', 'COMPLETED', 'COMPLETED_WITH_ERRORS', 'FAILED')",
             name="ck_matter_bulk_tag_job_status",
         ),
         CheckConstraint(
@@ -855,7 +1203,7 @@ class ReviewBatch(TimestampMixin, Base):
     __table_args__ = (
         CheckConstraint(
             "selection_type IN ('ALL_MATTER', 'SEARCH_QUERY', 'RANDOM_MATTER', 'RANDOM_BATCH', "
-            "'RANDOM_SAVED_SEARCH', 'DEFINITION_ASSESSMENT')",
+            "'RANDOM_SAVED_SEARCH', 'RANDOM_ASSESSMENT', 'DEFINITION_ASSESSMENT')",
             name="ck_review_batch_selection_type",
         ),
         CheckConstraint(
@@ -863,7 +1211,7 @@ class ReviewBatch(TimestampMixin, Base):
             name="ck_review_batch_value_visibility",
         ),
         CheckConstraint(
-            "status IN ('QUEUED', 'BUILDING', 'READY', 'FAILED', 'ARCHIVED')",
+            "status IN ('QUEUED', 'BUILDING', 'READY', 'FAILED', 'CANCELED', 'ARCHIVED')",
             name="ck_review_batch_status",
         ),
         CheckConstraint(
@@ -901,12 +1249,24 @@ class ReviewBatch(TimestampMixin, Base):
     search_status: Mapped[str] = mapped_column(String(20), default="QUEUED", index=True)
     search_error_message: Mapped[str | None] = mapped_column(Text)
     workflow_id: Mapped[str] = mapped_column(String(255), unique=True)
+    current_workflow_run_id: Mapped[uuid.UUID | None] = mapped_column(
+        Uuid,
+        ForeignKey("workflow_run.id", ondelete="SET NULL"),
+        nullable=True,
+        index=True,
+    )
     document_count: Mapped[int] = mapped_column(Integer, default=0)
     error_message: Mapped[str | None] = mapped_column(Text)
     created_by_user_id: Mapped[uuid.UUID] = mapped_column(
         Uuid, ForeignKey("app_user.id", ondelete="RESTRICT"), index=True
     )
     completed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+
+    current_workflow_run: Mapped["WorkflowRun | None"] = relationship(foreign_keys=[current_workflow_run_id])
+
+    @property
+    def execution(self) -> "WorkflowRun | None":
+        return self.current_workflow_run
 
 
 class ReviewBatchDocument(Base):
@@ -996,10 +1356,24 @@ class WorkflowRun(TimestampMixin, Base):
     __tablename__ = "workflow_run"
     __table_args__ = (
         CheckConstraint(
-            "status IN ('QUEUED', 'RUNNING', 'COMPLETED', 'COMPLETED_WITH_ERRORS', 'FAILED', 'CANCELED')",
+            "status IN ('QUEUED', 'RUNNING', 'WAITING', 'COMPLETED', 'COMPLETED_WITH_ERRORS', 'FAILED', 'CANCELED')",
             name="ck_workflow_run_status",
         ),
+        CheckConstraint("attempt_number > 0", name="ck_workflow_run_attempt_positive"),
+        CheckConstraint(
+            "progress_completed >= 0 AND (progress_total IS NULL OR progress_total >= 0)",
+            name="ck_workflow_run_progress_nonnegative",
+        ),
+        UniqueConstraint(
+            "job_type",
+            "job_id",
+            "attempt_number",
+            name="uq_workflow_run_job_attempt",
+        ),
         Index("ix_workflow_run_matter_created", "matter_id", "created_at"),
+        Index("ix_workflow_run_job_attempt", "job_type", "job_id", "attempt_number"),
+        Index("ix_workflow_run_matter_status_created", "matter_id", "status", "created_at"),
+        Index("ix_workflow_run_status_heartbeat", "status", "last_heartbeat_at"),
     )
 
     id: Mapped[uuid.UUID] = mapped_column(Uuid, primary_key=True, default=uuid.uuid4)
@@ -1010,10 +1384,24 @@ class WorkflowRun(TimestampMixin, Base):
     matter_id: Mapped[uuid.UUID | None] = mapped_column(
         Uuid, ForeignKey("matter.id", ondelete="CASCADE"), nullable=True, index=True
     )
+    job_type: Mapped[str | None] = mapped_column(String(80), nullable=True, index=True)
+    job_id: Mapped[uuid.UUID | None] = mapped_column(Uuid, nullable=True, index=True)
+    attempt_number: Mapped[int] = mapped_column(Integer, default=1)
+    retry_of_workflow_run_id: Mapped[uuid.UUID | None] = mapped_column(
+        Uuid,
+        ForeignKey("workflow_run.id", ondelete="SET NULL"),
+        nullable=True,
+        index=True,
+    )
     workflow_key: Mapped[str] = mapped_column(String(100), index=True)
     code_version: Mapped[str] = mapped_column(String(100))
     dbos_workflow_id: Mapped[str] = mapped_column(String(255), unique=True)
+    idempotency_key: Mapped[str | None] = mapped_column(String(500), nullable=True)
     status: Mapped[str] = mapped_column(String(30), default="QUEUED", index=True)
+    current_stage: Mapped[str | None] = mapped_column(String(100), nullable=True)
+    progress_completed: Mapped[int] = mapped_column(BigInteger, default=0)
+    progress_total: Mapped[int | None] = mapped_column(BigInteger, nullable=True)
+    progress_unit: Mapped[str | None] = mapped_column(String(40), nullable=True)
     input_snapshot: Mapped[dict[str, Any]] = mapped_column(JSON, default=dict)
     binding_snapshot: Mapped[dict[str, Any]] = mapped_column(JSON, default=dict)
     configuration_snapshot: Mapped[dict[str, Any]] = mapped_column(JSON, default=dict)
@@ -1027,9 +1415,70 @@ class WorkflowRun(TimestampMixin, Base):
     initiated_by_user_id: Mapped[uuid.UUID] = mapped_column(
         Uuid, ForeignKey("app_user.id", ondelete="RESTRICT"), index=True
     )
+    cancel_requested_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    cancel_requested_by_user_id: Mapped[uuid.UUID | None] = mapped_column(
+        Uuid,
+        ForeignKey("app_user.id", ondelete="SET NULL"),
+        nullable=True,
+        index=True,
+    )
+    last_heartbeat_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    failure_code: Mapped[str | None] = mapped_column(String(100), nullable=True)
+    failure_summary: Mapped[str | None] = mapped_column(Text, nullable=True)
+    failure_retriable: Mapped[bool] = mapped_column(Boolean, default=False)
     error_message: Mapped[str | None] = mapped_column(Text)
     started_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     completed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+
+    @property
+    def stage_label(self) -> str:
+        return (self.current_stage or self.status).replace("_", " ").title()
+
+    @property
+    def available_actions(self) -> list[str]:
+        actions: list[str] = []
+        if (
+            self.job_type
+            in {
+                "CLASSIFICATION_ANALYSIS_TASK",
+                "MATTER_DOCUMENT_IMPORT",
+                "MATTER_EMBEDDING_JOB",
+                "REVIEW_BATCH_MATERIALIZATION",
+                "CLASSIFICATION_TRAINING_JOB",
+                "CLASSIFICATION_SCORING_RUN",
+                "ANALYSIS_TASK_BATCH_RUN",
+                "MATTER_SEARCH_EXPORT",
+            }
+            and self.status not in {"COMPLETED", "COMPLETED_WITH_ERRORS", "FAILED", "CANCELED"}
+            and self.cancel_requested_at is None
+        ):
+            actions.append("CANCEL")
+        elif self.job_type in {
+            "CLASSIFICATION_ANALYSIS_TASK",
+            "REVIEW_BATCH_MATERIALIZATION",
+            "CLASSIFICATION_TRAINING_JOB",
+            "CLASSIFICATION_SCORING_RUN",
+            "CLASSIFICATION_PROJECTION",
+            "MATTER_SEARCH_EXPORT",
+        } and (self.status == "CANCELED" or (self.status == "FAILED" and self.failure_retriable)):
+            actions.append("RETRY")
+        return actions
+
+
+class JobArchive(Base):
+    __tablename__ = "job_archive"
+    __table_args__ = (
+        Index("ix_job_archive_matter_archived", "matter_id", "archived_at"),
+    )
+
+    job_type: Mapped[str] = mapped_column(String(80), primary_key=True)
+    job_id: Mapped[uuid.UUID] = mapped_column(Uuid, primary_key=True)
+    tenant_id: Mapped[uuid.UUID] = mapped_column(Uuid, ForeignKey("tenant.id", ondelete="CASCADE"), index=True)
+    matter_id: Mapped[uuid.UUID] = mapped_column(Uuid, ForeignKey("matter.id", ondelete="CASCADE"), index=True)
+    archived_by_user_id: Mapped[uuid.UUID] = mapped_column(
+        Uuid, ForeignKey("app_user.id", ondelete="RESTRICT"), index=True
+    )
+    archived_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
 
 
 class WorkflowStepRun(TimestampMixin, Base):
@@ -1122,10 +1571,254 @@ class SkillRun(TimestampMixin, Base):
     completed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
 
 
+class ReviewBatchReviewerCoding(TimestampMixin, Base):
+    __tablename__ = "review_batch_reviewer_coding"
+    __table_args__ = (
+        UniqueConstraint("review_batch_id", "reviewer_user_id", name="uq_review_batch_reviewer_coding_user"),
+        CheckConstraint("revision >= 0", name="ck_review_batch_reviewer_coding_revision"),
+    )
+
+    id: Mapped[uuid.UUID] = mapped_column(Uuid, primary_key=True, default=uuid.uuid4)
+    review_batch_id: Mapped[uuid.UUID] = mapped_column(
+        Uuid, ForeignKey("review_batch.id", ondelete="CASCADE"), index=True
+    )
+    reviewer_user_id: Mapped[uuid.UUID] = mapped_column(
+        Uuid, ForeignKey("app_user.id", ondelete="RESTRICT"), index=True
+    )
+    revision: Mapped[int] = mapped_column(BigInteger, default=0)
+
+
+class ReviewBatchReviewerRevision(Base):
+    __tablename__ = "review_batch_reviewer_revision"
+    __table_args__ = (
+        CheckConstraint("revision >= 1", name="ck_reviewer_revision_number"),
+        CheckConstraint(
+            "origin IN ('REVIEW_UI', 'IMPORT', 'SYSTEM_MIGRATION')",
+            name="ck_reviewer_revision_origin",
+        ),
+        UniqueConstraint(
+            "reviewer_coding_id",
+            "request_key",
+            name="uq_reviewer_revision_request",
+        ),
+        Index(
+            "ix_reviewer_revision_coding_desc",
+            "reviewer_coding_id",
+            "revision",
+        ),
+    )
+
+    reviewer_coding_id: Mapped[uuid.UUID] = mapped_column(
+        Uuid,
+        ForeignKey("review_batch_reviewer_coding.id", ondelete="CASCADE"),
+        primary_key=True,
+    )
+    revision: Mapped[int] = mapped_column(BigInteger, primary_key=True)
+    actor_user_id: Mapped[uuid.UUID | None] = mapped_column(
+        Uuid,
+        ForeignKey("app_user.id", ondelete="RESTRICT"),
+        nullable=True,
+        index=True,
+    )
+    origin: Mapped[str] = mapped_column(String(30))
+    request_key: Mapped[str | None] = mapped_column(String(200), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+
+
+class ReviewBatchReviewerDocumentRevision(Base):
+    __tablename__ = "review_batch_reviewer_document_revision"
+    __table_args__ = (
+        ForeignKeyConstraint(
+            ["reviewer_coding_id", "revision"],
+            [
+                "review_batch_reviewer_revision.reviewer_coding_id",
+                "review_batch_reviewer_revision.revision",
+            ],
+            ondelete="CASCADE",
+            name="fk_reviewer_doc_revision_header",
+        ),
+        CheckConstraint("revision >= 1", name="ck_reviewer_doc_revision_number"),
+        CheckConstraint(
+            "status IN ('IN_PROGRESS', 'COMPLETED', 'SKIPPED')",
+            name="ck_reviewer_doc_revision_status",
+        ),
+        Index(
+            "ix_reviewer_doc_revision_lookup",
+            "reviewer_coding_id",
+            "matter_document_id",
+            "revision",
+        ),
+    )
+
+    reviewer_coding_id: Mapped[uuid.UUID] = mapped_column(Uuid, primary_key=True)
+    revision: Mapped[int] = mapped_column(BigInteger, primary_key=True)
+    matter_document_id: Mapped[uuid.UUID] = mapped_column(
+        Uuid,
+        ForeignKey("matter_document.id", ondelete="CASCADE"),
+        primary_key=True,
+    )
+    status: Mapped[str] = mapped_column(String(20))
+    started_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
+    completed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+
+
+class ReviewBatchReviewerFieldRevision(Base):
+    __tablename__ = "review_batch_reviewer_field_revision"
+    __table_args__ = (
+        ForeignKeyConstraint(
+            ["reviewer_coding_id", "revision", "matter_document_id"],
+            [
+                "review_batch_reviewer_document_revision.reviewer_coding_id",
+                "review_batch_reviewer_document_revision.revision",
+                "review_batch_reviewer_document_revision.matter_document_id",
+            ],
+            ondelete="CASCADE",
+            name="fk_reviewer_field_revision_document",
+        ),
+        CheckConstraint("revision >= 1", name="ck_reviewer_field_revision_number"),
+        Index(
+            "ix_reviewer_field_revision_lookup",
+            "reviewer_coding_id",
+            "matter_document_id",
+            "metadata_definition_id",
+            "revision",
+        ),
+    )
+
+    reviewer_coding_id: Mapped[uuid.UUID] = mapped_column(Uuid, primary_key=True)
+    revision: Mapped[int] = mapped_column(BigInteger, primary_key=True)
+    matter_document_id: Mapped[uuid.UUID] = mapped_column(Uuid, primary_key=True)
+    metadata_definition_id: Mapped[uuid.UUID] = mapped_column(
+        Uuid,
+        ForeignKey("metadata_definition.id", ondelete="RESTRICT"),
+        primary_key=True,
+    )
+
+
+class ReviewBatchReviewerValueRevision(Base):
+    __tablename__ = "review_batch_reviewer_value_revision"
+    __table_args__ = (
+        ForeignKeyConstraint(
+            [
+                "reviewer_coding_id",
+                "revision",
+                "matter_document_id",
+                "metadata_definition_id",
+            ],
+            [
+                "review_batch_reviewer_field_revision.reviewer_coding_id",
+                "review_batch_reviewer_field_revision.revision",
+                "review_batch_reviewer_field_revision.matter_document_id",
+                "review_batch_reviewer_field_revision.metadata_definition_id",
+            ],
+            ondelete="CASCADE",
+            name="fk_reviewer_value_revision_field",
+        ),
+        CheckConstraint("revision >= 1", name="ck_reviewer_value_revision_number"),
+        CheckConstraint("value_ordinal >= 0", name="ck_reviewer_value_revision_ordinal"),
+        CheckConstraint(
+            "(CASE WHEN value_text IS NOT NULL THEN 1 ELSE 0 END + "
+            "CASE WHEN value_long IS NOT NULL THEN 1 ELSE 0 END + "
+            "CASE WHEN value_float IS NOT NULL THEN 1 ELSE 0 END + "
+            "CASE WHEN value_boolean IS NOT NULL THEN 1 ELSE 0 END + "
+            "CASE WHEN value_date IS NOT NULL THEN 1 ELSE 0 END + "
+            "CASE WHEN value_datetime IS NOT NULL THEN 1 ELSE 0 END + "
+            "CASE WHEN value_json IS NOT NULL THEN 1 ELSE 0 END) = 1",
+            name="ck_reviewer_value_revision_shape",
+        ),
+        Index(
+            "ix_reviewer_value_revision_document",
+            "reviewer_coding_id",
+            "matter_document_id",
+            "metadata_definition_id",
+        ),
+    )
+
+    reviewer_coding_id: Mapped[uuid.UUID] = mapped_column(Uuid, primary_key=True)
+    revision: Mapped[int] = mapped_column(BigInteger, primary_key=True)
+    matter_document_id: Mapped[uuid.UUID] = mapped_column(Uuid, primary_key=True)
+    metadata_definition_id: Mapped[uuid.UUID] = mapped_column(Uuid, primary_key=True)
+    value_ordinal: Mapped[int] = mapped_column(Integer, primary_key=True)
+    value_text: Mapped[str | None] = mapped_column(Text)
+    value_long: Mapped[int | None] = mapped_column(BigInteger)
+    value_float: Mapped[float | None] = mapped_column(Float)
+    value_boolean: Mapped[bool | None] = mapped_column(Boolean)
+    value_date: Mapped[date | None] = mapped_column(Date)
+    value_datetime: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    value_json: Mapped[Any | None] = mapped_column(JSON(none_as_null=True))
+
+
+class ReviewBatchReviewerDocument(Base):
+    __tablename__ = "review_batch_reviewer_document"
+    __table_args__ = (
+        CheckConstraint(
+            "status IN ('IN_PROGRESS', 'COMPLETED', 'SKIPPED')",
+            name="ck_review_batch_reviewer_document_status",
+        ),
+        CheckConstraint("revision >= 1", name="ck_review_batch_reviewer_document_revision"),
+        Index("ix_review_batch_reviewer_document_coding_status", "reviewer_coding_id", "status"),
+    )
+
+    reviewer_coding_id: Mapped[uuid.UUID] = mapped_column(
+        Uuid, ForeignKey("review_batch_reviewer_coding.id", ondelete="CASCADE"), primary_key=True
+    )
+    matter_document_id: Mapped[uuid.UUID] = mapped_column(
+        Uuid, ForeignKey("matter_document.id", ondelete="CASCADE"), primary_key=True, index=True
+    )
+    status: Mapped[str] = mapped_column(String(20))
+    revision: Mapped[int] = mapped_column(BigInteger)
+    started_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+    completed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow, onupdate=utcnow)
+
+
+class ReviewBatchReviewerValue(Base):
+    __tablename__ = "review_batch_reviewer_value"
+    __table_args__ = (
+        CheckConstraint("value_ordinal >= 0", name="ck_review_batch_reviewer_value_ordinal"),
+        CheckConstraint("revision >= 1", name="ck_review_batch_reviewer_value_revision"),
+        CheckConstraint(
+            "(CASE WHEN value_text IS NOT NULL THEN 1 ELSE 0 END + "
+            "CASE WHEN value_long IS NOT NULL THEN 1 ELSE 0 END + "
+            "CASE WHEN value_float IS NOT NULL THEN 1 ELSE 0 END + "
+            "CASE WHEN value_boolean IS NOT NULL THEN 1 ELSE 0 END + "
+            "CASE WHEN value_date IS NOT NULL THEN 1 ELSE 0 END + "
+            "CASE WHEN value_datetime IS NOT NULL THEN 1 ELSE 0 END + "
+            "CASE WHEN value_json IS NOT NULL THEN 1 ELSE 0 END) = 1",
+            name="ck_review_batch_reviewer_value_shape",
+        ),
+        Index("ix_review_batch_reviewer_value_document", "matter_document_id", "metadata_definition_id"),
+    )
+
+    reviewer_coding_id: Mapped[uuid.UUID] = mapped_column(
+        Uuid, ForeignKey("review_batch_reviewer_coding.id", ondelete="CASCADE"), primary_key=True
+    )
+    matter_document_id: Mapped[uuid.UUID] = mapped_column(
+        Uuid, ForeignKey("matter_document.id", ondelete="CASCADE"), primary_key=True
+    )
+    metadata_definition_id: Mapped[uuid.UUID] = mapped_column(
+        Uuid, ForeignKey("metadata_definition.id", ondelete="RESTRICT"), primary_key=True
+    )
+    value_ordinal: Mapped[int] = mapped_column(Integer, primary_key=True)
+    value_text: Mapped[str | None] = mapped_column(Text)
+    value_long: Mapped[int | None] = mapped_column(BigInteger)
+    value_float: Mapped[float | None] = mapped_column(Float)
+    value_boolean: Mapped[bool | None] = mapped_column(Boolean)
+    value_date: Mapped[date | None] = mapped_column(Date)
+    value_datetime: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    value_json: Mapped[Any | None] = mapped_column(JSON(none_as_null=True))
+    revision: Mapped[int] = mapped_column(BigInteger)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow, onupdate=utcnow)
+
+
 class ReviewBatchRun(TimestampMixin, Base):
     __tablename__ = "review_batch_run"
     __table_args__ = (
-        CheckConstraint("run_type IN ('HUMAN', 'AGENT', 'WORKFLOW')", name="ck_review_batch_run_type"),
+        CheckConstraint(
+            "run_type IN ('AGENT', 'WORKFLOW', 'CLASSIFIER')",
+            name="ck_review_batch_run_type",
+        ),
         CheckConstraint(
             "purpose IN ('REVIEW', 'REFERENCE', 'CANDIDATE', 'ASSESSMENT')",
             name="ck_review_batch_run_purpose",
@@ -1136,16 +1829,36 @@ class ReviewBatchRun(TimestampMixin, Base):
         ),
         CheckConstraint("result_policy IN ('ISOLATED', 'PUBLISH_TO_MATTER')", name="ck_review_batch_run_policy"),
         CheckConstraint(
-            "(run_type = 'HUMAN' AND actor_user_id IS NOT NULL "
-            "AND agent_definition_version_id IS NULL AND workflow_run_record_id IS NULL) OR "
             "(run_type = 'AGENT' AND actor_user_id IS NULL "
-            "AND agent_definition_version_id IS NOT NULL AND workflow_run_record_id IS NULL) OR "
+            "AND agent_definition_version_id IS NOT NULL AND workflow_run_record_id IS NULL "
+            "AND classification_scoring_run_id IS NULL) OR "
             "(run_type = 'WORKFLOW' AND actor_user_id IS NULL "
-            "AND agent_definition_version_id IS NULL AND workflow_run_record_id IS NOT NULL)",
+            "AND agent_definition_version_id IS NULL AND workflow_run_record_id IS NOT NULL "
+            "AND classification_scoring_run_id IS NULL) OR "
+            "(run_type = 'CLASSIFIER' AND actor_user_id IS NULL "
+            "AND agent_definition_version_id IS NULL AND workflow_run_record_id IS NULL "
+            "AND classification_scoring_run_id IS NOT NULL)",
             name="ck_review_batch_run_actor",
         ),
         CheckConstraint("processed_document_count >= 0", name="ck_review_batch_run_processed_count"),
         Index("ix_review_batch_run_batch_created", "review_batch_id", "created_at"),
+        Index(
+            "uq_review_batch_classifier_idempotency",
+            "review_batch_id",
+            "idempotency_key",
+            unique=True,
+            postgresql_where=text("run_type = 'CLASSIFIER'"),
+            sqlite_where=text("run_type = 'CLASSIFIER'"),
+        ),
+        Index(
+            "uq_review_batch_classifier_derivation",
+            "review_batch_id",
+            "classification_scoring_run_id",
+            "derivation_key",
+            unique=True,
+            postgresql_where=text("run_type = 'CLASSIFIER'"),
+            sqlite_where=text("run_type = 'CLASSIFIER'"),
+        ),
     )
 
     id: Mapped[uuid.UUID] = mapped_column(Uuid, primary_key=True, default=uuid.uuid4)
@@ -1168,15 +1881,36 @@ class ReviewBatchRun(TimestampMixin, Base):
     workflow_run_record_id: Mapped[uuid.UUID | None] = mapped_column(
         Uuid, ForeignKey("workflow_run.id", ondelete="RESTRICT"), nullable=True, index=True
     )
+    classification_scoring_run_id: Mapped[uuid.UUID | None] = mapped_column(
+        Uuid,
+        ForeignKey("classification_scoring_run.id", ondelete="RESTRICT"),
+        nullable=True,
+        index=True,
+    )
+    derivation_key: Mapped[str | None] = mapped_column(String(64), nullable=True, index=True)
+    idempotency_key: Mapped[str | None] = mapped_column(String(200), nullable=True)
     configuration_snapshot: Mapped[dict[str, Any]] = mapped_column(JSON, default=dict)
+    result_summary: Mapped[dict[str, Any] | None] = mapped_column(JSON, nullable=True)
     initiated_by_user_id: Mapped[uuid.UUID] = mapped_column(
         Uuid, ForeignKey("app_user.id", ondelete="RESTRICT"), index=True
     )
     dbos_workflow_id: Mapped[str | None] = mapped_column(String(255), unique=True)
+    current_workflow_run_id: Mapped[uuid.UUID | None] = mapped_column(
+        Uuid,
+        ForeignKey("workflow_run.id", ondelete="SET NULL"),
+        nullable=True,
+        index=True,
+    )
     processed_document_count: Mapped[int] = mapped_column(Integer, default=0)
     error_message: Mapped[str | None] = mapped_column(Text)
     started_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), default=utcnow)
     completed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+
+    current_workflow_run: Mapped["WorkflowRun | None"] = relationship(foreign_keys=[current_workflow_run_id])
+
+    @property
+    def execution(self) -> "WorkflowRun | None":
+        return self.current_workflow_run
 
 
 class ReviewBatchRunDocument(Base):
@@ -1196,6 +1930,15 @@ class ReviewBatchRunDocument(Base):
         Uuid, ForeignKey("matter_document.id", ondelete="CASCADE"), primary_key=True, index=True
     )
     status: Mapped[str] = mapped_column(String(20), default="IN_PROGRESS")
+    last_workflow_run_id: Mapped[uuid.UUID | None] = mapped_column(
+        Uuid,
+        ForeignKey("workflow_run.id", ondelete="SET NULL"),
+        nullable=True,
+        index=True,
+    )
+    failure_code: Mapped[str | None] = mapped_column(String(100), nullable=True)
+    failure_message: Mapped[str | None] = mapped_column(Text, nullable=True)
+    failure_retriable: Mapped[bool] = mapped_column(Boolean, default=False)
     started_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
     completed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow, onupdate=utcnow)
@@ -1256,8 +1999,132 @@ class ReviewBatchRunValue(Base):
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow, onupdate=utcnow)
 
 
+class ReviewBatchRunPromotion(TimestampMixin, Base):
+    __tablename__ = "review_batch_run_promotion"
+    __table_args__ = (
+        CheckConstraint(
+            "status IN ('QUEUED', 'RUNNING', 'COMPLETED', 'FAILED')",
+            name="ck_review_batch_run_promotion_status",
+        ),
+        CheckConstraint("mode = 'REPLACE'", name="ck_review_batch_run_promotion_mode"),
+        CheckConstraint(
+            "total_document_count >= 0 AND eligible_document_count >= 0 "
+            "AND processed_document_count >= 0 AND skipped_document_count >= 0 "
+            "AND event_count >= 0",
+            name="ck_review_batch_run_promotion_counts",
+        ),
+        CheckConstraint(
+            "reviewer_coding_revision IS NULL OR reviewer_coding_revision >= 0",
+            name="ck_review_batch_run_promotion_reviewer_revision",
+        ),
+        CheckConstraint(
+            "(review_batch_run_id IS NOT NULL AND reviewer_coding_id IS NULL "
+            "AND reviewer_coding_revision IS NULL) OR "
+            "(review_batch_run_id IS NULL AND reviewer_coding_id IS NOT NULL "
+            "AND reviewer_coding_revision IS NOT NULL)",
+            name="ck_review_batch_run_promotion_source",
+        ),
+        UniqueConstraint("review_batch_run_id", name="uq_review_batch_run_promotion_run"),
+    )
+
+    id: Mapped[uuid.UUID] = mapped_column(Uuid, primary_key=True, default=uuid.uuid4)
+    matter_id: Mapped[uuid.UUID] = mapped_column(Uuid, ForeignKey("matter.id", ondelete="CASCADE"), index=True)
+    review_batch_id: Mapped[uuid.UUID] = mapped_column(
+        Uuid, ForeignKey("review_batch.id", ondelete="CASCADE"), index=True
+    )
+    review_batch_run_id: Mapped[uuid.UUID | None] = mapped_column(
+        Uuid, ForeignKey("review_batch_run.id", ondelete="CASCADE"), nullable=True, index=True
+    )
+    reviewer_coding_id: Mapped[uuid.UUID | None] = mapped_column(
+        Uuid, ForeignKey("review_batch_reviewer_coding.id", ondelete="CASCADE"), nullable=True, index=True
+    )
+    reviewer_coding_revision: Mapped[int | None] = mapped_column(BigInteger, nullable=True)
+    matter_analysis_task_version_id: Mapped[uuid.UUID | None] = mapped_column(
+        Uuid,
+        ForeignKey("matter_analysis_task_version.id", ondelete="RESTRICT"),
+        nullable=True,
+        index=True,
+    )
+    status: Mapped[str] = mapped_column(String(30), default="QUEUED", index=True)
+    mode: Mapped[str] = mapped_column(String(20), default="REPLACE")
+    destination_snapshot: Mapped[list[dict[str, Any]]] = mapped_column(JSON_DOCUMENT, default=list)
+    total_document_count: Mapped[int] = mapped_column(Integer, default=0)
+    eligible_document_count: Mapped[int] = mapped_column(Integer, default=0)
+    processed_document_count: Mapped[int] = mapped_column(Integer, default=0)
+    skipped_document_count: Mapped[int] = mapped_column(Integer, default=0)
+    event_count: Mapped[int] = mapped_column(Integer, default=0)
+    created_by_user_id: Mapped[uuid.UUID] = mapped_column(
+        Uuid, ForeignKey("app_user.id", ondelete="RESTRICT"), index=True
+    )
+    dbos_workflow_id: Mapped[str] = mapped_column(String(255), unique=True)
+    current_workflow_run_id: Mapped[uuid.UUID | None] = mapped_column(
+        Uuid,
+        ForeignKey("workflow_run.id", ondelete="SET NULL"),
+        nullable=True,
+        index=True,
+    )
+    search_operation_id: Mapped[uuid.UUID | None] = mapped_column(
+        Uuid, ForeignKey("search_projection_operation.id", ondelete="SET NULL"), nullable=True
+    )
+    error_message: Mapped[str | None] = mapped_column(Text)
+    started_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    completed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+
+    current_workflow_run: Mapped["WorkflowRun | None"] = relationship(foreign_keys=[current_workflow_run_id])
+
+    @property
+    def execution(self) -> "WorkflowRun | None":
+        return self.current_workflow_run
+
+
+class ReviewBatchPromotionDocument(Base):
+    __tablename__ = "review_batch_promotion_document"
+
+    promotion_id: Mapped[uuid.UUID] = mapped_column(
+        Uuid, ForeignKey("review_batch_run_promotion.id", ondelete="CASCADE"), primary_key=True
+    )
+    matter_document_id: Mapped[uuid.UUID] = mapped_column(
+        Uuid, ForeignKey("matter_document.id", ondelete="CASCADE"), primary_key=True, index=True
+    )
+
+
+class ReviewBatchPromotionValue(Base):
+    __tablename__ = "review_batch_promotion_value"
+    __table_args__ = (
+        CheckConstraint("value_ordinal >= 0", name="ck_review_batch_promotion_value_ordinal"),
+        CheckConstraint(
+            "(CASE WHEN value_text IS NOT NULL THEN 1 ELSE 0 END + "
+            "CASE WHEN value_long IS NOT NULL THEN 1 ELSE 0 END + "
+            "CASE WHEN value_float IS NOT NULL THEN 1 ELSE 0 END + "
+            "CASE WHEN value_boolean IS NOT NULL THEN 1 ELSE 0 END + "
+            "CASE WHEN value_date IS NOT NULL THEN 1 ELSE 0 END + "
+            "CASE WHEN value_datetime IS NOT NULL THEN 1 ELSE 0 END + "
+            "CASE WHEN value_json IS NOT NULL THEN 1 ELSE 0 END) = 1",
+            name="ck_review_batch_promotion_value_shape",
+        ),
+    )
+
+    promotion_id: Mapped[uuid.UUID] = mapped_column(
+        Uuid, ForeignKey("review_batch_run_promotion.id", ondelete="CASCADE"), primary_key=True
+    )
+    matter_document_id: Mapped[uuid.UUID] = mapped_column(
+        Uuid, ForeignKey("matter_document.id", ondelete="CASCADE"), primary_key=True
+    )
+    metadata_definition_id: Mapped[uuid.UUID] = mapped_column(
+        Uuid, ForeignKey("metadata_definition.id", ondelete="RESTRICT"), primary_key=True
+    )
+    value_ordinal: Mapped[int] = mapped_column(Integer, primary_key=True)
+    value_text: Mapped[str | None] = mapped_column(Text)
+    value_long: Mapped[int | None] = mapped_column(BigInteger)
+    value_float: Mapped[float | None] = mapped_column(Float)
+    value_boolean: Mapped[bool | None] = mapped_column(Boolean)
+    value_date: Mapped[date | None] = mapped_column(Date)
+    value_datetime: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    value_json: Mapped[Any | None] = mapped_column(JSON(none_as_null=True))
+
+
 class ReviewBatchSearchCodingRun(TimestampMixin, Base):
-    """The single batch run whose isolated coding is projected into search."""
+    """The batch run currently selected for Batch Coding search and facets."""
 
     __tablename__ = "review_batch_search_coding_run"
     __table_args__ = (
@@ -1266,19 +2133,57 @@ class ReviewBatchSearchCodingRun(TimestampMixin, Base):
             name="ck_review_batch_search_coding_status",
         ),
         UniqueConstraint("review_batch_run_id", name="uq_review_batch_search_coding_run"),
+        Index("ix_review_batch_search_coding_run_id", "review_batch_run_id"),
+        Index("ix_review_batch_search_coding_status", "status"),
+        Index("ix_review_batch_search_coding_user", "selected_by_user_id"),
     )
 
     review_batch_id: Mapped[uuid.UUID] = mapped_column(
         Uuid, ForeignKey("review_batch.id", ondelete="CASCADE"), primary_key=True
     )
-    review_batch_run_id: Mapped[uuid.UUID] = mapped_column(
-        Uuid, ForeignKey("review_batch_run.id", ondelete="CASCADE"), index=True
-    )
-    status: Mapped[str] = mapped_column(String(20), default="QUEUED", index=True)
-    selected_by_user_id: Mapped[uuid.UUID] = mapped_column(
-        Uuid, ForeignKey("app_user.id", ondelete="RESTRICT"), index=True
-    )
+    review_batch_run_id: Mapped[uuid.UUID] = mapped_column(Uuid, ForeignKey("review_batch_run.id", ondelete="CASCADE"))
+    status: Mapped[str] = mapped_column(String(20), default="QUEUED")
+    selected_by_user_id: Mapped[uuid.UUID] = mapped_column(Uuid, ForeignKey("app_user.id", ondelete="RESTRICT"))
     selected_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+    projected_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    error_message: Mapped[str | None] = mapped_column(Text)
+
+
+class ReviewBatchSearchCodingProjection(TimestampMixin, Base):
+    """A retained search projection for one immutable batch run."""
+
+    __tablename__ = "review_batch_search_coding_projection"
+    __table_args__ = (
+        CheckConstraint(
+            "status IN ('QUEUED', 'SYNCING', 'READY', 'FAILED', 'NOT_CONFIGURED')",
+            name="ck_review_batch_search_projection_status",
+        ),
+        Index("ix_review_batch_search_projection_run", "review_batch_run_id"),
+        Index("ix_review_batch_search_projection_status", "status"),
+        Index("ix_review_batch_search_projection_generation", "search_index_generation_id"),
+        Index("ix_review_batch_search_projection_user", "requested_by_user_id"),
+    )
+
+    review_batch_id: Mapped[uuid.UUID] = mapped_column(
+        Uuid,
+        ForeignKey("review_batch.id", ondelete="CASCADE"),
+        primary_key=True,
+    )
+    review_batch_run_id: Mapped[uuid.UUID] = mapped_column(
+        Uuid,
+        ForeignKey("review_batch_run.id", ondelete="CASCADE"),
+        primary_key=True,
+    )
+    search_index_generation_id: Mapped[uuid.UUID | None] = mapped_column(
+        Uuid,
+        ForeignKey("search_index_generation.id", ondelete="SET NULL"),
+        nullable=True,
+    )
+    status: Mapped[str] = mapped_column(String(20), default="QUEUED")
+    requested_by_user_id: Mapped[uuid.UUID] = mapped_column(
+        Uuid,
+        ForeignKey("app_user.id", ondelete="RESTRICT"),
+    )
     projected_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     error_message: Mapped[str | None] = mapped_column(Text)
 
@@ -1341,6 +2246,886 @@ class MetadataDefinition(TimestampMixin, Base):
     matter: Mapped[Matter] = relationship()
 
 
+class ClassificationModel(TimestampMixin, Base):
+    __tablename__ = "classification_model"
+    __table_args__ = (
+        CheckConstraint(
+            "status IN ('ACTIVE', 'SUSPENDED', 'ARCHIVED')",
+            name="ck_classification_model_status",
+        ),
+        CheckConstraint("row_version > 0", name="ck_classification_model_row_version"),
+        ForeignKeyConstraint(
+            ["current_configuration_id", "id"],
+            [
+                "classification_model_configuration.id",
+                "classification_model_configuration.classification_model_id",
+            ],
+            name="fk_classification_model_current_configuration",
+            use_alter=True,
+        ),
+        ForeignKeyConstraint(
+            ["active_model_version_id", "id"],
+            [
+                "classification_model_version.id",
+                "classification_model_version.classification_model_id",
+            ],
+            name="fk_classification_model_active_version",
+            use_alter=True,
+            ondelete="RESTRICT",
+        ),
+        Index("ix_classification_model_matter_created", "matter_id", "created_at"),
+    )
+
+    id: Mapped[uuid.UUID] = mapped_column(Uuid, primary_key=True, default=uuid.uuid4)
+    tenant_id: Mapped[uuid.UUID] = mapped_column(Uuid, ForeignKey("tenant.id", ondelete="RESTRICT"), index=True)
+    matter_id: Mapped[uuid.UUID] = mapped_column(Uuid, ForeignKey("matter.id", ondelete="RESTRICT"), index=True)
+    target_metadata_definition_id: Mapped[uuid.UUID] = mapped_column(
+        Uuid,
+        ForeignKey("metadata_definition.id", ondelete="RESTRICT"),
+        index=True,
+    )
+    name: Mapped[str] = mapped_column(String(200))
+    description: Mapped[str | None] = mapped_column(Text)
+    status: Mapped[str] = mapped_column(String(20), default="ACTIVE", index=True)
+    current_configuration_id: Mapped[uuid.UUID | None] = mapped_column(
+        Uuid,
+        nullable=True,
+        index=True,
+    )
+    active_model_version_id: Mapped[uuid.UUID | None] = mapped_column(
+        Uuid,
+        nullable=True,
+        index=True,
+    )
+    created_by_user_id: Mapped[uuid.UUID] = mapped_column(
+        Uuid,
+        ForeignKey("app_user.id", ondelete="RESTRICT"),
+        index=True,
+    )
+    updated_by_user_id: Mapped[uuid.UUID] = mapped_column(
+        Uuid,
+        ForeignKey("app_user.id", ondelete="RESTRICT"),
+        index=True,
+    )
+    row_version: Mapped[int] = mapped_column(Integer, default=1, nullable=False)
+
+    tenant: Mapped[Tenant] = relationship()
+    matter: Mapped[Matter] = relationship()
+    target_metadata_definition: Mapped[MetadataDefinition] = relationship()
+    current_configuration: Mapped["ClassificationModelConfiguration | None"] = relationship(
+        foreign_keys=[current_configuration_id],
+        post_update=True,
+    )
+    active_model_version: Mapped["ClassificationModelVersion | None"] = relationship(
+        foreign_keys=[active_model_version_id],
+        post_update=True,
+    )
+    created_by: Mapped[User] = relationship(foreign_keys=[created_by_user_id])
+    updated_by: Mapped[User] = relationship(foreign_keys=[updated_by_user_id])
+
+    __mapper_args__: ClassVar[dict[str, Any]] = {"version_id_col": row_version}
+
+
+class ClassificationModelConfiguration(Base):
+    __tablename__ = "classification_model_configuration"
+    __table_args__ = (
+        UniqueConstraint(
+            "classification_model_id",
+            "revision",
+            name="uq_classification_model_configuration_revision",
+        ),
+        UniqueConstraint(
+            "classification_model_id",
+            "configuration_hash",
+            name="uq_classification_model_configuration_hash",
+        ),
+        UniqueConstraint(
+            "id",
+            "classification_model_id",
+            name="uq_classification_model_configuration_identity",
+        ),
+        CheckConstraint("revision > 0", name="ck_classification_model_configuration_revision"),
+        CheckConstraint(
+            "classification_strategy IN ('BINARY', 'MULTICLASS', 'ONE_VS_REST')",
+            name="ck_classification_model_configuration_strategy",
+        ),
+        Index(
+            "ix_classification_model_configuration_model_created",
+            "classification_model_id",
+            "created_at",
+        ),
+    )
+
+    id: Mapped[uuid.UUID] = mapped_column(Uuid, primary_key=True, default=uuid.uuid4)
+    classification_model_id: Mapped[uuid.UUID] = mapped_column(
+        Uuid,
+        ForeignKey("classification_model.id", ondelete="CASCADE"),
+        index=True,
+    )
+    revision: Mapped[int] = mapped_column(Integer)
+    target_field_snapshot: Mapped[dict[str, Any]] = mapped_column(JSON_DOCUMENT)
+    classification_strategy: Mapped[str] = mapped_column(String(30))
+    ordered_class_keys: Mapped[list[str]] = mapped_column(JSON_DOCUMENT)
+    binary_mapping: Mapped[dict[str, Any] | None] = mapped_column(JSON_DOCUMENT)
+    label_policy: Mapped[dict[str, Any]] = mapped_column(JSON_DOCUMENT)
+    feature_contract: Mapped[dict[str, Any]] = mapped_column(JSON_DOCUMENT)
+    prediction_resolution_policy: Mapped[dict[str, Any]] = mapped_column(JSON_DOCUMENT)
+    trainer_specification: Mapped[dict[str, Any]] = mapped_column(JSON_DOCUMENT)
+    configuration_hash: Mapped[str] = mapped_column(String(64))
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+    created_by_user_id: Mapped[uuid.UUID] = mapped_column(
+        Uuid,
+        ForeignKey("app_user.id", ondelete="RESTRICT"),
+        index=True,
+    )
+
+    classification_model: Mapped[ClassificationModel] = relationship(
+        foreign_keys=[classification_model_id],
+    )
+    created_by: Mapped[User] = relationship()
+
+
+class ClassificationDatasetSnapshot(Base):
+    __tablename__ = "classification_dataset_snapshot"
+    __table_args__ = (
+        UniqueConstraint(
+            "classification_model_id",
+            "aggregate_hash",
+            name="uq_classification_dataset_snapshot_aggregate",
+        ),
+        CheckConstraint(
+            "purpose IN ('TRAINING', 'SCORING')",
+            name="ck_classification_dataset_snapshot_purpose",
+        ),
+        CheckConstraint(
+            "scope_type IN ('MATTER', 'REVIEW_BATCH')",
+            name="ck_classification_dataset_snapshot_scope_type",
+        ),
+        CheckConstraint(
+            "status IN ('BUILDING', 'READY_FOR_FEATURES', 'READY_FOR_TRAINING', 'READY_FOR_SCORING', 'FAILED')",
+            name="ck_classification_dataset_snapshot_status",
+        ),
+        CheckConstraint(
+            "population_count >= 0 AND labeled_count >= 0 AND unlabeled_count >= 0 "
+            "AND excluded_count >= 0 AND conflicting_count >= 0 "
+            "AND family_grouped_count >= 0 AND exact_duplicate_grouped_count >= 0 "
+            "AND missing_grouping_count >= 0 AND feature_ready_count >= 0 "
+            "AND feature_missing_count >= 0 AND feature_failed_count >= 0 "
+            "AND training_eligible_count >= 0",
+            name="ck_classification_dataset_snapshot_counts",
+        ),
+        CheckConstraint(
+            "(feature_artifact_id IS NULL AND feature_content_hash IS NULL "
+            "AND feature_specification IS NULL AND feature_specification_hash IS NULL) OR "
+            "(feature_artifact_id IS NOT NULL AND feature_content_hash IS NOT NULL "
+            "AND feature_specification IS NOT NULL AND feature_specification_hash IS NOT NULL)",
+            name="ck_classification_dataset_snapshot_feature_artifact",
+        ),
+        CheckConstraint(
+            "(split_artifact_id IS NULL AND split_content_hash IS NULL "
+            "AND split_specification IS NULL AND split_specification_hash IS NULL "
+            "AND training_aggregate_hash IS NULL) OR "
+            "(split_artifact_id IS NOT NULL AND split_content_hash IS NOT NULL "
+            "AND split_specification IS NOT NULL AND split_specification_hash IS NOT NULL "
+            "AND training_aggregate_hash IS NOT NULL)",
+            name="ck_classification_dataset_snapshot_split_artifact",
+        ),
+        CheckConstraint(
+            "status NOT IN ('READY_FOR_FEATURES', 'READY_FOR_TRAINING', 'READY_FOR_SCORING') OR "
+            "(population_artifact_id IS NOT NULL AND population_content_hash IS NOT NULL "
+            "AND (purpose = 'SCORING' OR "
+            "(label_artifact_id IS NOT NULL AND label_content_hash IS NOT NULL)))",
+            name="ck_classification_dataset_snapshot_base_artifacts",
+        ),
+        CheckConstraint(
+            "status != 'READY_FOR_TRAINING' OR (feature_artifact_id IS NOT NULL AND split_artifact_id IS NOT NULL)",
+            name="ck_classification_dataset_snapshot_training_artifacts",
+        ),
+        ForeignKeyConstraint(
+            ["configuration_id", "classification_model_id"],
+            [
+                "classification_model_configuration.id",
+                "classification_model_configuration.classification_model_id",
+            ],
+            name="fk_classification_dataset_snapshot_configuration",
+        ),
+        Index(
+            "ix_classification_dataset_snapshot_model_created",
+            "classification_model_id",
+            "created_at",
+        ),
+        Index(
+            "ix_classification_dataset_snapshot_scope",
+            "matter_id",
+            "scope_type",
+            "scope_id",
+        ),
+    )
+
+    id: Mapped[uuid.UUID] = mapped_column(Uuid, primary_key=True)
+    tenant_id: Mapped[uuid.UUID] = mapped_column(
+        Uuid,
+        ForeignKey("tenant.id", ondelete="RESTRICT"),
+        index=True,
+    )
+    matter_id: Mapped[uuid.UUID] = mapped_column(
+        Uuid,
+        ForeignKey("matter.id", ondelete="RESTRICT"),
+        index=True,
+    )
+    classification_model_id: Mapped[uuid.UUID] = mapped_column(
+        Uuid,
+        ForeignKey("classification_model.id", ondelete="CASCADE"),
+        index=True,
+    )
+    configuration_id: Mapped[uuid.UUID] = mapped_column(Uuid, index=True)
+    purpose: Mapped[str] = mapped_column(String(30), default="TRAINING")
+    scope_type: Mapped[str] = mapped_column(String(30))
+    scope_id: Mapped[uuid.UUID] = mapped_column(Uuid, index=True)
+    target_field_snapshot: Mapped[dict[str, Any]] = mapped_column(JSON_DOCUMENT)
+    label_policy_snapshot: Mapped[dict[str, Any]] = mapped_column(JSON_DOCUMENT)
+    population_artifact_id: Mapped[uuid.UUID | None] = mapped_column(Uuid, nullable=True)
+    population_content_hash: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    label_artifact_id: Mapped[uuid.UUID | None] = mapped_column(Uuid, nullable=True)
+    label_content_hash: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    feature_artifact_id: Mapped[uuid.UUID | None] = mapped_column(Uuid, nullable=True)
+    feature_content_hash: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    feature_specification: Mapped[dict[str, Any] | None] = mapped_column(JSON_DOCUMENT, nullable=True)
+    feature_specification_hash: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    split_artifact_id: Mapped[uuid.UUID | None] = mapped_column(Uuid, nullable=True)
+    split_content_hash: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    split_specification: Mapped[dict[str, Any] | None] = mapped_column(JSON_DOCUMENT, nullable=True)
+    split_specification_hash: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    training_aggregate_hash: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    aggregate_hash: Mapped[str] = mapped_column(String(64), index=True)
+    status: Mapped[str] = mapped_column(String(30), default="BUILDING", index=True)
+    population_count: Mapped[int] = mapped_column(Integer, default=0)
+    labeled_count: Mapped[int] = mapped_column(Integer, default=0)
+    unlabeled_count: Mapped[int] = mapped_column(Integer, default=0)
+    excluded_count: Mapped[int] = mapped_column(Integer, default=0)
+    conflicting_count: Mapped[int] = mapped_column(Integer, default=0)
+    family_grouped_count: Mapped[int] = mapped_column(Integer, default=0)
+    exact_duplicate_grouped_count: Mapped[int] = mapped_column(Integer, default=0)
+    missing_grouping_count: Mapped[int] = mapped_column(Integer, default=0)
+    feature_ready_count: Mapped[int] = mapped_column(Integer, default=0)
+    feature_missing_count: Mapped[int] = mapped_column(Integer, default=0)
+    feature_failed_count: Mapped[int] = mapped_column(Integer, default=0)
+    training_eligible_count: Mapped[int] = mapped_column(Integer, default=0)
+    trained_class_keys: Mapped[list[str]] = mapped_column(JSON_DOCUMENT, default=list)
+    excluded_classes: Mapped[list[dict[str, Any]]] = mapped_column(JSON_DOCUMENT, default=list)
+    class_support: Mapped[dict[str, Any]] = mapped_column(JSON_DOCUMENT, default=dict)
+    source_summary: Mapped[list[dict[str, Any]]] = mapped_column(JSON_DOCUMENT, default=list)
+    warnings: Mapped[list[dict[str, Any]]] = mapped_column(JSON_DOCUMENT, default=list)
+    failure_code: Mapped[str | None] = mapped_column(String(100), nullable=True)
+    failure_summary: Mapped[str | None] = mapped_column(Text, nullable=True)
+    created_by_user_id: Mapped[uuid.UUID] = mapped_column(
+        Uuid,
+        ForeignKey("app_user.id", ondelete="RESTRICT"),
+        index=True,
+    )
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+    completed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+
+    created_by: Mapped[User] = relationship()
+
+
+class ClassificationTrainingJob(TimestampMixin, Base):
+    __tablename__ = "classification_training_job"
+    __table_args__ = (
+        UniqueConstraint(
+            "classification_model_id",
+            "idempotency_key",
+            name="uq_classification_training_job_idempotency",
+        ),
+        UniqueConstraint("workflow_id", name="uq_classification_training_job_workflow"),
+        UniqueConstraint("training_run_id", name="uq_classification_training_job_training_run"),
+        CheckConstraint(
+            "scope_type IN ('MATTER', 'REVIEW_BATCH')",
+            name="ck_classification_training_job_scope_type",
+        ),
+        CheckConstraint(
+            "status IN ('QUEUED', 'SNAPSHOTTING', 'PREPARING_FEATURES', 'LAUNCHING', "
+            "'TRAINING', 'FINALIZING', 'COMPLETED', 'FAILED', 'CANCELED')",
+            name="ck_classification_training_job_status",
+        ),
+        CheckConstraint(
+            "progress_completed >= 0 AND progress_total > 0 AND progress_completed <= progress_total",
+            name="ck_classification_training_job_progress",
+        ),
+        ForeignKeyConstraint(
+            ["configuration_id", "classification_model_id"],
+            [
+                "classification_model_configuration.id",
+                "classification_model_configuration.classification_model_id",
+            ],
+            name="fk_classification_training_job_configuration",
+        ),
+        Index(
+            "ix_classification_training_job_model_created",
+            "classification_model_id",
+            "created_at",
+        ),
+        Index(
+            "uq_classification_training_job_active",
+            "classification_model_id",
+            unique=True,
+            postgresql_where=text(
+                "status IN ('QUEUED', 'SNAPSHOTTING', 'PREPARING_FEATURES', 'LAUNCHING', 'TRAINING', 'FINALIZING')"
+            ),
+            sqlite_where=text(
+                "status IN ('QUEUED', 'SNAPSHOTTING', 'PREPARING_FEATURES', 'LAUNCHING', 'TRAINING', 'FINALIZING')"
+            ),
+        ),
+    )
+
+    id: Mapped[uuid.UUID] = mapped_column(Uuid, primary_key=True, default=uuid.uuid4)
+    tenant_id: Mapped[uuid.UUID] = mapped_column(
+        Uuid,
+        ForeignKey("tenant.id", ondelete="RESTRICT"),
+        index=True,
+    )
+    matter_id: Mapped[uuid.UUID] = mapped_column(
+        Uuid,
+        ForeignKey("matter.id", ondelete="RESTRICT"),
+        index=True,
+    )
+    classification_model_id: Mapped[uuid.UUID] = mapped_column(
+        Uuid,
+        ForeignKey("classification_model.id", ondelete="CASCADE"),
+        index=True,
+    )
+    configuration_id: Mapped[uuid.UUID] = mapped_column(Uuid, index=True)
+    embedding_job_id: Mapped[uuid.UUID] = mapped_column(
+        Uuid,
+        ForeignKey("matter_embedding_job.id", ondelete="RESTRICT"),
+        index=True,
+    )
+    dataset_snapshot_id: Mapped[uuid.UUID | None] = mapped_column(
+        Uuid,
+        ForeignKey("classification_dataset_snapshot.id", ondelete="RESTRICT"),
+        nullable=True,
+        index=True,
+    )
+    training_run_id: Mapped[uuid.UUID | None] = mapped_column(
+        Uuid,
+        ForeignKey("classification_training_run.id", ondelete="RESTRICT"),
+        nullable=True,
+    )
+    idempotency_key: Mapped[str] = mapped_column(String(200))
+    workflow_id: Mapped[str] = mapped_column(String(500))
+    current_workflow_run_id: Mapped[uuid.UUID | None] = mapped_column(
+        Uuid,
+        ForeignKey("workflow_run.id", ondelete="SET NULL"),
+        nullable=True,
+        index=True,
+    )
+    scope_type: Mapped[str] = mapped_column(String(30))
+    scope_id: Mapped[uuid.UUID] = mapped_column(Uuid, index=True)
+    random_seed: Mapped[int] = mapped_column(BigInteger)
+    validation_specification: Mapped[dict[str, Any]] = mapped_column(JSON_DOCUMENT)
+    status: Mapped[str] = mapped_column(String(40), default="QUEUED", index=True)
+    current_stage: Mapped[str] = mapped_column(String(100), default="QUEUED")
+    progress_completed: Mapped[int] = mapped_column(Integer, default=0)
+    progress_total: Mapped[int] = mapped_column(Integer, default=4)
+    failure_code: Mapped[str | None] = mapped_column(String(100), nullable=True)
+    failure_summary: Mapped[str | None] = mapped_column(Text, nullable=True)
+    failure_retriable: Mapped[bool] = mapped_column(Boolean, default=False)
+    created_by_user_id: Mapped[uuid.UUID] = mapped_column(
+        Uuid,
+        ForeignKey("app_user.id", ondelete="RESTRICT"),
+        index=True,
+    )
+    started_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    completed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    canceled_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+
+    created_by: Mapped[User] = relationship(foreign_keys=[created_by_user_id])
+    dataset_snapshot: Mapped["ClassificationDatasetSnapshot | None"] = relationship(foreign_keys=[dataset_snapshot_id])
+    training_run: Mapped["ClassificationTrainingRun | None"] = relationship(foreign_keys=[training_run_id])
+    current_workflow_run: Mapped["WorkflowRun | None"] = relationship(foreign_keys=[current_workflow_run_id])
+
+    @property
+    def execution(self) -> "WorkflowRun | None":
+        return self.current_workflow_run
+
+
+class ClassificationTrainingRun(TimestampMixin, Base):
+    __tablename__ = "classification_training_run"
+    __table_args__ = (
+        UniqueConstraint(
+            "classification_model_id",
+            "idempotency_key",
+            name="uq_classification_training_run_idempotency",
+        ),
+        UniqueConstraint(
+            "classification_model_id",
+            "derivation_key",
+            name="uq_classification_training_run_derivation",
+        ),
+        UniqueConstraint("workflow_id", name="uq_classification_training_run_workflow"),
+        CheckConstraint(
+            "status IN ('QUEUED', 'SNAPSHOTTING', 'WAITING_FOR_RUNTIME', 'TRAINING', "
+            "'PACKAGING', 'EVALUATING', 'PUBLISHING', 'FINALIZING', 'RECONCILING', "
+            "'COMPLETED', 'COMPLETED_WITH_ERRORS', 'FAILED', 'CANCELED')",
+            name="ck_classification_training_run_status",
+        ),
+        CheckConstraint(
+            "progress_completed >= 0 AND progress_total >= 0 AND progress_completed <= progress_total",
+            name="ck_classification_training_run_progress",
+        ),
+        CheckConstraint(
+            "((model_artifact_id IS NULL AND model_content_hash IS NULL) OR "
+            "(model_artifact_id IS NOT NULL AND model_content_hash IS NOT NULL)) AND "
+            "((prediction_artifact_id IS NULL AND prediction_content_hash IS NULL) OR "
+            "(prediction_artifact_id IS NOT NULL AND prediction_content_hash IS NOT NULL)) AND "
+            "((evaluation_artifact_id IS NULL AND evaluation_content_hash IS NULL) OR "
+            "(evaluation_artifact_id IS NOT NULL AND evaluation_content_hash IS NOT NULL)) AND "
+            "((result_manifest_artifact_id IS NULL AND result_manifest_content_hash IS NULL) OR "
+            "(result_manifest_artifact_id IS NOT NULL AND result_manifest_content_hash IS NOT NULL))",
+            name="ck_classification_training_run_artifact_pairs",
+        ),
+        CheckConstraint(
+            "status != 'COMPLETED' OR (model_artifact_id IS NOT NULL AND "
+            "prediction_artifact_id IS NOT NULL AND evaluation_artifact_id IS NOT NULL AND "
+            "result_manifest_artifact_id IS NOT NULL)",
+            name="ck_classification_training_run_completed_outputs",
+        ),
+        CheckConstraint("row_version > 0", name="ck_classification_training_run_row_version"),
+        CheckConstraint("attempt_number > 0", name="ck_classification_training_run_attempt_number"),
+        ForeignKeyConstraint(
+            ["configuration_id", "classification_model_id"],
+            [
+                "classification_model_configuration.id",
+                "classification_model_configuration.classification_model_id",
+            ],
+            name="fk_classification_training_run_configuration",
+        ),
+        Index(
+            "ix_classification_training_run_model_created",
+            "classification_model_id",
+            "created_at",
+        ),
+    )
+
+    id: Mapped[uuid.UUID] = mapped_column(Uuid, primary_key=True, default=uuid.uuid4)
+    tenant_id: Mapped[uuid.UUID] = mapped_column(Uuid, ForeignKey("tenant.id", ondelete="RESTRICT"), index=True)
+    matter_id: Mapped[uuid.UUID] = mapped_column(Uuid, ForeignKey("matter.id", ondelete="RESTRICT"), index=True)
+    classification_model_id: Mapped[uuid.UUID] = mapped_column(
+        Uuid,
+        ForeignKey("classification_model.id", ondelete="CASCADE"),
+        index=True,
+    )
+    configuration_id: Mapped[uuid.UUID] = mapped_column(Uuid, index=True)
+    dataset_snapshot_id: Mapped[uuid.UUID] = mapped_column(
+        Uuid,
+        ForeignKey("classification_dataset_snapshot.id", ondelete="RESTRICT"),
+        index=True,
+    )
+    idempotency_key: Mapped[str] = mapped_column(String(200))
+    workflow_id: Mapped[str] = mapped_column(String(500))
+    attempt_number: Mapped[int] = mapped_column(Integer, default=1)
+    derivation_key: Mapped[str] = mapped_column(String(64), index=True)
+    trainer_specification: Mapped[dict[str, Any]] = mapped_column(JSON_DOCUMENT)
+    validation_specification: Mapped[dict[str, Any]] = mapped_column(JSON_DOCUMENT)
+    random_seed: Mapped[int] = mapped_column(BigInteger)
+    package_schema_version: Mapped[int] = mapped_column(Integer, default=1)
+    runtime_image_digest: Mapped[str] = mapped_column(String(500))
+    source_revision: Mapped[str] = mapped_column(String(255))
+    status: Mapped[str] = mapped_column(String(40), default="QUEUED", index=True)
+    current_stage: Mapped[str] = mapped_column(String(100), default="QUEUED")
+    progress_completed: Mapped[int] = mapped_column(Integer, default=0)
+    progress_total: Mapped[int] = mapped_column(Integer, default=5)
+    model_artifact_id: Mapped[uuid.UUID | None] = mapped_column(Uuid, nullable=True)
+    model_content_hash: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    prediction_artifact_id: Mapped[uuid.UUID | None] = mapped_column(Uuid, nullable=True)
+    prediction_content_hash: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    evaluation_artifact_id: Mapped[uuid.UUID | None] = mapped_column(Uuid, nullable=True)
+    evaluation_content_hash: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    result_manifest_artifact_id: Mapped[uuid.UUID | None] = mapped_column(Uuid, nullable=True)
+    result_manifest_content_hash: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    failure_code: Mapped[str | None] = mapped_column(String(100), nullable=True)
+    failure_summary: Mapped[str | None] = mapped_column(Text, nullable=True)
+    failure_retriable: Mapped[bool] = mapped_column(Boolean, default=False)
+    created_by_user_id: Mapped[uuid.UUID] = mapped_column(
+        Uuid,
+        ForeignKey("app_user.id", ondelete="RESTRICT"),
+        index=True,
+    )
+    execution_actor_user_id: Mapped[uuid.UUID] = mapped_column(
+        Uuid,
+        ForeignKey("app_user.id", ondelete="RESTRICT"),
+        index=True,
+    )
+    started_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    completed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    canceled_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    row_version: Mapped[int] = mapped_column(Integer, default=1, nullable=False)
+
+    classification_model: Mapped[ClassificationModel] = relationship(foreign_keys=[classification_model_id])
+    configuration: Mapped[ClassificationModelConfiguration] = relationship(
+        overlaps="classification_model",
+    )
+    dataset_snapshot: Mapped[ClassificationDatasetSnapshot] = relationship()
+    created_by: Mapped[User] = relationship(foreign_keys=[created_by_user_id])
+    execution_actor: Mapped[User] = relationship(foreign_keys=[execution_actor_user_id])
+
+    __mapper_args__: ClassVar[dict[str, Any]] = {"version_id_col": row_version}
+
+
+class ClassificationModelVersion(Base):
+    __tablename__ = "classification_model_version"
+    __table_args__ = (
+        UniqueConstraint("training_run_id", name="uq_classification_model_version_run"),
+        UniqueConstraint(
+            "classification_model_id",
+            "version_number",
+            name="uq_classification_model_version_number",
+        ),
+        UniqueConstraint(
+            "id",
+            "classification_model_id",
+            name="uq_classification_model_version_identity",
+        ),
+        CheckConstraint(
+            "status IN ('CANDIDATE', 'APPROVED', 'REJECTED', 'RETIRED')",
+            name="ck_classification_model_version_status",
+        ),
+        CheckConstraint("version_number > 0", name="ck_classification_model_version_number"),
+        ForeignKeyConstraint(
+            ["configuration_id", "classification_model_id"],
+            [
+                "classification_model_configuration.id",
+                "classification_model_configuration.classification_model_id",
+            ],
+            name="fk_classification_model_version_configuration",
+        ),
+        Index(
+            "ix_classification_model_version_model_created",
+            "classification_model_id",
+            "created_at",
+        ),
+    )
+
+    id: Mapped[uuid.UUID] = mapped_column(Uuid, primary_key=True, default=uuid.uuid4)
+    tenant_id: Mapped[uuid.UUID] = mapped_column(Uuid, ForeignKey("tenant.id", ondelete="RESTRICT"), index=True)
+    matter_id: Mapped[uuid.UUID] = mapped_column(Uuid, ForeignKey("matter.id", ondelete="RESTRICT"), index=True)
+    classification_model_id: Mapped[uuid.UUID] = mapped_column(
+        Uuid,
+        ForeignKey("classification_model.id", ondelete="CASCADE"),
+        index=True,
+    )
+    configuration_id: Mapped[uuid.UUID] = mapped_column(Uuid, index=True)
+    training_run_id: Mapped[uuid.UUID] = mapped_column(
+        Uuid,
+        ForeignKey("classification_training_run.id", ondelete="RESTRICT"),
+        index=True,
+    )
+    dataset_snapshot_id: Mapped[uuid.UUID] = mapped_column(
+        Uuid,
+        ForeignKey("classification_dataset_snapshot.id", ondelete="RESTRICT"),
+        index=True,
+    )
+    version_number: Mapped[int] = mapped_column(Integer)
+    status: Mapped[str] = mapped_column(String(30), default="CANDIDATE", index=True)
+    target_field_snapshot: Mapped[dict[str, Any]] = mapped_column(JSON_DOCUMENT)
+    trained_class_keys: Mapped[list[str]] = mapped_column(JSON_DOCUMENT, default=list)
+    excluded_classes: Mapped[list[dict[str, Any]]] = mapped_column(JSON_DOCUMENT, default=list)
+    training_aggregate_hash: Mapped[str] = mapped_column(String(64))
+    feature_specification_hash: Mapped[str] = mapped_column(String(64))
+    model_artifact_id: Mapped[uuid.UUID] = mapped_column(Uuid)
+    model_content_hash: Mapped[str] = mapped_column(String(64))
+    prediction_artifact_id: Mapped[uuid.UUID] = mapped_column(Uuid)
+    prediction_content_hash: Mapped[str] = mapped_column(String(64))
+    evaluation_artifact_id: Mapped[uuid.UUID] = mapped_column(Uuid)
+    evaluation_content_hash: Mapped[str] = mapped_column(String(64))
+    result_manifest_artifact_id: Mapped[uuid.UUID] = mapped_column(Uuid)
+    result_manifest_content_hash: Mapped[str] = mapped_column(String(64))
+    package_schema_version: Mapped[int] = mapped_column(Integer)
+    runtime_image_digest: Mapped[str] = mapped_column(String(500))
+    source_revision: Mapped[str] = mapped_column(String(255))
+    metric_summary: Mapped[dict[str, Any]] = mapped_column(JSON_DOCUMENT)
+    warnings: Mapped[list[str]] = mapped_column(JSON_DOCUMENT, default=list)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+    created_by_user_id: Mapped[uuid.UUID] = mapped_column(
+        Uuid,
+        ForeignKey("app_user.id", ondelete="RESTRICT"),
+        index=True,
+    )
+
+    classification_model: Mapped[ClassificationModel] = relationship(
+        foreign_keys=[classification_model_id],
+        overlaps="active_model_version",
+    )
+    training_run: Mapped[ClassificationTrainingRun] = relationship()
+    dataset_snapshot: Mapped[ClassificationDatasetSnapshot] = relationship()
+    created_by: Mapped[User] = relationship()
+
+
+class ClassificationScoringRun(TimestampMixin, Base):
+    __tablename__ = "classification_scoring_run"
+    __table_args__ = (
+        UniqueConstraint(
+            "classification_model_id",
+            "idempotency_key",
+            name="uq_classification_scoring_run_idempotency",
+        ),
+        UniqueConstraint(
+            "classification_model_id",
+            "derivation_key",
+            name="uq_classification_scoring_run_derivation",
+        ),
+        UniqueConstraint("workflow_id", name="uq_classification_scoring_run_workflow"),
+        CheckConstraint(
+            "status IN ('QUEUED', 'VALIDATING', 'WAITING_FOR_RUNTIME', 'SCORING', "
+            "'PUBLISHING', 'FINALIZING', 'RECONCILING', 'COMPLETED', "
+            "'COMPLETED_WITH_ERRORS', 'FAILED', 'CANCELED')",
+            name="ck_classification_scoring_run_status",
+        ),
+        CheckConstraint(
+            "progress_completed >= 0 AND progress_total >= 0 AND progress_completed <= progress_total",
+            name="ck_classification_scoring_run_progress",
+        ),
+        CheckConstraint(
+            "population_document_count >= 0 AND scored_document_count >= 0 "
+            "AND abstained_document_count >= 0 AND excluded_document_count >= 0 "
+            "AND failed_document_count >= 0 AND abstained_document_count <= scored_document_count",
+            name="ck_classification_scoring_run_counts",
+        ),
+        CheckConstraint(
+            "(prediction_artifact_id IS NULL AND prediction_content_hash IS NULL) OR "
+            "(prediction_artifact_id IS NOT NULL AND prediction_content_hash IS NOT NULL)",
+            name="ck_classification_scoring_run_prediction_artifact",
+        ),
+        CheckConstraint(
+            "(result_manifest_artifact_id IS NULL AND result_manifest_content_hash IS NULL) OR "
+            "(result_manifest_artifact_id IS NOT NULL AND result_manifest_content_hash IS NOT NULL)",
+            name="ck_classification_scoring_run_manifest_artifact",
+        ),
+        CheckConstraint(
+            "status NOT IN ('COMPLETED', 'COMPLETED_WITH_ERRORS') OR "
+            "(prediction_artifact_id IS NOT NULL AND result_manifest_artifact_id IS NOT NULL "
+            "AND population_document_count = scored_document_count + excluded_document_count "
+            "+ failed_document_count)",
+            name="ck_classification_scoring_run_completed",
+        ),
+        CheckConstraint("row_version > 0", name="ck_classification_scoring_run_row_version"),
+        ForeignKeyConstraint(
+            ["model_version_id", "classification_model_id"],
+            ["classification_model_version.id", "classification_model_version.classification_model_id"],
+            name="fk_classification_scoring_run_version",
+            ondelete="RESTRICT",
+        ),
+        Index(
+            "ix_classification_scoring_run_model_created",
+            "classification_model_id",
+            "created_at",
+        ),
+    )
+
+    id: Mapped[uuid.UUID] = mapped_column(Uuid, primary_key=True)
+    tenant_id: Mapped[uuid.UUID] = mapped_column(Uuid, ForeignKey("tenant.id", ondelete="RESTRICT"), index=True)
+    matter_id: Mapped[uuid.UUID] = mapped_column(Uuid, ForeignKey("matter.id", ondelete="RESTRICT"), index=True)
+    classification_model_id: Mapped[uuid.UUID] = mapped_column(
+        Uuid,
+        ForeignKey("classification_model.id", ondelete="RESTRICT"),
+        index=True,
+    )
+    model_version_id: Mapped[uuid.UUID] = mapped_column(Uuid, index=True)
+    dataset_snapshot_id: Mapped[uuid.UUID] = mapped_column(
+        Uuid,
+        ForeignKey("classification_dataset_snapshot.id", ondelete="RESTRICT"),
+        index=True,
+    )
+    idempotency_key: Mapped[str] = mapped_column(String(200))
+    workflow_id: Mapped[str] = mapped_column(String(500))
+    current_workflow_run_id: Mapped[uuid.UUID | None] = mapped_column(
+        Uuid,
+        ForeignKey("workflow_run.id", ondelete="SET NULL"),
+        nullable=True,
+        index=True,
+    )
+    derivation_key: Mapped[str] = mapped_column(String(64), index=True)
+    configuration_hash: Mapped[str] = mapped_column(String(64))
+    model_content_hash: Mapped[str] = mapped_column(String(64))
+    feature_content_hash: Mapped[str] = mapped_column(String(64))
+    feature_specification_hash: Mapped[str] = mapped_column(String(64))
+    scoring_policy: Mapped[dict[str, Any]] = mapped_column(JSON_DOCUMENT)
+    scoring_policy_hash: Mapped[str] = mapped_column(String(64))
+    status: Mapped[str] = mapped_column(String(40), default="QUEUED", index=True)
+    current_stage: Mapped[str] = mapped_column(String(100), default="QUEUED")
+    progress_completed: Mapped[int] = mapped_column(Integer, default=0)
+    progress_total: Mapped[int] = mapped_column(Integer, default=4)
+    population_document_count: Mapped[int] = mapped_column(Integer, default=0)
+    scored_document_count: Mapped[int] = mapped_column(Integer, default=0)
+    abstained_document_count: Mapped[int] = mapped_column(Integer, default=0)
+    excluded_document_count: Mapped[int] = mapped_column(Integer, default=0)
+    failed_document_count: Mapped[int] = mapped_column(Integer, default=0)
+    prediction_artifact_id: Mapped[uuid.UUID | None] = mapped_column(Uuid, nullable=True)
+    prediction_content_hash: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    result_manifest_artifact_id: Mapped[uuid.UUID | None] = mapped_column(Uuid, nullable=True)
+    result_manifest_content_hash: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    failure_code: Mapped[str | None] = mapped_column(String(100), nullable=True)
+    failure_summary: Mapped[str | None] = mapped_column(Text, nullable=True)
+    failure_retriable: Mapped[bool] = mapped_column(Boolean, default=False)
+    created_by_user_id: Mapped[uuid.UUID] = mapped_column(
+        Uuid,
+        ForeignKey("app_user.id", ondelete="RESTRICT"),
+        index=True,
+    )
+    execution_actor_user_id: Mapped[uuid.UUID] = mapped_column(
+        Uuid,
+        ForeignKey("app_user.id", ondelete="RESTRICT"),
+        index=True,
+    )
+    started_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    completed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    canceled_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    row_version: Mapped[int] = mapped_column(Integer, default=1, nullable=False)
+
+    classification_model: Mapped[ClassificationModel] = relationship(foreign_keys=[classification_model_id])
+    model_version: Mapped[ClassificationModelVersion] = relationship(overlaps="classification_model")
+    dataset_snapshot: Mapped[ClassificationDatasetSnapshot] = relationship()
+    created_by: Mapped[User] = relationship(foreign_keys=[created_by_user_id])
+    execution_actor: Mapped[User] = relationship(foreign_keys=[execution_actor_user_id])
+    current_workflow_run: Mapped["WorkflowRun | None"] = relationship(foreign_keys=[current_workflow_run_id])
+
+    @property
+    def execution(self) -> "WorkflowRun | None":
+        return self.current_workflow_run
+
+    __mapper_args__: ClassVar[dict[str, Any]] = {"version_id_col": row_version}
+
+
+class ClassificationEvaluation(Base):
+    __tablename__ = "classification_evaluation"
+    __table_args__ = (
+        UniqueConstraint(
+            "model_version_id",
+            "evaluation_kind",
+            "dataset_snapshot_id",
+            "metric_policy_version",
+            name="uq_classification_evaluation_identity",
+        ),
+        CheckConstraint(
+            "evaluation_kind IN ('CROSS_FIT_DEVELOPMENT', 'FORMAL_VALIDATION', 'RANDOM_AUDIT', 'TARGETED_QA')",
+            name="ck_classification_evaluation_kind",
+        ),
+        Index(
+            "ix_classification_evaluation_model_created",
+            "classification_model_id",
+            "created_at",
+        ),
+    )
+
+    id: Mapped[uuid.UUID] = mapped_column(Uuid, primary_key=True, default=uuid.uuid4)
+    tenant_id: Mapped[uuid.UUID] = mapped_column(Uuid, ForeignKey("tenant.id", ondelete="RESTRICT"), index=True)
+    matter_id: Mapped[uuid.UUID] = mapped_column(Uuid, ForeignKey("matter.id", ondelete="RESTRICT"), index=True)
+    classification_model_id: Mapped[uuid.UUID] = mapped_column(
+        Uuid,
+        ForeignKey("classification_model.id", ondelete="CASCADE"),
+        index=True,
+    )
+    model_version_id: Mapped[uuid.UUID] = mapped_column(
+        Uuid,
+        ForeignKey("classification_model_version.id", ondelete="CASCADE"),
+        index=True,
+    )
+    dataset_snapshot_id: Mapped[uuid.UUID] = mapped_column(
+        Uuid,
+        ForeignKey("classification_dataset_snapshot.id", ondelete="RESTRICT"),
+        index=True,
+    )
+    evaluation_kind: Mapped[str] = mapped_column(String(40))
+    metric_policy_version: Mapped[int] = mapped_column(Integer, default=1)
+    evaluation_artifact_id: Mapped[uuid.UUID] = mapped_column(Uuid)
+    evaluation_content_hash: Mapped[str] = mapped_column(String(64))
+    metric_summary: Mapped[dict[str, Any]] = mapped_column(JSON_DOCUMENT)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+
+    model_version: Mapped[ClassificationModelVersion] = relationship()
+    dataset_snapshot: Mapped[ClassificationDatasetSnapshot] = relationship()
+
+
+class ClassificationModelDecision(Base):
+    __tablename__ = "classification_model_decision"
+    __table_args__ = (
+        UniqueConstraint("workflow_id", name="uq_classification_model_decision_workflow"),
+        CheckConstraint(
+            "decision_type IN ('APPROVAL', 'REJECTION', 'ACTIVATION', 'ROLLBACK', 'RETIREMENT')",
+            name="ck_classification_model_decision_type",
+        ),
+        CheckConstraint(
+            "length(trim(reason)) > 0",
+            name="ck_classification_model_decision_reason",
+        ),
+        ForeignKeyConstraint(
+            ["model_version_id", "classification_model_id"],
+            ["classification_model_version.id", "classification_model_version.classification_model_id"],
+            name="fk_classification_model_decision_version",
+            ondelete="RESTRICT",
+        ),
+        ForeignKeyConstraint(
+            ["before_active_model_version_id", "classification_model_id"],
+            ["classification_model_version.id", "classification_model_version.classification_model_id"],
+            name="fk_classification_model_decision_before_active",
+            ondelete="RESTRICT",
+        ),
+        ForeignKeyConstraint(
+            ["after_active_model_version_id", "classification_model_id"],
+            ["classification_model_version.id", "classification_model_version.classification_model_id"],
+            name="fk_classification_model_decision_after_active",
+            ondelete="RESTRICT",
+        ),
+        Index(
+            "ix_classification_model_decision_model_created",
+            "classification_model_id",
+            "created_at",
+        ),
+    )
+
+    id: Mapped[uuid.UUID] = mapped_column(Uuid, primary_key=True, default=uuid.uuid4)
+    tenant_id: Mapped[uuid.UUID] = mapped_column(
+        Uuid,
+        ForeignKey("tenant.id", ondelete="RESTRICT"),
+        index=True,
+    )
+    matter_id: Mapped[uuid.UUID] = mapped_column(
+        Uuid,
+        ForeignKey("matter.id", ondelete="RESTRICT"),
+        index=True,
+    )
+    classification_model_id: Mapped[uuid.UUID] = mapped_column(
+        Uuid,
+        ForeignKey("classification_model.id", ondelete="RESTRICT"),
+        index=True,
+    )
+    model_version_id: Mapped[uuid.UUID] = mapped_column(Uuid, index=True)
+    decision_type: Mapped[str] = mapped_column(String(30), index=True)
+    workflow_id: Mapped[str | None] = mapped_column(String(500), nullable=True)
+    reason: Mapped[str] = mapped_column(Text)
+    policy_snapshot: Mapped[dict[str, Any]] = mapped_column(JSON_DOCUMENT)
+    metric_snapshot: Mapped[dict[str, Any]] = mapped_column(JSON_DOCUMENT)
+    before_active_model_version_id: Mapped[uuid.UUID | None] = mapped_column(
+        Uuid,
+        nullable=True,
+        index=True,
+    )
+    after_active_model_version_id: Mapped[uuid.UUID | None] = mapped_column(
+        Uuid,
+        nullable=True,
+        index=True,
+    )
+    authorization_context: Mapped[dict[str, Any]] = mapped_column(JSON_DOCUMENT)
+    actor_user_id: Mapped[uuid.UUID] = mapped_column(
+        Uuid,
+        ForeignKey("app_user.id", ondelete="RESTRICT"),
+        index=True,
+    )
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+
+    actor: Mapped[User] = relationship()
+
+
 class MetadataEvent(Base):
     __tablename__ = "metadata_event"
     __table_args__ = (
@@ -1383,6 +3168,15 @@ class MetadataEvent(Base):
             "id",
         ),
         Index("ix_metadata_event_matter_created", "matter_id", "created_at"),
+        Index(
+            "uq_metadata_event_import_source",
+            "matter_document_id",
+            "metadata_definition_id",
+            "source_id",
+            unique=True,
+            postgresql_where=text("source_type = 'IMPORT' AND source_id IS NOT NULL"),
+            sqlite_where=text("source_type = 'IMPORT' AND source_id IS NOT NULL"),
+        ),
     )
 
     id: Mapped[uuid.UUID] = mapped_column(Uuid, primary_key=True, default=uuid.uuid4)
@@ -1634,9 +3428,7 @@ class AgentDefinition(TimestampMixin, Base):
     )
 
     id: Mapped[uuid.UUID] = mapped_column(Uuid, primary_key=True, default=uuid.uuid4)
-    owner_tenant_id: Mapped[uuid.UUID] = mapped_column(
-        Uuid, ForeignKey("tenant.id", ondelete="RESTRICT"), index=True
-    )
+    owner_tenant_id: Mapped[uuid.UUID] = mapped_column(Uuid, ForeignKey("tenant.id", ondelete="RESTRICT"), index=True)
     scope: Mapped[str] = mapped_column(String(20))
     key: Mapped[str] = mapped_column(String(100))
     name: Mapped[str] = mapped_column(String(200))
@@ -1773,9 +3565,7 @@ class WorkflowSkillBinding(TimestampMixin, Base):
     workflow_key: Mapped[str] = mapped_column(String(100), index=True)
     role_key: Mapped[str] = mapped_column(String(100))
     scope: Mapped[str] = mapped_column(String(20))
-    owner_tenant_id: Mapped[uuid.UUID] = mapped_column(
-        Uuid, ForeignKey("tenant.id", ondelete="CASCADE"), index=True
-    )
+    owner_tenant_id: Mapped[uuid.UUID] = mapped_column(Uuid, ForeignKey("tenant.id", ondelete="CASCADE"), index=True)
     skill_definition_id: Mapped[uuid.UUID] = mapped_column(
         Uuid, ForeignKey("skill_definition.id", ondelete="RESTRICT"), index=True
     )
@@ -1840,9 +3630,7 @@ class AgentConversationEventCursor(TimestampMixin, Base):
         CheckConstraint("oldest_sequence >= 1", name="ck_agent_conversation_event_cursor_oldest"),
     )
 
-    matter_id: Mapped[uuid.UUID] = mapped_column(
-        Uuid, ForeignKey("matter.id", ondelete="CASCADE"), primary_key=True
-    )
+    matter_id: Mapped[uuid.UUID] = mapped_column(Uuid, ForeignKey("matter.id", ondelete="CASCADE"), primary_key=True)
     newest_sequence: Mapped[int] = mapped_column(BigInteger, default=0)
     oldest_sequence: Mapped[int] = mapped_column(BigInteger, default=1)
 
@@ -2121,7 +3909,7 @@ class MatterAnalysisTask(TimestampMixin, Base):
     __table_args__ = (
         UniqueConstraint("matter_id", "key", name="uq_matter_analysis_task_matter_key"),
         CheckConstraint(
-            "task_type IN ('QUESTION_ANSWERING')",
+            "task_type IN ('QUESTION_ANSWERING', 'CLASSIFICATION')",
             name="ck_matter_analysis_task_type",
         ),
         CheckConstraint(
@@ -2164,6 +3952,10 @@ class MatterAnalysisTaskVersion(Base):
             "compilation_status IN ('NOT_GENERATED', 'STALE', 'GENERATING', 'READY', 'FAILED')",
             name="ck_matter_analysis_task_compilation_status",
         ),
+        CheckConstraint(
+            "decision_provider IN ('JEV', 'OPENAI_DECISIONS')",
+            name="ck_matter_analysis_task_version_decision_provider",
+        ),
         Index("ix_matter_analysis_task_version_task_status", "matter_analysis_task_id", "status"),
         Index("ix_analysis_task_version_skill_definition", "compiler_skill_definition_version_id"),
         Index("ix_analysis_task_version_skill_run", "compiler_skill_run_id"),
@@ -2181,6 +3973,24 @@ class MatterAnalysisTaskVersion(Base):
     compilation_status: Mapped[str] = mapped_column(String(30), default="NOT_GENERATED")
     definition_markdown: Mapped[str] = mapped_column(Text)
     definition_content_hash: Mapped[str] = mapped_column(String(64), index=True)
+    destination_metadata_definition_ids: Mapped[list[str] | None] = mapped_column(
+        JSON_DOCUMENT,
+        nullable=True,
+    )
+    decision_provider: Mapped[str] = mapped_column(String(30), default="JEV")
+    decision_model: Mapped[str | None] = mapped_column(String(200), nullable=True)
+    classification_model_id: Mapped[uuid.UUID | None] = mapped_column(
+        Uuid,
+        ForeignKey("classification_model.id", ondelete="RESTRICT"),
+        nullable=True,
+        index=True,
+    )
+    classification_model_version_id: Mapped[uuid.UUID | None] = mapped_column(
+        Uuid,
+        ForeignKey("classification_model_version.id", ondelete="RESTRICT"),
+        nullable=True,
+        index=True,
+    )
     decision_specification: Mapped[dict[str, Any] | None] = mapped_column(JSON, nullable=True)
     specification_content_hash: Mapped[str | None] = mapped_column(String(64), nullable=True, index=True)
     input_contract: Mapped[dict[str, Any]] = mapped_column(JSON, default=dict)
@@ -2199,14 +4009,123 @@ class MatterAnalysisTaskVersion(Base):
     compiler_model_configuration: Mapped[dict[str, Any]] = mapped_column(JSON, default=dict)
     validation_report: Mapped[dict[str, Any]] = mapped_column(JSON, default=dict)
     source_provenance: Mapped[dict[str, Any]] = mapped_column(JSON, default=dict)
-    created_by_user_id: Mapped[uuid.UUID] = mapped_column(
-        Uuid, ForeignKey("app_user.id", ondelete="RESTRICT")
-    )
+    created_by_user_id: Mapped[uuid.UUID] = mapped_column(Uuid, ForeignKey("app_user.id", ondelete="RESTRICT"))
     published_by_user_id: Mapped[uuid.UUID | None] = mapped_column(
         Uuid, ForeignKey("app_user.id", ondelete="RESTRICT"), nullable=True
     )
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
     published_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+
+
+class MatterAnalysisTaskRun(TimestampMixin, Base):
+    __tablename__ = "matter_analysis_task_run"
+    __table_args__ = (
+        UniqueConstraint(
+            "matter_analysis_task_id",
+            "idempotency_key",
+            name="uq_analysis_task_run_idempotency",
+        ),
+        UniqueConstraint("workflow_id", name="uq_analysis_task_run_workflow"),
+        CheckConstraint(
+            "scope_type IN ('MATTER', 'REVIEW_BATCH')",
+            name="ck_analysis_task_run_scope_type",
+        ),
+        CheckConstraint(
+            "status IN ('QUEUED', 'SNAPSHOTTING', 'PREPARING_FEATURES', 'SCORING', "
+            "'COMPLETED', 'COMPLETED_WITH_ERRORS', 'FAILED', 'CANCELED')",
+            name="ck_analysis_task_run_status",
+        ),
+        CheckConstraint(
+            "progress_completed >= 0 AND progress_total > 0 AND progress_completed <= progress_total",
+            name="ck_analysis_task_run_progress",
+        ),
+        CheckConstraint(
+            "population_document_count >= 0",
+            name="ck_analysis_task_run_population_count",
+        ),
+        Index("ix_analysis_task_run_task_created", "matter_analysis_task_id", "created_at"),
+        Index("ix_analysis_task_run_matter_status", "matter_id", "status"),
+        Index("ix_analysis_task_run_scoring", "classification_scoring_run_id"),
+    )
+
+    id: Mapped[uuid.UUID] = mapped_column(Uuid, primary_key=True, default=uuid.uuid4)
+    tenant_id: Mapped[uuid.UUID] = mapped_column(Uuid, ForeignKey("tenant.id", ondelete="RESTRICT"), index=True)
+    matter_id: Mapped[uuid.UUID] = mapped_column(Uuid, ForeignKey("matter.id", ondelete="CASCADE"), index=True)
+    matter_analysis_task_id: Mapped[uuid.UUID] = mapped_column(
+        Uuid, ForeignKey("matter_analysis_task.id", ondelete="CASCADE"), index=True
+    )
+    matter_analysis_task_version_id: Mapped[uuid.UUID] = mapped_column(
+        Uuid, ForeignKey("matter_analysis_task_version.id", ondelete="RESTRICT"), index=True
+    )
+    scope_type: Mapped[str] = mapped_column(String(30))
+    scope_id: Mapped[uuid.UUID] = mapped_column(Uuid, index=True)
+    classification_model_id: Mapped[uuid.UUID] = mapped_column(
+        Uuid, ForeignKey("classification_model.id", ondelete="RESTRICT"), index=True
+    )
+    classification_model_version_id: Mapped[uuid.UUID] = mapped_column(
+        Uuid, ForeignKey("classification_model_version.id", ondelete="RESTRICT"), index=True
+    )
+    embedding_job_id: Mapped[uuid.UUID] = mapped_column(
+        Uuid, ForeignKey("matter_embedding_job.id", ondelete="RESTRICT"), index=True
+    )
+    dataset_snapshot_id: Mapped[uuid.UUID | None] = mapped_column(
+        Uuid,
+        ForeignKey("classification_dataset_snapshot.id", ondelete="RESTRICT"),
+        nullable=True,
+        index=True,
+    )
+    classification_scoring_run_id: Mapped[uuid.UUID | None] = mapped_column(
+        Uuid,
+        ForeignKey("classification_scoring_run.id", ondelete="RESTRICT"),
+        nullable=True,
+        index=True,
+    )
+    current_workflow_run_id: Mapped[uuid.UUID | None] = mapped_column(
+        Uuid,
+        ForeignKey("workflow_run.id", ondelete="SET NULL"),
+        nullable=True,
+        index=True,
+    )
+    idempotency_key: Mapped[str] = mapped_column(String(200))
+    workflow_id: Mapped[str] = mapped_column(String(500))
+    status: Mapped[str] = mapped_column(String(40), default="QUEUED", index=True)
+    current_stage: Mapped[str] = mapped_column(String(100), default="QUEUED")
+    progress_completed: Mapped[int] = mapped_column(Integer, default=0)
+    progress_total: Mapped[int] = mapped_column(Integer, default=4)
+    population_document_count: Mapped[int] = mapped_column(Integer, default=0)
+    failure_code: Mapped[str | None] = mapped_column(String(100), nullable=True)
+    failure_summary: Mapped[str | None] = mapped_column(Text, nullable=True)
+    failure_retriable: Mapped[bool] = mapped_column(Boolean, default=False)
+    created_by_user_id: Mapped[uuid.UUID] = mapped_column(
+        Uuid, ForeignKey("app_user.id", ondelete="RESTRICT"), index=True
+    )
+    started_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    completed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    canceled_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+
+    dataset_snapshot: Mapped[ClassificationDatasetSnapshot | None] = relationship()
+    classification_scoring_run: Mapped[ClassificationScoringRun | None] = relationship()
+    current_workflow_run: Mapped[WorkflowRun | None] = relationship(foreign_keys=[current_workflow_run_id])
+
+    @property
+    def execution(self) -> WorkflowRun | None:
+        return self.current_workflow_run
+
+    @property
+    def feature_ready_count(self) -> int:
+        return self.dataset_snapshot.feature_ready_count if self.dataset_snapshot is not None else 0
+
+    @property
+    def feature_missing_count(self) -> int:
+        return self.dataset_snapshot.feature_missing_count if self.dataset_snapshot is not None else 0
+
+    @property
+    def feature_failed_count(self) -> int:
+        return self.dataset_snapshot.feature_failed_count if self.dataset_snapshot is not None else 0
+
+    @property
+    def feature_processed_count(self) -> int:
+        return self.feature_ready_count + self.feature_missing_count + self.feature_failed_count
 
 
 class MatterAnalysisTaskVersionDependency(Base):
@@ -2249,8 +4168,7 @@ class ReviewDecisionResult(Base):
             name="ck_review_decision_result_status",
         ),
         CheckConstraint(
-            "attempts > 0 AND request_count >= 0 AND input_tokens >= 0 AND output_tokens >= 0 "
-            "AND latency_ms >= 0",
+            "attempts > 0 AND request_count >= 0 AND input_tokens >= 0 AND output_tokens >= 0 AND latency_ms >= 0",
             name="ck_review_decision_result_usage",
         ),
         CheckConstraint(
@@ -2404,8 +4322,7 @@ class MatterDefinitionAssessmentRun(TimestampMixin, Base):
             name="ck_matter_definition_assessment_counts",
         ),
         CheckConstraint(
-            "guidance_refinement_status IN "
-            "('NOT_READY', 'QUEUED', 'RUNNING', 'COMPLETED', 'NOT_REQUIRED', 'FAILED')",
+            "guidance_refinement_status IN ('NOT_READY', 'QUEUED', 'RUNNING', 'COMPLETED', 'NOT_REQUIRED', 'FAILED')",
             name="ck_definition_assessment_guidance_refinement_status",
         ),
         Index("ix_definition_assessment_matter_created", "matter_id", "created_at"),
@@ -2469,9 +4386,7 @@ class MatterDefinitionAssessmentRun(TimestampMixin, Base):
     guidance_refinement_error_message: Mapped[str | None] = mapped_column(Text)
     status: Mapped[str] = mapped_column(String(30), default="QUEUED")
     error_message: Mapped[str | None] = mapped_column(Text)
-    initiated_by_user_id: Mapped[uuid.UUID] = mapped_column(
-        Uuid, ForeignKey("app_user.id", ondelete="RESTRICT")
-    )
+    initiated_by_user_id: Mapped[uuid.UUID] = mapped_column(Uuid, ForeignKey("app_user.id", ondelete="RESTRICT"))
     started_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     completed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     canceled_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
@@ -2491,8 +4406,7 @@ class MatterDefinitionAssessmentProviderBatch(TimestampMixin, Base):
         ),
         UniqueConstraint("provider_batch_id", name="uq_definition_assessment_provider_batch_id"),
         CheckConstraint(
-            "status IN ('QUEUED', 'SUBMITTED', 'RUNNING', 'COMPLETED', 'COMPLETED_WITH_ERRORS', "
-            "'FAILED', 'CANCELED')",
+            "status IN ('QUEUED', 'SUBMITTED', 'RUNNING', 'COMPLETED', 'COMPLETED_WITH_ERRORS', 'FAILED', 'CANCELED')",
             name="ck_definition_assessment_provider_batch_status",
         ),
         CheckConstraint("ordinal > 0 AND request_count >= 0", name="ck_definition_assessment_provider_batch_counts"),
@@ -2528,7 +4442,9 @@ class MatterDefinitionAssessmentQuery(Base):
     __tablename__ = "matter_definition_assessment_query"
     __table_args__ = (
         UniqueConstraint("assessment_run_id", "ordinal", name="uq_definition_assessment_query_ordinal"),
-        CheckConstraint("ordinal > 0 AND quota > 0 AND result_count >= 0", name="ck_definition_assessment_query_counts"),
+        CheckConstraint(
+            "ordinal > 0 AND quota > 0 AND result_count >= 0", name="ck_definition_assessment_query_counts"
+        ),
     )
 
     id: Mapped[uuid.UUID] = mapped_column(Uuid, primary_key=True, default=uuid.uuid4)
@@ -2548,10 +4464,10 @@ class MatterDefinitionAssessmentQuery(Base):
 class MatterDefinitionAssessmentCandidate(Base):
     __tablename__ = "matter_definition_assessment_candidate"
     __table_args__ = (
-        UniqueConstraint(
-            "assessment_run_id", "matter_document_id", name="uq_definition_assessment_candidate_document"
+        UniqueConstraint("assessment_run_id", "matter_document_id", name="uq_definition_assessment_candidate_document"),
+        CheckConstraint(
+            "selection_order IS NULL OR selection_order > 0", name="ck_definition_assessment_selection_order"
         ),
-        CheckConstraint("selection_order IS NULL OR selection_order > 0", name="ck_definition_assessment_selection_order"),
         Index("ix_definition_assessment_candidate_selected", "assessment_run_id", "selected"),
     )
 
@@ -2666,6 +4582,11 @@ class BatchTopicAssignment(Base):
 
 class AuditRecord(Base):
     __tablename__ = "audit_record"
+    __table_args__ = (
+        Index("ix_audit_record_tenant_created_id", "tenant_id", "created_at", "id"),
+        Index("ix_audit_record_tenant_actor_created", "tenant_id", "actor_user_id", "created_at"),
+        Index("ix_audit_record_tenant_action_created", "tenant_id", "action", "created_at"),
+    )
 
     id: Mapped[uuid.UUID] = mapped_column(Uuid, primary_key=True, default=uuid.uuid4)
     tenant_id: Mapped[uuid.UUID] = mapped_column(Uuid, index=True)

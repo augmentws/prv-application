@@ -3,16 +3,16 @@ title: Metadata definitions
 description: Configure the fields that a matter will use for search, review, filtering, and agent output.
 ---
 
-A metadata definition describes a field available within one matter. Every new matter receives the versioned **edrm-core-v1** default profile. Definitions provide the schema for immutable document-value events and their resolved current values.
+A metadata definition describes a field available within one matter. Every new matter receives the current versioned **edrm-core** default profile. Definitions provide the schema for immutable document-value events and their resolved current values.
 
 ## Default matter profile
 
-Matter creation automatically adds 24 definitions covering:
+Matter creation automatically adds 25 definitions covering:
 
 - identification, including control number, original filename, and document title;
 - family and custodian relationships;
 - source path and source-system timestamps;
-- email sender, recipients, subject, sent date, and received date;
+- email sender, recipients, unique participant domains, subject, sent date, and received date;
 - file extension, size, page count, MD5, and SHA-256; and
 - responsiveness, privilege, key-document coding, and review notes.
 
@@ -38,6 +38,7 @@ The profile is copied into the matter as ordinary database rows, so later matter
 | Email | `email_to` | Text | Multiple | Imported |
 | Email | `email_cc` | Text | Multiple | Imported |
 | Email | `email_bcc` | Text | Multiple | Imported |
+| Email | `email_domain` | Text | Multiple | System |
 | Email | `email_subject` | Text | Single | Imported |
 | Email | `email_sent_at` | Datetime | Single | Imported |
 | Email | `email_received_at` | Datetime | Single | Imported |
@@ -54,6 +55,12 @@ The profile is copied into the matter as ordinary database rows, so later matter
 | Review Coding | `review_notes` | Long text | Single | Asserted |
 
 Responsiveness options are **Responsive**, **Not responsive**, and **Needs review**. Privilege options are **Privileged**, **Not privileged**, and **Needs review**.
+
+### Email Domain
+
+**Email Domain** is a read-only, multi-value system field. For each document, Priv-View parses the structured From, To, CC, and BCC participants, lowercases and IDNA-normalizes their domains, removes duplicates, and sorts the result. A non-email document or an email without a usable address has zero values; Priv-View does not write a synthetic **No value** tag.
+
+New matters receive the field automatically and populate it during normal indexing. A full search-index rebuild installs a missing Email Domain definition and Email-group membership for a matter created from an older profile, then derives the field while rebuilding every document projection. Publishing documents does not perform this profile upgrade. To install or refresh the field without a full rebuild, open **Metadata → Definitions** and select **Update email domains**. The durable bounded update reads only Artifact's structured email participants and partially updates `metadata.email_domain`; it does not reread document bodies or embeddings and does not append per-document metadata events. The operation is safe to run again. Progress and failures appear under **Search index → Operations**.
 
 ## Add a field
 
@@ -117,7 +124,7 @@ System and imported fields are read-only through this event API because their au
 - **Searchable** makes the field eligible for future search operations.
 - **Available as a filter** makes the field eligible for faceting. Long text and JSON cannot be faceted.
 - **Visible to reviewers** marks the field for reviewer-facing experiences.
-- **Agents may assign values** allows processing agents to propose or assign values when agent workflows are implemented.
+- **Agents may assign values** makes an active, matter-owned Asserted field available as an output destination for analysis tasks. Select **Edit**, change the setting in the field modal, and save to update it later. The same modal manages controlled Enum values. System and Imported definitions cannot be AI-assignment destinations because their values are owned by another source.
 
 For imported collection metadata that already carries a path, create a **Text** field and enable **Interpret delimited values as a hierarchy** under **Hierarchy paths**. Enter `/` as the hierarchy delimiter. Enabling the option also enables **Searchable** and **Available as a filter**. For example, `/` interprets these source values as a hierarchy:
 

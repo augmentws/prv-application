@@ -13,6 +13,7 @@ function count(value: number) {
 }
 
 function jobTypeLabel(value: string) {
+  if (value === "MATTER_ANALYSIS_TASK_BATCH" || value === "ANALYSIS_TASK_BATCH_RUN") return "Question answering";
   return value.toLowerCase().split("_").map((part) => part.charAt(0).toUpperCase() + part.slice(1)).join(" ");
 }
 

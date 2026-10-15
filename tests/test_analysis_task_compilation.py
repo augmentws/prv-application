@@ -8,6 +8,7 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from app.analysis_task_compilation import (
+    _compiler_output_validator,
     _validate_preserved_recommendations,
     build_source_reference_catalog,
     compile_analysis_task_version,
@@ -23,6 +24,7 @@ from app.models import (
     ExternalProviderUsage,
     MatterAnalysisTaskVersion,
     SkillDefinition,
+    SkillDefinitionVersion,
     SkillRun,
     Tenant,
     WorkflowRun,
@@ -127,6 +129,17 @@ def test_standard_analysis_task_compiler_skill_is_idempotent(db: Session, root_a
     )
     assert skill is not None
     assert skill.scope == "SYSTEM"
+    version = db.scalar(
+        select(SkillDefinitionVersion).where(
+            SkillDefinitionVersion.skill_definition_id == skill.id,
+            SkillDefinitionVersion.version == skill.published_version,
+        )
+    )
+    assert version is not None
+    assert version.limits["max_requests"] == 5
+    assert version.limits["max_output_tokens"] == 128_000
+    assert version.limits["max_output_retries"] == 4
+    assert "authoritative assignment mapping" in version.instructions
     binding = db.scalar(
         select(WorkflowSkillBinding).where(WorkflowSkillBinding.workflow_key == "matter_analysis_task_compilation_v1")
     )
@@ -153,6 +166,9 @@ def test_compile_endpoint_queues_pinned_managed_skill_workflow(
     queued = response.json()
     assert queued["version"]["compilation_status"] == "GENERATING"
     assert queued["version"]["compiler_workflow_run_id"] is not None
+    assert queued["version"]["compilation_progress"]["stage"] == "QUEUED"
+    assert queued["version"]["compilation_progress"]["destination_count"] == 0
+    assert queued["version"]["compilation_progress"]["source_reference_count"] >= 1
     workflow = db.get(WorkflowRun, uuid.UUID(queued["version"]["compiler_workflow_run_id"]))
     assert workflow is not None
     assert workflow.workflow_key == "matter_analysis_task_compilation_v1"
@@ -160,6 +176,7 @@ def test_compile_endpoint_queues_pinned_managed_skill_workflow(
         "compile_analysis_task_decision_specification"
     )
     assert workflow.input_snapshot["definition_content_hash"] == queued["version"]["definition_content_hash"]
+    assert workflow.input_snapshot["destination_metadata_definition_ids"] == []
 
     duplicate = client.post(
         f"/v1/matters/{matter_id}/analysis-tasks/{task['id']}/versions/1/compile",
@@ -221,6 +238,9 @@ def test_compiler_persists_validated_specification_and_provenance(
     workflow = db.get(WorkflowRun, version.compiler_workflow_run_id)
     skill_run = db.get(SkillRun, version.compiler_skill_run_id)
     assert workflow is not None and workflow.status == "COMPLETED"
+    assert workflow.progress["stage"] == "COMPLETED"
+    assert workflow.progress["question_count"] == 1
+    assert workflow.progress["validation_attempt"] == 1
     assert skill_run is not None and skill_run.status == "COMPLETED"
     usage = db.scalar(
         select(ExternalProviderUsage).where(
@@ -325,3 +345,85 @@ def test_compiler_schema_exposes_dotted_question_and_state_path_patterns() -> No
     assert "matter.decision_context" in DecisionSpecification.model_validate(
         _compiler_output(str(uuid.uuid4()), "a" * 64)["decision_specification"]
     ).state_contract.required_paths
+
+
+def test_selected_multiple_enum_requires_question_or_structured_omission_per_active_value() -> None:
+    version_id = uuid.uuid4()
+    excerpt_hash = "a" * 64
+    output = _compiler_output(str(version_id), excerpt_hash)
+    output["decision_specification"]["questions"] = {
+        "issues.topic_401": {
+            "type": "noul",
+            "instructions": "Does the document concern the Olympics?",
+            "criteria": {"true": "It concerns the Olympics", "false": "It does not"},
+            "source_refs": [
+                {
+                    "task_version_id": str(version_id),
+                    "heading": "Issues",
+                    "excerpt_hash": excerpt_hash,
+                }
+            ],
+            "aggregation": {"operator": "ANY_WINDOW"},
+            "field_mapping": None,
+        }
+    }
+    output["decision_specification"]["decision_policy"] = {
+        "version": "decision-policy-v1",
+        "recommendations": {
+            "issue_coding.topic_401": {
+                "operator": "MAPPED_VALUE",
+                "predicate": {
+                    "question_key": "issues.topic_401",
+                    "measure": "noul",
+                    "comparator": "GTE",
+                    "threshold": 0.7,
+                },
+                "metadata_definition_key": "issue_coding",
+                "value": "topic_401",
+            }
+        },
+        "routes": {},
+    }
+    output["question_rationales"] = {
+        "issues.topic_401": "The selected multi-value destination needs an independent issue decision."
+    }
+    output["omissions"] = [
+        {
+            "subject": "Issue 402 lacks reviewed guidance",
+            "rationale": "The task definition does not define this issue.",
+            "metadata_definition_key": "issue_coding",
+            "metadata_value_key": "topic_402",
+            "source_refs": [],
+        }
+    ]
+    metadata_definitions = [
+        {
+            "key": "issue_coding",
+            "type": "ENUM",
+            "cardinality": "MULTIPLE",
+            "selected_destination": True,
+            "allowed_values": [
+                {"key": "topic_401", "label": "Olympics", "active": True},
+                {"key": "topic_402", "label": "Energy", "active": True},
+                {"key": "retired", "label": "Retired", "active": False},
+            ],
+        }
+    ]
+    validate = _compiler_output_validator(
+        task_version_id=version_id,
+        references=[
+            {
+                "task_version_id": str(version_id),
+                "heading": "Issues",
+                "excerpt": "Issue definitions",
+                "excerpt_hash": excerpt_hash,
+            }
+        ],
+        metadata_definitions=metadata_definitions,
+    )
+
+    validate(output)
+
+    output["omissions"] = []
+    with pytest.raises(ValueError, match=r"missing: issue_coding\.topic_402"):
+        validate(output)

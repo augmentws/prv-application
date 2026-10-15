@@ -34,7 +34,7 @@ adapters that can be added without changing the domain model or lifecycle.
 The first implementation supports:
 
 - Matter-wide or existing review-batch training scopes, frozen at build time.
-- A selected Boolean or enum metadata field as the prediction target.
+- A selected active asserted Boolean, enum, text, or long-text coding field as the prediction target.
 - Binary, native multiclass, and one-vs-rest classifier-set strategies.
 - Deterministic, document-level embedding features.
 - A regularized logistic-regression candidate model.
@@ -148,10 +148,11 @@ It stores stable configuration such as:
 - Name and description.
 - Required `target_metadata_definition_id` foreign key.
 - Target field stable key and display-name snapshot.
-- Pinned target type, cardinality, selected value keys, and schema fingerprint.
+- Pinned target identity, type, cardinality, and schema fingerprint.
 - Classification strategy: `BINARY`, `MULTICLASS`, or `ONE_VS_REST`.
-- Ordered selected class keys and explicit binary positive/negative mappings
-  where applicable.
+- Optional explicit binary positive/negative mappings for intentional value
+  collapse; otherwise class keys are discovered and frozen per dataset/model
+  version.
 - Label-source, missing-label, and conflict policies.
 - Allowed feature-specification family.
 - `active_model_version_id`, nullable.
@@ -237,21 +238,26 @@ created_by_user_id
 
 #### Ordered class keys and binary mappings
 
-Use stable metadata enum keys or canonical Boolean tokens, never renameable
-display labels, as class identity. `ordered_class_keys` defines the permanent
-output index order for the configuration, evaluation artifacts, prediction
-files, and model package. The order must be canonicalized once and stored; a
-worker must not reorder classes based on observed frequency.
+For dynamic configurations, class identity is the exact resolved target value:
+stable enum keys, canonical Boolean tokens, or text values. Configuration may
+leave `ordered_class_keys` empty. Dataset creation discovers the values in the
+resolved label population, canonicalizes their order, and freezes that order on
+the immutable dataset snapshot. Evaluation artifacts, prediction files, and
+model packages use the snapshot order. A worker must not reorder classes based
+on observed frequency. Legacy configurations may still provide an explicit
+class list and binary collapse mapping.
 
 Strategy-specific interpretation is:
 
-- `BINARY`: `binary_mapping` contains non-empty, disjoint
+- `BINARY`: when exactly two values are discovered, they become the two frozen
+  classes automatically. For an explicit many-values-to-two collapse,
+  `binary_mapping` contains non-empty, disjoint
   `positive_value_keys` and `negative_value_keys`. A value not explicitly in
   either set is out of scope/unlabeled according to policy; "everything else"
   must never become negative implicitly.
-- `MULTICLASS`: `ordered_class_keys` is the complete selected mutually
-  exclusive class set. A usable row resolves to exactly one key.
-- `ONE_VS_REST`: each ordered key identifies one child binary component. A
+- `MULTICLASS`: each frozen snapshot class is a mutually exclusive outcome. A
+  usable row resolves to exactly one key.
+- `ONE_VS_REST`: each frozen snapshot class identifies one child binary component. A
   multi-valued row may be positive for more than one component.
 
 For example:
@@ -605,9 +611,12 @@ and models competition among mutually exclusive classes. Conversely, native
 multiclass is semantically wrong for a genuinely multi-valued field.
 
 Target configuration is immutable for a logical classifier. A material change
-to field type/cardinality, selected classes, binary mapping, or classification
-strategy creates a new logical classifier or an explicit incompatible
-configuration revision; it must not silently alter an active model.
+to field type/cardinality, explicit binary mapping, or classification strategy
+creates a new logical classifier or an explicit incompatible configuration
+revision; it must not silently alter an active model. Class growth or removal
+in later review is not a configuration mutation: each new training snapshot and
+model version freezes its own discovered class catalog, while historical
+versions keep their original output contract.
 
 Field lifecycle compatibility rules are:
 
@@ -616,7 +625,9 @@ Field lifecycle compatibility rules are:
   when they differ.
 - Field deactivation preserves historical models but blocks new builds,
   promotion, and scoring for operational use.
-- Stable-key, type, or cardinality incompatibility blocks use. The current
+- Stable-key, type, or cardinality incompatibility blocks use. Additions or
+  deactivations in an enum's current value catalog do not invalidate an
+  already-frozen dataset or model version. The current
   metadata rules already prevent most such mutation, but model checks remain
   defense in depth.
 - Deactivation or removal of a selected enum value requires an explicit
@@ -661,6 +672,14 @@ are invalid or unlabeled according to policy. For one-vs-rest, a negative for
 one class must be supported by an authoritative reviewed value; incomplete
 coding must not manufacture negative examples.
 
+For a delimited hierarchical Text target, the configuration may freeze a
+1-based hierarchy level. Label resolution projects every valid full path to
+the prefix at that depth before conflict resolution and class discovery. A
+path that does not reach the selected depth is out of scope for that snapshot.
+This projection never rewrites the matter coding, and the delimiter plus level
+are part of the frozen target identity and configuration hash. Omitting the
+level preserves the complete path as the class key.
+
 ### 5.5 Split construction
 
 Splits must be group-aware: family members, duplicates, and identified
@@ -669,6 +688,15 @@ fold assignments, seed, algorithm version, and any stratification/cohort rules.
 
 The worker consumes a frozen split artifact; it must not silently create a new
 split during training.
+
+For `ONE_VS_REST`, the snapshot keeps all observed classes even when a class
+cannot support a reliable child classifier. Feature/split preparation checks
+feature-ready positive and negative document counts, distinct transitive
+family/exact-duplicate groups, and the resulting support in every deterministic
+fold. Unsupported classes are removed one at a time and the group allocation
+is recomputed until stable. The snapshot and resulting model version persist
+the trained class keys and structured exclusion evidence. Binary and native
+multiclass tasks do not use partial exclusion and continue to fail as a unit.
 
 ## 6. Trainer worker contract
 
@@ -1160,16 +1188,20 @@ Collect:
 
 - Program name and optional description.
 - Review objective.
-- Target Boolean or enum metadata field.
+- Target asserted Boolean, enum, text, or long-text coding field.
 - Classification strategy: binary, multiclass, or one-vs-rest classifier set.
-- Selected class values.
-- For binary classification, explicit positive and negative value mappings.
+- Optionally, for an intentional many-values-to-two binary collapse, explicit
+  positive and negative value mappings.
 
-Validate that the target field is active and reviewable. Boolean fields default
-to binary. Single-cardinality enums permit multiclass or one-vs-rest.
-Multi-valued enums require one-vs-rest. Explain the probability and decision
-semantics of the selected strategy and that changing the target or strategy
-later creates a new classifier identity rather than mutating existing lineage.
+Validate that the target is an active asserted coding field with Boolean, enum,
+text, or long-text type. System and imported metadata are not targets;
+`reviewable` is not an eligibility rule. Boolean fields default to binary.
+Single-cardinality enum and text fields permit multiclass or one-vs-rest.
+Multi-valued fields require one-vs-rest. Explain that classes are discovered
+and frozen when a dataset snapshot is created, so later review may introduce a
+new class without mutating existing model lineage. Also explain the probability
+and decision semantics of the selected strategy and that changing the target or
+strategy later creates a new classifier identity.
 
 #### Step 2: Label policy
 
@@ -1246,7 +1278,7 @@ detail drawer/page.
 The current snapshot summary shows:
 
 - Scope kind and matter/review-batch source.
-- Target field, selected strategy, and included classes.
+- Target field, selected strategy, and classes discovered and frozen for that snapshot.
 - Eligible, labeled, unlabeled, and excluded counts.
 - Binary positive/negative counts or multiclass/one-vs-rest support and
   exclusions per class.

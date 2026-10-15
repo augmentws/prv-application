@@ -167,7 +167,7 @@ def test_individual_email_upload_with_source_container(client: TestClient, root_
             ],
         },
         "raw_metadata": {"file": "allen-p/_sent_mail/1."},
-        "unmapped_metadata": {},
+        "unmapped_metadata": {"Tr2016_Facets": ["george w. bush", "marketing"], "ignored": "value"},
     }
     item_response = client.post(
         f"/v1/collections/{collection_id}/items:upload",
@@ -183,6 +183,25 @@ def test_individual_email_upload_with_source_container(client: TestClient, root_
     assert payload["item"]["custodian_ids"] == [custodian_id]
     artifact_id = payload["item"]["native_artifact"]["id"]
     sha256 = payload["item"]["native_artifact"]["sha256"]
+
+    grouping_response = client.post(
+        "/v1/collection-items/grouping-snapshots",
+        headers=auth(root_token),
+        json={
+            "tenant_id": tenant_id,
+            "client_id": client_id,
+            "item_ids": [payload["item"]["id"], str(uuid.uuid4())],
+        },
+    )
+    assert grouping_response.status_code == 200, grouping_response.text
+    assert grouping_response.json() == [
+        {
+            "item_id": payload["item"]["id"],
+            "family_id": None,
+            "record_type": "EMAIL",
+            "native_content_hash": sha256,
+        }
+    ]
 
     artifacts_response = client.get(
         f"/v1/collection-items/{payload['item']['id']}/artifacts",
@@ -218,8 +237,18 @@ def test_individual_email_upload_with_source_container(client: TestClient, root_
             "item_id": payload["item"]["id"],
             "custodian_ids": [custodian_id],
             "custodians": [{"custodian_id": custodian_id, "relationship_type": "PRIMARY"}],
+            "unmapped_metadata": {},
         }
     ]
+    metadata_batch_response = client.get(
+        f"/v1/collection-selections/{selection_response.json()['id']}/items",
+        headers=auth(root_token),
+        params=[("metadata_key", "tr2016_facets")],
+    )
+    assert metadata_batch_response.status_code == 200, metadata_batch_response.text
+    assert metadata_batch_response.json()["items"][0]["unmapped_metadata"] == {
+        "tr2016_facets": ["george w. bush", "marketing"]
+    }
 
     custodian_summary_response = client.get(
         f"/v1/collections/{collection_id}/custodians",

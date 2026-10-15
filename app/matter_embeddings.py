@@ -31,6 +31,13 @@ from app.embeddings.configuration import (
     processing_configuration,
 )
 from app.embeddings.parquet import read_chunk_set, write_chunk_set, write_vector_set
+from app.job_executions import (
+    MATTER_EMBEDDING_JOB_TYPE,
+    JobExecutionConflict,
+    JobExecutionNotFound,
+    execution_cancel_requested,
+    transition_job_execution,
+)
 from app.models import (
     MatterDocument,
     MatterEmbeddingBatch,
@@ -47,6 +54,28 @@ logger = logging.getLogger(__name__)
 
 def utcnow() -> datetime:
     return datetime.now(timezone.utc)
+
+
+def _heartbeat_embedding_execution(
+    job_id: uuid.UUID,
+    *,
+    stage: str,
+    status: str = "RUNNING",
+    progress: dict[str, Any] | None = None,
+) -> None:
+    with SessionLocal() as heartbeat_db:
+        try:
+            transition_job_execution(
+                heartbeat_db,
+                job_type=MATTER_EMBEDDING_JOB_TYPE,
+                job_id=job_id,
+                status=status,
+                current_stage=stage,
+                progress=progress,
+            )
+            heartbeat_db.commit()
+        except (JobExecutionConflict, JobExecutionNotFound):
+            heartbeat_db.rollback()
 
 
 @dataclass(frozen=True)
@@ -138,7 +167,9 @@ def _scope(job: MatterEmbeddingJob) -> tuple[uuid.UUID, uuid.UUID]:
     return job.matter.client.tenant_id, job.matter.client_id
 
 
-def _runtime(job: MatterEmbeddingJob) -> EmbeddingJobRuntime:
+def _runtime(job: MatterEmbeddingJob | EmbeddingJobRuntime) -> EmbeddingJobRuntime:
+    if isinstance(job, EmbeddingJobRuntime):
+        return job
     tenant_id, client_id = _scope(job)
     return EmbeddingJobRuntime(
         id=job.id,
@@ -401,7 +432,7 @@ def _persist_prepared_document(
 
 
 def process_documents(
-    job: MatterEmbeddingJob,
+    job: MatterEmbeddingJob | EmbeddingJobRuntime,
     documents: Sequence[MatterDocument],
     *,
     progress_callback: EmbeddingProgressCallback | None = None,
@@ -788,6 +819,31 @@ def poll_voyage_batch(batch_id: uuid.UUID) -> str:
         batch.provider_error_file_id = provider_batch.get("error_file_id")
         batch.provider_last_polled_at = utcnow()
         request_counts = provider_batch.get("request_counts") or {}
+        execution_status = (
+            "RUNNING"
+            if provider_status in {"completed", "partially_completed", "failed", "cancelled"}
+            else "WAITING"
+        )
+        try:
+            transition_job_execution(
+                db,
+                job_type=MATTER_EMBEDDING_JOB_TYPE,
+                job_id=job.id,
+                status=execution_status,
+                current_stage=(
+                    "PROCESSING_BATCHES" if execution_status == "RUNNING" else "WAITING_FOR_PROVIDER"
+                ),
+                progress={
+                    "provider_batch_id": batch.provider_batch_id,
+                    "provider_status": provider_status,
+                    "provider_completed_requests": request_counts.get("completed", 0),
+                    "provider_failed_requests": request_counts.get("failed", 0),
+                    "provider_total_requests": request_counts.get("total", batch.provider_request_count),
+                },
+            )
+        except JobExecutionConflict:
+            if job.status != "CANCELED":
+                raise
         db.commit()
         logger.info(
             "Voyage embedding batch status job_id=%s batch_id=%s provider_batch_id=%s "
@@ -1085,7 +1141,11 @@ def plan_job(job_id: uuid.UUID) -> list[uuid.UUID]:
         job = db.get(MatterEmbeddingJob, job_id)
         if job is None:
             raise ValueError("Matter embedding job not found")
-        if job.status == "CANCELED":
+        if job.status == "CANCELED" or execution_cancel_requested(
+            db,
+            job_type=MATTER_EMBEDDING_JOB_TYPE,
+            job_id=job.id,
+        ):
             return []
         existing = list(
             db.scalars(
@@ -1095,14 +1155,25 @@ def plan_job(job_id: uuid.UUID) -> list[uuid.UUID]:
             )
         )
         if existing:
-            job.status = "RUNNING"
-            job.started_at = job.started_at or utcnow()
-            job.completed_at = None
+            transition_job_execution(
+                db,
+                job_type=MATTER_EMBEDDING_JOB_TYPE,
+                job_id=job.id,
+                status="RUNNING",
+                current_stage="PROCESSING_BATCHES",
+                progress_completed=job.processed_count,
+                progress_total=job.total_count or None,
+            )
             db.commit()
             return existing
         _assert_worker_configuration(job)
-        job.status = "PLANNING"
-        job.started_at = job.started_at or utcnow()
+        transition_job_execution(
+            db,
+            job_type=MATTER_EMBEDDING_JOB_TYPE,
+            job_id=job.id,
+            status="RUNNING",
+            current_stage="PLANNING",
+        )
         db.flush()
         batch_size = get_settings().matter_embedding_batch_size
         batch_ids: list[uuid.UUID] = []
@@ -1143,7 +1214,15 @@ def plan_job(job_id: uuid.UUID) -> list[uuid.UUID]:
             )
         )
         job.batch_count = len(batch_ids)
-        job.status = "RUNNING"
+        transition_job_execution(
+            db,
+            job_type=MATTER_EMBEDDING_JOB_TYPE,
+            job_id=job.id,
+            status="RUNNING",
+            current_stage="PROCESSING_BATCHES",
+            progress_total=job.total_count,
+            progress={"batch_count": job.batch_count},
+        )
         db.commit()
         return batch_ids
 
@@ -1155,6 +1234,21 @@ def index_job(job_id: uuid.UUID) -> str:
         job = db.get(MatterEmbeddingJob, job_id)
         if job is None:
             raise ValueError("Matter embedding job not found")
+        if execution_cancel_requested(
+            db,
+            job_type=MATTER_EMBEDDING_JOB_TYPE,
+            job_id=job.id,
+        ):
+            return "CANCELED"
+        transition_job_execution(
+            db,
+            job_type=MATTER_EMBEDDING_JOB_TYPE,
+            job_id=job.id,
+            status="RUNNING",
+            current_stage="INDEXING_SEARCH",
+            progress_completed=job.processed_count,
+            progress_total=job.total_count or None,
+        )
         workflow_id = f"embedding-index-job:{job.id}"
         operation = db.scalar(
             select(SearchProjectionOperation).where(SearchProjectionOperation.workflow_id == workflow_id)
@@ -1197,7 +1291,11 @@ def process_batch(batch_id: uuid.UUID) -> dict[str, int]:
                 "failed_count": batch.failed_count,
                 "chunk_count": batch.chunk_count,
             }
-        if job.status == "CANCELED":
+        if job.status == "CANCELED" or execution_cancel_requested(
+            db,
+            job_type=MATTER_EMBEDDING_JOB_TYPE,
+            job_id=job.id,
+        ):
             batch.status = "CANCELED"
             db.commit()
             return {
@@ -1205,20 +1303,6 @@ def process_batch(batch_id: uuid.UUID) -> dict[str, int]:
             }
         _assert_worker_configuration(job)
         batch.status = "RUNNING"
-        db.commit()
-        logger.info(
-            "Starting embedding batch job_id=%s batch_id=%s batch_number=%s documents=%s",
-            job.id,
-            batch.id,
-            batch.batch_number,
-            len(batch.document_ids),
-        )
-
-        # Load and validate the model before entering the per-document error boundary.
-        # A missing or incompatible model is a batch infrastructure failure, not a
-        # separate failure for every document in the batch.
-        get_embedding_gateway().warmup()
-
         processed = embedded = skipped = failed = chunk_count = 0
         errors: list[str] = []
         documents: list[MatterDocument] = []
@@ -1231,10 +1315,37 @@ def process_batch(batch_id: uuid.UUID) -> dict[str, int]:
                 errors.append(f"{document_id}: matter document not found")
                 continue
             documents.append(document)
+        runtime = _runtime(job)
+        db.commit()
+        logger.info(
+            "Starting embedding batch job_id=%s batch_id=%s batch_number=%s documents=%s",
+            job.id,
+            batch.id,
+            batch.batch_number,
+            len(batch.document_ids),
+        )
+
+        # Load and validate the model before entering the per-document error boundary.
+        # A missing or incompatible model is a batch infrastructure failure, not a
+        # separate failure for every document in the batch. The Core transaction was
+        # committed above so model and artifact work does not hold a pooled Core
+        # database connection for the duration of the batch.
+        get_embedding_gateway().warmup()
 
         def log_progress(stage: str, current: int, total: int) -> None:
             if current % 25 != 0 and current != total:
                 return
+            _heartbeat_embedding_execution(
+                job.id,
+                stage="PROCESSING_BATCHES",
+                progress={
+                    "batch_id": str(batch.id),
+                    "batch_number": batch.batch_number,
+                    "batch_stage": stage,
+                    "batch_progress_completed": current,
+                    "batch_progress_total": total,
+                },
+            )
             logger.info(
                 "Embedding batch progress job_id=%s batch_id=%s batch_number=%s "
                 "stage=%s documents=%s/%s concurrency=%s",
@@ -1287,7 +1398,7 @@ def process_batch(batch_id: uuid.UUID) -> dict[str, int]:
             )
 
         outcomes = process_documents(
-            job,
+            runtime,
             documents,
             progress_callback=log_progress,
             metrics_callback=log_metrics,
@@ -1383,6 +1494,26 @@ def refresh_job(job_id: uuid.UUID) -> None:
             job.failed_count,
             job.chunk_count,
         ) = (int(value) for value in totals)
+        try:
+            transition_job_execution(
+                db,
+                job_type=MATTER_EMBEDDING_JOB_TYPE,
+                job_id=job.id,
+                status="RUNNING",
+                current_stage="PROCESSING_BATCHES",
+                progress_completed=job.processed_count,
+                progress_total=job.total_count or None,
+                progress={
+                    "batch_count": job.batch_count,
+                    "embedded_count": job.embedded_count,
+                    "skipped_count": job.skipped_count,
+                    "failed_count": job.failed_count,
+                    "chunk_count": job.chunk_count,
+                },
+            )
+        except JobExecutionConflict:
+            if job.status != "CANCELED":
+                raise
         db.commit()
 
 
@@ -1391,7 +1522,6 @@ def complete_job(job_id: uuid.UUID) -> None:
     with SessionLocal() as db:
         job = db.get(MatterEmbeddingJob, job_id)
         if job is not None and job.status != "CANCELED":
-            job.status = "COMPLETED_WITH_ERRORS" if job.failed_count else "COMPLETED"
             batch_errors = list(
                 db.scalars(
                     select(MatterEmbeddingBatch.error_message)
@@ -1403,8 +1533,26 @@ def complete_job(job_id: uuid.UUID) -> None:
                     .limit(10)
                 )
             )
-            job.error_message = "\n".join(batch_errors)[:4000] if batch_errors else None
-            job.completed_at = utcnow()
+            failure_summary = "\n".join(batch_errors)[:4000] if batch_errors else None
+            transition_job_execution(
+                db,
+                job_type=MATTER_EMBEDDING_JOB_TYPE,
+                job_id=job.id,
+                status="COMPLETED_WITH_ERRORS" if job.failed_count else "COMPLETED",
+                current_stage="COMPLETED_WITH_ERRORS" if job.failed_count else "COMPLETED",
+                progress_completed=job.processed_count,
+                progress_total=job.total_count,
+                progress={
+                    "batch_count": job.batch_count,
+                    "embedded_count": job.embedded_count,
+                    "skipped_count": job.skipped_count,
+                    "failed_count": job.failed_count,
+                    "chunk_count": job.chunk_count,
+                },
+                failure_code=("MATTER_EMBEDDING_PARTIAL_FAILURE" if job.failed_count else None),
+                failure_summary=failure_summary,
+                failure_retriable=False,
+            )
             db.commit()
 
 
@@ -1419,7 +1567,28 @@ def fail_job(job_id: uuid.UUID, message: str) -> None:
             )
             if projection is not None and projection.error_message:
                 message = f"Search indexing failed: {projection.error_message}"
-            job.status = "FAILED"
-            job.error_message = message[:4000]
-            job.completed_at = utcnow()
+            try:
+                transition_job_execution(
+                    db,
+                    job_type=MATTER_EMBEDDING_JOB_TYPE,
+                    job_id=job.id,
+                    status="FAILED",
+                    current_stage="FAILED",
+                    progress_completed=job.processed_count,
+                    progress_total=job.total_count or None,
+                    progress={
+                        "batch_count": job.batch_count,
+                        "embedded_count": job.embedded_count,
+                        "skipped_count": job.skipped_count,
+                        "failed_count": job.failed_count,
+                        "chunk_count": job.chunk_count,
+                    },
+                    failure_code="MATTER_EMBEDDING_FAILED",
+                    failure_summary=message,
+                    failure_retriable=False,
+                )
+            except JobExecutionNotFound:
+                job.status = "FAILED"
+                job.error_message = message[:4000]
+                job.completed_at = utcnow()
             db.commit()

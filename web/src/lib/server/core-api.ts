@@ -14,6 +14,14 @@ export interface TokenPair {
   refresh_expires_in: number;
 }
 
+interface RefreshAttempt {
+  promise: Promise<TokenPair | null>;
+  expiresAt: number;
+}
+
+const refreshAttempts = new Map<string, RefreshAttempt>();
+const refreshReuseWindowMs = 5_000;
+
 const CORE_API_URL = (process.env.CORE_API_URL ?? "http://127.0.0.1:8000").replace(/\/$/, "");
 
 function configuredAppOrigin() {
@@ -47,6 +55,27 @@ export function appUrl(request: Request, path: string) {
 
 export async function requestCore(path: string, init: RequestInit = {}) {
   return fetch(coreUrl(path), { ...init, cache: "no-store" });
+}
+
+export function refreshCoreSession(refreshToken: string | undefined) {
+  if (!refreshToken) return Promise.resolve(null);
+  const now = Date.now();
+  const existing = refreshAttempts.get(refreshToken);
+  if (existing && existing.expiresAt > now) return existing.promise;
+
+  const promise = requestCore("/v1/auth/refresh", {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({ refresh_token: refreshToken }),
+  })
+    .then(async (response) => response.ok ? await response.json() as TokenPair : null)
+    .catch(() => null);
+  const attempt = { promise, expiresAt: now + refreshReuseWindowMs };
+  refreshAttempts.set(refreshToken, attempt);
+  setTimeout(() => {
+    if (refreshAttempts.get(refreshToken) === attempt) refreshAttempts.delete(refreshToken);
+  }, refreshReuseWindowMs);
+  return promise;
 }
 
 export async function readCoreError(response: Response) {

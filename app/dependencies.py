@@ -25,6 +25,7 @@ bearer_scheme = HTTPBearer(auto_error=False)
 class Principal:
     user: User
     session: AuthSession
+    db: Session
 
     @property
     def is_root_admin(self) -> bool:
@@ -59,7 +60,7 @@ def get_principal(
         or user.tenant_id != claims.tenant_id
     ):
         raise unauthorized("Session is no longer active")
-    return Principal(user=user, session=session)
+    return Principal(user=user, session=session, db=db)
 
 
 def require_root_admin(principal: Principal = Depends(get_principal)) -> Principal:
@@ -69,9 +70,13 @@ def require_root_admin(principal: Principal = Depends(get_principal)) -> Princip
 
 
 def can_admin_tenant(principal: Principal, tenant_id: uuid.UUID) -> bool:
-    return principal.is_root_admin or (
+    if principal.is_root_admin or (
         principal.user.tenant_id == tenant_id and principal.user.tenant_role == "ADMIN"
-    )
+    ):
+        return True
+    from app.authorization import ResourceRef, can
+
+    return can(principal.db, principal, "tenant.configure", ResourceRef.tenant(tenant_id))
 
 
 def can_admin_client(db: Session, principal: Principal, client: Client) -> bool:
@@ -84,7 +89,11 @@ def can_admin_client(db: Session, principal: Principal, client: Client) -> bool:
             ClientMembership.role == "ADMIN",
         )
     )
-    return membership is not None
+    if membership is not None:
+        return True
+    from app.authorization import ResourceRef, can
+
+    return can(db, principal, "client.configure", ResourceRef.client(client.id))
 
 
 def can_admin_matter(db: Session, principal: Principal, matter: Matter) -> bool:
@@ -97,4 +106,8 @@ def can_admin_matter(db: Session, principal: Principal, matter: Matter) -> bool:
             MatterMembership.role == "ADMIN",
         )
     )
-    return membership is not None
+    if membership is not None:
+        return True
+    from app.authorization import ResourceRef, can
+
+    return can(db, principal, "matter.configure", ResourceRef.matter(matter.id))

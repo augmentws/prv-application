@@ -5,8 +5,10 @@ from sqlalchemy import select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
+from app.authorization import ResourceRef, can
 from app.database import get_db
-from app.dependencies import Principal, can_admin_matter, get_principal
+from app.dependencies import Principal, get_principal
+from app.email_domains import EmailDomainUpdateConflict, ensure_email_domain_metadata
 from app.metadata_definitions import (
     MetadataDefinitionCommandError,
     MetadataDefinitionConflictError,
@@ -23,6 +25,7 @@ from app.metadata_definitions import (
 )
 from app.models import Matter, MetadataDefinition
 from app.schemas import (
+    EmailDomainUpdateRead,
     MetadataDefinitionCreate,
     MetadataDefinitionRead,
     MetadataDefinitionUpdate,
@@ -33,14 +36,19 @@ from app.schemas import (
 router = APIRouter(prefix="/v1/matters/{matter_id}/metadata-definitions", tags=["metadata definitions"])
 
 
-def get_authorized_matter(db: Session, principal: Principal, matter_id: uuid.UUID) -> Matter:
+def get_authorized_matter(
+    db: Session,
+    principal: Principal,
+    matter_id: uuid.UUID,
+    permission_key: str = "metadata.manage",
+) -> Matter:
     matter = db.scalar(select(Matter).where(Matter.id == matter_id))
     if matter is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Matter not found")
     if matter.status != "ACTIVE" or matter.client.status != "ACTIVE" or matter.client.tenant.status != "ACTIVE":
         raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="Matter, client, or tenant is not active")
-    if not can_admin_matter(db, principal, matter):
-        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Matter ADMIN required")
+    if not can(db, principal, permission_key, ResourceRef.matter(matter.id)):
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail=f"Permission required: {permission_key}")
     return matter
 
 
@@ -76,6 +84,46 @@ def _command_error(exc: MetadataDefinitionCommandError) -> HTTPException:
         else status.HTTP_409_CONFLICT
     )
     return HTTPException(status_code=error_status, detail=str(exc))
+
+
+@router.post(
+    "/email-domain/update",
+    response_model=EmailDomainUpdateRead,
+    status_code=status.HTTP_202_ACCEPTED,
+)
+def update_email_domains(
+    matter_id: uuid.UUID,
+    principal: Principal = Depends(get_principal),
+    db: Session = Depends(get_db),
+) -> EmailDomainUpdateRead:
+    """Install/refresh the system Email Domain field for an existing matter."""
+
+    matter = get_authorized_matter(db, principal, matter_id)
+    try:
+        definition, created, operation = ensure_email_domain_metadata(
+            db,
+            matter=matter,
+            actor_user_id=principal.user.id,
+        )
+        if operation is None:  # pragma: no cover - manual refresh always queues
+            raise RuntimeError("Email Domain refresh was not queued")
+        response = EmailDomainUpdateRead(
+            metadata_definition_id=definition.id,
+            definition_created=created,
+            search_operation_id=operation.id,
+            status=operation.status,
+        )
+        db.commit()
+        return response
+    except EmailDomainUpdateConflict as exc:
+        db.rollback()
+        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=str(exc)) from exc
+    except IntegrityError as exc:
+        db.rollback()
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail="The Email Domain update conflicted with another metadata change; retry the update",
+        ) from exc
 
 
 @router.patch("/{definition_id}", response_model=MetadataDefinitionRead)
@@ -189,7 +237,7 @@ def list_metadata_definitions(
     principal: Principal = Depends(get_principal),
     db: Session = Depends(get_db),
 ) -> list[MetadataDefinition]:
-    get_authorized_matter(db, principal, matter_id)
+    get_authorized_matter(db, principal, matter_id, "metadata.view")
     return list(
         db.scalars(
             select(MetadataDefinition)
@@ -206,7 +254,7 @@ def get_metadata_definition(
     principal: Principal = Depends(get_principal),
     db: Session = Depends(get_db),
 ) -> MetadataDefinition:
-    get_authorized_matter(db, principal, matter_id)
+    get_authorized_matter(db, principal, matter_id, "metadata.view")
     definition = db.scalar(
         select(MetadataDefinition).where(
             MetadataDefinition.id == definition_id,

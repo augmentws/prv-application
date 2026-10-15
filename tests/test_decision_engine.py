@@ -1,6 +1,8 @@
 import asyncio
+import json
 from datetime import UTC, datetime
 
+import httpx
 import pytest
 from pydantic import ValidationError
 
@@ -14,6 +16,7 @@ from app.decision_engine import (
 )
 from app.decision_execution import execute_decision_request
 from app.decision_specifications import DecisionSpecification, validate_selected_option_policy_semantics
+from app.openai_decision_engine import OpenAIDecisionsEngine
 
 
 def test_decision_specification_enforces_primitive_uncertainty_semantics() -> None:
@@ -230,3 +233,150 @@ def test_decision_execution_produces_shared_invocation_telemetry() -> None:
     assert execution.invocations[0].provider == "typesafe"
     assert execution.invocations[0].request_count == 2
     assert execution.invocations[0].input_tokens == 50
+
+
+def test_openai_decisions_adapter_maps_provider_primitives_to_internal_answers() -> None:
+    specification = DecisionSpecification.model_validate(
+        {
+            "questions": {
+                "review.responsive": {
+                    "type": "noul",
+                    "instructions": "Is the document responsive?",
+                    "criteria": {"true": "It concerns the investigation.", "false": "It does not."},
+                    "source_refs": [
+                        {
+                            "task_version_id": "56d6dd2c-41ad-4854-b696-a7b34c31becb",
+                            "excerpt_hash": "a" * 64,
+                        }
+                    ],
+                    "aggregation": {"operator": "MAX_PROBABILITY"},
+                },
+                "review.disposition": {
+                    "type": "choice",
+                    "instructions": "Choose the disposition.",
+                    "criteria": {"responsive": "Responsive", "not_responsive": "Not responsive"},
+                    "source_refs": [
+                        {
+                            "task_version_id": "56d6dd2c-41ad-4854-b696-a7b34c31becb",
+                            "excerpt_hash": "a" * 64,
+                        }
+                    ],
+                    "aggregation": {"operator": "HIGHEST_CONFIDENCE_CHOICE"},
+                },
+                "review.priority": {
+                    "type": "score",
+                    "instructions": "Score review priority.",
+                    "criteria": ["Low", "Medium", "High"],
+                    "source_refs": [
+                        {
+                            "task_version_id": "56d6dd2c-41ad-4854-b696-a7b34c31becb",
+                            "excerpt_hash": "a" * 64,
+                        }
+                    ],
+                    "aggregation": {"operator": "MAX_PROBABILITY"},
+                },
+            },
+            "state_contract": {
+                "builder_version": "document-review-state-v1",
+                "required_paths": ["document.text"],
+            },
+        }
+    )
+    captured: dict = {}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        captured.update(json.loads(request.content))
+        return httpx.Response(
+            200,
+            headers={"x-request-id": "req_decision_123"},
+            json={
+                "model": "gpt-6-luna",
+                "answers": [
+                    {"type": "predicate", "name": "question_0", "probability": 0.91},
+                    {
+                        "type": "choice",
+                        "name": "question_1",
+                        "choice": "responsive",
+                        "probabilities": [
+                            {"value": "responsive", "probability": 0.84},
+                            {"value": "not_responsive", "probability": 0.16},
+                        ],
+                        "confidence": 0.77,
+                    },
+                    {
+                        "type": "score",
+                        "name": "question_2",
+                        "score": 1.7,
+                        "probabilities": [
+                            {"value": 0, "label": "0", "probability": 0.05},
+                            {"value": 1, "label": "1", "probability": 0.2},
+                            {"value": 2, "label": "2", "probability": 0.75},
+                        ],
+                        "confidence": 0.7,
+                    },
+                ],
+                "usage": {"input_tokens": 123, "output_tokens": 0, "total_tokens": 123},
+            },
+        )
+
+    transport = httpx.MockTransport(handler)
+
+    def client_factory(**kwargs):
+        return httpx.AsyncClient(transport=transport, **kwargs)
+
+    engine = OpenAIDecisionsEngine(
+        Settings(openai_api_key="test-key"),
+        client_factory=client_factory,
+    )
+    envelope = asyncio.run(
+        engine.evaluate(
+            DecisionRequest(
+                state={"document": {"text": "Investigation notes"}},
+                questions=specification.questions,
+                model_key="gpt-6-luna",
+                idempotency_key="decision-idempotency-key",
+            )
+        )
+    )
+
+    assert captured["model"] == "gpt-6-luna"
+    assert json.loads(captured["input"])["document"]["text"] == "Investigation notes"
+    assert [question["type"] for question in captured["questions"]] == ["predicate", "choice", "score"]
+    assert captured["questions"][1]["choices"][0]["value"] == "responsive"
+    assert envelope.provider == "openai"
+    assert envelope.provider_request_id == "req_decision_123"
+    assert envelope.answers["review.responsive"].model_dump() == {"type": "noul", "noul": 0.91}
+    assert envelope.answers["review.disposition"].model_dump()["probabilities"] == {
+        "responsive": 0.84,
+        "not_responsive": 0.16,
+    }
+    assert envelope.answers["review.priority"].model_dump()["score"] == 1.7
+    assert envelope.usage.input_tokens == 123
+
+
+def test_openai_decisions_adapter_requires_key_and_supported_model() -> None:
+    request = DecisionRequest.model_validate(
+        {
+            "state": {"document": {"text": "text"}},
+            "questions": {
+                "review.responsive": {
+                    "type": "noul",
+                    "instructions": "Is it responsive?",
+                    "source_refs": [
+                        {
+                            "task_version_id": "56d6dd2c-41ad-4854-b696-a7b34c31becb",
+                            "excerpt_hash": "a" * 64,
+                        }
+                    ],
+                    "aggregation": {"operator": "MAX_PROBABILITY"},
+                }
+            },
+            "model_key": "gpt-6-luna",
+        }
+    )
+    with pytest.raises(Exception, match="OPENAI_API_KEY"):
+        asyncio.run(OpenAIDecisionsEngine(Settings(openai_api_key=None)).evaluate(request))
+
+    unsupported = request.model_copy(update={"model_key": "not-supported"})
+    with pytest.raises(Exception, match="does not support"):
+        asyncio.run(OpenAIDecisionsEngine(Settings(openai_api_key="test-key")).evaluate(unsupported))

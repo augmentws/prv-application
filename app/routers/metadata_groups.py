@@ -6,8 +6,9 @@ from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
 from app.audit import record_audit
+from app.authorization import ResourceRef, can
 from app.database import get_db
-from app.dependencies import Principal, can_admin_matter, get_principal
+from app.dependencies import Principal, get_principal
 from app.matter_configuration import group_key
 from app.models import Matter, MetadataDefinition, MetadataGroup, MetadataGroupField, MetadataGroupPreference
 from app.schemas import MetadataGroupCreate, MetadataGroupRead, MetadataGroupVisibilityUpdate
@@ -15,14 +16,19 @@ from app.schemas import MetadataGroupCreate, MetadataGroupRead, MetadataGroupVis
 router = APIRouter(prefix="/v1/matters/{matter_id}/metadata-groups", tags=["metadata groups"])
 
 
-def authorized_matter(db: Session, principal: Principal, matter_id: uuid.UUID) -> Matter:
+def authorized_matter(
+    db: Session,
+    principal: Principal,
+    matter_id: uuid.UUID,
+    permission_key: str = "metadata.manage",
+) -> Matter:
     matter = db.scalar(select(Matter).where(Matter.id == matter_id))
     if matter is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Matter not found")
     if matter.status != "ACTIVE" or matter.client.status != "ACTIVE" or matter.client.tenant.status != "ACTIVE":
         raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="Matter, client, or tenant is not active")
-    if not can_admin_matter(db, principal, matter):
-        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Matter ADMIN required")
+    if not can(db, principal, permission_key, ResourceRef.matter(matter.id)):
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail=f"Permission required: {permission_key}")
     return matter
 
 
@@ -99,7 +105,7 @@ def list_metadata_groups(
     principal: Principal = Depends(get_principal),
     db: Session = Depends(get_db),
 ) -> list[MetadataGroupRead]:
-    authorized_matter(db, principal, matter_id)
+    authorized_matter(db, principal, matter_id, "metadata.view")
     groups = list(
         db.scalars(
             select(MetadataGroup)

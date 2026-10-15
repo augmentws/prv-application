@@ -32,7 +32,13 @@ def main() -> None:
         analysis_task_batch,
         analysis_task_compilation,
         analysis_task_playground,
+        analysis_task_promotions,
         bulk_tags,
+        classification_analysis_tasks,
+        classification_lifecycle,
+        classification_models,
+        classification_projections,
+        classification_scoring,
         collection_deletion,
         collection_text_processing,
         matter_definition_assessments,
@@ -40,6 +46,7 @@ def main() -> None:
         matter_import,
         matter_topics,
         review_batches,
+        search_exports,
         search_projection,
     )
 

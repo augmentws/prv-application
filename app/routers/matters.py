@@ -6,6 +6,7 @@ from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
 from app.audit import record_audit
+from app.authorization import ResourceRef, can, increment_authorization_revision
 from app.database import get_db
 from app.dependencies import (
     Principal,
@@ -15,7 +16,9 @@ from app.dependencies import (
 )
 from app.matter_configuration import instantiate_configuration_snapshot, snapshot_matter_configuration
 from app.metadata_profiles import DEFAULT_MATTER_METADATA_PROFILE, instantiate_default_configuration
-from app.models import Client, Matter, MatterMembership, MatterTemplate, MatterTemplateVersion
+from app.models import AuthorizationGrant, Client, Matter, MatterMembership, MatterTemplate, MatterTemplateVersion
+from app.rbac_catalog import ensure_rbac_catalog
+from app.rbac_manifest import SYSTEM_ROLE_BY_KEY
 from app.schemas import MatterCreate, MatterRead
 from app.search.operations import create_search_operation
 
@@ -46,6 +49,37 @@ def create_matter(
         raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="Matter name already exists in client") from exc
     if principal.user.tenant_id == client.tenant_id:
         db.add(MatterMembership(matter_id=matter.id, user_id=principal.user.id, role="ADMIN"))
+        ensure_rbac_catalog(db)
+        matter_admin_role = SYSTEM_ROLE_BY_KEY["MATTER_ADMINISTRATOR"]
+        grant = AuthorizationGrant(
+            tenant_id=client.tenant_id,
+            user_id=principal.user.id,
+            role_id=matter_admin_role.id,
+            scope_type="MATTER",
+            matter_id=matter.id,
+            created_by_user_id=principal.user.id,
+            updated_by_user_id=principal.user.id,
+        )
+        db.add(grant)
+        db.flush()
+        revision_before, revision_after = increment_authorization_revision(db, client.tenant_id)
+        record_audit(
+            db,
+            tenant_id=client.tenant_id,
+            actor_user_id=principal.user.id,
+            action="authorization.grant.created",
+            target_type="authorization_grant",
+            target_id=grant.id,
+            details={
+                "subject_type": "USER",
+                "subject_id": str(principal.user.id),
+                "role_id": str(matter_admin_role.id),
+                "scope_type": "MATTER",
+                "scope_id": str(matter.id),
+                "authorization_revision_before": revision_before,
+                "authorization_revision_after": revision_after,
+            },
+        )
 
     configuration_details: dict[str, str | int] = {}
     if payload.template_id:
@@ -127,9 +161,14 @@ def list_matters(
     client = db.scalar(select(Client).where(Client.id == client_id))
     if client is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Client not found")
-    if not can_admin_client(db, principal, client):
-        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Client ADMIN required")
-    return list(db.scalars(select(Matter).where(Matter.client_id == client_id).order_by(Matter.name)))
+    matters = list(
+        db.scalars(select(Matter).where(Matter.client_id == client_id).order_by(Matter.name))
+    )
+    return [
+        matter
+        for matter in matters
+        if can(db, principal, "matter.view", ResourceRef.matter(matter.id))
+    ]
 
 
 @router.get("/matters/{matter_id}", response_model=MatterRead)
@@ -141,6 +180,6 @@ def get_matter(
     matter = db.scalar(select(Matter).where(Matter.id == matter_id))
     if matter is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Matter not found")
-    if not can_admin_matter(db, principal, matter):
-        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Matter ADMIN required")
+    if not can(db, principal, "matter.view", ResourceRef.matter(matter.id)):
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Matter not found")
     return matter
