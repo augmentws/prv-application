@@ -59,6 +59,7 @@ WORKFLOW_ARTIFACT_MAX_BYTES = {
     ArtifactType.SEARCH_RESULT_EXPORT: 20 * 1024**3,
     ArtifactType.JOB_ITEM_OUTCOME_FRAGMENT: 5 * 1024**3,
     ArtifactType.JOB_ITEM_OUTCOMES: 20 * 1024**3,
+    ArtifactType.FACT_EXPORT: 5 * 1024**3,
 }
 
 
@@ -75,7 +76,7 @@ def allowed_media_types(artifact_type: ArtifactType) -> set[str]:
         return COLUMNAR_MEDIA_TYPES
     if artifact_type == ArtifactType.CLASSIFICATION_MODEL_PACKAGE:
         return PACKAGE_MEDIA_TYPES
-    if artifact_type == ArtifactType.SEARCH_RESULT_EXPORT:
+    if artifact_type in {ArtifactType.SEARCH_RESULT_EXPORT, ArtifactType.FACT_EXPORT}:
         return CSV_MEDIA_TYPES
     return JSON_MEDIA_TYPES
 
@@ -133,16 +134,16 @@ def _validate_content_format(
                 raise WorkflowArtifactError("JSON workflow artifacts must contain valid UTF-8 JSON") from exc
             if not isinstance(value, dict):
                 raise WorkflowArtifactError("JSON workflow artifacts must contain a top-level object")
-        elif artifact_type == ArtifactType.SEARCH_RESULT_EXPORT:
+        elif artifact_type in {ArtifactType.SEARCH_RESULT_EXPORT, ArtifactType.FACT_EXPORT}:
             if byte_length < 2:
-                raise WorkflowArtifactError("Search result CSV exports must contain a header row")
+                raise WorkflowArtifactError("CSV exports must contain a header row")
             decoder = codecs.getincrementaldecoder("utf-8")()
             try:
                 while chunk := staged.read(1024 * 1024):
                     decoder.decode(chunk)
                 decoder.decode(b"", final=True)
             except UnicodeDecodeError as exc:
-                raise WorkflowArtifactError("Search result CSV exports must use UTF-8") from exc
+                raise WorkflowArtifactError("CSV exports must use UTF-8") from exc
     finally:
         staged.seek(0)
 

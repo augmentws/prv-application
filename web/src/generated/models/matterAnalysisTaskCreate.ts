@@ -27,4 +27,6 @@ export interface MatterAnalysisTaskCreate {
   /** @maxItems 100 */
   destination_metadata_definition_ids?: string[];
   classification_model_version_id?: string | null;
+  review_guidance_id?: string | null;
+  review_guidance_revision?: number | null;
 }

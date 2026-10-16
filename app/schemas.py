@@ -1,5 +1,5 @@
 import uuid
-from datetime import datetime
+from datetime import date, datetime
 from typing import Annotated, Any, Literal
 
 from pydantic import (
@@ -15,6 +15,8 @@ from pydantic import (
 
 from app.decision_engine import DecisionAnswer
 from app.decision_specifications import DecisionSpecification
+from app.fact_queries import FacetName, FactFilters, FactSort
+from app.fact_specifications import FactDevelopmentSpecification
 from classification_service.schemas import (
     BinaryClassMapping,
     ClassificationStrategy,
@@ -55,7 +57,7 @@ MatterDefinitionSourceKind = Literal[
     "PASTE", "MARKDOWN", "TEXT", "DOCX", "AGENT_EDIT", "USER_EDIT", "ASSESSMENT_REFINEMENT", "CLONE"
 ]
 MatterDefinitionUserSourceKind = Literal["PASTE", "MARKDOWN", "TEXT", "USER_EDIT"]
-MatterAnalysisTaskType = Literal["QUESTION_ANSWERING", "CLASSIFICATION"]
+MatterAnalysisTaskType = Literal["QUESTION_ANSWERING", "CLASSIFICATION", "FACT_DEVELOPMENT"]
 MatterAnalysisTaskStatus = Literal["ACTIVE", "SUSPENDED", "ARCHIVED"]
 MatterAnalysisTaskVersionStatus = Literal["DRAFT", "PUBLISHED", "RETIRED"]
 MatterAnalysisTaskCompilationStatus = Literal["NOT_GENERATED", "STALE", "GENERATING", "READY", "FAILED"]
@@ -2611,6 +2613,8 @@ class MatterAnalysisTaskCreate(BaseModel):
     definition_markdown: str = Field(min_length=1, max_length=2_000_000)
     destination_metadata_definition_ids: list[uuid.UUID] = Field(default_factory=list, max_length=100)
     classification_model_version_id: uuid.UUID | None = None
+    review_guidance_id: uuid.UUID | None = None
+    review_guidance_revision: int | None = Field(default=None, ge=1)
 
     @field_validator("destination_metadata_definition_ids")
     @classmethod
@@ -2628,6 +2632,7 @@ class MatterAnalysisTaskVersionCreate(BaseModel):
     decision_provider: Literal["JEV", "OPENAI_DECISIONS"] | None = None
     destination_metadata_definition_ids: list[uuid.UUID] | None = Field(default=None, max_length=100)
     classification_model_version_id: uuid.UUID | None = None
+    review_guidance_revision: int | None = Field(default=None, ge=1)
 
     @field_validator("destination_metadata_definition_ids")
     @classmethod
@@ -2650,6 +2655,36 @@ class MatterAnalysisTaskSpecificationUpdate(BaseModel):
     compiler_model_configuration: dict[str, Any] = Field(default_factory=dict)
     validation_report: dict[str, Any] = Field(default_factory=dict)
     source_provenance: dict[str, Any] = Field(default_factory=dict)
+
+
+class FactDevelopmentSpecificationUpdate(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    fact_development_specification: FactDevelopmentSpecification
+
+
+class FactIssueMembershipPreviewCreate(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    review_batch_id: uuid.UUID
+    coding_source: Literal["MATTER_METADATA", "REVIEWER_CODING"] = "MATTER_METADATA"
+    reviewer_coding_id: uuid.UUID | None = None
+
+
+class FactIssueMembershipCount(BaseModel):
+    issue_key: str
+    name: str
+    document_count: int
+
+
+class FactIssueMembershipPreviewRead(BaseModel):
+    review_batch_id: uuid.UUID
+    coding_source: Literal["MATTER_METADATA", "REVIEWER_CODING"]
+    reviewer_coding_id: uuid.UUID | None
+    reviewer_coding_revision: int | None
+    batch_document_count: int
+    matched_document_count: int
+    issues: list[FactIssueMembershipCount]
 
 
 class MatterAnalysisTaskPlaygroundCreate(BaseModel):
@@ -2684,7 +2719,13 @@ class MatterAnalysisTaskVersionRead(ORMModel):
     classification_model_id: uuid.UUID | None
     classification_model_version_id: uuid.UUID | None
     classification_embedding_job_id: uuid.UUID | None = None
+    review_guidance_id: uuid.UUID | None = None
+    review_guidance_revision_id: uuid.UUID | None = None
+    review_guidance_revision: int | None = None
+    review_guidance_content_hash: str | None = None
+    review_guidance_pin_stale: bool = False
     decision_specification: DecisionSpecification | None
+    fact_development_specification: FactDevelopmentSpecification | None = None
     specification_content_hash: str | None
     input_contract: dict[str, Any]
     output_contract: dict[str, Any]
@@ -2743,6 +2784,87 @@ class JobExecutionHistoryRead(BaseModel):
     job_id: uuid.UUID
     current_execution: JobExecutionRead | None
     attempts: list[JobExecutionRead]
+
+
+class FactDevelopmentRunCreate(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    review_batch_id: uuid.UUID
+    coding_source: Literal["MATTER_METADATA", "REVIEWER_CODING"] = "MATTER_METADATA"
+    reviewer_coding_id: uuid.UUID | None = None
+    idempotency_key: str = Field(min_length=1, max_length=200)
+
+    @field_validator("idempotency_key")
+    @classmethod
+    def normalize_fact_run_idempotency_key(cls, value: str) -> str:
+        normalized = value.strip()
+        if not normalized:
+            raise ValueError("idempotency_key cannot be blank")
+        return normalized
+
+
+class FactDevelopmentRunEstimateCreate(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    review_batch_id: uuid.UUID
+    coding_source: Literal["MATTER_METADATA", "REVIEWER_CODING"] = "MATTER_METADATA"
+    reviewer_coding_id: uuid.UUID | None = None
+
+
+class FactDevelopmentRunEstimateRead(BaseModel):
+    """What a run launched now would process. Token figures are planning approximations, not billing figures."""
+
+    review_batch_id: uuid.UUID
+    task_version: int
+    coding_source: Literal["MATTER_METADATA", "REVIEWER_CODING"]
+    reviewer_coding_revision: int | None
+    batch_document_count: int
+    matched_document_count: int
+    excluded_document_count: int
+    missing_text_document_count: int
+    previously_extracted_count: int
+    documents_to_extract: int
+    text_bytes_to_extract: int
+    estimated_input_tokens: int
+    estimated_output_tokens: int
+    extraction_model: str
+    chunk_count: int
+    issue_document_counts: list[FactIssueMembershipCount]
+
+
+class FactDevelopmentRunRead(ORMModel):
+    id: uuid.UUID
+    matter_id: uuid.UUID
+    matter_analysis_task_id: uuid.UUID
+    matter_analysis_task_version_id: uuid.UUID
+    run_kind: Literal["FACT_DEVELOPMENT"]
+    scope_type: Literal["REVIEW_BATCH"]
+    scope_id: uuid.UUID
+    status: Literal[
+        "QUEUED",
+        "PREPARING",
+        "EXTRACTING",
+        "COMPLETED",
+        "COMPLETED_WITH_ERRORS",
+        "FAILED",
+        "CANCELED",
+    ]
+    current_stage: str
+    progress_completed: int
+    progress_total: int
+    population_document_count: int
+    configuration_snapshot: dict[str, Any]
+    report: dict[str, Any]
+    failure_code: str | None
+    failure_summary: str | None
+    failure_retriable: bool
+    created_by_user_id: uuid.UUID
+    started_at: datetime | None
+    completed_at: datetime | None
+    canceled_at: datetime | None
+    created_at: datetime
+    updated_at: datetime
+    execution: JobExecutionRead | None = None
 
 
 class MatterAnalysisTaskRunRead(ORMModel):
@@ -3968,3 +4090,383 @@ class ErrorResponse(BaseModel):
 
 def normalize_email(email: str) -> str:
     return email.strip().casefold()
+
+
+EntityTypeLiteral = Literal["PERSON", "ORGANIZATION"]
+FactDatePrecision = Literal["DAY", "MONTH", "QUARTER", "YEAR", "RANGE", "UNKNOWN"]
+FactDateBasis = Literal["STATED_IN_TEXT", "DOCUMENT_DATE", "INFERRED"]
+FactParticipantRole = Literal["PARTICIPANT_ACTOR", "PARTICIPANT_RECIPIENT"]
+FactStatus = Literal["WORKING", "CONFIRMED", "REJECTED", "MERGED"]
+
+
+class MatterEntityCreate(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    entity_type: EntityTypeLiteral
+    display_name: str = Field(min_length=1, max_length=300)
+    email: str | None = Field(default=None, max_length=320)
+    title: str | None = Field(default=None, max_length=200)
+    organization_id: uuid.UUID | None = None
+    custodian_id: uuid.UUID | None = None
+    description: str | None = Field(default=None, max_length=10_000)
+    status: Literal["PROPOSED", "CONFIRMED"] = "CONFIRMED"
+
+
+class MatterEntityUpdate(BaseModel):
+    """Only fields present in the request are changed."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    lock_version: int = Field(ge=1)
+    display_name: str | None = Field(default=None, min_length=1, max_length=300)
+    title: str | None = Field(default=None, max_length=200)
+    organization_id: uuid.UUID | None = None
+    custodian_id: uuid.UUID | None = None
+    description: str | None = Field(default=None, max_length=10_000)
+
+
+class MatterEntityVariantCreate(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    lock_version: int = Field(ge=1)
+    display_name: str | None = Field(default=None, min_length=1, max_length=300)
+    email: str | None = Field(default=None, max_length=320)
+
+
+class MatterEntityAction(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    lock_version: int = Field(ge=1)
+    reason: str | None = Field(default=None, max_length=4_000)
+
+
+class MatterEntityMerge(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    lock_version: int = Field(ge=1)
+    target_entity_id: uuid.UUID
+
+
+class MatterEntityVariantRead(ORMModel):
+    id: uuid.UUID
+    display_name: str
+    email: str | None
+    lock_version: int
+    created_at: datetime
+
+
+class MatterEntityRead(ORMModel):
+    id: uuid.UUID
+    matter_id: uuid.UUID
+    entity_type: EntityTypeLiteral
+    display_name: str
+    email: str | None
+    title: str | None
+    organization_id: uuid.UUID | None
+    custodian_id: uuid.UUID | None
+    description: str | None
+    status: Literal["PROPOSED", "CONFIRMED", "REJECTED"]
+    lock_version: int
+    created_by_user_id: uuid.UUID | None
+    created_by_workflow_run_id: uuid.UUID | None
+    created_at: datetime
+    updated_at: datetime
+    variants: list[MatterEntityVariantRead] = Field(default_factory=list)
+    fact_count: int = 0
+
+
+class MatterEntityPage(BaseModel):
+    items: list[MatterEntityRead]
+    total: int
+
+
+class FactIssueRefModel(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    matter_analysis_task_id: uuid.UUID
+    issue_key: str = Field(min_length=1, max_length=100)
+
+
+class FactParticipantModel(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    entity_id: uuid.UUID
+    role: FactParticipantRole
+
+
+class FactEvidenceCreate(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    matter_document_id: uuid.UUID
+    paragraph_id: str = Field(min_length=1, max_length=50)
+    quote: str = Field(min_length=1, max_length=5_000)
+    occurrence: int = Field(default=1, ge=1, le=1_000)
+    stance: Literal["SUPPORTS", "CONTRADICTS"] = "SUPPORTS"
+
+
+class MatterFactCreate(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    summary: str = Field(min_length=1, max_length=4_000)
+    date_precision: FactDatePrecision = "UNKNOWN"
+    event_date_start: date | None = None
+    event_date_end: date | None = None
+    date_basis: FactDateBasis | None = None
+    owner_entity_id: uuid.UUID | None = None
+    issues: list[FactIssueRefModel] = Field(min_length=1, max_length=100)
+    participants: list[FactParticipantModel] = Field(default_factory=list, max_length=200)
+    evidence: list[FactEvidenceCreate] = Field(min_length=1, max_length=50)
+    key_fact: bool = False
+
+
+class MatterFactUpdate(BaseModel):
+    """Only fields present in the request are changed; each content change appends a revision."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    lock_version: int = Field(ge=1)
+    reason: str | None = Field(default=None, max_length=4_000)
+    summary: str | None = Field(default=None, min_length=1, max_length=4_000)
+    date_precision: FactDatePrecision | None = None
+    event_date_start: date | None = None
+    event_date_end: date | None = None
+    date_basis: FactDateBasis | None = None
+    owner_entity_id: uuid.UUID | None = None
+    issues: list[FactIssueRefModel] | None = Field(default=None, min_length=1, max_length=100)
+    participants: list[FactParticipantModel] | None = Field(default=None, max_length=200)
+    key_fact: bool | None = None
+
+
+class MatterFactAction(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    lock_version: int = Field(ge=1)
+    reason: str | None = Field(default=None, max_length=4_000)
+
+
+class MatterFactEvidenceAdd(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    lock_version: int = Field(ge=1)
+    evidence: FactEvidenceCreate
+
+
+class MatterFactMerge(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    lock_version: int = Field(ge=1)
+    target_fact_id: uuid.UUID
+    target_lock_version: int = Field(ge=1)
+
+
+class MatterFactEntityRef(BaseModel):
+    entity_id: uuid.UUID
+    canonical_entity_id: uuid.UUID
+    display_name: str
+    canonical_display_name: str
+    entity_type: EntityTypeLiteral
+    role: FactParticipantRole | None = None
+
+
+class MatterFactEvidenceRead(ORMModel):
+    id: uuid.UUID
+    matter_document_id: uuid.UUID
+    control_number: str | None = None
+    source_artifact_id: uuid.UUID
+    source_content_hash: str
+    paragraph_map_version: str
+    paragraph_id: str
+    char_start: int
+    char_end: int
+    quote: str
+    stance: Literal["SUPPORTS", "CONTRADICTS"]
+    status: Literal["ACTIVE", "REMOVED"]
+    added_by_user_id: uuid.UUID | None
+    workflow_run_id: uuid.UUID | None
+    created_at: datetime
+    removed_at: datetime | None
+
+
+class MatterFactRevisionRead(ORMModel):
+    revision: int
+    summary: str
+    event_date_start: date | None
+    event_date_end: date | None
+    date_precision: FactDatePrecision
+    date_basis: FactDateBasis | None
+    owner_entity_id: uuid.UUID | None
+    issues: list[dict[str, Any]]
+    participants: list[dict[str, Any]]
+    author_type: Literal["HUMAN", "AGENT"]
+    author_user_id: uuid.UUID | None
+    workflow_run_id: uuid.UUID | None
+    reason: str | None
+    created_at: datetime
+
+
+class MatterFactEventRead(ORMModel):
+    id: uuid.UUID
+    event_type: str
+    payload: dict[str, Any]
+    actor_type: Literal["HUMAN", "AGENT", "SYSTEM"]
+    actor_user_id: uuid.UUID | None
+    workflow_run_id: uuid.UUID | None
+    created_at: datetime
+
+
+class MatterFactRead(BaseModel):
+    id: uuid.UUID
+    matter_id: uuid.UUID
+    status: FactStatus
+    summary: str
+    event_date_start: date | None
+    event_date_end: date | None
+    date_precision: FactDatePrecision
+    date_basis: FactDateBasis | None
+    owner: MatterFactEntityRef | None
+    participants: list[MatterFactEntityRef]
+    issues: list[FactIssueRefModel]
+    key_fact: bool
+    has_contradiction: bool
+    evidence_count: int
+    document_count: int
+    merged_into_fact_id: uuid.UUID | None
+    confirmed_by_user_id: uuid.UUID | None
+    confirmed_at: datetime | None
+    created_by_user_id: uuid.UUID | None
+    origin_workflow_run_id: uuid.UUID | None
+    current_revision: int
+    lock_version: int
+    created_at: datetime
+    updated_at: datetime
+
+
+class MatterFactDetailRead(MatterFactRead):
+    evidence: list[MatterFactEvidenceRead]
+    revisions: list[MatterFactRevisionRead]
+    events: list[MatterFactEventRead]
+
+
+class MatterFactSuggestionRead(ORMModel):
+    id: uuid.UUID
+    fact_id: uuid.UUID
+    kind: Literal["REVISION", "MERGE"]
+    status: Literal["PENDING", "ACCEPTED", "DISMISSED"]
+    base_revision: int
+    changes: dict[str, Any]
+    evidence: list[dict[str, Any]]
+    target_fact_id: uuid.UUID | None
+    rationale: str | None
+    created_by_workflow_run_id: uuid.UUID | None
+    resolved_by_user_id: uuid.UUID | None
+    resolved_at: datetime | None
+    resolution_note: str | None
+    created_at: datetime
+
+
+class MatterFactSuggestionAccept(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    lock_version: int = Field(ge=1)
+    target_lock_version: int | None = Field(default=None, ge=1)
+
+
+class MatterFactSuggestionDismiss(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    note: str | None = Field(default=None, max_length=4_000)
+
+
+class MatterFactPage(BaseModel):
+    items: list[MatterFactRead]
+    total: int
+
+
+class MatterFactExportCreate(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    filters: FactFilters = Field(default_factory=FactFilters)
+    requested_filename: str = Field(default="facts", min_length=1, max_length=150)
+    spreadsheet_safe: bool = True
+    idempotency_key: str = Field(min_length=1, max_length=200)
+
+    @field_validator("idempotency_key")
+    @classmethod
+    def normalize_fact_export_idempotency_key(cls, value: str) -> str:
+        normalized = value.strip()
+        if not normalized:
+            raise ValueError("idempotency_key must not be blank")
+        return normalized
+
+
+class MatterFactExportRead(ORMModel):
+    id: uuid.UUID
+    matter_id: uuid.UUID
+    filter_snapshot: dict[str, Any]
+    csv_policy_snapshot: dict[str, Any]
+    requested_filename: str
+    status: Literal["QUEUED", "RUNNING", "COMPLETED", "FAILED", "CANCELED"]
+    current_stage: str | None
+    fact_count: int
+    evidence_count: int
+    facts_filename: str | None
+    facts_byte_length: int | None
+    evidence_filename: str | None
+    evidence_byte_length: int | None
+    snapshot_started_at: datetime | None
+    expires_at: datetime | None
+    failure_code: str | None
+    failure_summary: str | None
+    failure_retriable: bool
+    created_by_user_id: uuid.UUID
+    created_at: datetime
+    updated_at: datetime
+    completed_at: datetime | None
+    canceled_at: datetime | None
+    execution: JobExecutionRead | None = None
+
+
+class MatterFactSearchRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    filters: FactFilters = Field(default_factory=FactFilters)
+    sort: FactSort = "DATE_ASC"
+    limit: int = Field(default=100, ge=1, le=500)
+    offset: int = Field(default=0, ge=0)
+
+
+class MatterFactFacetRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    filters: FactFilters = Field(default_factory=FactFilters)
+    facet: FacetName
+    size: int = Field(default=50, ge=1, le=500)
+
+
+class MatterFactFacetBucket(BaseModel):
+    value: str | bool | uuid.UUID
+    label: str
+    count: int
+
+
+class MatterFactFacetRead(BaseModel):
+    facet: str
+    buckets: list[MatterFactFacetBucket]
+
+
+class MatterFactHistogramRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    filters: FactFilters = Field(default_factory=FactFilters)
+    interval: Literal["YEAR", "QUARTER", "MONTH"] = "MONTH"
+
+
+class MatterFactHistogramBucket(BaseModel):
+    start: date
+    count: int
+
+
+class MatterFactHistogramRead(BaseModel):
+    interval: Literal["YEAR", "QUARTER", "MONTH"]
+    buckets: list[MatterFactHistogramBucket]
+    undated_count: int

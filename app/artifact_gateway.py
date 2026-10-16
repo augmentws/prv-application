@@ -1,3 +1,4 @@
+import hashlib
 import json
 import uuid
 from collections.abc import Iterator
@@ -18,6 +19,7 @@ from app.search.text import (
     native_can_supply_search_text,
     read_search_text_bytes,
 )
+from artifact_service.analysis_inputs import collection_item_analysis_input_snapshots
 from artifact_service.auth import ArtifactPrincipal, mint_artifact_delegation
 from artifact_service.config import get_artifact_settings
 from artifact_service.database import ArtifactSessionLocal
@@ -39,6 +41,8 @@ from artifact_service.models import (
 )
 from artifact_service.schemas import (
     CollectionDeletionJobRead,
+    CollectionItemAnalysisInputSnapshot,
+    CollectionItemAnalysisInputSnapshotsRequest,
     CollectionItemGroupingSnapshotsRequest,
     CollectionItemRead,
     CollectionSelectionCreate,
@@ -543,6 +547,148 @@ def get_collection_item_grouping_snapshots(
                     native_content_hash=value.get("native_content_hash"),
                 )
     return snapshots
+
+
+@dataclass(frozen=True)
+class TextSourceReference:
+    """The immutable artifact that supplies an item's text, chosen by Core's text-source precedence."""
+
+    artifact_id: uuid.UUID
+    role: str
+    media_type: str
+    original_filename: str
+    content_hash: str
+    byte_length: int
+
+
+@dataclass(frozen=True)
+class AnalysisInputItemSnapshot:
+    item_id: uuid.UUID
+    family_id: uuid.UUID | None
+    record_type: str
+    original_filename: str
+    file_date: datetime | None
+    email_sender: str | None
+    email_subject: str | None
+    email_sent_at: datetime | None
+    email_recipients: dict[str, list[str]]
+    text_source: TextSourceReference | None
+
+
+def _analysis_input_item_snapshot(value: CollectionItemAnalysisInputSnapshot) -> AnalysisInputItemSnapshot:
+    candidates = {
+        candidate.artifact_id: candidate for candidate in value.text_candidates if candidate.role in SEARCH_TEXT_ROLES
+    }
+    chosen = _search_text_candidate(
+        [
+            SearchTextArtifact(
+                id=candidate.artifact_id,
+                role=candidate.role,
+                original_filename=candidate.original_filename,
+                media_type=candidate.media_type,
+                content_hash=candidate.content_hash,
+            )
+            for candidate in candidates.values()
+        ],
+        record_type=value.record_type,
+    )
+    source = candidates[chosen.id] if chosen is not None else None
+    return AnalysisInputItemSnapshot(
+        item_id=value.item_id,
+        family_id=value.family_id,
+        record_type=value.record_type,
+        original_filename=value.original_filename,
+        file_date=value.file_date,
+        email_sender=value.email.sender if value.email else None,
+        email_subject=value.email.subject if value.email else None,
+        email_sent_at=value.email.sent_at if value.email else None,
+        email_recipients=value.email.recipients if value.email else {"TO": [], "CC": [], "BCC": []},
+        text_source=(
+            TextSourceReference(
+                artifact_id=source.artifact_id,
+                role=source.role,
+                media_type=source.media_type,
+                original_filename=source.original_filename,
+                content_hash=source.content_hash,
+                byte_length=source.byte_length,
+            )
+            if source is not None
+            else None
+        ),
+    )
+
+
+def get_collection_item_analysis_input_snapshots(
+    *,
+    item_ids: list[uuid.UUID],
+    actor_user_id: uuid.UUID,
+    tenant_id: uuid.UUID,
+    client_id: uuid.UUID,
+) -> dict[uuid.UUID, AnalysisInputItemSnapshot]:
+    """Content-free item inputs for freezing an analysis input manifest, read in bounded pages.
+
+    Items outside the tenant and client are omitted; callers treat an omitted item as missing.
+    """
+
+    unique_item_ids = list(dict.fromkeys(item_ids))
+    snapshots: dict[uuid.UUID, AnalysisInputItemSnapshot] = {}
+    settings = get_settings()
+    for offset in range(0, len(unique_item_ids), REMOTE_GROUPING_SNAPSHOT_BATCH_SIZE):
+        page = unique_item_ids[offset : offset + REMOTE_GROUPING_SNAPSHOT_BATCH_SIZE]
+        if settings.artifact_mode == "embedded":
+            with ArtifactSessionLocal() as db:
+                values = collection_item_analysis_input_snapshots(
+                    db,
+                    tenant_id=tenant_id,
+                    client_id=client_id,
+                    item_ids=page,
+                )
+        else:
+            with httpx.Client(base_url=settings.artifact_base_url, timeout=120) as client:
+                response = client.post(
+                    "/v1/collection-items/analysis-input-snapshots",
+                    json=CollectionItemAnalysisInputSnapshotsRequest(
+                        tenant_id=tenant_id,
+                        client_id=client_id,
+                        item_ids=page,
+                    ).model_dump(mode="json"),
+                    headers=_headers(actor_user_id, tenant_id, client_id),
+                )
+            if response.status_code == 403:
+                raise PermissionError("Collection items are not available to this matter")
+            response.raise_for_status()
+            values = [CollectionItemAnalysisInputSnapshot.model_validate(value) for value in response.json()]
+        for value in values:
+            snapshots[value.item_id] = _analysis_input_item_snapshot(value)
+    return snapshots
+
+
+def read_text_source(
+    reference: TextSourceReference,
+    *,
+    record_type: str,
+    actor_user_id: uuid.UUID,
+    tenant_id: uuid.UUID,
+    client_id: uuid.UUID,
+) -> str | None:
+    """Read and extract the text of one pinned artifact, verifying its bytes against the frozen content hash."""
+
+    content = read_artifact_bytes(
+        artifact_id=reference.artifact_id,
+        actor_user_id=actor_user_id,
+        tenant_id=tenant_id,
+        client_id=client_id,
+    )
+    if hashlib.sha256(content).hexdigest() != reference.content_hash:
+        raise ValueError("The pinned text artifact does not match its frozen content hash")
+    text = extract_search_text(
+        content,
+        role=reference.role,
+        media_type=reference.media_type,
+        filename=reference.original_filename,
+        record_type=record_type,
+    )
+    return text if text and text.strip() else None
 
 
 def get_collection_snapshot(

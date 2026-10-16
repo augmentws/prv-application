@@ -38,6 +38,12 @@ const TASK_TYPE_LABELS = {
   CLASSIFICATION: "Classification",
 } as const;
 
+// Fact-development tasks are created through the API until their authoring UI exists.
+const TASK_TYPE_DISPLAY_LABELS = {
+  ...TASK_TYPE_LABELS,
+  FACT_DEVELOPMENT: "Fact development",
+} as const;
+
 const DECISION_PROVIDER_LABELS = {
   JEV: "TypeSafe JEV",
   OPENAI_DECISIONS: "OpenAI Decisions",
@@ -111,7 +117,7 @@ export function AnalysisTasksPanel({ clientId, matterId }: { clientId?: string; 
                 >
                   <span className="block truncate font-semibold">{task.name}</span>
                   <span className="mt-1 flex flex-wrap items-center gap-1.5 text-xs">
-                    <span>{TASK_TYPE_LABELS[task.task_type]}</span>
+                    <span>{TASK_TYPE_DISPLAY_LABELS[task.task_type]}</span>
                     <span aria-hidden="true">·</span>
                     <span>v{task.current_version}</span>
                     {task.published_version ? <Badge variant="outline">published v{task.published_version}</Badge> : null}
@@ -214,7 +220,7 @@ function AnalysisTaskDetail({ clientId, matterId, task, definitions, onTaskUpdat
       <Card className="p-5">
         <div className="flex flex-wrap items-start justify-between gap-4">
           <div className="min-w-0">
-            <div className="flex flex-wrap items-center gap-2"><h3 className="text-xl font-semibold">{task.name}</h3><StatusBadge status={task.status} /><Badge variant="outline">{TASK_TYPE_LABELS[task.task_type]}</Badge></div>
+            <div className="flex flex-wrap items-center gap-2"><h3 className="text-xl font-semibold">{task.name}</h3><StatusBadge status={task.status} /><Badge variant="outline">{TASK_TYPE_DISPLAY_LABELS[task.task_type]}</Badge></div>
             <p className="mt-1 text-sm text-muted-foreground">{task.description || "No task description."}</p>
             <p className="mt-2 font-mono text-xs text-muted-foreground">{task.key} · {task.workflow_key}</p>
           </div>

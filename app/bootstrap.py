@@ -14,6 +14,7 @@ from app.document_cleaner import (
     STANDARD_DOCUMENT_CLEANER_AGENT_PROMPT,
     STANDARD_DOCUMENT_CLEANER_USAGE,
 )
+from app.fact_development_skills import ensure_standard_fact_development_skills
 from app.models import (
     AgentDefinition,
     AgentDefinitionVersion,
@@ -233,6 +234,8 @@ def bootstrap_root() -> tuple[Tenant, User, bool]:
                 db.flush()
             if ensure_standard_analysis_task_skills(db, existing_root, existing_user):
                 db.flush()
+            if ensure_standard_fact_development_skills(db, existing_root, existing_user):
+                db.flush()
             db.commit()
             return existing_root, existing_user, False
 
@@ -265,6 +268,7 @@ def bootstrap_root() -> tuple[Tenant, User, bool]:
         ensure_standard_agents(db, root, user)
         ensure_standard_assessment_skills(db, root, user)
         ensure_standard_analysis_task_skills(db, root, user)
+        ensure_standard_fact_development_skills(db, root, user)
         db.commit()
         return root, user, True
 

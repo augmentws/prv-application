@@ -18,12 +18,15 @@ from app.routers import (
     coding_history,
     collection_deletions,
     document_metadata,
+    fact_exports,
+    facts,
     job_executions,
     job_outcomes,
     managed_skills,
     matter_definition_assessments,
     matter_definitions,
     matter_embeddings,
+    matter_entities,
     matter_imports,
     matter_templates,
     matter_topics,
@@ -101,6 +104,9 @@ app.include_router(search.router)
 app.include_router(managed_skills.router)
 app.include_router(matter_definition_assessments.router)
 app.include_router(matter_definition_assessments.guidance_router)
+app.include_router(facts.router)
+app.include_router(matter_entities.router)
+app.include_router(fact_exports.router)
 if get_settings().artifact_mode == "embedded":
     app.include_router(build_artifact_router(get_embedded_artifact_principal))
 elif get_settings().artifact_mode == "remote":

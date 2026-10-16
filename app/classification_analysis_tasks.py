@@ -318,7 +318,11 @@ def create_classification_analysis_run(
 
 
 def _authorized_run(db: Session, run_id: uuid.UUID) -> tuple[MatterAnalysisTaskRun, Matter]:
-    run = db.scalar(select(MatterAnalysisTaskRun).where(MatterAnalysisTaskRun.id == run_id).with_for_update())
+    run = db.scalar(
+        select(MatterAnalysisTaskRun)
+        .where(MatterAnalysisTaskRun.id == run_id, MatterAnalysisTaskRun.run_kind == "CLASSIFICATION")
+        .with_for_update()
+    )
     if run is None:
         raise ClassificationAnalysisTaskError("Classification Analysis Task run was not found")
     matter = db.get(Matter, run.matter_id)

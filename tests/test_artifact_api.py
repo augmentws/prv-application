@@ -203,6 +203,73 @@ def test_individual_email_upload_with_source_container(client: TestClient, root_
         }
     ]
 
+    input_response = client.post(
+        "/v1/collection-items/analysis-input-snapshots",
+        headers=auth(root_token),
+        json={
+            "tenant_id": tenant_id,
+            "client_id": client_id,
+            "item_ids": [str(uuid.uuid4()), payload["item"]["id"]],
+        },
+    )
+    assert input_response.status_code == 200, input_response.text
+    assert input_response.json() == [
+        {
+            "item_id": payload["item"]["id"],
+            "family_id": None,
+            "record_type": "EMAIL",
+            "original_filename": "1.eml",
+            "file_date": "2001-05-14T23:39:00Z",
+            "email": {
+                "sender": "phillip.allen@enron.com",
+                "subject": "Test message",
+                "sent_at": "2001-05-14T23:39:00Z",
+                "recipients": {"TO": ["tim.belden@enron.com"], "CC": [], "BCC": []},
+            },
+            "text_candidates": [
+                {
+                    "artifact_id": artifact_id,
+                    "role": "NATIVE",
+                    "media_type": "message/rfc822",
+                    "original_filename": "1.eml",
+                    "content_hash": sha256,
+                    "byte_length": len(email_bytes),
+                }
+            ],
+        }
+    ]
+    other_client = client.post(
+        "/v1/collection-items/analysis-input-snapshots",
+        headers=auth(root_token),
+        json={"tenant_id": tenant_id, "client_id": str(uuid.uuid4()), "item_ids": [payload["item"]["id"]]},
+    )
+    assert other_client.status_code in {403, 404}
+
+    # The embedded Core gateway reads the same snapshot and applies Core's text-source precedence.
+    from conftest import ArtifactTestingSessionLocal
+
+    from app import artifact_gateway
+
+    original_session = artifact_gateway.ArtifactSessionLocal
+    artifact_gateway.ArtifactSessionLocal = ArtifactTestingSessionLocal
+    try:
+        gateway_snapshots = artifact_gateway.get_collection_item_analysis_input_snapshots(
+            item_ids=[uuid.UUID(payload["item"]["id"])],
+            actor_user_id=uuid.uuid4(),
+            tenant_id=uuid.UUID(tenant_id),
+            client_id=uuid.UUID(client_id),
+        )
+    finally:
+        artifact_gateway.ArtifactSessionLocal = original_session
+    gateway_snapshot = gateway_snapshots[uuid.UUID(payload["item"]["id"])]
+    assert gateway_snapshot.file_date is not None
+    assert gateway_snapshot.email_recipients["TO"] == ["tim.belden@enron.com"]
+    assert gateway_snapshot.text_source is not None
+    assert (gateway_snapshot.text_source.artifact_id, gateway_snapshot.text_source.content_hash) == (
+        uuid.UUID(artifact_id),
+        sha256,
+    )
+
     artifacts_response = client.get(
         f"/v1/collection-items/{payload['item']['id']}/artifacts",
         headers=auth(root_token),

@@ -45,6 +45,8 @@ def package_bytes() -> bytes:
 def content_for(artifact_type: ArtifactType) -> tuple[bytes, str]:
     if artifact_type == ArtifactType.SEARCH_RESULT_EXPORT:
         return b"Matter document ID,Original filename\r\n1,example.msg\r\n", "text/csv"
+    if artifact_type == ArtifactType.FACT_EXPORT:
+        return b"Fact ID,Summary\r\nf-1,Prices rose.\r\n", "text/csv"
     if artifact_type == ArtifactType.CLASSIFICATION_MODEL_PACKAGE:
         return package_bytes(), "application/zip"
     if artifact_type in {

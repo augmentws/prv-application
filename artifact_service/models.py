@@ -433,7 +433,7 @@ class WorkflowArtifact(ArtifactBase):
             "'CLASSIFICATION_LABELS', 'CLASSIFICATION_SPLITS', 'CLASSIFICATION_MODEL_PACKAGE', "
             "'CLASSIFICATION_PREDICTIONS', 'CLASSIFICATION_EVALUATION', "
             "'CLASSIFICATION_RESULT_MANIFEST', 'SEARCH_RESULT_EXPORT', "
-            "'JOB_ITEM_OUTCOME_FRAGMENT', 'JOB_ITEM_OUTCOMES')",
+            "'JOB_ITEM_OUTCOME_FRAGMENT', 'JOB_ITEM_OUTCOMES', 'FACT_EXPORT')",
             name="ck_workflow_artifact_type",
         ),
         CheckConstraint("schema_version > 0", name="ck_workflow_artifact_schema_version"),

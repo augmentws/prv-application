@@ -18,4 +18,5 @@ export interface MatterAnalysisTaskVersionCreate {
   decision_provider?: MatterAnalysisTaskVersionCreateDecisionProvider;
   destination_metadata_definition_ids?: string[] | null;
   classification_model_version_id?: string | null;
+  review_guidance_revision?: number | null;
 }

@@ -106,6 +106,11 @@ PERMISSIONS = (
     _permission("classification.activate", "Classification", "MATTER", dangerous=True),
     _permission("classification.score", "Classification", "MATTER"),
     _permission("classification.publish", "Classification", "MATTER", dangerous=True),
+    _permission("fact.view", "Facts", "MATTER"),
+    _permission("fact.review", "Facts", "MATTER"),
+    _permission("fact.export", "Facts", "MATTER", dangerous=True),
+    _permission("entity.view", "Entities", "MATTER"),
+    _permission("entity.manage", "Entities", "MATTER"),
 )
 
 PERMISSION_BY_KEY = {permission.key: permission for permission in PERMISSIONS}
@@ -142,6 +147,8 @@ MATTER_ADMINISTRATOR_PERMISSIONS = frozenset(
             "search.",
             "embedding.",
             "classification.",
+            "fact.",
+            "entity.",
         )
     )
 )
@@ -156,6 +163,10 @@ REVIEWER_PERMISSIONS = frozenset(
         "batch.review",
         "matter_definition.view",
         "analysis_task.view",
+        "fact.view",
+        "fact.review",
+        "entity.view",
+        "entity.manage",
     }
 )
 ANALYSIS_OPERATOR_PERMISSIONS = frozenset(
@@ -170,6 +181,8 @@ ANALYSIS_OPERATOR_PERMISSIONS = frozenset(
         "analysis_task.view",
         "analysis_task.run",
         "job.view",
+        "fact.view",
+        "entity.view",
     }
 )
 CLASSIFICATION_MANAGER_PERMISSIONS = frozenset(
@@ -203,6 +216,8 @@ READ_ONLY_PERMISSIONS = frozenset(
         "analysis_task.view",
         "job.view",
         "classification.view",
+        "fact.view",
+        "entity.view",
     }
 )
 
