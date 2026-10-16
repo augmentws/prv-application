@@ -28,6 +28,7 @@ from app.models import (
     MatterFactEntity,
     MatterFactEvidence,
     MatterFactIssue,
+    MatterFactSuggestion,
     MetadataDefinition,
     User,
 )
@@ -136,6 +137,8 @@ class FactFilters(BaseModel):
     undated: bool | None = None
     key_fact: bool | None = None
     has_contradiction: bool | None = None
+    # Agent suggestions waiting for a reviewer: revisions of the fact, or merges it is either side of.
+    has_pending_suggestion: bool | None = None
     author_types: list[Literal["HUMAN", "AGENT"]] = Field(default_factory=list, max_length=2)
     origin_workflow_run_ids: list[uuid.UUID] = Field(default_factory=list, max_length=MAX_IDS)
     confirmed_by_user_ids: list[uuid.UUID] = Field(default_factory=list, max_length=MAX_IDS)
@@ -312,6 +315,16 @@ def fact_filter_statement(db: Session, *, matter_id: uuid.UUID, filters: FactFil
         statement = statement.where(MatterFact.key_fact.is_(filters.key_fact))
     if filters.has_contradiction is not None:
         statement = statement.where(MatterFact.has_contradiction.is_(filters.has_contradiction))
+    if filters.has_pending_suggestion is not None:
+        pending = (
+            select(MatterFactSuggestion.id)
+            .where(
+                MatterFactSuggestion.status == "PENDING",
+                or_(MatterFactSuggestion.fact_id == MatterFact.id, MatterFactSuggestion.target_fact_id == MatterFact.id),
+            )
+            .exists()
+        )
+        statement = statement.where(pending if filters.has_pending_suggestion else ~pending)
     if filters.author_types:
         conditions = []
         if "HUMAN" in filters.author_types:

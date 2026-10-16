@@ -474,6 +474,7 @@ export * from './matterDefinitionRevisionCreateSourceKind';
 export * from './matterDefinitionRevisionRead';
 export * from './matterDefinitionRevisionReadSourceKind';
 export * from './matterDefinitionUpdate';
+export * from './matterDocumentFactRead';
 export * from './matterDocumentImportCreate';
 export * from './matterDocumentImportRead';
 export * from './matterDocumentImportReadSelection';

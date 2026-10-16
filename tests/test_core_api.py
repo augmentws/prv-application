@@ -64,7 +64,7 @@ def test_core_phase_one_flow(client: TestClient, root_token: str) -> None:
     )
     assert default_definitions.status_code == 200, default_definitions.text
     definitions_by_key = {definition["key"]: definition for definition in default_definitions.json()}
-    assert len(definitions_by_key) == 26
+    assert len(definitions_by_key) == 27
     assert {
         key: definitions_by_key["custodian"][key]
         for key in ("value_source", "reference_target", "cardinality", "facetable")
@@ -105,7 +105,7 @@ def test_core_phase_one_flow(client: TestClient, root_token: str) -> None:
     assert definitions_by_key["email_subject"]["normalize_to_lowercase"] is False
     assert definitions_by_key["responsiveness"]["value_source"] == "ASSERTED"
     assert definitions_by_key["responsiveness"]["template_key"] == "edrm-core"
-    assert definitions_by_key["responsiveness"]["template_version"] == 4
+    assert definitions_by_key["responsiveness"]["template_version"] == 5
 
     update_domains = client.post(
         f"/v1/matters/{matter_id}/metadata-definitions/email-domain/update",
@@ -417,8 +417,10 @@ def test_metadata_groups_preferences_templates_and_clone(client: TestClient, roo
     groups_response = client.get(f"/v1/matters/{matter_id}/metadata-groups", headers=auth(root_token))
     assert groups_response.status_code == 200, groups_response.text
     groups = groups_response.json()
-    assert len(groups) == 7
+    assert len(groups) == 8
     groups_by_key = {group["key"]: group for group in groups}
+    assert groups_by_key["facts"]["scope"] == "SYSTEM"
+    assert groups_by_key["facts"]["default_table_visible"] is False
     assert groups_by_key["email"]["default_table_visible"] is False
     assert groups_by_key["email"]["table_visible"] is False
     assert groups_by_key["email"]["document_visible"] is True
@@ -511,8 +513,8 @@ def test_metadata_groups_preferences_templates_and_clone(client: TestClient, roo
     )
     assert template_response.status_code == 201, template_response.text
     template = template_response.json()
-    assert template["definition_count"] == 27
-    assert template["group_count"] == 8
+    assert template["definition_count"] == 28
+    assert template["group_count"] == 9
 
     available_templates = client.get(
         f"/v1/clients/{client_id}/matter-templates",
@@ -545,6 +547,7 @@ def test_metadata_groups_preferences_templates_and_clone(client: TestClient, roo
         "file_details",
         "source_dates",
         "review_coding",
+        "facts",
         "priority_coding",
     }
     assert next(group for group in template_groups if group["key"] == "email")["table_visible"] is False

@@ -19,6 +19,7 @@ from app.document_metadata import current_metadata_values, event_value
 from app.email_domains import extract_email_domains
 from app.embeddings.configuration import canonical_hash, processing_configuration
 from app.embeddings.parquet import read_chunk_set, read_vector_set
+from app.fact_document_state import FACT_STATE_KEY, cited_document_ids, document_fact_states
 from app.metadata_hierarchy import hierarchy_entries, is_hierarchical_field
 from app.models import (
     BatchTopic,
@@ -198,6 +199,9 @@ def batch_coding_projection_value(
     return {key: item for key, item in projected.items() if item is not None}
 
 
+_UNRESOLVED = object()
+
+
 def build_document_projection(
     db: Session,
     document: MatterDocument,
@@ -207,6 +211,7 @@ def build_document_projection(
     batch_topics: list[dict[str, str]] | None = None,
     batch_coding: list[dict[str, Any]] | None = None,
     coded_by: list[str] | None = None,
+    fact_state: str | None | object = _UNRESOLVED,
 ) -> dict[str, Any]:
     matter = db.get(Matter, document.matter_id)
     if matter is None:
@@ -247,6 +252,10 @@ def build_document_projection(
         "source_created_at": snapshot.source_created_at,
         "source_modified_at": snapshot.source_modified_at,
         "file_date": snapshot.file_date,
+        # Derived from the Core fact ledger; absent when no live fact cites the document.
+        "fact_state": (
+            document_fact_states(db, [document.id])[document.id] if fact_state is _UNRESOLVED else fact_state
+        ),
     }
     values.update(current_metadata_values(db, document.id, definitions))
     indexed_values = {
@@ -770,12 +779,18 @@ class SearchIndexManager:
         requested_keys = tuple(key for key in field_keys if key in known_keys)
         if not requested_keys:
             return 0
-        unsupported_keys = set(requested_keys) - {"email_domain"}
+        unsupported_keys = set(requested_keys) - {"email_domain", FACT_STATE_KEY}
         if unsupported_keys:
             raise ValueError(
                 "Explicit system metadata backfill is not implemented for: "
                 + ", ".join(sorted(unsupported_keys))
             )
+        fact_state_updated = 0
+        if FACT_STATE_KEY in requested_keys:
+            fact_state_updated = self._backfill_fact_state(index_name, matter, page_size=page_size)
+        if "email_domain" not in requested_keys:
+            self.client.refresh(index_name)
+            return fact_state_updated
         total = int(
             self.db.scalar(
                 select(func.count()).select_from(MatterDocument).where(MatterDocument.matter_id == matter.id)
@@ -873,6 +888,22 @@ class SearchIndexManager:
             self.db.commit()
         self.client.refresh(index_name)
         return processed
+
+    def _backfill_fact_state(self, index_name: str, matter: Matter, *, page_size: int) -> int:
+        """Project ``fact_state`` onto the documents facts cite; every other document correctly has no value."""
+
+        document_ids = cited_document_ids(self.db, matter.id)
+        for start in range(0, len(document_ids), page_size):
+            page = document_ids[start : start + page_size]
+            states = document_fact_states(self.db, page)
+            self.client.bulk(
+                index_name,
+                (
+                    ("update", str(document_id), {"doc": {"metadata": {FACT_STATE_KEY: states[document_id]}}})
+                    for document_id in page
+                ),
+            )
+        return len(document_ids)
 
     def upsert_documents(self, matter_id: uuid.UUID, document_ids: list[uuid.UUID]) -> int:
         generation = self.ensure(matter_id)
@@ -1277,6 +1308,7 @@ class SearchIndexManager:
                 self.db,
                 [document.id for document in batch],
             )
+            fact_states = document_fact_states(self.db, [document.id for document in batch])
             memberships: dict[uuid.UUID, list[uuid.UUID]] = {document.id: [] for document in batch}
             rows = self.db.execute(
                 select(ReviewBatchDocument.matter_document_id, ReviewBatchDocument.review_batch_id)
@@ -1370,6 +1402,7 @@ class SearchIndexManager:
                             batch_topics=batch_topics[document.id],
                             batch_coding=batch_coding[document.id],
                             coded_by=coding_actors[document.id],
+                            fact_state=fact_states[document.id],
                         ),
                     )
                     for document in batch
@@ -1388,6 +1421,7 @@ class SearchIndexManager:
                         batch_topics[document.id],
                         batch_coding[document.id],
                         coding_actors[document.id],
+                        fact_states[document.id],
                     )
                     for document in batch
                 ]
@@ -1399,6 +1433,7 @@ class SearchIndexManager:
                         list[dict[str, str]],
                         list[dict[str, Any]],
                         list[str],
+                        str | None,
                     ],
                     session_factory=projection_session,
                 ) -> tuple[str, str, dict[str, Any]]:
@@ -1408,6 +1443,7 @@ class SearchIndexManager:
                         document_batch_topics,
                         document_batch_coding,
                         document_coding_actors,
+                        document_fact_state,
                     ) = item
                     with session_factory() as worker_db:
                         document = worker_db.get(MatterDocument, document_id)
@@ -1421,6 +1457,7 @@ class SearchIndexManager:
                             batch_topics=document_batch_topics,
                             batch_coding=document_batch_coding,
                             coded_by=document_coding_actors,
+                            fact_state=document_fact_state,
                         )
                         return "index", str(document_id), projection
 

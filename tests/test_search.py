@@ -1204,6 +1204,7 @@ def test_document_projection_includes_artifact_body_text(monkeypatch: pytest.Mon
         "app.search.service.coded_by_tokens",
         lambda *_: ["user:reviewer@example.com"],
     )
+    monkeypatch.setattr("app.search.service.document_fact_states", lambda _db, ids: dict.fromkeys(ids, "confirmed"))
 
     batch_ids = [uuid.uuid4(), uuid.uuid4()]
     definitions = [
@@ -1212,6 +1213,7 @@ def test_document_projection_includes_artifact_body_text(monkeypatch: pytest.Mon
         definition("email_domain", "TEXT", facetable=True, normalize_to_lowercase=True),
         definition("file_date", "DATETIME", facetable=True),
         definition("initiative", "TEXT", facetable=True, hierarchy_separator="/"),
+        definition("fact_state", "ENUM", facetable=True),
     ]
     definitions[1].cardinality = "MULTIPLE"
     definitions[2].cardinality = "MULTIPLE"
@@ -1227,6 +1229,7 @@ def test_document_projection_includes_artifact_body_text(monkeypatch: pytest.Mon
     assert projection["metadata"]["email_domain"] == ["example.com"]
     assert projection["metadata"]["file_date"] == "2001-05-14T23:39:00+00:00"
     assert projection["metadata"]["initiative"] == "Initiatives/344"
+    assert projection["metadata"]["fact_state"] == "confirmed"
     assert projection["hierarchy_facets"] == [
         {
             "field": "initiative",
@@ -1301,6 +1304,7 @@ def test_document_projection_attaches_nested_chunk_vectors(monkeypatch: pytest.M
     monkeypatch.setattr("app.search.service.load_current_chunk_artifacts", lambda **_: (chunk_set, vector_set))
     monkeypatch.setattr("app.search.service.current_metadata_values", lambda *_: {})
     monkeypatch.setattr("app.search.service.coded_by_tokens", lambda *_: [])
+    monkeypatch.setattr("app.search.service.document_fact_states", lambda _db, ids: dict.fromkeys(ids))
 
     projection = build_document_projection(db, document, [])
 
@@ -2316,11 +2320,11 @@ def test_explicit_rebuild_installs_missing_default_system_definitions(
         db.scalars(
             select(MetadataDefinition).where(
                 MetadataDefinition.matter_id == matter_id,
-                MetadataDefinition.key.in_(["email_domain", "file_date"]),
+                MetadataDefinition.key.in_(["email_domain", "file_date", "fact_state"]),
             )
         )
     )
-    assert {definition.key for definition in missing_definitions} == {"email_domain", "file_date"}
+    assert {definition.key for definition in missing_definitions} == {"email_domain", "file_date", "fact_state"}
     db.execute(
         delete(MetadataGroupField).where(
             MetadataGroupField.metadata_definition_id.in_([definition.id for definition in missing_definitions])
@@ -2341,11 +2345,11 @@ def test_explicit_rebuild_installs_missing_default_system_definitions(
         db.scalars(
             select(MetadataDefinition).where(
                 MetadataDefinition.matter_id == matter_id,
-                MetadataDefinition.key.in_(["email_domain", "file_date"]),
+                MetadataDefinition.key.in_(["email_domain", "file_date", "fact_state"]),
             )
         )
     )
-    assert {definition.key for definition in installed} == {"email_domain", "file_date"}
+    assert {definition.key for definition in installed} == {"email_domain", "file_date", "fact_state"}
     assert all(definition.value_source == "SYSTEM" for definition in installed)
 
 

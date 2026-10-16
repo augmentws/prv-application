@@ -21,6 +21,7 @@ from app.database import get_db
 from app.dependencies import Principal, get_principal
 from app.email_domains import EmailDomainUpdateConflict, ensure_email_domain_metadata
 from app.embedding_gateway import get_query_embedding_gateway
+from app.fact_document_state import FactStateUpdateConflict, ensure_fact_state_metadata
 from app.file_dates import FileDateUpdateConflict, ensure_file_date_metadata
 from app.job_archives import job_not_archived
 from app.job_executions import MATTER_SEARCH_EXPORT_JOB_TYPE, JobExecutionConflict
@@ -82,7 +83,13 @@ def _ensure_rebuild_metadata(db: Session, matter: Matter, principal: Principal) 
             matter=matter,
             actor_user_id=principal.user.id,
         )
-    except (EmailDomainUpdateConflict, FileDateUpdateConflict) as exc:
+        ensure_fact_state_metadata(
+            db,
+            matter=matter,
+            actor_user_id=principal.user.id,
+            queue_backfill=False,
+        )
+    except (EmailDomainUpdateConflict, FileDateUpdateConflict, FactStateUpdateConflict) as exc:
         raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=str(exc)) from exc
 
 

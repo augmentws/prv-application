@@ -105,6 +105,7 @@ app.include_router(managed_skills.router)
 app.include_router(matter_definition_assessments.router)
 app.include_router(matter_definition_assessments.guidance_router)
 app.include_router(facts.router)
+app.include_router(facts.document_router)
 app.include_router(matter_entities.router)
 app.include_router(fact_exports.router)
 if get_settings().artifact_mode == "embedded":
