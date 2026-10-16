@@ -33,6 +33,8 @@ export interface FactListState {
   pendingOnly: boolean;
   /** Facts an entity owns or takes part in, across its merged variants. */
   entityId: string;
+  /** Timeline only: also show working facts, marked as unconfirmed. */
+  includeWorking: boolean;
   sort: FactSort;
   page: number;
 }
@@ -54,6 +56,7 @@ export function readFactListState(params: URLSearchParams): FactListState {
     dateTo: parseDateOnly(params.get("fto") ?? "") ? (params.get("fto") as string) : "",
     pendingOnly: params.get("fpending") === "1",
     entityId: params.get("fentity") ?? "",
+    includeWorking: params.get("fworking") === "1",
     sort: sort && sort in FACT_SORT_LABELS ? (sort as FactSort) : "DATE_ASC",
     page: Number.isFinite(page) && page > 0 ? page : 1,
   };
@@ -63,7 +66,7 @@ export function readFactListState(params: URLSearchParams): FactListState {
 export function writeFactListState(params: URLSearchParams, state: FactListState): URLSearchParams {
   const next = new URLSearchParams(params);
   for (const key of [...next.keys()]) {
-    if (key.startsWith(PARAM_PREFIX) || ["fq", "ffrom", "fto", "fpending", "fentity", "fsort", "fpage"].includes(key)) next.delete(key);
+    if (key.startsWith(PARAM_PREFIX) || ["fq", "ffrom", "fto", "fpending", "fentity", "fworking", "fsort", "fpage"].includes(key)) next.delete(key);
   }
   if (state.query.trim()) next.set("fq", state.query.trim());
   for (const facet of FACT_FACETS) {
@@ -74,6 +77,7 @@ export function writeFactListState(params: URLSearchParams, state: FactListState
   if (state.dateTo) next.set("fto", state.dateTo);
   if (state.pendingOnly) next.set("fpending", "1");
   if (state.entityId) next.set("fentity", state.entityId);
+  if (state.includeWorking) next.set("fworking", "1");
   if (state.sort !== "DATE_ASC") next.set("fsort", state.sort);
   if (state.page > 1) next.set("fpage", String(state.page));
   return next;
@@ -105,6 +109,11 @@ export function factFilters(state: FactListState, { without }: { without?: FactF
   if (state.pendingOnly) filters.has_pending_suggestion = true;
   if (state.entityId) filters.entity_id = state.entityId;
   return filters;
+}
+
+/** The timeline's filter: the list filters without the status facet, limited to confirmed (and optionally working) facts. */
+export function timelineFilters(state: FactListState): FactFilters {
+  return { ...factFilters(state, { without: "status" }), statuses: state.includeWorking ? ["CONFIRMED", "WORKING"] : ["CONFIRMED"] };
 }
 
 export function hasFactFilters(state: FactListState) {
@@ -172,4 +181,71 @@ export function entityDetailHref(clientId: string, matterId: string, entityId: s
 /** The Facts list filtered to facts an entity owns or takes part in. */
 export function entityFactsHref(clientId: string, matterId: string, entityId: string) {
   return `/app/clients/${clientId}/matters/${matterId}?${new URLSearchParams({ tab: "facts", fentity: entityId })}`;
+}
+
+export type FactsTab = "list" | "timeline";
+
+/** Switch between the Facts sub-tabs, keeping the shared filters. */
+export function factsTabParams(params: URLSearchParams, tab: FactsTab): URLSearchParams {
+  const next = new URLSearchParams(params);
+  next.set("tab", "facts");
+  next.delete("fpage");
+  if (tab === "timeline") next.set("facts", "timeline");
+  else next.delete("facts");
+  return next;
+}
+
+export interface TimelineSection<T> {
+  key: string;
+  label: string;
+  facts: T[];
+}
+
+export interface TimelineYear<T> {
+  year: string;
+  sections: TimelineSection<T>[];
+}
+
+type TimelineFact = Pick<MatterFactRead, "date_precision" | "event_date_start" | "event_date_end">;
+
+function timelineSection(fact: TimelineFact): { year: string; key: string; label: string } | null {
+  const start = fact.event_date_start ? parseDateOnly(fact.event_date_start) : null;
+  if (!start || fact.date_precision === "UNKNOWN") return null;
+  const year = String(start.getUTCFullYear()).padStart(4, "0");
+  if (fact.date_precision === "YEAR") return { year, key: `${year}`, label: `${year}, month unknown` };
+  if (fact.date_precision === "QUARTER") {
+    const quarter = QUARTER_MONTHS[start.getUTCMonth()] ?? "";
+    return { year, key: `${year}-${quarter}`, label: `${quarter} ${year}` };
+  }
+  const month = String(start.getUTCMonth() + 1).padStart(2, "0");
+  return { year, key: `${year}-${month}`, label: new Intl.DateTimeFormat(undefined, { month: "long", year: "numeric", timeZone: "UTC" }).format(start) };
+}
+
+/**
+ * Group date-ordered facts by year, then by month (or quarter, or year only, as precise as each fact's date), keeping
+ * their order. Undated facts are returned separately.
+ */
+export function groupTimeline<T extends TimelineFact>(facts: T[]): { years: TimelineYear<T>[]; undated: T[] } {
+  const years: TimelineYear<T>[] = [];
+  const undated: T[] = [];
+  for (const fact of facts) {
+    const section = timelineSection(fact);
+    if (!section) {
+      undated.push(fact);
+      continue;
+    }
+    let year = years.at(-1);
+    if (year?.year !== section.year) {
+      year = { year: section.year, sections: [] };
+      years.push(year);
+    }
+    let current = year.sections.at(-1);
+    if (current?.label !== section.label) {
+      // A section can recur within a year (a quarter-precision fact between two days of the same month); keys stay unique.
+      current = { key: `${section.key}:${year.sections.length}`, label: section.label, facts: [] };
+      year.sections.push(current);
+    }
+    current.facts.push(fact);
+  }
+  return { years, undated };
 }

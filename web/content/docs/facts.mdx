@@ -1,11 +1,11 @@
 ---
 title: Facts
-description: Review, confirm, correct, and merge the dated facts developed from a matter's documents.
+description: Review, confirm, correct, and merge the dated facts developed from a matter's documents, read them as a timeline, and export them.
 ---
 
 A **fact** is one dated event, decision, statement, or action that matters to an issue in the matter. Each fact has a summary, a date at the precision the record supports, an owner (the person or organization responsible for it, never the reviewing attorney), participants, the issues it supports, and one or more **supporting quotes** copied word for word from the documents.
 
-Facts are proposed by fact-development runs and can be corrected by reviewers. A fact starts as **Working**. Only a person can confirm or reject it: confirming is what makes a fact part of the matter's record, and there is no separate publish step.
+Facts are proposed by fact-development runs and can be corrected by reviewers. A fact starts as **Working**. Only a person can confirm or reject it: confirming is what puts a fact on the matter's timeline, and there is no separate publish step.
 
 ## Who can use it
 
@@ -13,6 +13,7 @@ Facts are proposed by fact-development runs and can be corrected by reviewers. A
 | --- | --- |
 | View facts | Open the **Facts** tab, search and filter facts, and open a fact. Facts quote documents, so you also need document view access. |
 | Review facts | Confirm, reject, edit, merge and unmerge facts, remove quotes, and accept or dismiss agent suggestions. |
+| Export facts | Export facts as CSV files and download earlier exports. Only tenant, client and matter administrators have it. |
 
 Matter administrators and reviewers can review facts. Analysis operators and read-only users can view them. Changing a fact's owner or participants also requires entity access; see [Entities](/docs/entities).
 
@@ -40,7 +41,7 @@ Each run shows its progress and, when finished, how many facts were proposed, ho
 
 ## Find facts
 
-1. Open the matter and select the **Facts** tab.
+1. Open the matter, select the **Facts** tab, and stay on **List**.
 2. Search summaries and quotes with the search box. Search matches the words you type anywhere in a summary or a quote.
 3. Narrow the list with the filters on the left: status, issue, owner, participant, date precision, who created the fact, key facts, contradicted facts, an event date range, and **Has pending suggestions**. Choices within one filter are combined with *or*; different filters are combined with *and*. Each count shows how many facts you would see if you picked that value.
 4. Change the order with the sort menu. The default is by event date, oldest first, with undated facts last.
@@ -52,6 +53,30 @@ Each row shows the fact's date, summary, owner, issues, status, how many quotes 
 ### Confirm or reject several facts
 
 If you can review facts, select rows with their checkboxes and choose **Confirm** or **Reject**. Only working facts with at least one quote can be confirmed. If someone else changed a fact since your page loaded, that fact is skipped and you are asked to refresh.
+
+## Read the timeline
+
+Select **Timeline** under the **Facts** tab for a chronological reading view of the matter's facts.
+
+- The timeline shows **confirmed** facts only. A fact appears as soon as a reviewer confirms it and disappears if it is rejected or merged into another fact; the view refreshes every few seconds.
+- Turn on **Include unconfirmed** to also see working facts. They are drawn with a dashed outline and marked **Unconfirmed**, so you can see what is coming before it is reviewed.
+- The chart at the top counts facts by year or by month. Select a bar to narrow the timeline to that period; remove the **Date** filter to widen it again.
+- Facts are grouped by year, then by month. A fact dated only to a quarter or a year is shown under that quarter (for example **Q2 2021**) or as **2021, month unknown**, in date order. Undated facts are listed last, under **Undated**.
+- Each card shows the date, summary, owner, issues, and how many quotes support it. Select the summary to open the fact.
+- The timeline uses the same search and filters as the list, except status. Switching between **List** and **Timeline** keeps them.
+- The timeline shows the first 100 facts; choose **Show more** to load the next 100.
+
+## Export facts
+
+If you can export facts, choose **Export CSV** on the list or the timeline. The export contains exactly the facts matched by the current search and filters, oldest first; from the timeline, that is the confirmed facts (and working facts, if **Include unconfirmed** is on).
+
+1. Name the export and keep **Protect against spreadsheet formulas** on unless you need raw values. When it is on, cells that start with `=`, `+`, `-` or `@` are prefixed with an apostrophe so spreadsheets don't run them.
+2. Choose **Create export**. The files are written straight away; for a large matter this can take a few seconds.
+3. Download the two files:
+   - **Facts**: one row per fact, with its ID, status, dates and precision, summary, owner, participants, issues, flags, quote and document counts, who confirmed it and when, and when it last changed.
+   - **Evidence**: one row per supporting quote, with the fact ID, control number, document ID, paragraph, offsets, and the quote.
+
+Both file names include the time the export was taken ("as of"), and every fact in it reflects that one moment. **Recent exports** in the same dialog lets you download earlier exports again until they expire (after 7 days by default). Creating and downloading exports are recorded in the audit log.
 
 ## Review one fact
 
@@ -78,5 +103,6 @@ Search & Review has a **Facts** field for every document: **Confirmed** when at 
 
 ## Current limitations
 
-- The timeline view, CSV export from this tab, and the Facts panel beside a document in Search & Review are planned and not yet available.
+- The Facts panel beside a document in Search & Review is planned and not yet available.
+- Exports are CSV only. Very large exports may be refused if they exceed the configured size limit; narrow the filters and export again.
 - Search matches words in summaries and quotes; it does not search by meaning.

@@ -31,7 +31,7 @@ export const helpTopics = {
   },
   facts: {
     title: "Facts help",
-    summary: "Learn how facts are proposed, reviewed, confirmed, and kept in step with their supporting quotes.",
+    summary: "Learn how facts are proposed, reviewed and confirmed, read as a timeline, and exported as CSV.",
     href: "/docs/facts",
   },
   entities: {

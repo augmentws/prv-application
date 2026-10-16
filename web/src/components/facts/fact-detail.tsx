@@ -9,7 +9,7 @@ import { toast } from "sonner";
 
 import { FactEvidenceViewer } from "@/components/facts/fact-evidence-viewer";
 import { FactStatusBadge } from "@/components/facts/fact-status-badge";
-import { useIssueNames } from "@/components/facts/facts-list-panel";
+import { useIssueNames } from "@/components/facts/fact-filters";
 import { QueryError, TableLoading } from "@/components/query-state";
 import { ResourcePageHeader } from "@/components/resource-page-header";
 import { Badge } from "@/components/ui/badge";

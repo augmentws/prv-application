@@ -4,13 +4,14 @@ import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import type { ColumnDef } from "@tanstack/react-table";
 import { AlertTriangle, Ban, BarChart3, BrainCircuit, BriefcaseBusiness, CheckCircle2, ChevronRight, Database, Download, FileDown, FileSearch, FileText, ListChecks, Play, RotateCcw, Search, Sparkles, Tags, Trash2, UsersRound } from "lucide-react";
 import Link from "next/link";
-import { useRouter } from "next/navigation";
+import { useRouter, useSearchParams } from "next/navigation";
 import { type ReactElement, useCallback, useMemo, useState, useSyncExternalStore } from "react";
 import { toast } from "sonner";
 
 import { DataTable } from "@/components/data-table";
 import { EntitiesPanel, type EntitiesTab } from "@/components/entities/entities-panel";
 import { FactsListPanel } from "@/components/facts/facts-list-panel";
+import { FactsTimelinePanel } from "@/components/facts/facts-timeline-panel";
 import { AnalysisTasksPanel } from "@/components/analysis-tasks-panel";
 import { ClassificationAnalysisJobDetail } from "@/components/classification-analysis-job-detail";
 import { ClassificationPanel } from "@/components/classification-panel";
@@ -42,6 +43,7 @@ import { SplitActionButton } from "@/components/ui/split-action-button";
 import type { ClientRead, EffectivePermissionsRead, JobExecutionRead, MatterAnalysisTaskRead, MatterAnalysisTaskRunRead, MatterBulkTagJobRead, MatterDefinitionAssessmentRead, MatterDocumentImportRead, MatterEmbeddingJobRead, MatterOverviewCounts, MatterProviderUsageReportRead, MatterQuestionAnsweringJobRead, MatterRead, MatterSavedSearchRead, MatterSearchExportRead, MatterTemplateRead, MatterTopicJobCreate, MatterTopicJobRead, MetadataDefinitionCreate, MetadataDefinitionRead, MetadataGroupRead, ReviewBatchCreate, ReviewBatchRead, SearchIndexGenerationRead, SearchProjectionOperationRead, SearchProjectionRetryResponse, UserRead } from "@/generated/models";
 import { coreApi } from "@/lib/api-client";
 import { bulkTagDisplayStatus, bulkTagIsWaiting } from "@/lib/bulk-tag-jobs";
+import { type FactsTab, factsTabParams } from "@/lib/facts";
 import { formatDate } from "@/lib/format";
 
 type MatterTab = "overview" | "metadata" | "definition" | "facts" | "entities" | "analysis" | "batches" | "classification" | "jobs" | "usage" | "search";
@@ -67,19 +69,22 @@ function subscribeToMatterJobType(callback: () => void) {
   };
 }
 
-export function MatterView({ clientId, matterId, requestedTab, requestedMetadataTab, requestedEntitiesTab, selectedJobId, requestedJobType }: {
+export function MatterView({ clientId, matterId, requestedTab, requestedMetadataTab, requestedEntitiesTab, requestedFactsTab, selectedJobId, requestedJobType }: {
   clientId: string;
   matterId: string;
   requestedTab?: string;
   requestedMetadataTab?: string;
   requestedEntitiesTab?: string;
+  requestedFactsTab?: string;
   selectedJobId?: string;
   requestedJobType?: string;
 }) {
   const tab: MatterTab = requestedTab === "overview" || requestedTab === "definition" || requestedTab === "facts" || requestedTab === "entities" || requestedTab === "analysis" || requestedTab === "batches" || requestedTab === "classification" || requestedTab === "jobs" || requestedTab === "usage" || requestedTab === "search" ? requestedTab : "metadata";
   const entitiesTab: EntitiesTab = requestedEntitiesTab === "proposed" ? "proposed" : "directory";
+  const factsTab: FactsTab = requestedFactsTab === "timeline" ? "timeline" : "list";
   const metadataTab: MetadataTab = requestedTab === "groups" || requestedMetadataTab === "groups" ? "groups" : "definitions";
   const router = useRouter();
+  const searchParams = useSearchParams();
   const queryClient = useQueryClient();
   const storedJobType = useSyncExternalStore(subscribeToMatterJobType, readStoredMatterJobType, () => "BULK_TAGGING");
   const explicitJobType = requestedJobType && MATTER_JOB_TYPES.includes(requestedJobType as MatterJobType)
@@ -202,6 +207,7 @@ export function MatterView({ clientId, matterId, requestedTab, requestedMetadata
   // UI visibility only; the API enforces fact permissions on every request.
   const canViewFacts = permissionKeys.has("fact.view");
   const canReviewFacts = permissionKeys.has("fact.review");
+  const canExportFacts = permissionKeys.has("fact.export");
   const canViewEntities = permissionKeys.has("entity.view");
   const canManageEntities = permissionKeys.has("entity.manage");
   const searchIndexes = useQuery({
@@ -452,6 +458,11 @@ export function MatterView({ clientId, matterId, requestedTab, requestedMetadata
     router.replace(`/app/clients/${clientId}/matters/${matterId}?${params}`);
   }, [clientId, matterId, router]);
 
+  const openFactsTab = useCallback((nextTab: FactsTab) => {
+    // The List and Timeline share their filters, so switching keeps them.
+    router.replace(`/app/clients/${clientId}/matters/${matterId}?${factsTabParams(new URLSearchParams(searchParams.toString()), nextTab)}`);
+  }, [clientId, matterId, router, searchParams]);
+
   const openEntitiesTab = useCallback((nextTab: EntitiesTab) => {
     const params = new URLSearchParams({ tab: "entities", entities: nextTab });
     router.replace(`/app/clients/${clientId}/matters/${matterId}?${params}`);
@@ -664,6 +675,9 @@ export function MatterView({ clientId, matterId, requestedTab, requestedMetadata
         {tab === "overview" ? <div className="mb-5 flex items-center justify-end gap-2 border-b pb-2" aria-label="Overview actions">
           <CloneMatterDialog sourceName={matter.data.name} onClone={cloneMatter} />
           <SaveMatterTemplateDialog onCreate={saveTemplate} />
+        </div> : tab === "facts" && canViewFacts ? <div className="mb-5 flex border-b" role="tablist" aria-label="Fact sections">
+          <button type="button" role="tab" aria-selected={factsTab === "list"} onClick={() => openFactsTab("list")} className={subtabClass(factsTab === "list")}>List</button>
+          <button type="button" role="tab" aria-selected={factsTab === "timeline"} onClick={() => openFactsTab("timeline")} className={subtabClass(factsTab === "timeline")}>Timeline</button>
         </div> : tab === "entities" && canViewEntities ? <div className="mb-5 flex border-b" role="tablist" aria-label="Entity sections">
           <button type="button" role="tab" aria-selected={entitiesTab === "directory"} onClick={() => openEntitiesTab("directory")} className={subtabClass(entitiesTab === "directory")}>Directory</button>
           <button type="button" role="tab" aria-selected={entitiesTab === "proposed"} onClick={() => openEntitiesTab("proposed")} className={subtabClass(entitiesTab === "proposed")}>Proposed</button>
@@ -679,7 +693,7 @@ export function MatterView({ clientId, matterId, requestedTab, requestedMetadata
         : tab === "metadata" ? definitions.isPending || groups.isPending ? <TableLoading /> : definitions.error || groups.error ? <QueryError message={definitions.error?.message ?? groups.error?.message} /> : <MetadataGroupsPanel definitions={definitions.data} groups={groups.data} onCreate={createGroup} onVisibilityChange={changeVisibility} />
         : tab === "definition" ? <MatterDefinitionPanel matterId={matterId} />
         : tab === "entities" ? effectivePermissions.isPending ? <TableLoading /> : effectivePermissions.error ? <QueryError message={effectivePermissions.error.message} /> : canViewEntities ? <EntitiesPanel key={entitiesTab} clientId={clientId} matterId={matterId} tab={entitiesTab} canManage={canManageEntities} /> : <QueryError message="You do not have permission to view entities in this matter." />
-        : tab === "facts" ? effectivePermissions.isPending ? <TableLoading /> : effectivePermissions.error ? <QueryError message={effectivePermissions.error.message} /> : canViewFacts ? <FactsListPanel clientId={clientId} matterId={matterId} canReview={canReviewFacts} /> : <QueryError message="You do not have permission to view facts in this matter." />
+        : tab === "facts" ? effectivePermissions.isPending ? <TableLoading /> : effectivePermissions.error ? <QueryError message={effectivePermissions.error.message} /> : canViewFacts ? factsTab === "timeline" ? <FactsTimelinePanel clientId={clientId} matterId={matterId} canExport={canExportFacts} /> : <FactsListPanel clientId={clientId} matterId={matterId} canReview={canReviewFacts} canExport={canExportFacts} /> : <QueryError message="You do not have permission to view facts in this matter." />
         : tab === "analysis" ? <AnalysisTasksPanel clientId={clientId} matterId={matterId} />
         : tab === "batches" ? reviewBatches.isPending || groups.isPending || tenantUsers.isPending || savedSearches.isPending || assessments.isPending ? <TableLoading /> : reviewBatches.error || groups.error || tenantUsers.error || savedSearches.error || assessments.error ? <QueryError message={reviewBatches.error?.message ?? groups.error?.message ?? tenantUsers.error?.message ?? savedSearches.error?.message ?? assessments.error?.message} /> : <div className="space-y-4"><div className="flex flex-wrap items-start justify-between gap-3"><div><h2 className="text-lg font-semibold">Review batches</h2><p className="text-sm text-muted-foreground">Freeze document sets for assignment, repeatable agent runs, and coding comparisons.</p></div><CreateReviewBatchDialog groups={groups.data} batches={reviewBatches.data} savedSearches={savedSearches.data} assessments={assessments.data} onCreate={createReviewBatch} /></div><DataTable columns={reviewBatchColumns} data={reviewBatches.data} emptyMessage="No review batches have been created for this matter." /></div>
         : tab === "classification" ? reviewBatches.isPending || embeddingJobs.isPending || definitions.isPending ? <TableLoading /> : reviewBatches.error || embeddingJobs.error || definitions.error ? <QueryError message={reviewBatches.error?.message ?? embeddingJobs.error?.message ?? definitions.error?.message} /> : <ClassificationPanel clientId={clientId} matterId={matterId} definitions={definitions.data} reviewBatches={reviewBatches.data} embeddingJobs={embeddingJobs.data} />

@@ -1,101 +1,35 @@
 "use client";
 
-import { keepPreviousData, useMutation, useQueries, useQuery, useQueryClient } from "@tanstack/react-query";
+import { keepPreviousData, useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import type { ColumnDef } from "@tanstack/react-table";
-import { Bot, CheckCircle2, MessageSquareWarning, Search, XCircle } from "lucide-react";
+import { Bot, CheckCircle2, MessageSquareWarning, XCircle } from "lucide-react";
 import Link from "next/link";
-import { usePathname, useRouter, useSearchParams } from "next/navigation";
-import { type FormEvent, useMemo, useState } from "react";
+import { useMemo, useState } from "react";
 import { toast } from "sonner";
 
 import { DataTable } from "@/components/data-table";
+import { FactExportDialog } from "@/components/facts/fact-export-dialog";
+import { FactSearchForm, useFactFilterControls, useFactListState } from "@/components/facts/fact-filters";
 import { FactStatusBadge } from "@/components/facts/fact-status-badge";
-import { ActiveFilterBar, DateRangeFacet, type FacetGroup, FacetSidebar } from "@/components/faceted-filter";
 import { EmptyState, QueryError, TableLoading } from "@/components/query-state";
 import { ResultPagination } from "@/components/result-pagination";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
-import { Input } from "@/components/ui/input";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
-import type { FactIssueCatalogEntry, MatterEntityRead, MatterFactDetailRead, MatterFactFacetRead, MatterFactPage, MatterFactRead } from "@/generated/models";
+import type { MatterFactDetailRead, MatterFactPage, MatterFactRead } from "@/generated/models";
 import { coreApi } from "@/lib/api-client";
 import { formatDate } from "@/lib/format";
-import {
-  FACT_FACETS,
-  FACT_SORT_LABELS,
-  FACT_STATUS_LABELS,
-  type FactFacetKey,
-  type FactListState,
-  type FactSort,
-  factDetailHref,
-  factFilters,
-  formatFactDate,
-  hasFactFilters,
-  readFactListState,
-  writeFactListState,
-} from "@/lib/facts";
+import { FACT_SORT_LABELS, type FactSort, factDetailHref, factFilters, formatFactDate, hasFactFilters } from "@/lib/facts";
 
 export const FACT_PAGE_SIZE = 50;
 const REFRESH_INTERVAL_MS = 15_000;
-const BOOLEAN_LABELS: Record<string, string> = { true: "Yes", false: "No" };
-const AUTHOR_LABELS: Record<string, string> = { HUMAN: "Reviewer", AGENT: "Agent" };
-const PRECISION_LABELS: Record<string, string> = {
-  DAY: "Day",
-  MONTH: "Month",
-  QUARTER: "Quarter",
-  YEAR: "Year",
-  RANGE: "Range",
-  UNKNOWN: "Undated",
-};
-
-function bucketLabel(facet: FactFacetKey, value: string, label: string) {
-  if (facet === "status") return FACT_STATUS_LABELS[value] ?? label;
-  if (facet === "key_fact" || facet === "has_contradiction") return BOOLEAN_LABELS[value] ?? label;
-  if (facet === "author_type") return AUTHOR_LABELS[value] ?? label;
-  if (facet === "date_precision") return PRECISION_LABELS[value] ?? label;
-  return label;
-}
-
-export function useIssueNames(matterId: string) {
-  const catalog = useQuery({
-    queryKey: ["fact-issue-catalog", matterId],
-    queryFn: () => coreApi<FactIssueCatalogEntry[]>(`/v1/matters/${matterId}/facts/issue-catalog`),
-    staleTime: 60_000,
-  });
-  const names = useMemo(
-    () => new Map((catalog.data ?? []).map((entry) => [entry.issue_key, entry.name])),
-    [catalog.data],
-  );
-  return { catalog, names };
-}
-
-export function FactsListPanel({ clientId, matterId, canReview }: { clientId: string; matterId: string; canReview: boolean }) {
-  const router = useRouter();
-  const pathname = usePathname();
-  const searchParams = useSearchParams();
+export function FactsListPanel({ clientId, matterId, canReview, canExport = false }: { clientId: string; matterId: string; canReview: boolean; canExport?: boolean }) {
   const queryClient = useQueryClient();
-  const state = useMemo(() => readFactListState(new URLSearchParams(searchParams.toString())), [searchParams]);
-  const [queryDraft, setQueryDraft] = useState(state.query);
-  const [openFacets, setOpenFacets] = useState<Set<FactFacetKey>>(
-    () => new Set(FACT_FACETS.filter((facet) => state.selected[facet.key]?.length).map((facet) => facet.key)),
-  );
   const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set());
-  const { names: issueNames } = useIssueNames(matterId);
-  const filterEntity = useQuery({
-    queryKey: ["matter-entity", matterId, state.entityId],
-    queryFn: () => coreApi<MatterEntityRead>(`/v1/matters/${matterId}/entities/${state.entityId}`),
-    enabled: Boolean(state.entityId),
-    retry: false,
-  });
+  const { state, update } = useFactListState(() => setSelectedIds(new Set()));
+  const { issueNames, sidebar, activeFilterBar } = useFactFilterControls({ matterId, state, update });
   const filters = useMemo(() => factFilters(state), [state]);
   const offset = (state.page - 1) * FACT_PAGE_SIZE;
-
-  function update(patch: Partial<FactListState>) {
-    const next: FactListState = { ...state, page: 1, ...patch };
-    const params = writeFactListState(new URLSearchParams(searchParams.toString()), next);
-    setSelectedIds(new Set());
-    router.replace(`${pathname}?${params.toString()}`, { scroll: false });
-  }
 
   const facts = useQuery({
     queryKey: ["matter-facts", matterId, filters, state.sort, offset],
@@ -107,37 +41,6 @@ export function FactsListPanel({ clientId, matterId, canReview }: { clientId: st
     placeholderData: keepPreviousData,
     // Agent runs add and change facts while reviewers work; keep the visible page current.
     refetchInterval: REFRESH_INTERVAL_MS,
-  });
-
-  const facetResults = useQueries({
-    queries: FACT_FACETS.map((facet) => {
-      const facetFilters = factFilters(state, { without: facet.key });
-      return {
-        queryKey: ["matter-fact-facet", matterId, facet.key, facetFilters],
-        queryFn: () =>
-          coreApi<MatterFactFacetRead>(`/v1/matters/${matterId}/facts/facets`, {
-            method: "POST",
-            body: JSON.stringify({ filters: facetFilters, facet: facet.key }),
-          }),
-        enabled: openFacets.has(facet.key),
-        placeholderData: keepPreviousData,
-      };
-    }),
-  });
-
-  const groups: FacetGroup[] = FACT_FACETS.map((facet, index) => {
-    const result = facetResults[index];
-    return {
-      key: facet.key,
-      label: facet.label,
-      loaded: result.isSuccess,
-      loading: result.isPending && openFacets.has(facet.key),
-      error: result.isError,
-      options: (result.data?.buckets ?? []).map((bucket) => {
-        const value = String(bucket.value);
-        return { value, label: bucketLabel(facet.key, value, bucket.label), count: bucket.count };
-      }),
-    };
   });
 
   const review = useMutation({
@@ -247,82 +150,21 @@ export function FactsListPanel({ clientId, matterId, canReview }: { clientId: st
     { id: "updated", header: "Updated", size: 120, cell: ({ row }) => <span className="whitespace-nowrap text-muted-foreground">{formatDate(row.original.updated_at)}</span> },
   ];
 
-  const activeFilters = [
-    ...(state.query ? [{ key: "query", label: `Search: ${state.query}` }] : []),
-    ...FACT_FACETS.flatMap((facet) =>
-      (state.selected[facet.key] ?? []).map((value) => ({
-        key: `${facet.key}:${value}`,
-        label: `${facet.label}: ${groups.find((group) => group.key === facet.key)?.options.find((option) => option.value === value)?.label ?? (facet.key === "issue_key" ? issueNames.get(value) ?? value : bucketLabel(facet.key, value, value))}`,
-      })),
-    ),
-    ...(state.dateFrom || state.dateTo ? [{ key: "dates", label: `Date: ${state.dateFrom || "…"} to ${state.dateTo || "…"}` }] : []),
-    ...(state.pendingOnly ? [{ key: "pending", label: "Has pending suggestions" }] : []),
-    ...(state.entityId ? [{ key: "entity", label: `Involving: ${filterEntity.data?.display_name ?? "selected person or organization"}` }] : []),
-  ];
-
-  function removeFilter(key: string) {
-    if (key === "query") {
-      setQueryDraft("");
-      update({ query: "" });
-    } else if (key === "dates") update({ dateFrom: "", dateTo: "" });
-    else if (key === "pending") update({ pendingOnly: false });
-    else if (key === "entity") update({ entityId: "" });
-    else {
-      const separator = key.indexOf(":");
-      const facetKey = key.slice(0, separator) as FactFacetKey;
-      const value = key.slice(separator + 1);
-      update({ selected: { ...state.selected, [facetKey]: (state.selected[facetKey] ?? []).filter((item) => item !== value) } });
-    }
-  }
-
-  function toggleFacet(groupKey: string, value: string) {
-    const key = groupKey as FactFacetKey;
-    const current = state.selected[key] ?? [];
-    update({ selected: { ...state.selected, [key]: current.includes(value) ? current.filter((item) => item !== value) : [...current, value] } });
-  }
-
-  function submitQuery(event: FormEvent) {
-    event.preventDefault();
-    update({ query: queryDraft });
-  }
-
   return (
     <div className="grid gap-5 lg:grid-cols-[17rem_minmax(0,1fr)]">
-      <FacetSidebar
-        title="Filter facts"
-        groups={groups}
-        selected={state.selected as Record<string, string[]>}
-        hasFilters={hasFactFilters(state)}
-        onToggle={toggleFacet}
-        onOpen={(key) => setOpenFacets((current) => new Set(current).add(key as FactFacetKey))}
-        onClear={() => {
-          setQueryDraft("");
-          update({ query: "", selected: {}, dateFrom: "", dateTo: "", pendingOnly: false, entityId: "" });
-        }}
-      >
-        <DateRangeFacet label="Event date" from={state.dateFrom} to={state.dateTo} onChange={({ from, to }) => update({ dateFrom: from, dateTo: to })} />
-        <label className="flex cursor-pointer items-center gap-2 p-4 text-sm font-semibold">
-          <input type="checkbox" className="size-4 accent-primary" checked={state.pendingOnly} onChange={(event) => update({ pendingOnly: event.target.checked })} />
-          Has pending suggestions
-        </label>
-      </FacetSidebar>
+      {sidebar()}
       <div className="min-w-0 space-y-3">
         <div className="flex flex-wrap items-center gap-2">
-          <form onSubmit={submitQuery} className="flex min-w-0 flex-1 items-center gap-2" role="search">
-            <div className="relative min-w-0 flex-1">
-              <Search className="pointer-events-none absolute top-1/2 left-3 size-4 -translate-y-1/2 text-muted-foreground" aria-hidden="true" />
-              <Input value={queryDraft} onChange={(event) => setQueryDraft(event.target.value)} placeholder="Search summaries and quotes" aria-label="Search facts" className="pl-9" />
-            </div>
-            <Button type="submit" variant="outline">Search</Button>
-          </form>
+          <FactSearchForm query={state.query} onSearch={(query) => update({ query })} />
           <Select value={state.sort} onValueChange={(value) => update({ sort: value as FactSort })}>
             <SelectTrigger className="w-52" aria-label="Sort facts"><SelectValue /></SelectTrigger>
             <SelectContent>
               {(Object.keys(FACT_SORT_LABELS) as FactSort[]).map((sort) => <SelectItem key={sort} value={sort}>{FACT_SORT_LABELS[sort]}</SelectItem>)}
             </SelectContent>
           </Select>
+          {canExport ? <FactExportDialog matterId={matterId} filters={filters} factCount={facts.data?.total} /> : null}
         </div>
-        <ActiveFilterBar filters={activeFilters} onRemove={removeFilter} />
+        {activeFilterBar}
         {canReview && selectedRows.length ? (
           <div className="flex flex-wrap items-center gap-2 rounded-lg border bg-muted/40 px-3 py-2 text-sm" aria-label="Bulk actions">
             <span className="font-medium">{selectedRows.length} selected</span>
