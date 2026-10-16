@@ -152,13 +152,55 @@ describe("AnalysisTasksPanel", () => {
     await user.click(await screen.findByRole("button", { name: "New analysis task" }));
     expect(screen.getByText("Issue coding")).toBeInTheDocument();
     await user.click(screen.getByRole("combobox", { name: "Task type" }));
-    expect(screen.getAllByRole("option")).toHaveLength(2);
+    expect(screen.getAllByRole("option")).toHaveLength(3);
     expect(screen.getByRole("option", { name: "Question answering" })).toBeInTheDocument();
     expect(screen.getByRole("option", { name: "Classification" })).toBeInTheDocument();
+    expect(screen.getByRole("option", { name: "Fact development" })).toBeInTheDocument();
     await user.keyboard("{Escape}");
     await user.click(screen.getByRole("combobox", { name: "Decision provider" }));
     expect(screen.getByRole("option", { name: "TypeSafe JEV" })).toBeInTheDocument();
     expect(screen.getByRole("option", { name: "OpenAI Decisions" })).toBeInTheDocument();
+  });
+
+  it("creates a fact-development task pinned to published Review Guidance", async () => {
+    const created: unknown[] = [];
+    vi.mocked(coreApi).mockImplementation(async (path, init) => {
+      if (path === "/v1/matters/matter-1/analysis-tasks" && init?.method === "POST") {
+        created.push(JSON.parse(String(init.body)));
+        throw new Error("stop after capturing the request");
+      }
+      if (path === "/v1/matters/matter-1/analysis-tasks") return [] as never;
+      if (path === "/v1/matters/matter-1/metadata-definitions") return [destinationDefinition] as never;
+      if (path === "/v1/matters/matter-1/classification-models") return [] as never;
+      if (path === "/v1/matters/matter-1/guidance") return [
+        { id: "guidance-1", name: "Second pass", status: "ACTIVE", published_revision: 2 },
+        { id: "guidance-2", name: "Unpublished draft", status: "ACTIVE", published_revision: null },
+      ] as never;
+      throw new Error(`Unexpected API request: ${path}`);
+    });
+    const user = userEvent.setup();
+    const client = new QueryClient({ defaultOptions: { queries: { retry: false }, mutations: { retry: false } } });
+    render(<QueryClientProvider client={client}><AnalysisTasksPanel matterId="matter-1" /></QueryClientProvider>);
+
+    await user.click(await screen.findByRole("button", { name: "New analysis task" }));
+    await user.type(screen.getByLabelText("Name"), "Pricing facts");
+    await user.click(screen.getByRole("combobox", { name: "Task type" }));
+    await user.click(screen.getByRole("option", { name: "Fact development" }));
+    expect(screen.queryByText("Issue coding")).not.toBeInTheDocument();
+    await user.click(screen.getByRole("combobox", { name: "Review Guidance" }));
+    expect(screen.queryByRole("option", { name: /Unpublished draft/ })).not.toBeInTheDocument();
+    await user.click(screen.getByRole("option", { name: "Second pass · revision 2" }));
+    await user.type(screen.getByLabelText("Fact guidance"), "One event per fact.");
+    await user.click(screen.getByRole("button", { name: "Create task" }));
+
+    await waitFor(() => expect(created).toEqual([{
+      key: "pricing_facts",
+      name: "Pricing facts",
+      description: null,
+      task_type: "FACT_DEVELOPMENT",
+      definition_markdown: "One event per fact.",
+      review_guidance_id: "guidance-1",
+    }]));
   });
 
   it("stores the selected decision provider when creating a question-answering task", async () => {

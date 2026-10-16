@@ -16,6 +16,28 @@ Facts are proposed by fact-development runs and can be corrected by reviewers. A
 
 Matter administrators and reviewers can review facts. Analysis operators and read-only users can view them. Changing a fact's owner or participants also requires entity access; see [Entities](/docs/entities).
 
+## Set up fact development
+
+Matter administrators set up fact development on the matter's **Analysis** tab. You need a published [Review Guidance](/docs/matter-definition) revision whose issues reviewers have already coded.
+
+1. Choose **New analysis task**, pick **Fact development**, select the published Review Guidance, and write the **fact guidance**: what counts as a fact, how to date it, and who owns it.
+2. Choose **Generate** to build the **issue catalog**. Each issue names the coding field and value that mark a document as belonging to it, and says how to build facts for it. You can correct the catalog with **Edit JSON**; it is checked when you save.
+3. Choose **Publish version**. Only a published version can run.
+
+The task keeps the exact guidance revision it was built from. When newer guidance is published, the task shows **Newer guidance is published**; choose **Adopt revision N** to start a new draft from it, then generate and publish again.
+
+**Check issue matches** counts how many documents in a review batch are coded to each issue, without running anything.
+
+## Run fact development
+
+On the published version, under **Run fact development**:
+
+1. Pick a ready review batch and where issue coding comes from: the current matter coding, or one reviewer's coding in that batch (frozen at the moment you launch).
+2. Choose **Estimate**. It shows how many documents are coded to an issue, how many an earlier run already read (these are reused, not read again), how many have no usable text, how many will be read, and an approximate token volume.
+3. Choose **Launch run**. Documents are read oldest first, so later documents can build on facts from earlier ones.
+
+Each run shows its progress and, when finished, how many facts were proposed, how many quotes were added to existing facts, how many suggestions were made, how many documents were reused, and how many entities are waiting for review. Choose **Outcomes** to see what happened to each document. You can cancel a running run; canceling is final, but launching a new run later reuses every document already read. A run that failed can be resumed with **Resume**.
+
 ## Find facts
 
 1. Open the matter and select the **Facts** tab.
