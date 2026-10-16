@@ -339,3 +339,15 @@ def test_recall_ranks_similar_facts_and_caches_embeddings(client: TestClient, co
         uuid.UUID(corpus["facts"]["approval"]["id"]),
         uuid.UUID(corpus["facts"]["final"]["id"]),
     }
+
+
+def test_issue_catalog_is_readable_with_fact_view(client: TestClient, corpus: dict) -> None:
+    ctx = corpus
+    response = client.get(f"/v1/matters/{ctx['matter_id']}/facts/issue-catalog", headers=auth(ctx["token"]))
+    assert response.status_code == 200, response.text
+    entries = response.json()
+    assert [(entry["issue_key"], entry["name"]) for entry in entries] == [
+        ("pricing", "Pricing decisions"),
+        ("safety", "Safety reports"),
+    ]
+    assert {entry["matter_analysis_task_id"] for entry in entries} == {ctx["task_id"]}

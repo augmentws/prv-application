@@ -4385,6 +4385,14 @@ class MatterDocumentFactRead(BaseModel):
     quotes: list[MatterFactEvidenceRead]
 
 
+class FactIssueCatalogEntry(BaseModel):
+    matter_analysis_task_id: uuid.UUID
+    task_name: str
+    issue_key: str
+    name: str
+    description: str | None
+
+
 class MatterFactPage(BaseModel):
     items: list[MatterFactRead]
     total: int

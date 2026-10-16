@@ -127,6 +127,7 @@ import type {
   FactDevelopmentRunEstimateRead,
   FactDevelopmentRunRead,
   FactDevelopmentSpecificationUpdate,
+  FactIssueCatalogEntry,
   FactIssueMembershipPreviewCreate,
   FactIssueMembershipPreviewRead,
   GetAssessmentExecutionV1MattersMatterIdDefinitionAssessmentsAssessmentIdExecutionGetParams,
@@ -14986,6 +14987,59 @@ const res = await fetch(getFactHistogramV1MattersMatterIdFactsDateHistogramPostU
 
   const data: factHistogramV1MattersMatterIdFactsDateHistogramPostResponse['data'] = body ? JSON.parse(body) : {}
   return { data, status: res.status, headers: res.headers } as factHistogramV1MattersMatterIdFactsDateHistogramPostResponse
+}
+
+
+
+export type listFactIssueCatalogV1MattersMatterIdFactsIssueCatalogGetResponse200 = {
+  data: FactIssueCatalogEntry[]
+  status: 200
+}
+
+export type listFactIssueCatalogV1MattersMatterIdFactsIssueCatalogGetResponse422 = {
+  data: HTTPValidationError
+  status: 422
+}
+
+export type listFactIssueCatalogV1MattersMatterIdFactsIssueCatalogGetResponseSuccess = (listFactIssueCatalogV1MattersMatterIdFactsIssueCatalogGetResponse200) & {
+  headers: Headers;
+};
+export type listFactIssueCatalogV1MattersMatterIdFactsIssueCatalogGetResponseError = (listFactIssueCatalogV1MattersMatterIdFactsIssueCatalogGetResponse422) & {
+  headers: Headers;
+};
+
+export type listFactIssueCatalogV1MattersMatterIdFactsIssueCatalogGetResponse = (listFactIssueCatalogV1MattersMatterIdFactsIssueCatalogGetResponseSuccess | listFactIssueCatalogV1MattersMatterIdFactsIssueCatalogGetResponseError)
+
+export const getListFactIssueCatalogV1MattersMatterIdFactsIssueCatalogGetUrl = (matterId: string,) => {
+
+
+
+
+  return `/api/core/v1/matters/${matterId}/facts/issue-catalog`
+}
+
+/**
+ * The issues facts can support: every published fact-development catalog in the matter.
+ *
+ * Readable with ``fact.view`` so reviewers can name and choose issues without Analysis Task access.
+ * @summary List Fact Issue Catalog
+ */
+export const listFactIssueCatalogV1MattersMatterIdFactsIssueCatalogGet = async (matterId: string, options?: RequestInit): Promise<listFactIssueCatalogV1MattersMatterIdFactsIssueCatalogGetResponse> => {
+
+  const res = await fetch(getListFactIssueCatalogV1MattersMatterIdFactsIssueCatalogGetUrl(matterId),
+  {
+    ...options,
+    method: 'GET'
+
+
+  }
+)
+
+
+  const body = [204, 205, 304].includes(res.status) ? null : await res.text();
+
+  const data: listFactIssueCatalogV1MattersMatterIdFactsIssueCatalogGetResponse['data'] = body ? JSON.parse(body) : {}
+  return { data, status: res.status, headers: res.headers } as listFactIssueCatalogV1MattersMatterIdFactsIssueCatalogGetResponse
 }
 
 

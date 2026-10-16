@@ -1,0 +1,60 @@
+---
+title: Facts
+description: Review, confirm, correct, and merge the dated facts developed from a matter's documents.
+---
+
+A **fact** is one dated event, decision, statement, or action that matters to an issue in the matter. Each fact has a summary, a date at the precision the record supports, an owner (the person or organization responsible for it, never the reviewing attorney), participants, the issues it supports, and one or more **supporting quotes** copied word for word from the documents.
+
+Facts are proposed by fact-development runs and can be corrected by reviewers. A fact starts as **Working**. Only a person can confirm or reject it: confirming is what makes a fact part of the matter's record, and there is no separate publish step.
+
+## Who can use it
+
+| Permission | What it allows |
+| --- | --- |
+| View facts | Open the **Facts** tab, search and filter facts, and open a fact. Facts quote documents, so you also need document view access. |
+| Review facts | Confirm, reject, edit, merge and unmerge facts, remove quotes, and accept or dismiss agent suggestions. |
+
+Matter administrators and reviewers can review facts. Analysis operators and read-only users can view them. Changing a fact's owner or participants also requires entity access.
+
+## Find facts
+
+1. Open the matter and select the **Facts** tab.
+2. Search summaries and quotes with the search box. Search matches the words you type anywhere in a summary or a quote.
+3. Narrow the list with the filters on the left: status, issue, owner, participant, date precision, who created the fact, key facts, contradicted facts, an event date range, and **Has pending suggestions**. Choices within one filter are combined with *or*; different filters are combined with *and*. Each count shows how many facts you would see if you picked that value.
+4. Change the order with the sort menu. The default is by event date, oldest first, with undated facts last.
+
+Your search, filters, sort and page are kept in the page address, so you can bookmark or share a view. The list refreshes every few seconds while it is open, so facts proposed by a running agent appear without reloading.
+
+Each row shows the fact's date, summary, owner, issues, status, how many quotes it has from how many documents, and when it last changed. Badges mark agent-proposed facts, key facts, contradicted facts, and facts with suggestions waiting for review.
+
+### Confirm or reject several facts
+
+If you can review facts, select rows with their checkboxes and choose **Confirm** or **Reject**. Only working facts with at least one quote can be confirmed. If someone else changed a fact since your page loaded, that fact is skipped and you are asked to refresh.
+
+## Review one fact
+
+Select a fact's summary to open it.
+
+- **Edit** the summary, date (precision, date or range, and how the date was determined), owner, participants, issues, and whether it is a key fact. If someone else changed the fact while you were editing, your save is refused and the fact reloads so you can review the newer version.
+- **Supporting quotes** lists every quote with its document's control number and paragraph. Select **View in document** to open the document with the quote highlighted, or open it in Search & Review. A confirmed fact must keep at least one quote. Removed quotes stay listed under the removed section.
+- **Confirm** or **Reject** the fact. Rejected facts stay in the record, and when an agent proposes a fact that closely matches a rejected one, it is blocked rather than recreated.
+- **Merge into…** combines duplicate facts: search for the fact to keep and select **Keep this fact**. The quotes, issues and participants move to that fact. **Unmerge** on the merged fact undoes it.
+- **History** shows every change, and whether a reviewer or an agent made it.
+
+## Agent suggestions
+
+Agents never change a confirmed fact directly. When a later document suggests a confirmed fact is wrong or incomplete, the agent records a **suggestion** instead, and after a run finishes it may suggest merging near-duplicate facts. Facts with suggestions show a badge in the list, and you can filter for them.
+
+On the fact page, **Agent suggestions** shows each one:
+
+- A **revision** lists the current and suggested value of each field. **Apply** makes the change as your own edit and adds the agent's supporting quotes. **Dismiss** leaves the fact unchanged.
+- A **merge** names the other fact. **Merge** combines them (you can unmerge later); **Dismiss** keeps them separate, and that pair is not suggested again.
+
+## Find documents with facts
+
+Search & Review has a **Facts** field for every document: **Confirmed** when at least one confirmed fact quotes the document, **Unconfirmed** when only working facts quote it, and no value otherwise. Use it as a filter or facet like any other field. It updates shortly after facts change.
+
+## Current limitations
+
+- The timeline view, CSV export from this tab, the Entities tab, and the Facts panel beside a document in Search & Review are planned and not yet available.
+- Search matches words in summaries and quotes; it does not search by meaning.

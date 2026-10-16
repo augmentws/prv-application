@@ -36,6 +36,7 @@ export function FacetSidebar({
   onOpen,
   onClear,
   children,
+  title = "Filter documents",
 }: {
   groups: FacetGroup[];
   selected: Record<string, string[]>;
@@ -44,6 +45,7 @@ export function FacetSidebar({
   onOpen?: (groupKey: string) => void;
   onClear: () => void;
   children?: ReactNode;
+  title?: string;
 }) {
   const [openGroups, setOpenGroups] = useState(() => new Set(
     Object.entries(selected).filter(([, values]) => values.length > 0).map(([key]) => key),
@@ -52,7 +54,7 @@ export function FacetSidebar({
   return (
     <Card className="overflow-hidden lg:sticky lg:top-5">
       <div className="flex items-center justify-between border-b px-4 py-3">
-        <h2 className="text-sm font-semibold">Filter documents</h2>
+        <h2 className="text-sm font-semibold">{title}</h2>
         {hasFilters ? <Button type="button" variant="ghost" size="sm" onClick={onClear}>Clear all</Button> : null}
       </div>
       <div className="divide-y">

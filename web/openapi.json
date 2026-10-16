@@ -15724,6 +15724,59 @@
         }
       }
     },
+    "/v1/matters/{matter_id}/facts/issue-catalog": {
+      "get": {
+        "tags": [
+          "matter facts"
+        ],
+        "summary": "List Fact Issue Catalog",
+        "description": "The issues facts can support: every published fact-development catalog in the matter.\n\nReadable with ``fact.view`` so reviewers can name and choose issues without Analysis Task access.",
+        "operationId": "list_fact_issue_catalog_v1_matters__matter_id__facts_issue_catalog_get",
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "matter_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid",
+              "title": "Matter Id"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "array",
+                  "items": {
+                    "$ref": "#/components/schemas/FactIssueCatalogEntry"
+                  },
+                  "title": "Response List Fact Issue Catalog V1 Matters  Matter Id  Facts Issue Catalog Get"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/v1/matters/{matter_id}/facts/{fact_id}": {
       "get": {
         "tags": [
@@ -33277,6 +33330,47 @@
           "coding_mappings"
         ],
         "title": "FactIssue"
+      },
+      "FactIssueCatalogEntry": {
+        "properties": {
+          "matter_analysis_task_id": {
+            "type": "string",
+            "format": "uuid",
+            "title": "Matter Analysis Task Id"
+          },
+          "task_name": {
+            "type": "string",
+            "title": "Task Name"
+          },
+          "issue_key": {
+            "type": "string",
+            "title": "Issue Key"
+          },
+          "name": {
+            "type": "string",
+            "title": "Name"
+          },
+          "description": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Description"
+          }
+        },
+        "type": "object",
+        "required": [
+          "matter_analysis_task_id",
+          "task_name",
+          "issue_key",
+          "name",
+          "description"
+        ],
+        "title": "FactIssueCatalogEntry"
       },
       "FactIssueCodingMapping": {
         "properties": {

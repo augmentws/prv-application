@@ -9,6 +9,7 @@ import { type ReactElement, useCallback, useMemo, useState, useSyncExternalStore
 import { toast } from "sonner";
 
 import { DataTable } from "@/components/data-table";
+import { FactsListPanel } from "@/components/facts/facts-list-panel";
 import { AnalysisTasksPanel } from "@/components/analysis-tasks-panel";
 import { ClassificationAnalysisJobDetail } from "@/components/classification-analysis-job-detail";
 import { ClassificationPanel } from "@/components/classification-panel";
@@ -42,7 +43,7 @@ import { coreApi } from "@/lib/api-client";
 import { bulkTagDisplayStatus, bulkTagIsWaiting } from "@/lib/bulk-tag-jobs";
 import { formatDate } from "@/lib/format";
 
-type MatterTab = "overview" | "metadata" | "definition" | "analysis" | "batches" | "classification" | "jobs" | "usage" | "search";
+type MatterTab = "overview" | "metadata" | "definition" | "facts" | "analysis" | "batches" | "classification" | "jobs" | "usage" | "search";
 type MetadataTab = "definitions" | "groups";
 type MatterJobType = "BULK_TAGGING" | "DOCUMENT_EMBEDDINGS" | "TOPIC_CLUSTERING" | "DOCUMENT_IMPORTS" | "QUESTION_ANSWERING" | "CLASSIFICATION_ANALYSIS" | "SEARCH_EXPORTS";
 type ClassificationAnalysisJobRow = MatterAnalysisTaskRunRead & { task_name: string };
@@ -73,7 +74,7 @@ export function MatterView({ clientId, matterId, requestedTab, requestedMetadata
   selectedJobId?: string;
   requestedJobType?: string;
 }) {
-  const tab: MatterTab = requestedTab === "overview" || requestedTab === "definition" || requestedTab === "analysis" || requestedTab === "batches" || requestedTab === "classification" || requestedTab === "jobs" || requestedTab === "usage" || requestedTab === "search" ? requestedTab : "metadata";
+  const tab: MatterTab = requestedTab === "overview" || requestedTab === "definition" || requestedTab === "facts" || requestedTab === "analysis" || requestedTab === "batches" || requestedTab === "classification" || requestedTab === "jobs" || requestedTab === "usage" || requestedTab === "search" ? requestedTab : "metadata";
   const metadataTab: MetadataTab = requestedTab === "groups" || requestedMetadataTab === "groups" ? "groups" : "definitions";
   const router = useRouter();
   const queryClient = useQueryClient();
@@ -191,11 +192,13 @@ export function MatterView({ clientId, matterId, requestedTab, requestedMetadata
   const effectivePermissions = useQuery({
     queryKey: ["effective-permissions", "MATTER", matterId],
     queryFn: () => coreApi<EffectivePermissionsRead>(`/v1/authorization/effective?resource_type=MATTER&resource_id=${matterId}`),
-    enabled: tab === "batches" || tab === "jobs",
   });
   const permissionKeys = new Set(effectivePermissions.data?.permission_keys ?? []);
   const canDeleteBatches = permissionKeys.has("batch.delete");
   const canDeleteJobs = permissionKeys.has("job.delete");
+  // UI visibility only; the API enforces fact permissions on every request.
+  const canViewFacts = permissionKeys.has("fact.view");
+  const canReviewFacts = permissionKeys.has("fact.review");
   const searchIndexes = useQuery({
     queryKey: ["search-indexes", matterId],
     queryFn: () => coreApi<SearchIndexGenerationRead[]>(`/v1/matters/${matterId}/search-indexes`),
@@ -633,6 +636,7 @@ export function MatterView({ clientId, matterId, requestedTab, requestedMetadata
             <button role="tab" aria-selected={tab === "overview"} onClick={() => openTab("overview")} className={tabClass(tab === "overview")}>Overview</button>
             <button role="tab" aria-selected={tab === "metadata"} onClick={() => openTab("metadata")} className={tabClass(tab === "metadata")}>Metadata</button>
             <button role="tab" aria-selected={tab === "definition"} onClick={() => openTab("definition")} className={tabClass(tab === "definition")}>Matter definition</button>
+            {canViewFacts ? <button role="tab" aria-selected={tab === "facts"} onClick={() => openTab("facts")} className={tabClass(tab === "facts")}>Facts</button> : null}
             <button role="tab" aria-selected={tab === "analysis"} onClick={() => openTab("analysis")} className={tabClass(tab === "analysis")}>Analysis</button>
             <button role="tab" aria-selected={tab === "batches"} onClick={() => openTab("batches")} className={tabClass(tab === "batches")}>Batches</button>
             <button role="tab" aria-selected={tab === "classification"} onClick={() => openTab("classification")} className={tabClass(tab === "classification")}>Classification</button>
@@ -641,7 +645,7 @@ export function MatterView({ clientId, matterId, requestedTab, requestedMetadata
             <button role="tab" aria-selected={tab === "search"} onClick={() => openTab("search")} className={tabClass(tab === "search")}>Search index</button>
           </div>
           <div className="flex shrink-0 flex-wrap items-center gap-2 pb-2">
-            <HelpLink topic={tab === "classification" ? "classification" : tab === "jobs" ? "matterJobs" : tab === "usage" ? "tokenUsage" : tab === "search" ? "matterSearch" : tab === "definition" ? "matterDefinition" : "metadata"} />
+            <HelpLink topic={tab === "facts" ? "facts" : tab === "classification" ? "classification" : tab === "jobs" ? "matterJobs" : tab === "usage" ? "tokenUsage" : tab === "search" ? "matterSearch" : tab === "definition" ? "matterDefinition" : "metadata"} />
           </div>
         </div>
       </div>
@@ -660,6 +664,7 @@ export function MatterView({ clientId, matterId, requestedTab, requestedMetadata
         : tab === "metadata" && metadataTab === "definitions" ? definitions.isPending ? <TableLoading /> : definitions.error ? <QueryError message={definitions.error.message} /> : <DataTable columns={columns} data={definitions.data} emptyMessage="No metadata fields yet. Add the first field definition for this matter." />
         : tab === "metadata" ? definitions.isPending || groups.isPending ? <TableLoading /> : definitions.error || groups.error ? <QueryError message={definitions.error?.message ?? groups.error?.message} /> : <MetadataGroupsPanel definitions={definitions.data} groups={groups.data} onCreate={createGroup} onVisibilityChange={changeVisibility} />
         : tab === "definition" ? <MatterDefinitionPanel matterId={matterId} />
+        : tab === "facts" ? effectivePermissions.isPending ? <TableLoading /> : effectivePermissions.error ? <QueryError message={effectivePermissions.error.message} /> : canViewFacts ? <FactsListPanel clientId={clientId} matterId={matterId} canReview={canReviewFacts} /> : <QueryError message="You do not have permission to view facts in this matter." />
         : tab === "analysis" ? <AnalysisTasksPanel clientId={clientId} matterId={matterId} />
         : tab === "batches" ? reviewBatches.isPending || groups.isPending || tenantUsers.isPending || savedSearches.isPending || assessments.isPending ? <TableLoading /> : reviewBatches.error || groups.error || tenantUsers.error || savedSearches.error || assessments.error ? <QueryError message={reviewBatches.error?.message ?? groups.error?.message ?? tenantUsers.error?.message ?? savedSearches.error?.message ?? assessments.error?.message} /> : <div className="space-y-4"><div className="flex flex-wrap items-start justify-between gap-3"><div><h2 className="text-lg font-semibold">Review batches</h2><p className="text-sm text-muted-foreground">Freeze document sets for assignment, repeatable agent runs, and coding comparisons.</p></div><CreateReviewBatchDialog groups={groups.data} batches={reviewBatches.data} savedSearches={savedSearches.data} assessments={assessments.data} onCreate={createReviewBatch} /></div><DataTable columns={reviewBatchColumns} data={reviewBatches.data} emptyMessage="No review batches have been created for this matter." /></div>
         : tab === "classification" ? reviewBatches.isPending || embeddingJobs.isPending || definitions.isPending ? <TableLoading /> : reviewBatches.error || embeddingJobs.error || definitions.error ? <QueryError message={reviewBatches.error?.message ?? embeddingJobs.error?.message ?? definitions.error?.message} /> : <ClassificationPanel clientId={clientId} matterId={matterId} definitions={definitions.data} reviewBatches={reviewBatches.data} embeddingJobs={embeddingJobs.data} />

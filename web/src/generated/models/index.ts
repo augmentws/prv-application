@@ -320,6 +320,7 @@ export * from './factFiltersParticipantRole';
 export * from './factFiltersStancesItem';
 export * from './factFiltersStatusesItem';
 export * from './factIssue';
+export * from './factIssueCatalogEntry';
 export * from './factIssueCodingMapping';
 export * from './factIssueCodingMappingMatchType';
 export * from './factIssueMembershipCount';
