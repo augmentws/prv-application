@@ -203,6 +203,27 @@ describe("AnalysisTasksPanel", () => {
     }]));
   });
 
+  it.each([
+    { name: "unpublished guidance", guidance: async () => [{ id: "guidance-2", name: "Draft", status: "ACTIVE", published_revision: null }], expected: /has no published revision yet\. Publish it on the Matter definition tab first/ },
+    { name: "a guidance load failure", guidance: async () => { throw new Error("Matter ADMIN required"); }, expected: /Review Guidance could not be loaded: Matter ADMIN required/ },
+  ])("explains why no guidance can be picked for $name", async ({ guidance, expected }) => {
+    vi.mocked(coreApi).mockImplementation(async (path) => {
+      if (path === "/v1/matters/matter-1/analysis-tasks") return [] as never;
+      if (path === "/v1/matters/matter-1/metadata-definitions") return [destinationDefinition] as never;
+      if (path === "/v1/matters/matter-1/classification-models") return [] as never;
+      if (path === "/v1/matters/matter-1/guidance") return (await guidance()) as never;
+      throw new Error(`Unexpected API request: ${path}`);
+    });
+    const user = userEvent.setup();
+    const client = new QueryClient({ defaultOptions: { queries: { retry: false }, mutations: { retry: false } } });
+    render(<QueryClientProvider client={client}><AnalysisTasksPanel matterId="matter-1" /></QueryClientProvider>);
+
+    await user.click(await screen.findByRole("button", { name: "New analysis task" }));
+    await user.click(screen.getByRole("combobox", { name: "Task type" }));
+    await user.click(screen.getByRole("option", { name: "Fact development" }));
+    expect(await screen.findByText(expected)).toBeInTheDocument();
+  });
+
   it("stores the selected decision provider when creating a question-answering task", async () => {
     const openAiTask = {
       ...task,
