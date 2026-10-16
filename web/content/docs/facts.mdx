@@ -21,9 +21,17 @@ Matter administrators and reviewers can review facts. Analysis operators and rea
 
 Matter administrators set up fact development on the matter's **Analysis** tab. You need a published [Review Guidance](/docs/matter-definition) revision whose issues reviewers have already coded.
 
-1. Choose **New analysis task**, pick **Fact development**, select the published Review Guidance, and write the **fact guidance**: what counts as a fact, how to date it, and who owns it.
+1. Choose **New analysis task**, pick **Fact development**, select the published Review Guidance, and edit the **fact guidance** (see below).
 2. Choose **Generate** to build the **issue catalog**. Each issue names the coding field and value that mark a document as belonging to it, and says how to build facts for it. You can correct the catalog with **Edit JSON**; it is checked when you save.
 3. Choose **Publish version**. Only a published version can run.
+
+### What the fact guidance does
+
+The Review Guidance says which issues exist and how documents are coded to them. The **fact guidance** says how facts should be built in this matter: what counts as one fact, how to date it, who owns it, and what to leave out.
+
+The agent doesn't read the fact guidance directly. When you choose **Generate**, it is read together with the Review Guidance to write the issue catalog: an overall summary, date and owner rules, and guidance for each issue. The catalog is what the agent follows for every document, and you can check it before you publish. Each heading in the fact guidance can be cited by the catalog, so keep one topic per heading.
+
+A new task starts from a template with four headings (**What counts as a fact**, **Dates**, **Owners**, **Exclude**) and sensible defaults. Keep, edit, or delete them, and add anything specific to the matter, such as a meeting series whose minutes date the decisions, or people who act on behalf of an organization.
 
 The task keeps the exact guidance revision it was built from. When newer guidance is published, the task shows **Newer guidance is published**; choose **Adopt revision N** to start a new draft from it, then generate and publish again.
 

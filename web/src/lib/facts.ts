@@ -249,3 +249,28 @@ export function groupTimeline<T extends TimelineFact>(facts: T[]): { years: Time
   }
   return { years, undated };
 }
+
+/**
+ * Starting text for a new fact-development task. Each heading becomes a section the issue catalog can cite, so the
+ * defaults are complete instructions a reviewer can keep, edit, or delete.
+ */
+export const FACT_GUIDANCE_TEMPLATE = `# Fact guidance
+
+## What counts as a fact
+Record one dated event, decision, statement, or action per fact, in a single self-contained sentence that names who did what.
+Prefer facts that show what people knew, decided, or did about an issue, and when.
+
+## Dates
+Date each fact by when the event happened, not when the document was sent. Use the document date only when the text gives no other date.
+When the text gives only a month, quarter, or year, record that precision rather than guessing a day.
+
+## Owners
+The owner is the person or organization responsible for the fact in the record, such as the person who made the decision or statement.
+List other people and organizations involved as participants. The reviewing attorney is never an owner.
+
+## Exclude
+Scheduling and logistics, signatures and disclaimers, forwarded newsletters, and text quoted from earlier messages that is already covered by its original document.
+`;
+
+export const FACT_GUIDANCE_HELP =
+  "How facts should be built in this matter: what counts as a fact, how to date it, who owns it, and what to leave out. Generate reads it together with the Review Guidance to write the issue catalog, and the agent follows that catalog for every document. Each heading can be cited as a source, so keep one topic per heading.";

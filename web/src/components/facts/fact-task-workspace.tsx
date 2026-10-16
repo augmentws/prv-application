@@ -28,6 +28,7 @@ import type {
   ReviewBatchRead,
 } from "@/generated/models";
 import { coreApi } from "@/lib/api-client";
+import { FACT_GUIDANCE_HELP } from "@/lib/facts";
 import { formatDate } from "@/lib/format";
 
 type CodingSource = "MATTER_METADATA" | "REVIEWER_CODING";
@@ -137,7 +138,7 @@ export function FactTaskWorkspace({ clientId, matterId, task, version, onTaskUpd
         <Card className="min-w-0">
           <CardHeader className="border-b">
             <CardTitle className="flex items-center gap-2"><FileJson className="size-4 text-primary" />Fact guidance</CardTitle>
-            <p className="text-sm text-muted-foreground">What counts as a fact, how to date it, and who owns it. Editing creates a new draft version.</p>
+            <p className="text-sm text-muted-foreground">{FACT_GUIDANCE_HELP} Editing creates a new draft version.</p>
           </CardHeader>
           <CardContent className="space-y-3 p-4">
             <Textarea aria-label="Fact guidance" className="min-h-72 resize-y font-mono text-sm leading-6" value={definition} onChange={(event) => setDefinition(event.target.value)} readOnly={!isCurrent} />

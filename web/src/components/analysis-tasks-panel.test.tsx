@@ -5,6 +5,7 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 
 import { AnalysisTasksPanel } from "@/components/analysis-tasks-panel";
 import { coreApi } from "@/lib/api-client";
+import { FACT_GUIDANCE_TEMPLATE } from "@/lib/facts";
 
 vi.mock("@/lib/api-client", async (importOriginal) => {
   const actual = await importOriginal<typeof import("@/lib/api-client")>();
@@ -190,7 +191,11 @@ describe("AnalysisTasksPanel", () => {
     await user.click(screen.getByRole("combobox", { name: "Review Guidance" }));
     expect(screen.queryByRole("option", { name: /Unpublished draft/ })).not.toBeInTheDocument();
     await user.click(screen.getByRole("option", { name: "Second pass · revision 2" }));
-    await user.type(screen.getByLabelText("Fact guidance"), "One event per fact.");
+    const factGuidance = screen.getByLabelText("Fact guidance");
+    expect(factGuidance).toHaveValue(FACT_GUIDANCE_TEMPLATE);
+    expect(factGuidance).toHaveAccessibleDescription(/Generate reads it together with the Review Guidance/);
+    await user.clear(factGuidance);
+    await user.type(factGuidance, "One event per fact.");
     await user.click(screen.getByRole("button", { name: "Create task" }));
 
     await waitFor(() => expect(created).toEqual([{
@@ -222,6 +227,27 @@ describe("AnalysisTasksPanel", () => {
     await user.click(screen.getByRole("combobox", { name: "Task type" }));
     await user.click(screen.getByRole("option", { name: "Fact development" }));
     expect(await screen.findByText(expected)).toBeInTheDocument();
+  });
+
+  it("drops the untouched fact guidance template when switching to another task type", async () => {
+    vi.mocked(coreApi).mockImplementation(async (path) => {
+      if (path === "/v1/matters/matter-1/analysis-tasks") return [] as never;
+      if (path === "/v1/matters/matter-1/metadata-definitions") return [destinationDefinition] as never;
+      if (path === "/v1/matters/matter-1/classification-models") return [] as never;
+      if (path === "/v1/matters/matter-1/guidance") return [] as never;
+      throw new Error(`Unexpected API request: ${path}`);
+    });
+    const user = userEvent.setup();
+    const client = new QueryClient({ defaultOptions: { queries: { retry: false }, mutations: { retry: false } } });
+    render(<QueryClientProvider client={client}><AnalysisTasksPanel matterId="matter-1" /></QueryClientProvider>);
+
+    await user.click(await screen.findByRole("button", { name: "New analysis task" }));
+    await user.click(screen.getByRole("combobox", { name: "Task type" }));
+    await user.click(screen.getByRole("option", { name: "Fact development" }));
+    expect(screen.getByLabelText("Fact guidance")).toHaveValue(FACT_GUIDANCE_TEMPLATE);
+    await user.click(screen.getByRole("combobox", { name: "Task type" }));
+    await user.click(screen.getByRole("option", { name: "Question answering" }));
+    expect(screen.getByLabelText("Task definition")).toHaveValue("");
   });
 
   it("stores the selected decision provider when creating a question-answering task", async () => {
