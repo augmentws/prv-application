@@ -31,6 +31,7 @@ from app.fact_development import (
     FactDevelopmentRunError,
     cancel_fact_development_run,
     create_fact_development_run,
+    estimate_fact_development_run,
     finalize_canceled_fact_development_run,
 )
 from app.fact_issue_membership import FactIssueMembershipError, evaluate_issue_membership, issue_document_counts
@@ -62,6 +63,8 @@ from app.models import (
 )
 from app.schemas import (
     FactDevelopmentRunCreate,
+    FactDevelopmentRunEstimateCreate,
+    FactDevelopmentRunEstimateRead,
     FactDevelopmentRunRead,
     FactDevelopmentSpecificationUpdate,
     FactIssueMembershipPreviewCreate,
@@ -1056,6 +1059,35 @@ def start_fact_development_run(
         if existing is not None:
             return existing
         raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="Fact-development run conflicted") from exc
+
+
+@router.post("/{task_id}/fact-runs/estimate", response_model=FactDevelopmentRunEstimateRead)
+def estimate_fact_development_run_endpoint(
+    matter_id: uuid.UUID,
+    task_id: uuid.UUID,
+    payload: FactDevelopmentRunEstimateCreate,
+    principal: Principal = Depends(get_principal),
+    db: Session = Depends(get_db),
+) -> FactDevelopmentRunEstimateRead:
+    """Show what a run would process before launching it: issue counts, reusable documents, and token volume."""
+
+    matter = _require_fact_runner(db, principal, matter_id)
+    task = _require_task(db, matter_id=matter_id, task_id=task_id)
+    try:
+        estimate = estimate_fact_development_run(
+            db,
+            matter=matter,
+            task=task,
+            review_batch_id=payload.review_batch_id,
+            coding_source=payload.coding_source,
+            reviewer_coding_id=payload.reviewer_coding_id,
+            actor_user_id=principal.user.id,
+        )
+    except FactDevelopmentRunError as exc:
+        db.rollback()
+        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=str(exc)) from exc
+    db.rollback()  # The estimate only reads; end its read transaction.
+    return FactDevelopmentRunEstimateRead.model_validate(estimate)
 
 
 @router.get("/{task_id}/fact-runs/{run_id}", response_model=FactDevelopmentRunRead)

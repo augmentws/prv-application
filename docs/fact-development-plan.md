@@ -1,6 +1,6 @@
 # Fact Development and Timeline Plan
 
-Status: slices 1 and 2 (task type, entities, fact ledger, permissions, API, CSV export job) implemented on `feature/fact-backend`; slice 3 (Postgres search, facets, histogram, recall) implemented; slice 4 (single-pass extraction runs on `matter_analysis_task_run`, frozen in an analysis input manifest, job outcomes) implemented; slice 5a (ordered chunk window, duplicate consolidation, confirmed-fact suggestions) implemented; slice 5b (final duplicate sweep, launch estimate) next
+Status: slices 1 and 2 (task type, entities, fact ledger, permissions, API, CSV export job) implemented on `feature/fact-backend`; slice 3 (Postgres search, facets, histogram, recall) implemented; slice 4 (single-pass extraction runs on `matter_analysis_task_run`, frozen in an analysis input manifest, job outcomes) implemented; slice 5 (ordered chunk window, duplicate consolidation, confirmed-fact suggestions, final duplicate sweep with merge suggestions, launch estimate) implemented; slice 6 (matter tabs and detail pages) next
 
 ## Objective
 
@@ -623,8 +623,9 @@ Each slice ends with:
      barriers), duplicate checks with the `fact_consolidation` skill and per-issue advisory locks with a bounded
      recheck, tombstones (rejected matches block re-creation), `REFINE`, and confirmed-fact suggestions with
      accept and dismiss.
-   - **5b:** final duplicate sweep (auto-merge only agent-authored working pairs within strict limits, otherwise
-     merge suggestions) and the launch estimate.
+   - **5b (done):** final duplicate sweep that only suggests merges (no automatic merging, by decision);
+     accepting a merge suggestion merges with both facts' lock versions and is undoable; dismissed pairs are not
+     suggested again. Launch estimate that reuses the freeze's population resolution.
 6. **Matter tabs and detail pages.** Task authoring in Analysis. The **Facts** tab (List sub-tab) with live
    review, facets and bulk actions. The fact detail page. The **Entities** tab (Directory and Proposed) and the
    entity detail page. The run job type in Jobs. Overview tiles.

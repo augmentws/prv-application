@@ -73,7 +73,7 @@ from app.fact_specifications import (
     FactSpecificationError,
     parse_fact_development_specification,
 )
-from app.facts import Actor
+from app.facts import Actor, suggest_merge
 from app.job_executions import (
     FACT_DEVELOPMENT_ANALYSIS_TASK_JOB_TYPE,
     JobExecutionConflict,
@@ -181,6 +181,124 @@ def _published_version(db: Session, task: MatterAnalysisTask) -> tuple[MatterAna
     return version, specification
 
 
+@dataclass(frozen=True)
+class _LaunchInputs:
+    task_version: MatterAnalysisTaskVersion
+    specification: FactDevelopmentSpecification
+    batch: ReviewBatch
+    reviewer_coding_revision: int | None
+    document_count: int
+    bindings: dict[str, Any]
+
+
+def _launch_inputs(
+    db: Session,
+    *,
+    matter: Matter,
+    task: MatterAnalysisTask,
+    review_batch_id: uuid.UUID,
+    coding_source: CodingSource,
+    reviewer_coding_id: uuid.UUID | None,
+) -> _LaunchInputs:
+    task_version, specification = _published_version(db, task)
+    batch = db.scalar(select(ReviewBatch).where(ReviewBatch.id == review_batch_id, ReviewBatch.matter_id == matter.id))
+    if batch is None or batch.status != "READY":
+        raise FactDevelopmentRunError("A ready review batch in this matter is required")
+    reviewer_coding_revision: int | None = None
+    if coding_source == "REVIEWER_CODING":
+        coding = db.get(ReviewBatchReviewerCoding, reviewer_coding_id) if reviewer_coding_id is not None else None
+        if coding is None or coding.review_batch_id != batch.id:
+            raise FactDevelopmentRunError("Reviewer coding was not found for this review batch")
+        reviewer_coding_revision = coding.revision
+    elif reviewer_coding_id is not None:
+        raise FactDevelopmentRunError("reviewer_coding_id applies only to the REVIEWER_CODING source")
+    document_count = int(
+        db.scalar(select(func.count()).where(ReviewBatchDocument.review_batch_id == batch.id)) or 0
+    )
+    if document_count == 0:
+        raise FactDevelopmentRunError("The review batch has no documents")
+    try:
+        bindings = resolve_workflow_skill_bindings(
+            db,
+            workflow_key=FACT_DEVELOPMENT_SPEC.key,
+            tenant_id=matter.client.tenant_id,
+        )
+    except ValueError as exc:
+        raise FactDevelopmentRunError(f"Fact extraction is not configured: {exc}") from exc
+    return _LaunchInputs(task_version, specification, batch, reviewer_coding_revision, document_count, bindings)
+
+
+# Rough prompt sizes for the launch estimate: instructions, the issue catalog and recalled facts per document, and
+# the extraction output. They are planning figures, not billing figures.
+ESTIMATE_PROMPT_OVERHEAD_TOKENS = 4_000
+ESTIMATE_OUTPUT_TOKENS_PER_DOCUMENT = 800
+ESTIMATE_BYTES_PER_TOKEN = 4
+
+
+def estimate_fact_development_run(
+    db: Session,
+    *,
+    matter: Matter,
+    task: MatterAnalysisTask,
+    review_batch_id: uuid.UUID,
+    coding_source: CodingSource,
+    reviewer_coding_id: uuid.UUID | None,
+    actor_user_id: uuid.UUID,
+    settings: Settings | None = None,
+) -> dict[str, Any]:
+    """What a run launched now would process, using the same population resolution as the run itself."""
+
+    settings = settings or get_settings()
+    launch = _launch_inputs(
+        db,
+        matter=matter,
+        task=task,
+        review_batch_id=review_batch_id,
+        coding_source=coding_source,
+        reviewer_coding_id=reviewer_coding_id,
+    )
+    population = _resolve_population(
+        db,
+        matter=matter,
+        task_id=task.id,
+        exclude_run_id=None,
+        specification=launch.specification,
+        specification_hash=canonical_hash(launch.specification.model_dump(mode="json")),
+        batch_id=launch.batch.id,
+        expected_count=None,
+        coding_source=coding_source,
+        reviewer_coding_id=reviewer_coding_id,
+        reviewer_coding_revision=launch.reviewer_coding_revision,
+        actor_user_id=actor_user_id,
+    )
+    ready = population.status_counts.get("READY", 0)
+    to_extract = ready - population.previously_extracted
+    issue_counts: Counter[str] = Counter(key for keys in population.membership.values() for key in keys)
+    extraction_version = launch.bindings[FACT_EXTRACTION_ROLE][2]
+    return {
+        "review_batch_id": launch.batch.id,
+        "task_version": launch.task_version.version,
+        "coding_source": coding_source,
+        "reviewer_coding_revision": launch.reviewer_coding_revision,
+        "batch_document_count": population.document_count,
+        "matched_document_count": len(population.membership),
+        "excluded_document_count": population.status_counts.get("EXCLUDED", 0),
+        "missing_text_document_count": population.status_counts.get("MISSING", 0),
+        "previously_extracted_count": population.previously_extracted,
+        "documents_to_extract": to_extract,
+        "text_bytes_to_extract": population.text_bytes_to_extract,
+        "estimated_input_tokens": population.text_bytes_to_extract // ESTIMATE_BYTES_PER_TOKEN
+        + to_extract * ESTIMATE_PROMPT_OVERHEAD_TOKENS,
+        "estimated_output_tokens": to_extract * ESTIMATE_OUTPUT_TOKENS_PER_DOCUMENT,
+        "extraction_model": resolve_agent_model(extraction_version.model_key, settings),
+        "chunk_count": math.ceil(population.document_count / settings.fact_development_chunk_size),
+        "issue_document_counts": [
+            {"issue_key": issue.key, "name": issue.name, "document_count": issue_counts.get(issue.key, 0)}
+            for issue in launch.specification.issues
+        ],
+    }
+
+
 def create_fact_development_run(
     db: Session,
     *,
@@ -204,31 +322,17 @@ def create_fact_development_run(
         if existing.run_kind != "FACT_DEVELOPMENT":
             raise FactDevelopmentRunError("The idempotency key belongs to another kind of run")
         return existing, False
-    task_version, specification = _published_version(db, task)
-    batch = db.scalar(select(ReviewBatch).where(ReviewBatch.id == review_batch_id, ReviewBatch.matter_id == matter.id))
-    if batch is None or batch.status != "READY":
-        raise FactDevelopmentRunError("A ready review batch in this matter is required")
-    reviewer_coding_revision: int | None = None
-    if coding_source == "REVIEWER_CODING":
-        coding = db.get(ReviewBatchReviewerCoding, reviewer_coding_id) if reviewer_coding_id is not None else None
-        if coding is None or coding.review_batch_id != batch.id:
-            raise FactDevelopmentRunError("Reviewer coding was not found for this review batch")
-        reviewer_coding_revision = coding.revision
-    elif reviewer_coding_id is not None:
-        raise FactDevelopmentRunError("reviewer_coding_id applies only to the REVIEWER_CODING source")
-    document_count = int(
-        db.scalar(select(func.count()).where(ReviewBatchDocument.review_batch_id == batch.id)) or 0
+    launch = _launch_inputs(
+        db,
+        matter=matter,
+        task=task,
+        review_batch_id=review_batch_id,
+        coding_source=coding_source,
+        reviewer_coding_id=reviewer_coding_id,
     )
-    if document_count == 0:
-        raise FactDevelopmentRunError("The review batch has no documents")
-    try:
-        resolved = resolve_workflow_skill_bindings(
-            db,
-            workflow_key=FACT_DEVELOPMENT_SPEC.key,
-            tenant_id=matter.client.tenant_id,
-        )
-    except ValueError as exc:
-        raise FactDevelopmentRunError(f"Fact extraction is not configured: {exc}") from exc
+    task_version, specification, batch = launch.task_version, launch.specification, launch.batch
+    reviewer_coding_revision, document_count = launch.reviewer_coding_revision, launch.document_count
+    resolved = launch.bindings
     skill_version = resolved[FACT_EXTRACTION_ROLE][2]
     consolidation_version = resolved[FACT_CONSOLIDATION_ROLE][2]
     configuration = {
@@ -244,6 +348,7 @@ def create_fact_development_run(
         "recall_window_days": settings.fact_development_recall_window_days,
         "chunk_window": settings.fact_development_chunk_window,
         "duplicate_threshold": settings.fact_duplicate_threshold,
+        "merge_suggestion_threshold": settings.fact_merge_suggestion_threshold,
         "skill_definition_version_id": str(skill_version.id),
         "resolved_model": resolve_agent_model(skill_version.model_key, settings),
         "consolidation_skill_definition_version_id": str(consolidation_version.id),
@@ -685,17 +790,17 @@ def _input_contract(run: MatterAnalysisTaskRun) -> AnalysisInputContract:
     )
 
 
-def _finished_fingerprints(db: Session, run: MatterAnalysisTaskRun) -> set[str]:
-    """Fingerprints of documents that earlier runs of the same task finished."""
+def _finished_fingerprints(db: Session, *, task_id: uuid.UUID, exclude_run_id: uuid.UUID | None) -> set[str]:
+    """Fingerprints of documents that runs of the task (other than ``exclude_run_id``) finished."""
 
     finished: set[str] = set()
     for fingerprints in db.scalars(
         select(MatterAnalysisTaskRunChunk.fingerprints)
         .join(MatterAnalysisTaskRun, MatterAnalysisTaskRun.id == MatterAnalysisTaskRunChunk.run_id)
         .where(
-            MatterAnalysisTaskRun.matter_analysis_task_id == run.matter_analysis_task_id,
+            MatterAnalysisTaskRun.matter_analysis_task_id == task_id,
             MatterAnalysisTaskRun.run_kind == "FACT_DEVELOPMENT",
-            MatterAnalysisTaskRun.id != run.id,
+            *([MatterAnalysisTaskRun.id != exclude_run_id] if exclude_run_id is not None else []),
         )
     ):
         finished.update(fingerprints or [])
@@ -733,47 +838,62 @@ def _chronological_key(
     return (file_date is None, file_date.isoformat() if file_date else "", family, sequence)
 
 
-def _freeze_input_manifest(db: Session, run: MatterAnalysisTaskRun) -> AnalysisInputManifest:
-    """Resolve every batch document once, in chronological order, into the run's immutable input manifest."""
+@dataclass(frozen=True)
+class _ResolvedPopulation:
+    rows: list[AnalysisInputDocument]
+    document_count: int
+    membership: dict[uuid.UUID, list[str]]
+    status_counts: Counter[str]
+    previously_extracted: int
+    text_bytes_to_extract: int
 
-    configuration = run.configuration_snapshot
-    matter = db.get(Matter, run.matter_id)
-    task_version = db.get(MatterAnalysisTaskVersion, run.matter_analysis_task_version_id)
-    if matter is None or task_version is None:
-        raise FactDevelopmentRunError("The pinned fact-development task version is unavailable")
-    try:
-        specification = parse_fact_development_specification(task_version.fact_development_specification)
-    except FactSpecificationError as exc:
-        raise FactDevelopmentRunError(str(exc), code="FACT_SPECIFICATION_INVALID") from exc
-    if canonical_hash(specification.model_dump(mode="json")) != configuration["specification_hash"]:
-        raise FactDevelopmentRunError("The pinned issue catalog changed after the run was launched")
+
+def _resolve_population(
+    db: Session,
+    *,
+    matter: Matter,
+    task_id: uuid.UUID,
+    exclude_run_id: uuid.UUID | None,
+    specification: FactDevelopmentSpecification,
+    specification_hash: str,
+    batch_id: uuid.UUID,
+    expected_count: int | None,
+    coding_source: CodingSource,
+    reviewer_coding_id: uuid.UUID | None,
+    reviewer_coding_revision: int | None,
+    actor_user_id: uuid.UUID,
+) -> _ResolvedPopulation:
+    """Resolve every batch document once, in chronological order, into input-manifest rows.
+
+    Shared by the run freeze and the launch estimate so the estimate counts exactly what a run would do.
+    """
+
     members = db.execute(
         select(MatterDocument, ReviewBatchDocument.sequence_number)
         .join(ReviewBatchDocument, ReviewBatchDocument.matter_document_id == MatterDocument.id)
-        .where(ReviewBatchDocument.review_batch_id == run.scope_id, MatterDocument.matter_id == run.matter_id)
+        .where(ReviewBatchDocument.review_batch_id == batch_id, MatterDocument.matter_id == matter.id)
         .order_by(ReviewBatchDocument.sequence_number)
     ).all()
-    if len(members) != run.population_document_count:
+    if expected_count is not None and len(members) != expected_count:
         raise FactDevelopmentRunError("The review batch's documents changed after the run was launched")
     document_ids = [document.id for document, _ in members]
-    reviewer_coding_id = configuration.get("reviewer_coding_id")
     try:
         membership = evaluate_issue_membership(
             db,
-            matter_id=run.matter_id,
+            matter_id=matter.id,
             specification=specification,
             document_ids=document_ids,
-            coding_source=configuration["coding_source"],
-            reviewer_coding_id=uuid.UUID(reviewer_coding_id) if reviewer_coding_id else None,
-            reviewer_coding_revision=configuration.get("reviewer_coding_revision"),
+            coding_source=coding_source,
+            reviewer_coding_id=reviewer_coding_id,
+            reviewer_coding_revision=reviewer_coding_revision,
         )
     except FactIssueMembershipError as exc:
         raise FactDevelopmentRunError(str(exc), code="FACT_ISSUE_MEMBERSHIP_FAILED") from exc
     try:
         snapshots = get_collection_item_analysis_input_snapshots(
             item_ids=[document.collection_item_id for document, _ in members],
-            actor_user_id=run.created_by_user_id,
-            tenant_id=run.tenant_id,
+            actor_user_id=actor_user_id,
+            tenant_id=matter.client.tenant_id,
             client_id=matter.client_id,
         )
     except (httpx.HTTPError, PermissionError, ValueError) as exc:
@@ -785,7 +905,7 @@ def _freeze_input_manifest(db: Session, run: MatterAnalysisTaskRun) -> AnalysisI
         .order_by(MatterDocumentCustodian.matter_document_id, MatterDocumentCustodian.custodian_id)
     ):
         custodians.setdefault(document_id, []).append(str(custodian_id))
-    finished = _finished_fingerprints(db, run)
+    finished = _finished_fingerprints(db, task_id=task_id, exclude_run_id=exclude_run_id)
     ordered = sorted(
         members,
         key=lambda member: _chronological_key(
@@ -795,6 +915,7 @@ def _freeze_input_manifest(db: Session, run: MatterAnalysisTaskRun) -> AnalysisI
     rows: list[AnalysisInputDocument] = []
     status_counts: Counter[str] = Counter()
     reused = 0
+    text_bytes = 0
     for position, (document, _) in enumerate(ordered, start=1):
         snapshot = snapshots.get(document.collection_item_id)
         issue_keys = membership.get(document.id, [])
@@ -829,11 +950,13 @@ def _freeze_input_manifest(db: Session, run: MatterAnalysisTaskRun) -> AnalysisI
             fingerprint = extraction_fingerprint(
                 matter_document_id=str(document.id),
                 source_content_hash=snapshot.text_source.content_hash,
-                specification_hash=configuration["specification_hash"],
+                specification_hash=specification_hash,
                 issue_keys=issue_keys,
             )
             prior_extraction = fingerprint in finished
             reused += prior_extraction
+            if not prior_extraction:
+                text_bytes += snapshot.text_source.byte_length
             row = AnalysisInputDocument(
                 **base,
                 source_artifact_id=snapshot.text_source.artifact_id,
@@ -854,6 +977,50 @@ def _freeze_input_manifest(db: Session, run: MatterAnalysisTaskRun) -> AnalysisI
             )
         status_counts[row.input_status] += 1
         rows.append(row)
+    return _ResolvedPopulation(
+        rows=rows,
+        document_count=len(members),
+        membership=membership,
+        status_counts=status_counts,
+        previously_extracted=reused,
+        text_bytes_to_extract=text_bytes,
+    )
+
+
+def _freeze_input_manifest(db: Session, run: MatterAnalysisTaskRun) -> AnalysisInputManifest:
+    """Freeze the run's population into its immutable input manifest."""
+
+    configuration = run.configuration_snapshot
+    matter = db.get(Matter, run.matter_id)
+    task_version = db.get(MatterAnalysisTaskVersion, run.matter_analysis_task_version_id)
+    if matter is None or task_version is None:
+        raise FactDevelopmentRunError("The pinned fact-development task version is unavailable")
+    try:
+        specification = parse_fact_development_specification(task_version.fact_development_specification)
+    except FactSpecificationError as exc:
+        raise FactDevelopmentRunError(str(exc), code="FACT_SPECIFICATION_INVALID") from exc
+    if canonical_hash(specification.model_dump(mode="json")) != configuration["specification_hash"]:
+        raise FactDevelopmentRunError("The pinned issue catalog changed after the run was launched")
+    reviewer_coding_id = configuration.get("reviewer_coding_id")
+    population = _resolve_population(
+        db,
+        matter=matter,
+        task_id=run.matter_analysis_task_id,
+        exclude_run_id=run.id,
+        specification=specification,
+        specification_hash=configuration["specification_hash"],
+        batch_id=run.scope_id,
+        expected_count=run.population_document_count,
+        coding_source=configuration["coding_source"],
+        reviewer_coding_id=uuid.UUID(reviewer_coding_id) if reviewer_coding_id else None,
+        reviewer_coding_revision=configuration.get("reviewer_coding_revision"),
+        actor_user_id=run.created_by_user_id,
+    )
+    rows = population.rows
+    membership = population.membership
+    status_counts = population.status_counts
+    reused = population.previously_extracted
+    document_ids = [row.matter_document_id for row in rows]
     db.expire_all()  # Observe a cancel committed while the batch was being resolved.
     if _cancel_requested(db, run.id):
         # Resolution can take a while for a large batch; do not publish a manifest for a canceled run.
@@ -1519,6 +1686,86 @@ def _execution_ids(db: Session, run_id: uuid.UUID) -> list[uuid.UUID]:
     )
 
 
+MAX_SWEEP_CANDIDATES = 3
+
+
+def _merge_direction(fact: MatterFact, other: MatterFact) -> tuple[MatterFact, MatterFact]:
+    """The fact to absorb and the fact to keep: never absorb a confirmed fact; otherwise keep the older one."""
+
+    if other.status == "CONFIRMED":
+        return fact, other
+    if fact.status == "CONFIRMED":
+        return other, fact
+    return (other, fact) if (fact.created_at, str(fact.id)) < (other.created_at, str(other.id)) else (fact, other)
+
+
+def sweep_duplicate_facts(db: Session, run: MatterAnalysisTaskRun) -> dict[str, int]:
+    """After the last chunk, suggest merging this run's working facts with close facts sharing an issue.
+
+    Every pair becomes a reviewer suggestion; nothing is merged automatically. A pair already pending, or one a
+    reviewer dismissed, is not suggested again, so the sweep is safe to repeat.
+    """
+
+    execution_ids = _execution_ids(db, run.id)
+    execution = current_job_execution(db, job_type=FACT_DEVELOPMENT_ANALYSIS_TASK_JOB_TYPE, job_id=run.id)
+    actor = Actor(actor_type="AGENT", workflow_run_id=execution.id if execution is not None else None)
+    threshold = float(run.configuration_snapshot.get("merge_suggestion_threshold", 0.9))
+    window_days = int(run.configuration_snapshot["recall_window_days"])
+    facts = list(
+        db.scalars(
+            select(MatterFact)
+            .where(MatterFact.origin_workflow_run_id.in_(execution_ids), MatterFact.status == "WORKING")
+            .order_by(MatterFact.created_at, MatterFact.id)
+        )
+    )
+    created = 0
+    for fact in facts:
+        issue_keys = list(
+            db.scalars(
+                select(MatterFactIssue.issue_key).where(
+                    MatterFactIssue.fact_id == fact.id,
+                    MatterFactIssue.matter_analysis_task_id == run.matter_analysis_task_id,
+                )
+            )
+        )
+        recalled = recall_facts(
+            db,
+            matter_id=run.matter_id,
+            text=fact.summary,
+            issue_keys=issue_keys,
+            event_date=fact.event_date_start,
+            window_days=window_days,
+            limit=MAX_SWEEP_CANDIDATES + 1,
+            include_rejected=False,
+        )
+        for item in recalled:
+            other = item.fact
+            if other.id == fact.id or item.similarity < threshold or other.status not in {"WORKING", "CONFIRMED"}:
+                continue
+            source, target = _merge_direction(fact, other)
+            suggestion = suggest_merge(
+                db,
+                source=source,
+                target=target,
+                rationale=f"Summaries are {item.similarity:.0%} similar and share an issue.",
+                actor=actor,
+            )
+            created += suggestion is not None
+    return {"working_facts_checked": len(facts), "merge_suggestions_created": created}
+
+
+def _run_sweep(db: Session, run_id: uuid.UUID) -> dict[str, Any]:
+    run = db.get(MatterAnalysisTaskRun, run_id)
+    try:
+        result: dict[str, Any] = dict(sweep_duplicate_facts(db, run))
+        db.commit()
+    except Exception as exc:  # noqa: BLE001 - the sweep only suggests; its failure is reported, not fatal
+        logger.warning("Duplicate sweep failed run_id=%s: %s", run_id, exc)
+        db.rollback()
+        result = {"working_facts_checked": 0, "merge_suggestions_created": 0, "unavailable": True}
+    return result
+
+
 def finalize_fact_development_run(db: Session, run_id: uuid.UUID) -> MatterAnalysisTaskRun:
     run = _lock_run(db, run_id)
     if _cancel_requested(db, run.id):
@@ -1534,13 +1781,16 @@ def finalize_fact_development_run(db: Session, run_id: uuid.UUID) -> MatterAnaly
         job_id=run.id,
         current_stage="FINALIZING",
     )
+    db.commit()
+    sweep = _run_sweep(db, run_id)
+    run = _lock_run(db, run_id)
     reader = _manifest_reader(db, run)
     manifest = finalize_outcome_manifest(
         db,
         scope=_outcome_scope(db, run),
         chunks=[_outcome_chunk(chunk, _chunk_rows(reader, chunk)) for chunk in chunks],
     )
-    run.report = _report(db, run, _execution_ids(db, run.id), manifest)
+    run.report = {**_report(db, run, _execution_ids(db, run.id), manifest), "sweep": sweep}
     failed = int(manifest.status_counts.get("FAILED", 0))
     final_status = "COMPLETED_WITH_ERRORS" if failed else "COMPLETED"
     execution = current_job_execution(db, job_type=FACT_DEVELOPMENT_ANALYSIS_TASK_JOB_TYPE, job_id=run.id)

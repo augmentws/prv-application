@@ -123,6 +123,8 @@ import type {
   ExternalProviderUsageRead,
   FacetValue,
   FactDevelopmentRunCreate,
+  FactDevelopmentRunEstimateCreate,
+  FactDevelopmentRunEstimateRead,
   FactDevelopmentRunRead,
   FactDevelopmentSpecificationUpdate,
   FactIssueMembershipPreviewCreate,
@@ -219,6 +221,7 @@ import type {
   MatterFactMerge,
   MatterFactPage,
   MatterFactSearchRequest,
+  MatterFactSuggestionAccept,
   MatterFactSuggestionDismiss,
   MatterFactSuggestionRead,
   MatterFactUpdate,
@@ -5574,6 +5577,74 @@ const res = await fetch(getStartFactDevelopmentRunV1MattersMatterIdAnalysisTasks
 
   const data: startFactDevelopmentRunV1MattersMatterIdAnalysisTasksTaskIdFactRunsPostResponse['data'] = body ? JSON.parse(body) : {}
   return { data, status: res.status, headers: res.headers } as startFactDevelopmentRunV1MattersMatterIdAnalysisTasksTaskIdFactRunsPostResponse
+}
+
+
+
+export type estimateFactDevelopmentRunEndpointV1MattersMatterIdAnalysisTasksTaskIdFactRunsEstimatePostResponse200 = {
+  data: FactDevelopmentRunEstimateRead
+  status: 200
+}
+
+export type estimateFactDevelopmentRunEndpointV1MattersMatterIdAnalysisTasksTaskIdFactRunsEstimatePostResponse422 = {
+  data: HTTPValidationError
+  status: 422
+}
+
+export type estimateFactDevelopmentRunEndpointV1MattersMatterIdAnalysisTasksTaskIdFactRunsEstimatePostResponseSuccess = (estimateFactDevelopmentRunEndpointV1MattersMatterIdAnalysisTasksTaskIdFactRunsEstimatePostResponse200) & {
+  headers: Headers;
+};
+export type estimateFactDevelopmentRunEndpointV1MattersMatterIdAnalysisTasksTaskIdFactRunsEstimatePostResponseError = (estimateFactDevelopmentRunEndpointV1MattersMatterIdAnalysisTasksTaskIdFactRunsEstimatePostResponse422) & {
+  headers: Headers;
+};
+
+export type estimateFactDevelopmentRunEndpointV1MattersMatterIdAnalysisTasksTaskIdFactRunsEstimatePostResponse = (estimateFactDevelopmentRunEndpointV1MattersMatterIdAnalysisTasksTaskIdFactRunsEstimatePostResponseSuccess | estimateFactDevelopmentRunEndpointV1MattersMatterIdAnalysisTasksTaskIdFactRunsEstimatePostResponseError)
+
+export const getEstimateFactDevelopmentRunEndpointV1MattersMatterIdAnalysisTasksTaskIdFactRunsEstimatePostUrl = (matterId: string,
+    taskId: string,) => {
+
+
+
+
+  return `/api/core/v1/matters/${matterId}/analysis-tasks/${taskId}/fact-runs/estimate`
+}
+
+/**
+ * Show what a run would process before launching it: issue counts, reusable documents, and token volume.
+ * @summary Estimate Fact Development Run Endpoint
+ */
+export const estimateFactDevelopmentRunEndpointV1MattersMatterIdAnalysisTasksTaskIdFactRunsEstimatePost = async (matterId: string,
+    taskId: string,
+    factDevelopmentRunEstimateCreate: FactDevelopmentRunEstimateCreate, options?: RequestInit): Promise<estimateFactDevelopmentRunEndpointV1MattersMatterIdAnalysisTasksTaskIdFactRunsEstimatePostResponse> => {
+
+    const getHeaders = (h?: NonNullable<RequestInit['headers']>): Record<string, string | readonly string[]> => {
+    if (!h) return {};
+    if (h instanceof Headers) return Object.fromEntries(h.entries());
+    if (Symbol.iterator in h) {
+      return Object.fromEntries(
+        Array.from(h as Iterable<Iterable<string>>, (entry) => Array.from(entry) as [string, string]),
+      );
+    }
+    const headers: Record<string, string | readonly string[]> = {};
+    for (const [name, value] of Object.entries<string | readonly string[] | undefined>(h)) {
+      if (value !== undefined) headers[name] = value;
+    }
+    return headers;
+  };
+const res = await fetch(getEstimateFactDevelopmentRunEndpointV1MattersMatterIdAnalysisTasksTaskIdFactRunsEstimatePostUrl(matterId,taskId),
+  {
+    ...options,
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json', ...getHeaders(options?.headers) },
+    body: JSON.stringify(factDevelopmentRunEstimateCreate)
+  }
+)
+
+
+  const body = [204, 205, 304].includes(res.status) ? null : await res.text();
+
+  const data: estimateFactDevelopmentRunEndpointV1MattersMatterIdAnalysisTasksTaskIdFactRunsEstimatePostResponse['data'] = body ? JSON.parse(body) : {}
+  return { data, status: res.status, headers: res.headers } as estimateFactDevelopmentRunEndpointV1MattersMatterIdAnalysisTasksTaskIdFactRunsEstimatePostResponse
 }
 
 
@@ -15518,13 +15589,16 @@ export const getAcceptMatterFactSuggestionV1MattersMatterIdFactsFactIdSuggestion
 }
 
 /**
- * Apply an agent's suggested revision to a confirmed fact as the reviewer's own revision.
+ * Apply an agent suggestion as the reviewer's own change.
+ *
+ * A revision returns the revised fact. A merge (which needs ``target_lock_version``) returns the fact that
+ * absorbed this one; it can be undone with unmerge.
  * @summary Accept Matter Fact Suggestion
  */
 export const acceptMatterFactSuggestionV1MattersMatterIdFactsFactIdSuggestionsSuggestionIdAcceptPost = async (matterId: string,
     factId: string,
     suggestionId: string,
-    matterFactAction: MatterFactAction, options?: RequestInit): Promise<acceptMatterFactSuggestionV1MattersMatterIdFactsFactIdSuggestionsSuggestionIdAcceptPostResponse> => {
+    matterFactSuggestionAccept: MatterFactSuggestionAccept, options?: RequestInit): Promise<acceptMatterFactSuggestionV1MattersMatterIdFactsFactIdSuggestionsSuggestionIdAcceptPostResponse> => {
 
     const getHeaders = (h?: NonNullable<RequestInit['headers']>): Record<string, string | readonly string[]> => {
     if (!h) return {};
@@ -15545,7 +15619,7 @@ const res = await fetch(getAcceptMatterFactSuggestionV1MattersMatterIdFactsFactI
     ...options,
     method: 'POST',
     headers: { 'Content-Type': 'application/json', ...getHeaders(options?.headers) },
-    body: JSON.stringify(matterFactAction)
+    body: JSON.stringify(matterFactSuggestionAccept)
   }
 )
 

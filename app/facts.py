@@ -14,7 +14,7 @@ from dataclasses import dataclass, field
 from datetime import date
 from typing import Any, Literal
 
-from sqlalchemy import delete, func, select
+from sqlalchemy import and_, delete, func, or_, select
 from sqlalchemy.orm import Session
 
 from app.fact_evidence import VerifiedEvidence
@@ -883,6 +883,58 @@ def suggest_revision(
     return suggestion
 
 
+def suggest_merge(
+    db: Session,
+    *,
+    source: MatterFact,
+    target: MatterFact,
+    rationale: str | None,
+    actor: Actor,
+) -> MatterFactSuggestion | None:
+    """Propose absorbing ``source`` into ``target``; ``None`` when the pair was already suggested or dismissed."""
+
+    if source.id == target.id or source.matter_id != target.matter_id:
+        raise FactError("A merge suggestion needs two different facts in the same matter")
+    for fact in (source, target):
+        if fact.status not in {"WORKING", "CONFIRMED"}:
+            raise FactConflict(f"A {fact.status.lower()} fact cannot be part of a merge suggestion")
+    existing = db.scalar(
+        select(MatterFactSuggestion.id).where(
+            MatterFactSuggestion.kind == "MERGE",
+            MatterFactSuggestion.status.in_(["PENDING", "DISMISSED"]),
+            or_(
+                and_(MatterFactSuggestion.fact_id == source.id, MatterFactSuggestion.target_fact_id == target.id),
+                and_(MatterFactSuggestion.fact_id == target.id, MatterFactSuggestion.target_fact_id == source.id),
+            ),
+        )
+    )
+    if existing is not None:
+        # A pending pair needs no second suggestion, and a reviewer who dismissed it is not asked again.
+        return None
+    suggestion = MatterFactSuggestion(
+        matter_id=source.matter_id,
+        fact_id=source.id,
+        kind="MERGE",
+        status="PENDING",
+        base_revision=source.current_revision,
+        changes={},
+        evidence=[],
+        target_fact_id=target.id,
+        rationale=rationale,
+        created_by_workflow_run_id=actor.workflow_run_id,
+    )
+    db.add(suggestion)
+    db.flush()
+    _record(
+        db,
+        source,
+        "SUGGESTION_CREATED",
+        {"suggestion_id": str(suggestion.id), "kind": "MERGE", "target_fact_id": str(target.id)},
+        actor,
+    )
+    return suggestion
+
+
 def _pending_suggestion(db: Session, fact: MatterFact, suggestion_id: uuid.UUID) -> MatterFactSuggestion:
     suggestion = db.scalar(
         select(MatterFactSuggestion)
@@ -903,14 +955,34 @@ def accept_suggestion(
     suggestion_id: uuid.UUID,
     lock_version: int,
     actor: Actor,
+    target_lock_version: int | None = None,
 ) -> MatterFact:
-    """Apply a pending suggestion as the reviewer's own revision, with its supporting quotes."""
+    """Apply a pending suggestion as the reviewer's own change.
+
+    A revision is applied with its supporting quotes and returns ``fact``; a merge absorbs ``fact`` into the
+    suggested target (undoable with unmerge) and returns the target.
+    """
 
     if actor.actor_type != "HUMAN":
         raise FactConflict("Only a person can accept a suggestion")
     suggestion = _pending_suggestion(db, fact, suggestion_id)
-    if suggestion.kind != "REVISION":
-        raise FactConflict("Merge suggestions are accepted by merging the facts")
+    if suggestion.kind == "MERGE":
+        if target_lock_version is None:
+            raise FactError("Accepting a merge suggestion needs the target fact's lock_version")
+        target = get_fact(db, matter_id=fact.matter_id, fact_id=suggestion.target_fact_id, for_update=True)  # type: ignore[arg-type]
+        merge_facts(
+            db,
+            source=fact,
+            target=target,
+            source_lock_version=lock_version,
+            target_lock_version=target_lock_version,
+            actor=actor,
+        )
+        suggestion.status = "ACCEPTED"
+        suggestion.resolved_by_user_id = actor.user_id
+        suggestion.resolved_at = utcnow()
+        _record(db, fact, "SUGGESTION_ACCEPTED", {"suggestion_id": str(suggestion.id)}, actor)
+        return target
     _require_not_merged(fact)
     _check_version(fact, lock_version)
     revise_fact(

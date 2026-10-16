@@ -5400,6 +5400,75 @@
         }
       }
     },
+    "/v1/matters/{matter_id}/analysis-tasks/{task_id}/fact-runs/estimate": {
+      "post": {
+        "tags": [
+          "matter analysis tasks"
+        ],
+        "summary": "Estimate Fact Development Run Endpoint",
+        "description": "Show what a run would process before launching it: issue counts, reusable documents, and token volume.",
+        "operationId": "estimate_fact_development_run_endpoint_v1_matters__matter_id__analysis_tasks__task_id__fact_runs_estimate_post",
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "matter_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid",
+              "title": "Matter Id"
+            }
+          },
+          {
+            "name": "task_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid",
+              "title": "Task Id"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/FactDevelopmentRunEstimateCreate"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/FactDevelopmentRunEstimateRead"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/v1/matters/{matter_id}/analysis-tasks/{task_id}/fact-runs/{run_id}": {
       "get": {
         "tags": [
@@ -16283,7 +16352,7 @@
           "matter facts"
         ],
         "summary": "Accept Matter Fact Suggestion",
-        "description": "Apply an agent's suggested revision to a confirmed fact as the reviewer's own revision.",
+        "description": "Apply an agent suggestion as the reviewer's own change.\n\nA revision returns the revised fact. A merge (which needs ``target_lock_version``) returns the fact that\nabsorbed this one; it can be undone with unmerge.",
         "operationId": "accept_matter_fact_suggestion_v1_matters__matter_id__facts__fact_id__suggestions__suggestion_id__accept_post",
         "security": [
           {
@@ -16327,7 +16396,7 @@
           "content": {
             "application/json": {
               "schema": {
-                "$ref": "#/components/schemas/MatterFactAction"
+                "$ref": "#/components/schemas/MatterFactSuggestionAccept"
               }
             }
           }
@@ -32262,6 +32331,146 @@
         ],
         "title": "FactDevelopmentRunCreate"
       },
+      "FactDevelopmentRunEstimateCreate": {
+        "properties": {
+          "review_batch_id": {
+            "type": "string",
+            "format": "uuid",
+            "title": "Review Batch Id"
+          },
+          "coding_source": {
+            "type": "string",
+            "enum": [
+              "MATTER_METADATA",
+              "REVIEWER_CODING"
+            ],
+            "title": "Coding Source",
+            "default": "MATTER_METADATA"
+          },
+          "reviewer_coding_id": {
+            "anyOf": [
+              {
+                "type": "string",
+                "format": "uuid"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Reviewer Coding Id"
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "review_batch_id"
+        ],
+        "title": "FactDevelopmentRunEstimateCreate"
+      },
+      "FactDevelopmentRunEstimateRead": {
+        "properties": {
+          "review_batch_id": {
+            "type": "string",
+            "format": "uuid",
+            "title": "Review Batch Id"
+          },
+          "task_version": {
+            "type": "integer",
+            "title": "Task Version"
+          },
+          "coding_source": {
+            "type": "string",
+            "enum": [
+              "MATTER_METADATA",
+              "REVIEWER_CODING"
+            ],
+            "title": "Coding Source"
+          },
+          "reviewer_coding_revision": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Reviewer Coding Revision"
+          },
+          "batch_document_count": {
+            "type": "integer",
+            "title": "Batch Document Count"
+          },
+          "matched_document_count": {
+            "type": "integer",
+            "title": "Matched Document Count"
+          },
+          "excluded_document_count": {
+            "type": "integer",
+            "title": "Excluded Document Count"
+          },
+          "missing_text_document_count": {
+            "type": "integer",
+            "title": "Missing Text Document Count"
+          },
+          "previously_extracted_count": {
+            "type": "integer",
+            "title": "Previously Extracted Count"
+          },
+          "documents_to_extract": {
+            "type": "integer",
+            "title": "Documents To Extract"
+          },
+          "text_bytes_to_extract": {
+            "type": "integer",
+            "title": "Text Bytes To Extract"
+          },
+          "estimated_input_tokens": {
+            "type": "integer",
+            "title": "Estimated Input Tokens"
+          },
+          "estimated_output_tokens": {
+            "type": "integer",
+            "title": "Estimated Output Tokens"
+          },
+          "extraction_model": {
+            "type": "string",
+            "title": "Extraction Model"
+          },
+          "chunk_count": {
+            "type": "integer",
+            "title": "Chunk Count"
+          },
+          "issue_document_counts": {
+            "items": {
+              "$ref": "#/components/schemas/FactIssueMembershipCount"
+            },
+            "type": "array",
+            "title": "Issue Document Counts"
+          }
+        },
+        "type": "object",
+        "required": [
+          "review_batch_id",
+          "task_version",
+          "coding_source",
+          "reviewer_coding_revision",
+          "batch_document_count",
+          "matched_document_count",
+          "excluded_document_count",
+          "missing_text_document_count",
+          "previously_extracted_count",
+          "documents_to_extract",
+          "text_bytes_to_extract",
+          "estimated_input_tokens",
+          "estimated_output_tokens",
+          "extraction_model",
+          "chunk_count",
+          "issue_document_counts"
+        ],
+        "title": "FactDevelopmentRunEstimateRead",
+        "description": "What a run launched now would process. Token figures are planning approximations, not billing figures."
+      },
       "FactDevelopmentRunRead": {
         "properties": {
           "id": {
@@ -39811,6 +40020,33 @@
         "additionalProperties": false,
         "type": "object",
         "title": "MatterFactSearchRequest"
+      },
+      "MatterFactSuggestionAccept": {
+        "properties": {
+          "lock_version": {
+            "type": "integer",
+            "minimum": 1.0,
+            "title": "Lock Version"
+          },
+          "target_lock_version": {
+            "anyOf": [
+              {
+                "type": "integer",
+                "minimum": 1.0
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Target Lock Version"
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "lock_version"
+        ],
+        "title": "MatterFactSuggestionAccept"
       },
       "MatterFactSuggestionDismiss": {
         "properties": {

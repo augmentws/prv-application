@@ -2803,6 +2803,35 @@ class FactDevelopmentRunCreate(BaseModel):
         return normalized
 
 
+class FactDevelopmentRunEstimateCreate(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    review_batch_id: uuid.UUID
+    coding_source: Literal["MATTER_METADATA", "REVIEWER_CODING"] = "MATTER_METADATA"
+    reviewer_coding_id: uuid.UUID | None = None
+
+
+class FactDevelopmentRunEstimateRead(BaseModel):
+    """What a run launched now would process. Token figures are planning approximations, not billing figures."""
+
+    review_batch_id: uuid.UUID
+    task_version: int
+    coding_source: Literal["MATTER_METADATA", "REVIEWER_CODING"]
+    reviewer_coding_revision: int | None
+    batch_document_count: int
+    matched_document_count: int
+    excluded_document_count: int
+    missing_text_document_count: int
+    previously_extracted_count: int
+    documents_to_extract: int
+    text_bytes_to_extract: int
+    estimated_input_tokens: int
+    estimated_output_tokens: int
+    extraction_model: str
+    chunk_count: int
+    issue_document_counts: list[FactIssueMembershipCount]
+
+
 class FactDevelopmentRunRead(ORMModel):
     id: uuid.UUID
     matter_id: uuid.UUID
@@ -4333,6 +4362,13 @@ class MatterFactSuggestionRead(ORMModel):
     resolved_at: datetime | None
     resolution_note: str | None
     created_at: datetime
+
+
+class MatterFactSuggestionAccept(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    lock_version: int = Field(ge=1)
+    target_lock_version: int | None = Field(default=None, ge=1)
 
 
 class MatterFactSuggestionDismiss(BaseModel):

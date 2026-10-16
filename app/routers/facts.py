@@ -72,6 +72,7 @@ from app.schemas import (
     MatterFactRead,
     MatterFactRevisionRead,
     MatterFactSearchRequest,
+    MatterFactSuggestionAccept,
     MatterFactSuggestionDismiss,
     MatterFactSuggestionRead,
     MatterFactUpdate,
@@ -627,20 +628,25 @@ def accept_matter_fact_suggestion(
     matter_id: uuid.UUID,
     fact_id: uuid.UUID,
     suggestion_id: uuid.UUID,
-    payload: MatterFactAction,
+    payload: MatterFactSuggestionAccept,
     principal: Principal = Depends(get_principal),
     db: Session = Depends(get_db),
 ) -> MatterFactDetailRead:
-    """Apply an agent's suggested revision to a confirmed fact as the reviewer's own revision."""
+    """Apply an agent suggestion as the reviewer's own change.
+
+    A revision returns the revised fact. A merge (which needs ``target_lock_version``) returns the fact that
+    absorbed this one; it can be undone with unmerge.
+    """
 
     matter = _matter(db, principal, matter_id, "fact.review")
     try:
         fact = get_fact(db, matter_id=matter_id, fact_id=fact_id, for_update=True)
-        accept_suggestion(
+        result = accept_suggestion(
             db,
             fact=fact,
             suggestion_id=suggestion_id,
             lock_version=payload.lock_version,
+            target_lock_version=payload.target_lock_version,
             actor=_actor(principal),
         )
     except FactError as exc:
@@ -648,8 +654,8 @@ def accept_matter_fact_suggestion(
         _raise(exc)
     _audit(db, matter, principal, "suggestion_accepted", fact, {"suggestion_id": str(suggestion_id)})
     db.commit()
-    db.refresh(fact)
-    return _detail(db, fact)
+    db.refresh(result)
+    return _detail(db, result)
 
 
 @router.post("/{fact_id}/suggestions/{suggestion_id}/dismiss", response_model=MatterFactSuggestionRead)
