@@ -30,6 +30,7 @@ export interface MatterFactDetailRead {
   has_contradiction: boolean;
   evidence_count: number;
   document_count: number;
+  pending_suggestion_count?: number;
   merged_into_fact_id: string | null;
   confirmed_by_user_id: string | null;
   confirmed_at: string | null;

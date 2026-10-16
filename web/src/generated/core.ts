@@ -194,6 +194,7 @@ import type {
   MatterDefinitionRevisionCreate,
   MatterDefinitionRevisionRead,
   MatterDefinitionUpdate,
+  MatterDocumentFactRead,
   MatterDocumentImportCreate,
   MatterDocumentImportRead,
   MatterDocumentRead,
@@ -15697,6 +15698,59 @@ const res = await fetch(getDismissMatterFactSuggestionV1MattersMatterIdFactsFact
 
   const data: dismissMatterFactSuggestionV1MattersMatterIdFactsFactIdSuggestionsSuggestionIdDismissPostResponse['data'] = body ? JSON.parse(body) : {}
   return { data, status: res.status, headers: res.headers } as dismissMatterFactSuggestionV1MattersMatterIdFactsFactIdSuggestionsSuggestionIdDismissPostResponse
+}
+
+
+
+export type listDocumentFactsV1MattersMatterIdDocumentsDocumentIdFactsGetResponse200 = {
+  data: MatterDocumentFactRead[]
+  status: 200
+}
+
+export type listDocumentFactsV1MattersMatterIdDocumentsDocumentIdFactsGetResponse422 = {
+  data: HTTPValidationError
+  status: 422
+}
+
+export type listDocumentFactsV1MattersMatterIdDocumentsDocumentIdFactsGetResponseSuccess = (listDocumentFactsV1MattersMatterIdDocumentsDocumentIdFactsGetResponse200) & {
+  headers: Headers;
+};
+export type listDocumentFactsV1MattersMatterIdDocumentsDocumentIdFactsGetResponseError = (listDocumentFactsV1MattersMatterIdDocumentsDocumentIdFactsGetResponse422) & {
+  headers: Headers;
+};
+
+export type listDocumentFactsV1MattersMatterIdDocumentsDocumentIdFactsGetResponse = (listDocumentFactsV1MattersMatterIdDocumentsDocumentIdFactsGetResponseSuccess | listDocumentFactsV1MattersMatterIdDocumentsDocumentIdFactsGetResponseError)
+
+export const getListDocumentFactsV1MattersMatterIdDocumentsDocumentIdFactsGetUrl = (matterId: string,
+    documentId: string,) => {
+
+
+
+
+  return `/api/core/v1/matters/${matterId}/documents/${documentId}/facts`
+}
+
+/**
+ * Working and confirmed facts citing one document, oldest first, read from Core so changes show immediately.
+ * @summary List Document Facts
+ */
+export const listDocumentFactsV1MattersMatterIdDocumentsDocumentIdFactsGet = async (matterId: string,
+    documentId: string, options?: RequestInit): Promise<listDocumentFactsV1MattersMatterIdDocumentsDocumentIdFactsGetResponse> => {
+
+  const res = await fetch(getListDocumentFactsV1MattersMatterIdDocumentsDocumentIdFactsGetUrl(matterId,documentId),
+  {
+    ...options,
+    method: 'GET'
+
+
+  }
+)
+
+
+  const body = [204, 205, 304].includes(res.status) ? null : await res.text();
+
+  const data: listDocumentFactsV1MattersMatterIdDocumentsDocumentIdFactsGetResponse['data'] = body ? JSON.parse(body) : {}
+  return { data, status: res.status, headers: res.headers } as listDocumentFactsV1MattersMatterIdDocumentsDocumentIdFactsGetResponse
 }
 
 

@@ -16503,6 +16503,69 @@
         }
       }
     },
+    "/v1/matters/{matter_id}/documents/{document_id}/facts": {
+      "get": {
+        "tags": [
+          "matter facts"
+        ],
+        "summary": "List Document Facts",
+        "description": "Working and confirmed facts citing one document, oldest first, read from Core so changes show immediately.",
+        "operationId": "list_document_facts_v1_matters__matter_id__documents__document_id__facts_get",
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "matter_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid",
+              "title": "Matter Id"
+            }
+          },
+          {
+            "name": "document_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid",
+              "title": "Document Id"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "array",
+                  "items": {
+                    "$ref": "#/components/schemas/MatterDocumentFactRead"
+                  },
+                  "title": "Response List Document Facts V1 Matters  Matter Id  Documents  Document Id  Facts Get"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/v1/matters/{matter_id}/entities": {
       "get": {
         "tags": [
@@ -32949,6 +33012,17 @@
             ],
             "title": "Has Contradiction"
           },
+          "has_pending_suggestion": {
+            "anyOf": [
+              {
+                "type": "boolean"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Has Pending Suggestion"
+          },
           "author_types": {
             "items": {
               "type": "string",
@@ -37195,6 +37269,27 @@
         "type": "object",
         "title": "MatterDefinitionUpdate"
       },
+      "MatterDocumentFactRead": {
+        "properties": {
+          "fact": {
+            "$ref": "#/components/schemas/MatterFactRead"
+          },
+          "quotes": {
+            "items": {
+              "$ref": "#/components/schemas/MatterFactEvidenceRead"
+            },
+            "type": "array",
+            "title": "Quotes"
+          }
+        },
+        "type": "object",
+        "required": [
+          "fact",
+          "quotes"
+        ],
+        "title": "MatterDocumentFactRead",
+        "description": "A live fact that cites one document, with only the quotes taken from that document."
+      },
       "MatterDocumentImportCreate": {
         "properties": {
           "source_collection_id": {
@@ -38744,6 +38839,11 @@
             "type": "integer",
             "title": "Document Count"
           },
+          "pending_suggestion_count": {
+            "type": "integer",
+            "title": "Pending Suggestion Count",
+            "default": 0
+          },
           "merged_into_fact_id": {
             "anyOf": [
               {
@@ -39720,6 +39820,11 @@
           "document_count": {
             "type": "integer",
             "title": "Document Count"
+          },
+          "pending_suggestion_count": {
+            "type": "integer",
+            "title": "Pending Suggestion Count",
+            "default": 0
           },
           "merged_into_fact_id": {
             "anyOf": [

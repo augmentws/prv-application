@@ -3,7 +3,7 @@ from datetime import datetime
 from typing import Never
 
 from fastapi import APIRouter, Depends, HTTPException, Query, status
-from sqlalchemy import func, select
+from sqlalchemy import func, or_, select
 from sqlalchemy.orm import Session
 
 from app.audit import record_audit
@@ -12,6 +12,7 @@ from app.database import get_db
 from app.dependencies import Principal, get_principal
 from app.fact_evidence import FactEvidenceError, verify_evidence
 from app.fact_queries import (
+    FACT_DATE_ORDER,
     FACT_SORTS,
     FactFilterError,
     FactFilterNotFound,
@@ -43,6 +44,7 @@ from app.facts import (
 from app.models import (
     DocumentMetadataCurrent,
     Matter,
+    MatterDocument,
     MatterEntity,
     MatterFact,
     MatterFactEntity,
@@ -56,6 +58,7 @@ from app.models import (
 from app.schemas import (
     FactEvidenceCreate,
     FactIssueRefModel,
+    MatterDocumentFactRead,
     MatterFactAction,
     MatterFactCreate,
     MatterFactDetailRead,
@@ -79,6 +82,7 @@ from app.schemas import (
 )
 
 router = APIRouter(prefix="/v1/matters/{matter_id}/facts", tags=["matter facts"])
+document_router = APIRouter(prefix="/v1/matters/{matter_id}/documents", tags=["matter facts"])
 
 def _matter(db: Session, principal: Principal, matter_id: uuid.UUID, *permission_keys: str) -> Matter:
     """Facts quote documents, so every fact permission also requires ``document.view``."""
@@ -184,6 +188,17 @@ def _reads(db: Session, facts: list[MatterFact]) -> list[MatterFactRead]:
         db,
         {row.entity_id for row in participants} | {fact.owner_entity_id for fact in facts if fact.owner_entity_id},
     )
+    pending: dict[uuid.UUID, int] = dict.fromkeys(fact_ids, 0)
+    for source_id, target_id in db.execute(
+        select(MatterFactSuggestion.fact_id, MatterFactSuggestion.target_fact_id).where(
+            MatterFactSuggestion.status == "PENDING",
+            or_(MatterFactSuggestion.fact_id.in_(fact_ids), MatterFactSuggestion.target_fact_id.in_(fact_ids)),
+        )
+    ):
+        # A merge suggestion is pending review on both of its facts.
+        for fact_id in {source_id, target_id}:
+            if fact_id in pending:
+                pending[fact_id] += 1
     by_fact: dict[uuid.UUID, list[MatterFactEntityRef]] = {fact_id: [] for fact_id in fact_ids}
     for row in participants:
         if row.entity_id in refs:
@@ -205,6 +220,7 @@ def _reads(db: Session, facts: list[MatterFact]) -> list[MatterFactRead]:
             has_contradiction=fact.has_contradiction,
             evidence_count=fact.evidence_count,
             document_count=fact.document_count,
+            pending_suggestion_count=pending[fact.id],
             merged_into_fact_id=fact.merged_into_fact_id,
             confirmed_by_user_id=fact.confirmed_by_user_id,
             confirmed_at=fact.confirmed_at,
@@ -684,3 +700,52 @@ def dismiss_matter_fact_suggestion(
     db.commit()
     db.refresh(suggestion)
     return suggestion
+
+
+@document_router.get("/{document_id}/facts", response_model=list[MatterDocumentFactRead])
+def list_document_facts(
+    matter_id: uuid.UUID,
+    document_id: uuid.UUID,
+    principal: Principal = Depends(get_principal),
+    db: Session = Depends(get_db),
+) -> list[MatterDocumentFactRead]:
+    """Working and confirmed facts citing one document, oldest first, read from Core so changes show immediately."""
+
+    _matter(db, principal, matter_id, "fact.view")
+    document = db.scalar(
+        select(MatterDocument).where(MatterDocument.id == document_id, MatterDocument.matter_id == matter_id)
+    )
+    if document is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Document not found")
+    quotes = list(
+        db.scalars(
+            select(MatterFactEvidence)
+            .join(MatterFact, MatterFact.id == MatterFactEvidence.fact_id)
+            .where(
+                MatterFactEvidence.matter_document_id == document.id,
+                MatterFactEvidence.status == "ACTIVE",
+                MatterFact.matter_id == matter_id,
+                MatterFact.status.in_(["WORKING", "CONFIRMED"]),
+            )
+            .order_by(MatterFactEvidence.char_start, MatterFactEvidence.id)
+        )
+    )
+    quotes_by_fact: dict[uuid.UUID, list[MatterFactEvidence]] = {}
+    for row in quotes:
+        quotes_by_fact.setdefault(row.fact_id, []).append(row)
+    facts = list(
+        db.scalars(
+            select(MatterFact).where(MatterFact.id.in_(list(quotes_by_fact))).order_by(*FACT_DATE_ORDER)
+        )
+    )
+    control_number = _control_numbers(db, matter_id, {document.id}).get(document.id)
+    return [
+        MatterDocumentFactRead(
+            fact=read,
+            quotes=[
+                MatterFactEvidenceRead.model_validate(row).model_copy(update={"control_number": control_number})
+                for row in quotes_by_fact[fact.id]
+            ],
+        )
+        for fact, read in zip(facts, _reads(db, facts), strict=True)
+    ]

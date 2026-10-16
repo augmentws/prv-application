@@ -40,6 +40,7 @@ export interface FactFilters {
   undated?: boolean | null;
   key_fact?: boolean | null;
   has_contradiction?: boolean | null;
+  has_pending_suggestion?: boolean | null;
   /** @maxItems 2 */
   author_types?: FactFiltersAuthorTypesItem[];
   /** @maxItems 500 */

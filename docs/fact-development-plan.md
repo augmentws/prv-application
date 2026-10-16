@@ -1,6 +1,6 @@
 # Fact Development and Timeline Plan
 
-Status: slices 1 and 2 (task type, entities, fact ledger, permissions, API, CSV export job) implemented on `feature/fact-backend`; slice 3 (Postgres search, facets, histogram, recall) implemented; slice 4 (single-pass extraction runs on `matter_analysis_task_run`, frozen in an analysis input manifest, job outcomes) implemented; slice 5 (ordered chunk window, duplicate consolidation, confirmed-fact suggestions, final duplicate sweep with merge suggestions, launch estimate) implemented; slice 6 (matter tabs and detail pages) next
+Status: slices 1 and 2 (task type, entities, fact ledger, permissions, API, CSV export job) implemented on `feature/fact-backend`; slice 3 (Postgres search, facets, histogram, recall) implemented; slice 4 (single-pass extraction runs on `matter_analysis_task_run`, frozen in an analysis input manifest, job outcomes) implemented; slice 5 (ordered chunk window, duplicate consolidation, confirmed-fact suggestions, final duplicate sweep with merge suggestions, launch estimate) implemented; slice 9 backend (`fact_state` as a derived SYSTEM metadata field with backfill and change-only upserts, the per-document facts endpoint) and the pending-suggestion filter implemented; slice 6 (matter tabs and detail pages) next
 
 ## Objective
 
@@ -470,6 +470,11 @@ next.
 #### Document integration (slice 9)
 
 **1. Project one field, `fact_state`, into the document search index.**
+
+*Implemented as a derived `SYSTEM` ENUM metadata definition (`fact_state`, display name "Facts", values `confirmed` and
+`unconfirmed`) in the default profile (version 5) and a Facts system group, like `email_domain` and `file_date`, so it
+uses the normal metadata filter and facet path rather than a special built-in field. Older matters get it from
+`ensure_fact_state_metadata` when their first fact is created or on a full rebuild.*
 
 The index records only *whether* a document has facts. Everything else about a document's facts is read from Core
 in the Facts tab of the coding panel.

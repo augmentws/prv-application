@@ -4330,6 +4330,7 @@ class MatterFactRead(BaseModel):
     has_contradiction: bool
     evidence_count: int
     document_count: int
+    pending_suggestion_count: int = 0
     merged_into_fact_id: uuid.UUID | None
     confirmed_by_user_id: uuid.UUID | None
     confirmed_at: datetime | None
@@ -4375,6 +4376,13 @@ class MatterFactSuggestionDismiss(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     note: str | None = Field(default=None, max_length=4_000)
+
+
+class MatterDocumentFactRead(BaseModel):
+    """A live fact that cites one document, with only the quotes taken from that document."""
+
+    fact: MatterFactRead
+    quotes: list[MatterFactEvidenceRead]
 
 
 class MatterFactPage(BaseModel):

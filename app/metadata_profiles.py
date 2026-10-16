@@ -56,7 +56,7 @@ def enum_option(key: str, label: str, description: str | None = None) -> dict[st
 
 DEFAULT_MATTER_METADATA_PROFILE = MetadataProfile(
     key="edrm-core",
-    version=4,
+    version=5,
     definitions=(
         MetadataDefinitionTemplate(
             "control_number", "Control number", "Unique control identifier supplied with or assigned to the document.", "TEXT", "IMPORTED"
@@ -178,6 +178,19 @@ DEFAULT_MATTER_METADATA_PROFILE = MetadataProfile(
         MetadataDefinitionTemplate(
             "review_notes", "Review notes", "Reviewer or agent narrative notes about the document.", "LONG_TEXT", "ASSERTED", ai_assignable=True
         ),
+        MetadataDefinitionTemplate(
+            "fact_state",
+            "Facts",
+            "Whether the document supports a confirmed fact, only working facts, or none (derived from the fact ledger).",
+            "ENUM",
+            "SYSTEM",
+            allowed_values=(
+                enum_option("confirmed", "Confirmed"),
+                enum_option("unconfirmed", "Unconfirmed"),
+            ),
+            facetable=True,
+            reviewable=False,
+        ),
     ),
     groups=(
         MetadataGroupTemplate(
@@ -250,6 +263,15 @@ DEFAULT_MATTER_METADATA_PROFILE = MetadataProfile(
             ("responsiveness", "privilege", "key_document", "review_notes"),
             70,
             True,
+            True,
+        ),
+        MetadataGroupTemplate(
+            "facts",
+            "Facts",
+            "Whether facts developed in this matter cite the document.",
+            ("fact_state",),
+            80,
+            False,
             True,
         ),
     ),

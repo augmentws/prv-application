@@ -17,6 +17,7 @@ from typing import Any, Literal
 from sqlalchemy import and_, delete, func, or_, select
 from sqlalchemy.orm import Session
 
+from app.fact_document_state import FactStateTracker
 from app.fact_evidence import VerifiedEvidence
 from app.fact_specifications import FactSpecificationError, parse_fact_development_specification
 from app.matter_entities import canonical_ids
@@ -143,6 +144,26 @@ def _record(
     )
     db.add(event)
     return event
+
+
+def _state_tracker(
+    db: Session,
+    matter_id: uuid.UUID,
+    actor: Actor,
+    *,
+    fact_ids: Sequence[uuid.UUID] = (),
+    document_ids: Iterable[uuid.UUID] = (),
+) -> FactStateTracker:
+    """Track the documents a command can affect so their ``fact_state`` is reprojected only if it changes."""
+
+    return FactStateTracker(
+        db,
+        matter_id=matter_id,
+        actor_user_id=actor.user_id,
+        workflow_run_id=actor.workflow_run_id,
+        fact_ids=fact_ids,
+        document_ids=document_ids,
+    )
 
 
 def get_fact(db: Session, *, matter_id: uuid.UUID, fact_id: uuid.UUID, for_update: bool = False) -> MatterFact:
@@ -414,6 +435,7 @@ def create_fact(
     if not evidence:
         raise FactError("A fact needs at least one supporting quote")
     validated = _validated_content(db, matter_id=matter.id, content=content)
+    tracker = _state_tracker(db, matter.id, actor, document_ids=[item.matter_document_id for item in evidence])
     fact = MatterFact(
         matter_id=matter.id,
         status="WORKING",
@@ -447,6 +469,7 @@ def create_fact(
         },
         actor,
     )
+    tracker.publish()
     return fact
 
 
@@ -506,12 +529,14 @@ def confirm_fact(db: Session, *, fact: MatterFact, lock_version: int, actor: Act
         raise FactConflict("Fact is already confirmed")
     if fact.evidence_count == 0:
         raise FactConflict("A fact without active supporting quotes cannot be confirmed")
+    tracker = _state_tracker(db, fact.matter_id, actor, fact_ids=[fact.id])
     prior = fact.status
     fact.status = "CONFIRMED"
     fact.confirmed_by_user_id = actor.user_id
     fact.confirmed_at = utcnow()
     _bump(fact)
     _record(db, fact, "CONFIRMED", {"prior_status": prior}, actor)
+    tracker.publish()
     return fact
 
 
@@ -529,12 +554,14 @@ def reject_fact(
     _check_version(fact, lock_version)
     if fact.status == "REJECTED":
         raise FactConflict("Fact is already rejected")
+    tracker = _state_tracker(db, fact.matter_id, actor, fact_ids=[fact.id])
     prior = fact.status
     fact.status = "REJECTED"
     fact.confirmed_by_user_id = None
     fact.confirmed_at = None
     _bump(fact)
     _record(db, fact, "REJECTED", {"prior_status": prior, "reason": reason}, actor)
+    tracker.publish()
     return fact
 
 
@@ -559,12 +586,14 @@ def add_evidence(
     )
     if duplicate is not None:
         raise FactConflict("This quote is already evidence for the fact")
+    tracker = _state_tracker(db, fact.matter_id, actor, document_ids=[evidence.matter_document_id])
     row = _evidence_row(fact, evidence, actor)
     db.add(row)
     db.flush()
     _refresh_evidence_counts(db, fact)
     _bump(fact)
     _record(db, fact, "EVIDENCE_ADDED", _evidence_payload(row), actor)
+    tracker.publish()
     return row
 
 
@@ -590,12 +619,14 @@ def remove_evidence(
         raise FactNotFound("Active evidence was not found on this fact")
     if fact.status == "CONFIRMED" and fact.evidence_count <= 1:
         raise FactConflict("A confirmed fact must keep at least one supporting quote")
+    tracker = _state_tracker(db, fact.matter_id, actor, document_ids=[row.matter_document_id])
     row.status = "REMOVED"
     row.removed_at = utcnow()
     db.flush()
     _refresh_evidence_counts(db, fact)
     _bump(fact)
     _record(db, fact, "EVIDENCE_REMOVED", {**_evidence_payload(row), "reason": reason}, actor)
+    tracker.publish()
     return row
 
 
@@ -620,6 +651,7 @@ def merge_facts(
     _check_version(target, target_lock_version)
     if target.status == "REJECTED":
         raise FactConflict("Facts cannot be merged into a rejected fact")
+    tracker = _state_tracker(db, source.matter_id, actor, fact_ids=[source.id, target.id])
     target_before = current_content(db, target)
     source_content = current_content(db, source)
     added_issues = [issue for issue in source_content.issues if issue not in target_before.issues]
@@ -678,6 +710,7 @@ def merge_facts(
     }
     _record(db, source, "MERGED", payload, actor)
     _record(db, target, "ABSORBED", {"source_fact_id": str(source.id), **payload}, actor)
+    tracker.publish()
     return target
 
 
@@ -696,6 +729,7 @@ def unmerge_fact(db: Session, *, source: MatterFact, lock_version: int, actor: A
     if merge_event is None:
         raise FactConflict("The merge being undone has no recorded event")
     target = get_fact(db, matter_id=source.matter_id, fact_id=source.merged_into_fact_id, for_update=True)
+    tracker = _state_tracker(db, source.matter_id, actor, fact_ids=[target.id])
     payload = merge_event.payload
     returned: list[str] = []
     for evidence_id in payload.get("moved_evidence_ids", []):
@@ -737,6 +771,7 @@ def unmerge_fact(db: Session, *, source: MatterFact, lock_version: int, actor: A
     _bump(target)
     _record(db, source, "UNMERGED", {"from_fact_id": str(target.id), "returned_evidence_ids": returned}, actor)
     _record(db, target, "SPLIT", {"source_fact_id": str(source.id), "returned_evidence_ids": returned}, actor)
+    tracker.publish()
     return source
 
 
@@ -985,6 +1020,12 @@ def accept_suggestion(
         return target
     _require_not_merged(fact)
     _check_version(fact, lock_version)
+    tracker = _state_tracker(
+        db,
+        fact.matter_id,
+        actor,
+        document_ids=[uuid.UUID(item["matter_document_id"]) for item in suggestion.evidence],
+    )
     revise_fact(
         db,
         fact=fact,
@@ -1014,6 +1055,7 @@ def accept_suggestion(
     suggestion.resolved_by_user_id = actor.user_id
     suggestion.resolved_at = utcnow()
     _record(db, fact, "SUGGESTION_ACCEPTED", {"suggestion_id": str(suggestion.id)}, actor)
+    tracker.publish()
     return fact
 
 
