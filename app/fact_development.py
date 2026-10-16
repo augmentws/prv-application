@@ -95,6 +95,7 @@ from app.job_outcomes import (
     publish_outcome_fragment,
     register_job_outcome_adapter,
 )
+from app.model_batching import resolve_batch_target
 from app.models import (
     AnalysisInputManifest,
     Matter,
@@ -144,8 +145,16 @@ COUNT_KEYS = (
     "suggestions_created",
     "duplicate_check_unavailable",
     "duplicate_rechecks",
+    "batched",
+    "batch_fallbacks",
 )
 MAX_DUPLICATE_RECHECKS = 2
+
+
+def batch_api_available(model_key: Any) -> bool:
+    """Whether a resolved extraction model has a registered provider Batch API adapter."""
+
+    return isinstance(model_key, str) and resolve_batch_target(model_key) is not None
 
 
 class FactDevelopmentRunError(ValueError):
@@ -291,6 +300,7 @@ def estimate_fact_development_run(
         + to_extract * ESTIMATE_PROMPT_OVERHEAD_TOKENS,
         "estimated_output_tokens": to_extract * ESTIMATE_OUTPUT_TOKENS_PER_DOCUMENT,
         "extraction_model": resolve_agent_model(extraction_version.model_key, settings),
+        "batch_api_available": batch_api_available(resolve_agent_model(extraction_version.model_key, settings)),
         "chunk_count": math.ceil(population.document_count / settings.fact_development_chunk_size),
         "issue_document_counts": [
             {"issue_key": issue.key, "name": issue.name, "document_count": issue_counts.get(issue.key, 0)}
@@ -309,6 +319,7 @@ def create_fact_development_run(
     reviewer_coding_id: uuid.UUID | None,
     idempotency_key: str,
     actor_user_id: uuid.UUID,
+    use_batch_api: bool = False,
     settings: Settings | None = None,
 ) -> tuple[MatterAnalysisTaskRun, bool]:
     settings = settings or get_settings()
@@ -335,6 +346,12 @@ def create_fact_development_run(
     resolved = launch.bindings
     skill_version = resolved[FACT_EXTRACTION_ROLE][2]
     consolidation_version = resolved[FACT_CONSOLIDATION_ROLE][2]
+    resolved_model = resolve_agent_model(skill_version.model_key, settings)
+    if use_batch_api and not batch_api_available(resolved_model):
+        raise FactDevelopmentRunError(
+            f"The extraction model {resolved_model} has no Batch API support; launch the run without it",
+            code="FACT_BATCH_API_UNAVAILABLE",
+        )
     configuration = {
         "task_version_id": str(task_version.id),
         "task_version": task_version.version,
@@ -350,7 +367,9 @@ def create_fact_development_run(
         "duplicate_threshold": settings.fact_duplicate_threshold,
         "merge_suggestion_threshold": settings.fact_merge_suggestion_threshold,
         "skill_definition_version_id": str(skill_version.id),
-        "resolved_model": resolve_agent_model(skill_version.model_key, settings),
+        "resolved_model": resolved_model,
+        "use_batch_api": use_batch_api,
+        "provider_batch_poll_seconds": settings.fact_development_provider_batch_poll_seconds,
         "consolidation_skill_definition_version_id": str(consolidation_version.id),
         "consolidation_model": resolve_agent_model(consolidation_version.model_key, settings),
         "binding_snapshot": binding_snapshot(resolved),
@@ -397,6 +416,7 @@ def create_fact_development_run(
             "coding_source": coding_source,
             "reviewer_coding_revision": reviewer_coding_revision,
             "document_count": document_count,
+            "use_batch_api": use_batch_api,
         },
     )
     return run, True
@@ -523,6 +543,9 @@ def cancel_fact_development_run(
             .where(MatterAnalysisTaskRunChunk.run_id == run.id, MatterAnalysisTaskRunChunk.status == "QUEUED")
             .values(status="CANCELED")
         )
+        from app.fact_batches import cancel_run_batches
+
+        cancel_run_batches(db, run.id)
         record_audit(
             db,
             tenant_id=run.tenant_id,
@@ -1374,13 +1397,39 @@ def _consolidate_creates(
     return decisions
 
 
-def _process_document(
+@dataclass
+class PreparedDocument:
+    """One document ready for its extraction call: the verified text, the recalled facts, and the skill inputs."""
+
+    document_id: str
+    issues: list[str]
+    fingerprint: str
+    text: DocumentText
+    recalled: list[dict[str, Any]]
+    recall_unavailable: bool
+    max_operations: int
+    started_at: datetime
+    stable_context: dict[str, Any]
+    dynamic_input: dict[str, Any]
+    cache_identity: dict[str, Any]
+
+
+def prepare_document(
     db: Session,
     context: _RunContext,
     chunk: MatterAnalysisTaskRunChunk,
     row: dict[str, Any],
     counts: Counter[str],
-) -> JobItemOutcome:
+    *,
+    recalled: list[dict[str, Any]] | None = None,
+    recall_unavailable: bool = False,
+) -> JobItemOutcome | PreparedDocument:
+    """Settle a document that needs no extraction call, or build its call.
+
+    `recalled` replaces recall with the facts recalled when a provider batch request was built, so its output is
+    validated against exactly what the model was shown.
+    """
+
     started_at = utcnow()
     document_id = row["matter_document_id"]
     inputs = row["resolved_inputs"]
@@ -1436,52 +1485,112 @@ def _process_document(
         source_content_hash=row["source_content_hash"],
         text=raw_text,
     )
-    parsed_id = uuid.UUID(document_id)
     metadata = inputs["metadata"]
-    recall_unavailable = False
-    try:
-        recalled = _recalled_facts(db, context, text, issues, metadata)
-    except Exception as exc:  # noqa: BLE001 - recall failure degrades the prompt, it must not fail the document
-        logger.warning("Fact recall failed run_id=%s document_id=%s: %s", context.run.id, document_id, exc)
-        db.rollback()
-        recalled = []
-        recall_unavailable = True
-        counts["recall_unavailable"] += 1
+    if recalled is None:
+        try:
+            recalled = _recalled_facts(db, context, text, issues, metadata)
+        except Exception as exc:  # noqa: BLE001 - recall failure degrades the prompt, it must not fail the document
+            logger.warning("Fact recall failed run_id=%s document_id=%s: %s", context.run.id, document_id, exc)
+            db.rollback()
+            recalled = []
+            recall_unavailable = True
     max_operations = context.specification.limits.max_operations_per_document
-    try:
-        output, skill_run = asyncio.run(
-            execute_skill_run(
-                db,
-                workflow=context.workflow,
-                step=context.step,
-                skill_version=context.skill_version,
-                scope_type="MATTER_DOCUMENT",
-                scope_id=parsed_id,
-                stable_context={"specification": _specification_context(context.specification)},
-                dynamic_input={
-                    "document": {
-                        "matter_document_id": document_id,
-                        "metadata": metadata,
-                        "paragraph_map_version": text.paragraph_map.version,
-                        "text": render_model_document(text.paragraph_map),
-                    },
-                    "matched_issues": issues,
-                    "known_entities": _known_entities(db, context, metadata),
-                    "recalled_facts": recalled,
-                    "max_operations": max_operations,
-                },
-                cache_identity={
-                    "tenant_id": str(context.run.tenant_id),
-                    "matter_id": str(context.matter.id),
-                    "task_version_id": str(context.run.matter_analysis_task_version_id),
-                    "specification_hash": context.configuration["specification_hash"],
-                    "skill_version_id": str(context.skill_version.id),
-                },
-                output_validators=(extraction_output_validator(max_operations=max_operations),),
-                usage_job_type=FACT_DEVELOPMENT_ANALYSIS_TASK_JOB_TYPE,
-                model=context.model,
-            )
+    return PreparedDocument(
+        document_id=document_id,
+        issues=issues,
+        fingerprint=fingerprint,
+        text=text,
+        recalled=recalled,
+        recall_unavailable=recall_unavailable,
+        max_operations=max_operations,
+        started_at=started_at,
+        stable_context={"specification": _specification_context(context.specification)},
+        dynamic_input={
+            "document": {
+                "matter_document_id": document_id,
+                "metadata": metadata,
+                "paragraph_map_version": text.paragraph_map.version,
+                "text": render_model_document(text.paragraph_map),
+            },
+            "matched_issues": issues,
+            "known_entities": _known_entities(db, context, metadata),
+            "recalled_facts": recalled,
+            "max_operations": max_operations,
+        },
+        cache_identity={
+            "tenant_id": str(context.run.tenant_id),
+            "matter_id": str(context.matter.id),
+            "task_version_id": str(context.run.matter_analysis_task_version_id),
+            "specification_hash": context.configuration["specification_hash"],
+            "skill_version_id": str(context.skill_version.id),
+        },
+    )
+
+
+def _extract_realtime(db: Session, context: _RunContext, prepared: PreparedDocument) -> tuple[dict[str, Any], Any]:
+    return asyncio.run(
+        execute_skill_run(
+            db,
+            workflow=context.workflow,
+            step=context.step,
+            skill_version=context.skill_version,
+            scope_type="MATTER_DOCUMENT",
+            scope_id=uuid.UUID(prepared.document_id),
+            stable_context=prepared.stable_context,
+            dynamic_input=prepared.dynamic_input,
+            cache_identity=prepared.cache_identity,
+            output_validators=(extraction_output_validator(max_operations=prepared.max_operations),),
+            usage_job_type=FACT_DEVELOPMENT_ANALYSIS_TASK_JOB_TYPE,
+            model=context.model,
         )
+    )
+
+
+class BatchedExtractions:
+    """Extraction outputs a provider batch already returned for a chunk; see `app.fact_batches`."""
+
+    def has(self, document_id: str) -> bool:  # pragma: no cover - interface
+        raise NotImplementedError
+
+    def recalled(self, document_id: str) -> tuple[list[dict[str, Any]], bool]:  # pragma: no cover - interface
+        raise NotImplementedError
+
+    def output(
+        self, db: Session, context: _RunContext, prepared: PreparedDocument
+    ) -> tuple[dict[str, Any], Any]:  # pragma: no cover - interface
+        raise NotImplementedError
+
+
+def _process_document(
+    db: Session,
+    context: _RunContext,
+    chunk: MatterAnalysisTaskRunChunk,
+    row: dict[str, Any],
+    counts: Counter[str],
+    batched: BatchedExtractions | None = None,
+) -> JobItemOutcome:
+    document_id = row["matter_document_id"]
+    if batched is not None and batched.has(document_id):
+        recalled, recall_unavailable = batched.recalled(document_id)
+        prepared = prepare_document(db, context, chunk, row, counts, recalled=recalled, recall_unavailable=recall_unavailable)
+        if isinstance(prepared, JobItemOutcome):
+            return prepared
+        try:
+            output, skill_run = batched.output(db, context, prepared)
+        except Exception as exc:  # noqa: BLE001 - an unusable batch result falls back to a real-time call
+            logger.warning("Batch result unusable run_id=%s document_id=%s: %s", context.run.id, document_id, exc)
+            db.commit()  # Keep the failed batch skill run and its usage.
+            counts["batch_fallbacks"] += 1
+        else:
+            counts["batched"] += 1
+            counts["recall_unavailable"] += prepared.recall_unavailable
+            return _apply_document(db, context, chunk, prepared, output, skill_run, counts)
+    prepared = prepare_document(db, context, chunk, row, counts)
+    if isinstance(prepared, JobItemOutcome):
+        return prepared
+    counts["recall_unavailable"] += prepared.recall_unavailable
+    try:
+        output, skill_run = _extract_realtime(db, context, prepared)
     except Exception as exc:  # noqa: BLE001 - one document's model failure is recorded, not fatal to the run
         logger.warning("Fact extraction failed run_id=%s document_id=%s: %s", context.run.id, document_id, exc)
         db.commit()  # Keep the failed skill run and its usage.
@@ -1490,8 +1599,23 @@ def _process_document(
             "FAILED",
             "fact.extraction_failed",
             " ".join(str(exc).split())[:1000] or type(exc).__name__,
-            started_at=started_at,
+            started_at=prepared.started_at,
         )
+    return _apply_document(db, context, chunk, prepared, output, skill_run, counts)
+
+
+def _apply_document(
+    db: Session,
+    context: _RunContext,
+    chunk: MatterAnalysisTaskRunChunk,
+    prepared: PreparedDocument,
+    output: dict[str, Any],
+    skill_run: Any,
+    counts: Counter[str],
+) -> JobItemOutcome:
+    document_id, issues, fingerprint, text = prepared.document_id, prepared.issues, prepared.fingerprint, prepared.text
+    recalled, recall_unavailable = prepared.recalled, prepared.recall_unavailable
+    max_operations, started_at = prepared.max_operations, prepared.started_at
     extraction = parse_extraction_output(output, max_operations=max_operations)
     decisions = _consolidate_creates(db, context, document_id, extraction.operations, issues, counts)
     result = apply_extraction(
@@ -1594,6 +1718,12 @@ def process_fact_development_chunk(
         db.commit()
 
         context = _run_context(db, run, model, consolidation_model)
+        from app.fact_batches import load_batched_extractions
+
+        batched = load_batched_extractions(db, chunk)
+        if batched is not None:
+            _refresh_progress(db, run, stage="EXTRACTING")
+            db.commit()
         counts: Counter[str] = Counter()
         outcomes: list[JobItemOutcome] = []
         canceled = False
@@ -1609,7 +1739,7 @@ def process_fact_development_chunk(
                     )
                 )
                 continue
-            outcome = _process_document(db, context, chunk, row, counts)
+            outcome = _process_document(db, context, chunk, row, counts, batched)
             outcomes.append(outcome)
             chunk.processed_count += 1
             if outcome.outcome_status == "FAILED":

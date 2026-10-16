@@ -26,6 +26,7 @@ export interface FactDevelopmentRunEstimateRead {
   estimated_input_tokens: number;
   estimated_output_tokens: number;
   extraction_model: string;
+  batch_api_available: boolean;
   chunk_count: number;
   issue_document_counts: FactIssueMembershipCount[];
 }

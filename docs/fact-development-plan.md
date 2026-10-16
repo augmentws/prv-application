@@ -641,6 +641,7 @@ Each slice ends with:
    review, facets and bulk actions. The fact detail page. The **Entities** tab (Directory and Proposed) and the
    entity detail page. The run job type in Jobs. Overview tiles.
 7. **Facts → Timeline sub-tab, export UI, and user documentation.**
+7b. **Provider Batch API (done).** Opt-in per run when the extraction model has a batch adapter: one provider batch per chunk, durable polling, results applied in manifest order with real-time fallback, and pending batches canceled with the run. Documents in one chunk recall only earlier chunks' facts; consolidation catches duplicates within a chunk.
 8. **Evaluation** on a closed matter (the Enron sample) to measure duplicate rate, quote validity, reviewer accept
    and reject rate, entity resolution accuracy, timeline coverage of known key events, cost per 1k documents, and
    the effect of recall on duplicate rate.

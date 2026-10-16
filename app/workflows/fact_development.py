@@ -5,6 +5,7 @@ from dbos import DBOS, Queue, SetWorkflowID
 
 from app.config import get_settings
 from app.database import SessionLocal
+from app.fact_batches import poll_chunk_batch, submit_chunk_batch
 from app.fact_development import (
     FactDevelopmentRunError,
     chunk_window,
@@ -45,8 +46,25 @@ def process(chunk_id: str) -> dict:
     return process_fact_development_chunk(uuid.UUID(chunk_id))
 
 
+@DBOS.step(name="submit_fact_development_chunk_batch", retries_allowed=True, max_attempts=3, should_retry=_should_retry)
+def submit_batch(chunk_id: str) -> dict:
+    with SessionLocal() as db:
+        return submit_chunk_batch(db, uuid.UUID(chunk_id))
+
+
+@DBOS.step(name="poll_fact_development_chunk_batch", retries_allowed=True, max_attempts=10, should_retry=_should_retry)
+def poll_batch(chunk_id: str) -> bool:
+    with SessionLocal() as db:
+        return poll_chunk_batch(db, uuid.UUID(chunk_id))
+
+
 @DBOS.workflow(name="fact_development_chunk_v1")
 def fact_development_chunk(chunk_id: str) -> dict:
+    # With the Batch API, wait durably for the chunk's provider batch; real-time runs go straight to processing.
+    submission = submit_batch(chunk_id)
+    if submission["submitted"]:
+        while poll_batch(chunk_id):
+            DBOS.sleep(float(submission["poll_seconds"]))
     return process(chunk_id)
 
 

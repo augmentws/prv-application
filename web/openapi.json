@@ -32438,6 +32438,11 @@
             "maxLength": 200,
             "minLength": 1,
             "title": "Idempotency Key"
+          },
+          "use_batch_api": {
+            "type": "boolean",
+            "title": "Use Batch Api",
+            "default": false
           }
         },
         "additionalProperties": false,
@@ -32554,6 +32559,10 @@
             "type": "string",
             "title": "Extraction Model"
           },
+          "batch_api_available": {
+            "type": "boolean",
+            "title": "Batch Api Available"
+          },
           "chunk_count": {
             "type": "integer",
             "title": "Chunk Count"
@@ -32582,6 +32591,7 @@
           "estimated_input_tokens",
           "estimated_output_tokens",
           "extraction_model",
+          "batch_api_available",
           "chunk_count",
           "issue_document_counts"
         ],

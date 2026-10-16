@@ -45,6 +45,15 @@ On the published version, under **Run fact development**:
 2. Choose **Estimate**. It shows how many documents are coded to an issue, how many an earlier run already read (these are reused, not read again), how many have no usable text, how many will be read, and an approximate token volume.
 3. Choose **Launch run**. Documents are read oldest first, so later documents can build on facts from earlier ones.
 
+### Use the Batch API
+
+When the extraction model supports it, the estimate offers **Use the Batch API**. The model provider then processes each chunk of up to 50 documents as one batch at a lower price, and the run waits for each batch: usually minutes to hours, and at most 24 hours. While it waits, the run shows **waiting for provider batch**, and the run is labeled **Batch API**.
+
+- Up to four chunks are processed at a time, oldest first, as in a normal run.
+- Documents in the same chunk don't see each other's facts. Duplicates are still caught when the results are applied, so the run makes more duplicate checks and adds more quotes to existing facts instead of refining them.
+- A document whose batch result is missing or invalid is read again with a normal call; the run reports how many were. If a whole batch fails or can't be submitted, its chunk is read with normal calls.
+- Canceling the run also cancels its pending batches.
+
 Each run shows its progress and, when finished, how many facts were proposed, how many quotes were added to existing facts, how many suggestions were made, how many documents were reused, and how many entities are waiting for review. Choose **Outcomes** to see what happened to each document. You can cancel a running run; canceling is final, but launching a new run later reuses every document already read. A run that failed can be resumed with **Resume**.
 
 ## Find facts

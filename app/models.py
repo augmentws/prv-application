@@ -4299,6 +4299,11 @@ class MatterAnalysisTaskRunChunk(TimestampMixin, Base):
             "AND failed_count >= 0",
             name="ck_analysis_task_run_chunk_counts",
         ),
+        CheckConstraint(
+            "provider_batch_status IS NULL OR provider_batch_status IN "
+            "('SUBMITTED', 'RUNNING', 'SUCCEEDED', 'FAILED', 'CANCELED')",
+            name="ck_analysis_task_run_chunk_provider_batch_status",
+        ),
     )
 
     id: Mapped[uuid.UUID] = mapped_column(Uuid, primary_key=True, default=uuid.uuid4)
@@ -4315,6 +4320,17 @@ class MatterAnalysisTaskRunChunk(TimestampMixin, Base):
     processed_count: Mapped[int] = mapped_column(Integer, default=0)
     failed_count: Mapped[int] = mapped_column(Integer, default=0)
     counts: Mapped[dict[str, Any]] = mapped_column(JSON, default=dict)
+    # Set only when the run uses a provider Batch API: the chunk's extraction calls were submitted as one provider
+    # batch. The manifest maps each request to its document, skill run, and the facts recalled when it was built.
+    provider_batch_status: Mapped[str | None] = mapped_column(String(30))
+    provider: Mapped[str | None] = mapped_column(String(50))
+    provider_model: Mapped[str | None] = mapped_column(String(200))
+    provider_batch_id: Mapped[str | None] = mapped_column(String(255))
+    provider_state: Mapped[str | None] = mapped_column(String(100))
+    provider_manifest: Mapped[dict[str, Any] | None] = mapped_column(JSON)
+    provider_error: Mapped[str | None] = mapped_column(Text)
+    provider_submitted_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    provider_completed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
 
 
 class MatterAnalysisTaskVersionDependency(Base):

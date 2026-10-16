@@ -307,6 +307,7 @@ function FactRunPanel({ clientId, matterId, task }: { clientId?: string; matterI
   const queryClient = useQueryClient();
   const selection = useBatchSelection(matterId);
   const runsKey = ["fact-development-runs", matterId, task.id];
+  const [useBatchApi, setUseBatchApi] = useState(false);
   const runs = useQuery({
     queryKey: runsKey,
     queryFn: () => coreApi<FactDevelopmentRunRead[]>(`/v1/matters/${matterId}/analysis-tasks/${task.id}/fact-runs`),
@@ -322,7 +323,7 @@ function FactRunPanel({ clientId, matterId, task }: { clientId?: string; matterI
   const launch = useMutation({
     mutationFn: () => coreApi<FactDevelopmentRunRead>(`/v1/matters/${matterId}/analysis-tasks/${task.id}/fact-runs`, {
       method: "POST",
-      body: JSON.stringify({ ...selection.payload, idempotency_key: crypto.randomUUID() }),
+      body: JSON.stringify({ ...selection.payload, idempotency_key: crypto.randomUUID(), use_batch_api: Boolean(estimate.data?.batch_api_available && useBatchApi) }),
     }),
     onSuccess: () => {
       estimate.reset();
@@ -364,6 +365,15 @@ function FactRunPanel({ clientId, matterId, task }: { clientId?: string; matterI
               <dt className="text-muted-foreground">Approximate model tokens</dt><dd className="tabular-nums">{current.estimated_input_tokens.toLocaleString()} in · {current.estimated_output_tokens.toLocaleString()} out ({current.extraction_model})</dd>
             </dl>
             <p className="text-xs text-muted-foreground">Token figures are planning estimates, not billing figures.</p>
+            {current.batch_api_available ? (
+              <label className="flex cursor-pointer items-start gap-2">
+                <input type="checkbox" className="mt-0.5 size-4 accent-primary" checked={useBatchApi} onChange={(event) => setUseBatchApi(event.target.checked)} />
+                <span>
+                  <span className="font-medium">Use the Batch API</span>
+                  <span className="block text-xs text-muted-foreground">Lower model cost. Each chunk of documents is sent to the provider as one batch and waits for it, usually minutes to hours (at most 24 hours), so the run takes longer. Documents in the same chunk don&apos;t see each other&apos;s facts; duplicates are still caught when results are applied.</span>
+                </span>
+              </label>
+            ) : <p className="text-xs text-muted-foreground">The extraction model has no Batch API support, so the run uses real-time calls.</p>}
             <div className="flex justify-end">
               <Button disabled={launch.isPending || current.documents_to_extract === 0} onClick={() => launch.mutate()}>
                 {launch.isPending ? <LoaderCircle className="animate-spin" /> : <Play />}
@@ -411,6 +421,7 @@ function FactRunCard({ clientId, matterId, run, batchName, busy, onCancel, onRet
   const qc = recordValue(report.qc);
   const canCancel = execution?.available_actions.includes("CANCEL") ?? active;
   const canRetry = execution?.available_actions.includes("RETRY") ?? (run.status === "FAILED" && run.failure_retriable);
+  const batchApi = recordValue(run.configuration_snapshot).use_batch_api === true;
   return (
     <div className="rounded-lg border p-3">
       <div className="flex flex-wrap items-start justify-between gap-3">
@@ -420,6 +431,7 @@ function FactRunCard({ clientId, matterId, run, batchName, busy, onCancel, onRet
         </div>
         <div className="flex flex-wrap items-center gap-2">
           <StatusBadge status={run.status} />
+          {batchApi ? <Badge variant="outline">Batch API</Badge> : null}
           {execution?.cancel_requested_at && active ? <Badge variant="outline">Cancellation requested</Badge> : null}
           {canCancel ? <Button size="sm" variant="outline" disabled={busy} onClick={onCancel}><Ban />Cancel</Button> : null}
           {canRetry ? <Button size="sm" variant="outline" disabled={busy} onClick={onRetry}><RotateCcw />Resume</Button> : null}
@@ -439,6 +451,7 @@ function FactRunCard({ clientId, matterId, run, batchName, busy, onCancel, onRet
           <Badge variant="outline">{numberOf(counts.reused).toLocaleString()} documents reused</Badge>
           {numberOf(qc.entities_awaiting_confirmation) ? <Badge variant="outline">{numberOf(qc.entities_awaiting_confirmation).toLocaleString()} entities to review</Badge> : null}
           {numberOf(counts.invalid_operations) ? <Badge variant="outline" className="text-warning">{numberOf(counts.invalid_operations).toLocaleString()} invalid agent operations</Badge> : null}
+          {numberOf(counts.batch_fallbacks) ? <Badge variant="outline" className="text-warning">{numberOf(counts.batch_fallbacks).toLocaleString()} batch results retried in real time</Badge> : null}
           {numberOf(counts.duplicate_check_unavailable) ? <Badge variant="outline" className="text-warning">{numberOf(counts.duplicate_check_unavailable).toLocaleString()} duplicate checks unavailable</Badge> : null}
         </div>
       ) : null}

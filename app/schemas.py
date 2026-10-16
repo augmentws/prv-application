@@ -2793,6 +2793,8 @@ class FactDevelopmentRunCreate(BaseModel):
     coding_source: Literal["MATTER_METADATA", "REVIEWER_CODING"] = "MATTER_METADATA"
     reviewer_coding_id: uuid.UUID | None = None
     idempotency_key: str = Field(min_length=1, max_length=200)
+    # Submit extraction calls through the provider's Batch API: lower cost, results in minutes to hours.
+    use_batch_api: bool = False
 
     @field_validator("idempotency_key")
     @classmethod
@@ -2828,6 +2830,8 @@ class FactDevelopmentRunEstimateRead(BaseModel):
     estimated_input_tokens: int
     estimated_output_tokens: int
     extraction_model: str
+    # Whether the extraction model can run through a provider Batch API.
+    batch_api_available: bool
     chunk_count: int
     issue_document_counts: list[FactIssueMembershipCount]
 

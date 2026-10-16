@@ -84,6 +84,7 @@ function run(overrides: Record<string, unknown> = {}) {
 }
 
 let runs: unknown[] = [run()];
+let batchApiAvailable = false;
 const onTaskUpdated = vi.fn();
 
 function renderWorkspace(versionOverrides: Record<string, unknown> = {}, taskOverrides: Record<string, unknown> = {}) {
@@ -103,11 +104,12 @@ async function choose(user: ReturnType<typeof userEvent.setup>, section: string,
 
 beforeEach(() => {
   runs = [run()];
+  batchApiAvailable = false;
   vi.mocked(coreApi).mockImplementation(async (path, init) => {
     if (path === "/v1/matters/matter-1/guidance") return [{ id: "guidance-1", name: "Second pass", status: "ACTIVE", published_revision: 3 }] as never;
     if (path === "/v1/matters/matter-1/review-batches") return [{ id: "batch-1", name: "Responsive", status: "READY", document_count: 10 }] as never;
     if (path === "/v1/matters/matter-1/analysis-tasks/task-1/fact-runs" && !init?.method) return runs as never;
-    if (path.endsWith("/fact-runs/estimate")) return { review_batch_id: "batch-1", task_version: 2, coding_source: "MATTER_METADATA", reviewer_coding_revision: null, batch_document_count: 10, matched_document_count: 8, excluded_document_count: 2, missing_text_document_count: 1, previously_extracted_count: 3, documents_to_extract: 4, text_bytes_to_extract: 4000, estimated_input_tokens: 17000, estimated_output_tokens: 3200, extraction_model: "test-model", chunk_count: 1, issue_document_counts: [] } as never;
+    if (path.endsWith("/fact-runs/estimate")) return { review_batch_id: "batch-1", task_version: 2, coding_source: "MATTER_METADATA", reviewer_coding_revision: null, batch_document_count: 10, matched_document_count: 8, excluded_document_count: 2, missing_text_document_count: 1, previously_extracted_count: 3, documents_to_extract: 4, text_bytes_to_extract: 4000, estimated_input_tokens: 17000, estimated_output_tokens: 3200, extraction_model: "test-model", batch_api_available: batchApiAvailable, chunk_count: 1, issue_document_counts: [] } as never;
     if (path.endsWith("/fact-runs") && init?.method === "POST") return run({ id: "run-2", status: "QUEUED" }) as never;
     if (path.endsWith("/issue-membership-preview")) return { review_batch_id: "batch-1", coding_source: "MATTER_METADATA", reviewer_coding_id: null, reviewer_coding_revision: null, batch_document_count: 10, matched_document_count: 8, issues: [{ issue_key: "pricing", name: "Pricing decisions", document_count: 8 }] } as never;
     if (path.endsWith("/retry")) return {} as never;
@@ -157,12 +159,27 @@ describe("FactTaskWorkspace", () => {
     await user.click(screen.getByRole("button", { name: "Estimate" }));
     expect(await screen.findByText("Documents to read")).toBeInTheDocument();
     expect(screen.getByText(/17,000 in · 3,200 out/)).toBeInTheDocument();
+    expect(screen.getByText("The extraction model has no Batch API support, so the run uses real-time calls.")).toBeInTheDocument();
     await user.click(screen.getByRole("button", { name: "Launch run for 4 documents" }));
     await waitFor(() => {
       const body = bodyOf((path) => path === "/v1/matters/matter-1/analysis-tasks/task-1/fact-runs");
-      expect(body).toMatchObject({ review_batch_id: "batch-1", coding_source: "MATTER_METADATA", reviewer_coding_id: null });
+      expect(body).toMatchObject({ review_batch_id: "batch-1", coding_source: "MATTER_METADATA", reviewer_coding_id: null, use_batch_api: false });
       expect(body.idempotency_key).toEqual(expect.any(String));
     });
+  });
+
+  it("launches through the Batch API when the model supports it and labels batch runs", async () => {
+    batchApiAvailable = true;
+    runs = [run({ configuration_snapshot: { use_batch_api: true }, report: { counts: { facts_created: 1, batch_fallbacks: 2 } } })];
+    const user = userEvent.setup();
+    renderWorkspace({ review_guidance_pin_stale: false });
+    expect(await screen.findByText("Batch API")).toBeInTheDocument();
+    expect(screen.getByText("2 batch results retried in real time")).toBeInTheDocument();
+    await choose(user, "Run fact development", "Ready batch", "Responsive · 10 docs");
+    await user.click(screen.getByRole("button", { name: "Estimate" }));
+    await user.click(await screen.findByRole("checkbox", { name: /Use the Batch API/ }));
+    await user.click(screen.getByRole("button", { name: "Launch run for 4 documents" }));
+    await waitFor(() => expect(bodyOf((path) => path === "/v1/matters/matter-1/analysis-tasks/task-1/fact-runs")).toMatchObject({ use_batch_api: true }));
   });
 
   it("summarises finished runs and resumes failed ones", async () => {
