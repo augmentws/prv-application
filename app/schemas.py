@@ -4421,25 +4421,16 @@ class MatterFactExportRead(ORMModel):
     filter_snapshot: dict[str, Any]
     csv_policy_snapshot: dict[str, Any]
     requested_filename: str
-    status: Literal["QUEUED", "RUNNING", "COMPLETED", "FAILED", "CANCELED"]
-    current_stage: str | None
     fact_count: int
     evidence_count: int
-    facts_filename: str | None
-    facts_byte_length: int | None
-    evidence_filename: str | None
-    evidence_byte_length: int | None
-    snapshot_started_at: datetime | None
-    expires_at: datetime | None
-    failure_code: str | None
-    failure_summary: str | None
-    failure_retriable: bool
+    facts_filename: str
+    facts_byte_length: int
+    evidence_filename: str
+    evidence_byte_length: int
+    snapshot_started_at: datetime
+    expires_at: datetime
     created_by_user_id: uuid.UUID
     created_at: datetime
-    updated_at: datetime
-    completed_at: datetime | None
-    canceled_at: datetime | None
-    execution: JobExecutionRead | None = None
 
 
 class MatterFactSearchRequest(BaseModel):

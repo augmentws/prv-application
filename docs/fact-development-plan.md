@@ -1,6 +1,6 @@
 # Fact Development and Timeline Plan
 
-Status: slices 1 and 2 (task type, entities, fact ledger, permissions, API, CSV export job) implemented on `feature/fact-backend`; slice 3 (Postgres search, facets, histogram, recall) implemented; slice 4 (single-pass extraction runs on `matter_analysis_task_run`, frozen in an analysis input manifest, job outcomes) implemented; slice 5 (ordered chunk window, duplicate consolidation, confirmed-fact suggestions, final duplicate sweep with merge suggestions, launch estimate) implemented; slice 9 backend (`fact_state` as a derived SYSTEM metadata field with backfill and change-only upserts, the per-document facts endpoint) and the pending-suggestion filter implemented; slice 6 (matter tabs and detail pages) next
+Status: slices 1 and 2 (task type, entities, fact ledger, permissions, API, CSV export) implemented on `feature/fact-backend`; slice 3 (Postgres search, facets, histogram, recall) implemented; slice 4 (single-pass extraction runs on `matter_analysis_task_run`, frozen in an analysis input manifest, job outcomes) implemented; slice 5 (ordered chunk window, duplicate consolidation, confirmed-fact suggestions, final duplicate sweep with merge suggestions, launch estimate) implemented; slice 9 backend (`fact_state` as a derived SYSTEM metadata field with backfill and change-only upserts, the per-document facts endpoint) and the pending-suggestion filter implemented; slice 6 (matter tabs and detail pages) next
 
 ## Objective
 
@@ -266,8 +266,8 @@ later slice.
 | Workflow spec | `app/workflow_specs.py`: `FACT_DEVELOPMENT_SPEC` with `fact_extraction` and `fact_consolidation` roles, and `FACT_SPECIFICATION_COMPILATION_SPEC` with a `fact_specification_compiler` role |
 | Managed skills | `app/standard_skills.py`: bootstrapped `compile-fact-development-specification`, `fact-extraction` and `fact-consolidation` skills and their schemas |
 | Fact search and recall | `app/fact_queries.py` (shared filter, facets, histogram) and `app/fact_recall.py` (new) |
-| Exports | `app/fact_exports.py` and `app/workflows/fact_exports.py` (new): a `MATTER_FACT_EXPORT` job following `app/search_exports.py` |
-| Job execution | `app/job_executions.py`: `FactDevelopmentRunExecutionAdapter` and `MatterFactExportExecutionAdapter`, so both appear in Jobs with the common progress, cancel and failure fields |
+| Exports | `app/fact_exports.py`: produced within the request and stored in Artifact (originally a `MATTER_FACT_EXPORT` job; replaced in migration `0098`) |
+| Job execution | `app/job_executions.py`: `FactDevelopmentAnalysisTaskExecutionAdapter`, so runs appear in Jobs with the common progress, cancel and failure fields |
 | Permissions | `app/rbac_manifest.py`: new permission keys and system-role assignments (see Authorization) |
 | Routers | `app/routers/facts.py`, `app/routers/fact_runs.py`, `app/routers/matter_entities.py` (new), registered in `app/main.py` |
 | Schemas | `app/schemas.py` |
@@ -375,8 +375,8 @@ GET    /v1/matters/{matter_id}/facts?updated_since=…         live-review polli
 GET    /v1/matters/{matter_id}/facts/{fact_id}               revisions, evidence, events, suggested revisions
 PATCH  /v1/matters/{matter_id}/facts/{fact_id}               edit -> new revision (requires lock_version)
 POST   /v1/matters/{matter_id}/facts/{fact_id}/confirm|reject|merge|evidence
-POST   /v1/matters/{matter_id}/fact-exports                  create a MATTER_FACT_EXPORT job for the filter request
-GET    /v1/matters/{matter_id}/fact-exports/{job_id}[/download]   status; download streams through Core
+POST   /v1/matters/{matter_id}/fact-exports                  write both CSV files for the filter request now; returns the completed export
+GET    /v1/matters/{matter_id}/fact-exports[/{export_id}[/download]]   recent exports; download streams through Core
 
 GET    /v1/matters/{matter_id}/entities                      canonical entities: search by type, status, name, email
 GET    /v1/matters/{matter_id}/entities/{entity_id}          canonical entity with its variants and fact counts
@@ -387,13 +387,19 @@ GET    /v1/matters/{matter_id}/documents/{document_id}/facts facts citing one do
 The timeline uses `facts/search` and `facts/date-histogram` with a `CONFIRMED` status filter. No separate timeline
 endpoint is needed.
 
-**Export as a job.** Exports follow the existing `MATTER_SEARCH_EXPORT` pattern:
-- Core freezes the filter request, column contract and initiating user.
-- A DBOS workflow enumerates the facts.
-- The Artifact Service owns the immutable CSV (or JSON) bytes. One export produces a facts file and an evidence
-  file.
-- Download always streams through Core after fresh authorization.
-- No per-fact rows are written to Core for an export.
+**Export within the request (decided; replaces the original export job).** Fact volumes are small enough that a
+background job is not needed, so an export is produced by the request itself:
+- Core reads every matching fact from one `REPEATABLE READ` snapshot, writes a facts file and an evidence file to
+  temporary files, and stores both in the Artifact Service as immutable `FACT_EXPORT` artifacts.
+- Core then records a completed `matter_fact_export` row (filter, CSV policy, counts, file references, expiry) and a
+  `fact_export.created` audit event in one transaction. A failed request records `fact_export.failed` and leaves no
+  export. Each download records `fact_export.downloaded`.
+- The idempotency key returns the first export for a repeated request; an advisory lock stops a double submit
+  from writing the files twice.
+- Download always streams through Core after fresh authorization and provenance checks.
+- No per-fact rows are written to Core for an export, and fact exports do not appear in Jobs.
+- Document (search-result) export stays a `MATTER_SEARCH_EXPORT` job: it can cover millions of documents and pins a
+  search-index generation.
 
 ### Authorization
 
@@ -460,7 +466,7 @@ every permission.
 | Entity detail | `entities/[entityId]/page.tsx`. The canonical name, title, organization, custodian link and status, with edit, confirm and reject. A **variants** list (each name or email seen) with add, move to another entity, and split off as its own entity (unmerge). Below that, the facts the entity owns or participates in as a mini-timeline that links to the fact list pre-filtered to the entity. |
 | Overview tab | Added tiles for working facts, confirmed facts and proposed entities, each linking to its tab. |
 | Task authoring | Existing **Analysis** tab, adding the `FACT_DEVELOPMENT` type: a Review Guidance profile and revision picker, compile and regenerate, an issue catalog editor (issues, guidance excerpts, coding mappings with field and value pickers), a stale-pin indicator, and publish. Launch a run from the published task by picking a review batch, with the issue-match counts and cost estimate. |
-| Run progress and exports | Existing **Jobs** tab, through the job execution adapters: fact-development runs (progress, cancel, the run report with QC signals) and fact exports (status, download). |
+| Run progress | Existing **Jobs** tab, through the job execution adapter: fact-development runs (progress, cancel, the run report with QC signals). Fact exports are not jobs; their recent downloads are listed in the Facts tab. |
 | Help and docs | `HelpLink` topics `facts` and `entities` on the new tabs. `web/content/docs/facts-and-timeline.mdx` and `web/content/docs/entities.mdx`, glossary entries, `meta.json`. |
 
 In the slices before slice 9, Search & Review, batch review and their document detail panels are unchanged. Facts
@@ -584,8 +590,8 @@ launch ── prepare ── plan waves ─┬─ wave 1: extract (parallel) ─
 | Ledger plus rebuildable projection; every write path uses one audited command service; no triggers; no direct projection updates | `matter_fact_event` and `matter_entity_event` are the ledgers. The fact and entity command services are the only writers, for both humans and agents. Each write appends the event, updates projections, writes an audit record, and enqueues the search upsert in one transaction. |
 | Agent output needs an explicit human approval boundary (topics never publish silently; Matter Definitions are published only by admins) | Agent facts are `WORKING` and agent entities are `PROPOSED`. Neither reaches the timeline until a reviewer explicitly confirms it. Agents cannot confirm or reject. |
 | Reviewer coding and evaluation runs stay isolated; reproducible consumers pin the reviewer source and revision | Reviewer coding is only *read*, pinned at a revision when the run is prepared. Nothing is written to reviewer coding, `review_batch_run_value`, `metadata_event` or `document_metadata_current`. |
-| Durable operations use the unified job execution platform | Fact-development runs and fact exports register job execution adapters, so they share the common status, progress, cancellation and failure fields. |
-| Search-result export is a job; Artifact owns export bytes; downloads stream through Core with fresh authorization | Fact exports follow the same `MATTER_SEARCH_EXPORT` pattern and require `fact.export` plus `document.view`. |
+| Durable operations use the unified job execution platform | Fact-development runs register a job execution adapter, so they share the common status, progress, cancellation and failure fields. Fact exports finish within the request and are not durable operations. |
+| Search-result export is a job; Artifact owns export bytes; downloads stream through Core with fresh authorization | Fact exports keep Artifact-owned bytes, Core-streamed downloads, and `fact.export` plus `document.view`, but run within the request rather than as a job. |
 | Search: rebuildable projection, versioned names behind aliases, no raw DSL from callers, matter-keyed advisory lock, user updates prioritized | Covered in the search projection section above. |
 | Agent runtime: code-owned model and tool registries, managed skills, DBOS durability | The three skills are bootstrapped managed skills bound through `WorkflowSkillBinding`. Workflows are code-owned. No tenant-defined code. |
 | Authorization: code-owned permissions, roles and scoped grants, enforced in the backend; catalog changes are audited | New `fact.*` and `entity.*` permissions added to the code-owned manifest with system-role assignments. Every endpoint checks permissions, with backend tests. UI visibility is not relied on. |

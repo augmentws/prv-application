@@ -17267,8 +17267,9 @@
         "tags": [
           "matter fact exports"
         ],
-        "summary": "Create Fact Export",
-        "operationId": "create_fact_export_v1_matters__matter_id__fact_exports_post",
+        "summary": "Create Fact Export Files",
+        "description": "Write the facts and evidence CSV files for the filter now and return the completed export.\n\nRepeating a request with the same idempotency key returns the first export instead of writing new files.",
+        "operationId": "create_fact_export_files_v1_matters__matter_id__fact_exports_post",
         "security": [
           {
             "HTTPBearer": []
@@ -17297,7 +17298,7 @@
           }
         },
         "responses": {
-          "202": {
+          "201": {
             "description": "Successful Response",
             "content": {
               "application/json": {
@@ -39397,28 +39398,6 @@
             "type": "string",
             "title": "Requested Filename"
           },
-          "status": {
-            "type": "string",
-            "enum": [
-              "QUEUED",
-              "RUNNING",
-              "COMPLETED",
-              "FAILED",
-              "CANCELED"
-            ],
-            "title": "Status"
-          },
-          "current_stage": {
-            "anyOf": [
-              {
-                "type": "string"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "title": "Current Stage"
-          },
           "fact_count": {
             "type": "integer",
             "title": "Fact Count"
@@ -39428,98 +39407,30 @@
             "title": "Evidence Count"
           },
           "facts_filename": {
-            "anyOf": [
-              {
-                "type": "string"
-              },
-              {
-                "type": "null"
-              }
-            ],
+            "type": "string",
             "title": "Facts Filename"
           },
           "facts_byte_length": {
-            "anyOf": [
-              {
-                "type": "integer"
-              },
-              {
-                "type": "null"
-              }
-            ],
+            "type": "integer",
             "title": "Facts Byte Length"
           },
           "evidence_filename": {
-            "anyOf": [
-              {
-                "type": "string"
-              },
-              {
-                "type": "null"
-              }
-            ],
+            "type": "string",
             "title": "Evidence Filename"
           },
           "evidence_byte_length": {
-            "anyOf": [
-              {
-                "type": "integer"
-              },
-              {
-                "type": "null"
-              }
-            ],
+            "type": "integer",
             "title": "Evidence Byte Length"
           },
           "snapshot_started_at": {
-            "anyOf": [
-              {
-                "type": "string",
-                "format": "date-time"
-              },
-              {
-                "type": "null"
-              }
-            ],
+            "type": "string",
+            "format": "date-time",
             "title": "Snapshot Started At"
           },
           "expires_at": {
-            "anyOf": [
-              {
-                "type": "string",
-                "format": "date-time"
-              },
-              {
-                "type": "null"
-              }
-            ],
+            "type": "string",
+            "format": "date-time",
             "title": "Expires At"
-          },
-          "failure_code": {
-            "anyOf": [
-              {
-                "type": "string"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "title": "Failure Code"
-          },
-          "failure_summary": {
-            "anyOf": [
-              {
-                "type": "string"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "title": "Failure Summary"
-          },
-          "failure_retriable": {
-            "type": "boolean",
-            "title": "Failure Retriable"
           },
           "created_by_user_id": {
             "type": "string",
@@ -39530,45 +39441,6 @@
             "type": "string",
             "format": "date-time",
             "title": "Created At"
-          },
-          "updated_at": {
-            "type": "string",
-            "format": "date-time",
-            "title": "Updated At"
-          },
-          "completed_at": {
-            "anyOf": [
-              {
-                "type": "string",
-                "format": "date-time"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "title": "Completed At"
-          },
-          "canceled_at": {
-            "anyOf": [
-              {
-                "type": "string",
-                "format": "date-time"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "title": "Canceled At"
-          },
-          "execution": {
-            "anyOf": [
-              {
-                "$ref": "#/components/schemas/JobExecutionRead"
-              },
-              {
-                "type": "null"
-              }
-            ]
           }
         },
         "type": "object",
@@ -39578,8 +39450,6 @@
           "filter_snapshot",
           "csv_policy_snapshot",
           "requested_filename",
-          "status",
-          "current_stage",
           "fact_count",
           "evidence_count",
           "facts_filename",
@@ -39588,14 +39458,8 @@
           "evidence_byte_length",
           "snapshot_started_at",
           "expires_at",
-          "failure_code",
-          "failure_summary",
-          "failure_retriable",
           "created_by_user_id",
-          "created_at",
-          "updated_at",
-          "completed_at",
-          "canceled_at"
+          "created_at"
         ],
         "title": "MatterFactExportRead"
       },

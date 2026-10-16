@@ -16400,26 +16400,26 @@ const res = await fetch(getUnmergeMatterEntityV1MattersMatterIdEntitiesEntityIdU
 
 
 
-export type createFactExportV1MattersMatterIdFactExportsPostResponse202 = {
+export type createFactExportFilesV1MattersMatterIdFactExportsPostResponse201 = {
   data: MatterFactExportRead
-  status: 202
+  status: 201
 }
 
-export type createFactExportV1MattersMatterIdFactExportsPostResponse422 = {
+export type createFactExportFilesV1MattersMatterIdFactExportsPostResponse422 = {
   data: HTTPValidationError
   status: 422
 }
 
-export type createFactExportV1MattersMatterIdFactExportsPostResponseSuccess = (createFactExportV1MattersMatterIdFactExportsPostResponse202) & {
+export type createFactExportFilesV1MattersMatterIdFactExportsPostResponseSuccess = (createFactExportFilesV1MattersMatterIdFactExportsPostResponse201) & {
   headers: Headers;
 };
-export type createFactExportV1MattersMatterIdFactExportsPostResponseError = (createFactExportV1MattersMatterIdFactExportsPostResponse422) & {
+export type createFactExportFilesV1MattersMatterIdFactExportsPostResponseError = (createFactExportFilesV1MattersMatterIdFactExportsPostResponse422) & {
   headers: Headers;
 };
 
-export type createFactExportV1MattersMatterIdFactExportsPostResponse = (createFactExportV1MattersMatterIdFactExportsPostResponseSuccess | createFactExportV1MattersMatterIdFactExportsPostResponseError)
+export type createFactExportFilesV1MattersMatterIdFactExportsPostResponse = (createFactExportFilesV1MattersMatterIdFactExportsPostResponseSuccess | createFactExportFilesV1MattersMatterIdFactExportsPostResponseError)
 
-export const getCreateFactExportV1MattersMatterIdFactExportsPostUrl = (matterId: string,) => {
+export const getCreateFactExportFilesV1MattersMatterIdFactExportsPostUrl = (matterId: string,) => {
 
 
 
@@ -16428,10 +16428,13 @@ export const getCreateFactExportV1MattersMatterIdFactExportsPostUrl = (matterId:
 }
 
 /**
- * @summary Create Fact Export
+ * Write the facts and evidence CSV files for the filter now and return the completed export.
+ *
+ * Repeating a request with the same idempotency key returns the first export instead of writing new files.
+ * @summary Create Fact Export Files
  */
-export const createFactExportV1MattersMatterIdFactExportsPost = async (matterId: string,
-    matterFactExportCreate: MatterFactExportCreate, options?: RequestInit): Promise<createFactExportV1MattersMatterIdFactExportsPostResponse> => {
+export const createFactExportFilesV1MattersMatterIdFactExportsPost = async (matterId: string,
+    matterFactExportCreate: MatterFactExportCreate, options?: RequestInit): Promise<createFactExportFilesV1MattersMatterIdFactExportsPostResponse> => {
 
     const getHeaders = (h?: NonNullable<RequestInit['headers']>): Record<string, string | readonly string[]> => {
     if (!h) return {};
@@ -16447,7 +16450,7 @@ export const createFactExportV1MattersMatterIdFactExportsPost = async (matterId:
     }
     return headers;
   };
-const res = await fetch(getCreateFactExportV1MattersMatterIdFactExportsPostUrl(matterId),
+const res = await fetch(getCreateFactExportFilesV1MattersMatterIdFactExportsPostUrl(matterId),
   {
     ...options,
     method: 'POST',
@@ -16459,8 +16462,8 @@ const res = await fetch(getCreateFactExportV1MattersMatterIdFactExportsPostUrl(m
 
   const body = [204, 205, 304].includes(res.status) ? null : await res.text();
 
-  const data: createFactExportV1MattersMatterIdFactExportsPostResponse['data'] = body ? JSON.parse(body) : {}
-  return { data, status: res.status, headers: res.headers } as createFactExportV1MattersMatterIdFactExportsPostResponse
+  const data: createFactExportFilesV1MattersMatterIdFactExportsPostResponse['data'] = body ? JSON.parse(body) : {}
+  return { data, status: res.status, headers: res.headers } as createFactExportFilesV1MattersMatterIdFactExportsPostResponse
 }
 
 

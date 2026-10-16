@@ -1,9 +1,10 @@
-"""CSV export of filtered facts as a durable job.
+"""CSV export of filtered facts, produced within the request.
 
-Core freezes the filter, CSV policy, and requesting user. The worker re-authorizes that user, reads every matching
-fact from one consistent database snapshot in date order (the same order the fact list uses), and writes two CSV
-files: one row per fact and one row per active quote. The Artifact Service stores both files; downloads always
-stream through Core after fresh authorization. No per-fact rows are written to Core for an export.
+Core reads every matching fact from one consistent database snapshot in date order (the same order the fact list
+uses) and writes two CSV files: one row per fact and one row per active quote. The Artifact Service stores both
+files; Core then records a completed export with the filter, CSV policy, counts, and file references, plus an audit
+event. Downloads always stream through Core after fresh authorization. No per-fact rows are written to Core for an
+export, and no background job is involved: a request that fails leaves no export record behind.
 """
 
 from __future__ import annotations
@@ -21,9 +22,7 @@ from datetime import datetime, timedelta, timezone
 from pathlib import PurePath
 from typing import IO, Any
 
-import httpx
-from sqlalchemy import func, select
-from sqlalchemy.exc import OperationalError, ProgrammingError
+from sqlalchemy import select, text
 from sqlalchemy.orm import Session
 
 from app.artifact_gateway import (
@@ -32,19 +31,9 @@ from app.artifact_gateway import (
     store_workflow_artifact,
 )
 from app.audit import record_audit
-from app.authorization import ResourceRef, user_can
 from app.config import Settings
 from app.fact_queries import FACT_DATE_ORDER, FactFilters, fact_filter_statement
 from app.fact_specifications import FactSpecificationError, parse_fact_development_specification
-from app.job_executions import (
-    MATTER_FACT_EXPORT_JOB_TYPE,
-    JobExecutionConflict,
-    JobScope,
-    create_job_execution,
-    current_job_execution,
-    execution_cancel_requested,
-    transition_job_execution,
-)
 from app.models import (
     DocumentMetadataCurrent,
     Matter,
@@ -54,17 +43,15 @@ from app.models import (
     MatterFact,
     MatterFactEntity,
     MatterFactEvidence,
-    MatterFactExportJob,
+    MatterFactExport,
     MatterFactIssue,
     MetadataDefinition,
     User,
-    WorkflowRun,
 )
 from classification_service.schemas import ArtifactType
 
 logger = logging.getLogger(__name__)
 CSV_POLICY_VERSION = "fact-export-v1"
-EXPORT_PERMISSIONS = ("fact.export", "fact.view", "document.view")
 READ_CHUNK_SIZE = 500
 FACT_COLUMNS = (
     "Fact ID",
@@ -103,8 +90,12 @@ EVIDENCE_COLUMNS = (
 )
 
 
-class FactExportTransientError(RuntimeError):
-    """A dependency produced a transient response that can be retried safely."""
+class FactExportConflict(RuntimeError):
+    """The idempotency key was already used for a different export."""
+
+
+class FactExportTooLarge(ValueError):
+    """The export would exceed the configured output size limit."""
 
 
 def utcnow() -> datetime:
@@ -138,131 +129,10 @@ def _cell(value: Any, *, spreadsheet_safe: bool) -> str:
         return "true" if value else "false"
     if isinstance(value, datetime):
         return as_utc(value).isoformat()
-    text = str(value)
-    if spreadsheet_safe and text[:1] in {"=", "+", "-", "@"}:
-        return f"'{text}"
-    return text
-
-
-def require_export_permissions(db: Session, user: User, matter_id: uuid.UUID) -> None:
-    for permission_key in EXPORT_PERMISSIONS:
-        if not user_can(db, user, permission_key, ResourceRef.matter(matter_id)):
-            raise PermissionError(f"Fact export requires {permission_key}")
-
-
-def create_fact_export_job(
-    db: Session,
-    matter: Matter,
-    *,
-    filters: FactFilters,
-    requested_filename: str,
-    idempotency_key: str,
-    spreadsheet_safe: bool,
-    actor_user_id: uuid.UUID,
-) -> tuple[MatterFactExportJob, bool]:
-    fact_filter_statement(db, matter_id=matter.id, filters=filters)  # validates the filter before freezing it
-    filter_snapshot = filters.snapshot()
-    filter_hash = canonical_hash(filter_snapshot)
-    policy = {
-        "version": CSV_POLICY_VERSION,
-        "encoding": "utf-8",
-        "delimiter": ",",
-        "line_terminator": "CRLF",
-        "spreadsheet_safe": spreadsheet_safe,
-    }
-    existing = db.scalar(
-        select(MatterFactExportJob).where(
-            MatterFactExportJob.matter_id == matter.id,
-            MatterFactExportJob.created_by_user_id == actor_user_id,
-            MatterFactExportJob.idempotency_key == idempotency_key,
-        )
-    )
-    if existing is not None:
-        if existing.filter_hash != filter_hash or existing.csv_policy_snapshot != policy:
-            raise JobExecutionConflict("Idempotency key was already used for a different export")
-        return existing, False
-    job = MatterFactExportJob(
-        tenant_id=matter.client.tenant_id,
-        matter_id=matter.id,
-        filter_snapshot=filter_snapshot,
-        filter_hash=filter_hash,
-        csv_policy_snapshot=policy,
-        idempotency_key=idempotency_key,
-        requested_filename=_safe_stem(requested_filename),
-        status="QUEUED",
-        workflow_id=f"matter-fact-export:{uuid.uuid4()}",
-        current_stage="QUEUED",
-        created_by_user_id=actor_user_id,
-    )
-    db.add(job)
-    db.flush()
-    create_fact_export_execution(db, job, retry_of=None)
-    record_audit(
-        db,
-        tenant_id=job.tenant_id,
-        actor_user_id=actor_user_id,
-        action="fact_export.requested",
-        target_type="matter_fact_export_job",
-        target_id=job.id,
-        details={"matter_id": str(matter.id), "filters": filter_snapshot},
-    )
-    return job, True
-
-
-def create_fact_export_execution(
-    db: Session,
-    job: MatterFactExportJob,
-    *,
-    retry_of: WorkflowRun | None,
-) -> WorkflowRun:
-    attempt = retry_of.attempt_number + 1 if retry_of is not None else 1
-    workflow_id = job.workflow_id if retry_of is None else f"matter-fact-export:{job.id}:attempt:{attempt}"
-    execution = create_job_execution(
-        db,
-        job_type=MATTER_FACT_EXPORT_JOB_TYPE,
-        job_id=job.id,
-        scope=JobScope(job.tenant_id, job.matter.client_id, job.matter_id),
-        workflow_key="matter_fact_export_v1",
-        code_version="1",
-        dbos_workflow_id=workflow_id,
-        initiated_by_user_id=job.created_by_user_id,
-        idempotency_key=f"matter-fact-export:{job.id}:attempt:{attempt}",
-        current_stage="QUEUED",
-        progress_unit="facts",
-        input_snapshot={"matter_id": str(job.matter_id), "filter_hash": job.filter_hash, "filters": job.filter_snapshot},
-        configuration_snapshot={"csv_policy": job.csv_policy_snapshot},
-        retry_of=retry_of,
-    )
-    job.workflow_id = execution.dbos_workflow_id
-    return execution
-
-
-def retry_fact_export_job(db: Session, job: MatterFactExportJob, *, actor_user_id: uuid.UUID) -> WorkflowRun:
-    current = current_job_execution(db, job_type=MATTER_FACT_EXPORT_JOB_TYPE, job_id=job.id, for_update=True)
-    if current is None or current.status not in {"FAILED", "CANCELED"}:
-        raise JobExecutionConflict("Only failed or canceled fact exports can be retried")
-    if current.status == "FAILED" and not current.failure_retriable:
-        raise JobExecutionConflict("This fact export failure is not retryable")
-    job.status = "QUEUED"
-    job.current_stage = "QUEUED"
-    job.fact_count = 0
-    job.evidence_count = 0
-    job.failure_code = None
-    job.failure_summary = None
-    job.failure_retriable = False
-    job.completed_at = None
-    job.canceled_at = None
-    execution = create_fact_export_execution(db, job, retry_of=current)
-    record_audit(
-        db,
-        tenant_id=job.tenant_id,
-        actor_user_id=actor_user_id,
-        action="fact_export.retried",
-        target_type="matter_fact_export_job",
-        target_id=job.id,
-        details={"matter_id": str(job.matter_id), "attempt_number": execution.attempt_number},
-    )
-    return execution
+    text_value = str(value)
+    if spreadsheet_safe and text_value[:1] in {"=", "+", "-", "@"}:
+        return f"'{text_value}"
+    return text_value
 
 
 class _ExportReader:
@@ -440,13 +310,23 @@ def _begin_snapshot(db: Session) -> None:
         db.connection(execution_options={"isolation_level": "REPEATABLE READ"})
 
 
+
+def _lock_idempotency_key(db: Session, matter_id: uuid.UUID, user_id: uuid.UUID, idempotency_key: str) -> None:
+    """Serialize exports that share an idempotency key so a double submit cannot write the files twice."""
+
+    if db.get_bind().dialect.name != "postgresql":
+        return
+    digest = hashlib.sha256(f"matter-fact-export:{matter_id}:{user_id}:{idempotency_key}".encode()).digest()
+    lock_key = int.from_bytes(digest[:8], "big") & ((1 << 63) - 1)
+    db.execute(text("SELECT pg_advisory_xact_lock(:lock_key)"), {"lock_key": lock_key})
+
+
 def _verified_artifact(
     artifact: WorkflowArtifactReference,
     *,
-    job_id: uuid.UUID,
+    export_id: uuid.UUID,
     matter_id: uuid.UUID,
     file_kind: str,
-    attempt_number: int,
     filter_hash: str,
 ) -> WorkflowArtifactReference:
     metadata = artifact.metadata
@@ -455,10 +335,9 @@ def _verified_artifact(
         and artifact.core_scope_kind == "MATTER"
         and artifact.core_scope_id == matter_id
         and artifact.producer_kind == "CORE"
-        and artifact.producer_run_id == job_id
-        and str(metadata.get("export_job_id")) == str(job_id)
+        and artifact.producer_run_id == export_id
+        and str(metadata.get("export_id")) == str(export_id)
         and metadata.get("file_kind") == file_kind
-        and int(metadata.get("attempt_number") or 0) == attempt_number
         and metadata.get("filter_hash") == filter_hash
         and metadata.get("content_hash") == artifact.content_hash
         and int(metadata.get("byte_length") or -1) == artifact.byte_length
@@ -474,20 +353,17 @@ def _store_csv(
     *,
     file_kind: str,
     filename: str,
-    job_id: uuid.UUID,
-    matter_id: uuid.UUID,
-    attempt_number: int,
+    export_id: uuid.UUID,
+    matter: Matter,
     filter_hash: str,
     snapshot_started_at: datetime,
     row_count: int,
     settings: Settings,
     actor_user_id: uuid.UUID,
-    tenant_id: uuid.UUID,
-    client_id: uuid.UUID,
 ) -> WorkflowArtifactReference:
     byte_length = binary.seek(0, io.SEEK_END)
     if byte_length > settings.fact_export_max_bytes:
-        raise ValueError("Fact export exceeds the configured output size limit")
+        raise FactExportTooLarge("Fact export exceeds the configured output size limit")
     binary.seek(0)
     digest = hashlib.sha256()
     while chunk := binary.read(1024 * 1024):
@@ -495,49 +371,33 @@ def _store_csv(
     content_hash = digest.hexdigest()
     binary.seek(0)
     derivation_key = canonical_hash(
-        {
-            "contract": CSV_POLICY_VERSION,
-            "job_id": str(job_id),
-            "attempt_number": attempt_number,
-            "file_kind": file_kind,
-            "filter_hash": filter_hash,
-        }
+        {"contract": CSV_POLICY_VERSION, "export_id": str(export_id), "file_kind": file_kind, "filter_hash": filter_hash}
     )
+    scope = {"actor_user_id": actor_user_id, "tenant_id": matter.client.tenant_id, "client_id": matter.client_id}
+    verify = {"export_id": export_id, "matter_id": matter.id, "file_kind": file_kind, "filter_hash": filter_hash}
     existing = find_workflow_artifact_reference(
-        artifact_type=ArtifactType.FACT_EXPORT,
-        derivation_key=derivation_key,
-        actor_user_id=actor_user_id,
-        tenant_id=tenant_id,
-        client_id=client_id,
+        artifact_type=ArtifactType.FACT_EXPORT, derivation_key=derivation_key, **scope
     )
-    verify = {
-        "job_id": job_id,
-        "matter_id": matter_id,
-        "file_kind": file_kind,
-        "attempt_number": attempt_number,
-        "filter_hash": filter_hash,
-    }
     if existing is not None:
         return _verified_artifact(existing, **verify)
     artifact, _ = store_workflow_artifact(
         content=binary,
         artifact_type=ArtifactType.FACT_EXPORT,
         core_scope_kind="MATTER",
-        core_scope_id=matter_id,
+        core_scope_id=matter.id,
         schema_version=1,
         derivation_key=derivation_key,
         content_hash=content_hash,
         byte_length=byte_length,
         media_type="text/csv",
         producer_kind="CORE",
-        producer_run_id=job_id,
+        producer_run_id=export_id,
         artifact_metadata={
             "contract_version": CSV_POLICY_VERSION,
-            "export_job_id": str(job_id),
-            "matter_id": str(matter_id),
+            "export_id": str(export_id),
+            "matter_id": str(matter.id),
             "file_kind": file_kind,
             "filter_hash": filter_hash,
-            "attempt_number": attempt_number,
             "row_count": row_count,
             "snapshot_started_at": snapshot_started_at.isoformat(),
             "filename": filename,
@@ -545,70 +405,53 @@ def _store_csv(
             "byte_length": byte_length,
         },
         lineage=[],
-        actor_user_id=actor_user_id,
-        tenant_id=tenant_id,
-        client_id=client_id,
         filename=filename,
+        **scope,
     )
     return _verified_artifact(artifact, **verify)
 
 
-def _cancel_if_requested(db: Session, job: MatterFactExportJob, fact_count: int) -> bool:
-    if not execution_cancel_requested(db, job_type=MATTER_FACT_EXPORT_JOB_TYPE, job_id=job.id):
-        return False
-    transition_job_execution(
-        db,
-        job_type=MATTER_FACT_EXPORT_JOB_TYPE,
-        job_id=job.id,
-        status="CANCELED",
-        current_stage="CANCELED",
-        failure_retriable=False,
-    )
-    record_audit(
-        db,
-        tenant_id=job.tenant_id,
-        actor_user_id=job.created_by_user_id,
-        action="fact_export.canceled",
-        target_type="matter_fact_export_job",
-        target_id=job.id,
-        details={"matter_id": str(job.matter_id), "fact_count": fact_count},
-    )
-    return True
+def create_fact_export(
+    db: Session,
+    matter: Matter,
+    *,
+    filters: FactFilters,
+    requested_filename: str,
+    idempotency_key: str,
+    spreadsheet_safe: bool,
+    actor_user_id: uuid.UUID,
+    settings: Settings,
+) -> tuple[MatterFactExport, bool]:
+    """Write both CSV files, store them, and record the completed export; repeat requests return the first export.
 
+    The caller has already authorized the user and commits the returned record with its audit event.
+    """
 
-def run_fact_export(job_id: uuid.UUID, settings: Settings, *, session_factory: Any) -> None:
-    with session_factory() as db:
-        job = db.get(MatterFactExportJob, job_id)
-        if job is None:
-            raise ValueError("Fact export job was not found")
-        matter = db.get(Matter, job.matter_id)
-        actor = db.get(User, job.created_by_user_id)
-        if matter is None or actor is None:
-            raise ValueError("Fact export scope is unavailable")
-        require_export_permissions(db, actor, matter.id)
-        execution = current_job_execution(db, job_type=MATTER_FACT_EXPORT_JOB_TYPE, job_id=job.id, for_update=True)
-        if execution is None:
-            raise ValueError("Fact export execution is unavailable")
-        # A DBOS step retry rebuilds the unpublished files from the beginning.
-        execution.progress_completed = 0
-        execution.progress_total = None
-        transition_job_execution(
-            db, job_type=MATTER_FACT_EXPORT_JOB_TYPE, job_id=job.id, status="RUNNING", current_stage="EXPORTING"
+    fact_filter_statement(db, matter_id=matter.id, filters=filters)  # rejects an invalid filter before any work
+    filter_snapshot = filters.snapshot()
+    filter_hash = canonical_hash(filter_snapshot)
+    policy = {
+        "version": CSV_POLICY_VERSION,
+        "encoding": "utf-8",
+        "delimiter": ",",
+        "line_terminator": "CRLF",
+        "spreadsheet_safe": spreadsheet_safe,
+    }
+    _lock_idempotency_key(db, matter.id, actor_user_id, idempotency_key)
+    existing = db.scalar(
+        select(MatterFactExport).where(
+            MatterFactExport.matter_id == matter.id,
+            MatterFactExport.created_by_user_id == actor_user_id,
+            MatterFactExport.idempotency_key == idempotency_key,
         )
-        db.commit()
-        context = {
-            "matter_id": matter.id,
-            "tenant_id": job.tenant_id,
-            "client_id": matter.client_id,
-            "actor_user_id": actor.id,
-            "attempt_number": execution.attempt_number,
-            "filter_hash": job.filter_hash,
-            "filters": FactFilters.from_snapshot(job.filter_snapshot),
-            "spreadsheet_safe": bool(job.csv_policy_snapshot.get("spreadsheet_safe", True)),
-            "stem": job.requested_filename,
-        }
+    )
+    if existing is not None:
+        if existing.filter_hash != filter_hash or existing.csv_policy_snapshot != policy:
+            raise FactExportConflict("Idempotency key was already used for a different export")
+        return existing, False
 
-    spreadsheet_safe = context["spreadsheet_safe"]
+    export_id = uuid.uuid4()
+    stem = _safe_stem(requested_filename)
     fact_count = 0
     evidence_count = 0
     with tempfile.TemporaryFile(mode="w+b") as facts_binary, tempfile.TemporaryFile(mode="w+b") as evidence_binary:
@@ -619,12 +462,12 @@ def run_fact_export(job_id: uuid.UUID, settings: Settings, *, session_factory: A
         facts_writer.writerow(FACT_COLUMNS)
         evidence_writer.writerow(EVIDENCE_COLUMNS)
 
-        with session_factory() as read_db:
+        # A separate session so the whole read sees one snapshot, independent of the request's own transaction.
+        with Session(bind=db.get_bind(), autoflush=False) as read_db:
             _begin_snapshot(read_db)
             snapshot_started_at = utcnow()
-            reader = _ExportReader(read_db, context["matter_id"])
-            statement = fact_filter_statement(read_db, matter_id=context["matter_id"], filters=context["filters"])
-            total = read_db.scalar(select(func.count()).select_from(statement.subquery())) or 0
+            reader = _ExportReader(read_db, matter.id)
+            statement = fact_filter_statement(read_db, matter_id=matter.id, filters=filters)
             chunk: list[MatterFact] = []
 
             def flush(facts: list[MatterFact]) -> None:
@@ -639,167 +482,94 @@ def run_fact_export(job_id: uuid.UUID, settings: Settings, *, session_factory: A
                         evidence_count += 1
                     fact_count += 1
                 if facts_binary.tell() + evidence_binary.tell() > settings.fact_export_max_bytes:
-                    raise ValueError("Fact export exceeds the configured output size limit")
+                    raise FactExportTooLarge("Fact export exceeds the configured output size limit")
 
             for fact in read_db.scalars(statement.order_by(*FACT_DATE_ORDER).execution_options(yield_per=READ_CHUNK_SIZE)):
                 chunk.append(fact)
-                if len(chunk) < READ_CHUNK_SIZE:
-                    continue
-                flush(chunk)
-                chunk = []
-                with session_factory() as progress_db:
-                    current = progress_db.get(MatterFactExportJob, job_id)
-                    if current is None:
-                        raise ValueError("Fact export job was not found")
-                    transition_job_execution(
-                        progress_db,
-                        job_type=MATTER_FACT_EXPORT_JOB_TYPE,
-                        job_id=job_id,
-                        current_stage="EXPORTING",
-                        progress_completed=fact_count,
-                        progress_total=total,
-                    )
-                    canceled = _cancel_if_requested(progress_db, current, fact_count)
-                    progress_db.commit()
-                    if canceled:
-                        return
+                if len(chunk) == READ_CHUNK_SIZE:
+                    flush(chunk)
+                    chunk = []
             if chunk:
                 flush(chunk)
 
-        with session_factory() as db:
-            current = db.get(MatterFactExportJob, job_id)
-            if current is None:
-                raise ValueError("Fact export job was not found")
-            canceled = _cancel_if_requested(db, current, fact_count)
-            if not canceled:
-                transition_job_execution(
-                    db,
-                    job_type=MATTER_FACT_EXPORT_JOB_TYPE,
-                    job_id=job_id,
-                    current_stage="UPLOADING",
-                    progress_completed=fact_count,
-                    progress_total=total,
-                )
-            db.commit()
-            if canceled:
-                return
-
-        facts_filename, evidence_filename = export_filenames(context["stem"], snapshot_started_at)
+        facts_filename, evidence_filename = export_filenames(stem, snapshot_started_at)
         common = {
-            "job_id": job_id,
-            "matter_id": context["matter_id"],
-            "attempt_number": context["attempt_number"],
-            "filter_hash": context["filter_hash"],
+            "export_id": export_id,
+            "matter": matter,
+            "filter_hash": filter_hash,
             "snapshot_started_at": snapshot_started_at,
             "settings": settings,
-            "actor_user_id": context["actor_user_id"],
-            "tenant_id": context["tenant_id"],
-            "client_id": context["client_id"],
+            "actor_user_id": actor_user_id,
         }
-        facts_artifact = _store_csv(
-            facts_binary, file_kind="FACTS", filename=facts_filename, row_count=fact_count, **common
-        )
+        facts_artifact = _store_csv(facts_binary, file_kind="FACTS", filename=facts_filename, row_count=fact_count, **common)
         evidence_artifact = _store_csv(
             evidence_binary, file_kind="EVIDENCE", filename=evidence_filename, row_count=evidence_count, **common
         )
 
-    with session_factory() as db:
-        current = db.get(MatterFactExportJob, job_id)
-        if current is None:
-            raise ValueError("Fact export job was not found")
-        current.facts_artifact_id = facts_artifact.artifact_id
-        current.facts_content_hash = facts_artifact.content_hash
-        current.facts_byte_length = facts_artifact.byte_length
-        current.facts_filename = facts_filename
-        current.evidence_artifact_id = evidence_artifact.artifact_id
-        current.evidence_content_hash = evidence_artifact.content_hash
-        current.evidence_byte_length = evidence_artifact.byte_length
-        current.evidence_filename = evidence_filename
-        current.evidence_count = evidence_count
-        current.snapshot_started_at = snapshot_started_at
-        current.expires_at = utcnow() + timedelta(days=settings.fact_export_retention_days)
-        transition_job_execution(
-            db,
-            job_type=MATTER_FACT_EXPORT_JOB_TYPE,
-            job_id=job_id,
-            status="COMPLETED",
-            current_stage="COMPLETED",
-            progress_completed=fact_count,
-            progress_total=fact_count,
-            progress={"evidence_count": evidence_count, "snapshot_started_at": snapshot_started_at.isoformat()},
-            failure_retriable=False,
-        )
-        record_audit(
-            db,
-            tenant_id=current.tenant_id,
-            actor_user_id=current.created_by_user_id,
-            action="fact_export.completed",
-            target_type="matter_fact_export_job",
-            target_id=current.id,
-            details={
-                "matter_id": str(current.matter_id),
-                "fact_count": fact_count,
-                "evidence_count": evidence_count,
-                "facts_content_hash": facts_artifact.content_hash,
-                "evidence_content_hash": evidence_artifact.content_hash,
-            },
-        )
-        db.commit()
-
-
-def _fact_export_failure(error: BaseException) -> tuple[str, bool]:
-    if isinstance(error, FactExportTransientError):
-        return "FACT_EXPORT_DEPENDENCY_UNAVAILABLE", True
-    if isinstance(error, httpx.HTTPStatusError):
-        return "FACT_EXPORT_DEPENDENCY_FAILED", error.response.status_code in {408, 429} or error.response.status_code >= 500
-    if isinstance(error, httpx.TransportError | ConnectionError | TimeoutError):
-        return "FACT_EXPORT_DEPENDENCY_UNAVAILABLE", True
-    if isinstance(error, OperationalError | ProgrammingError):
-        return "FACT_EXPORT_STORAGE_UNAVAILABLE", True
-    if isinstance(error, PermissionError):
-        return "FACT_EXPORT_AUTHORIZATION_REVOKED", False
-    if isinstance(error, TypeError | ValueError):
-        return "FACT_EXPORT_INVALID", False
-    return "FACT_EXPORT_FAILED", False
-
-
-def record_fact_export_attempt_failure(db: Session, job_id: uuid.UUID, error: BaseException) -> None:
-    """Retain the original step error classification across DBOS retry wrapping."""
-
-    job = db.get(MatterFactExportJob, job_id)
-    if job is None:
-        return
-    code, retriable = _fact_export_failure(error)
-    job.failure_code = code
-    job.failure_summary = str(error)[:4000]
-    job.failure_retriable = retriable
-
-
-def fail_fact_export_job(db: Session, job_id: uuid.UUID, error: BaseException) -> None:
-    job = db.get(MatterFactExportJob, job_id)
-    if job is None:
-        return
-    execution = current_job_execution(db, job_type=MATTER_FACT_EXPORT_JOB_TYPE, job_id=job_id)
-    if execution is None or execution.status in {"COMPLETED", "FAILED", "CANCELED"}:
-        return
-    fallback_code, fallback_retriable = _fact_export_failure(error)
-    retriable = job.failure_retriable or fallback_retriable
-    transition_job_execution(
-        db,
-        job_type=MATTER_FACT_EXPORT_JOB_TYPE,
-        job_id=job_id,
-        status="FAILED",
-        current_stage="FAILED",
-        failure_code=job.failure_code or fallback_code,
-        failure_summary=job.failure_summary or str(error)[:4000],
-        failure_retriable=retriable,
+    export = MatterFactExport(
+        id=export_id,
+        tenant_id=matter.client.tenant_id,
+        matter_id=matter.id,
+        filter_snapshot=filter_snapshot,
+        filter_hash=filter_hash,
+        csv_policy_snapshot=policy,
+        idempotency_key=idempotency_key,
+        requested_filename=stem,
+        fact_count=fact_count,
+        evidence_count=evidence_count,
+        facts_artifact_id=facts_artifact.artifact_id,
+        facts_content_hash=facts_artifact.content_hash,
+        facts_byte_length=facts_artifact.byte_length,
+        facts_filename=facts_filename,
+        evidence_artifact_id=evidence_artifact.artifact_id,
+        evidence_content_hash=evidence_artifact.content_hash,
+        evidence_byte_length=evidence_artifact.byte_length,
+        evidence_filename=evidence_filename,
+        snapshot_started_at=snapshot_started_at,
+        expires_at=utcnow() + timedelta(days=settings.fact_export_retention_days),
+        created_by_user_id=actor_user_id,
     )
+    db.add(export)
+    db.flush()
     record_audit(
         db,
-        tenant_id=job.tenant_id,
-        actor_user_id=job.created_by_user_id,
+        tenant_id=export.tenant_id,
+        actor_user_id=actor_user_id,
+        action="fact_export.created",
+        target_type="matter_fact_export",
+        target_id=export.id,
+        details={
+            "matter_id": str(matter.id),
+            "filters": filter_snapshot,
+            "spreadsheet_safe": spreadsheet_safe,
+            "fact_count": fact_count,
+            "evidence_count": evidence_count,
+            "snapshot_started_at": snapshot_started_at.isoformat(),
+            "facts_artifact_id": str(facts_artifact.artifact_id),
+            "facts_content_hash": facts_artifact.content_hash,
+            "evidence_artifact_id": str(evidence_artifact.artifact_id),
+            "evidence_content_hash": evidence_artifact.content_hash,
+        },
+    )
+    return export, True
+
+
+def record_fact_export_failure(
+    db: Session,
+    matter: Matter,
+    *,
+    actor_user_id: uuid.UUID,
+    filters: FactFilters,
+    error: BaseException,
+) -> None:
+    """Audit an export attempt that produced no export, so failed attempts are visible alongside completed ones."""
+
+    record_audit(
+        db,
+        tenant_id=matter.client.tenant_id,
+        actor_user_id=actor_user_id,
         action="fact_export.failed",
-        target_type="matter_fact_export_job",
-        target_id=job.id,
-        details={"matter_id": str(job.matter_id), "retriable": retriable},
+        target_type="matter",
+        target_id=matter.id,
+        details={"filters": filters.snapshot(), "error": type(error).__name__, "message": str(error)[:1000]},
     )

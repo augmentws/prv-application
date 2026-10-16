@@ -42,7 +42,6 @@ def main() -> None:
         collection_deletion,
         collection_text_processing,
         fact_development,
-        fact_exports,
         fact_specification_compilation,
         matter_definition_assessments,
         matter_embeddings,
