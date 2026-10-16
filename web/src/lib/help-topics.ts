@@ -34,6 +34,11 @@ export const helpTopics = {
     summary: "Learn how facts are proposed, reviewed, confirmed, and kept in step with their supporting quotes.",
     href: "/docs/facts",
   },
+  entities: {
+    title: "Entities help",
+    summary: "Learn how people and organizations are proposed, confirmed, merged, and split, and how they connect to facts.",
+    href: "/docs/entities",
+  },
   matterSearch: {
     title: "Matter search help",
     summary: "Learn how matter indexes, searches, filters, facets, and rebuilds work.",

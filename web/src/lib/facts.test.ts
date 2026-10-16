@@ -13,6 +13,7 @@ describe("fact list URL state", () => {
       dateFrom: "2021-01-01",
       dateTo: "",
       pendingOnly: true,
+      entityId: "",
       sort: "UPDATED_DESC",
       page: 3,
     });
@@ -29,6 +30,9 @@ describe("fact list URL state", () => {
     expect(factFilters(state)).toEqual({ query: "approval", issue_keys: ["pricing"], has_contradiction: false, has_pending_suggestion: true });
     expect(factFilters(state, { without: "issue_key" })).not.toHaveProperty("issue_keys");
     expect(hasFactFilters(readFactListState(new URLSearchParams("tab=facts")))).toBe(false);
+    const entityState = readFactListState(new URLSearchParams("tab=facts&fentity=entity-1"));
+    expect(factFilters(entityState)).toEqual({ entity_id: "entity-1" });
+    expect(writeFactListState(new URLSearchParams("tab=facts"), entityState).get("fentity")).toBe("entity-1");
   });
 });
 

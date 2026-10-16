@@ -9,6 +9,7 @@ import { type ReactElement, useCallback, useMemo, useState, useSyncExternalStore
 import { toast } from "sonner";
 
 import { DataTable } from "@/components/data-table";
+import { EntitiesPanel, type EntitiesTab } from "@/components/entities/entities-panel";
 import { FactsListPanel } from "@/components/facts/facts-list-panel";
 import { AnalysisTasksPanel } from "@/components/analysis-tasks-panel";
 import { ClassificationAnalysisJobDetail } from "@/components/classification-analysis-job-detail";
@@ -43,7 +44,7 @@ import { coreApi } from "@/lib/api-client";
 import { bulkTagDisplayStatus, bulkTagIsWaiting } from "@/lib/bulk-tag-jobs";
 import { formatDate } from "@/lib/format";
 
-type MatterTab = "overview" | "metadata" | "definition" | "facts" | "analysis" | "batches" | "classification" | "jobs" | "usage" | "search";
+type MatterTab = "overview" | "metadata" | "definition" | "facts" | "entities" | "analysis" | "batches" | "classification" | "jobs" | "usage" | "search";
 type MetadataTab = "definitions" | "groups";
 type MatterJobType = "BULK_TAGGING" | "DOCUMENT_EMBEDDINGS" | "TOPIC_CLUSTERING" | "DOCUMENT_IMPORTS" | "QUESTION_ANSWERING" | "CLASSIFICATION_ANALYSIS" | "SEARCH_EXPORTS";
 type ClassificationAnalysisJobRow = MatterAnalysisTaskRunRead & { task_name: string };
@@ -66,15 +67,17 @@ function subscribeToMatterJobType(callback: () => void) {
   };
 }
 
-export function MatterView({ clientId, matterId, requestedTab, requestedMetadataTab, selectedJobId, requestedJobType }: {
+export function MatterView({ clientId, matterId, requestedTab, requestedMetadataTab, requestedEntitiesTab, selectedJobId, requestedJobType }: {
   clientId: string;
   matterId: string;
   requestedTab?: string;
   requestedMetadataTab?: string;
+  requestedEntitiesTab?: string;
   selectedJobId?: string;
   requestedJobType?: string;
 }) {
-  const tab: MatterTab = requestedTab === "overview" || requestedTab === "definition" || requestedTab === "facts" || requestedTab === "analysis" || requestedTab === "batches" || requestedTab === "classification" || requestedTab === "jobs" || requestedTab === "usage" || requestedTab === "search" ? requestedTab : "metadata";
+  const tab: MatterTab = requestedTab === "overview" || requestedTab === "definition" || requestedTab === "facts" || requestedTab === "entities" || requestedTab === "analysis" || requestedTab === "batches" || requestedTab === "classification" || requestedTab === "jobs" || requestedTab === "usage" || requestedTab === "search" ? requestedTab : "metadata";
+  const entitiesTab: EntitiesTab = requestedEntitiesTab === "proposed" ? "proposed" : "directory";
   const metadataTab: MetadataTab = requestedTab === "groups" || requestedMetadataTab === "groups" ? "groups" : "definitions";
   const router = useRouter();
   const queryClient = useQueryClient();
@@ -199,6 +202,8 @@ export function MatterView({ clientId, matterId, requestedTab, requestedMetadata
   // UI visibility only; the API enforces fact permissions on every request.
   const canViewFacts = permissionKeys.has("fact.view");
   const canReviewFacts = permissionKeys.has("fact.review");
+  const canViewEntities = permissionKeys.has("entity.view");
+  const canManageEntities = permissionKeys.has("entity.manage");
   const searchIndexes = useQuery({
     queryKey: ["search-indexes", matterId],
     queryFn: () => coreApi<SearchIndexGenerationRead[]>(`/v1/matters/${matterId}/search-indexes`),
@@ -447,6 +452,11 @@ export function MatterView({ clientId, matterId, requestedTab, requestedMetadata
     router.replace(`/app/clients/${clientId}/matters/${matterId}?${params}`);
   }, [clientId, matterId, router]);
 
+  const openEntitiesTab = useCallback((nextTab: EntitiesTab) => {
+    const params = new URLSearchParams({ tab: "entities", entities: nextTab });
+    router.replace(`/app/clients/${clientId}/matters/${matterId}?${params}`);
+  }, [clientId, matterId, router]);
+
   const openMetadataTab = useCallback((nextTab: MetadataTab) => {
     const params = new URLSearchParams({ tab: "metadata", metadata: nextTab });
     router.replace(`/app/clients/${clientId}/matters/${matterId}?${params}`);
@@ -637,6 +647,7 @@ export function MatterView({ clientId, matterId, requestedTab, requestedMetadata
             <button role="tab" aria-selected={tab === "metadata"} onClick={() => openTab("metadata")} className={tabClass(tab === "metadata")}>Metadata</button>
             <button role="tab" aria-selected={tab === "definition"} onClick={() => openTab("definition")} className={tabClass(tab === "definition")}>Matter definition</button>
             {canViewFacts ? <button role="tab" aria-selected={tab === "facts"} onClick={() => openTab("facts")} className={tabClass(tab === "facts")}>Facts</button> : null}
+            {canViewEntities ? <button role="tab" aria-selected={tab === "entities"} onClick={() => openTab("entities")} className={tabClass(tab === "entities")}>Entities</button> : null}
             <button role="tab" aria-selected={tab === "analysis"} onClick={() => openTab("analysis")} className={tabClass(tab === "analysis")}>Analysis</button>
             <button role="tab" aria-selected={tab === "batches"} onClick={() => openTab("batches")} className={tabClass(tab === "batches")}>Batches</button>
             <button role="tab" aria-selected={tab === "classification"} onClick={() => openTab("classification")} className={tabClass(tab === "classification")}>Classification</button>
@@ -645,7 +656,7 @@ export function MatterView({ clientId, matterId, requestedTab, requestedMetadata
             <button role="tab" aria-selected={tab === "search"} onClick={() => openTab("search")} className={tabClass(tab === "search")}>Search index</button>
           </div>
           <div className="flex shrink-0 flex-wrap items-center gap-2 pb-2">
-            <HelpLink topic={tab === "facts" ? "facts" : tab === "classification" ? "classification" : tab === "jobs" ? "matterJobs" : tab === "usage" ? "tokenUsage" : tab === "search" ? "matterSearch" : tab === "definition" ? "matterDefinition" : "metadata"} />
+            <HelpLink topic={tab === "facts" ? "facts" : tab === "entities" ? "entities" : tab === "classification" ? "classification" : tab === "jobs" ? "matterJobs" : tab === "usage" ? "tokenUsage" : tab === "search" ? "matterSearch" : tab === "definition" ? "matterDefinition" : "metadata"} />
           </div>
         </div>
       </div>
@@ -653,6 +664,9 @@ export function MatterView({ clientId, matterId, requestedTab, requestedMetadata
         {tab === "overview" ? <div className="mb-5 flex items-center justify-end gap-2 border-b pb-2" aria-label="Overview actions">
           <CloneMatterDialog sourceName={matter.data.name} onClone={cloneMatter} />
           <SaveMatterTemplateDialog onCreate={saveTemplate} />
+        </div> : tab === "entities" && canViewEntities ? <div className="mb-5 flex border-b" role="tablist" aria-label="Entity sections">
+          <button type="button" role="tab" aria-selected={entitiesTab === "directory"} onClick={() => openEntitiesTab("directory")} className={subtabClass(entitiesTab === "directory")}>Directory</button>
+          <button type="button" role="tab" aria-selected={entitiesTab === "proposed"} onClick={() => openEntitiesTab("proposed")} className={subtabClass(entitiesTab === "proposed")}>Proposed</button>
         </div> : tab === "metadata" ? <div className="mb-5 flex items-end justify-between gap-3 border-b">
           <div className="flex" role="tablist" aria-label="Metadata sections">
             <button type="button" role="tab" aria-selected={metadataTab === "definitions"} onClick={() => openMetadataTab("definitions")} className={subtabClass(metadataTab === "definitions")}>Definitions</button>
@@ -664,6 +678,7 @@ export function MatterView({ clientId, matterId, requestedTab, requestedMetadata
         : tab === "metadata" && metadataTab === "definitions" ? definitions.isPending ? <TableLoading /> : definitions.error ? <QueryError message={definitions.error.message} /> : <DataTable columns={columns} data={definitions.data} emptyMessage="No metadata fields yet. Add the first field definition for this matter." />
         : tab === "metadata" ? definitions.isPending || groups.isPending ? <TableLoading /> : definitions.error || groups.error ? <QueryError message={definitions.error?.message ?? groups.error?.message} /> : <MetadataGroupsPanel definitions={definitions.data} groups={groups.data} onCreate={createGroup} onVisibilityChange={changeVisibility} />
         : tab === "definition" ? <MatterDefinitionPanel matterId={matterId} />
+        : tab === "entities" ? effectivePermissions.isPending ? <TableLoading /> : effectivePermissions.error ? <QueryError message={effectivePermissions.error.message} /> : canViewEntities ? <EntitiesPanel key={entitiesTab} clientId={clientId} matterId={matterId} tab={entitiesTab} canManage={canManageEntities} /> : <QueryError message="You do not have permission to view entities in this matter." />
         : tab === "facts" ? effectivePermissions.isPending ? <TableLoading /> : effectivePermissions.error ? <QueryError message={effectivePermissions.error.message} /> : canViewFacts ? <FactsListPanel clientId={clientId} matterId={matterId} canReview={canReviewFacts} /> : <QueryError message="You do not have permission to view facts in this matter." />
         : tab === "analysis" ? <AnalysisTasksPanel clientId={clientId} matterId={matterId} />
         : tab === "batches" ? reviewBatches.isPending || groups.isPending || tenantUsers.isPending || savedSearches.isPending || assessments.isPending ? <TableLoading /> : reviewBatches.error || groups.error || tenantUsers.error || savedSearches.error || assessments.error ? <QueryError message={reviewBatches.error?.message ?? groups.error?.message ?? tenantUsers.error?.message ?? savedSearches.error?.message ?? assessments.error?.message} /> : <div className="space-y-4"><div className="flex flex-wrap items-start justify-between gap-3"><div><h2 className="text-lg font-semibold">Review batches</h2><p className="text-sm text-muted-foreground">Freeze document sets for assignment, repeatable agent runs, and coding comparisons.</p></div><CreateReviewBatchDialog groups={groups.data} batches={reviewBatches.data} savedSearches={savedSearches.data} assessments={assessments.data} onCreate={createReviewBatch} /></div><DataTable columns={reviewBatchColumns} data={reviewBatches.data} emptyMessage="No review batches have been created for this matter." /></div>

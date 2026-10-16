@@ -17,7 +17,7 @@ import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
-import type { FactIssueCatalogEntry, MatterFactDetailRead, MatterFactFacetRead, MatterFactPage, MatterFactRead } from "@/generated/models";
+import type { FactIssueCatalogEntry, MatterEntityRead, MatterFactDetailRead, MatterFactFacetRead, MatterFactPage, MatterFactRead } from "@/generated/models";
 import { coreApi } from "@/lib/api-client";
 import { formatDate } from "@/lib/format";
 import {
@@ -81,6 +81,12 @@ export function FactsListPanel({ clientId, matterId, canReview }: { clientId: st
   );
   const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set());
   const { names: issueNames } = useIssueNames(matterId);
+  const filterEntity = useQuery({
+    queryKey: ["matter-entity", matterId, state.entityId],
+    queryFn: () => coreApi<MatterEntityRead>(`/v1/matters/${matterId}/entities/${state.entityId}`),
+    enabled: Boolean(state.entityId),
+    retry: false,
+  });
   const filters = useMemo(() => factFilters(state), [state]);
   const offset = (state.page - 1) * FACT_PAGE_SIZE;
 
@@ -251,6 +257,7 @@ export function FactsListPanel({ clientId, matterId, canReview }: { clientId: st
     ),
     ...(state.dateFrom || state.dateTo ? [{ key: "dates", label: `Date: ${state.dateFrom || "…"} to ${state.dateTo || "…"}` }] : []),
     ...(state.pendingOnly ? [{ key: "pending", label: "Has pending suggestions" }] : []),
+    ...(state.entityId ? [{ key: "entity", label: `Involving: ${filterEntity.data?.display_name ?? "selected person or organization"}` }] : []),
   ];
 
   function removeFilter(key: string) {
@@ -259,6 +266,7 @@ export function FactsListPanel({ clientId, matterId, canReview }: { clientId: st
       update({ query: "" });
     } else if (key === "dates") update({ dateFrom: "", dateTo: "" });
     else if (key === "pending") update({ pendingOnly: false });
+    else if (key === "entity") update({ entityId: "" });
     else {
       const separator = key.indexOf(":");
       const facetKey = key.slice(0, separator) as FactFacetKey;
@@ -289,7 +297,7 @@ export function FactsListPanel({ clientId, matterId, canReview }: { clientId: st
         onOpen={(key) => setOpenFacets((current) => new Set(current).add(key as FactFacetKey))}
         onClear={() => {
           setQueryDraft("");
-          update({ query: "", selected: {}, dateFrom: "", dateTo: "", pendingOnly: false });
+          update({ query: "", selected: {}, dateFrom: "", dateTo: "", pendingOnly: false, entityId: "" });
         }}
       >
         <DateRangeFacet label="Event date" from={state.dateFrom} to={state.dateTo} onChange={({ from, to }) => update({ dateFrom: from, dateTo: to })} />

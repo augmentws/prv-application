@@ -31,6 +31,8 @@ export interface FactListState {
   dateFrom: string;
   dateTo: string;
   pendingOnly: boolean;
+  /** Facts an entity owns or takes part in, across its merged variants. */
+  entityId: string;
   sort: FactSort;
   page: number;
 }
@@ -51,6 +53,7 @@ export function readFactListState(params: URLSearchParams): FactListState {
     dateFrom: parseDateOnly(params.get("ffrom") ?? "") ? (params.get("ffrom") as string) : "",
     dateTo: parseDateOnly(params.get("fto") ?? "") ? (params.get("fto") as string) : "",
     pendingOnly: params.get("fpending") === "1",
+    entityId: params.get("fentity") ?? "",
     sort: sort && sort in FACT_SORT_LABELS ? (sort as FactSort) : "DATE_ASC",
     page: Number.isFinite(page) && page > 0 ? page : 1,
   };
@@ -60,7 +63,7 @@ export function readFactListState(params: URLSearchParams): FactListState {
 export function writeFactListState(params: URLSearchParams, state: FactListState): URLSearchParams {
   const next = new URLSearchParams(params);
   for (const key of [...next.keys()]) {
-    if (key.startsWith(PARAM_PREFIX) || ["fq", "ffrom", "fto", "fpending", "fsort", "fpage"].includes(key)) next.delete(key);
+    if (key.startsWith(PARAM_PREFIX) || ["fq", "ffrom", "fto", "fpending", "fentity", "fsort", "fpage"].includes(key)) next.delete(key);
   }
   if (state.query.trim()) next.set("fq", state.query.trim());
   for (const facet of FACT_FACETS) {
@@ -70,6 +73,7 @@ export function writeFactListState(params: URLSearchParams, state: FactListState
   if (state.dateFrom) next.set("ffrom", state.dateFrom);
   if (state.dateTo) next.set("fto", state.dateTo);
   if (state.pendingOnly) next.set("fpending", "1");
+  if (state.entityId) next.set("fentity", state.entityId);
   if (state.sort !== "DATE_ASC") next.set("fsort", state.sort);
   if (state.page > 1) next.set("fpage", String(state.page));
   return next;
@@ -99,6 +103,7 @@ export function factFilters(state: FactListState, { without }: { without?: FactF
   if (state.dateFrom) filters.event_date_from = state.dateFrom;
   if (state.dateTo) filters.event_date_to = state.dateTo;
   if (state.pendingOnly) filters.has_pending_suggestion = true;
+  if (state.entityId) filters.entity_id = state.entityId;
   return filters;
 }
 
@@ -108,6 +113,7 @@ export function hasFactFilters(state: FactListState) {
       state.dateFrom ||
       state.dateTo ||
       state.pendingOnly ||
+      state.entityId ||
       Object.values(state.selected).some((values) => values?.length),
   );
 }
@@ -157,4 +163,13 @@ export const FACT_STATUS_CLASSES: Record<string, string> = {
 
 export function factDetailHref(clientId: string, matterId: string, factId: string) {
   return `/app/clients/${clientId}/matters/${matterId}/facts/${factId}`;
+}
+
+export function entityDetailHref(clientId: string, matterId: string, entityId: string) {
+  return `/app/clients/${clientId}/matters/${matterId}/entities/${entityId}`;
+}
+
+/** The Facts list filtered to facts an entity owns or takes part in. */
+export function entityFactsHref(clientId: string, matterId: string, entityId: string) {
+  return `/app/clients/${clientId}/matters/${matterId}?${new URLSearchParams({ tab: "facts", fentity: entityId })}`;
 }
