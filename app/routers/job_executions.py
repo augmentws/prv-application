@@ -35,7 +35,6 @@ from app.fact_development import (
     finalize_canceled_fact_development_run,
     retry_fact_development_run,
 )
-from app.fact_exports import retry_fact_export_job
 from app.job_archives import MATTER_BULK_TAG_JOB_TYPE, MATTER_TOPIC_JOB_TYPE, is_job_archived
 from app.job_executions import (
     ANALYSIS_TASK_BATCH_RUN_JOB_TYPE,
@@ -46,7 +45,6 @@ from app.job_executions import (
     FACT_DEVELOPMENT_ANALYSIS_TASK_JOB_TYPE,
     MATTER_DOCUMENT_IMPORT_JOB_TYPE,
     MATTER_EMBEDDING_JOB_TYPE,
-    MATTER_FACT_EXPORT_JOB_TYPE,
     MATTER_SEARCH_EXPORT_JOB_TYPE,
     REVIEW_BATCH_MATERIALIZATION_JOB_TYPE,
     JobExecutionConflict,
@@ -69,7 +67,6 @@ from app.models import (
     MatterDocumentImportJob,
     MatterEmbeddingBatch,
     MatterEmbeddingJob,
-    MatterFactExportJob,
     MatterSearchExportJob,
     MatterTopicJob,
     ReviewBatch,
@@ -93,7 +90,6 @@ from app.workflows.dispatcher import (
     cancel_classification_model_scoring,
     cancel_classification_training_job,
     cancel_fact_development_run_workflow,
-    cancel_fact_export,
     cancel_matter_embedding,
     cancel_matter_import,
     cancel_review_batch,
@@ -104,7 +100,6 @@ from app.workflows.dispatcher import (
     enqueue_classification_projection,
     enqueue_classification_training_job,
     enqueue_fact_development_run,
-    enqueue_fact_export,
     enqueue_review_batch,
     enqueue_search_export,
 )
@@ -146,11 +141,6 @@ def _authorized_job(
         authorized = can(db, principal, "document.export", ResourceRef.matter(matter.id))
     elif adapter.job_type == FACT_DEVELOPMENT_ANALYSIS_TASK_JOB_TYPE:
         authorized = can(db, principal, "analysis_task.run", ResourceRef.matter(matter.id))
-    elif adapter.job_type == MATTER_FACT_EXPORT_JOB_TYPE:
-        authorized = all(
-            can(db, principal, permission_key, ResourceRef.matter(matter.id))
-            for permission_key in ("fact.export", "fact.view", "document.view")
-        )
     else:
         authorized = can_admin_matter(db, principal, matter)
     if not authorized:
@@ -162,8 +152,7 @@ def _authorized_job(
                 CLASSIFICATION_SCORING_RUN_JOB_TYPE,
                 CLASSIFICATION_PROJECTION_JOB_TYPE,
                 MATTER_SEARCH_EXPORT_JOB_TYPE,
-                MATTER_FACT_EXPORT_JOB_TYPE,
-                FACT_DEVELOPMENT_ANALYSIS_TASK_JOB_TYPE,
+                            FACT_DEVELOPMENT_ANALYSIS_TASK_JOB_TYPE,
             }
             else "Matter ADMIN required"
         )
@@ -558,27 +547,6 @@ def cancel_job(
                 logger.warning("DBOS cancellation request failed for %s: %s", workflow_id, exc)
         db.refresh(execution)
         return JobExecutionRead.model_validate(execution)
-    if adapter.job_type == MATTER_FACT_EXPORT_JOB_TYPE and isinstance(job, MatterFactExportJob):
-        if job.current_stage == "UPLOADING":
-            raise HTTPException(
-                status_code=status.HTTP_409_CONFLICT,
-                detail="The fact export is finalizing and can no longer be canceled",
-            )
-        execution, canceled = cancel_job_execution(
-            db,
-            job_type=MATTER_FACT_EXPORT_JOB_TYPE,
-            job_id=job.id,
-            actor_user_id=principal.user.id,
-        )
-        workflow_id = job.workflow_id
-        db.commit()
-        if canceled:
-            try:
-                cancel_fact_export(workflow_id)
-            except Exception as exc:  # noqa: BLE001 - cancellation is already durable
-                logger.warning("DBOS cancellation request failed for %s: %s", workflow_id, exc)
-        db.refresh(execution)
-        return JobExecutionRead.model_validate(execution)
     if adapter.job_type == CLASSIFICATION_TRAINING_JOB_TYPE and isinstance(job, ClassificationTrainingJob):
         child_workflow_id = job.training_run.workflow_id if job.training_run is not None else None
         execution, canceled = cancel_job_execution(
@@ -723,15 +691,6 @@ def retry_job(
         except JobExecutionConflict as exc:
             raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=str(exc)) from exc
         enqueue_fact_development_run(db, execution.dbos_workflow_id, str(job.id))
-        db.commit()
-        db.refresh(execution)
-        return JobExecutionRead.model_validate(execution)
-    if adapter.job_type == MATTER_FACT_EXPORT_JOB_TYPE and isinstance(job, MatterFactExportJob):
-        try:
-            execution = retry_fact_export_job(db, job, actor_user_id=principal.user.id)
-        except JobExecutionConflict as exc:
-            raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=str(exc)) from exc
-        enqueue_fact_export(db, execution.dbos_workflow_id, str(job.id))
         db.commit()
         db.refresh(execution)
         return JobExecutionRead.model_validate(execution)

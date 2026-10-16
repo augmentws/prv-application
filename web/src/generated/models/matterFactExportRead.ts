@@ -5,10 +5,8 @@
  * Phase-one Core API for authentication, hierarchical tenants, clients, matters, and matter metadata definitions.
  * OpenAPI spec version: 0.1.0
  */
-import type { JobExecutionRead } from './jobExecutionRead';
 import type { MatterFactExportReadCsvPolicySnapshot } from './matterFactExportReadCsvPolicySnapshot';
 import type { MatterFactExportReadFilterSnapshot } from './matterFactExportReadFilterSnapshot';
-import type { MatterFactExportReadStatus } from './matterFactExportReadStatus';
 
 export interface MatterFactExportRead {
   id: string;
@@ -16,23 +14,14 @@ export interface MatterFactExportRead {
   filter_snapshot: MatterFactExportReadFilterSnapshot;
   csv_policy_snapshot: MatterFactExportReadCsvPolicySnapshot;
   requested_filename: string;
-  status: MatterFactExportReadStatus;
-  current_stage: string | null;
   fact_count: number;
   evidence_count: number;
-  facts_filename: string | null;
-  facts_byte_length: number | null;
-  evidence_filename: string | null;
-  evidence_byte_length: number | null;
-  snapshot_started_at: string | null;
-  expires_at: string | null;
-  failure_code: string | null;
-  failure_summary: string | null;
-  failure_retriable: boolean;
+  facts_filename: string;
+  facts_byte_length: number;
+  evidence_filename: string;
+  evidence_byte_length: number;
+  snapshot_started_at: string;
+  expires_at: string;
   created_by_user_id: string;
   created_at: string;
-  updated_at: string;
-  completed_at: string | null;
-  canceled_at: string | null;
-  execution?: JobExecutionRead | null;
 }

@@ -9,9 +9,7 @@ import pytest
 from conftest import TestingSessionLocal
 from fastapi.testclient import TestClient
 
-from app.config import get_settings
 from app.document_metadata import add_metadata_event
-from app.fact_exports import run_fact_export
 from app.fact_recall import recall_facts
 from app.models import Custodian, Matter, MatterDocumentCustodian, MatterFact
 from tests.test_agents_and_matter_definitions import auth
@@ -275,8 +273,7 @@ def test_export_uses_the_full_search_filter(client: TestClient, corpus: dict, st
             "filters": {"issue_keys": ["safety"], "entity_types": ["ORGANIZATION"]},
         },
     )
-    assert job.status_code == 202, job.text
-    run_fact_export(uuid.UUID(job.json()["id"]), get_settings(), session_factory=TestingSessionLocal)
+    assert job.status_code == 201, job.text
     rows = list(csv.DictReader(io.StringIO(stored["FACTS"].decode())))
     assert [row["Fact ID"] for row in rows] == [corpus["facts"]["incident"]["id"]]
 

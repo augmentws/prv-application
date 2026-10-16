@@ -525,7 +525,6 @@ export * from './matterFactExportCreate';
 export * from './matterFactExportRead';
 export * from './matterFactExportReadCsvPolicySnapshot';
 export * from './matterFactExportReadFilterSnapshot';
-export * from './matterFactExportReadStatus';
 export * from './matterFactFacetBucket';
 export * from './matterFactFacetRead';
 export * from './matterFactFacetRequest';

@@ -16,7 +16,6 @@ from app.models import (
     MatterAnalysisTaskRun,
     MatterDocumentImportJob,
     MatterEmbeddingJob,
-    MatterFactExportJob,
     MatterSearchExportJob,
     ReviewBatch,
     ReviewBatchRun,
@@ -34,7 +33,6 @@ CLASSIFICATION_SCORING_RUN_JOB_TYPE = "CLASSIFICATION_SCORING_RUN"
 CLASSIFICATION_PROJECTION_JOB_TYPE = "CLASSIFICATION_PROJECTION"
 REVIEW_BATCH_CODING_PROMOTION_JOB_TYPE = "REVIEW_BATCH_CODING_PROMOTION"
 MATTER_SEARCH_EXPORT_JOB_TYPE = "MATTER_SEARCH_EXPORT"
-MATTER_FACT_EXPORT_JOB_TYPE = "MATTER_FACT_EXPORT"
 FACT_DEVELOPMENT_ANALYSIS_TASK_JOB_TYPE = "FACT_DEVELOPMENT_ANALYSIS_TASK"
 
 EXECUTION_TERMINAL_STATUSES = {
@@ -594,52 +592,6 @@ class MatterSearchExportExecutionAdapter:
         job.canceled_at = execution.completed_at if execution.status == "CANCELED" else None
 
 
-class MatterFactExportExecutionAdapter:
-    job_type = MATTER_FACT_EXPORT_JOB_TYPE
-    supports_retry = True
-
-    def load(
-        self,
-        db: Session,
-        job_id: uuid.UUID,
-        *,
-        for_update: bool = False,
-    ) -> MatterFactExportJob | None:
-        statement = select(MatterFactExportJob).where(MatterFactExportJob.id == job_id)
-        if for_update:
-            statement = statement.with_for_update()
-        return db.scalar(statement)
-
-    def scope(
-        self,
-        db: Session,
-        job: MatterFactExportJob,
-    ) -> tuple[JobScope, Matter | None]:
-        matter = db.get(Matter, job.matter_id)
-        if matter is None:
-            raise JobExecutionNotFound("Fact export matter was not found")
-        return JobScope(job.tenant_id, matter.client_id, matter.id), matter
-
-    def project(self, job: MatterFactExportJob, execution: WorkflowRun) -> None:
-        job.current_workflow_run_id = execution.id
-        job.current_workflow_run = execution
-        job.workflow_id = execution.dbos_workflow_id
-        job.current_stage = execution.current_stage or execution.status
-        job.failure_code = execution.failure_code
-        job.failure_summary = execution.failure_summary
-        job.failure_retriable = execution.failure_retriable
-        job.started_at = execution.started_at
-        job.completed_at = execution.completed_at
-        job.fact_count = int(execution.progress_completed)
-        if execution.status == "QUEUED":
-            job.status = "QUEUED"
-        elif execution.status in {"RUNNING", "WAITING"}:
-            job.status = "RUNNING"
-        else:
-            job.status = "COMPLETED" if execution.status == "COMPLETED_WITH_ERRORS" else execution.status
-        job.canceled_at = execution.completed_at if execution.status == "CANCELED" else None
-
-
 class FactDevelopmentAnalysisTaskExecutionAdapter:
     job_type = FACT_DEVELOPMENT_ANALYSIS_TASK_JOB_TYPE
     supports_retry = True
@@ -705,7 +657,6 @@ _ADAPTERS: dict[str, JobExecutionAdapter] = {
     CLASSIFICATION_PROJECTION_JOB_TYPE: ClassificationProjectionExecutionAdapter(),
     REVIEW_BATCH_CODING_PROMOTION_JOB_TYPE: ReviewBatchCodingPromotionExecutionAdapter(),
     MATTER_SEARCH_EXPORT_JOB_TYPE: MatterSearchExportExecutionAdapter(),
-    MATTER_FACT_EXPORT_JOB_TYPE: MatterFactExportExecutionAdapter(),
     FACT_DEVELOPMENT_ANALYSIS_TASK_JOB_TYPE: FactDevelopmentAnalysisTaskExecutionAdapter(),
 }
 
