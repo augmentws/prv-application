@@ -1,9 +1,9 @@
 import type { Metadata } from "next";
 
-import { CollectionView } from "@/components/views/collection-view";
+import { FileDatesSection } from "@/components/collection/sections/file-dates-section";
 
 export const metadata: Metadata = { title: "File dates" };
 
 export default function CollectionFileDatesPage() {
-  return <CollectionView section="file-dates" />;
+  return <FileDatesSection />;
 }

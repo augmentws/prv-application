@@ -1,9 +1,9 @@
 import type { Metadata } from "next";
 
-import { CollectionView } from "@/components/views/collection-view";
+import { ProcessingSection } from "@/components/collection/sections/processing-section";
 
 export const metadata: Metadata = { title: "Text processing" };
 
 export default function CollectionProcessingPage() {
-  return <CollectionView section="processing" />;
+  return <ProcessingSection />;
 }

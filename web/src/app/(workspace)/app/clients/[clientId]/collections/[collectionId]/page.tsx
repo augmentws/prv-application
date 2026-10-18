@@ -1,9 +1,9 @@
 import type { Metadata } from "next";
 
-import { CollectionView } from "@/components/views/collection-view";
+import { DocumentsSection } from "@/components/collection/sections/documents-section";
 
 export const metadata: Metadata = { title: "Collection" };
 
 export default function CollectionDocumentsPage() {
-  return <CollectionView section="documents" />;
+  return <DocumentsSection />;
 }
