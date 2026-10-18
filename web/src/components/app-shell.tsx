@@ -6,7 +6,7 @@ import {
   Building2,
   Bot,
   BookOpenText,
-  ChevronsUpDown,
+  ChevronDown,
   FolderKanban,
   LayoutGrid,
   LayoutDashboard,
@@ -186,31 +186,6 @@ function Shell({ children }: { children: ReactNode }) {
           })}
         </nav>
       )}
-
-      <div className="border-t border-sidebar-border p-3">
-        <DropdownMenu.Root>
-          <DropdownMenu.Trigger asChild>
-            <button className={cn("flex w-full items-center gap-3 rounded-lg p-2 text-left outline-none hover:bg-card focus-visible:ring-2 focus-visible:ring-ring", collapsed && "justify-center")}>
-              <span className="grid size-9 shrink-0 place-items-center rounded-full bg-primary text-xs font-bold text-primary-foreground">
-                {user.display_name.split(" ").map((part) => part[0]).join("").slice(0, 2).toUpperCase()}
-              </span>
-              {!collapsed ? (
-                <>
-                  <span className="min-w-0 flex-1"><span className="block truncate text-sm font-semibold">{user.display_name}</span><span className="block truncate text-xs text-muted-foreground">{user.email}</span></span>
-                  <ChevronsUpDown className="size-4 text-muted-foreground" />
-                </>
-              ) : null}
-            </button>
-          </DropdownMenu.Trigger>
-          <DropdownMenu.Portal>
-            <DropdownMenu.Content side="top" align="start" className="z-50 mb-2 min-w-52 rounded-lg border bg-popover p-1 text-popover-foreground shadow-xl">
-              <DropdownMenu.Item onSelect={() => void signOut()} className="flex cursor-default items-center gap-2 rounded-md px-3 py-2 text-sm text-destructive outline-none focus:bg-muted">
-                <LogOut className="size-4" /> Sign out
-              </DropdownMenu.Item>
-            </DropdownMenu.Content>
-          </DropdownMenu.Portal>
-        </DropdownMenu.Root>
-      </div>
     </aside>
   );
 
@@ -228,6 +203,7 @@ function Shell({ children }: { children: ReactNode }) {
             <p className="truncate text-xs text-muted-foreground">Secure workspace</p>
           </div>
           <ThemeToggle />
+          <AccountMenu displayName={user.display_name} email={user.email} onSignOut={() => void signOut()} />
         </header>
         <main
           id="main-content"
@@ -240,5 +216,37 @@ function Shell({ children }: { children: ReactNode }) {
         </main>
       </div>
     </div>
+  );
+}
+
+/** The signed-in user's menu at the top right of every workspace page. */
+function AccountMenu({ displayName, email, onSignOut }: { displayName: string; email: string; onSignOut: () => void }) {
+  const initials = displayName.split(" ").map((part) => part[0]).join("").slice(0, 2).toUpperCase();
+  return (
+    <DropdownMenu.Root>
+      <DropdownMenu.Trigger asChild>
+        <button
+          type="button"
+          aria-label={`Account: ${displayName}`}
+          className="flex shrink-0 items-center gap-2 rounded-full p-1 outline-none hover:bg-muted focus-visible:ring-2 focus-visible:ring-ring md:rounded-lg md:pr-2"
+        >
+          <span aria-hidden="true" className="grid size-8 shrink-0 place-items-center rounded-full bg-primary text-xs font-bold text-primary-foreground">{initials}</span>
+          <span className="hidden max-w-40 truncate text-sm font-semibold md:block">{displayName}</span>
+          <ChevronDown aria-hidden="true" className="hidden size-4 text-muted-foreground md:block" />
+        </button>
+      </DropdownMenu.Trigger>
+      <DropdownMenu.Portal>
+        <DropdownMenu.Content side="bottom" align="end" sideOffset={6} className="z-50 min-w-56 rounded-lg border bg-popover p-1 text-popover-foreground shadow-xl">
+          <div className="px-3 py-2">
+            <p className="truncate text-sm font-semibold">{displayName}</p>
+            <p className="truncate text-xs text-muted-foreground">{email}</p>
+          </div>
+          <DropdownMenu.Separator className="my-1 h-px bg-border" />
+          <DropdownMenu.Item onSelect={onSignOut} className="flex cursor-default items-center gap-2 rounded-md px-3 py-2 text-sm text-destructive outline-none focus:bg-muted">
+            <LogOut className="size-4" aria-hidden="true" /> Sign out
+          </DropdownMenu.Item>
+        </DropdownMenu.Content>
+      </DropdownMenu.Portal>
+    </DropdownMenu.Root>
   );
 }
