@@ -1,4 +1,4 @@
-import { fireEvent, cleanup, screen, within } from "@testing-library/react";
+import { cleanup, fireEvent, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import type { ReactNode } from "react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
@@ -63,7 +63,10 @@ function postedImport() {
 }
 
 async function addToMatter(user: ReturnType<typeof userEvent.setup>, trigger: string) {
-  await user.click(screen.getByRole("button", { name: trigger }));
+  // The button stays disabled until the client's matters (and, for Documents, the results) have loaded.
+  const button = screen.getByRole("button", { name: trigger });
+  await waitFor(() => expect(button).toBeEnabled());
+  await user.click(button);
   await user.click(await screen.findByRole("combobox", { name: "Destination matter" }));
   await user.click(await screen.findByRole("option", { name: "Trec-JBush" }));
   await user.click(screen.getByRole("button", { name: "Start job" }));
