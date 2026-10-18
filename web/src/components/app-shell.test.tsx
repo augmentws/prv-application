@@ -104,7 +104,7 @@ describe("AppShell", () => {
 
     expect(screen.getAllByRole("navigation", { name: "Primary" }).length).toBeGreaterThan(0);
     expect(screen.queryByRole("navigation", { name: "Matter" })).not.toBeInTheDocument();
-    expect(screen.queryByRole("button", { name: "Workspace" })).not.toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: /Workspace menu/ })).not.toBeInTheDocument();
   });
 
   it("replaces workspace links with the matter menu inside a matter", async () => {
@@ -115,9 +115,11 @@ describe("AppShell", () => {
     expect(screen.getAllByRole("navigation", { name: "Matter" })[0]).toHaveTextContent("client-1/matter-1");
     expect(screen.queryByRole("navigation", { name: "Primary" })).not.toBeInTheDocument();
 
-    await user.click(screen.getAllByRole("button", { name: "Workspace" })[0]);
+    await user.click(screen.getAllByRole("button", { name: "Tenant One. Workspace menu" })[0]);
     expect(await screen.findByRole("menuitem", { name: "Clients" })).toHaveAttribute("href", "/app/clients");
     expect(screen.getByRole("menuitem", { name: "Documentation" })).toHaveAttribute("href", "/docs");
+    // The tenant card is the only way in; there is no separate Workspace button at the bottom.
+    expect(screen.queryByRole("button", { name: "Workspace" })).not.toBeInTheDocument();
   });
 
   it("replaces workspace links with the collection menu inside a collection", async () => {
@@ -129,7 +131,7 @@ describe("AppShell", () => {
     expect(screen.queryByRole("navigation", { name: "Matter" })).not.toBeInTheDocument();
     expect(screen.queryByRole("navigation", { name: "Primary" })).not.toBeInTheDocument();
 
-    await user.click(screen.getAllByRole("button", { name: "Workspace" })[0]);
+    await user.click(screen.getAllByRole("button", { name: "Tenant One. Workspace menu" })[0]);
     expect(await screen.findByRole("menuitem", { name: "Clients" })).toHaveAttribute("href", "/app/clients");
   });
 
