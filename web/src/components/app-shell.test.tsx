@@ -23,6 +23,10 @@ vi.mock("@/components/matter/matter-sidebar-nav", () => ({
   MatterSidebarNav: ({ clientId, matterId }: { clientId: string; matterId: string }) => <nav aria-label="Matter">{clientId}/{matterId}</nav>,
 }));
 
+vi.mock("@/components/collection/collection-sidebar-nav", () => ({
+  CollectionSidebarNav: ({ clientId, collectionId }: { clientId: string; collectionId: string }) => <nav aria-label="Collection">{clientId}/{collectionId}</nav>,
+}));
+
 vi.mock("@/components/workspace-context", () => ({
   WorkspaceProvider: ({ children }: { children: ReactNode }) => children,
   useWorkspace: () => ({
@@ -100,7 +104,7 @@ describe("AppShell", () => {
 
     expect(screen.getAllByRole("navigation", { name: "Primary" }).length).toBeGreaterThan(0);
     expect(screen.queryByRole("navigation", { name: "Matter" })).not.toBeInTheDocument();
-    expect(screen.queryByRole("button", { name: "Workspace" })).not.toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: /Workspace menu/ })).not.toBeInTheDocument();
   });
 
   it("replaces workspace links with the matter menu inside a matter", async () => {
@@ -111,8 +115,31 @@ describe("AppShell", () => {
     expect(screen.getAllByRole("navigation", { name: "Matter" })[0]).toHaveTextContent("client-1/matter-1");
     expect(screen.queryByRole("navigation", { name: "Primary" })).not.toBeInTheDocument();
 
-    await user.click(screen.getAllByRole("button", { name: "Workspace" })[0]);
+    await user.click(screen.getAllByRole("button", { name: "Tenant One. Workspace menu" })[0]);
     expect(await screen.findByRole("menuitem", { name: "Clients" })).toHaveAttribute("href", "/app/clients");
     expect(screen.getByRole("menuitem", { name: "Documentation" })).toHaveAttribute("href", "/docs");
+    // The tenant card is the only way in; there is no separate Workspace button at the bottom.
+    expect(screen.queryByRole("button", { name: "Workspace" })).not.toBeInTheDocument();
+  });
+
+  it("replaces workspace links with the collection menu inside a collection", async () => {
+    route.pathname = "/app/clients/client-1/collections/collection-1/file-dates";
+    const user = userEvent.setup();
+    renderShell();
+
+    expect(screen.getAllByRole("navigation", { name: "Collection" })[0]).toHaveTextContent("client-1/collection-1");
+    expect(screen.queryByRole("navigation", { name: "Matter" })).not.toBeInTheDocument();
+    expect(screen.queryByRole("navigation", { name: "Primary" })).not.toBeInTheDocument();
+
+    await user.click(screen.getAllByRole("button", { name: "Tenant One. Workspace menu" })[0]);
+    expect(await screen.findByRole("menuitem", { name: "Clients" })).toHaveAttribute("href", "/app/clients");
+  });
+
+  it("keeps workspace links on the client page", () => {
+    route.pathname = "/app/clients/client-1";
+    renderShell();
+
+    expect(screen.getAllByRole("navigation", { name: "Primary" }).length).toBeGreaterThan(0);
+    expect(screen.queryByRole("navigation", { name: "Collection" })).not.toBeInTheDocument();
   });
 });

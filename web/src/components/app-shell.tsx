@@ -23,6 +23,7 @@ import { usePathname, useRouter } from "next/navigation";
 import { useState, type ReactNode } from "react";
 
 import { BrandMark } from "@/components/brand-mark";
+import { CollectionSidebarNav } from "@/components/collection/collection-sidebar-nav";
 import { MatterSidebarNav } from "@/components/matter/matter-sidebar-nav";
 import { ThemeToggle } from "@/components/theme-toggle";
 import { Button } from "@/components/ui/button";
@@ -30,7 +31,7 @@ import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@
 import { WorkspaceProvider, useWorkspace } from "@/components/workspace-context";
 import { logout } from "@/lib/api-client";
 import { cn } from "@/lib/utils";
-import { parseMatterPath } from "@/lib/workspace-path";
+import { parseResourcePath } from "@/lib/workspace-path";
 
 const primaryLinks = [
   { href: "/app", label: "Overview", icon: LayoutDashboard, exact: true },
@@ -53,7 +54,7 @@ function Shell({ children }: { children: ReactNode }) {
   const { user, tenant, tenants, permissionKeys = [], selectedTenantId, setSelectedTenantId, tenantFromRoute } = useWorkspace();
   const [mobileOpen, setMobileOpen] = useState(false);
   const [collapsed, setCollapsed] = useState(false);
-  const matterPath = parseMatterPath(pathname);
+  const resourcePath = parseResourcePath(pathname);
 
   async function signOut() {
     await logout();
@@ -99,7 +100,43 @@ function Shell({ children }: { children: ReactNode }) {
       </div>
 
       <div className="border-b border-sidebar-border p-3">
-        {collapsed ? (
+        {resourcePath ? (
+          // Inside a matter or collection the tenant card opens the workspace links, one level above "← client".
+          <DropdownMenu.Root>
+            <DropdownMenu.Trigger asChild>
+              <button
+                type="button"
+                aria-label={`${tenant.name}. Workspace menu`}
+                title={collapsed ? `${tenant.name} · Workspace` : "Workspace"}
+                className={cn(
+                  "flex w-full items-center gap-2 rounded-lg border border-sidebar-border bg-card text-left outline-none transition hover:border-input focus-visible:ring-2 focus-visible:ring-ring",
+                  collapsed ? "size-10 justify-center p-0" : "px-3 py-2",
+                )}
+              >
+                {collapsed ? (
+                  <span className="font-bold text-primary">{tenant.name.slice(0, 1).toUpperCase()}</span>
+                ) : (
+                  <>
+                    <span className="min-w-0 flex-1">
+                      <span className="block truncate text-sm font-semibold">{tenant.name}</span>
+                      <span className="block truncate text-xs text-muted-foreground">{tenant.slug}</span>
+                    </span>
+                    <LayoutGrid className="size-4 shrink-0 text-muted-foreground" aria-hidden="true" />
+                  </>
+                )}
+              </button>
+            </DropdownMenu.Trigger>
+            <DropdownMenu.Portal>
+              <DropdownMenu.Content side="bottom" align="start" className="z-50 mt-1 min-w-52 rounded-lg border bg-popover p-1 text-popover-foreground shadow-xl">
+                {navigation.map(({ href, label, icon: Icon }) => (
+                  <DropdownMenu.Item key={href} asChild className="flex cursor-default items-center gap-2 rounded-md px-3 py-2 text-sm outline-none focus:bg-muted">
+                    <Link href={href} onClick={() => setMobileOpen(false)}><Icon className="size-4" aria-hidden="true" />{label}</Link>
+                  </DropdownMenu.Item>
+                ))}
+              </DropdownMenu.Content>
+            </DropdownMenu.Portal>
+          </DropdownMenu.Root>
+        ) : collapsed ? (
           <div className="grid size-10 place-items-center rounded-lg bg-primary/10 font-bold text-primary" title={tenant.name}>
             {tenant.name.slice(0, 1).toUpperCase()}
           </div>
@@ -121,8 +158,10 @@ function Shell({ children }: { children: ReactNode }) {
         )}
       </div>
 
-      {matterPath ? (
-        <MatterSidebarNav clientId={matterPath.clientId} matterId={matterPath.matterId} collapsed={collapsed} onNavigate={() => setMobileOpen(false)} />
+      {resourcePath?.kind === "matter" ? (
+        <MatterSidebarNav clientId={resourcePath.clientId} matterId={resourcePath.matterId} collapsed={collapsed} onNavigate={() => setMobileOpen(false)} />
+      ) : resourcePath?.kind === "collection" ? (
+        <CollectionSidebarNav clientId={resourcePath.clientId} collectionId={resourcePath.collectionId} collapsed={collapsed} onNavigate={() => setMobileOpen(false)} />
       ) : (
         <nav aria-label="Primary" className="flex-1 space-y-1 overflow-y-auto p-3">
           {navigation.map(({ href, label, icon: Icon, exact }) => {
@@ -148,26 +187,7 @@ function Shell({ children }: { children: ReactNode }) {
         </nav>
       )}
 
-      <div className={cn("border-t border-sidebar-border p-3", matterPath && "space-y-1")}>
-        {matterPath ? (
-          <DropdownMenu.Root>
-            <DropdownMenu.Trigger asChild>
-              <button title={collapsed ? "Workspace" : undefined} className={cn("flex h-9 w-full items-center gap-3 rounded-lg px-3 text-left text-sm font-medium outline-none hover:bg-card focus-visible:ring-2 focus-visible:ring-ring", collapsed && "justify-center px-0")}>
-                <LayoutGrid className="size-[1.05rem] shrink-0" aria-hidden="true" />
-                {!collapsed ? <span className="flex-1">Workspace</span> : <span className="sr-only">Workspace</span>}
-              </button>
-            </DropdownMenu.Trigger>
-            <DropdownMenu.Portal>
-              <DropdownMenu.Content side="top" align="start" className="z-50 mb-2 min-w-52 rounded-lg border bg-popover p-1 text-popover-foreground shadow-xl">
-                {navigation.map(({ href, label, icon: Icon }) => (
-                  <DropdownMenu.Item key={href} asChild className="flex cursor-default items-center gap-2 rounded-md px-3 py-2 text-sm outline-none focus:bg-muted">
-                    <Link href={href} onClick={() => setMobileOpen(false)}><Icon className="size-4" aria-hidden="true" />{label}</Link>
-                  </DropdownMenu.Item>
-                ))}
-              </DropdownMenu.Content>
-            </DropdownMenu.Portal>
-          </DropdownMenu.Root>
-        ) : null}
+      <div className="border-t border-sidebar-border p-3">
         <DropdownMenu.Root>
           <DropdownMenu.Trigger asChild>
             <button className={cn("flex w-full items-center gap-3 rounded-lg p-2 text-left outline-none hover:bg-card focus-visible:ring-2 focus-visible:ring-ring", collapsed && "justify-center")}>

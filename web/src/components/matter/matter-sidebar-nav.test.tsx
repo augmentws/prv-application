@@ -45,7 +45,8 @@ describe("MatterSidebarNav", () => {
     expect(await screen.findByRole("link", { name: "Facts" })).toHaveAttribute("href", `${base}/facts`);
     expect(screen.getByRole("link", { name: "TREC" })).toHaveAttribute("href", "/app/clients/client-1");
     expect(screen.getByRole("link", { name: "Search and review" })).toHaveAttribute("href", "/review/matters/matter-1");
-    expect(within(screen.getByRole("group", { name: "Setup" })).getAllByRole("link").map((link) => link.textContent)).toEqual(["Matter definition", "Metadata fields", "Search index", "Token usage"]);
+    expect(within(screen.getByRole("group", { name: "Setup" })).getAllByRole("link").map((link) => link.textContent)).toEqual(["Metadata fields", "Search index", "Token usage"]);
+    expect(within(screen.getByRole("group", { name: "Agents and models" })).getAllByRole("link").map((link) => link.textContent)).toEqual(["Matter definition", "Analysis tasks", "Classifiers", "Jobs"]);
     expect(screen.getByRole("link", { name: "Overview" })).toHaveAttribute("aria-current", "page");
   });
 
