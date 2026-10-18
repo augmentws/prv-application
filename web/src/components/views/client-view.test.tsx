@@ -41,7 +41,7 @@ function renderView() {
 }
 
 describe("ClientView collections", () => {
-  it("lets a client administrator delete a collection from the trash can at the left of its row", async () => {
+  it("lets a client administrator delete a collection from the trash can at the right of its row", async () => {
     mockApi(["collection.view", "client.configure"]);
     const user = userEvent.setup();
     renderView();
@@ -49,11 +49,19 @@ describe("ClientView collections", () => {
     const row = (await screen.findByRole("link", { name: "Enron mailboxes" })).closest("tr")!;
     const trash = within(row).getByRole("button", { name: "Delete Collection Enron mailboxes" });
     expect(trash).toHaveAttribute("title", "Delete Collection");
-    expect(within(row).getAllByRole("cell")[0]).toContainElement(trash);
+    expect(within(row).getAllByRole("cell").at(-1)).toContainElement(trash);
 
     await user.click(trash);
-    await user.type(await screen.findByLabelText(/to confirm/), "Enron mailboxes");
-    await user.click(screen.getByRole("button", { name: "Delete permanently" }));
+    const dialog = await screen.findByRole("dialog", { name: "Delete Enron mailboxes?" });
+    const confirm = within(dialog).getByRole("button", { name: "Delete permanently" });
+    // Nothing can be deleted until the exact collection name is typed.
+    expect(confirm).toBeDisabled();
+    await user.type(within(dialog).getByLabelText(/to confirm/), "Enron mailbox");
+    expect(confirm).toBeDisabled();
+    expect(coreApi).not.toHaveBeenCalledWith("/v1/collections/collection-1", { method: "DELETE" });
+    await user.type(within(dialog).getByLabelText(/to confirm/), "es");
+    expect(confirm).toBeEnabled();
+    await user.click(confirm);
 
     await waitFor(() => expect(coreApi).toHaveBeenCalledWith("/v1/collections/collection-1", { method: "DELETE" }));
   });

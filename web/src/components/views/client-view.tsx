@@ -79,14 +79,6 @@ export function ClientView({ clientId }: { clientId: string }) {
     { id: "open", header: "", cell: ({ row }) => <Button asChild variant="ghost" size="sm"><MatterDestinationLink clientId={clientId} matter={row.original}>Open <ArrowRight /></MatterDestinationLink></Button> },
   ], [clientId]);
   const collectionColumns = useMemo<ColumnDef<CollectionRead>[]>(() => [
-    ...(canConfigureClient ? [{
-      id: "delete",
-      header: () => <span className="sr-only">Delete</span>,
-      size: 52,
-      enableResizing: false,
-      // A collection already being deleted shows its Deleting status instead.
-      cell: ({ row }) => row.original.status === "DELETING" ? null : <DeleteCollectionDialog collectionName={row.original.name} onDelete={() => deleteCollection(row.original.id)} />,
-    } satisfies ColumnDef<CollectionRead>] : []),
     {
       accessorKey: "name",
       header: "Collection",
@@ -100,6 +92,14 @@ export function ClientView({ clientId }: { clientId: string }) {
     { accessorKey: "status", header: "Status", cell: ({ row }) => <StatusBadge status={row.original.status} /> },
     { accessorKey: "created_at", header: "Created", cell: ({ row }) => <span className="text-muted-foreground">{formatDate(row.original.created_at)}</span> },
     { id: "open", header: "", cell: ({ row }) => <Button asChild variant="ghost" size="sm"><Link href={collectionHref(clientId, row.original.id)}>Open <ArrowRight /></Link></Button> },
+    ...(canConfigureClient ? [{
+      id: "delete",
+      header: () => <span className="sr-only">Delete</span>,
+      size: 52,
+      enableResizing: false,
+      // A collection already being deleted shows its Deleting status instead.
+      cell: ({ row }) => row.original.status === "DELETING" ? null : <DeleteCollectionDialog collectionName={row.original.name} onDelete={() => deleteCollection(row.original.id)} />,
+    } satisfies ColumnDef<CollectionRead>] : []),
   ], [canConfigureClient, clientId, deleteCollection]);
 
   if (client.isPending) return <TableLoading />;
