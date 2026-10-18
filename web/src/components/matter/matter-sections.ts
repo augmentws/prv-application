@@ -1,21 +1,12 @@
-import { Activity, BrainCircuit, Coins, Database, FileSearch, FileText, Layers, LayoutDashboard, ListTree, Sparkles, Tags, UsersRound, type LucideIcon } from "lucide-react";
+import { Activity, BrainCircuit, Coins, Database, FileSearch, FileText, Layers, LayoutDashboard, ListTree, Sparkles, Tags, UsersRound } from "lucide-react";
 
+import { type NavGroup, type NavItem, visibleNav } from "@/components/resource-nav/types";
 import { type MatterSection, matterHref, matterJobsHref, searchAndReviewHref } from "@/lib/matter-routes";
 
-export interface MatterNavItem {
-  label: string;
-  icon: LucideIcon;
-  /** A matter section route, or "search-and-review" for the separate review workspace. */
-  target: MatterSection | "search-and-review";
-  /** Matter permission needed to see the item. */
-  permission?: string;
-}
-
-export interface MatterNavGroup {
-  /** Groups without a label sit at the top of the menu. */
-  label?: string;
-  items: MatterNavItem[];
-}
+/** A matter section route, or "search-and-review" for the separate review workspace. */
+export type MatterNavTarget = MatterSection | "search-and-review";
+export type MatterNavItem = NavItem<MatterNavTarget>;
+export type MatterNavGroup = NavGroup<MatterNavTarget>;
 
 /** The matter menu, grouped by the work being done. Shared by the sidebar and the review workspace. */
 export const MATTER_NAV: MatterNavGroup[] = [
@@ -75,9 +66,7 @@ export function matterSectionLabel(section: MatterSection): string {
 
 /** The menu groups and items this user may see; groups left empty are dropped. UI visibility only. */
 export function visibleMatterNav(permissionKeys: ReadonlySet<string>): MatterNavGroup[] {
-  return MATTER_NAV
-    .map((group) => ({ ...group, items: group.items.filter((item) => !item.permission || permissionKeys.has(item.permission)) }))
-    .filter((group) => group.items.length);
+  return visibleNav(MATTER_NAV, permissionKeys);
 }
 
 export function matterNavHref(clientId: string, matterId: string, target: MatterNavItem["target"]) {
