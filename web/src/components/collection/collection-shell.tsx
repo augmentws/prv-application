@@ -44,11 +44,11 @@ function CollectionFrame({ children }: { children: ReactNode }) {
               </>}
         </>}
         title={collection.name}
+        leading={<>
+          <HelpLink topic={section === "processing" ? "documentCleaner" : "collections"} />
+          <StatusBadge status={collection.status} />
+        </>}
       />
-      <div className="-mt-2 mb-4 flex flex-wrap items-center justify-end gap-2">
-        <HelpLink topic={section === "processing" ? "documentCleaner" : "collections"} />
-        <StatusBadge status={collection.status} />
-      </div>
       {children}
     </>
   );

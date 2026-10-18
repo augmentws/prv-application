@@ -9,6 +9,7 @@ import { HelpLink } from "@/components/help-link";
 import { MatterProvider, useMatter } from "@/components/matter/matter-context";
 import { matterSectionLabel } from "@/components/matter/matter-sections";
 import { ResourcePageHeader } from "@/components/resource-page-header";
+import { StatusBadge } from "@/components/status-badge";
 import type { HelpTopic } from "@/lib/help-topics";
 import { isMatterSectionPage, type MatterSection, matterHref, matterSectionFromPath } from "@/lib/matter-routes";
 
@@ -59,10 +60,11 @@ function MatterFrame({ children }: { children: ReactNode }) {
                 </>}
           </>}
           title={matter.name}
+          leading={<>
+            <HelpLink topic={SECTION_HELP[section] ?? "metadata"} />
+            <StatusBadge status={matter.status} />
+          </>}
         />
-        <div className="-mt-2 mb-4 flex justify-end">
-          <HelpLink topic={SECTION_HELP[section] ?? "metadata"} />
-        </div>
       </div>
       <div className={definition ? "matter-definition-page-content" : undefined}>{children}</div>
     </div>

@@ -20,6 +20,24 @@ describe("ResourcePageHeader", () => {
     expect(within(header).queryByRole("button")).not.toBeInTheDocument();
   });
 
+  it("places leading content immediately left of the title", () => {
+    render(
+      <ResourcePageHeader
+        breadcrumbs={<><a href="/clients">Clients</a><span>Example</span></>}
+        title="Example resource"
+        leading={<><button type="button">Help</button><span>open</span></>}
+      />,
+    );
+
+    const header = screen.getByRole("banner", { name: "Example resource header" });
+    const heading = within(header).getByRole("heading", { name: "Example resource" });
+    const help = within(header).getByRole("button", { name: "Help" });
+    // Same row as the title, and before it.
+    expect(heading.parentElement).toContainElement(help);
+    expect(help.compareDocumentPosition(heading) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+    expect(within(header).getByText("open").compareDocumentPosition(heading) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+  });
+
   it("replaces the visible title with an action when provided", () => {
     render(
       <ResourcePageHeader

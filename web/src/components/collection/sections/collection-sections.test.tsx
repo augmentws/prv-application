@@ -164,6 +164,9 @@ describe("CollectionShell", () => {
     const breadcrumb = await screen.findByRole("navigation", { name: "Breadcrumb" });
     expect(within(breadcrumb).getByRole("link", { name: "Enron mailboxes" })).toHaveAttribute("href", base);
     expect(within(breadcrumb).getByText("Custodians")).toHaveAttribute("aria-current", "page");
+    // Help and status sit just left of the collection name.
+    const heading = screen.getByRole("heading", { name: "Enron mailboxes" });
+    expect(heading.parentElement).toContainElement(screen.getByRole("link", { name: "Collections help" }));
     // Collections are deleted from the client page, not here.
     expect(screen.queryByRole("button", { name: /Delete Collection/ })).not.toBeInTheDocument();
   });
