@@ -31,6 +31,7 @@ import type {
 } from "@/generated/models";
 import { coreApi } from "@/lib/api-client";
 import { formatDate } from "@/lib/format";
+import { matterHref } from "@/lib/matter-routes";
 
 function shortId(value: string) {
   return value.slice(0, 8);
@@ -332,7 +333,7 @@ export function ClassificationModelDetail({
   return (
     <div className="space-y-6">
       <div>
-        <Button asChild variant="ghost" size="sm" className="-ml-3 mb-2"><Link href={`/app/clients/${clientId}/matters/${matterId}?tab=classification`}><ArrowLeft />Classification</Link></Button>
+        <Button asChild variant="ghost" size="sm" className="-ml-3 mb-2"><Link href={matterHref(clientId, matterId, "classification")}><ArrowLeft />Classification</Link></Button>
         <div className="flex flex-wrap items-start justify-between gap-3">
           <div><h1 className="flex items-center gap-2 text-2xl font-semibold"><BrainCircuit className="size-6" />{model.data.name}</h1><p className="mt-1 text-sm text-muted-foreground">Predicts {model.data.target_field.display_name} · {model.data.current_configuration?.classification_strategy.toLowerCase().replaceAll("_", " ")}{model.data.target_field.hierarchy_separator && model.data.current_configuration ? ` · ${model.data.current_configuration.hierarchy_level ? `hierarchy level ${model.data.current_configuration.hierarchy_level}` : "full hierarchy path"}` : ""}</p></div>
           <Badge variant={model.data.status === "ACTIVE" && model.data.active_model_version_id ? "accent" : "outline"}>

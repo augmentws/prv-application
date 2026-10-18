@@ -27,6 +27,7 @@ import { coreApi } from "@/lib/api-client";
 import { formatDateOnly, utcDayEnd, utcDayStart } from "@/lib/date-only";
 import { formatBytes, formatDate } from "@/lib/format";
 import { toast } from "sonner";
+import { matterJobsHref } from "@/lib/matter-routes";
 
 const PAGE_SIZE = 50;
 const COLLECTION_FACET_KEYS = ["custodians", "file_extensions", "record_types", "processing_statuses"] as const;
@@ -376,7 +377,7 @@ export function CollectionView({ clientId, collectionId }: { clientId: string; c
       method: "POST",
       body: JSON.stringify(payload),
     });
-    router.push(`/app/clients/${clientId}/matters/${matterId}?tab=jobs&job=${job.id}`);
+    router.push(matterJobsHref(clientId, matterId, "DOCUMENT_IMPORTS", { job: job.id }));
   }
 
   if (client.isPending || collection.isPending) return <TableLoading />;

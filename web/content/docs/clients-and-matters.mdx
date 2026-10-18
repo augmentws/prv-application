@@ -31,15 +31,34 @@ To create a matter:
 
 The person who creates a matter receives matter-level **ADMIN** membership. Priv-View also creates the 26-field versioned **edrm-core** metadata profile and its seven standard groups in the same operation, including mandatory custodian and family fields, canonical File date, derived Email Domain, and default review-coding fields.
 
-The matter **Overview** shows the current document count and the number of distinct custodians represented by those documents. These values come from the Core database and update as document-import jobs finish; they do not require the planned search index.
+A matter opens on its **Overview**, which shows the current document count and the number of distinct custodians represented by those documents. These values come from the Core database and update as document-import jobs finish; they do not require the planned search index.
 
-The **Search index** tab shows whether the matter's rebuildable search projection is ready, building, behind, needs confirmation, or failed. It compares indexed documents with the authoritative Core count, records operation history, asks before a schema change requires a full reindex, and lets a matter administrator request a full rebuild directly.
+**Search index** shows whether the matter's rebuildable search projection is ready, building, behind, needs confirmation, or failed. It compares indexed documents with the authoritative Core count, records operation history, asks before a schema change requires a full reindex, and lets a matter administrator request a full rebuild directly.
 
 When reusable templates are available, the **Configuration** choice in the creation dialog can use one instead of the standard profile. See [Matter templates and cloning](/docs/matter-templates).
 
+## Moving around a matter
+
+When you open a matter, the sidebar shows that matter's menu instead of the workspace links. The menu groups the matter's sections by the work they support:
+
+| Group | Sections |
+| --- | --- |
+| (top) | Overview |
+| Review | Search and review, Batches |
+| Findings | Facts, Entities (shown when you can view them) |
+| Agents and models | Analysis tasks, Classifiers, Jobs |
+| Setup | Matter definition, Metadata fields, Search index, Token usage |
+
+- Select the client name at the top of the menu to return to the client.
+- Select the matter name to switch to another matter of the same client. You stay in the same section; from a single fact, entity, or other record you land on that section's list.
+- Select **Workspace** at the bottom of the sidebar for Overview, Clients, Documentation, and the administration pages.
+- Each section has its own address, so the browser's Back button returns to the section you were on, and you can bookmark or share a section. Older links that selected a tab with `?tab=` still open the right section.
+- Inside a client or matter, the sidebar shows the tenant that owns that client, and the tenant switcher is hidden. Root administrators switch tenants from Clients and the other workspace pages.
+- Search & Review and batch review use the whole screen, so the sidebar is not shown. Select the matter name in the upper-left corner of those pages to open the same matter menu.
+
 ## Matter jobs
 
-The **Jobs** tab records background work for a matter. Adding collection documents redirects there so you can follow the matched, processed, added, and already-present counts. You can also generate document embeddings and run topic clustering in automatic or fixed-count mode. Topic jobs publish named, facetable values into the matter's `topics` metadata field. See [Matter jobs](/docs/matter-jobs).
+**Jobs** records background work for a matter. Adding collection documents redirects there so you can follow the matched, processed, added, and already-present counts. You can also generate document embeddings and run topic clustering in automatic or fixed-count mode. Topic jobs publish named, facetable values into the matter's `topics` metadata field. See [Matter jobs](/docs/matter-jobs).
 
 ## Current scope
 

@@ -215,7 +215,7 @@ describe("FactTaskWorkspace", () => {
     expect(await screen.findByText("4 facts proposed")).toBeInTheDocument();
     expect(screen.getByText("3 entities to review")).toBeInTheDocument();
     expect(screen.getByText("Outcomes for run-1")).toBeInTheDocument();
-    expect(screen.getByRole("link", { name: "Review working facts" })).toHaveAttribute("href", "/app/clients/client-1/matters/matter-1?tab=facts&ff_status=WORKING");
+    expect(screen.getByRole("link", { name: "Review working facts" })).toHaveAttribute("href", "/app/clients/client-1/matters/matter-1/facts?ff_status=WORKING");
     expect(screen.getByText("Worker lost")).toBeInTheDocument();
     await user.click(screen.getByRole("button", { name: "Resume" }));
     await waitFor(() => expect(vi.mocked(coreApi).mock.calls.some(([path]) => path === "/v1/jobs/FACT_DEVELOPMENT_ANALYSIS_TASK/run-failed/retry")).toBe(true));

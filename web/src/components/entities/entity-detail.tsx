@@ -31,6 +31,7 @@ import type {
 } from "@/generated/models";
 import { ApiError, coreApi } from "@/lib/api-client";
 import { entityDetailHref, entityFactsHref, factDetailHref, formatFactDate } from "@/lib/facts";
+import { matterHref } from "@/lib/matter-routes";
 
 const ENTITY_FACT_PREVIEW = 20;
 
@@ -101,7 +102,7 @@ export function EntityDetail({ clientId, matterId, entityId }: { clientId: strin
   const current = entity.data;
   const variants = current.variants ?? [];
   const lock = { lock_version: current.lock_version };
-  const entitiesHref = `/app/clients/${clientId}/matters/${matterId}?tab=entities${current.status === "PROPOSED" ? "&entities=proposed" : ""}`;
+  const entitiesHref = matterHref(clientId, matterId, current.status === "PROPOSED" ? "entities-proposed" : "entities");
   const organization = current.organization_id ? organizationNames.get(current.organization_id) : undefined;
   const custodian = current.custodian_id ? custodians.data?.find((item) => item.id === current.custodian_id) : undefined;
 

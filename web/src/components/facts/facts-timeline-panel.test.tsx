@@ -7,11 +7,11 @@ import { FactsTimelinePanel } from "@/components/facts/facts-timeline-panel";
 import { coreApi } from "@/lib/api-client";
 
 const replace = vi.fn();
-let currentParams = new URLSearchParams("tab=facts&facts=timeline");
+let currentParams = new URLSearchParams();
 
 vi.mock("next/navigation", () => ({
   useRouter: () => ({ replace }),
-  usePathname: () => "/app/clients/client-1/matters/matter-1",
+  usePathname: () => "/app/clients/client-1/matters/matter-1/facts/timeline",
   useSearchParams: () => currentParams,
 }));
 vi.mock("@/lib/api-client", async (importOriginal) => {
@@ -71,7 +71,7 @@ function searchBodies() {
 }
 
 beforeEach(() => {
-  currentParams = new URLSearchParams("tab=facts&facts=timeline");
+  currentParams = new URLSearchParams();
   searchTotal = 3;
   vi.mocked(coreApi).mockImplementation(async (path, init) => {
     if (path === "/v1/matters/matter-1/facts/issue-catalog") return [{ matter_analysis_task_id: "task-1", task_name: "Facts", issue_key: "pricing", name: "Pricing decisions", description: null }] as never;
@@ -115,13 +115,13 @@ describe("FactsTimelinePanel", () => {
     renderPanel();
     await screen.findByRole("region", { name: "2021" });
     await user.click(screen.getByRole("checkbox", { name: "Include unconfirmed" }));
-    expect(replace).toHaveBeenLastCalledWith("/app/clients/client-1/matters/matter-1?tab=facts&facts=timeline&fworking=1", { scroll: false });
+    expect(replace).toHaveBeenLastCalledWith("/app/clients/client-1/matters/matter-1/facts/timeline?fworking=1", { scroll: false });
     await user.click(screen.getByRole("button", { name: "2 facts buckets" }));
-    expect(replace).toHaveBeenLastCalledWith("/app/clients/client-1/matters/matter-1?tab=facts&facts=timeline&ffrom=2021-01-01&fto=2021-12-31", { scroll: false });
+    expect(replace).toHaveBeenLastCalledWith("/app/clients/client-1/matters/matter-1/facts/timeline?ffrom=2021-01-01&fto=2021-12-31", { scroll: false });
   });
 
   it("asks for confirmed and working facts when unconfirmed facts are included", async () => {
-    currentParams = new URLSearchParams("tab=facts&facts=timeline&fworking=1&ff_status=REJECTED");
+    currentParams = new URLSearchParams("fworking=1&ff_status=REJECTED");
     renderPanel();
     await screen.findByRole("region", { name: "2021" });
     expect(searchBodies()[0].filters).toEqual({ statuses: ["CONFIRMED", "WORKING"] });

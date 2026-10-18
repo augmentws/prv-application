@@ -37,6 +37,7 @@ import type {
 import { ApiError, coreApi } from "@/lib/api-client";
 import { formatDate } from "@/lib/format";
 import { FACT_PRECISION_LABELS, factDetailHref, formatFactDate } from "@/lib/facts";
+import { matterHref } from "@/lib/matter-routes";
 
 const PRECISIONS = ["DAY", "MONTH", "QUARTER", "YEAR", "RANGE", "UNKNOWN"] as const;
 const BASES = ["STATED_IN_TEXT", "DOCUMENT_DATE", "INFERRED"] as const;
@@ -186,7 +187,7 @@ export function FactDetail({ clientId, matterId, factId }: { clientId: string; m
   const pending = (suggestions.data ?? []).filter((item) => item.status === "PENDING");
   const activeEvidence = current.evidence.filter((item) => item.status === "ACTIVE");
   const removedEvidence = current.evidence.filter((item) => item.status === "REMOVED");
-  const factsHref = `/app/clients/${clientId}/matters/${matterId}?tab=facts`;
+  const factsHref = matterHref(clientId, matterId, "facts");
 
   return (
     <div className="space-y-5">

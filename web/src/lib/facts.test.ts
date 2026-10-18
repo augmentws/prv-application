@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 
-import { factFilters, factsTabParams, formatFactDate, groupTimeline, hasFactFilters, readFactListState, timelineFilters, writeFactListState } from "@/lib/facts";
+import { entityFactsHref, factFilters, factsFilterParams, formatFactDate, groupTimeline, hasFactFilters, readFactListState, timelineFilters, writeFactListState } from "@/lib/facts";
 
 describe("fact list URL state", () => {
   it("round-trips search, facets, dates, pending, sort and page while keeping other params", () => {
@@ -83,10 +83,12 @@ describe("timeline", () => {
   });
 
   it("switches sub-tabs keeping filters but not the page", () => {
-    const params = new URLSearchParams("tab=facts&ff_issue_key=pricing&fpage=3");
-    const timeline = factsTabParams(params, "timeline");
-    expect(timeline.toString()).toBe("tab=facts&ff_issue_key=pricing&facts=timeline");
-    expect(factsTabParams(timeline, "list").toString()).toBe("tab=facts&ff_issue_key=pricing");
+    const params = new URLSearchParams("ff_issue_key=pricing&fpage=3");
+    expect(factsFilterParams(params).toString()).toBe("ff_issue_key=pricing");
+  });
+
+  it("links an entity to the Facts list filtered to that entity", () => {
+    expect(entityFactsHref("client-1", "matter-1", "entity-1")).toBe("/app/clients/client-1/matters/matter-1/facts?fentity=entity-1");
   });
 
   it("groups date-ordered facts by year and by each fact's precision, with undated facts apart", () => {

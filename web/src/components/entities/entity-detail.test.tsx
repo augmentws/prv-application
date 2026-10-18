@@ -83,7 +83,7 @@ describe("EntityDetail", () => {
     expect(await screen.findByText("Smith, Jane")).toBeInTheDocument();
     expect(screen.getByText("jsmith@gmail.com")).toBeInTheDocument();
     expect(await screen.findByRole("link", { name: "Jane approved prices." })).toHaveAttribute("href", "/app/clients/client-1/matters/matter-1/facts/fact-1");
-    expect(screen.getByRole("link", { name: "View all 2 in Facts" })).toHaveAttribute("href", "/app/clients/client-1/matters/matter-1?tab=facts&fentity=entity-1");
+    expect(screen.getByRole("link", { name: "View all 2 in Facts" })).toHaveAttribute("href", "/app/clients/client-1/matters/matter-1/facts?fentity=entity-1");
     expect(bodyOf("/v1/matters/matter-1/facts/search").filters).toEqual({ entity_id: "entity-1" });
   });
 

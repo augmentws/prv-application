@@ -7,11 +7,11 @@ import { EntitiesPanel, type EntitiesTab } from "@/components/entities/entities-
 import { coreApi } from "@/lib/api-client";
 
 const replace = vi.fn();
-let currentParams = new URLSearchParams("tab=entities");
+let currentParams = new URLSearchParams();
 
 vi.mock("next/navigation", () => ({
   useRouter: () => ({ replace }),
-  usePathname: () => "/app/clients/client-1/matters/matter-1",
+  usePathname: () => "/app/clients/client-1/matters/matter-1/entities",
   useSearchParams: () => currentParams,
 }));
 vi.mock("@/lib/api-client", async (importOriginal) => {
@@ -53,7 +53,7 @@ function renderPanel(tab: EntitiesTab, canManage = true) {
 }
 
 beforeEach(() => {
-  currentParams = new URLSearchParams("tab=entities");
+  currentParams = new URLSearchParams();
   vi.mocked(coreApi).mockImplementation(async (path) => {
     if (path.includes("entity_type=ORGANIZATION&limit=500")) return { items: [entity({ id: "org-1", entity_type: "ORGANIZATION", display_name: "Acme Corp", variants: [] })], total: 1 } as never;
     if (path.startsWith("/v1/matters/matter-1/entities?")) return { items: [entity()], total: 1 } as never;
@@ -88,7 +88,7 @@ describe("EntitiesPanel", () => {
     await screen.findByRole("link", { name: "Jane Smith" });
     await user.type(screen.getByRole("textbox", { name: "Search entities" }), "smith");
     await user.click(screen.getByRole("button", { name: "Search" }));
-    expect(replace).toHaveBeenCalledWith("/app/clients/client-1/matters/matter-1?tab=entities&eq=smith", { scroll: false });
+    expect(replace).toHaveBeenCalledWith("/app/clients/client-1/matters/matter-1/entities?eq=smith", { scroll: false });
   });
 
   it("reviews proposed entities, warning before a rejection removes them from facts", async () => {
