@@ -16,6 +16,7 @@ import { StatusBadge } from "@/components/status-badge";
 import { Button } from "@/components/ui/button";
 import type { ClientRead, CollectionRead, EffectivePermissionsRead, MatterRead, MatterTemplateRead, TenantRead } from "@/generated/models";
 import { coreApi } from "@/lib/api-client";
+import { collectionHref } from "@/lib/collection-routes";
 import { formatDate } from "@/lib/format";
 
 export function ClientView({ clientId }: { clientId: string }) {
@@ -73,14 +74,14 @@ export function ClientView({ clientId }: { clientId: string }) {
       header: "Collection",
       cell: ({ row }) => (
         <div>
-          <Link className="font-semibold text-primary hover:underline" href={`/app/clients/${clientId}/collections/${row.original.id}`}>{row.original.name}</Link>
+          <Link className="font-semibold text-primary hover:underline" href={collectionHref(clientId, row.original.id)}>{row.original.name}</Link>
           {row.original.description ? <p className="mt-0.5 max-w-xl truncate text-xs text-muted-foreground">{row.original.description}</p> : null}
         </div>
       ),
     },
     { accessorKey: "status", header: "Status", cell: ({ row }) => <StatusBadge status={row.original.status} /> },
     { accessorKey: "created_at", header: "Created", cell: ({ row }) => <span className="text-muted-foreground">{formatDate(row.original.created_at)}</span> },
-    { id: "open", header: "", cell: ({ row }) => <Button asChild variant="ghost" size="sm"><Link href={`/app/clients/${clientId}/collections/${row.original.id}`}>Open <ArrowRight /></Link></Button> },
+    { id: "open", header: "", cell: ({ row }) => <Button asChild variant="ghost" size="sm"><Link href={collectionHref(clientId, row.original.id)}>Open <ArrowRight /></Link></Button> },
   ], [clientId]);
 
   if (client.isPending) return <TableLoading />;

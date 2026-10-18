@@ -23,6 +23,7 @@ import { usePathname, useRouter } from "next/navigation";
 import { useState, type ReactNode } from "react";
 
 import { BrandMark } from "@/components/brand-mark";
+import { CollectionSidebarNav } from "@/components/collection/collection-sidebar-nav";
 import { MatterSidebarNav } from "@/components/matter/matter-sidebar-nav";
 import { ThemeToggle } from "@/components/theme-toggle";
 import { Button } from "@/components/ui/button";
@@ -30,7 +31,7 @@ import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@
 import { WorkspaceProvider, useWorkspace } from "@/components/workspace-context";
 import { logout } from "@/lib/api-client";
 import { cn } from "@/lib/utils";
-import { parseMatterPath } from "@/lib/workspace-path";
+import { parseResourcePath } from "@/lib/workspace-path";
 
 const primaryLinks = [
   { href: "/app", label: "Overview", icon: LayoutDashboard, exact: true },
@@ -53,7 +54,7 @@ function Shell({ children }: { children: ReactNode }) {
   const { user, tenant, tenants, permissionKeys = [], selectedTenantId, setSelectedTenantId, tenantFromRoute } = useWorkspace();
   const [mobileOpen, setMobileOpen] = useState(false);
   const [collapsed, setCollapsed] = useState(false);
-  const matterPath = parseMatterPath(pathname);
+  const resourcePath = parseResourcePath(pathname);
 
   async function signOut() {
     await logout();
@@ -121,8 +122,10 @@ function Shell({ children }: { children: ReactNode }) {
         )}
       </div>
 
-      {matterPath ? (
-        <MatterSidebarNav clientId={matterPath.clientId} matterId={matterPath.matterId} collapsed={collapsed} onNavigate={() => setMobileOpen(false)} />
+      {resourcePath?.kind === "matter" ? (
+        <MatterSidebarNav clientId={resourcePath.clientId} matterId={resourcePath.matterId} collapsed={collapsed} onNavigate={() => setMobileOpen(false)} />
+      ) : resourcePath?.kind === "collection" ? (
+        <CollectionSidebarNav clientId={resourcePath.clientId} collectionId={resourcePath.collectionId} collapsed={collapsed} onNavigate={() => setMobileOpen(false)} />
       ) : (
         <nav aria-label="Primary" className="flex-1 space-y-1 overflow-y-auto p-3">
           {navigation.map(({ href, label, icon: Icon, exact }) => {
@@ -148,8 +151,8 @@ function Shell({ children }: { children: ReactNode }) {
         </nav>
       )}
 
-      <div className={cn("border-t border-sidebar-border p-3", matterPath && "space-y-1")}>
-        {matterPath ? (
+      <div className={cn("border-t border-sidebar-border p-3", resourcePath && "space-y-1")}>
+        {resourcePath ? (
           <DropdownMenu.Root>
             <DropdownMenu.Trigger asChild>
               <button title={collapsed ? "Workspace" : undefined} className={cn("flex h-9 w-full items-center gap-3 rounded-lg px-3 text-left text-sm font-medium outline-none hover:bg-card focus-visible:ring-2 focus-visible:ring-ring", collapsed && "justify-center px-0")}>

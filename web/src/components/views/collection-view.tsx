@@ -1,33 +1,30 @@
 "use client";
 
-import { useMutation, useQueries, useQuery, useQueryClient } from "@tanstack/react-query";
+import { useQueries, useQuery } from "@tanstack/react-query";
 import type { ColumnDef } from "@tanstack/react-table";
 import { ChevronLeft, ChevronRight, Search } from "lucide-react";
-import Link from "next/link";
-import { useRouter } from "next/navigation";
+import { useRouter, useSearchParams } from "next/navigation";
 import { useMemo, useState, type FormEvent } from "react";
 
 import { DataTable } from "@/components/data-table";
 import { DateHistogram, type DateHistogramInterval } from "@/components/date-histogram";
-import { ResourcePageHeader } from "@/components/resource-page-header";
+import { useCollection } from "@/components/collection/collection-context";
 import { CollectionProcessingPanel } from "@/components/collection-processing-panel";
 import { DocumentViewerDialog } from "@/components/document-viewer-dialog";
 import { ActiveFilterBar, DateRangeFacet, FacetSidebar, type ActiveFilter, type FacetGroup } from "@/components/faceted-filter";
 import { AddToMatterDialog } from "@/components/forms/add-to-matter-dialog";
-import { DeleteCollectionDialog } from "@/components/forms/delete-collection-dialog";
-import { HelpLink } from "@/components/help-link";
 import { QueryError, TableLoading } from "@/components/query-state";
 import { StatusBadge } from "@/components/status-badge";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Card } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
-import type { ClientRead, CollectionCustodianSummary, CollectionDateHistogramResponse, CollectionDeletionJobRead, CollectionItemRead, CollectionItemSearchResponse, CollectionRead, CustodianRead, FacetValue, MatterDocumentImportCreate, MatterDocumentImportRead, MatterRead } from "@/generated/models";
+import type { CollectionCustodianSummary, CollectionDateHistogramResponse, CollectionItemRead, CollectionItemSearchResponse, CustodianRead, FacetValue, MatterDocumentImportCreate, MatterDocumentImportRead, MatterRead } from "@/generated/models";
 import { coreApi } from "@/lib/api-client";
 import { formatDateOnly, utcDayEnd, utcDayStart } from "@/lib/date-only";
 import { formatBytes, formatDate } from "@/lib/format";
-import { toast } from "sonner";
 import { matterJobsHref } from "@/lib/matter-routes";
+import { type CollectionSection, collectionHref } from "@/lib/collection-routes";
 
 const PAGE_SIZE = 50;
 const COLLECTION_FACET_KEYS = ["custodians", "file_extensions", "record_types", "processing_statuses"] as const;
@@ -49,28 +46,26 @@ interface CollectionCustodianRow {
   itemCount: number;
 }
 
-export function CollectionView({ clientId, collectionId }: { clientId: string; collectionId: string }) {
+/**
+ * The collection's sections, rendered one per route inside CollectionShell, which draws the header,
+ * status and delete action. Phase 2 of the collection navigation plan moves the Documents filters
+ * into the URL; until then only the File dates drill-down passes `from`/`to` to Documents.
+ */
+export function CollectionView({ section }: { section: CollectionSection }) {
+  const { clientId, collectionId } = useCollection();
   const router = useRouter();
-  const queryClient = useQueryClient();
-  const [tab, setTab] = useState<"documents" | "custodians" | "date-histogram" | "processing">("documents");
+  const searchParams = useSearchParams();
+  const tab = section;
   const [histogramInterval, setHistogramInterval] = useState<DateHistogramInterval>("month");
   const [searchInput, setSearchInput] = useState("");
   const [search, setSearch] = useState("");
-  const [fileDateRange, setFileDateRange] = useState<FileDateRange>({ from: "", to: "" });
+  const [fileDateRange, setFileDateRange] = useState<FileDateRange>(() => ({ from: searchParams.get("from") ?? "", to: searchParams.get("to") ?? "" }));
   const [facetFilters, setFacetFilters] = useState<CollectionFacetFilters>(emptyFacetFilters);
   const [requestedFacets, setRequestedFacets] = useState<CollectionFacetKey[]>([]);
   const [offset, setOffset] = useState(0);
   const [selectedItem, setSelectedItem] = useState<CollectionItemRead | null>(null);
   const [selectedCustodianIds, setSelectedCustodianIds] = useState<string[]>([]);
 
-  const client = useQuery({
-    queryKey: ["client", clientId],
-    queryFn: () => coreApi<ClientRead>(`/v1/clients/${clientId}`),
-  });
-  const collection = useQuery({
-    queryKey: ["collection", collectionId],
-    queryFn: () => coreApi<CollectionRead>(`/v1/collections/${collectionId}`),
-  });
   const matters = useQuery({
     queryKey: ["matters", clientId],
     queryFn: () => coreApi<MatterRead[]>(`/v1/clients/${clientId}/matters`),
@@ -109,16 +104,8 @@ export function CollectionView({ clientId, collectionId }: { clientId: string; c
   const collectionDateHistogram = useQuery({
     queryKey: ["collection-date-histogram", collectionId, histogramInterval],
     queryFn: () => coreApi<CollectionDateHistogramResponse>(`/v1/collections/${collectionId}/date-histogram?interval=${histogramInterval}`),
-    enabled: tab === "date-histogram",
+    enabled: tab === "file-dates",
     placeholderData: (previous) => previous,
-  });
-  const deleteCollection = useMutation({
-    mutationFn: () => coreApi<CollectionDeletionJobRead>(`/v1/collections/${collectionId}`, { method: "DELETE" }),
-    onSuccess: (job) => {
-      void queryClient.invalidateQueries({ queryKey: ["collections"] });
-      toast.success(`Deletion of ${job.collection_name} was queued.`);
-      router.push(`/app/clients/${clientId}`);
-    },
   });
 
   const custodianNames = useMemo(
@@ -380,9 +367,6 @@ export function CollectionView({ clientId, collectionId }: { clientId: string; c
     router.push(matterJobsHref(clientId, matterId, "DOCUMENT_IMPORTS", { job: job.id }));
   }
 
-  if (client.isPending || collection.isPending) return <TableLoading />;
-  if (client.error || collection.error) return <QueryError message={client.error?.message ?? collection.error?.message} />;
-  if (collection.data.client_id !== clientId) return <QueryError message="This collection does not belong to the selected client." />;
 
   const hasFilters = Boolean(search || fileDateRange.from || fileDateRange.to) || Object.values(facetFilters).some((values) => values.length > 0);
   const pageStart = searchResults.data?.items.length ? offset + 1 : 0;
@@ -390,20 +374,9 @@ export function CollectionView({ clientId, collectionId }: { clientId: string; c
 
   return (
     <>
-      <ResourcePageHeader
-        breadcrumbs={<><Link href="/app/clients" className="hover:text-foreground">Clients</Link><ChevronRight className="size-4" /><Link href={`/app/clients/${clientId}`} className="hover:text-foreground">{client.data.name}</Link><ChevronRight className="size-4" /><span aria-current="page" className="text-foreground">{collection.data.name}</span></>}
-        title={collection.data.name}
-      />
-      <div className="mb-6 flex flex-wrap items-end justify-between gap-3 border-b">
-        <div className="flex min-w-0 flex-1 gap-1 overflow-x-auto" role="tablist" aria-label="Collection sections">
-          <button role="tab" aria-selected={tab === "documents"} onClick={() => setTab("documents")} className={tabClass(tab === "documents")}>Documents</button>
-          <button role="tab" aria-selected={tab === "custodians"} onClick={() => setTab("custodians")} className={tabClass(tab === "custodians")}>Custodians</button>
-          <button role="tab" aria-selected={tab === "date-histogram"} onClick={() => setTab("date-histogram")} className={tabClass(tab === "date-histogram")}>Date Histogram</button>
-          <button role="tab" aria-selected={tab === "processing"} onClick={() => setTab("processing")} className={tabClass(tab === "processing")}>Processing</button>
-        </div>
-        <div className="flex shrink-0 flex-wrap items-center gap-2 pb-2">
-          {tab === "documents" ? (
-            <AddToMatterDialog
+      {tab === "documents" ? (
+        <div className="mb-4 flex flex-wrap items-center justify-end gap-2">
+          <AddToMatterDialog
               matters={matters.data ?? []}
               triggerLabel="Add all matching"
               disabled={!searchResults.data?.total || matters.isPending}
@@ -424,12 +397,8 @@ export function CollectionView({ clientId, collectionId }: { clientId: string; c
                 selection_summary: hasFilters ? "Current collection search and filters" : "All collection documents",
               })}
             />
-          ) : null}
-          <HelpLink topic={tab === "processing" ? "documentCleaner" : "collections"} />
-          <StatusBadge status={collection.data.status} />
-          {collection.data.status !== "DELETING" ? <DeleteCollectionDialog collectionName={collection.data.name} onDelete={() => deleteCollection.mutateAsync().then(() => undefined)} /> : null}
         </div>
-      </div>
+      ) : null}
 
       {tab === "documents" ? (
         <>
@@ -500,7 +469,7 @@ export function CollectionView({ clientId, collectionId }: { clientId: string; c
           )}
           <DocumentViewerDialog item={selectedItem} onClose={() => setSelectedItem(null)} showUnmappedMetadata />
         </>
-      ) : tab === "date-histogram" ? (
+      ) : tab === "file-dates" ? (
         <Card className="p-5">
           <DateHistogram
             buckets={collectionDateHistogram.data?.buckets ?? []}
@@ -509,9 +478,10 @@ export function CollectionView({ clientId, collectionId }: { clientId: string; c
             loading={collectionDateHistogram.isPending}
             error={Boolean(collectionDateHistogram.error)}
             onSelect={(range) => {
-              setFileDateRange(range);
-              setOffset(0);
-              setTab("documents");
+              const params: Record<string, string> = {};
+              if (range.from) params.from = range.from;
+              if (range.to) params.to = range.to;
+              router.push(collectionHref(clientId, collectionId, "documents", params));
             }}
           />
           {collectionDateHistogram.data?.missing_count ? (
@@ -561,10 +531,6 @@ export function CollectionView({ clientId, collectionId }: { clientId: string; c
       )}
     </>
   );
-}
-
-function tabClass(active: boolean) {
-  return `relative px-4 py-3 text-sm font-semibold outline-none transition focus-visible:ring-2 focus-visible:ring-ring ${active ? "text-primary after:absolute after:inset-x-1 after:bottom-0 after:h-0.5 after:bg-accent" : "text-muted-foreground hover:text-foreground"}`;
 }
 
 function mapFacetOptions(values: FacetValue[] | undefined, label: (value: string) => string) {
