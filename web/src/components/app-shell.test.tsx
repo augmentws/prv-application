@@ -1,5 +1,5 @@
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
-import { cleanup, render, screen } from "@testing-library/react";
+import { cleanup, render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import type { ReactNode } from "react";
 import { afterEach, describe, expect, it, vi } from "vitest";
@@ -10,12 +10,15 @@ vi.mock("next/link", () => ({
   default: ({ children, ...props }: { children: ReactNode; href: string }) => <a {...props}>{children}</a>,
 }));
 
-const route = vi.hoisted(() => ({ pathname: "/app/clients" }));
+const route = vi.hoisted(() => ({ pathname: "/app/clients", replace: vi.fn(), refresh: vi.fn() }));
 
 vi.mock("next/navigation", () => ({
   usePathname: () => route.pathname,
-  useRouter: () => ({ replace: vi.fn(), refresh: vi.fn() }),
+  useRouter: () => ({ replace: route.replace, refresh: route.refresh }),
 }));
+
+const api = vi.hoisted(() => ({ logout: vi.fn(async () => undefined) }));
+vi.mock("@/lib/api-client", () => ({ logout: api.logout }));
 
 const workspace = vi.hoisted(() => ({ isSuperuser: false, tenantFromRoute: false }));
 
@@ -141,5 +144,25 @@ describe("AppShell", () => {
 
     expect(screen.getAllByRole("navigation", { name: "Primary" }).length).toBeGreaterThan(0);
     expect(screen.queryByRole("navigation", { name: "Collection" })).not.toBeInTheDocument();
+  });
+
+  it("puts the account menu at the top right of the header instead of the sidebar", async () => {
+    const user = userEvent.setup();
+    renderShell();
+
+    const header = screen.getByRole("banner");
+    const account = within(header).getByRole("button", { name: "Account: Test User" });
+    expect(header.lastElementChild).toBe(account);
+    for (const sidebar of screen.getAllByRole("complementary")) {
+      expect(within(sidebar).queryByText("test@example.com")).not.toBeInTheDocument();
+      expect(within(sidebar).queryByRole("button", { name: /Test User/ })).not.toBeInTheDocument();
+    }
+
+    await user.click(account);
+    expect(await screen.findByText("test@example.com")).toBeInTheDocument();
+    await user.click(screen.getByRole("menuitem", { name: "Sign out" }));
+
+    await waitFor(() => expect(api.logout).toHaveBeenCalledOnce());
+    expect(route.replace).toHaveBeenCalledWith("/login");
   });
 });
