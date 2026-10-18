@@ -24,13 +24,14 @@ vi.mock("next/link", () => ({
 const item = {
   id: "item-1",
   original_filename: "memo.pdf",
+  original_extension: ".pdf",
   source_item_id: "src-1",
   record_type: "FILE",
   email: null,
   original_source_path: "/share/memo.pdf",
   custodian_ids: ["cust-1"],
   file_date: "2001-01-05T00:00:00Z",
-  native_artifact: { byte_length: 2048 },
+  native_artifact: { byte_length: 2048, media_type: "application/pdf" },
   processing_status: "PROCESSED",
 };
 
@@ -77,8 +78,9 @@ describe("DocumentsSection", () => {
     navigation.params = new URLSearchParams("q=memo&ext=pdf&offset=50");
     renderInCollection(<DocumentsSection />);
 
-    expect(await screen.findByRole("button", { name: "memo.pdf" })).toBeInTheDocument();
-    expect(coreApi).toHaveBeenCalledWith("/v1/collections/collection-1/search?q=memo&extension=pdf&limit=50&offset=50");
+    // Rows re-render as facet and custodian data arrive, so check the request rather than hold on to a row element.
+    await waitFor(() => expect(coreApi).toHaveBeenCalledWith("/v1/collections/collection-1/search?q=memo&extension=pdf&limit=50&offset=50"));
+    expect(await screen.findByRole("button", { name: "memo.pdf" })).toHaveTextContent("memo.pdf");
     expect(screen.getByRole("textbox", { name: "Search collection" })).toHaveValue("memo");
   });
 
