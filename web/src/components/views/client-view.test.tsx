@@ -82,3 +82,23 @@ describe("ClientView collections", () => {
     expect(screen.queryByRole("button", { name: /Delete Collection/ })).not.toBeInTheDocument();
   });
 });
+
+describe("ClientView table columns", () => {
+  function columnWidths(table: HTMLElement) {
+    return within(table).getAllByRole("columnheader").map((header) => header.style.width);
+  }
+
+  it.each([
+    ["with the collection trash can", ["collection.view", "client.configure"]],
+    ["without it", ["collection.view"]],
+  ])("lines up the Collections and Matters columns %s", async (_, permissions) => {
+    mockApi(permissions);
+    renderView();
+
+    await screen.findByRole("link", { name: "Enron mailboxes" });
+    const [collectionTable, matterTable] = screen.getAllByRole("table");
+    expect(columnWidths(collectionTable)).toEqual(columnWidths(matterTable));
+    // Widths are shares of the table, so both tables fill the same width.
+    expect(columnWidths(collectionTable).every((width) => width.endsWith("%"))).toBe(true);
+  });
+});
