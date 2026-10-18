@@ -20,6 +20,9 @@ import { coreApi } from "@/lib/api-client";
 import { collectionHref } from "@/lib/collection-routes";
 import { formatDate } from "@/lib/format";
 
+/** One width per column, shared by the Collections and Matters tables so their columns line up. */
+const COLUMN_SIZES = { name: 400, status: 160, created: 180, open: 140, delete: 52 } as const;
+
 export function ClientView({ clientId }: { clientId: string }) {
   const queryClient = useQueryClient();
   const client = useQuery({ queryKey: ["client", clientId], queryFn: () => coreApi<ClientRead>(`/v1/clients/${clientId}`) });
@@ -31,6 +34,7 @@ export function ClientView({ clientId }: { clientId: string }) {
   const canViewCollections = permissionKeys.has("collection.view");
   const canCreateCollection = permissionKeys.has("collection.create");
   const canConfigureClient = permissionKeys.has("client.configure");
+  const showCollectionDelete = canViewCollections && canConfigureClient;
   const matters = useQuery({ queryKey: ["matters", clientId], queryFn: () => coreApi<MatterRead[]>(`/v1/clients/${clientId}/matters`) });
   const templates = useQuery({ queryKey: ["matter-templates", clientId], queryFn: () => coreApi<MatterTemplateRead[]>(`/v1/clients/${clientId}/matter-templates`), enabled: canConfigureClient });
   const collections = useQuery({
@@ -73,15 +77,18 @@ export function ClientView({ clientId }: { clientId: string }) {
   const createMatter = useCallback((values: CreateMatterValues) => matterMutation.mutateAsync(values).then(() => undefined), [matterMutation]);
   const createCollection = useCallback((values: CreateCollectionValues) => collectionMutation.mutateAsync(values).then(() => undefined), [collectionMutation]);
   const matterColumns = useMemo<ColumnDef<MatterRead>[]>(() => [
-    { accessorKey: "name", header: "Matter", cell: ({ row }) => <MatterDestinationLink className="font-semibold text-primary hover:underline" clientId={clientId} matter={row.original}>{row.original.name}</MatterDestinationLink> },
-    { accessorKey: "status", header: "Status", cell: ({ row }) => <StatusBadge status={row.original.status} /> },
-    { accessorKey: "created_at", header: "Created", cell: ({ row }) => <span className="text-muted-foreground">{formatDate(row.original.created_at)}</span> },
-    { id: "open", header: "", cell: ({ row }) => <Button asChild variant="ghost" size="sm"><MatterDestinationLink clientId={clientId} matter={row.original}>Open <ArrowRight /></MatterDestinationLink></Button> },
-  ], [clientId]);
+    { accessorKey: "name", header: "Matter", size: COLUMN_SIZES.name, cell: ({ row }) => <MatterDestinationLink className="font-semibold text-primary hover:underline" clientId={clientId} matter={row.original}>{row.original.name}</MatterDestinationLink> },
+    { accessorKey: "status", header: "Status", size: COLUMN_SIZES.status, cell: ({ row }) => <StatusBadge status={row.original.status} /> },
+    { accessorKey: "created_at", header: "Created", size: COLUMN_SIZES.created, cell: ({ row }) => <span className="text-muted-foreground">{formatDate(row.original.created_at)}</span> },
+    { id: "open", header: "", size: COLUMN_SIZES.open, cell: ({ row }) => <Button asChild variant="ghost" size="sm"><MatterDestinationLink clientId={clientId} matter={row.original}>Open <ArrowRight /></MatterDestinationLink></Button> },
+    // Matches the Collections table's delete column so both tables' columns line up.
+    ...(showCollectionDelete ? [{ id: "delete-spacer", header: "", size: COLUMN_SIZES.delete, enableResizing: false, cell: () => null } satisfies ColumnDef<MatterRead>] : []),
+  ], [clientId, showCollectionDelete]);
   const collectionColumns = useMemo<ColumnDef<CollectionRead>[]>(() => [
     {
       accessorKey: "name",
       header: "Collection",
+      size: COLUMN_SIZES.name,
       cell: ({ row }) => (
         <div>
           <Link className="font-semibold text-primary hover:underline" href={collectionHref(clientId, row.original.id)}>{row.original.name}</Link>
@@ -89,18 +96,18 @@ export function ClientView({ clientId }: { clientId: string }) {
         </div>
       ),
     },
-    { accessorKey: "status", header: "Status", cell: ({ row }) => <StatusBadge status={row.original.status} /> },
-    { accessorKey: "created_at", header: "Created", cell: ({ row }) => <span className="text-muted-foreground">{formatDate(row.original.created_at)}</span> },
-    { id: "open", header: "", cell: ({ row }) => <Button asChild variant="ghost" size="sm"><Link href={collectionHref(clientId, row.original.id)}>Open <ArrowRight /></Link></Button> },
-    ...(canConfigureClient ? [{
+    { accessorKey: "status", header: "Status", size: COLUMN_SIZES.status, cell: ({ row }) => <StatusBadge status={row.original.status} /> },
+    { accessorKey: "created_at", header: "Created", size: COLUMN_SIZES.created, cell: ({ row }) => <span className="text-muted-foreground">{formatDate(row.original.created_at)}</span> },
+    { id: "open", header: "", size: COLUMN_SIZES.open, cell: ({ row }) => <Button asChild variant="ghost" size="sm"><Link href={collectionHref(clientId, row.original.id)}>Open <ArrowRight /></Link></Button> },
+    ...(showCollectionDelete ? [{
       id: "delete",
       header: () => <span className="sr-only">Delete</span>,
-      size: 52,
+      size: COLUMN_SIZES.delete,
       enableResizing: false,
       // A collection already being deleted shows its Deleting status instead.
       cell: ({ row }) => row.original.status === "DELETING" ? null : <DeleteCollectionDialog collectionName={row.original.name} onDelete={() => deleteCollection(row.original.id)} />,
     } satisfies ColumnDef<CollectionRead>] : []),
-  ], [canConfigureClient, clientId, deleteCollection]);
+  ], [clientId, deleteCollection, showCollectionDelete]);
 
   if (client.isPending) return <TableLoading />;
   if (client.error) return <QueryError message={client.error.message} />;
@@ -111,14 +118,14 @@ export function ClientView({ clientId }: { clientId: string }) {
       <PageHeader eyebrow="Client" title={client.data.name} description="Open the review matters and evidence collections available to you." actions={canCreateCollection ? <CreateCollectionDialog onCreate={createCollection} /> : undefined} />
       {canViewCollections ? <section>
         <h2 className="mb-3 text-base font-semibold">Collections</h2>
-        {collections.isPending ? <TableLoading /> : collections.error ? <QueryError message={collections.error.message} /> : <DataTable columns={collectionColumns} data={collections.data} emptyMessage="No collections yet. Create one to receive imported evidence." />}
+        {collections.isPending ? <TableLoading /> : collections.error ? <QueryError message={collections.error.message} /> : <DataTable columns={collectionColumns} data={collections.data} fitToWidth emptyMessage="No collections yet. Create one to receive imported evidence." />}
       </section> : null}
       <section className="mt-8">
         <div className="mb-3 flex items-center justify-between gap-3">
           <h2 className="text-base font-semibold">Matters</h2>
           {canConfigureClient ? <CreateMatterDialog templates={templates.data ?? []} onCreate={createMatter} /> : null}
         </div>
-        {matters.isPending ? <TableLoading /> : matters.error ? <QueryError message={matters.error.message} /> : <DataTable columns={matterColumns} data={matters.data} emptyMessage="No matters yet. Add this client's first matter." />}
+        {matters.isPending ? <TableLoading /> : matters.error ? <QueryError message={matters.error.message} /> : <DataTable columns={matterColumns} data={matters.data} fitToWidth emptyMessage="No matters yet. Add this client's first matter." />}
       </section>
     </>
   );
