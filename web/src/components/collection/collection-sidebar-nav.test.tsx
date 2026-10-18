@@ -46,7 +46,7 @@ describe("CollectionSidebarNav", () => {
     expect(await screen.findByRole("link", { name: "TREC" })).toHaveAttribute("href", "/app/clients/client-1");
     expect(screen.getByRole("navigation", { name: "Collection" })).toBeInTheDocument();
     expect(screen.getByRole("link", { name: "Documents" })).toHaveAttribute("href", base);
-    expect(within(screen.getByRole("group", { name: "Explore" })).getAllByRole("link").map((link) => link.getAttribute("href"))).toEqual([`${base}/custodians`, `${base}/file-dates`]);
+    expect(within(screen.getByRole("group", { name: "Explore" })).getAllByRole("link").map((link) => link.getAttribute("href"))).toEqual([base, `${base}/custodians`, `${base}/file-dates`]);
     expect(screen.getByRole("link", { name: "Text processing" })).toHaveAttribute("href", `${base}/processing`);
     expect(screen.getByRole("link", { name: "Documents" })).toHaveAttribute("aria-current", "page");
   });

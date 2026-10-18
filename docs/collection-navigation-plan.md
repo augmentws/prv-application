@@ -51,8 +51,8 @@ Inside a matter (as built)          Inside a collection (new)
 │ Priv-View            │            │ Priv-View            │
 │ ← TREC               │            │ ← TREC               │  back to the client
 │ [Trec-JBush ▾]       │            │ [Enron mailboxes ▾]  │  switcher (same client)
-│ Overview             │            │ Documents            │
-│ Review …             │            │ Explore              │
+│ Overview             │            │ Explore              │
+│ Review …             │            │   Documents          │
 │ Findings …           │            │   Custodians         │
 │ Agents and models …  │            │   File dates         │
 │ Setup …              │            │ Setup                │
@@ -76,8 +76,8 @@ Everything that holds for matters holds for collections:
 ### Routes
 
 ```
-Documents          /app/clients/:c/collections/:k            (root, unchanged URL)
 Explore
+  Documents        /app/clients/:c/collections/:k            (root, unchanged URL)
   Custodians       …/custodians
   File dates       …/file-dates
 Setup

@@ -9,10 +9,10 @@ export type CollectionNavGroup = NavGroup<CollectionSection>;
 
 /** The collection menu, grouped like the matter menu. */
 export const COLLECTION_NAV: CollectionNavGroup[] = [
-  { items: [{ label: "Documents", icon: Files, target: "documents" }] },
   {
     label: "Explore",
     items: [
+      { label: "Documents", icon: Files, target: "documents" },
       { label: "Custodians", icon: UsersRound, target: "custodians" },
       { label: "File dates", icon: CalendarDays, target: "file-dates" },
     ],
