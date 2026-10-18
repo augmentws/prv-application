@@ -152,7 +152,7 @@ def _authorized_job(
                 CLASSIFICATION_SCORING_RUN_JOB_TYPE,
                 CLASSIFICATION_PROJECTION_JOB_TYPE,
                 MATTER_SEARCH_EXPORT_JOB_TYPE,
-                            FACT_DEVELOPMENT_ANALYSIS_TASK_JOB_TYPE,
+                FACT_DEVELOPMENT_ANALYSIS_TASK_JOB_TYPE,
             }
             else "Matter ADMIN required"
         )
@@ -690,7 +690,9 @@ def retry_job(
             execution = retry_fact_development_run(db, job, actor_user_id=principal.user.id)
         except JobExecutionConflict as exc:
             raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=str(exc)) from exc
-        enqueue_fact_development_run(db, execution.dbos_workflow_id, str(job.id))
+        enqueue_fact_development_run(
+            db, execution.dbos_workflow_id, str(job.id), batch_api=bool(job.configuration_snapshot.get("use_batch_api"))
+        )
         db.commit()
         db.refresh(execution)
         return JobExecutionRead.model_validate(execution)

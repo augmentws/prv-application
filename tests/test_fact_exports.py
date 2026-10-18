@@ -133,6 +133,9 @@ def test_fact_export_writes_filtered_facts_and_quotes_in_date_order(
     assert same.json()["id"] == export["id"]
     assert stored == {}, "a repeated request must not write the files again"
     assert _request_export(client, ctx, filters={"statuses": ["WORKING"]}).status_code == 409
+    assert _request_export(
+        client, ctx, filters={"statuses": ["CONFIRMED"]}, requested_filename="other.csv"
+    ).status_code == 409
     assert _audit_actions(export["id"]) == ["fact_export.created"]
 
     listed = client.get(f"/v1/matters/{ctx['matter_id']}/fact-exports", headers=auth(ctx["token"])).json()
@@ -190,7 +193,45 @@ def test_fact_export_failure_is_audited_and_leaves_no_export(
     assert failed.status_code == 503, failed.text
     with TestingSessionLocal() as db:
         assert db.scalar(select(MatterFactExport.id)) is None
+        record = db.scalar(select(AuditRecord).where(AuditRecord.action == "fact_export.failed"))
+        # Dependency error text can carry URLs or response bodies, so only its type is recorded.
+        assert record.details["error"] == "ConnectError"
+        assert record.details["message"] is None
     assert _audit_actions() == ["fact_export.failed"]
+
+
+def test_unexpected_export_errors_are_audited_and_not_retried(
+    client: TestClient,
+    root_token: str,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    ctx = _matter_with_task(client, root_token)
+    _create_fact(client, ctx)
+
+    def invalid(**_):
+        raise ValueError("Fact export artifact provenance is invalid")
+
+    monkeypatch.setattr("app.fact_exports.find_workflow_artifact_reference", lambda **_: None)
+    monkeypatch.setattr("app.fact_exports.store_workflow_artifact", invalid)
+    with pytest.raises(ValueError, match="provenance"):
+        _request_export(client, ctx)
+    assert _audit_actions() == ["fact_export.failed"]
+
+
+def test_one_export_per_matter_at_a_time(client: TestClient, root_token: str, stored: dict[str, bytes]) -> None:
+    from app.fact_exports import _LOCAL_EXPORTS
+
+    ctx = _matter_with_task(client, root_token)
+    _create_fact(client, ctx)
+    _LOCAL_EXPORTS.add(uuid.UUID(ctx["matter_id"]))
+    try:
+        busy = _request_export(client, ctx)
+    finally:
+        _LOCAL_EXPORTS.discard(uuid.UUID(ctx["matter_id"]))
+    assert busy.status_code == 429, busy.text
+    assert stored == {}
+    assert _audit_actions() == ["fact_export.failed"]
+    assert _request_export(client, ctx).status_code == 201
 
 
 def test_fact_export_over_the_size_limit_is_refused(
@@ -204,7 +245,8 @@ def test_fact_export_over_the_size_limit_is_refused(
     settings = get_settings()
     monkeypatch.setattr(settings, "fact_export_max_bytes", 64)  # smaller than the header rows alone
     refused = _request_export(client, ctx)
-    assert refused.status_code == 413, refused.text
+    assert refused.status_code == 422, refused.text
+    assert "Narrow the filters" in refused.json()["error"]["message"]
     assert stored == {}
     assert _audit_actions() == ["fact_export.failed"]
 
@@ -260,6 +302,13 @@ def test_fact_export_download_checks_provenance_and_expiry(
     evidence = client.get(url, headers=auth(ctx["token"]), params={"file": "evidence"})
     assert evidence.content == stored["EVIDENCE"]
     assert _audit_actions(export["id"]) == ["fact_export.created", "fact_export.downloaded", "fact_export.downloaded"]
+
+    # Exports stored before exports ran within the request recorded the id as export_job_id.
+    monkeypatch.setattr(
+        "app.routers.fact_exports.get_workflow_artifact_reference",
+        lambda **kwargs: replace(reference(**kwargs), metadata={"export_job_id": export["id"], "file_kind": "FACTS"}),
+    )
+    assert client.get(url, headers=auth(ctx["token"])).status_code == 200
 
     monkeypatch.setattr(
         "app.routers.fact_exports.get_workflow_artifact_reference",

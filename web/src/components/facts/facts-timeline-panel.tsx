@@ -35,7 +35,7 @@ function TimelineCard({ fact, clientId, matterId, issueNames }: { fact: MatterFa
       <div className="flex flex-wrap items-baseline justify-between gap-2">
         <span className="font-medium tabular-nums text-muted-foreground">{formatFactDate(fact)}</span>
         {working ? (
-          <Badge variant="outline" className="gap-1 border-pending/50 text-pending"><CircleDashed className="size-3" aria-hidden="true" />Unconfirmed</Badge>
+          <Badge variant="outline" className="gap-1 border-pending/50 text-pending-foreground"><CircleDashed className="size-3" aria-hidden="true" />Unconfirmed</Badge>
         ) : null}
       </div>
       <Link href={factDetailHref(clientId, matterId, fact.id)} className="mt-1 block font-medium hover:text-primary">{fact.summary}</Link>
@@ -45,7 +45,7 @@ function TimelineCard({ fact, clientId, matterId, issueNames }: { fact: MatterFa
           <Badge key={`${issue.matter_analysis_task_id}:${issue.issue_key}`} variant="outline">{issueNames.get(issue.issue_key) ?? issue.issue_key}</Badge>
         ))}
         {fact.key_fact ? <Badge variant="accent">Key fact</Badge> : null}
-        {fact.has_contradiction ? <Badge variant="outline" className="text-conflict">Contradicted</Badge> : null}
+        {fact.has_contradiction ? <Badge variant="outline" className="text-conflict-foreground">Contradicted</Badge> : null}
         {fact.origin_workflow_run_id ? <span className="inline-flex items-center gap-1 text-agent"><Bot className="size-3" aria-hidden="true" />Agent</span> : null}
         <span>{fact.evidence_count} {fact.evidence_count === 1 ? "quote" : "quotes"} in {fact.document_count} {fact.document_count === 1 ? "document" : "documents"}</span>
       </div>
@@ -89,8 +89,9 @@ export function FactsTimelinePanel({ clientId, matterId, canExport = false }: { 
       const loaded = pages.reduce((count, page) => count + page.items.length, 0);
       return loaded < last.total && last.items.length ? loaded : undefined;
     },
-    // Confirming, rejecting and merging change the timeline; keep it live while people review.
-    refetchInterval: REFRESH_INTERVAL_MS,
+    // Confirming, rejecting and merging change the timeline; keep the first page live while people review. Once more
+    // pages are loaded, a refetch would re-read every page, so it refreshes on focus instead.
+    refetchInterval: (query) => ((query.state.data?.pages.length ?? 0) <= 1 ? REFRESH_INTERVAL_MS : false),
   });
 
   const loaded = useMemo(() => facts.data?.pages.flatMap((page) => page.items) ?? [], [facts.data]);
@@ -143,10 +144,10 @@ export function FactsTimelinePanel({ clientId, matterId, canExport = false }: { 
               </p>
               {years.map((year) => (
                 <section key={year.year} aria-labelledby={`timeline-year-${year.year}`} className="space-y-3">
-                  <h3 id={`timeline-year-${year.year}`} className="text-lg font-semibold">{year.year}</h3>
+                  <h2 id={`timeline-year-${year.year}`} className="text-lg font-semibold">{year.year}</h2>
                   {year.sections.map((section) => (
                     <div key={section.key} className="space-y-2">
-                      <h4 className="text-xs font-semibold tracking-wide text-muted-foreground uppercase">{section.label}</h4>
+                      <h3 className="text-xs font-semibold tracking-wide text-muted-foreground uppercase">{section.label}</h3>
                       <ol className="ml-2 space-y-2 border-l pl-5">
                         {section.facts.map((fact) => <TimelineCard key={fact.id} fact={fact} clientId={clientId} matterId={matterId} issueNames={issueNames} />)}
                       </ol>
@@ -156,7 +157,7 @@ export function FactsTimelinePanel({ clientId, matterId, canExport = false }: { 
               ))}
               {undated.length ? (
                 <section aria-labelledby="timeline-undated" className="space-y-3">
-                  <h3 id="timeline-undated" className="text-lg font-semibold">Undated</h3>
+                  <h2 id="timeline-undated" className="text-lg font-semibold">Undated</h2>
                   <ol className="ml-2 space-y-2 border-l pl-5">
                     {undated.map((fact) => <TimelineCard key={fact.id} fact={fact} clientId={clientId} matterId={matterId} issueNames={issueNames} />)}
                   </ol>

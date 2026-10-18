@@ -1041,7 +1041,9 @@ def start_fact_development_run(
             use_batch_api=payload.use_batch_api,
         )
         if created:
-            enqueue_fact_development_run(db, run.workflow_id, str(run.id))
+            enqueue_fact_development_run(
+                db, run.workflow_id, str(run.id), batch_api=bool(run.configuration_snapshot.get("use_batch_api"))
+            )
         db.commit()
         db.refresh(run)
         return run

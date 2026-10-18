@@ -31,9 +31,12 @@ describe("fact list URL state", () => {
     expect(factFilters(state)).toEqual({ query: "approval", issue_keys: ["pricing"], has_contradiction: false, has_pending_suggestion: true });
     expect(factFilters(state, { without: "issue_key" })).not.toHaveProperty("issue_keys");
     expect(hasFactFilters(readFactListState(new URLSearchParams("tab=facts")))).toBe(false);
-    const entityState = readFactListState(new URLSearchParams("tab=facts&fentity=entity-1"));
-    expect(factFilters(entityState)).toEqual({ entity_id: "entity-1" });
-    expect(writeFactListState(new URLSearchParams("tab=facts"), entityState).get("fentity")).toBe("entity-1");
+    const entityId = "0b8c3c1e-6d3f-4a8e-9d55-2f1b7a6c9e10";
+    const entityState = readFactListState(new URLSearchParams(`tab=facts&fentity=${entityId}`));
+    expect(factFilters(entityState)).toEqual({ entity_id: entityId });
+    expect(writeFactListState(new URLSearchParams("tab=facts"), entityState).get("fentity")).toBe(entityId);
+    // The entity id is used in API paths, so anything but a UUID is dropped.
+    expect(readFactListState(new URLSearchParams("tab=facts&fentity=../../clients")).entityId).toBe("");
   });
 });
 
@@ -46,6 +49,26 @@ describe("formatFactDate", () => {
     expect(formatFactDate({ date_precision: "DAY", event_date_start: "2021-01-01", event_date_end: null })).not.toMatch(/2020/);
     expect(formatFactDate({ date_precision: "RANGE", event_date_start: "2021-01-01", event_date_end: "2021-02-01" })).toContain("–");
     expect(formatFactDate({ date_precision: "UNKNOWN", event_date_start: null, event_date_end: null })).toBe("Undated");
+  });
+
+  it("keeps the calendar day in a time zone behind UTC", () => {
+    const original = process.env.TZ;
+    process.env.TZ = "America/Los_Angeles";
+    try {
+      const utc = (options: Intl.DateTimeFormatOptions, value: number) =>
+        new Intl.DateTimeFormat(undefined, { ...options, timeZone: "UTC" }).format(value);
+      // Local midnight on Jan 1 in Los Angeles is still Dec 31 in local time if the UTC handling is lost.
+      expect(formatFactDate({ date_precision: "DAY", event_date_start: "2021-01-01", event_date_end: null })).toBe(
+        utc({ month: "short", day: "numeric", year: "numeric" }, Date.UTC(2021, 0, 1)),
+      );
+      expect(formatFactDate({ date_precision: "MONTH", event_date_start: "2021-03-01", event_date_end: null })).toBe(
+        utc({ month: "short", year: "numeric" }, Date.UTC(2021, 2, 1)),
+      );
+      // The pin is in effect: UTC midnight on Jan 1 is Dec 31 in local time.
+      expect(new Date(Date.UTC(2021, 0, 1)).getDate()).toBe(31);
+    } finally {
+      process.env.TZ = original;
+    }
   });
 });
 

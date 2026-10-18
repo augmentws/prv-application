@@ -17308,15 +17308,17 @@
               }
             }
           },
+          "409": {
+            "description": "The idempotency key was already used for a different export"
+          },
           "422": {
-            "description": "Validation Error",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/HTTPValidationError"
-                }
-              }
-            }
+            "description": "The filter is invalid, or the export would exceed the size limit"
+          },
+          "429": {
+            "description": "Another export of this matter is in progress"
+          },
+          "503": {
+            "description": "The export files could not be stored; try again"
           }
         }
       },

@@ -17,6 +17,7 @@ from app.config import get_settings
 from app.database import get_db
 from app.dependencies import Principal, get_principal
 from app.fact_exports import (
+    FactExportBusy,
     FactExportConflict,
     FactExportTooLarge,
     as_utc,
@@ -58,7 +59,17 @@ def _export_or_404(db: Session, matter_id: uuid.UUID, export_id: uuid.UUID) -> M
     return export
 
 
-@router.post("", response_model=MatterFactExportRead, status_code=status.HTTP_201_CREATED)
+@router.post(
+    "",
+    response_model=MatterFactExportRead,
+    status_code=status.HTTP_201_CREATED,
+    responses={
+        409: {"description": "The idempotency key was already used for a different export"},
+        422: {"description": "The filter is invalid, or the export would exceed the size limit"},
+        429: {"description": "Another export of this matter is in progress"},
+        503: {"description": "The export files could not be stored; try again"},
+    },
+)
 def create_fact_export_files(
     matter_id: uuid.UUID,
     payload: MatterFactExportCreate,
@@ -88,19 +99,28 @@ def create_fact_export_files(
     except FactExportConflict as exc:
         db.rollback()
         raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=str(exc)) from exc
-    except (FactExportTooLarge, HTTPError, ConnectionError, TimeoutError, PermissionError, ValueError) as exc:
+    except FactExportBusy as exc:
         db.rollback()
-        logger.warning("Fact export for matter %s failed: %s", matter.id, exc)
-        record_fact_export_failure(
-            db, matter, actor_user_id=principal.user.id, filters=payload.filters, error=exc
-        )
+        record_fact_export_failure(db, matter, actor_user_id=principal.user.id, filters=payload.filters, error=exc)
+        db.commit()
+        raise HTTPException(status_code=status.HTTP_429_TOO_MANY_REQUESTS, detail=str(exc)) from exc
+    except Exception as exc:
+        # Every failed attempt is audited; only storage outages are worth retrying.
+        db.rollback()
+        logger.warning("Fact export for matter %s failed: %s", matter_id, exc)
+        record_fact_export_failure(db, matter, actor_user_id=principal.user.id, filters=payload.filters, error=exc)
         db.commit()
         if isinstance(exc, FactExportTooLarge):
-            raise HTTPException(status_code=status.HTTP_413_CONTENT_TOO_LARGE, detail=str(exc)) from exc
-        raise HTTPException(
-            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
-            detail="The export files could not be stored. Try again.",
-        ) from exc
+            raise HTTPException(
+                status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
+                detail=f"{exc}. Narrow the filters and export again.",
+            ) from exc
+        if isinstance(exc, HTTPError | ConnectionError | TimeoutError):
+            raise HTTPException(
+                status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+                detail="The export files could not be stored. Try again.",
+            ) from exc
+        raise
     db.commit()
     db.refresh(export)
     return export
@@ -170,7 +190,8 @@ def download_fact_export(
         and artifact.producer_run_id == export.id
         and artifact.content_hash == content_hash
         and artifact.byte_length == byte_length
-        and str(artifact.metadata.get("export_id")) == str(export.id)
+        # Exports written before exports ran within the request recorded the same id as export_job_id.
+        and str(artifact.metadata.get("export_id") or artifact.metadata.get("export_job_id")) == str(export.id)
         and artifact.metadata.get("file_kind") == expected_kind
     ):
         raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="Fact export file provenance is invalid")

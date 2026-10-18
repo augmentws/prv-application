@@ -11,7 +11,7 @@ from fastapi.testclient import TestClient
 
 from app.document_metadata import add_metadata_event
 from app.fact_recall import recall_facts
-from app.models import Custodian, Matter, MatterDocumentCustodian, MatterFact
+from app.models import Custodian, Matter, MatterAnalysisTask, MatterDocumentCustodian, MatterFact
 from tests.test_agents_and_matter_definitions import auth
 from tests.test_fact_exports import stored  # noqa: F401
 from tests.test_facts_and_entities import _create_fact, _entity, _matter_with_task, document_text  # noqa: F401
@@ -348,3 +348,45 @@ def test_issue_catalog_is_readable_with_fact_view(client: TestClient, corpus: di
         ("safety", "Safety reports"),
     ]
     assert {entry["matter_analysis_task_id"] for entry in entries} == {ctx["task_id"]}
+
+
+def _tenant_user(client: TestClient, ctx: dict, email: str, role_key: str | None) -> str:
+    created = client.post(
+        f"/v1/tenants/{ctx['tenant_id']}/users",
+        headers=auth(ctx["token"]),
+        json={"email": email, "display_name": email.split("@")[0], "password": "long-enough-test-password"},
+    )
+    assert created.status_code == 201, created.text
+    if role_key is not None:
+        roles = {
+            role["key"]: role
+            for role in client.get(f"/v1/tenants/{ctx['tenant_id']}/roles", headers=auth(ctx["token"])).json()
+        }
+        granted = client.post(
+            f"/v1/tenants/{ctx['tenant_id']}/authorization-grants",
+            headers=auth(ctx["token"]),
+            json={
+                "subject": {"type": "USER", "id": created.json()["id"]},
+                "role_id": roles[role_key]["id"],
+                "scope": {"type": "MATTER", "id": ctx["matter_id"]},
+            },
+        )
+        assert granted.status_code == 201, granted.text
+    login = client.post("/v1/auth/login", json={"email": email, "password": "long-enough-test-password"})
+    return login.json()["access_token"]
+
+
+def test_issue_catalog_needs_fact_view_and_lists_only_published_catalogs(client: TestClient, corpus: dict) -> None:
+    ctx = corpus
+    url = f"/v1/matters/{ctx['matter_id']}/facts/issue-catalog"
+    # Reviewers can read facts without Analysis Task access; the catalog only needs fact.view.
+    reviewer = _tenant_user(client, ctx, "catalog-reviewer@example.com", "REVIEWER")
+    assert client.get(url, headers=auth(reviewer)).status_code == 200
+    outsider = _tenant_user(client, ctx, "catalog-outsider@example.com", None)
+    assert client.get(url, headers=auth(outsider)).status_code == 403
+
+    with TestingSessionLocal() as db:
+        task = db.get(MatterAnalysisTask, uuid.UUID(ctx["task_id"]))
+        task.published_version = None
+        db.commit()
+    assert client.get(url, headers=auth(ctx["token"])).json() == []

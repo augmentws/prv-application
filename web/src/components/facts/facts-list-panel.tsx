@@ -121,7 +121,7 @@ export function FactsListPanel({ clientId, matterId, canReview, canExport = fals
           <div className="mt-1 flex flex-wrap items-center gap-1.5 text-xs text-muted-foreground">
             {row.original.origin_workflow_run_id ? <span className="inline-flex items-center gap-1 text-agent"><Bot className="size-3" aria-hidden="true" />Agent</span> : null}
             {row.original.key_fact ? <Badge variant="accent">Key fact</Badge> : null}
-            {row.original.has_contradiction ? <Badge variant="outline" className="text-conflict">Contradicted</Badge> : null}
+            {row.original.has_contradiction ? <Badge variant="outline" className="text-conflict-foreground">Contradicted</Badge> : null}
             {row.original.pending_suggestion_count ? (
               <Badge variant="outline" className="gap-1 text-agent">
                 <MessageSquareWarning className="size-3" aria-hidden="true" />

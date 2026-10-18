@@ -308,22 +308,30 @@ function FactRunPanel({ clientId, matterId, task }: { clientId?: string; matterI
   const selection = useBatchSelection(matterId);
   const runsKey = ["fact-development-runs", matterId, task.id];
   const [useBatchApi, setUseBatchApi] = useState(false);
+  // One key per estimate and option choice: retrying a launch whose response was lost returns the same run.
+  const [launchKey, setLaunchKey] = useState("");
   const runs = useQuery({
     queryKey: runsKey,
     queryFn: () => coreApi<FactDevelopmentRunRead[]>(`/v1/matters/${matterId}/analysis-tasks/${task.id}/fact-runs`),
-    refetchInterval: (query) => query.state.data?.some((run) => !TERMINAL.includes(run.status)) ? 3000 : false,
+    refetchInterval: (query) => {
+      const active = (query.state.data ?? []).filter((run) => !TERMINAL.includes(run.status));
+      if (!active.length) return false;
+      // A run waiting on a provider batch changes over hours, not seconds.
+      return active.every((run) => run.current_stage === "WAITING_FOR_PROVIDER_BATCH") ? 30_000 : 3000;
+    },
   });
   const estimate = useMutation({
     mutationFn: () => coreApi<FactDevelopmentRunEstimateRead>(`/v1/matters/${matterId}/analysis-tasks/${task.id}/fact-runs/estimate`, {
       method: "POST",
       body: JSON.stringify(selection.payload),
     }),
+    onSuccess: () => setLaunchKey(crypto.randomUUID()),
     onError: (error) => toast.error(error.message),
   });
   const launch = useMutation({
     mutationFn: () => coreApi<FactDevelopmentRunRead>(`/v1/matters/${matterId}/analysis-tasks/${task.id}/fact-runs`, {
       method: "POST",
-      body: JSON.stringify({ ...selection.payload, idempotency_key: crypto.randomUUID(), use_batch_api: Boolean(estimate.data?.batch_api_available && useBatchApi) }),
+      body: JSON.stringify({ ...selection.payload, idempotency_key: launchKey, use_batch_api: Boolean(estimate.data?.batch_api_available && useBatchApi) }),
     }),
     onSuccess: () => {
       estimate.reset();
@@ -367,7 +375,7 @@ function FactRunPanel({ clientId, matterId, task }: { clientId?: string; matterI
             <p className="text-xs text-muted-foreground">Token figures are planning estimates, not billing figures.</p>
             {current.batch_api_available ? (
               <label className="flex cursor-pointer items-start gap-2">
-                <input type="checkbox" className="mt-0.5 size-4 accent-primary" checked={useBatchApi} onChange={(event) => setUseBatchApi(event.target.checked)} />
+                <input type="checkbox" className="mt-0.5 size-4 accent-primary" checked={useBatchApi} onChange={(event) => { setUseBatchApi(event.target.checked); setLaunchKey(crypto.randomUUID()); }} />
                 <span>
                   <span className="font-medium">Use the Batch API</span>
                   <span className="block text-xs text-muted-foreground">Lower model cost. Each chunk of documents is sent to the provider as one batch and waits for it, usually minutes to hours (at most 24 hours), so the run takes longer. Documents in the same chunk don&apos;t see each other&apos;s facts; duplicates are still caught when results are applied.</span>
@@ -375,7 +383,7 @@ function FactRunPanel({ clientId, matterId, task }: { clientId?: string; matterI
               </label>
             ) : <p className="text-xs text-muted-foreground">The extraction model has no Batch API support, so the run uses real-time calls.</p>}
             <div className="flex justify-end">
-              <Button disabled={launch.isPending || current.documents_to_extract === 0} onClick={() => launch.mutate()}>
+              <Button disabled={launch.isPending || !launchKey || current.documents_to_extract === 0} onClick={() => launch.mutate()}>
                 {launch.isPending ? <LoaderCircle className="animate-spin" /> : <Play />}
                 {current.documents_to_extract === 0 ? "Nothing to read" : `Launch run for ${current.documents_to_extract.toLocaleString()} documents`}
               </Button>
@@ -439,7 +447,7 @@ function FactRunCard({ clientId, matterId, run, batchName, busy, onCancel, onRet
         </div>
       </div>
       {active ? (
-        <div className="mt-3 h-2 overflow-hidden rounded-full bg-muted" aria-label={`${run.progress_completed} of ${run.progress_total} documents processed`}>
+        <div className="mt-3 h-2 overflow-hidden rounded-full bg-muted" role="progressbar" aria-valuemin={0} aria-valuemax={run.progress_total} aria-valuenow={run.progress_completed} aria-label={`${run.progress_completed} of ${run.progress_total} documents processed`}>
           <div className="h-full bg-primary transition-[width]" style={{ width: `${Math.min(100, percent)}%` }} />
         </div>
       ) : null}

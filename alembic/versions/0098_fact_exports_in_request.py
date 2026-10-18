@@ -47,6 +47,8 @@ INDEXED_COLUMNS = ("tenant_id", "matter_id", "created_by_user_id")
 
 
 def upgrade() -> None:
+    # Block writers from old code between the cleanup and the constraint changes.
+    op.execute("LOCK TABLE matter_fact_export_job IN ACCESS EXCLUSIVE MODE")
     op.execute(
         "DELETE FROM matter_fact_export_job WHERE status <> 'COMPLETED' OR "
         + " OR ".join(f"{name} IS NULL" for name, _ in REQUIRED_COLUMNS)
@@ -96,6 +98,7 @@ def downgrade() -> None:
     )
     for column in ("started_at", "completed_at", "canceled_at"):
         op.add_column("matter_fact_export_job", sa.Column(column, sa.DateTime(timezone=True), nullable=True))
+    op.execute("UPDATE matter_fact_export_job SET started_at = created_at, completed_at = created_at")
     op.alter_column("matter_fact_export_job", "status", server_default=None)
     op.alter_column("matter_fact_export_job", "failure_retriable", server_default=None)
     op.create_check_constraint(

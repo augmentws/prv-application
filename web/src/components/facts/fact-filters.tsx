@@ -12,6 +12,7 @@ import type { FactFilters, FactIssueCatalogEntry, MatterEntityRead, MatterFactFa
 import { coreApi } from "@/lib/api-client";
 import {
   FACT_FACETS,
+  FACT_PRECISION_LABELS,
   FACT_STATUS_LABELS,
   type FactFacetKey,
   type FactListState,
@@ -23,20 +24,12 @@ import {
 
 const BOOLEAN_LABELS: Record<string, string> = { true: "Yes", false: "No" };
 const AUTHOR_LABELS: Record<string, string> = { HUMAN: "Reviewer", AGENT: "Agent" };
-const PRECISION_LABELS: Record<string, string> = {
-  DAY: "Day",
-  MONTH: "Month",
-  QUARTER: "Quarter",
-  YEAR: "Year",
-  RANGE: "Range",
-  UNKNOWN: "Undated",
-};
 
 function bucketLabel(facet: FactFacetKey, value: string, label: string) {
   if (facet === "status") return FACT_STATUS_LABELS[value] ?? label;
   if (facet === "key_fact" || facet === "has_contradiction") return BOOLEAN_LABELS[value] ?? label;
   if (facet === "author_type") return AUTHOR_LABELS[value] ?? label;
-  if (facet === "date_precision") return PRECISION_LABELS[value] ?? label;
+  if (facet === "date_precision") return FACT_PRECISION_LABELS[value] ?? label;
   return label;
 }
 

@@ -21,7 +21,7 @@ from collections import Counter
 from collections.abc import Callable
 from dataclasses import dataclass
 from datetime import datetime, timezone
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 import httpx
 from sqlalchemy import func, select
@@ -118,6 +118,9 @@ from app.models import (
 )
 from app.skill_execution import execute_skill_run
 from app.workflow_specs import FACT_DEVELOPMENT_SPEC, binding_snapshot, resolve_workflow_skill_bindings
+
+if TYPE_CHECKING:
+    from app.fact_batches import ChunkBatchResults
 
 logger = logging.getLogger(__name__)
 
@@ -284,6 +287,7 @@ def estimate_fact_development_run(
     to_extract = ready - population.previously_extracted
     issue_counts: Counter[str] = Counter(key for keys in population.membership.values() for key in keys)
     extraction_version = launch.bindings[FACT_EXTRACTION_ROLE][2]
+    extraction_model = resolve_agent_model(extraction_version.model_key, settings)
     return {
         "review_batch_id": launch.batch.id,
         "task_version": launch.task_version.version,
@@ -299,8 +303,8 @@ def estimate_fact_development_run(
         "estimated_input_tokens": population.text_bytes_to_extract // ESTIMATE_BYTES_PER_TOKEN
         + to_extract * ESTIMATE_PROMPT_OVERHEAD_TOKENS,
         "estimated_output_tokens": to_extract * ESTIMATE_OUTPUT_TOKENS_PER_DOCUMENT,
-        "extraction_model": resolve_agent_model(extraction_version.model_key, settings),
-        "batch_api_available": batch_api_available(resolve_agent_model(extraction_version.model_key, settings)),
+        "extraction_model": extraction_model,
+        "batch_api_available": batch_api_available(extraction_model),
         "chunk_count": math.ceil(population.document_count / settings.fact_development_chunk_size),
         "issue_document_counts": [
             {"issue_key": issue.key, "name": issue.name, "document_count": issue_counts.get(issue.key, 0)}
@@ -760,10 +764,20 @@ def run_ordered_window(
             handles.append(start(chunk_ids[following]))
 
 
+def uses_batch_api(db: Session, run_id: uuid.UUID) -> bool:
+    run = db.get(MatterAnalysisTaskRun, run_id)
+    if run is None:
+        raise FactDevelopmentRunError("Fact-development run was not found")
+    return bool(run.configuration_snapshot.get("use_batch_api"))
+
+
 def chunk_window(db: Session, run_id: uuid.UUID) -> int:
     run = db.get(MatterAnalysisTaskRun, run_id)
     if run is None:
         raise FactDevelopmentRunError("Fact-development run was not found")
+    if run.configuration_snapshot.get("use_batch_api"):
+        # A batch is built when its chunk starts, so later chunks wait for earlier chunks' facts to be applied.
+        return 1
     return max(1, int(run.configuration_snapshot.get("chunk_window", 1)))
 
 
@@ -1546,34 +1560,20 @@ def _extract_realtime(db: Session, context: _RunContext, prepared: PreparedDocum
     )
 
 
-class BatchedExtractions:
-    """Extraction outputs a provider batch already returned for a chunk; see `app.fact_batches`."""
-
-    def has(self, document_id: str) -> bool:  # pragma: no cover - interface
-        raise NotImplementedError
-
-    def recalled(self, document_id: str) -> tuple[list[dict[str, Any]], bool]:  # pragma: no cover - interface
-        raise NotImplementedError
-
-    def output(
-        self, db: Session, context: _RunContext, prepared: PreparedDocument
-    ) -> tuple[dict[str, Any], Any]:  # pragma: no cover - interface
-        raise NotImplementedError
-
-
 def _process_document(
     db: Session,
     context: _RunContext,
     chunk: MatterAnalysisTaskRunChunk,
     row: dict[str, Any],
     counts: Counter[str],
-    batched: BatchedExtractions | None = None,
+    batched: ChunkBatchResults | None = None,
 ) -> JobItemOutcome:
     document_id = row["matter_document_id"]
     if batched is not None and batched.has(document_id):
         recalled, recall_unavailable = batched.recalled(document_id)
         prepared = prepare_document(db, context, chunk, row, counts, recalled=recalled, recall_unavailable=recall_unavailable)
         if isinstance(prepared, JobItemOutcome):
+            batched.abandon(db, document_id, f"The batch result was not applied: {prepared.reason_code}")
             return prepared
         try:
             output, skill_run = batched.output(db, context, prepared)
@@ -1721,7 +1721,8 @@ def process_fact_development_chunk(
         from app.fact_batches import load_batched_extractions
 
         batched = load_batched_extractions(db, chunk)
-        if batched is not None:
+        if chunk.provider_batch_status is not None:
+            # A batch chunk is now applied or extracted in real time; it no longer waits on the provider.
             _refresh_progress(db, run, stage="EXTRACTING")
             db.commit()
         counts: Counter[str] = Counter()
@@ -1730,6 +1731,8 @@ def process_fact_development_chunk(
         for row in rows:
             if canceled or _cancel_requested(db, run.id):
                 canceled = True
+                if batched is not None and batched.has(row["matter_document_id"]):
+                    batched.abandon(db, row["matter_document_id"], "The run was canceled before the batch result was applied")
                 outcomes.append(
                     _outcome(
                         row["matter_document_id"],
@@ -1952,8 +1955,18 @@ def finalize_fact_development_run(db: Session, run_id: uuid.UUID) -> MatterAnaly
 
 
 def finalize_canceled_fact_development_run(db: Session, run: MatterAnalysisTaskRun) -> None:
-    """Fill unpublished chunks with CANCELED outcomes and publish the final outcome manifest."""
+    """Fill unpublished chunks with CANCELED outcomes and publish the final outcome manifest.
 
+    Called after the cancellation is committed, so it also asks the provider to stop the run's batches.
+    """
+
+    from app.fact_batches import cancel_provider_batches
+
+    try:
+        cancel_provider_batches(db, run.id)
+    except Exception:
+        db.rollback()
+        logger.exception("Could not cancel the provider batches of run %s", run.id)
     scope = _outcome_scope(db, run)
     chunks = _chunks(db, run.id)
     if run.analysis_input_manifest_id is None or not chunks:

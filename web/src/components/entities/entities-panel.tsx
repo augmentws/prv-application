@@ -24,7 +24,7 @@ import { entityDetailHref } from "@/lib/facts";
 export type EntitiesTab = "directory" | "proposed";
 const PAGE_SIZE = 50;
 const ENTITY_STATUS_CLASSES: Record<string, string> = {
-  PROPOSED: "border border-pending/40 bg-pending/10 text-pending",
+  PROPOSED: "border border-pending/40 bg-pending/10 text-pending-foreground",
   CONFIRMED: "border border-confirmed/40 bg-confirmed/10 text-confirmed",
   REJECTED: "border border-rejected/40 bg-rejected/10 text-rejected",
 };

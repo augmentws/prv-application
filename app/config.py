@@ -50,13 +50,16 @@ class Settings(BaseSettings):
     search_export_max_columns: int = Field(default=250, ge=1, le=1000)
     search_export_max_bytes: int = Field(default=20 * 1024**3, ge=1024, le=20 * 1024**3)
     fact_export_retention_days: int = Field(default=7, ge=1, le=365)
-    fact_export_max_bytes: int = Field(default=5 * 1024**3, ge=1024, le=5 * 1024**3)
+    # Exports are written within the request, so the cap keeps one export to a few minutes at most.
+    fact_export_max_bytes: int = Field(default=500 * 1024**2, ge=1024, le=5 * 1024**3)
     fact_development_chunk_size: int = Field(default=50, ge=1, le=1_000)
     fact_development_document_concurrency: int = Field(default=4, ge=1, le=64)
     fact_development_max_document_characters: int = Field(default=200_000, ge=1_000, le=2_000_000)
     fact_development_recall_window_days: int = Field(default=365, ge=1, le=36_500)
     fact_development_chunk_window: int = Field(default=4, ge=1, le=256)
     fact_development_provider_batch_poll_seconds: float = Field(default=60.0, ge=1, le=3600)
+    # Batch API runs that may wait on provider batches at once; each has one chunk in flight.
+    fact_development_batch_run_concurrency: int = Field(default=8, ge=1, le=256)
     fact_duplicate_threshold: float = Field(default=0.85, gt=0, le=1)
     fact_merge_suggestion_threshold: float = Field(default=0.9, gt=0, le=1)
     agent_default_model: str | None = None

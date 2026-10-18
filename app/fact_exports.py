@@ -15,9 +15,12 @@ import io
 import json
 import logging
 import tempfile
+import threading
 import uuid
 from collections import defaultdict
-from collections.abc import Iterable
+from collections.abc import Iterable, Iterator
+from contextlib import contextmanager
+from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 from pathlib import PurePath
 from typing import IO, Any
@@ -96,6 +99,51 @@ class FactExportConflict(RuntimeError):
 
 class FactExportTooLarge(ValueError):
     """The export would exceed the configured output size limit."""
+
+
+class FactExportBusy(RuntimeError):
+    """Another export of the same matter is in progress."""
+
+
+@dataclass(frozen=True)
+class _ExportScope:
+    matter_id: uuid.UUID
+    tenant_id: uuid.UUID
+    client_id: uuid.UUID
+
+
+_LOCAL_EXPORTS: set[uuid.UUID] = set()
+_LOCAL_EXPORTS_LOCK = threading.Lock()
+
+
+@contextmanager
+def _matter_export_guard(db: Session, matter_id: uuid.UUID) -> Iterator[None]:
+    """Allow one export per matter at a time, without holding a transaction open while it runs.
+
+    PostgreSQL uses a session advisory lock on its own autocommit connection; other databases (tests) use an
+    in-process guard.
+    """
+
+    if db.get_bind().dialect.name != "postgresql":
+        with _LOCAL_EXPORTS_LOCK:
+            if matter_id in _LOCAL_EXPORTS:
+                raise FactExportBusy("Another export of this matter is in progress. Try again when it finishes.")
+            _LOCAL_EXPORTS.add(matter_id)
+        try:
+            yield
+        finally:
+            with _LOCAL_EXPORTS_LOCK:
+                _LOCAL_EXPORTS.discard(matter_id)
+        return
+    digest = hashlib.sha256(f"matter-fact-export:{matter_id}".encode()).digest()
+    lock_key = int.from_bytes(digest[:8], "big") & ((1 << 63) - 1)
+    with db.get_bind().connect().execution_options(isolation_level="AUTOCOMMIT") as connection:
+        if not connection.execute(text("SELECT pg_try_advisory_lock(:lock_key)"), {"lock_key": lock_key}).scalar():
+            raise FactExportBusy("Another export of this matter is in progress. Try again when it finishes.")
+        try:
+            yield
+        finally:
+            connection.execute(text("SELECT pg_advisory_unlock(:lock_key)"), {"lock_key": lock_key})
 
 
 def utcnow() -> datetime:
@@ -311,16 +359,6 @@ def _begin_snapshot(db: Session) -> None:
 
 
 
-def _lock_idempotency_key(db: Session, matter_id: uuid.UUID, user_id: uuid.UUID, idempotency_key: str) -> None:
-    """Serialize exports that share an idempotency key so a double submit cannot write the files twice."""
-
-    if db.get_bind().dialect.name != "postgresql":
-        return
-    digest = hashlib.sha256(f"matter-fact-export:{matter_id}:{user_id}:{idempotency_key}".encode()).digest()
-    lock_key = int.from_bytes(digest[:8], "big") & ((1 << 63) - 1)
-    db.execute(text("SELECT pg_advisory_xact_lock(:lock_key)"), {"lock_key": lock_key})
-
-
 def _verified_artifact(
     artifact: WorkflowArtifactReference,
     *,
@@ -354,7 +392,7 @@ def _store_csv(
     file_kind: str,
     filename: str,
     export_id: uuid.UUID,
-    matter: Matter,
+    scope: _ExportScope,
     filter_hash: str,
     snapshot_started_at: datetime,
     row_count: int,
@@ -373,10 +411,10 @@ def _store_csv(
     derivation_key = canonical_hash(
         {"contract": CSV_POLICY_VERSION, "export_id": str(export_id), "file_kind": file_kind, "filter_hash": filter_hash}
     )
-    scope = {"actor_user_id": actor_user_id, "tenant_id": matter.client.tenant_id, "client_id": matter.client_id}
-    verify = {"export_id": export_id, "matter_id": matter.id, "file_kind": file_kind, "filter_hash": filter_hash}
+    owner = {"actor_user_id": actor_user_id, "tenant_id": scope.tenant_id, "client_id": scope.client_id}
+    verify = {"export_id": export_id, "matter_id": scope.matter_id, "file_kind": file_kind, "filter_hash": filter_hash}
     existing = find_workflow_artifact_reference(
-        artifact_type=ArtifactType.FACT_EXPORT, derivation_key=derivation_key, **scope
+        artifact_type=ArtifactType.FACT_EXPORT, derivation_key=derivation_key, **owner
     )
     if existing is not None:
         return _verified_artifact(existing, **verify)
@@ -384,7 +422,7 @@ def _store_csv(
         content=binary,
         artifact_type=ArtifactType.FACT_EXPORT,
         core_scope_kind="MATTER",
-        core_scope_id=matter.id,
+        core_scope_id=scope.matter_id,
         schema_version=1,
         derivation_key=derivation_key,
         content_hash=content_hash,
@@ -395,7 +433,7 @@ def _store_csv(
         artifact_metadata={
             "contract_version": CSV_POLICY_VERSION,
             "export_id": str(export_id),
-            "matter_id": str(matter.id),
+            "matter_id": str(scope.matter_id),
             "file_kind": file_kind,
             "filter_hash": filter_hash,
             "row_count": row_count,
@@ -406,7 +444,7 @@ def _store_csv(
         },
         lineage=[],
         filename=filename,
-        **scope,
+        **owner,
     )
     return _verified_artifact(artifact, **verify)
 
@@ -437,21 +475,71 @@ def create_fact_export(
         "line_terminator": "CRLF",
         "spreadsheet_safe": spreadsheet_safe,
     }
-    _lock_idempotency_key(db, matter.id, actor_user_id, idempotency_key)
+    stem = _safe_stem(requested_filename)
+    existing = _existing_export(db, matter.id, actor_user_id, idempotency_key, filter_hash, policy, stem)
+    if existing is not None:
+        return existing, False
+    scope = _ExportScope(matter_id=matter.id, tenant_id=matter.client.tenant_id, client_id=matter.client_id)
+    with _matter_export_guard(db, matter.id):
+        # Exports of a matter are serialized, so a repeat of this request that finished meanwhile is found here.
+        existing = _existing_export(db, matter.id, actor_user_id, idempotency_key, filter_hash, policy, stem)
+        if existing is not None:
+            return existing, False
+        # No transaction stays open on the request connection while the files are written and uploaded.
+        db.rollback()
+        return _write_export(
+            db,
+            scope,
+            filters=filters,
+            filter_snapshot=filter_snapshot,
+            filter_hash=filter_hash,
+            policy=policy,
+            stem=stem,
+            idempotency_key=idempotency_key,
+            spreadsheet_safe=spreadsheet_safe,
+            actor_user_id=actor_user_id,
+            settings=settings,
+        ), True
+
+
+def _existing_export(
+    db: Session,
+    matter_id: uuid.UUID,
+    actor_user_id: uuid.UUID,
+    idempotency_key: str,
+    filter_hash: str,
+    policy: dict[str, Any],
+    stem: str,
+) -> MatterFactExport | None:
     existing = db.scalar(
         select(MatterFactExport).where(
-            MatterFactExport.matter_id == matter.id,
+            MatterFactExport.matter_id == matter_id,
             MatterFactExport.created_by_user_id == actor_user_id,
             MatterFactExport.idempotency_key == idempotency_key,
         )
     )
-    if existing is not None:
-        if existing.filter_hash != filter_hash or existing.csv_policy_snapshot != policy:
-            raise FactExportConflict("Idempotency key was already used for a different export")
-        return existing, False
+    if existing is not None and (
+        existing.filter_hash != filter_hash or existing.csv_policy_snapshot != policy or existing.requested_filename != stem
+    ):
+        raise FactExportConflict("Idempotency key was already used for a different export")
+    return existing
 
+
+def _write_export(
+    db: Session,
+    scope: _ExportScope,
+    *,
+    filters: FactFilters,
+    filter_snapshot: dict[str, Any],
+    filter_hash: str,
+    policy: dict[str, Any],
+    stem: str,
+    idempotency_key: str,
+    spreadsheet_safe: bool,
+    actor_user_id: uuid.UUID,
+    settings: Settings,
+) -> MatterFactExport:
     export_id = uuid.uuid4()
-    stem = _safe_stem(requested_filename)
     fact_count = 0
     evidence_count = 0
     with tempfile.TemporaryFile(mode="w+b") as facts_binary, tempfile.TemporaryFile(mode="w+b") as evidence_binary:
@@ -466,8 +554,8 @@ def create_fact_export(
         with Session(bind=db.get_bind(), autoflush=False) as read_db:
             _begin_snapshot(read_db)
             snapshot_started_at = utcnow()
-            reader = _ExportReader(read_db, matter.id)
-            statement = fact_filter_statement(read_db, matter_id=matter.id, filters=filters)
+            reader = _ExportReader(read_db, scope.matter_id)
+            statement = fact_filter_statement(read_db, matter_id=scope.matter_id, filters=filters)
             chunk: list[MatterFact] = []
 
             def flush(facts: list[MatterFact]) -> None:
@@ -495,7 +583,7 @@ def create_fact_export(
         facts_filename, evidence_filename = export_filenames(stem, snapshot_started_at)
         common = {
             "export_id": export_id,
-            "matter": matter,
+            "scope": scope,
             "filter_hash": filter_hash,
             "snapshot_started_at": snapshot_started_at,
             "settings": settings,
@@ -508,8 +596,8 @@ def create_fact_export(
 
     export = MatterFactExport(
         id=export_id,
-        tenant_id=matter.client.tenant_id,
-        matter_id=matter.id,
+        tenant_id=scope.tenant_id,
+        matter_id=scope.matter_id,
         filter_snapshot=filter_snapshot,
         filter_hash=filter_hash,
         csv_policy_snapshot=policy,
@@ -539,7 +627,7 @@ def create_fact_export(
         target_type="matter_fact_export",
         target_id=export.id,
         details={
-            "matter_id": str(matter.id),
+            "matter_id": str(scope.matter_id),
             "filters": filter_snapshot,
             "spreadsheet_safe": spreadsheet_safe,
             "fact_count": fact_count,
@@ -551,7 +639,7 @@ def create_fact_export(
             "evidence_content_hash": evidence_artifact.content_hash,
         },
     )
-    return export, True
+    return export
 
 
 def record_fact_export_failure(
@@ -571,5 +659,10 @@ def record_fact_export_failure(
         action="fact_export.failed",
         target_type="matter",
         target_id=matter.id,
-        details={"filters": filters.snapshot(), "error": type(error).__name__, "message": str(error)[:1000]},
+        details={
+            "filters": filters.snapshot(),
+            "error": type(error).__name__,
+            # Only this module's own messages are recorded; dependency errors may carry URLs or response bodies.
+            "message": str(error)[:1000] if isinstance(error, FactExportTooLarge | FactExportBusy) else None,
+        },
     )

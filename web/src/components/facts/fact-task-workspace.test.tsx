@@ -168,6 +168,32 @@ describe("FactTaskWorkspace", () => {
     });
   });
 
+  it("retries a failed launch with the same idempotency key", async () => {
+    let attempts = 0;
+    const base = vi.mocked(coreApi).getMockImplementation()!;
+    vi.mocked(coreApi).mockImplementation(async (path, init) => {
+      if (path === "/v1/matters/matter-1/analysis-tasks/task-1/fact-runs" && init?.method === "POST") {
+        attempts += 1;
+        if (attempts === 1) throw new Error("Network error");
+      }
+      return base(path, init);
+    });
+    const user = userEvent.setup();
+    renderWorkspace({ review_guidance_pin_stale: false });
+    await choose(user, "Run fact development", "Ready batch", "Responsive · 10 docs");
+    await user.click(screen.getByRole("button", { name: "Estimate" }));
+    const launch = await screen.findByRole("button", { name: "Launch run for 4 documents" });
+    await user.click(launch);
+    await waitFor(() => expect(attempts).toBe(1));
+    await user.click(screen.getByRole("button", { name: "Launch run for 4 documents" }));
+    await waitFor(() => expect(attempts).toBe(2));
+    const keys = vi.mocked(coreApi).mock.calls
+      .filter(([path, init]) => path === "/v1/matters/matter-1/analysis-tasks/task-1/fact-runs" && init?.method === "POST")
+      .map(([, init]) => JSON.parse(String(init?.body)).idempotency_key);
+    expect(keys[0]).toEqual(expect.any(String));
+    expect(keys[1]).toBe(keys[0]);
+  });
+
   it("launches through the Batch API when the model supports it and labels batch runs", async () => {
     batchApiAvailable = true;
     runs = [run({ configuration_snapshot: { use_batch_api: true }, report: { counts: { facts_created: 1, batch_fallbacks: 2 } } })];

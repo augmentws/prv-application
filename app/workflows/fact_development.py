@@ -14,14 +14,26 @@ from app.fact_development import (
     prepare_fact_development_run,
     process_fact_development_chunk,
     run_ordered_window,
+    uses_batch_api,
 )
 
 logger = logging.getLogger(__name__)
 
 RUN_QUEUE = Queue("fact-development-runs", global_concurrency=2)
+# A Batch API run waits hours for its provider batches, so it runs on its own queue and never holds a real-time slot.
+BATCH_RUN_QUEUE = Queue(
+    "fact-development-batch-runs",
+    global_concurrency=get_settings().fact_development_batch_run_concurrency,
+)
 CHUNK_QUEUE = Queue(
     "fact-development-chunks",
     global_concurrency=get_settings().fact_development_document_concurrency,
+)
+# Batch API chunks hold their queue slot while they wait hours for the provider, so they get their own queue and
+# never block real-time runs. A batch run has one chunk in flight at a time.
+BATCH_CHUNK_QUEUE = Queue(
+    "fact-development-batch-chunks",
+    global_concurrency=get_settings().fact_development_batch_run_concurrency,
 )
 
 
@@ -35,10 +47,10 @@ def prepare(run_id: str) -> list[str]:
         return prepare_fact_development_run(db, uuid.UUID(run_id))
 
 
-@DBOS.step(name="read_fact_development_chunk_window")
-def read_window(run_id: str) -> int:
+@DBOS.step(name="read_fact_development_dispatch")
+def read_dispatch(run_id: str) -> dict:
     with SessionLocal() as db:
-        return chunk_window(db, uuid.UUID(run_id))
+        return {"window": chunk_window(db, uuid.UUID(run_id)), "batch_api": uses_batch_api(db, uuid.UUID(run_id))}
 
 
 @DBOS.step(name="process_fact_development_chunk", retries_allowed=True, max_attempts=3, should_retry=_should_retry)
@@ -80,17 +92,24 @@ def fail(run_id: str, message: str, code: str, retriable: bool) -> None:
         fail_fact_development_run(db, uuid.UUID(run_id), message, code=code, retriable=retriable)
 
 
-def _enqueue_chunk(chunk_id: str):
-    with SetWorkflowID(f"{DBOS.workflow_id}:chunk:{chunk_id}"):
-        return CHUNK_QUEUE.enqueue(fact_development_chunk, chunk_id)
+def _chunk_starter(batch_api: bool):
+    queue = BATCH_CHUNK_QUEUE if batch_api else CHUNK_QUEUE
+
+    def start(chunk_id: str):
+        with SetWorkflowID(f"{DBOS.workflow_id}:chunk:{chunk_id}"):
+            return queue.enqueue(fact_development_chunk, chunk_id)
+
+    return start
 
 
 @DBOS.workflow(name="fact_development_v1")
 def fact_development_run(run_id: str) -> None:
     try:
         chunk_ids = prepare(run_id)
-        window = read_window(run_id)
-        run_ordered_window(chunk_ids, window, _enqueue_chunk, lambda handle: handle.get_result())
+        dispatch = read_dispatch(run_id)
+        run_ordered_window(
+            chunk_ids, dispatch["window"], _chunk_starter(dispatch["batch_api"]), lambda handle: handle.get_result()
+        )
         finalize(run_id)
     except Exception as exc:
         logger.exception("Fact-development run failed run_id=%s", run_id)

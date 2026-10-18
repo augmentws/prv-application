@@ -16405,15 +16405,30 @@ export type createFactExportFilesV1MattersMatterIdFactExportsPostResponse201 = {
   status: 201
 }
 
+export type createFactExportFilesV1MattersMatterIdFactExportsPostResponse409 = {
+  data: void
+  status: 409
+}
+
 export type createFactExportFilesV1MattersMatterIdFactExportsPostResponse422 = {
-  data: HTTPValidationError
+  data: void
   status: 422
+}
+
+export type createFactExportFilesV1MattersMatterIdFactExportsPostResponse429 = {
+  data: void
+  status: 429
+}
+
+export type createFactExportFilesV1MattersMatterIdFactExportsPostResponse503 = {
+  data: void
+  status: 503
 }
 
 export type createFactExportFilesV1MattersMatterIdFactExportsPostResponseSuccess = (createFactExportFilesV1MattersMatterIdFactExportsPostResponse201) & {
   headers: Headers;
 };
-export type createFactExportFilesV1MattersMatterIdFactExportsPostResponseError = (createFactExportFilesV1MattersMatterIdFactExportsPostResponse422) & {
+export type createFactExportFilesV1MattersMatterIdFactExportsPostResponseError = (createFactExportFilesV1MattersMatterIdFactExportsPostResponse409 | createFactExportFilesV1MattersMatterIdFactExportsPostResponse422 | createFactExportFilesV1MattersMatterIdFactExportsPostResponse429 | createFactExportFilesV1MattersMatterIdFactExportsPostResponse503) & {
   headers: Headers;
 };
 

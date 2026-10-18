@@ -36,10 +36,9 @@ import type {
 } from "@/generated/models";
 import { ApiError, coreApi } from "@/lib/api-client";
 import { formatDate } from "@/lib/format";
-import { factDetailHref, formatFactDate } from "@/lib/facts";
+import { FACT_PRECISION_LABELS, factDetailHref, formatFactDate } from "@/lib/facts";
 
 const PRECISIONS = ["DAY", "MONTH", "QUARTER", "YEAR", "RANGE", "UNKNOWN"] as const;
-const PRECISION_LABELS: Record<string, string> = { DAY: "Day", MONTH: "Month", QUARTER: "Quarter", YEAR: "Year", RANGE: "Date range", UNKNOWN: "Undated" };
 const BASES = ["STATED_IN_TEXT", "DOCUMENT_DATE", "INFERRED"] as const;
 const BASIS_LABELS: Record<string, string> = { STATED_IN_TEXT: "Stated in the text", DOCUMENT_DATE: "The document's date", INFERRED: "Inferred" };
 const ROLE_LABELS: Record<string, string> = { PARTICIPANT_ACTOR: "Actor", PARTICIPANT_RECIPIENT: "Recipient" };
@@ -213,7 +212,7 @@ export function FactDetail({ clientId, matterId, factId }: { clientId: string; m
             <div className="flex flex-wrap items-center gap-2">
               <FactStatusBadge status={current.status} />
               {current.key_fact ? <Badge variant="accent">Key fact</Badge> : null}
-              {current.has_contradiction ? <Badge variant="outline" className="text-conflict">Contradicted</Badge> : null}
+              {current.has_contradiction ? <Badge variant="outline" className="text-conflict-foreground">Contradicted</Badge> : null}
               {current.origin_workflow_run_id ? <span className="inline-flex items-center gap-1 text-xs font-medium text-agent"><Bot className="size-3.5" aria-hidden="true" />Proposed by an agent</span> : null}
             </div>
             <CardTitle className="text-lg leading-snug">{current.summary}</CardTitle>
@@ -355,7 +354,7 @@ function EvidenceItem({ evidence, canRemove, busy, onView, onRemove }: { evidenc
       <figcaption className="mt-2 flex flex-wrap items-center gap-2 text-xs text-muted-foreground">
         <span className="font-medium text-foreground">{evidence.control_number ?? "Document"}</span>
         <span>{evidence.paragraph_id}</span>
-        {evidence.stance === "CONTRADICTS" ? <Badge variant="outline" className="text-conflict">Contradicts</Badge> : null}
+        {evidence.stance === "CONTRADICTS" ? <Badge variant="outline" className="text-conflict-foreground">Contradicts</Badge> : null}
         {evidence.workflow_run_id ? <span className="text-agent">Agent</span> : null}
         <span className="ml-auto flex gap-1">
           <Button type="button" variant="ghost" size="sm" onClick={onView}><Eye aria-hidden="true" />View in document</Button>
@@ -369,7 +368,7 @@ function EvidenceItem({ evidence, canRemove, busy, onView, onRemove }: { evidenc
 function displayChange(field: string, value: unknown, issueNames: Map<string, string>, entityNames: Map<string, string>): ReactNode {
   if (value === null || value === undefined || value === "") return "—";
   if (field === "owner_entity_id") return entityNames.get(String(value)) ?? "Unknown entity";
-  if (field === "date_precision") return PRECISION_LABELS[String(value)] ?? String(value);
+  if (field === "date_precision") return FACT_PRECISION_LABELS[String(value)] ?? String(value);
   if (field === "date_basis") return BASIS_LABELS[String(value)] ?? String(value);
   if (field === "issues" && Array.isArray(value)) return value.map((item) => issueNames.get((item as { issue_key: string }).issue_key) ?? (item as { issue_key: string }).issue_key).join(", ") || "—";
   if (field === "participants" && Array.isArray(value)) {
@@ -496,7 +495,7 @@ function FactEditForm({ fact, catalog, entities, entitiesAvailable, saving, onCa
           <Label htmlFor="fact-precision">Date precision</Label>
           <Select value={edit.datePrecision} onValueChange={(value) => setEdit({ ...edit, datePrecision: value })}>
             <SelectTrigger id="fact-precision"><SelectValue /></SelectTrigger>
-            <SelectContent>{PRECISIONS.map((value) => <SelectItem key={value} value={value}>{PRECISION_LABELS[value]}</SelectItem>)}</SelectContent>
+            <SelectContent>{PRECISIONS.map((value) => <SelectItem key={value} value={value}>{FACT_PRECISION_LABELS[value]}</SelectItem>)}</SelectContent>
           </Select>
         </div>
         <div className="space-y-2">

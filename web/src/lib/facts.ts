@@ -40,6 +40,7 @@ export interface FactListState {
 }
 
 const PARAM_PREFIX = "ff_";
+const UUID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 
 export function readFactListState(params: URLSearchParams): FactListState {
   const selected: FactListState["selected"] = {};
@@ -55,7 +56,8 @@ export function readFactListState(params: URLSearchParams): FactListState {
     dateFrom: parseDateOnly(params.get("ffrom") ?? "") ? (params.get("ffrom") as string) : "",
     dateTo: parseDateOnly(params.get("fto") ?? "") ? (params.get("fto") as string) : "",
     pendingOnly: params.get("fpending") === "1",
-    entityId: params.get("fentity") ?? "",
+    // Interpolated into API paths, so only a UUID is accepted.
+    entityId: UUID_PATTERN.test(params.get("fentity") ?? "") ? (params.get("fentity") as string) : "",
     includeWorking: params.get("fworking") === "1",
     sort: sort && sort in FACT_SORT_LABELS ? (sort as FactSort) : "DATE_ASC",
     page: Number.isFinite(page) && page > 0 ? page : 1,
@@ -156,6 +158,15 @@ export function formatFactDate(fact: Pick<MatterFactRead, "date_precision" | "ev
   }
 }
 
+export const FACT_PRECISION_LABELS: Record<string, string> = {
+  DAY: "Day",
+  MONTH: "Month",
+  QUARTER: "Quarter",
+  YEAR: "Year",
+  RANGE: "Date range",
+  UNKNOWN: "Undated",
+};
+
 export const FACT_STATUS_LABELS: Record<string, string> = {
   WORKING: "Working",
   CONFIRMED: "Confirmed",
@@ -164,7 +175,7 @@ export const FACT_STATUS_LABELS: Record<string, string> = {
 };
 
 export const FACT_STATUS_CLASSES: Record<string, string> = {
-  WORKING: "border border-pending/40 bg-pending/10 text-pending",
+  WORKING: "border border-pending/40 bg-pending/10 text-pending-foreground",
   CONFIRMED: "border border-confirmed/40 bg-confirmed/10 text-confirmed",
   REJECTED: "border border-rejected/40 bg-rejected/10 text-rejected",
   MERGED: "border border-border bg-muted text-muted-foreground",
