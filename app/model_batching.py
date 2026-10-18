@@ -56,6 +56,8 @@ class BatchProviderAdapter(Protocol):
         display_name: str,
     ) -> BatchSubmission: ...
 
+    def find(self, display_name: str) -> BatchSubmission | None: ...
+
     def poll(self, batch_id: str) -> BatchPoll: ...
 
     def results(self, batch_id: str) -> tuple[str, list[BatchModelResult]]: ...
@@ -116,6 +118,21 @@ class GoogleBatchProvider:
         if not job.name:
             raise ValueError("Gemini Batch API did not return a batch name")
         return BatchSubmission(batch_id=job.name, status=self._state(job))
+
+    def find(self, display_name: str, *, max_pages: int = 5) -> BatchSubmission | None:
+        """The most recent batch with this display name, searched across a bounded number of list pages."""
+
+        client = self._client()
+        try:
+            pager = client.batches.list(config={"page_size": 100})
+            for index, job in enumerate(pager):
+                if index >= max_pages * 100:
+                    break
+                if job.display_name == display_name and job.name:
+                    return BatchSubmission(batch_id=job.name, status=self._state(job))
+        finally:
+            client.close()
+        return None
 
     def poll(self, batch_id: str) -> BatchPoll:
         client = self._client()

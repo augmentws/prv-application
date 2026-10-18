@@ -2793,6 +2793,8 @@ class FactDevelopmentRunCreate(BaseModel):
     coding_source: Literal["MATTER_METADATA", "REVIEWER_CODING"] = "MATTER_METADATA"
     reviewer_coding_id: uuid.UUID | None = None
     idempotency_key: str = Field(min_length=1, max_length=200)
+    # Submit extraction calls through the provider's Batch API: lower cost, results in minutes to hours.
+    use_batch_api: bool = False
 
     @field_validator("idempotency_key")
     @classmethod
@@ -2828,6 +2830,8 @@ class FactDevelopmentRunEstimateRead(BaseModel):
     estimated_input_tokens: int
     estimated_output_tokens: int
     extraction_model: str
+    # Whether the extraction model can run through a provider Batch API.
+    batch_api_available: bool
     chunk_count: int
     issue_document_counts: list[FactIssueMembershipCount]
 
@@ -4385,6 +4389,14 @@ class MatterDocumentFactRead(BaseModel):
     quotes: list[MatterFactEvidenceRead]
 
 
+class FactIssueCatalogEntry(BaseModel):
+    matter_analysis_task_id: uuid.UUID
+    task_name: str
+    issue_key: str
+    name: str
+    description: str | None
+
+
 class MatterFactPage(BaseModel):
     items: list[MatterFactRead]
     total: int
@@ -4413,25 +4425,16 @@ class MatterFactExportRead(ORMModel):
     filter_snapshot: dict[str, Any]
     csv_policy_snapshot: dict[str, Any]
     requested_filename: str
-    status: Literal["QUEUED", "RUNNING", "COMPLETED", "FAILED", "CANCELED"]
-    current_stage: str | None
     fact_count: int
     evidence_count: int
-    facts_filename: str | None
-    facts_byte_length: int | None
-    evidence_filename: str | None
-    evidence_byte_length: int | None
-    snapshot_started_at: datetime | None
-    expires_at: datetime | None
-    failure_code: str | None
-    failure_summary: str | None
-    failure_retriable: bool
+    facts_filename: str
+    facts_byte_length: int
+    evidence_filename: str
+    evidence_byte_length: int
+    snapshot_started_at: datetime
+    expires_at: datetime
     created_by_user_id: uuid.UUID
     created_at: datetime
-    updated_at: datetime
-    completed_at: datetime | None
-    canceled_at: datetime | None
-    execution: JobExecutionRead | None = None
 
 
 class MatterFactSearchRequest(BaseModel):

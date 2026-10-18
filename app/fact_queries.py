@@ -528,26 +528,44 @@ def _entity_names(db: Session, entity_ids: list[uuid.UUID]) -> dict[uuid.UUID, s
 def issue_names(db: Session, matter_id: uuid.UUID) -> dict[str, str]:
     """Issue key to display name across the published catalogs of the matter's fact-development tasks."""
 
+    names: dict[str, str] = {}
+    for entry in issue_catalog(db, matter_id):
+        names.setdefault(entry["issue_key"], entry["name"])
+    return names
+
+
+def issue_catalog(db: Session, matter_id: uuid.UUID) -> list[dict[str, Any]]:
+    """Every issue in the published catalogs of the matter's fact-development tasks, in catalog order."""
+
     from app.fact_specifications import FactSpecificationError, parse_fact_development_specification
 
-    names: dict[str, str] = {}
+    entries: list[dict[str, Any]] = []
     rows = db.execute(
-        select(MatterAnalysisTaskVersion.fact_development_specification)
-        .join(MatterAnalysisTask, MatterAnalysisTask.id == MatterAnalysisTaskVersion.matter_analysis_task_id)
+        select(MatterAnalysisTask.id, MatterAnalysisTask.name, MatterAnalysisTaskVersion.fact_development_specification)
+        .join(MatterAnalysisTaskVersion, MatterAnalysisTaskVersion.matter_analysis_task_id == MatterAnalysisTask.id)
         .where(
             MatterAnalysisTask.matter_id == matter_id,
             MatterAnalysisTask.task_type == "FACT_DEVELOPMENT",
             MatterAnalysisTaskVersion.version == MatterAnalysisTask.published_version,
         )
-    ).scalars()
-    for value in rows:
+        .order_by(MatterAnalysisTask.created_at, MatterAnalysisTask.id)
+    ).all()
+    for task_id, task_name, value in rows:
         try:
             specification = parse_fact_development_specification(value)
         except FactSpecificationError:
             continue
-        for issue in specification.issues:
-            names.setdefault(issue.key, issue.name)
-    return names
+        entries.extend(
+            {
+                "matter_analysis_task_id": task_id,
+                "task_name": task_name,
+                "issue_key": issue.key,
+                "name": issue.name,
+                "description": issue.description,
+            }
+            for issue in specification.issues
+        )
+    return entries
 
 
 def _bucket_start(value: date, interval: str) -> date:

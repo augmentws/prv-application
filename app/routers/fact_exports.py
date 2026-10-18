@@ -1,3 +1,4 @@
+import logging
 import uuid
 from datetime import datetime, timezone
 from typing import Literal
@@ -5,23 +6,30 @@ from urllib.parse import quote
 
 from fastapi import APIRouter, Depends, HTTPException, Query, status
 from fastapi.responses import StreamingResponse
+from httpx import HTTPError
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from app.artifact_gateway import get_workflow_artifact_reference, iter_workflow_artifact_content
 from app.audit import record_audit
 from app.authorization import ResourceRef, can
+from app.config import get_settings
 from app.database import get_db
 from app.dependencies import Principal, get_principal
-from app.fact_exports import as_utc, create_fact_export_job
+from app.fact_exports import (
+    FactExportBusy,
+    FactExportConflict,
+    FactExportTooLarge,
+    as_utc,
+    create_fact_export,
+    record_fact_export_failure,
+)
 from app.fact_queries import FactFilterError
-from app.job_archives import job_not_archived
-from app.job_executions import MATTER_FACT_EXPORT_JOB_TYPE, JobExecutionConflict
-from app.models import Matter, MatterFactExportJob
+from app.models import Matter, MatterFactExport
 from app.schemas import MatterFactExportCreate, MatterFactExportRead
-from app.workflows.dispatcher import enqueue_fact_export
 from classification_service.schemas import ArtifactType
 
+logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/v1/matters/{matter_id}/fact-exports", tags=["matter fact exports"])
 EXPORT_PERMISSIONS = ("fact.export", "fact.view", "document.view")
 
@@ -39,28 +47,43 @@ def _export_matter(db: Session, matter_id: uuid.UUID, principal: Principal) -> M
     return matter
 
 
-def _export_or_404(db: Session, matter_id: uuid.UUID, export_id: uuid.UUID) -> MatterFactExportJob:
-    job = db.scalar(
-        select(MatterFactExportJob).where(
-            MatterFactExportJob.id == export_id,
-            MatterFactExportJob.matter_id == matter_id,
+def _export_or_404(db: Session, matter_id: uuid.UUID, export_id: uuid.UUID) -> MatterFactExport:
+    export = db.scalar(
+        select(MatterFactExport).where(
+            MatterFactExport.id == export_id,
+            MatterFactExport.matter_id == matter_id,
         )
     )
-    if job is None:
+    if export is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Fact export not found")
-    return job
+    return export
 
 
-@router.post("", response_model=MatterFactExportRead, status_code=status.HTTP_202_ACCEPTED)
-def create_fact_export(
+@router.post(
+    "",
+    response_model=MatterFactExportRead,
+    status_code=status.HTTP_201_CREATED,
+    responses={
+        409: {"description": "The idempotency key was already used for a different export"},
+        422: {"description": "The filter is invalid, or the export would exceed the size limit"},
+        429: {"description": "Another export of this matter is in progress"},
+        503: {"description": "The export files could not be stored; try again"},
+    },
+)
+def create_fact_export_files(
     matter_id: uuid.UUID,
     payload: MatterFactExportCreate,
     principal: Principal = Depends(get_principal),
     db: Session = Depends(get_db),
-) -> MatterFactExportJob:
+) -> MatterFactExport:
+    """Write the facts and evidence CSV files for the filter now and return the completed export.
+
+    Repeating a request with the same idempotency key returns the first export instead of writing new files.
+    """
+
     matter = _export_matter(db, matter_id, principal)
     try:
-        job, created = create_fact_export_job(
+        export, _ = create_fact_export(
             db,
             matter,
             filters=payload.filters,
@@ -68,18 +91,39 @@ def create_fact_export(
             idempotency_key=payload.idempotency_key,
             spreadsheet_safe=payload.spreadsheet_safe,
             actor_user_id=principal.user.id,
+            settings=get_settings(),
         )
     except FactFilterError as exc:
         db.rollback()
         raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_CONTENT, detail=str(exc)) from exc
-    except JobExecutionConflict as exc:
+    except FactExportConflict as exc:
         db.rollback()
         raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=str(exc)) from exc
-    if created:
-        enqueue_fact_export(db, job.workflow_id, str(job.id))
+    except FactExportBusy as exc:
+        db.rollback()
+        record_fact_export_failure(db, matter, actor_user_id=principal.user.id, filters=payload.filters, error=exc)
+        db.commit()
+        raise HTTPException(status_code=status.HTTP_429_TOO_MANY_REQUESTS, detail=str(exc)) from exc
+    except Exception as exc:
+        # Every failed attempt is audited; only storage outages are worth retrying.
+        db.rollback()
+        logger.warning("Fact export for matter %s failed: %s", matter_id, exc)
+        record_fact_export_failure(db, matter, actor_user_id=principal.user.id, filters=payload.filters, error=exc)
+        db.commit()
+        if isinstance(exc, FactExportTooLarge):
+            raise HTTPException(
+                status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
+                detail=f"{exc}. Narrow the filters and export again.",
+            ) from exc
+        if isinstance(exc, HTTPError | ConnectionError | TimeoutError):
+            raise HTTPException(
+                status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+                detail="The export files could not be stored. Try again.",
+            ) from exc
+        raise
     db.commit()
-    db.refresh(job)
-    return job
+    db.refresh(export)
+    return export
 
 
 @router.get("", response_model=list[MatterFactExportRead])
@@ -88,16 +132,13 @@ def list_fact_exports(
     limit: int = Query(default=100, ge=1, le=500),
     principal: Principal = Depends(get_principal),
     db: Session = Depends(get_db),
-) -> list[MatterFactExportJob]:
+) -> list[MatterFactExport]:
     matter = _export_matter(db, matter_id, principal)
     return list(
         db.scalars(
-            select(MatterFactExportJob)
-            .where(
-                MatterFactExportJob.matter_id == matter.id,
-                job_not_archived(MATTER_FACT_EXPORT_JOB_TYPE, MatterFactExportJob.id),
-            )
-            .order_by(MatterFactExportJob.created_at.desc(), MatterFactExportJob.id.desc())
+            select(MatterFactExport)
+            .where(MatterFactExport.matter_id == matter.id)
+            .order_by(MatterFactExport.created_at.desc(), MatterFactExport.id.desc())
             .limit(limit)
         )
     )
@@ -109,7 +150,7 @@ def get_fact_export(
     export_id: uuid.UUID,
     principal: Principal = Depends(get_principal),
     db: Session = Depends(get_db),
-) -> MatterFactExportJob:
+) -> MatterFactExport:
     _export_matter(db, matter_id, principal)
     return _export_or_404(db, matter_id, export_id)
 
@@ -125,14 +166,12 @@ def download_fact_export(
     """Stream one of the export's two CSV files through Core after fresh authorization."""
 
     matter = _export_matter(db, matter_id, principal)
-    job = _export_or_404(db, matter_id, export_id)
-    artifact_id = job.facts_artifact_id if file == "facts" else job.evidence_artifact_id
-    content_hash = job.facts_content_hash if file == "facts" else job.evidence_content_hash
-    byte_length = job.facts_byte_length if file == "facts" else job.evidence_byte_length
-    filename = job.facts_filename if file == "facts" else job.evidence_filename
-    if job.status != "COMPLETED" or artifact_id is None or filename is None:
-        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="Fact export is not ready")
-    if job.expires_at is not None and as_utc(job.expires_at) <= datetime.now(timezone.utc):
+    export = _export_or_404(db, matter_id, export_id)
+    artifact_id = export.facts_artifact_id if file == "facts" else export.evidence_artifact_id
+    content_hash = export.facts_content_hash if file == "facts" else export.evidence_content_hash
+    byte_length = export.facts_byte_length if file == "facts" else export.evidence_byte_length
+    filename = export.facts_filename if file == "facts" else export.evidence_filename
+    if as_utc(export.expires_at) <= datetime.now(timezone.utc):
         raise HTTPException(status_code=status.HTTP_410_GONE, detail="Fact export has expired")
     try:
         artifact = get_workflow_artifact_reference(
@@ -148,10 +187,11 @@ def download_fact_export(
         artifact.artifact_type == ArtifactType.FACT_EXPORT
         and artifact.core_scope_kind == "MATTER"
         and artifact.core_scope_id == matter.id
-        and artifact.producer_run_id == job.id
+        and artifact.producer_run_id == export.id
         and artifact.content_hash == content_hash
         and artifact.byte_length == byte_length
-        and str(artifact.metadata.get("export_job_id")) == str(job.id)
+        # Exports written before exports ran within the request recorded the same id as export_job_id.
+        and str(artifact.metadata.get("export_id") or artifact.metadata.get("export_job_id")) == str(export.id)
         and artifact.metadata.get("file_kind") == expected_kind
     ):
         raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="Fact export file provenance is invalid")
@@ -160,8 +200,8 @@ def download_fact_export(
         tenant_id=matter.client.tenant_id,
         actor_user_id=principal.user.id,
         action="fact_export.downloaded",
-        target_type="matter_fact_export_job",
-        target_id=job.id,
+        target_type="matter_fact_export",
+        target_id=export.id,
         details={"matter_id": str(matter.id), "file": file, "artifact_id": str(artifact_id), "content_hash": content_hash},
     )
     db.commit()
@@ -175,7 +215,7 @@ def download_fact_export(
         media_type="text/csv; charset=utf-8",
         headers={
             "Content-Disposition": f"attachment; filename*=UTF-8''{quote(filename)}",
-            "Content-Length": str(byte_length or 0),
-            "ETag": content_hash or "",
+            "Content-Length": str(byte_length),
+            "ETag": content_hash,
         },
     )

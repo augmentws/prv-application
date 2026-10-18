@@ -16,4 +16,5 @@ export interface FactDevelopmentRunCreate {
      * @maxLength 200
      */
   idempotency_key: string;
+  use_batch_api?: boolean;
 }

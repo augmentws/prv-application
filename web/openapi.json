@@ -15724,6 +15724,59 @@
         }
       }
     },
+    "/v1/matters/{matter_id}/facts/issue-catalog": {
+      "get": {
+        "tags": [
+          "matter facts"
+        ],
+        "summary": "List Fact Issue Catalog",
+        "description": "The issues facts can support: every published fact-development catalog in the matter.\n\nReadable with ``fact.view`` so reviewers can name and choose issues without Analysis Task access.",
+        "operationId": "list_fact_issue_catalog_v1_matters__matter_id__facts_issue_catalog_get",
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "matter_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid",
+              "title": "Matter Id"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "array",
+                  "items": {
+                    "$ref": "#/components/schemas/FactIssueCatalogEntry"
+                  },
+                  "title": "Response List Fact Issue Catalog V1 Matters  Matter Id  Facts Issue Catalog Get"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/v1/matters/{matter_id}/facts/{fact_id}": {
       "get": {
         "tags": [
@@ -17214,8 +17267,9 @@
         "tags": [
           "matter fact exports"
         ],
-        "summary": "Create Fact Export",
-        "operationId": "create_fact_export_v1_matters__matter_id__fact_exports_post",
+        "summary": "Create Fact Export Files",
+        "description": "Write the facts and evidence CSV files for the filter now and return the completed export.\n\nRepeating a request with the same idempotency key returns the first export instead of writing new files.",
+        "operationId": "create_fact_export_files_v1_matters__matter_id__fact_exports_post",
         "security": [
           {
             "HTTPBearer": []
@@ -17244,7 +17298,7 @@
           }
         },
         "responses": {
-          "202": {
+          "201": {
             "description": "Successful Response",
             "content": {
               "application/json": {
@@ -17254,15 +17308,17 @@
               }
             }
           },
+          "409": {
+            "description": "The idempotency key was already used for a different export"
+          },
           "422": {
-            "description": "Validation Error",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/HTTPValidationError"
-                }
-              }
-            }
+            "description": "The filter is invalid, or the export would exceed the size limit"
+          },
+          "429": {
+            "description": "Another export of this matter is in progress"
+          },
+          "503": {
+            "description": "The export files could not be stored; try again"
           }
         }
       },
@@ -32384,6 +32440,11 @@
             "maxLength": 200,
             "minLength": 1,
             "title": "Idempotency Key"
+          },
+          "use_batch_api": {
+            "type": "boolean",
+            "title": "Use Batch Api",
+            "default": false
           }
         },
         "additionalProperties": false,
@@ -32500,6 +32561,10 @@
             "type": "string",
             "title": "Extraction Model"
           },
+          "batch_api_available": {
+            "type": "boolean",
+            "title": "Batch Api Available"
+          },
           "chunk_count": {
             "type": "integer",
             "title": "Chunk Count"
@@ -32528,6 +32593,7 @@
           "estimated_input_tokens",
           "estimated_output_tokens",
           "extraction_model",
+          "batch_api_available",
           "chunk_count",
           "issue_document_counts"
         ],
@@ -33277,6 +33343,47 @@
           "coding_mappings"
         ],
         "title": "FactIssue"
+      },
+      "FactIssueCatalogEntry": {
+        "properties": {
+          "matter_analysis_task_id": {
+            "type": "string",
+            "format": "uuid",
+            "title": "Matter Analysis Task Id"
+          },
+          "task_name": {
+            "type": "string",
+            "title": "Task Name"
+          },
+          "issue_key": {
+            "type": "string",
+            "title": "Issue Key"
+          },
+          "name": {
+            "type": "string",
+            "title": "Name"
+          },
+          "description": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Description"
+          }
+        },
+        "type": "object",
+        "required": [
+          "matter_analysis_task_id",
+          "task_name",
+          "issue_key",
+          "name",
+          "description"
+        ],
+        "title": "FactIssueCatalogEntry"
       },
       "FactIssueCodingMapping": {
         "properties": {
@@ -39303,28 +39410,6 @@
             "type": "string",
             "title": "Requested Filename"
           },
-          "status": {
-            "type": "string",
-            "enum": [
-              "QUEUED",
-              "RUNNING",
-              "COMPLETED",
-              "FAILED",
-              "CANCELED"
-            ],
-            "title": "Status"
-          },
-          "current_stage": {
-            "anyOf": [
-              {
-                "type": "string"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "title": "Current Stage"
-          },
           "fact_count": {
             "type": "integer",
             "title": "Fact Count"
@@ -39334,98 +39419,30 @@
             "title": "Evidence Count"
           },
           "facts_filename": {
-            "anyOf": [
-              {
-                "type": "string"
-              },
-              {
-                "type": "null"
-              }
-            ],
+            "type": "string",
             "title": "Facts Filename"
           },
           "facts_byte_length": {
-            "anyOf": [
-              {
-                "type": "integer"
-              },
-              {
-                "type": "null"
-              }
-            ],
+            "type": "integer",
             "title": "Facts Byte Length"
           },
           "evidence_filename": {
-            "anyOf": [
-              {
-                "type": "string"
-              },
-              {
-                "type": "null"
-              }
-            ],
+            "type": "string",
             "title": "Evidence Filename"
           },
           "evidence_byte_length": {
-            "anyOf": [
-              {
-                "type": "integer"
-              },
-              {
-                "type": "null"
-              }
-            ],
+            "type": "integer",
             "title": "Evidence Byte Length"
           },
           "snapshot_started_at": {
-            "anyOf": [
-              {
-                "type": "string",
-                "format": "date-time"
-              },
-              {
-                "type": "null"
-              }
-            ],
+            "type": "string",
+            "format": "date-time",
             "title": "Snapshot Started At"
           },
           "expires_at": {
-            "anyOf": [
-              {
-                "type": "string",
-                "format": "date-time"
-              },
-              {
-                "type": "null"
-              }
-            ],
+            "type": "string",
+            "format": "date-time",
             "title": "Expires At"
-          },
-          "failure_code": {
-            "anyOf": [
-              {
-                "type": "string"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "title": "Failure Code"
-          },
-          "failure_summary": {
-            "anyOf": [
-              {
-                "type": "string"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "title": "Failure Summary"
-          },
-          "failure_retriable": {
-            "type": "boolean",
-            "title": "Failure Retriable"
           },
           "created_by_user_id": {
             "type": "string",
@@ -39436,45 +39453,6 @@
             "type": "string",
             "format": "date-time",
             "title": "Created At"
-          },
-          "updated_at": {
-            "type": "string",
-            "format": "date-time",
-            "title": "Updated At"
-          },
-          "completed_at": {
-            "anyOf": [
-              {
-                "type": "string",
-                "format": "date-time"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "title": "Completed At"
-          },
-          "canceled_at": {
-            "anyOf": [
-              {
-                "type": "string",
-                "format": "date-time"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "title": "Canceled At"
-          },
-          "execution": {
-            "anyOf": [
-              {
-                "$ref": "#/components/schemas/JobExecutionRead"
-              },
-              {
-                "type": "null"
-              }
-            ]
           }
         },
         "type": "object",
@@ -39484,8 +39462,6 @@
           "filter_snapshot",
           "csv_policy_snapshot",
           "requested_filename",
-          "status",
-          "current_stage",
           "fact_count",
           "evidence_count",
           "facts_filename",
@@ -39494,14 +39470,8 @@
           "evidence_byte_length",
           "snapshot_started_at",
           "expires_at",
-          "failure_code",
-          "failure_summary",
-          "failure_retriable",
           "created_by_user_id",
-          "created_at",
-          "updated_at",
-          "completed_at",
-          "canceled_at"
+          "created_at"
         ],
         "title": "MatterFactExportRead"
       },

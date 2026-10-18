@@ -29,6 +29,16 @@ export const helpTopics = {
     summary: "Learn how admins configure classifiers, freeze training sets, build governed versions, and inspect scoring previews.",
     href: "/docs/statistical-classification",
   },
+  facts: {
+    title: "Facts help",
+    summary: "Learn how facts are proposed, reviewed and confirmed, read as a timeline, and exported as CSV.",
+    href: "/docs/facts",
+  },
+  entities: {
+    title: "Entities help",
+    summary: "Learn how people and organizations are proposed, confirmed, merged, and split, and how they connect to facts.",
+    href: "/docs/entities",
+  },
   matterSearch: {
     title: "Matter search help",
     summary: "Learn how matter indexes, searches, filters, facets, and rebuilds work.",

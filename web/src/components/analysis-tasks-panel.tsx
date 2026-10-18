@@ -6,6 +6,7 @@ import Link from "next/link";
 import { useState } from "react";
 import { toast } from "sonner";
 
+import { FactTaskWorkspace } from "@/components/facts/fact-task-workspace";
 import { QueryError, TableLoading } from "@/components/query-state";
 import { StatusBadge } from "@/components/status-badge";
 import { Badge } from "@/components/ui/badge";
@@ -24,6 +25,7 @@ import type {
   MatterAnalysisTaskVersionRead,
   ClassificationModelRead,
   JobExecutionRead,
+  MatterDefinitionRead,
   MatterEmbeddingJobRead,
   MetadataDefinitionRead,
   ReviewBatchDocumentRead,
@@ -31,18 +33,15 @@ import type {
   ReviewDecisionResultRead,
 } from "@/generated/models";
 import { ApiError, coreApi } from "@/lib/api-client";
+import { FACT_GUIDANCE_HELP, FACT_GUIDANCE_TEMPLATE } from "@/lib/facts";
 import { formatDate } from "@/lib/format";
 
 const TASK_TYPE_LABELS = {
   QUESTION_ANSWERING: "Question answering",
   CLASSIFICATION: "Classification",
-} as const;
-
-// Fact-development tasks are created through the API until their authoring UI exists.
-const TASK_TYPE_DISPLAY_LABELS = {
-  ...TASK_TYPE_LABELS,
   FACT_DEVELOPMENT: "Fact development",
 } as const;
+
 
 const DECISION_PROVIDER_LABELS = {
   JEV: "TypeSafe JEV",
@@ -92,7 +91,7 @@ export function AnalysisTasksPanel({ clientId, matterId }: { clientId?: string; 
       <div className="flex flex-wrap items-start justify-between gap-4">
         <div>
           <h2 className="text-lg font-semibold">Analysis tasks</h2>
-          <p className="mt-1 max-w-3xl text-sm leading-6 text-muted-foreground">Run governed JEV, OpenAI Decisions, or statistical-classification analysis against a review batch or the whole matter. Results remain isolated from matter coding.</p>
+          <p className="mt-1 max-w-3xl text-sm leading-6 text-muted-foreground">Run governed JEV, OpenAI Decisions, statistical-classification, or fact-development analysis against a review batch or the whole matter. Results remain isolated from matter coding.</p>
         </div>
         <CreateAnalysisTaskDialog matterId={matterId} destinationDefinitions={aiAssignableDefinitions} classificationModels={classificationModels.data ?? []} onCreated={updateTask} />
       </div>
@@ -101,7 +100,7 @@ export function AnalysisTasksPanel({ clientId, matterId }: { clientId?: string; 
         <Card className="p-8 text-center">
           <Sparkles className="mx-auto mb-3 size-7 text-primary" />
           <h3 className="font-semibold">No analysis tasks yet</h3>
-          <p className="mx-auto mt-2 max-w-xl text-sm text-muted-foreground">Create a question-answering or classification task. Each published version pins the engine configuration used by every run.</p>
+          <p className="mx-auto mt-2 max-w-xl text-sm text-muted-foreground">Create a question-answering, classification, or fact-development task. Each published version pins the engine configuration used by every run.</p>
         </Card>
       ) : (
         <div className="grid min-h-[40rem] gap-4 xl:grid-cols-[18rem_minmax(0,1fr)]">
@@ -117,7 +116,7 @@ export function AnalysisTasksPanel({ clientId, matterId }: { clientId?: string; 
                 >
                   <span className="block truncate font-semibold">{task.name}</span>
                   <span className="mt-1 flex flex-wrap items-center gap-1.5 text-xs">
-                    <span>{TASK_TYPE_DISPLAY_LABELS[task.task_type]}</span>
+                    <span>{TASK_TYPE_LABELS[task.task_type]}</span>
                     <span aria-hidden="true">·</span>
                     <span>v{task.current_version}</span>
                     {task.published_version ? <Badge variant="outline">published v{task.published_version}</Badge> : null}
@@ -143,6 +142,13 @@ function CreateAnalysisTaskDialog({ matterId, destinationDefinitions, classifica
   const [definition, setDefinition] = useState("");
   const [destinationIds, setDestinationIds] = useState<string[]>([]);
   const [classificationModelId, setClassificationModelId] = useState("");
+  const [guidanceId, setGuidanceId] = useState("");
+  const guidance = useQuery({
+    queryKey: ["review-guidance", matterId],
+    queryFn: () => coreApi<MatterDefinitionRead[]>(`/v1/matters/${matterId}/guidance`),
+    enabled: open && taskType === "FACT_DEVELOPMENT",
+  });
+  const publishedGuidance = (guidance.data ?? []).filter((item) => item.status === "ACTIVE" && item.published_revision);
   const runnableModels = classificationModels.filter((model) => model.status === "ACTIVE" && model.active_model_version_id);
   const selectedModel = runnableModels.find((model) => model.id === classificationModelId);
   const mutation = useMutation({
@@ -157,6 +163,7 @@ function CreateAnalysisTaskDialog({ matterId, destinationDefinitions, classifica
       setDecisionProvider("JEV");
       setDestinationIds([]);
       setClassificationModelId("");
+      setGuidanceId("");
       toast.success(`${created.name} was created.`);
     },
   });
@@ -168,6 +175,17 @@ function CreateAnalysisTaskDialog({ matterId, destinationDefinitions, classifica
 
   function create() {
     const classification = taskType === "CLASSIFICATION";
+    if (taskType === "FACT_DEVELOPMENT") {
+      mutation.mutate({
+        key,
+        name: name.trim(),
+        description: description.trim() || null,
+        task_type: taskType,
+        definition_markdown: definition.trim(),
+        review_guidance_id: guidanceId,
+      });
+      return;
+    }
     mutation.mutate({
       key,
       name: name.trim(),
@@ -188,13 +206,20 @@ function CreateAnalysisTaskDialog({ matterId, destinationDefinitions, classifica
         <div className="grid gap-4 sm:grid-cols-2">
           <Field label="Name" htmlFor="analysis-task-name"><Input id="analysis-task-name" value={name} onChange={(event) => changeName(event.target.value)} placeholder="Contract relevance" /></Field>
           <Field label="Stable key" htmlFor="analysis-task-key"><Input id="analysis-task-key" value={key} onChange={(event) => setKey(taskKey(event.target.value))} placeholder="contract_relevance" /></Field>
-          <Field label="Task type" htmlFor="analysis-task-type"><Select value={taskType} onValueChange={(value) => { setTaskType(value as CreatableTaskType); setDestinationIds([]); }}><SelectTrigger id="analysis-task-type"><SelectValue /></SelectTrigger><SelectContent>{Object.entries(TASK_TYPE_LABELS).map(([value, label]) => <SelectItem key={value} value={value}>{label}</SelectItem>)}</SelectContent></Select></Field>
+          <Field label="Task type" htmlFor="analysis-task-type"><Select value={taskType} onValueChange={(value) => {
+            const next = value as CreatableTaskType;
+            setTaskType(next);
+            setDestinationIds([]);
+            // Start fact tasks from the template, and drop it again if the reviewer switches away without editing it.
+            if (next === "FACT_DEVELOPMENT" && !definition.trim()) setDefinition(FACT_GUIDANCE_TEMPLATE);
+            else if (next !== "FACT_DEVELOPMENT" && definition === FACT_GUIDANCE_TEMPLATE) setDefinition("");
+          }}><SelectTrigger id="analysis-task-type"><SelectValue /></SelectTrigger><SelectContent>{Object.entries(TASK_TYPE_LABELS).map(([value, label]) => <SelectItem key={value} value={value}>{label}</SelectItem>)}</SelectContent></Select></Field>
           <Field label="Description" htmlFor="analysis-task-description"><Input id="analysis-task-description" value={description} onChange={(event) => setDescription(event.target.value)} placeholder="What this task decides" /></Field>
           {taskType === "QUESTION_ANSWERING" ? <Field label="Decision provider" htmlFor="analysis-task-provider"><Select value={decisionProvider} onValueChange={(value) => setDecisionProvider(value as DecisionProvider)}><SelectTrigger id="analysis-task-provider"><SelectValue /></SelectTrigger><SelectContent>{Object.entries(DECISION_PROVIDER_LABELS).map(([value, label]) => <SelectItem key={value} value={value}>{label}</SelectItem>)}</SelectContent></Select></Field> : null}
         </div>
-        {taskType === "CLASSIFICATION" ? <div className="space-y-3"><Field label="Activated model version" htmlFor="analysis-task-classifier"><Select value={classificationModelId} onValueChange={setClassificationModelId}><SelectTrigger id="analysis-task-classifier"><SelectValue placeholder="Select an approved, activated classifier" /></SelectTrigger><SelectContent>{runnableModels.map((model) => <SelectItem key={model.id} value={model.id}>{model.name} · {model.target_field.display_name}</SelectItem>)}</SelectContent></Select></Field>{selectedModel ? <p className="rounded-md border bg-muted/20 p-3 text-sm">Destination field: <strong>{selectedModel.target_field.display_name}</strong>. The task version will pin model version <code>{selectedModel.active_model_version_id}</code>.</p> : null}{!runnableModels.length ? <p className="text-sm text-muted-foreground">No activated classification models are available.</p> : null}</div> : <><DestinationFieldPicker definitions={destinationDefinitions} selectedIds={destinationIds} onChange={setDestinationIds} /><Field label="Task definition" htmlFor="analysis-task-definition"><Textarea id="analysis-task-definition" className="min-h-64 font-mono text-sm" value={definition} onChange={(event) => setDefinition(event.target.value)} placeholder="# Purpose&#10;&#10;Describe the decision criteria, inclusions, exclusions, and ambiguity rules…" /></Field></>}
+        {taskType === "FACT_DEVELOPMENT" ? <div className="space-y-3"><Field label="Review Guidance" htmlFor="analysis-task-guidance"><Select value={guidanceId} onValueChange={setGuidanceId}><SelectTrigger id="analysis-task-guidance"><SelectValue placeholder={guidance.isPending ? "Loading guidance…" : "Select published guidance"} /></SelectTrigger><SelectContent>{publishedGuidance.map((item) => <SelectItem key={item.id} value={item.id}>{item.name} · revision {item.published_revision}</SelectItem>)}</SelectContent></Select></Field>{guidance.error ? <p role="alert" className="text-sm text-destructive">Review Guidance could not be loaded: {guidance.error.message}</p> : !guidance.isPending && !publishedGuidance.length ? <p className="text-sm text-muted-foreground">{guidance.data?.some((item) => item.status === "ACTIVE") ? "This matter's Review Guidance has no published revision yet. Publish it on the Matter definition tab first; its issues define what facts are developed." : "Publish a Review Guidance revision first; its issues define what facts are developed."}</p> : null}<Field label="Fact guidance" htmlFor="analysis-task-fact-guidance"><Textarea id="analysis-task-fact-guidance" aria-describedby="analysis-task-fact-guidance-help" className="min-h-72 font-mono text-sm" value={definition} onChange={(event) => setDefinition(event.target.value)} /></Field><p id="analysis-task-fact-guidance-help" className="text-sm text-muted-foreground">{FACT_GUIDANCE_HELP}</p></div> : taskType === "CLASSIFICATION" ? <div className="space-y-3"><Field label="Activated model version" htmlFor="analysis-task-classifier"><Select value={classificationModelId} onValueChange={setClassificationModelId}><SelectTrigger id="analysis-task-classifier"><SelectValue placeholder="Select an approved, activated classifier" /></SelectTrigger><SelectContent>{runnableModels.map((model) => <SelectItem key={model.id} value={model.id}>{model.name} · {model.target_field.display_name}</SelectItem>)}</SelectContent></Select></Field>{selectedModel ? <p className="rounded-md border bg-muted/20 p-3 text-sm">Destination field: <strong>{selectedModel.target_field.display_name}</strong>. The task version will pin model version <code>{selectedModel.active_model_version_id}</code>.</p> : null}{!runnableModels.length ? <p className="text-sm text-muted-foreground">No activated classification models are available.</p> : null}</div> : <><DestinationFieldPicker definitions={destinationDefinitions} selectedIds={destinationIds} onChange={setDestinationIds} /><Field label="Task definition" htmlFor="analysis-task-definition"><Textarea id="analysis-task-definition" className="min-h-64 font-mono text-sm" value={definition} onChange={(event) => setDefinition(event.target.value)} placeholder="# Purpose&#10;&#10;Describe the decision criteria, inclusions, exclusions, and ambiguity rules…" /></Field></>}
         {mutation.error ? <p role="alert" className="text-sm text-destructive">{mutation.error.message}</p> : null}
-        <DialogFooter><Button variant="outline" onClick={() => setOpen(false)} disabled={mutation.isPending}>Cancel</Button><Button onClick={create} disabled={mutation.isPending || !name.trim() || !key || (taskType === "QUESTION_ANSWERING" ? !definition.trim() : !selectedModel)}>{mutation.isPending ? <LoaderCircle className="animate-spin" /> : <Plus />}{mutation.isPending ? "Creating…" : "Create task"}</Button></DialogFooter>
+        <DialogFooter><Button variant="outline" onClick={() => setOpen(false)} disabled={mutation.isPending}>Cancel</Button><Button onClick={create} disabled={mutation.isPending || !name.trim() || !key || (taskType === "QUESTION_ANSWERING" ? !definition.trim() : taskType === "FACT_DEVELOPMENT" ? !definition.trim() || !guidanceId : !selectedModel)}>{mutation.isPending ? <LoaderCircle className="animate-spin" /> : <Plus />}{mutation.isPending ? "Creating…" : "Create task"}</Button></DialogFooter>
       </DialogContent>
     </Dialog>
   );
@@ -220,7 +245,7 @@ function AnalysisTaskDetail({ clientId, matterId, task, definitions, onTaskUpdat
       <Card className="p-5">
         <div className="flex flex-wrap items-start justify-between gap-4">
           <div className="min-w-0">
-            <div className="flex flex-wrap items-center gap-2"><h3 className="text-xl font-semibold">{task.name}</h3><StatusBadge status={task.status} /><Badge variant="outline">{TASK_TYPE_DISPLAY_LABELS[task.task_type]}</Badge></div>
+            <div className="flex flex-wrap items-center gap-2"><h3 className="text-xl font-semibold">{task.name}</h3><StatusBadge status={task.status} /><Badge variant="outline">{TASK_TYPE_LABELS[task.task_type]}</Badge></div>
             <p className="mt-1 text-sm text-muted-foreground">{task.description || "No task description."}</p>
             <p className="mt-2 font-mono text-xs text-muted-foreground">{task.key} · {task.workflow_key}</p>
           </div>
@@ -228,7 +253,9 @@ function AnalysisTaskDetail({ clientId, matterId, task, definitions, onTaskUpdat
         </div>
       </Card>
       {versions.isPending ? <TableLoading /> : versions.error ? <QueryError message={versions.error.message} /> : (
-        task.task_type === "CLASSIFICATION"
+        task.task_type === "FACT_DEVELOPMENT"
+          ? <FactTaskWorkspace key={`${selectedVersion.id}:${selectedVersion.compilation_status}:${selectedVersion.specification_content_hash ?? "none"}`} clientId={clientId} matterId={matterId} task={task} version={selectedVersion} onTaskUpdated={handleTaskUpdated} />
+          : task.task_type === "CLASSIFICATION"
           ? <ClassificationVersionWorkspace key={selectedVersion.id} clientId={clientId} matterId={matterId} task={task} version={selectedVersion} onTaskUpdated={handleTaskUpdated} />
           : <VersionWorkspace
               key={`${selectedVersion.id}:${selectedVersion.compilation_status}:${selectedVersion.specification_content_hash ?? "none"}`}

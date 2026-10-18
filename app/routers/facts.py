@@ -20,6 +20,7 @@ from app.fact_queries import (
     fact_date_histogram,
     fact_facet,
     fact_filter_statement,
+    issue_catalog,
 )
 from app.facts import (
     Actor,
@@ -57,6 +58,7 @@ from app.models import (
 )
 from app.schemas import (
     FactEvidenceCreate,
+    FactIssueCatalogEntry,
     FactIssueRefModel,
     MatterDocumentFactRead,
     MatterFactAction,
@@ -414,6 +416,21 @@ def create_matter_fact(
     db.commit()
     db.refresh(fact)
     return _detail(db, fact)
+
+
+@router.get("/issue-catalog", response_model=list[FactIssueCatalogEntry])
+def list_fact_issue_catalog(
+    matter_id: uuid.UUID,
+    principal: Principal = Depends(get_principal),
+    db: Session = Depends(get_db),
+) -> list[FactIssueCatalogEntry]:
+    """The issues facts can support: every published fact-development catalog in the matter.
+
+    Readable with ``fact.view`` so reviewers can name and choose issues without Analysis Task access.
+    """
+
+    _matter(db, principal, matter_id, "fact.view")
+    return [FactIssueCatalogEntry.model_validate(entry) for entry in issue_catalog(db, matter_id)]
 
 
 @router.get("/{fact_id}", response_model=MatterFactDetailRead)

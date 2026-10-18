@@ -1038,9 +1038,12 @@ def start_fact_development_run(
             reviewer_coding_id=payload.reviewer_coding_id,
             idempotency_key=payload.idempotency_key,
             actor_user_id=principal.user.id,
+            use_batch_api=payload.use_batch_api,
         )
         if created:
-            enqueue_fact_development_run(db, run.workflow_id, str(run.id))
+            enqueue_fact_development_run(
+                db, run.workflow_id, str(run.id), batch_api=bool(run.configuration_snapshot.get("use_batch_api"))
+            )
         db.commit()
         db.refresh(run)
         return run

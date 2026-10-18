@@ -28,6 +28,7 @@ interface ChartBucket extends DateHistogramBucket {
 }
 
 const MAX_FILLED_BUCKETS = 2_000;
+const DOCUMENT_UNIT = { singular: "document", plural: "documents" };
 
 export function bucketDateRange(start: string, interval: DateHistogramInterval) {
   const from = start.slice(0, 10);
@@ -49,6 +50,8 @@ export function DateHistogram({
   loading = false,
   error = false,
   compact = false,
+  intervals = ["week", "month", "year"],
+  unit = DOCUMENT_UNIT,
 }: {
   buckets: DateHistogramBucket[];
   interval: DateHistogramInterval;
@@ -59,6 +62,10 @@ export function DateHistogram({
   loading?: boolean;
   error?: boolean;
   compact?: boolean;
+  /** The intervals offered, for sources that cannot bucket by every interval. */
+  intervals?: DateHistogramInterval[];
+  /** What the bars count; documents by default. */
+  unit?: { singular: string; plural: string };
 }) {
   const displayBuckets = buckets.length > MAX_FILLED_BUCKETS
     ? buckets.filter((bucket) => bucket.count > 0)
@@ -84,9 +91,9 @@ export function DateHistogram({
   return (
     <div className="min-w-0 space-y-3">
       <div className="flex flex-wrap items-center justify-between gap-2">
-        <p className="text-xs font-medium text-muted-foreground">Documents by</p>
+        <p className="text-xs font-medium text-muted-foreground">{capitalize(unit.plural)} by</p>
         <div className="flex gap-1" aria-label="Date histogram interval">
-          {(["week", "month", "year"] as const).map((option) => (
+          {intervals.map((option) => (
             <Button
               key={option}
               type="button"
@@ -107,7 +114,7 @@ export function DateHistogram({
           <div
             className="relative min-w-0 w-full"
             style={{ height: compact ? 176 : 320 }}
-            aria-label={`${interval} document counts`}
+            aria-label={`${interval} ${unit.singular} counts`}
           >
             <div className="absolute left-2 top-2 z-10">
               {chartData.filter((bucket) => bucket.count > 0).map((bucket) => (
@@ -115,7 +122,7 @@ export function DateHistogram({
                   key={bucket.start}
                   type="button"
                   className="sr-only focus:not-sr-only focus:block focus:rounded-md focus:border focus:bg-popover focus:px-3 focus:py-2 focus:text-sm focus:shadow-md focus:outline-none focus:ring-2 focus:ring-ring"
-                  aria-label={`${bucket.label}: ${bucket.count.toLocaleString()} documents`}
+                  aria-label={`${bucket.label}: ${bucket.count.toLocaleString()} ${unit.plural}`}
                   disabled={!onSelect}
                   onClick={() => onSelect?.(bucket.range)}
                 >
@@ -160,7 +167,7 @@ export function DateHistogram({
                   tickFormatter={formatDocumentCount}
                   width={compact ? 42 : 64}
                   label={compact ? undefined : {
-                    value: "Documents",
+                    value: capitalize(unit.plural),
                     angle: -90,
                     position: "insideLeft",
                     fill: "var(--muted-foreground)",
@@ -168,7 +175,7 @@ export function DateHistogram({
                   }}
                 />
                 <Tooltip
-                  content={<HistogramTooltip />}
+                  content={<HistogramTooltip unit={unit} />}
                   cursor={{ fill: "var(--muted)", fillOpacity: 0.45 }}
                 />
                 <Bar
@@ -193,12 +200,12 @@ export function DateHistogram({
               </BarChart>
             </ResponsiveContainer>
           </div>
-        ) : <p className="py-8 text-center text-sm text-muted-foreground">No documents have a date value.</p>}
+        ) : <p className="py-8 text-center text-sm text-muted-foreground">No {unit.plural} have a date value.</p>}
     </div>
   );
 }
 
-function HistogramTooltip({ active, payload }: Partial<TooltipContentProps<number, string>>) {
+function HistogramTooltip({ active, payload, unit = DOCUMENT_UNIT }: Partial<TooltipContentProps<number, string>> & { unit?: { singular: string; plural: string } }) {
   const bucket = payload?.[0]?.payload as ChartBucket | undefined;
   if (!active || !bucket) return null;
 
@@ -206,10 +213,14 @@ function HistogramTooltip({ active, payload }: Partial<TooltipContentProps<numbe
     <div className="rounded-md border bg-popover px-3 py-2 text-popover-foreground shadow-md">
       <p className="text-xs text-muted-foreground">{bucket.label}</p>
       <p className="mt-0.5 text-sm font-medium">
-        {bucket.count.toLocaleString()} {bucket.count === 1 ? "document" : "documents"}
+        {bucket.count.toLocaleString()} {bucket.count === 1 ? unit.singular : unit.plural}
       </p>
     </div>
   );
+}
+
+function capitalize(value: string) {
+  return value.charAt(0).toLocaleUpperCase() + value.slice(1);
 }
 
 function formatDocumentCount(value: number) {

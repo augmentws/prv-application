@@ -1561,7 +1561,6 @@ class WorkflowRun(TimestampMixin, Base):
                 "CLASSIFICATION_SCORING_RUN",
                 "ANALYSIS_TASK_BATCH_RUN",
                 "MATTER_SEARCH_EXPORT",
-                "MATTER_FACT_EXPORT",
                 "FACT_DEVELOPMENT_ANALYSIS_TASK",
             }
             and self.status not in {"COMPLETED", "COMPLETED_WITH_ERRORS", "FAILED", "CANCELED"}
@@ -1575,7 +1574,6 @@ class WorkflowRun(TimestampMixin, Base):
             "CLASSIFICATION_SCORING_RUN",
             "CLASSIFICATION_PROJECTION",
             "MATTER_SEARCH_EXPORT",
-            "MATTER_FACT_EXPORT",
         } and (self.status == "CANCELED" or (self.status == "FAILED" and self.failure_retriable)):
             actions.append("RETRY")
         elif self.job_type == "FACT_DEVELOPMENT_ANALYSIS_TASK" and self.status == "FAILED" and self.failure_retriable:
@@ -4301,6 +4299,11 @@ class MatterAnalysisTaskRunChunk(TimestampMixin, Base):
             "AND failed_count >= 0",
             name="ck_analysis_task_run_chunk_counts",
         ),
+        CheckConstraint(
+            "provider_batch_status IS NULL OR provider_batch_status IN "
+            "('SUBMITTED', 'RUNNING', 'SUCCEEDED', 'FAILED', 'CANCELED')",
+            name="ck_analysis_task_run_chunk_provider_batch_status",
+        ),
     )
 
     id: Mapped[uuid.UUID] = mapped_column(Uuid, primary_key=True, default=uuid.uuid4)
@@ -4317,6 +4320,17 @@ class MatterAnalysisTaskRunChunk(TimestampMixin, Base):
     processed_count: Mapped[int] = mapped_column(Integer, default=0)
     failed_count: Mapped[int] = mapped_column(Integer, default=0)
     counts: Mapped[dict[str, Any]] = mapped_column(JSON, default=dict)
+    # Set only when the run uses a provider Batch API: the chunk's extraction calls were submitted as one provider
+    # batch. The manifest maps each request to its document, skill run, and the facts recalled when it was built.
+    provider_batch_status: Mapped[str | None] = mapped_column(String(30))
+    provider: Mapped[str | None] = mapped_column(String(50))
+    provider_model: Mapped[str | None] = mapped_column(String(200))
+    provider_batch_id: Mapped[str | None] = mapped_column(String(255))
+    provider_state: Mapped[str | None] = mapped_column(String(100))
+    provider_manifest: Mapped[dict[str, Any] | None] = mapped_column(JSON)
+    provider_error: Mapped[str | None] = mapped_column(Text)
+    provider_submitted_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    provider_completed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
 
 
 class MatterAnalysisTaskVersionDependency(Base):
@@ -5110,15 +5124,14 @@ class MatterFactSuggestion(TimestampMixin, Base):
     resolution_note: Mapped[str | None] = mapped_column(Text, nullable=True)
 
 
-class MatterFactExportJob(TimestampMixin, Base):
-    """One CSV export of filtered facts: a facts file and an evidence file, stored by the Artifact Service."""
+class MatterFactExport(TimestampMixin, Base):
+    """One completed CSV export of filtered facts: a facts file and an evidence file, stored by the Artifact Service.
 
-    __tablename__ = "matter_fact_export_job"
+    Exports run within the request, so a row exists only for an export whose files were stored.
+    """
+
+    __tablename__ = "matter_fact_export"
     __table_args__ = (
-        CheckConstraint(
-            "status IN ('QUEUED', 'RUNNING', 'COMPLETED', 'FAILED', 'CANCELED')",
-            name="ck_matter_fact_export_status",
-        ),
         CheckConstraint("fact_count >= 0 AND evidence_count >= 0", name="ck_matter_fact_export_counts"),
         UniqueConstraint(
             "matter_id",
@@ -5137,37 +5150,20 @@ class MatterFactExportJob(TimestampMixin, Base):
     csv_policy_snapshot: Mapped[dict[str, Any]] = mapped_column(JSON)
     idempotency_key: Mapped[str] = mapped_column(String(200))
     requested_filename: Mapped[str] = mapped_column(String(200))
-    status: Mapped[str] = mapped_column(String(30), default="QUEUED")
-    current_workflow_run_id: Mapped[uuid.UUID | None] = mapped_column(
-        Uuid, ForeignKey("workflow_run.id", ondelete="SET NULL"), nullable=True, index=True
-    )
-    workflow_id: Mapped[str] = mapped_column(String(255), unique=True)
-    current_stage: Mapped[str | None] = mapped_column(String(100))
     fact_count: Mapped[int] = mapped_column(Integer, default=0)
     evidence_count: Mapped[int] = mapped_column(Integer, default=0)
-    facts_artifact_id: Mapped[uuid.UUID | None] = mapped_column(Uuid, nullable=True)
-    facts_content_hash: Mapped[str | None] = mapped_column(String(64))
-    facts_byte_length: Mapped[int | None] = mapped_column(BigInteger)
-    facts_filename: Mapped[str | None] = mapped_column(String(255))
-    evidence_artifact_id: Mapped[uuid.UUID | None] = mapped_column(Uuid, nullable=True)
-    evidence_content_hash: Mapped[str | None] = mapped_column(String(64))
-    evidence_byte_length: Mapped[int | None] = mapped_column(BigInteger)
-    evidence_filename: Mapped[str | None] = mapped_column(String(255))
-    snapshot_started_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
-    expires_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
-    failure_code: Mapped[str | None] = mapped_column(String(100))
-    failure_summary: Mapped[str | None] = mapped_column(Text)
-    failure_retriable: Mapped[bool] = mapped_column(Boolean, default=False)
+    facts_artifact_id: Mapped[uuid.UUID] = mapped_column(Uuid)
+    facts_content_hash: Mapped[str] = mapped_column(String(64))
+    facts_byte_length: Mapped[int] = mapped_column(BigInteger)
+    facts_filename: Mapped[str] = mapped_column(String(255))
+    evidence_artifact_id: Mapped[uuid.UUID] = mapped_column(Uuid)
+    evidence_content_hash: Mapped[str] = mapped_column(String(64))
+    evidence_byte_length: Mapped[int] = mapped_column(BigInteger)
+    evidence_filename: Mapped[str] = mapped_column(String(255))
+    snapshot_started_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
+    expires_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
     created_by_user_id: Mapped[uuid.UUID] = mapped_column(
         Uuid, ForeignKey("app_user.id", ondelete="RESTRICT"), index=True
     )
-    started_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
-    completed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
-    canceled_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
 
     matter: Mapped["Matter"] = relationship()
-    current_workflow_run: Mapped["WorkflowRun | None"] = relationship(foreign_keys=[current_workflow_run_id])
-
-    @property
-    def execution(self) -> "WorkflowRun | None":
-        return self.current_workflow_run
