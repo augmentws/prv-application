@@ -35,6 +35,7 @@ import type {
 import { ApiError, coreApi } from "@/lib/api-client";
 import { FACT_GUIDANCE_HELP, FACT_GUIDANCE_TEMPLATE } from "@/lib/facts";
 import { formatDate } from "@/lib/format";
+import { matterJobsHref } from "@/lib/matter-routes";
 
 const TASK_TYPE_LABELS = {
   QUESTION_ANSWERING: "Question answering",
@@ -441,7 +442,7 @@ function ClassificationRunCard({ clientId, matterId, run, scopeName, canceling, 
               {retrying ? "Retrying…" : "Retry run"}
             </Button>
           ) : null}
-          {clientId ? <Button asChild size="sm" variant="outline"><Link href={`/app/clients/${clientId}/matters/${matterId}?tab=jobs&job_type=CLASSIFICATION_ANALYSIS&job=${run.id}`}><FileSearch />Open job</Link></Button> : null}
+          {clientId ? <Button asChild size="sm" variant="outline"><Link href={matterJobsHref(clientId, matterId, "CLASSIFICATION_ANALYSIS", { job: run.id })}><FileSearch />Open job</Link></Button> : null}
         </div>
       </div>
       <div className="mt-3 h-2 overflow-hidden rounded-full bg-muted" aria-label={`${progressCompleted} of ${progressTotal ?? "unknown"} execution stages completed`}>

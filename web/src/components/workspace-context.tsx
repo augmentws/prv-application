@@ -1,10 +1,12 @@
 "use client";
 
 import { useQuery } from "@tanstack/react-query";
+import { usePathname } from "next/navigation";
 import { createContext, useContext, useState, type ReactNode } from "react";
 
-import type { EffectivePermissionsRead, TenantRead, UserRead } from "@/generated/models";
+import type { ClientRead, EffectivePermissionsRead, TenantRead, UserRead } from "@/generated/models";
 import { coreApi } from "@/lib/api-client";
+import { parseClientPath } from "@/lib/workspace-path";
 
 interface WorkspaceValue {
   user: UserRead;
@@ -13,19 +15,40 @@ interface WorkspaceValue {
   permissionKeys: string[];
   selectedTenantId: string;
   setSelectedTenantId: (tenantId: string) => void;
+  /** True on client and matter routes, where the client's tenant scopes the page and cannot be switched. */
+  tenantFromRoute: boolean;
 }
 
 const WorkspaceContext = createContext<WorkspaceValue | null>(null);
 
 export function WorkspaceProvider({ children }: { children: ReactNode }) {
+  const pathname = usePathname();
+  const routeClientId = parseClientPath(pathname)?.clientId;
   const [selection, setSelection] = useState<string | null>(null);
+  const [syncedRouteTenantId, setSyncedRouteTenantId] = useState<string | null>(null);
   const userQuery = useQuery({
     queryKey: ["session"],
     queryFn: () => coreApi<UserRead>("/v1/auth/me"),
     staleTime: 0,
   });
   const user = userQuery.data;
-  const selectedTenantId = selection ?? user?.tenant_id ?? "";
+  // Same key and request as the client and matter views, so the page reuses this response.
+  const routeClientQuery = useQuery({
+    queryKey: ["client", routeClientId],
+    queryFn: () => coreApi<ClientRead>(`/v1/clients/${routeClientId}`),
+    enabled: Boolean(user && routeClientId),
+  });
+  const routeTenantId = routeClientId ? routeClientQuery.data?.tenant_id : undefined;
+  // Keep the selection on the route's tenant so leaving the client (for example to Clients) stays in that tenant.
+  if (routeTenantId && routeTenantId !== syncedRouteTenantId) {
+    setSyncedRouteTenantId(routeTenantId);
+    setSelection(routeTenantId);
+  } else if (!routeClientId && syncedRouteTenantId) {
+    setSyncedRouteTenantId(null);
+  }
+  const selectedTenantId = routeTenantId ?? selection ?? user?.tenant_id ?? "";
+  // A failed client lookup is reported by the page itself; the shell then keeps the current selection.
+  const routeTenantPending = Boolean(routeClientId) && routeClientQuery.isPending && !routeClientQuery.error;
 
   const tenantQuery = useQuery({
     queryKey: ["tenant", selectedTenantId],
@@ -55,7 +78,7 @@ export function WorkspaceProvider({ children }: { children: ReactNode }) {
     );
   }
 
-  if (userQuery.isPending || userQuery.isFetching || !user || tenantQuery.isPending || !tenantQuery.data || permissionsQuery.isPending) {
+  if (userQuery.isPending || userQuery.isFetching || !user || routeTenantPending || tenantQuery.isPending || !tenantQuery.data || permissionsQuery.isPending) {
     return (
       <div className="grid min-h-screen place-items-center bg-background">
         <div className="flex items-center gap-3 text-sm font-medium text-muted-foreground">
@@ -75,6 +98,7 @@ export function WorkspaceProvider({ children }: { children: ReactNode }) {
         permissionKeys: permissionsQuery.data?.permission_keys ?? [],
         selectedTenantId,
         setSelectedTenantId: setSelection,
+        tenantFromRoute: Boolean(routeTenantId),
       }}
     >
       {children}

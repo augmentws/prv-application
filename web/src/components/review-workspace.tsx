@@ -25,6 +25,7 @@ import { type CSSProperties, type FormEvent, useCallback, useEffect, useId, useM
 import { toast } from "sonner";
 
 import { BrandMark } from "@/components/brand-mark";
+import { MatterSectionMenu } from "@/components/matter/matter-section-menu";
 import { DateHistogram, type DateHistogramInterval } from "@/components/date-histogram";
 import { DocumentViewerSurface } from "@/components/document-viewer-dialog";
 import { HelpLink } from "@/components/help-link";
@@ -72,6 +73,7 @@ import { coreApi } from "@/lib/api-client";
 import { bulkTagDisplayStatus, bulkTagIsWaiting } from "@/lib/bulk-tag-jobs";
 import { HAS_VALUE_FILTER_TOKEN, NO_VALUE_FILTER_TOKEN, toggleFacetFilterToken } from "@/lib/search-filters";
 import { cn } from "@/lib/utils";
+import { matterHref, matterJobsHref } from "@/lib/matter-routes";
 
 const PAGE_SIZE = 50;
 const FACET_PAGE_SIZE = 8;
@@ -748,11 +750,9 @@ export function ReviewWorkspace({
       <header className="shrink-0 border-b bg-card shadow-sm">
         <div className="flex min-h-14 flex-wrap items-center gap-2 px-3 py-2 lg:flex-nowrap">
           <BrandMark className="size-8 shrink-0 rounded-lg" />
-          <Button asChild variant="ghost" size="sm" className="shrink-0"><Link href={matter.data ? `/app/clients/${matter.data.client_id}/matters/${matterId}` : "/app/clients"}><ArrowLeft />Matter</Link></Button>
-          <div className="min-w-0 border-l pl-3">
-            <p className="max-w-52 truncate text-sm font-semibold">{matter.data?.name ?? "Opening matter…"}</p>
-            <p className="max-w-52 truncate text-xs text-muted-foreground">{client.data?.name ?? "Search & Review"}</p>
-          </div>
+          {matter.data
+            ? <MatterSectionMenu clientId={matter.data.client_id} matterId={matterId} matterName={matter.data.name} clientName={client.data?.name} current="search-and-review" />
+            : <div className="min-w-0 px-2"><p className="max-w-52 truncate text-sm font-semibold">Opening matter…</p><p className="max-w-52 truncate text-xs text-muted-foreground">Search &amp; Review</p></div>}
           <form onSubmit={submitSearch} role="search" className="order-last flex min-w-0 basis-full items-center gap-2 lg:order-none lg:mx-3 lg:flex-1 lg:basis-auto">
             <Select value={searchMode} onValueChange={(value) => changeSearchMode(value as MatterSearchRequestSearchMode)}>
               <SelectTrigger className="w-32 shrink-0" aria-label="Search mode"><SelectValue /></SelectTrigger>
@@ -783,7 +783,7 @@ export function ReviewWorkspace({
             />
           ) : null}
           <SaveSearchDialog search={searchRequest} users={tenantUsers.data ?? []} currentUserId={currentUser.data?.id} onCreate={(payload) => createSavedSearchMutation.mutateAsync(payload).then(() => undefined)} />
-          {canExport ? <SearchExportDialog matterId={matterId} search={searchRequest} resultCount={searchResults.data?.total ?? 0} disabled={!searchResults.data?.total || searchResults.isFetching} onCreated={() => router.push(`/app/clients/${matter.data?.client_id}/matters/${matterId}?tab=jobs&job_type=SEARCH_EXPORTS`)} /> : null}
+          {canExport ? <SearchExportDialog matterId={matterId} search={searchRequest} resultCount={searchResults.data?.total ?? 0} disabled={!searchResults.data?.total || searchResults.isFetching} onCreated={() => router.push(matterJobsHref(matter.data?.client_id ?? "", matterId, "SEARCH_EXPORTS"))} /> : null}
           <HelpLink topic="matterReview" />
           <ThemeToggle />
         </div>
@@ -1102,7 +1102,7 @@ function ResultsList({ results, offset, selectedDocumentId, onSelect, matter }: 
 }) {
   if (results.isPending) return <div className="space-y-2 p-3">{Array.from({ length: 8 }, (_, index) => <Skeleton key={index} className="h-20 w-full" />)}</div>;
   if (results.error) {
-    return <div className="flex min-h-0 flex-1 items-center p-4"><div className="w-full text-center"><FileSearch className="mx-auto size-8 text-muted-foreground" /><p className="mt-3 font-semibold">Search is not ready</p><p className="mt-1 text-sm text-muted-foreground">{results.error.message}</p>{matter ? <Button asChild variant="outline" size="sm" className="mt-4"><Link href={`/app/clients/${matter.client_id}/matters/${matter.id}?tab=search`}>Open search index</Link></Button> : null}</div></div>;
+    return <div className="flex min-h-0 flex-1 items-center p-4"><div className="w-full text-center"><FileSearch className="mx-auto size-8 text-muted-foreground" /><p className="mt-3 font-semibold">Search is not ready</p><p className="mt-1 text-sm text-muted-foreground">{results.error.message}</p>{matter ? <Button asChild variant="outline" size="sm" className="mt-4"><Link href={matterHref(matter.client_id, matter.id, "search-index")}>Open search index</Link></Button> : null}</div></div>;
   }
   if (!results.data.hits.length) return <div className="grid min-h-0 flex-1 place-items-center p-6 text-center"><div><FileSearch className="mx-auto size-8 text-muted-foreground" /><p className="mt-3 font-semibold">No documents found</p><p className="mt-1 text-sm text-muted-foreground">Try fewer filters or a broader search.</p></div></div>;
 

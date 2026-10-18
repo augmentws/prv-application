@@ -1,5 +1,6 @@
 import type { FactFilters, MatterFactRead } from "@/generated/models";
 import { parseDateOnly } from "@/lib/date-only";
+import { matterHref } from "@/lib/matter-routes";
 
 export type FactSort = "DATE_ASC" | "DATE_DESC" | "UPDATED_DESC" | "EVIDENCE_COUNT_DESC";
 
@@ -191,18 +192,15 @@ export function entityDetailHref(clientId: string, matterId: string, entityId: s
 
 /** The Facts list filtered to facts an entity owns or takes part in. */
 export function entityFactsHref(clientId: string, matterId: string, entityId: string) {
-  return `/app/clients/${clientId}/matters/${matterId}?${new URLSearchParams({ tab: "facts", fentity: entityId })}`;
+  return matterHref(clientId, matterId, "facts", { fentity: entityId });
 }
 
 export type FactsTab = "list" | "timeline";
 
-/** Switch between the Facts sub-tabs, keeping the shared filters. */
-export function factsTabParams(params: URLSearchParams, tab: FactsTab): URLSearchParams {
+/** The shared filters to carry when switching between the Facts List and Timeline routes; the page does not carry over. */
+export function factsFilterParams(params: URLSearchParams): URLSearchParams {
   const next = new URLSearchParams(params);
-  next.set("tab", "facts");
   next.delete("fpage");
-  if (tab === "timeline") next.set("facts", "timeline");
-  else next.delete("facts");
   return next;
 }
 

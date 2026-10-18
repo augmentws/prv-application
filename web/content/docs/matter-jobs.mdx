@@ -5,9 +5,9 @@ description: Follow durable imports, embeddings, topic processing, classificatio
 
 Matter jobs add collection documents and run durable document processing. The matter stores a link to each source collection item; the Artifact Service continues to own native files and derived artifacts.
 
-Use the **Job type** picker on the matter's **Jobs** tab to switch between bulk tagging, document embeddings, topic clustering, document imports, question answering, classification analysis, and search exports. Only the selected job type is displayed. The browser remembers the last selection and restores it when you return to the Jobs tab. Opening a specific document-import job automatically selects **Document imports**; following **Open job** from a classification run selects **Classification analysis** and opens that run's results.
+Open **Jobs** in the matter menu. Each job type has its own page: bulk tagging, document embeddings, topic clustering, document imports, question answering, classification analysis, and search exports. Select a type in the row at the top of the page. **Jobs** opens on **Document imports**. Because each type has its own address, the browser's Back button returns to the type you were on, and you can bookmark a type. Opening a specific document-import job opens **Document imports** with that job's details; following **Open job** from a classification run opens **Classification analysis** with that run's results, and Back closes them.
 
-The **Jobs** tab also shows bulk tag jobs started from matter search. Each row identifies the target field and value, the frozen query or filter scope, current status and progress, tagged and failed counts, and any available error. A snapshotted job with no completed document batches displays **Waiting** and **Waiting for capacity** until its first batch reports progress. Active bulk tag jobs refresh automatically, so you can close the original progress dialog and follow them here.
+**Bulk tagging** shows bulk tag jobs started from matter search. Each row identifies the target field and value, the frozen query or filter scope, current status and progress, tagged and failed counts, and any available error. A snapshotted job with no completed document batches displays **Waiting** and **Waiting for capacity** until its first batch reports progress. Active bulk tag jobs refresh automatically, so you can close the original progress dialog and follow them here.
 
 Matter **ADMIN** users can start this work and can cancel a job when its row offers that action. The source collection and destination matter must belong to the same client, and the matter must be active.
 
@@ -18,7 +18,7 @@ Matter **ADMIN** users can start this work and can cancel a job when its row off
 3. Select **Add all matching**.
 4. Choose an active destination matter and select **Start job**.
 
-The application redirects to the matter's **Jobs** tab. The job freezes the matching IDs before processing, so an upload or metadata change made after that point does not silently change the running selection.
+The application opens **Document imports** under the matter's **Jobs**. The job freezes the matching IDs before processing, so an upload or metadata change made after that point does not silently change the running selection.
 
 Every publication job has a durable execution attempt. The Jobs table shows
 the current execution stage and attempt number, while the progress bar uses
@@ -64,7 +64,7 @@ Document-import status distinguishes matter links from label publication: **Adde
 
 ## Generate document embeddings
 
-Open the matter's **Jobs** tab and select **Generate embeddings**. The job freezes the matter's current document list, then processes it in durable batches. Documents added after planning begins are handled by a later job.
+Open **Jobs** in the matter menu, select **Document embeddings**, then select **Generate embeddings**. The job freezes the matter's current document list, then processes it in durable batches. Documents added after planning begins are handled by a later job.
 
 For each document, Priv-View chooses extracted text first, then OCR text, then a supported text-based native file. The embedding input places a non-empty email subject and original filename before that body text so semantic retrieval can use those high-signal descriptions. Sender and recipient headers are not embedded; they remain available to keyword search and exact filtering. Priv-View creates a sentence-aware chunk-set Parquet artifact and a matching vector-set Parquet artifact. Both artifacts remain associated with the source collection item and record their source lineage. Source reads, chunk preparation, and vector-artifact writes use bounded per-document concurrency, while chunks from multiple documents are embedded together up to the model service's input limit. Worker logs report preparation and completion progress every 25 documents, plus preparation, raw-inference, persistence, and total throughput after each batch. After every durable embedding batch finishes, the job updates the search index in one paged operation and performs one final refresh; the index stores chunks as nested records under the owning matter document.
 
@@ -81,7 +81,7 @@ complete document-level manifest. The viewer separates generated, reused, skippe
 failed, excluded, and canceled documents; shows stable reason codes; filters by
 status or reason; links back to each authorized document; and downloads the full
 manifest as CSV or Parquet. The same outcome viewer is available beside the selected
-embedding set on the Classification tab.
+embedding set on the **Classifiers** page.
 
 Core stores one small manifest record for the logical job. The Artifact Service owns
 the compressed Parquet rows, with exactly one row per frozen document, so complete
@@ -106,7 +106,7 @@ The embedding-job table reports external provider usage as the total token count
 
 ## Cluster document topics
 
-Topic clustering requires at least one completed embedding job with usable chunks. Open the matter's **Jobs** tab and select **Cluster topics**.
+Topic clustering requires at least one completed embedding job with usable chunks. Open **Jobs** in the matter menu, select **Topic clustering**, then select **Cluster topics**.
 
 Choose an operating mode:
 
@@ -147,9 +147,9 @@ Topic names are generated from the strongest terms in representative sample chun
 
 ## Run classification analysis
 
-Create and start classifier-backed work from the matter's **Analysis** tab. The Analysis Task is the reusable definition: it pins the approved model version and destination field and lets an administrator select either a ready review batch or the whole matter. Prediction output does not live on the task definition.
+Create and start classifier-backed work from **Analysis tasks** in the matter menu. The Analysis Task is the reusable definition: it pins the approved model version and destination field and lets an administrator select either a ready review batch or the whole matter. Prediction output does not live on the task definition.
 
-Every execution appears under **Classification analysis** in the **Jobs** tab. Each row identifies the task and whether it used a review batch or the whole matter, displays its durable stage, attempt, progress, and frozen document count, and provides the available cancel or retry action. Select **View job**, or follow **Open job** from the task's compact run history, to review the execution.
+Every execution appears on the **Classification analysis** page of **Jobs**. Each row identifies the task and whether it used a review batch or the whole matter, displays its durable stage, attempt, progress, and frozen document count, and provides the available cancel or retry action. Select **View job**, or follow **Open job** from the task's compact run history, to review the execution.
 
 The job result contains:
 
@@ -165,7 +165,7 @@ Batch- and whole-matter scopes use the same job-result view. A whole-matter clas
 
 ## Run question answering
 
-Question-answering Analysis Tasks run against a ready review batch from the batch review workspace. Every accepted run appears under **Question answering** in the matter's **Jobs** tab, whether it uses the Jev provider or OpenAI Decisions.
+Question-answering Analysis Tasks run against a ready review batch from the batch review workspace. Every accepted run appears on the **Question answering** page of the matter's **Jobs**, whether it uses the Jev provider or OpenAI Decisions.
 
 Each row shows the pinned task version, review batch, provider and model, durable status, attempt, and document progress. Select **Open batch** to inspect the run's document-level answers and evidence. Results remain isolated batch output until a matter administrator explicitly publishes the configured destination fields.
 
@@ -179,7 +179,7 @@ OpenAI Decisions tasks require `OPENAI_API_KEY` in the API and worker environmen
 
 ## Export search results
 
-Start a search export from **Search & Review → Export results**, then select **Search exports** on the matter's **Jobs** tab. Each row shows the requested filename, selected column count, creator, durable stage, exported rows over matched rows, output size, expiration, and available actions.
+Start a search export from **Search & Review → Export results**, then follow the export on the **Search exports** page of the matter's **Jobs**, which opens when the export starts. Each row shows the requested filename, selected column count, creator, durable stage, exported rows over matched rows, output size, expiration, and available actions.
 
 - **Preparing** reauthorizes the initiating user and resolves the frozen field and index contract.
 - **Exporting** reads the pinned OpenSearch generation through one point-in-time snapshot and updates document progress after every page.
@@ -196,9 +196,9 @@ Jobs use a durable workflow worker and can resume after an application or worker
 
 Users with **Delete jobs** permission can delete a completed, completed-with-errors, failed, or canceled job from its row action menu. Active work must be canceled or allowed to complete first. Job deletion is soft: the logical job disappears from the normal Jobs lists while its domain record, execution attempts, document failures, outputs, artifacts, and audit history remain intact. This operation does not delete documents or reverse coding that the job already published.
 
-The **Jobs** tab refreshes while work is active; it is safe to close the browser. Canceling is best effort for work already executing, so the final added count can include a batch that completed at the same time as the cancellation request.
+Job pages refresh while work is active; it is safe to close the browser. Canceling is best effort for work already executing, so the final added count can include a batch that completed at the same time as the cancellation request.
 
-The Core API terminal shows repeated job-list requests while the Jobs tab is open.
+The Core API terminal shows repeated job-list requests while a Jobs page is open.
 Those requests only refresh the displayed status. Model loading, sampling, topic
 discovery, batch counts, document failures, and completion are reported in the
 separate workflow-worker terminal. The first embedding batch can take longer while

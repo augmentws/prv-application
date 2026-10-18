@@ -19,6 +19,7 @@ import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@
 import { Textarea } from "@/components/ui/textarea";
 import type { ClientRead, MatterRead, MatterTopicApplyRequest, MatterTopicJobRead, MatterTopicProposalReview, MetadataDefinitionRead } from "@/generated/models";
 import { coreApi } from "@/lib/api-client";
+import { matterHref, matterJobsHref } from "@/lib/matter-routes";
 
 type EditableProposal = MatterTopicProposalReview & {
   keywords: string[];
@@ -41,10 +42,10 @@ export function TopicReviewPage({ clientId, matterId, jobId }: { clientId: strin
       void queryClient.invalidateQueries({ queryKey: ["metadata-definitions", matterId] });
       void queryClient.invalidateQueries({ queryKey: ["metadata-groups", matterId] });
       toast.success("The approved topics are being applied to the matter.");
-      router.push(`/app/clients/${clientId}/matters/${matterId}?tab=jobs`);
+      router.push(matterJobsHref(clientId, matterId, "TOPIC_CLUSTERING"));
     },
   });
-  const jobsHref = `/app/clients/${clientId}/matters/${matterId}?tab=jobs`;
+  const jobsHref = matterJobsHref(clientId, matterId, "TOPIC_CLUSTERING");
 
   if (client.isPending || matter.isPending || job.isPending || definitions.isPending) return <TableLoading />;
   if (client.error || matter.error || job.error || definitions.error) return <QueryError message={client.error?.message ?? matter.error?.message ?? job.error?.message ?? definitions.error?.message} />;
@@ -54,7 +55,7 @@ export function TopicReviewPage({ clientId, matterId, jobId }: { clientId: strin
   return (
     <div className="min-w-0">
       <ResourcePageHeader
-        breadcrumbs={<><Link href="/app/clients" className="hover:text-foreground">Clients</Link><ChevronRight className="size-4" /><Link href={`/app/clients/${clientId}`} className="hover:text-foreground">{client.data.name}</Link><ChevronRight className="size-4" /><Link href={jobsHref} className="hover:text-foreground">{matter.data.name}</Link><ChevronRight className="size-4" /><span aria-current="page" className="text-foreground">{awaitingReview ? "Topic review" : "Topic results"}</span></>}
+        breadcrumbs={<><Link href="/app/clients" className="hover:text-foreground">Clients</Link><ChevronRight className="size-4" /><Link href={`/app/clients/${clientId}`} className="hover:text-foreground">{client.data.name}</Link><ChevronRight className="size-4" /><Link href={matterHref(clientId, matterId)} className="hover:text-foreground">{matter.data.name}</Link><ChevronRight className="size-4" /><span aria-current="page" className="text-foreground">{awaitingReview ? "Topic review" : "Topic results"}</span></>}
         title={awaitingReview ? "Review proposed topics" : "View topic proposals"}
       />
       {awaitingReview || hasProposals

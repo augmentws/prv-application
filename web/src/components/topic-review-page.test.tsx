@@ -73,7 +73,7 @@ describe("TopicReviewPage", () => {
       expect(JSON.parse(String(applyCall?.[1]?.body))).toEqual({
         topics: [{ id: "cluster-1", name: "Coordinated pricing", description: "Pricing discussions", included: true }],
       });
-      expect(push).toHaveBeenCalledWith("/app/clients/client-1/matters/matter-1?tab=jobs");
+      expect(push).toHaveBeenCalledWith("/app/clients/client-1/matters/matter-1/jobs/topic-clustering");
     });
   });
 

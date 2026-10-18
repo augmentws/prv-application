@@ -546,7 +546,7 @@ describe("AnalysisTasksPanel", () => {
     expect(screen.queryByText("Classification output")).not.toBeInTheDocument();
     expect(screen.getByRole("link", { name: "Open job" })).toHaveAttribute(
       "href",
-      "/app/clients/client-1/matters/matter-1?tab=jobs&job_type=CLASSIFICATION_ANALYSIS&job=analysis-run-1",
+      "/app/clients/client-1/matters/matter-1/jobs/classification-analysis?job=analysis-run-1",
     );
   });
 

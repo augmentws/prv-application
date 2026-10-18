@@ -543,6 +543,9 @@ describe("BatchReviewWorkspace", () => {
     expect(await screen.findByText("contract.eml")).toBeInTheDocument();
     expect(screen.getByRole("main")).toHaveClass("fixed", "inset-0", "h-dvh", "min-h-0", "overscroll-none");
     expect(screen.getByRole("main")).toHaveStyle({ overflow: "clip" });
+    // The batch keeps its parent link, and the matter menu reaches the rest of the matter.
+    expect(screen.getByRole("link", { name: "Batches", hidden: true })).toHaveAttribute("href", "/app/clients/client-1/matters/matter-1/batches");
+    expect(screen.getByRole("button", { name: "Matter: Investigation. Open matter menu", hidden: true })).toHaveTextContent("Batch Client");
     expect(screen.getByRole("button", { name: "Export results", hidden: true })).toBeEnabled();
     expect(screen.getByLabelText("Batch review layout")).toHaveStyle({
       gridTemplateColumns: "24rem minmax(0, 1fr) 30rem",

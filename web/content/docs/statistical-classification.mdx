@@ -3,7 +3,7 @@ title: Statistical classification
 description: Train and inspect statistical classifiers for matter coding fields.
 ---
 
-Priv-View provides an administrator-only **Classification** tab for training statistical models against matter coding. The MVP concentrates on getting a new training run right; retraining, promotion, and reviewer-facing CAL workflows come later.
+Priv-View provides an administrator-only **Classifiers** page, under Agents and models in the matter menu, for training statistical models against matter coding. The MVP concentrates on getting a new training run right; retraining, promotion, and reviewer-facing CAL workflows come later.
 
 ## Choose a coding field
 
@@ -50,7 +50,7 @@ Training evaluation is development evidence, not final independent validation. A
 
 ## Run a classifier as an Analysis Task
 
-Model lifecycle and document analysis are separate surfaces. Train, inspect, approve, and activate statistical models in the **Classification** tab. To apply an approved model, create a **Classification** task in the matter's **Analysis** tab. The published task version pins the approved model version and its destination coding field.
+Model lifecycle and document analysis are separate surfaces. Train, inspect, approve, and activate statistical models on the **Classifiers** page. To apply an approved model, create a **Classification** task under **Analysis tasks** in the matter menu. The published task version pins the approved model version and its destination coding field.
 
 Select **Run classification**, then choose either a ready review batch or **Whole matter**. A batch run freezes its existing membership. A whole-matter run writes the ordered document population to an immutable Parquet artifact; it does not create a review-batch membership row for every matter document. Both scopes then materialize features for every frozen document and execute the durable DBOS classification scorer.
 

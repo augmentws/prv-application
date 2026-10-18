@@ -7,11 +7,11 @@ import { FactsListPanel } from "@/components/facts/facts-list-panel";
 import { coreApi } from "@/lib/api-client";
 
 const replace = vi.fn();
-let currentParams = new URLSearchParams("tab=facts");
+let currentParams = new URLSearchParams();
 
 vi.mock("next/navigation", () => ({
   useRouter: () => ({ replace }),
-  usePathname: () => "/app/clients/client-1/matters/matter-1",
+  usePathname: () => "/app/clients/client-1/matters/matter-1/facts",
   useSearchParams: () => currentParams,
 }));
 vi.mock("@/lib/api-client", async (importOriginal) => {
@@ -61,7 +61,7 @@ function renderPanel(canReview = true) {
 }
 
 beforeEach(() => {
-  currentParams = new URLSearchParams("tab=facts");
+  currentParams = new URLSearchParams();
   vi.mocked(coreApi).mockImplementation(async (path, init) => {
     if (path === "/v1/matters/matter-1/facts/issue-catalog") return [{ matter_analysis_task_id: "task-1", task_name: "Facts", issue_key: "pricing", name: "Pricing decisions", description: null }] as never;
     if (path === "/v1/matters/matter-1/facts/search") return { items: [fact(), fact({ id: "fact-2", summary: "Merged duplicate.", status: "MERGED", pending_suggestion_count: 0, origin_workflow_run_id: null })], total: 2 } as never;
@@ -92,7 +92,7 @@ describe("FactsListPanel", () => {
   });
 
   it("puts search and filters in the URL and asks facets for self-excluding counts", async () => {
-    currentParams = new URLSearchParams("tab=facts&ff_status=WORKING&ff_issue_key=pricing");
+    currentParams = new URLSearchParams("ff_status=WORKING&ff_issue_key=pricing");
     const user = userEvent.setup();
     renderPanel();
     await screen.findByText("2 facts");
@@ -100,7 +100,7 @@ describe("FactsListPanel", () => {
     await user.type(screen.getByRole("textbox", { name: "Search facts" }), "approval");
     await user.click(screen.getByRole("button", { name: "Search" }));
     expect(replace).toHaveBeenCalledWith(
-      "/app/clients/client-1/matters/matter-1?tab=facts&fq=approval&ff_status=WORKING&ff_issue_key=pricing",
+      "/app/clients/client-1/matters/matter-1/facts?fq=approval&ff_status=WORKING&ff_issue_key=pricing",
       { scroll: false },
     );
 

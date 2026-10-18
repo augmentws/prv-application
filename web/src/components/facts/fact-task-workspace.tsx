@@ -30,6 +30,7 @@ import type {
 import { coreApi } from "@/lib/api-client";
 import { FACT_GUIDANCE_HELP } from "@/lib/facts";
 import { formatDate } from "@/lib/format";
+import { matterHref } from "@/lib/matter-routes";
 
 type CodingSource = "MATTER_METADATA" | "REVIEWER_CODING";
 const TERMINAL = ["COMPLETED", "COMPLETED_WITH_ERRORS", "FAILED", "CANCELED"];
@@ -465,7 +466,7 @@ function FactRunCard({ clientId, matterId, run, batchName, busy, onCancel, onRet
       ) : null}
       {run.failure_summary ? <p className="mt-2 text-sm text-destructive">{run.failure_summary}</p> : null}
       {clientId && !active && numberOf(counts.facts_created) ? (
-        <p className="mt-2 text-sm"><Link className="font-medium text-primary hover:underline" href={`/app/clients/${clientId}/matters/${matterId}?tab=facts&ff_status=WORKING`}>Review working facts</Link></p>
+        <p className="mt-2 text-sm"><Link className="font-medium text-primary hover:underline" href={matterHref(clientId, matterId, "facts", { ff_status: "WORKING" })}>Review working facts</Link></p>
       ) : null}
     </div>
   );
