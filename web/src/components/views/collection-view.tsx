@@ -3,12 +3,13 @@
 import { useQueries, useQuery } from "@tanstack/react-query";
 import type { ColumnDef } from "@tanstack/react-table";
 import { ChevronLeft, ChevronRight, Search } from "lucide-react";
-import { useRouter, useSearchParams } from "next/navigation";
+import { useRouter } from "next/navigation";
 import { useMemo, useState, type FormEvent } from "react";
 
 import { DataTable } from "@/components/data-table";
 import { DateHistogram, type DateHistogramInterval } from "@/components/date-histogram";
 import { useCollection } from "@/components/collection/collection-context";
+import { useCollectionFilters } from "@/components/collection/use-collection-filters";
 import { CollectionProcessingPanel } from "@/components/collection-processing-panel";
 import { DocumentViewerDialog } from "@/components/document-viewer-dialog";
 import { ActiveFilterBar, DateRangeFacet, FacetSidebar, type ActiveFilter, type FacetGroup } from "@/components/faceted-filter";
@@ -21,21 +22,13 @@ import { Card } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
 import type { CollectionCustodianSummary, CollectionDateHistogramResponse, CollectionItemRead, CollectionItemSearchResponse, CustodianRead, FacetValue, MatterDocumentImportCreate, MatterDocumentImportRead, MatterRead } from "@/generated/models";
 import { coreApi } from "@/lib/api-client";
-import { formatDateOnly, utcDayEnd, utcDayStart } from "@/lib/date-only";
+import { formatDateOnly } from "@/lib/date-only";
 import { formatBytes, formatDate } from "@/lib/format";
 import { matterJobsHref } from "@/lib/matter-routes";
+import { COLLECTION_FACET_KEYS, type CollectionFacetKey, collectionSearchApiParams, type FileDateRange, hasCollectionFilters, toImportSelection } from "@/lib/collection-filters";
 import { type CollectionSection, collectionHref } from "@/lib/collection-routes";
 
 const PAGE_SIZE = 50;
-const COLLECTION_FACET_KEYS = ["custodians", "file_extensions", "record_types", "processing_statuses"] as const;
-
-type CollectionFacetKey = typeof COLLECTION_FACET_KEYS[number];
-type CollectionFacetFilters = Record<CollectionFacetKey, string[]>;
-interface FileDateRange { from: string; to: string }
-
-function emptyFacetFilters(): CollectionFacetFilters {
-  return { custodians: [], file_extensions: [], record_types: [], processing_statuses: [] };
-}
 
 interface CollectionCustodianRow {
   id: string;
@@ -48,22 +41,32 @@ interface CollectionCustodianRow {
 
 /**
  * The collection's sections, rendered one per route inside CollectionShell, which draws the header,
- * status and delete action. Phase 2 of the collection navigation plan moves the Documents filters
- * into the URL; until then only the File dates drill-down passes `from`/`to` to Documents.
+ * status and delete action. Documents filters, paging and the open document live in the page address
+ * (see useCollectionFilters), so Back, reload and shared links restore them.
  */
 export function CollectionView({ section }: { section: CollectionSection }) {
   const { clientId, collectionId } = useCollection();
   const router = useRouter();
-  const searchParams = useSearchParams();
   const tab = section;
+  const { filters, setSearch, setFileDateRange, toggleFacet: toggleFacetValue, clearFilters, setOffset, setItemId } = useCollectionFilters();
+  const { search, facets: facetFilters, fileDateRange, offset } = filters;
   const [histogramInterval, setHistogramInterval] = useState<DateHistogramInterval>("month");
-  const [searchInput, setSearchInput] = useState("");
-  const [search, setSearch] = useState("");
-  const [fileDateRange, setFileDateRange] = useState<FileDateRange>(() => ({ from: searchParams.get("from") ?? "", to: searchParams.get("to") ?? "" }));
-  const [facetFilters, setFacetFilters] = useState<CollectionFacetFilters>(emptyFacetFilters);
+  // The box is edited freely; Search applies it. Back or a cleared filter resets it to the applied search.
+  const [searchInput, setSearchInput] = useState(search);
+  const [appliedSearch, setAppliedSearch] = useState(search);
+  if (appliedSearch !== search) {
+    setAppliedSearch(search);
+    setSearchInput(search);
+  }
+  // The date fields show what's typed straight away; the address follows. Back resets them, as above.
+  const [dateInput, setDateInput] = useState<FileDateRange>(fileDateRange);
+  const [appliedDates, setAppliedDates] = useState<FileDateRange>(fileDateRange);
+  if (appliedDates.from !== fileDateRange.from || appliedDates.to !== fileDateRange.to) {
+    setAppliedDates(fileDateRange);
+    setDateInput(fileDateRange);
+  }
+  // Facet groups load their counts only once opened; that stays with the page, not the address.
   const [requestedFacets, setRequestedFacets] = useState<CollectionFacetKey[]>([]);
-  const [offset, setOffset] = useState(0);
-  const [selectedItem, setSelectedItem] = useState<CollectionItemRead | null>(null);
   const [selectedCustodianIds, setSelectedCustodianIds] = useState<string[]>([]);
 
   const matters = useQuery({
@@ -77,7 +80,7 @@ export function CollectionView({ section }: { section: CollectionSection }) {
   const searchResults = useQuery({
     queryKey: ["collection-search", collectionId, search, facetFilters, fileDateRange, offset],
     queryFn: () => {
-      const params = collectionFilterParams(search, facetFilters, fileDateRange);
+      const params = collectionSearchApiParams(filters);
       params.set("limit", String(PAGE_SIZE));
       params.set("offset", String(offset));
       return coreApi<CollectionItemSearchResponse>(`/v1/collections/${collectionId}/search?${params}`);
@@ -89,7 +92,7 @@ export function CollectionView({ section }: { section: CollectionSection }) {
     queries: COLLECTION_FACET_KEYS.map((facet) => ({
       queryKey: ["collection-search-facet", collectionId, facet, search, facetFilters, fileDateRange],
       queryFn: () => {
-        const params = collectionFilterParams(search, facetFilters, fileDateRange);
+        const params = collectionSearchApiParams(filters);
         return coreApi<FacetValue[]>(`/v1/collections/${collectionId}/search/facets/${facet}?${params}`);
       },
       enabled: tab === "documents" && requestedFacets.includes(facet),
@@ -124,7 +127,7 @@ export function CollectionView({ section }: { section: CollectionSection }) {
             type="button"
             className="block max-w-full truncate text-left font-semibold text-primary underline-offset-4 hover:underline focus-visible:rounded-sm focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
             title={row.original.original_filename}
-            onClick={() => setSelectedItem(row.original)}
+            onClick={() => setItemId(row.original.id)}
           >
             {row.original.original_filename}
           </button>
@@ -191,7 +194,7 @@ export function CollectionView({ section }: { section: CollectionSection }) {
       minSize: 90,
       cell: ({ row }) => <StatusBadge status={row.original.processing_status} />,
     },
-  ], [custodianNames]);
+  ], [custodianNames, setItemId]);
   const collectionCustodians = useMemo<CollectionCustodianRow[]>(() => {
     const detailsById = new Map((custodians.data ?? []).map((custodian) => [custodian.id, custodian]));
     return (collectionCustodianSummary.data ?? [])
@@ -298,35 +301,28 @@ export function CollectionView({ section }: { section: CollectionSection }) {
     };
   });
   const activeFilters = useMemo<ActiveFilter[]>(() => {
-    const filters: ActiveFilter[] = search ? [{ key: "search", label: `Search: ${search}` }] : [];
+    const active: ActiveFilter[] = search ? [{ key: "search", label: `Search: ${search}` }] : [];
     if (fileDateRange.from || fileDateRange.to) {
-      filters.push({ key: "file_date", label: formatFileDateRange(fileDateRange) });
+      active.push({ key: "file_date", label: formatFileDateRange(fileDateRange) });
     }
     for (const group of facetGroups) {
       for (const value of facetFilters[group.key as CollectionFacetKey]) {
         const label = group.options.find((option) => option.value === value)?.label
           ?? formatFacetValue(group.key as CollectionFacetKey, value, custodianNames);
-        filters.push({ key: `${group.key}:${value}`, label: `${group.label}: ${label}` });
+        active.push({ key: `${group.key}:${value}`, label: `${group.label}: ${label}` });
       }
     }
-    return filters;
+    return active;
   }, [custodianNames, facetFilters, facetGroups, fileDateRange, search]);
 
   function applySearch(event: FormEvent) {
     event.preventDefault();
-    setOffset(0);
-    setSearch(searchInput.trim());
+    setSearch(searchInput);
   }
 
   function toggleFacet(groupKey: string, value: string) {
     const key = groupKey as CollectionFacetKey;
-    setOffset(0);
-    setFacetFilters((current) => ({
-      ...current,
-      [key]: current[key].includes(value)
-        ? current[key].filter((selected) => selected !== value)
-        : [...current[key], value],
-    }));
+    if (COLLECTION_FACET_KEYS.includes(key)) toggleFacetValue(key, value);
   }
 
   function requestFacet(groupKey: string) {
@@ -335,24 +331,13 @@ export function CollectionView({ section }: { section: CollectionSection }) {
     setRequestedFacets((current) => current.includes(key) ? current : [...current, key]);
   }
 
-  function clearFilters() {
-    setSearchInput("");
-    setSearch("");
-    setFileDateRange({ from: "", to: "" });
-    setOffset(0);
-    setFacetFilters(emptyFacetFilters());
-  }
-
   function removeActiveFilter(key: string) {
     if (key === "search") {
-      setSearchInput("");
       setSearch("");
-      setOffset(0);
       return;
     }
     if (key === "file_date") {
       setFileDateRange({ from: "", to: "" });
-      setOffset(0);
       return;
     }
     const separator = key.indexOf(":");
@@ -368,7 +353,9 @@ export function CollectionView({ section }: { section: CollectionSection }) {
   }
 
 
-  const hasFilters = Boolean(search || fileDateRange.from || fileDateRange.to) || Object.values(facetFilters).some((values) => values.length > 0);
+  const hasFilters = hasCollectionFilters(filters);
+  // The viewer opens from the address; a document that isn't on this page simply isn't shown.
+  const selectedItem = filters.itemId ? searchResults.data?.items.find((item) => item.id === filters.itemId) ?? null : null;
   const pageStart = searchResults.data?.items.length ? offset + 1 : 0;
   const pageEnd = offset + (searchResults.data?.items.length ?? 0);
 
@@ -383,17 +370,7 @@ export function CollectionView({ section }: { section: CollectionSection }) {
               selectionDescription={`Add all ${(searchResults.data?.total ?? 0).toLocaleString()} documents matching the current search and filters.`}
               onAdd={(matterId) => createImportJob(matterId, {
                 source_collection_id: collectionId,
-                selection: {
-                  mode: "QUERY",
-                  q: search || null,
-                  custodian_ids: facetFilters.custodians,
-                  file_extensions: facetFilters.file_extensions,
-                  record_types: facetFilters.record_types as MatterDocumentImportCreate["selection"]["record_types"],
-                  processing_statuses: facetFilters.processing_statuses as MatterDocumentImportCreate["selection"]["processing_statuses"],
-                  file_date_from: utcDayStart(fileDateRange.from),
-                  file_date_to: utcDayEnd(fileDateRange.to),
-                  item_ids: [],
-                },
+                selection: toImportSelection(filters),
                 selection_summary: hasFilters ? "Current collection search and filters" : "All collection documents",
               })}
             />
@@ -437,11 +414,11 @@ export function CollectionView({ section }: { section: CollectionSection }) {
                   onClear={clearFilters}
                 >
                   <DateRangeFacet
-                    from={fileDateRange.from}
-                    to={fileDateRange.to}
+                    from={dateInput.from}
+                    to={dateInput.to}
                     onChange={(range) => {
-                      setOffset(0);
-                      setFileDateRange(range);
+                      setDateInput(range);
+                      setFileDateRange(range, "replace");
                     }}
                   />
                 </FacetSidebar>
@@ -456,10 +433,10 @@ export function CollectionView({ section }: { section: CollectionSection }) {
                 <div className="flex flex-col justify-between gap-3 text-sm text-muted-foreground sm:flex-row sm:items-center">
                   <p>{searchResults.data.items.length ? `Showing ${pageStart}–${pageEnd} of ${searchResults.data.total.toLocaleString()}` : "No items to show"}</p>
                   <div className="flex gap-2">
-                    <Button variant="outline" size="sm" disabled={offset === 0 || searchResults.isFetching} onClick={() => setOffset((value) => Math.max(0, value - PAGE_SIZE))}>
+                    <Button variant="outline" size="sm" disabled={offset === 0 || searchResults.isFetching} onClick={() => setOffset(offset - PAGE_SIZE)}>
                       <ChevronLeft />Previous
                     </Button>
-                    <Button variant="outline" size="sm" disabled={pageEnd >= searchResults.data.total || searchResults.isFetching} onClick={() => setOffset((value) => value + PAGE_SIZE)}>
+                    <Button variant="outline" size="sm" disabled={pageEnd >= searchResults.data.total || searchResults.isFetching} onClick={() => setOffset(offset + PAGE_SIZE)}>
                       Next<ChevronRight />
                     </Button>
                   </div>
@@ -467,7 +444,7 @@ export function CollectionView({ section }: { section: CollectionSection }) {
               </div>
             </div>
           )}
-          <DocumentViewerDialog item={selectedItem} onClose={() => setSelectedItem(null)} showUnmappedMetadata />
+          <DocumentViewerDialog item={selectedItem} onClose={() => setItemId(null)} showUnmappedMetadata />
         </>
       ) : tab === "file-dates" ? (
         <Card className="p-5">
@@ -545,24 +522,6 @@ function formatFacetValue(key: CollectionFacetKey, value: string, custodianNames
   if (key === "custodians") return custodianNames.get(value) ?? "Unknown custodian";
   if (key === "file_extensions") return value === "__none__" ? "No extension" : `.${value}`;
   return formatFacetLabel(value);
-}
-
-function collectionFilterParams(
-  search: string,
-  facetFilters: CollectionFacetFilters,
-  fileDateRange: FileDateRange,
-) {
-  const params = new URLSearchParams();
-  if (search) params.set("q", search);
-  const fileDateFrom = utcDayStart(fileDateRange.from);
-  const fileDateTo = utcDayEnd(fileDateRange.to);
-  if (fileDateFrom) params.set("file_date_from", fileDateFrom);
-  if (fileDateTo) params.set("file_date_to", fileDateTo);
-  facetFilters.custodians.forEach((value) => params.append("custodian_id", value));
-  facetFilters.file_extensions.forEach((value) => params.append("extension", value));
-  facetFilters.record_types.forEach((value) => params.append("record_type", value));
-  facetFilters.processing_statuses.forEach((value) => params.append("processing_status", value));
-  return params;
 }
 
 function formatFileDateRange(range: FileDateRange) {
