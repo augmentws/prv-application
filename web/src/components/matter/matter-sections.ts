@@ -28,6 +28,7 @@ export const MATTER_NAV: MatterNavGroup[] = [
   {
     label: "Agents and models",
     items: [
+      { label: "Matter definition", icon: FileText, target: "definition" },
       { label: "Analysis tasks", icon: Sparkles, target: "analysis" },
       { label: "Classifiers", icon: BrainCircuit, target: "classification" },
       { label: "Jobs", icon: Activity, target: "jobs" },
@@ -36,7 +37,6 @@ export const MATTER_NAV: MatterNavGroup[] = [
   {
     label: "Setup",
     items: [
-      { label: "Matter definition", icon: FileText, target: "definition" },
       { label: "Metadata fields", icon: Tags, target: "metadata" },
       { label: "Search index", icon: Database, target: "search-index" },
       { label: "Token usage", icon: Coins, target: "usage" },
