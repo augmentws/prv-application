@@ -164,6 +164,8 @@ describe("CollectionShell", () => {
     const breadcrumb = await screen.findByRole("navigation", { name: "Breadcrumb" });
     expect(within(breadcrumb).getByRole("link", { name: "Enron mailboxes" })).toHaveAttribute("href", base);
     expect(within(breadcrumb).getByText("Custodians")).toHaveAttribute("aria-current", "page");
+    // Collections are deleted from the client page, not here.
+    expect(screen.queryByRole("button", { name: /Delete Collection/ })).not.toBeInTheDocument();
   });
 
   it("leaves detail pages to draw their own header", async () => {

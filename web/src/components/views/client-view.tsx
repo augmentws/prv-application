@@ -9,12 +9,13 @@ import { toast } from "sonner";
 
 import { DataTable } from "@/components/data-table";
 import { CreateCollectionDialog, type CreateCollectionValues } from "@/components/forms/create-collection-dialog";
+import { DeleteCollectionDialog } from "@/components/forms/delete-collection-dialog";
 import { CreateMatterDialog, type CreateMatterValues } from "@/components/forms/create-matter-dialog";
 import { PageHeader } from "@/components/page-header";
 import { QueryError, TableLoading } from "@/components/query-state";
 import { StatusBadge } from "@/components/status-badge";
 import { Button } from "@/components/ui/button";
-import type { ClientRead, CollectionRead, EffectivePermissionsRead, MatterRead, MatterTemplateRead, TenantRead } from "@/generated/models";
+import type { ClientRead, CollectionDeletionJobRead, CollectionRead, EffectivePermissionsRead, MatterRead, MatterTemplateRead, TenantRead } from "@/generated/models";
 import { coreApi } from "@/lib/api-client";
 import { collectionHref } from "@/lib/collection-routes";
 import { formatDate } from "@/lib/format";
@@ -60,6 +61,15 @@ export function ClientView({ clientId }: { clientId: string }) {
       toast.success(`${collection.name} was created.`);
     },
   });
+  // Deleting a collection needs client administration (client.configure), the same rule the API applies.
+  const { mutateAsync: queueCollectionDeletion } = useMutation({
+    mutationFn: (collectionId: string) => coreApi<CollectionDeletionJobRead>(`/v1/collections/${collectionId}`, { method: "DELETE" }),
+    onSuccess: (job) => {
+      void queryClient.invalidateQueries({ queryKey: ["collections"] });
+      toast.success(`Deletion of ${job.collection_name} was queued.`);
+    },
+  });
+  const deleteCollection = useCallback((collectionId: string) => queueCollectionDeletion(collectionId).then(() => undefined), [queueCollectionDeletion]);
   const createMatter = useCallback((values: CreateMatterValues) => matterMutation.mutateAsync(values).then(() => undefined), [matterMutation]);
   const createCollection = useCallback((values: CreateCollectionValues) => collectionMutation.mutateAsync(values).then(() => undefined), [collectionMutation]);
   const matterColumns = useMemo<ColumnDef<MatterRead>[]>(() => [
@@ -69,6 +79,14 @@ export function ClientView({ clientId }: { clientId: string }) {
     { id: "open", header: "", cell: ({ row }) => <Button asChild variant="ghost" size="sm"><MatterDestinationLink clientId={clientId} matter={row.original}>Open <ArrowRight /></MatterDestinationLink></Button> },
   ], [clientId]);
   const collectionColumns = useMemo<ColumnDef<CollectionRead>[]>(() => [
+    ...(canConfigureClient ? [{
+      id: "delete",
+      header: () => <span className="sr-only">Delete</span>,
+      size: 52,
+      enableResizing: false,
+      // A collection already being deleted shows its Deleting status instead.
+      cell: ({ row }) => row.original.status === "DELETING" ? null : <DeleteCollectionDialog collectionName={row.original.name} onDelete={() => deleteCollection(row.original.id)} />,
+    } satisfies ColumnDef<CollectionRead>] : []),
     {
       accessorKey: "name",
       header: "Collection",
@@ -82,7 +100,7 @@ export function ClientView({ clientId }: { clientId: string }) {
     { accessorKey: "status", header: "Status", cell: ({ row }) => <StatusBadge status={row.original.status} /> },
     { accessorKey: "created_at", header: "Created", cell: ({ row }) => <span className="text-muted-foreground">{formatDate(row.original.created_at)}</span> },
     { id: "open", header: "", cell: ({ row }) => <Button asChild variant="ghost" size="sm"><Link href={collectionHref(clientId, row.original.id)}>Open <ArrowRight /></Link></Button> },
-  ], [clientId]);
+  ], [canConfigureClient, clientId, deleteCollection]);
 
   if (client.isPending) return <TableLoading />;
   if (client.error) return <QueryError message={client.error.message} />;

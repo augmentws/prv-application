@@ -50,7 +50,15 @@ export function DeleteCollectionDialog({
       }
     }}>
       <DialogTrigger asChild>
-        <Button variant="destructive"><Trash2 />Delete collection</Button>
+        <Button
+          variant="ghost"
+          size="icon"
+          title="Delete Collection"
+          aria-label={`Delete Collection ${collectionName}`}
+          className="size-8 text-destructive hover:bg-destructive/10 hover:text-destructive"
+        >
+          <Trash2 aria-hidden="true" />
+        </Button>
       </DialogTrigger>
       <DialogContent>
         <DialogHeader>

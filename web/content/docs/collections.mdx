@@ -119,7 +119,7 @@ Original native evidence, OCR text, and faithful extracted text are preserved un
 
 ## Delete a collection
 
-Choose **Delete collection** in the collection header, then type the exact collection name to confirm. Deletion is a durable background workflow: database records are removed in bounded batches, followed by their object-store blobs. A blob shared by another artifact is retained until its final reference is deleted.
+Client administrators can delete a collection from the **Collections** table on the client page. Select the red trash can at the left of the collection's row (its tooltip reads **Delete Collection**), then type the exact collection name to confirm. Other users do not see the trash can, and a collection that is already being deleted shows **Deleting** instead. Deletion is a durable background workflow: database records are removed in bounded batches, followed by their object-store blobs. A blob shared by another artifact is retained until its final reference is deleted.
 
 Priv-View refuses to start deletion while the collection has an active matter-import job or any documents linked into a matter. Remove those references first. Once accepted, the collection enters **Deleting** and no new imports, uploads, selections, or text-processing runs can start against it.
 
