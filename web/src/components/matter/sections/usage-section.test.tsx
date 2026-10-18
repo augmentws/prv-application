@@ -3,7 +3,7 @@ import type { ReactNode } from "react";
 import { afterEach, describe, expect, it, vi } from "vitest";
 
 import { UsageSection } from "@/components/matter/sections/usage-section";
-import { MATTER_BASE_PATH, renderInMatter } from "@/components/matter/test-utils";
+import { MATTER, MATTER_BASE_PATH, renderInMatter } from "@/components/matter/test-utils";
 import { coreApi } from "@/lib/api-client";
 
 vi.mock("@/lib/api-client", () => ({ coreApi: vi.fn() }));
@@ -24,7 +24,7 @@ describe("Matter token usage", () => {
   it("shows matter totals, model and workflow breakdowns, and the usage ledger", async () => {
     vi.mocked(coreApi).mockImplementation(async (path) => {
       if (path === "/v1/clients/client-1") return { id: "client-1", tenant_id: "tenant-1", name: "Client" } as never;
-      if (path === "/v1/matters/matter-1") return { id: "matter-1", name: "Matter" } as never;
+      if (path === "/v1/matters/matter-1") return MATTER as never;
       if (path === "/v1/matters/matter-1/metadata-definitions") return [] as never;
       if (path === "/v1/matters/matter-1/metadata-groups") return [] as never;
       if (path === "/v1/matters/matter-1/provider-usage?offset=0&limit=100") return {

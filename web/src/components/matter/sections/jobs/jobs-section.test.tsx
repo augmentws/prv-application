@@ -4,7 +4,7 @@ import type { ReactNode } from "react";
 import { afterEach, describe, expect, it, vi } from "vitest";
 
 import { JobsSection } from "@/components/matter/sections/jobs/jobs-section";
-import { MATTER_BASE_PATH, renderInMatter } from "@/components/matter/test-utils";
+import { MATTER, MATTER_BASE_PATH, renderInMatter } from "@/components/matter/test-utils";
 import { coreApi } from "@/lib/api-client";
 
 vi.mock("@/lib/api-client", () => ({ coreApi: vi.fn() }));
@@ -25,7 +25,7 @@ describe("Matter jobs", () => {
   it("shows a snapshotted zero-progress bulk tag job as waiting and links each job type to its own page", async () => {
     vi.mocked(coreApi).mockImplementation(async (path) => {
       if (path === "/v1/clients/client-1") return { id: "client-1", tenant_id: "tenant-1", name: "Client" } as never;
-      if (path === "/v1/matters/matter-1") return { id: "matter-1", name: "Matter" } as never;
+      if (path === "/v1/matters/matter-1") return MATTER as never;
       if (path === "/v1/authorization/effective?resource_type=MATTER&resource_id=matter-1") return { resource_type: "MATTER", resource_id: "matter-1", authorization_revision: 1, permission_keys: ["job.delete"] } as never;
       if (path === "/v1/matters/matter-1/metadata-definitions") return [{
         id: "definition-1",
@@ -111,7 +111,7 @@ describe("Matter jobs", () => {
   it("shows classification analysis as a job type and retries a canceled whole-matter run", async () => {
     vi.mocked(coreApi).mockImplementation(async (path, init) => {
       if (path === "/v1/clients/client-1") return { id: "client-1", tenant_id: "tenant-1", name: "Client" } as never;
-      if (path === "/v1/matters/matter-1") return { id: "matter-1", name: "Matter" } as never;
+      if (path === "/v1/matters/matter-1") return MATTER as never;
       if (path === "/v1/authorization/effective?resource_type=MATTER&resource_id=matter-1") return { resource_type: "MATTER", resource_id: "matter-1", authorization_revision: 1, permission_keys: ["job.delete"] } as never;
       if (path === "/v1/matters/matter-1/metadata-definitions") return [] as never;
       if (path === "/v1/matters/matter-1/metadata-groups") return [] as never;
@@ -167,7 +167,7 @@ describe("Matter jobs", () => {
         items: [], total: 5, retryable_count: 5, offset: 0, limit: 100,
       } as never;
       if (path === "/v1/clients/client-1") return { id: "client-1", tenant_id: "tenant-1", name: "Client" } as never;
-      if (path === "/v1/matters/matter-1") return { id: "matter-1", name: "Matter" } as never;
+      if (path === "/v1/matters/matter-1") return MATTER as never;
       if (path === "/v1/authorization/effective?resource_type=MATTER&resource_id=matter-1") return { resource_type: "MATTER", resource_id: "matter-1", authorization_revision: 1, permission_keys: ["job.delete"] } as never;
       if (path === "/v1/matters/matter-1/metadata-definitions") return [] as never;
       if (path === "/v1/matters/matter-1/metadata-groups") return [] as never;
@@ -231,7 +231,7 @@ describe("Matter jobs", () => {
   it("reviews completed classification output on the job with a probability threshold", async () => {
     vi.mocked(coreApi).mockImplementation(async (path) => {
       if (path === "/v1/clients/client-1") return { id: "client-1", tenant_id: "tenant-1", name: "Client" } as never;
-      if (path === "/v1/matters/matter-1") return { id: "matter-1", name: "Matter" } as never;
+      if (path === "/v1/matters/matter-1") return MATTER as never;
       if (path === "/v1/authorization/effective?resource_type=MATTER&resource_id=matter-1") return { resource_type: "MATTER", resource_id: "matter-1", authorization_revision: 1, permission_keys: ["job.delete"] } as never;
       if (path === "/v1/matters/matter-1/metadata-definitions") return [] as never;
       if (path === "/v1/matters/matter-1/metadata-groups") return [] as never;

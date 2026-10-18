@@ -5,7 +5,7 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 
 import { MetadataSection } from "@/components/matter/sections/metadata-section";
 import { OverviewSection } from "@/components/matter/sections/overview-section";
-import { MATTER_BASE_PATH, renderInMatter } from "@/components/matter/test-utils";
+import { MATTER, MATTER_BASE_PATH, renderInMatter } from "@/components/matter/test-utils";
 import { coreApi } from "@/lib/api-client";
 
 vi.mock("@/lib/api-client", () => ({ coreApi: vi.fn() }));
@@ -26,7 +26,7 @@ describe("Matter metadata navigation", () => {
   it("shows configuration actions only on the Overview tab", async () => {
     vi.mocked(coreApi).mockImplementation(async (path) => {
       if (path === "/v1/clients/client-1") return { id: "client-1", tenant_id: "tenant-1", name: "Client" } as never;
-      if (path === "/v1/matters/matter-1") return { id: "matter-1", name: "Matter" } as never;
+      if (path === "/v1/matters/matter-1") return MATTER as never;
       if (path === "/v1/matters/matter-1/metadata-definitions") return [] as never;
       if (path === "/v1/matters/matter-1/metadata-groups") return [] as never;
       if (path === "/v1/matters/matter-1/overview-counts") return { document_count: 0, custodian_count: 0 } as never;
@@ -54,7 +54,7 @@ describe("Matter metadata navigation", () => {
   it("does not expose a manual Email Domain update action", async () => {
     vi.mocked(coreApi).mockImplementation(async (path) => {
       if (path === "/v1/clients/client-1") return { id: "client-1", tenant_id: "tenant-1", name: "Client" } as never;
-      if (path === "/v1/matters/matter-1") return { id: "matter-1", name: "Matter" } as never;
+      if (path === "/v1/matters/matter-1") return MATTER as never;
       if (path === "/v1/matters/matter-1/metadata-definitions") return [] as never;
       if (path === "/v1/matters/matter-1/metadata-groups") return [] as never;
       throw new Error(`Unexpected API request: ${path}`);
@@ -72,7 +72,7 @@ describe("Matter metadata navigation", () => {
   it("shows a metadata field description on hover", async () => {
     vi.mocked(coreApi).mockImplementation(async (path) => {
       if (path === "/v1/clients/client-1") return { id: "client-1", tenant_id: "tenant-1", name: "Client" } as never;
-      if (path === "/v1/matters/matter-1") return { id: "matter-1", name: "Matter" } as never;
+      if (path === "/v1/matters/matter-1") return MATTER as never;
       if (path === "/v1/matters/matter-1/metadata-definitions") return [{
         id: "definition-1",
         matter_id: "matter-1",
@@ -110,7 +110,7 @@ describe("Matter metadata navigation", () => {
   it("shows Metadata groups as the Groups subtab of Metadata fields", async () => {
     vi.mocked(coreApi).mockImplementation(async (path) => {
       if (path === "/v1/clients/client-1") return { id: "client-1", tenant_id: "tenant-1", name: "Client" } as never;
-      if (path === "/v1/matters/matter-1") return { id: "matter-1", name: "Matter" } as never;
+      if (path === "/v1/matters/matter-1") return MATTER as never;
       if (path === "/v1/matters/matter-1/metadata-definitions") return [] as never;
       if (path === "/v1/matters/matter-1/metadata-groups") return [] as never;
       throw new Error(`Unexpected API request: ${path}`);
@@ -155,7 +155,7 @@ describe("Matter metadata navigation", () => {
     } as const;
     vi.mocked(coreApi).mockImplementation(async (path, init) => {
       if (path === "/v1/clients/client-1") return { id: "client-1", tenant_id: "tenant-1", name: "Client" } as never;
-      if (path === "/v1/matters/matter-1") return { id: "matter-1", name: "Matter" } as never;
+      if (path === "/v1/matters/matter-1") return MATTER as never;
       if (path === "/v1/matters/matter-1/metadata-definitions/definition-1" && init?.method === "PATCH") return { ...definition, ai_assignable: true } as never;
       if (path === "/v1/matters/matter-1/metadata-definitions") return [definition] as never;
       if (path === "/v1/matters/matter-1/metadata-groups") return [] as never;
