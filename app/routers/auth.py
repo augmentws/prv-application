@@ -118,6 +118,32 @@ def login(payload: LoginRequest, db: Session = Depends(get_db), settings: Settin
     return pair
 
 
+def revoke_on_stale_refresh_token(db: Session, session: AuthSession, user: User, settings: Settings) -> None:
+    """Handle a rotated refresh token being presented again.
+
+    Within the grace window after rotation this is treated as a race between two
+    requests from the same client, and the session is left alone. After it, the
+    old token must have been copied, so the session is revoked.
+    """
+
+    now = datetime.now(timezone.utc)
+    rotated_at = session.last_seen_at
+    if rotated_at is not None and rotated_at.tzinfo is None:
+        rotated_at = rotated_at.replace(tzinfo=timezone.utc)
+    if rotated_at is not None and now - rotated_at <= timedelta(seconds=settings.refresh_reuse_grace_seconds):
+        return
+    session.revoked_at = now
+    record_audit(
+        db,
+        tenant_id=user.tenant_id,
+        actor_user_id=user.id,
+        action="auth.refresh_reuse_detected",
+        target_type="auth_session",
+        target_id=session.id,
+    )
+    db.commit()
+
+
 @router.post("/refresh", response_model=TokenPair)
 def refresh(payload: RefreshRequest, db: Session = Depends(get_db), settings: Settings = Depends(get_settings)) -> TokenPair:
     try:
@@ -127,6 +153,14 @@ def refresh(payload: RefreshRequest, db: Session = Depends(get_db), settings: Se
 
     session = db.scalar(select(AuthSession).where(AuthSession.id == claims.session_id))
     user = db.scalar(select(User).where(User.id == claims.user_id))
+    if (
+        session is not None
+        and user is not None
+        and session.user_id == user.id
+        and session.revoked_at is None
+        and session.refresh_jti_hash != hash_jti(claims.jti)
+    ):
+        revoke_on_stale_refresh_token(db, session, user, settings)
     if (
         session is None
         or user is None

@@ -1,7 +1,7 @@
 from collections.abc import AsyncIterator
 
 import httpx
-from fastapi import APIRouter, Depends, Request
+from fastapi import APIRouter, Depends, HTTPException, Request, status
 from fastapi.responses import StreamingResponse
 from starlette.background import BackgroundTask
 
@@ -29,6 +29,12 @@ async def _proxy_artifact_request(
     core_settings: Settings,
     artifact_settings: ArtifactSettings,
 ) -> StreamingResponse:
+    declared_length = request.headers.get("content-length")
+    if declared_length is not None and declared_length.isdigit() and int(declared_length) > artifact_settings.upload_max_bytes:
+        raise HTTPException(
+            status_code=status.HTTP_413_CONTENT_TOO_LARGE,
+            detail=f"Upload exceeds the {artifact_settings.upload_max_bytes}-byte limit",
+        )
     client = httpx.AsyncClient(base_url=core_settings.artifact_base_url, timeout=None)
     headers = {
         key: value

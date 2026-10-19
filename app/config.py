@@ -128,6 +128,8 @@ class Settings(BaseSettings):
     jwt_audience: str = "priv-view-api"
     access_token_minutes: int = Field(default=15, ge=1, le=1440)
     refresh_token_days: int = Field(default=14, ge=1, le=90)
+    # A rotated refresh token presented within this window is a benign race, not theft.
+    refresh_reuse_grace_seconds: int = Field(default=30, ge=0, le=300)
     login_max_failed_attempts: int = Field(default=5, ge=1, le=20)
     login_lockout_minutes: int = Field(default=15, ge=1, le=1440)
 

@@ -10,7 +10,7 @@ from fastapi import HTTPException, UploadFile, status
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
-from artifact_service.config import ArtifactSettings
+from artifact_service.config import ArtifactSettings, get_artifact_settings
 from artifact_service.models import Artifact, ContentBlob, TenantStorage
 from artifact_service.storage import BlobStorage
 
@@ -49,13 +49,20 @@ def ensure_tenant_storage(
 
 
 def stage_upload(upload: UploadFile) -> tuple[BinaryIO, str, int]:
+    maximum = get_artifact_settings().upload_max_bytes
     staged = tempfile.SpooledTemporaryFile(max_size=16 * 1024 * 1024, mode="w+b")  # noqa: SIM115
     digest = hashlib.sha256()
     byte_length = 0
     while chunk := upload.file.read(1024 * 1024):
+        byte_length += len(chunk)
+        if byte_length > maximum:
+            staged.close()
+            raise HTTPException(
+                status_code=status.HTTP_413_CONTENT_TOO_LARGE,
+                detail=f"Upload exceeds the {maximum}-byte limit",
+            )
         digest.update(chunk)
         staged.write(chunk)
-        byte_length += len(chunk)
     staged.seek(0)
     return staged, digest.hexdigest(), byte_length
 

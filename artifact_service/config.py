@@ -32,6 +32,7 @@ class ArtifactSettings(BaseSettings):
     storage_region: str = "us-east-1"
     bucket_prefix: str = "pv-artifacts"
     bucket_suffix_length: int = Field(default=10, ge=8, le=32)
+    upload_max_bytes: int = Field(default=2 * 1024**3, ge=1024 * 1024, le=20 * 1024**3)
     delegation_secret: str = Field(min_length=32)
     delegation_issuer: str = "priv-view-core"
     delegation_audience: str = "priv-view-artifact"

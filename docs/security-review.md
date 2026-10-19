@@ -58,6 +58,8 @@ The most serious risks are configuration risks. Default secrets are hard-coded i
 
 #### M1. No refresh-token reuse detection
 
+**Status: remediated on `fix/security-defaults`.** A rotated refresh token presented after `REFRESH_REUSE_GRACE_SECONDS` (default 30) revokes the session and writes an `auth.refresh_reuse_detected` audit record. Inside the window it is rejected without revoking, so a concurrent refresh from the same client is not treated as theft (`app/routers/auth.py`, `tests/test_refresh_reuse.py`).
+
 - `app/routers/auth.py:122` (`refresh`)
 
 A stale refresh token is rejected, but the session is not revoked. If an attacker holds a previous refresh token, rotation by the legitimate client invalidates it, but the attacker's copy is not treated as a reuse signal and the session stays active.
@@ -66,6 +68,8 @@ A stale refresh token is rejected, but the session is not revoked. If an attacke
 
 #### M2. No upload size cap
 
+**Status: remediated on `fix/security-defaults`.** `ARTIFACT_UPLOAD_MAX_BYTES` (default 2 GB) is enforced while the upload is read, and the Core proxy rejects an oversized `Content-Length` before forwarding (`artifact_service/service.py`, `app/routers/artifact_proxy.py`, `tests/test_upload_limits.py`). The BFF also stopped buffering mutation bodies in memory. It streams them to Core and refreshes the access token before forwarding, so a streamed body is never retried (`web/src/app/api/core/[...path]/route.ts`, `route.mutation.test.ts`). The BFF buffering was not in the original review and was found while fixing this item.
+
 - `artifact_service/service.py:51` (`stage_upload`)
 
 The upload is streamed into a spooled temporary file with no byte limit. Any authenticated user can exhaust disk. The BFF proxy also forwards request bodies without a limit.
@@ -73,6 +77,8 @@ The upload is streamed into a spooled temporary file with no byte limit. Any aut
 **Recommendation:** Enforce a maximum size while reading, and add a body-size limit at the proxy.
 
 #### M3. CSV formula injection not neutralized in two exports
+
+**Status: remediated on `fix/security-defaults`.** The coding comparison and job outcome CSV exports now neutralize text cells that start with `=`, `+`, `-`, or `@`, using the shared helper in `app/csv_safety.py` (`tests/test_csv_safety.py`). XLSX output is unchanged, because its cells are stored as strings and cannot run formulas.
 
 Search and fact exports escape cells beginning with `=`, `+`, `-`, or `@` when `spreadsheet_safe` is true, which is the default. Two writers do not escape at all:
 
