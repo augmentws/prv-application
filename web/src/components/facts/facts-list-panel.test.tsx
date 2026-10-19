@@ -126,6 +126,16 @@ describe("FactsListPanel", () => {
     });
   });
 
+  it("makes the select column wide enough for its checkbox and keeps it from being resized", async () => {
+    renderPanel();
+    await screen.findByText("2 facts");
+
+    const header = screen.getByRole("checkbox", { name: "Select all facts on this page" }).closest("th")!;
+    // Cells have 16px padding on each side; the 16px checkbox plus a 2px focus outline must fit inside.
+    expect(Number.parseFloat(header.style.width) - 32).toBeGreaterThanOrEqual(16 + 2 * 2);
+    expect(screen.queryByRole("separator", { name: "Resize select column" })).not.toBeInTheDocument();
+  });
+
   it("hides review controls from viewers", async () => {
     renderPanel(false);
     await screen.findByText("2 facts");
