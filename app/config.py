@@ -4,12 +4,14 @@ from typing import Literal
 from pydantic import Field, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
+from app.deployment_policy import AppEnvironment, reject_development_secrets
+
 
 class Settings(BaseSettings):
     model_config = SettingsConfigDict(env_file=".env", env_file_encoding="utf-8", extra="ignore")
 
     app_name: str = "Priv-View Core"
-    app_env: str = "development"
+    app_env: AppEnvironment = "production"
     database_url: str = "postgresql+psycopg://postgres:postgres@localhost:5432/pvr-core"
     artifact_mode: str = "embedded"
     artifact_base_url: str = "http://localhost:8001"
@@ -130,6 +132,14 @@ class Settings(BaseSettings):
     bootstrap_superuser_email: str | None = None
     bootstrap_superuser_password: str | None = None
     bootstrap_superuser_display_name: str = "Super Admin"
+
+    @model_validator(mode="after")
+    def validate_deployment_secrets(self) -> "Settings":
+        reject_development_secrets(
+            self.app_env,
+            {"JWT_SECRET": self.jwt_secret, "CLASSIFICATION_SERVICE_TOKEN": self.classification_service_token},
+        )
+        return self
 
     @model_validator(mode="after")
     def validate_chunking(self) -> "Settings":

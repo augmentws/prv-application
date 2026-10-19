@@ -4,6 +4,8 @@ from typing import Literal
 from pydantic import AliasChoices, Field, SecretStr, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
+from app.deployment_policy import AppEnvironment, reject_development_secrets
+
 
 class EmbeddingSettings(BaseSettings):
     model_config = SettingsConfigDict(
@@ -14,6 +16,7 @@ class EmbeddingSettings(BaseSettings):
         extra="ignore",
     )
 
+    app_env: AppEnvironment = Field(default="production", validation_alias="APP_ENV")
     mode: Literal["embedded", "remote"] = "embedded"
     provider: Literal["sentence_transformers", "voyage_api"] = "sentence_transformers"
     model: str = "voyageai/voyage-4-nano"
@@ -47,6 +50,11 @@ class EmbeddingSettings(BaseSettings):
     voyage_realtime_concurrency: int = Field(default=8, ge=1, le=100)
     voyage_tokens_per_minute: int = Field(default=3_000_000, ge=1_000, le=1_000_000_000)
     voyage_requests_per_minute: int = Field(default=2_000, ge=1, le=100_000)
+
+    @model_validator(mode="after")
+    def validate_deployment_secrets(self) -> "EmbeddingSettings":
+        reject_development_secrets(self.app_env, {"EMBEDDING_SERVICE_TOKEN": self.service_token})
+        return self
 
     @model_validator(mode="after")
     def validate_provider(self) -> "EmbeddingSettings":

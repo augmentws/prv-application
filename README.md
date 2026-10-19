@@ -55,6 +55,8 @@ refreshing its status; they are not worker progress messages.
 
 DBOS stores its workflow state in the `dbos` schema of `pvr-core`. The application stores its user-visible job and batch records in the normal Core schema.
 
+`APP_ENV` defaults to `production`. In that mode every service refuses to start while its `JWT_SECRET`, `ARTIFACT_DELEGATION_SECRET`, `CLASSIFICATION_SERVICE_TOKEN`, or `EMBEDDING_SERVICE_TOKEN` is unset, shorter than the configured minimum, or still a development or placeholder value. Local development sets `APP_ENV=development` in `.env`, which allows the built-in development secrets. Docker Compose requires the four secrets to be defined in `.env` (it reads `.env` for the whole file, so define them even when starting only `postgres` and `minio`); generate values with `openssl rand -hex 32`. Compose publishes service ports on `127.0.0.1` only.
+
 Set a unique `JWT_SECRET` and change the bootstrap password in `.env` before running the bootstrap command. Bootstrap is idempotent for the configured root tenant, administrator, standard agents, and code-owned managed skills. Existing installations must rerun `pipenv run python -m app.bootstrap` after updating code-owned skill instructions or limits; restarting only the API or workflow worker does not publish a new persisted skill version. Bootstrap preserves explicitly configured resources while publishing changed standard definitions and updating their workflow bindings.
 
 To run the standard agent through Google AI Studio, set `AGENT_DEFAULT_MODEL` to a `google:<model-id>` value and provide `GOOGLE_API_KEY`. The Core API and workflow worker must be restarted after changing their environment.

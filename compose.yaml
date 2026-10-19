@@ -6,7 +6,7 @@ services:
       POSTGRES_USER: postgres
       POSTGRES_PASSWORD: postgres
     ports:
-      - "5432:5432"
+      - "127.0.0.1:5432:5432"
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U postgres -d pvr-core"]
       interval: 5s
@@ -24,8 +24,8 @@ services:
       MINIO_ROOT_USER: minioadmin
       MINIO_ROOT_PASSWORD: minioadmin
     ports:
-      - "9000:9000"
-      - "9001:9001"
+      - "127.0.0.1:9000:9000"
+      - "127.0.0.1:9001:9001"
     volumes:
       - type: bind
         source: /home/petefc/augment.ws/prv-data/minio-data
@@ -52,8 +52,8 @@ services:
         hard: 65536
     restart: unless-stopped
     ports:
-      - "9200:9200"
-      - "9600:9600"
+      - "127.0.0.1:9200:9200"
+      - "127.0.0.1:9600:9600"
     healthcheck:
       test: ["CMD-SHELL", "curl -fs http://localhost:9200/_cluster/health >/dev/null"]
       interval: 10s
@@ -67,6 +67,7 @@ services:
     build: .
     command: uvicorn embedding_service.main:app --host 0.0.0.0 --port 8002
     environment:
+      APP_ENV: ${APP_ENV:-production}
       EMBEDDING_PROVIDER: sentence_transformers
       EMBEDDING_MODEL: voyageai/voyage-4-nano
       EMBEDDING_DIMENSIONS: 1024
@@ -76,7 +77,7 @@ services:
       EMBEDDING_BATCH_SIZE: 32
       EMBEDDING_MAX_INPUTS: 256
       EMBEDDING_MAX_INPUT_CHARACTERS: 200000
-      EMBEDDING_SERVICE_TOKEN: development-embedding-service-token
+      EMBEDDING_SERVICE_TOKEN: ${EMBEDDING_SERVICE_TOKEN:?set EMBEDDING_SERVICE_TOKEN in .env}
       HF_HOME: /models
     healthcheck:
       test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8002/health')"]
@@ -84,7 +85,7 @@ services:
       timeout: 5s
       retries: 20
     ports:
-      - "8002:8002"
+      - "127.0.0.1:8002:8002"
     volumes:
       - pvr_embedding_models:/models
 
@@ -95,6 +96,7 @@ services:
       sh -c "alembic -c artifact_alembic.ini upgrade head &&
       uvicorn artifact_service.main:app --host 0.0.0.0 --port 8001"
     environment:
+      APP_ENV: ${APP_ENV:-production}
       ARTIFACT_DATABASE_URL: postgresql+psycopg://postgres:postgres@postgres:5432/pvr-artifact
       ARTIFACT_STORAGE_ENDPOINT_URL: http://minio:9000
       ARTIFACT_STORAGE_ACCESS_KEY: minioadmin
@@ -102,7 +104,7 @@ services:
       ARTIFACT_STORAGE_REGION: us-east-1
       ARTIFACT_BUCKET_PREFIX: pv-artifacts
       ARTIFACT_BUCKET_SUFFIX_LENGTH: 10
-      ARTIFACT_DELEGATION_SECRET: development-artifact-delegation-secret
+      ARTIFACT_DELEGATION_SECRET: ${ARTIFACT_DELEGATION_SECRET:?set ARTIFACT_DELEGATION_SECRET in .env}
       ARTIFACT_DELEGATION_ISSUER: priv-view-core
       ARTIFACT_DELEGATION_AUDIENCE: priv-view-artifact
     depends_on:
@@ -111,14 +113,15 @@ services:
       minio:
         condition: service_started
     ports:
-      - "8001:8001"
+      - "127.0.0.1:8001:8001"
 
   classification-api:
     profiles: ["split", "classification"]
     build: .
     command: uvicorn classification_service.main:app --host 0.0.0.0 --port 8003
     environment:
-      CLASSIFICATION_SERVICE_TOKEN: development-classification-service-token
+      APP_ENV: ${APP_ENV:-production}
+      CLASSIFICATION_SERVICE_TOKEN: ${CLASSIFICATION_SERVICE_TOKEN:?set CLASSIFICATION_SERVICE_TOKEN in .env}
       CLASSIFICATION_REQUEST_TIMEOUT_SECONDS: 120
       CLASSIFICATION_MAX_CONCURRENCY: 2
       CLASSIFICATION_RUNTIME_IMAGE_DIGEST: development-runtime
@@ -134,7 +137,7 @@ services:
       artifact-api:
         condition: service_started
     ports:
-      - "8003:8003"
+      - "127.0.0.1:8003:8003"
 
   core-api:
     profiles: ["split"]
@@ -143,18 +146,19 @@ services:
       sh -c "alembic upgrade head &&
       uvicorn app.main:app --host 0.0.0.0 --port 8000"
     environment:
+      APP_ENV: ${APP_ENV:-production}
       DATABASE_URL: postgresql+psycopg://postgres:postgres@postgres:5432/pvr-core
-      JWT_SECRET: development-only-change-me-please
+      JWT_SECRET: ${JWT_SECRET:?set JWT_SECRET in .env}
       JWT_ISSUER: priv-view-core
       JWT_AUDIENCE: priv-view-api
       ARTIFACT_MODE: remote
       ARTIFACT_BASE_URL: http://artifact-api:8001
-      ARTIFACT_DELEGATION_SECRET: development-artifact-delegation-secret
+      ARTIFACT_DELEGATION_SECRET: ${ARTIFACT_DELEGATION_SECRET:?set ARTIFACT_DELEGATION_SECRET in .env}
       ARTIFACT_DELEGATION_ISSUER: priv-view-core
       ARTIFACT_DELEGATION_AUDIENCE: priv-view-artifact
       CLASSIFICATION_MODE: remote
       CLASSIFICATION_BASE_URL: http://classification-api:8003
-      CLASSIFICATION_SERVICE_TOKEN: development-classification-service-token
+      CLASSIFICATION_SERVICE_TOKEN: ${CLASSIFICATION_SERVICE_TOKEN:?set CLASSIFICATION_SERVICE_TOKEN in .env}
       DBOS_ENABLED: "true"
       DBOS_SYSTEM_DATABASE_URL: postgresql+psycopg://postgres:postgres@postgres:5432/pvr-core
       DBOS_SYSTEM_SCHEMA: dbos
@@ -185,7 +189,7 @@ services:
       EMBEDDING_QUERY_MODE: remote
       EMBEDDING_QUERY_MODEL: ${EMBEDDING_QUERY_MODEL:-voyageai/voyage-4-nano}
       EMBEDDING_QUERY_BASE_URL: http://embedding-api:8002
-      EMBEDDING_SERVICE_TOKEN: development-embedding-service-token
+      EMBEDDING_SERVICE_TOKEN: ${EMBEDDING_SERVICE_TOKEN:?set EMBEDDING_SERVICE_TOKEN in .env}
       VOYAGE_API_KEY: ${VOYAGE_API_KEY:-}
       EMBEDDING_VOYAGE_REALTIME_CONCURRENCY: ${EMBEDDING_VOYAGE_REALTIME_CONCURRENCY:-8}
       EMBEDDING_VOYAGE_TOKENS_PER_MINUTE: ${EMBEDDING_VOYAGE_TOKENS_PER_MINUTE:-3000000}
@@ -214,7 +218,7 @@ services:
       classification-api:
         condition: service_healthy
     ports:
-      - "8000:8000"
+      - "127.0.0.1:8000:8000"
 
   workflow-worker:
     profiles: ["split"]
@@ -223,16 +227,18 @@ services:
       sh -c "alembic upgrade head &&
       python -m app.workflow_worker"
     environment:
+      APP_ENV: ${APP_ENV:-production}
       DATABASE_URL: postgresql+psycopg://postgres:postgres@postgres:5432/pvr-core
+      JWT_SECRET: ${JWT_SECRET:?set JWT_SECRET in .env}
       ARTIFACT_MODE: remote
       ARTIFACT_BASE_URL: http://artifact-api:8001
       ARTIFACT_DATABASE_URL: postgresql+psycopg://postgres:postgres@postgres:5432/pvr-artifact
-      ARTIFACT_DELEGATION_SECRET: development-artifact-delegation-secret
+      ARTIFACT_DELEGATION_SECRET: ${ARTIFACT_DELEGATION_SECRET:?set ARTIFACT_DELEGATION_SECRET in .env}
       ARTIFACT_DELEGATION_ISSUER: priv-view-core
       ARTIFACT_DELEGATION_AUDIENCE: priv-view-artifact
       CLASSIFICATION_MODE: remote
       CLASSIFICATION_BASE_URL: http://classification-api:8003
-      CLASSIFICATION_SERVICE_TOKEN: development-classification-service-token
+      CLASSIFICATION_SERVICE_TOKEN: ${CLASSIFICATION_SERVICE_TOKEN:?set CLASSIFICATION_SERVICE_TOKEN in .env}
       DBOS_ENABLED: "true"
       DBOS_SYSTEM_DATABASE_URL: postgresql+psycopg://postgres:postgres@postgres:5432/pvr-core
       DBOS_SYSTEM_SCHEMA: dbos
@@ -256,7 +262,7 @@ services:
       EMBEDDING_MODEL: ${EMBEDDING_MODEL:-voyageai/voyage-4-nano}
       EMBEDDING_DIMENSIONS: ${EMBEDDING_DIMENSIONS:-1024}
       EMBEDDING_BASE_URL: http://embedding-api:8002
-      EMBEDDING_SERVICE_TOKEN: development-embedding-service-token
+      EMBEDDING_SERVICE_TOKEN: ${EMBEDDING_SERVICE_TOKEN:?set EMBEDDING_SERVICE_TOKEN in .env}
       VOYAGE_API_KEY: ${VOYAGE_API_KEY:-}
       EMBEDDING_VOYAGE_REALTIME_CONCURRENCY: ${EMBEDDING_VOYAGE_REALTIME_CONCURRENCY:-8}
       EMBEDDING_VOYAGE_TOKENS_PER_MINUTE: ${EMBEDDING_VOYAGE_TOKENS_PER_MINUTE:-3000000}

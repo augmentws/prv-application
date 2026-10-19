@@ -1,7 +1,9 @@
 from functools import lru_cache
 
-from pydantic import Field
+from pydantic import Field, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
+
+from app.deployment_policy import AppEnvironment, reject_development_secrets
 
 
 class ArtifactSettings(BaseSettings):
@@ -12,6 +14,7 @@ class ArtifactSettings(BaseSettings):
         extra="ignore",
     )
 
+    app_env: AppEnvironment = Field(default="production", validation_alias="APP_ENV")
     database_url: str = "postgresql+psycopg://postgres:postgres@localhost:5432/pvr-artifact"
     storage_endpoint_url: str = "http://localhost:9000"
     storage_access_key: str = "minioadmin"
@@ -22,6 +25,11 @@ class ArtifactSettings(BaseSettings):
     delegation_secret: str = Field(default="development-artifact-delegation-secret", min_length=32)
     delegation_issuer: str = "priv-view-core"
     delegation_audience: str = "priv-view-artifact"
+
+    @model_validator(mode="after")
+    def validate_deployment_secrets(self) -> "ArtifactSettings":
+        reject_development_secrets(self.app_env, {"ARTIFACT_DELEGATION_SECRET": self.delegation_secret})
+        return self
 
 
 @lru_cache

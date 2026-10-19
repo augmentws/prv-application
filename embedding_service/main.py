@@ -47,4 +47,6 @@ def health() -> dict[str, str | bool | int | None]:
     }
 
 
+# Load settings at import so a development secret outside development stops startup.
+get_embedding_settings()
 app.include_router(build_router(require_embedding_service_token))
