@@ -11,7 +11,6 @@ class ClassificationSettings(BaseSettings):
 
     app_env: AppEnvironment = Field(default="production", validation_alias="APP_ENV")
     service_token: str = Field(
-        default="development-classification-service-token",
         min_length=16,
         validation_alias="CLASSIFICATION_SERVICE_TOKEN",
     )

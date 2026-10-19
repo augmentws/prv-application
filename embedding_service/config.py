@@ -29,7 +29,7 @@ class EmbeddingSettings(BaseSettings):
     max_inputs: int = Field(default=256, ge=1, le=1000)
     max_input_characters: int = Field(default=200_000, ge=1_000, le=10_000_000)
     base_url: str = "http://localhost:8002"
-    service_token: str = Field(default="development-embedding-service-token", min_length=32)
+    service_token: str = Field(min_length=32)
     request_timeout_seconds: float = Field(default=300.0, gt=0, le=3600)
     query_mode: Literal["embedded", "remote"] = "embedded"
     query_model: str | None = None

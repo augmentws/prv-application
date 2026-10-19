@@ -10,8 +10,10 @@ from typing import Literal
 
 AppEnvironment = Literal["development", "staging", "production"]
 
-# Every code default and compose value uses "development-..."; .env.example uses "replace-with...".
-PLACEHOLDER_SECRET_PREFIXES = ("development-", "replace-with")
+# .env.example ships "replace-with..." placeholders, which are never valid secrets.
+PLACEHOLDER_SECRET_PREFIXES = ("replace-with",)
+# Local development may keep "development-..." values in .env; other environments may not.
+DEVELOPMENT_SECRET_PREFIXES = ("development-",)
 
 
 class DeploymentSecretError(ValueError):
@@ -19,12 +21,12 @@ class DeploymentSecretError(ValueError):
 
 
 def reject_development_secrets(app_env: str, secrets: dict[str, str]) -> None:
-    if app_env == "development":
-        return
     for name, value in secrets.items():
         if value.startswith(PLACEHOLDER_SECRET_PREFIXES):
+            raise DeploymentSecretError(f"{name} is still a placeholder; replace it with a generated secret")
+        if app_env != "development" and value.startswith(DEVELOPMENT_SECRET_PREFIXES):
             raise DeploymentSecretError(
-                f"{name} is a development or placeholder value; set a real secret when APP_ENV={app_env}"
+                f"{name} is a development value; set a real secret when APP_ENV={app_env}"
             )
 
 

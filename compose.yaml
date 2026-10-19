@@ -4,7 +4,7 @@ services:
     environment:
       POSTGRES_DB: pvr-core
       POSTGRES_USER: postgres
-      POSTGRES_PASSWORD: postgres
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD in .env}
     ports:
       - "127.0.0.1:5432:5432"
     healthcheck:
@@ -21,8 +21,8 @@ services:
     platform: linux/amd64
     command: minio server /data --console-address ":9001" --license /minio.license
     environment:
-      MINIO_ROOT_USER: minioadmin
-      MINIO_ROOT_PASSWORD: minioadmin
+      MINIO_ROOT_USER: ${MINIO_ROOT_USER:?set MINIO_ROOT_USER in .env}
+      MINIO_ROOT_PASSWORD: ${MINIO_ROOT_PASSWORD:?set MINIO_ROOT_PASSWORD in .env}
     ports:
       - "127.0.0.1:9000:9000"
       - "127.0.0.1:9001:9001"
@@ -97,10 +97,12 @@ services:
       uvicorn artifact_service.main:app --host 0.0.0.0 --port 8001"
     environment:
       APP_ENV: ${APP_ENV:-production}
-      ARTIFACT_DATABASE_URL: postgresql+psycopg://postgres:postgres@postgres:5432/pvr-artifact
+      POSTGRES_HOST: postgres
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD in .env}
       ARTIFACT_STORAGE_ENDPOINT_URL: http://minio:9000
-      ARTIFACT_STORAGE_ACCESS_KEY: minioadmin
-      ARTIFACT_STORAGE_SECRET_KEY: minioadmin
+      ARTIFACT_STORAGE_ACCESS_KEY: ${MINIO_ROOT_USER:?set MINIO_ROOT_USER in .env}
+      ARTIFACT_STORAGE_SECRET_KEY: ${MINIO_ROOT_PASSWORD:?set MINIO_ROOT_PASSWORD in .env}
       ARTIFACT_STORAGE_REGION: us-east-1
       ARTIFACT_BUCKET_PREFIX: pv-artifacts
       ARTIFACT_BUCKET_SUFFIX_LENGTH: 10
@@ -147,7 +149,9 @@ services:
       uvicorn app.main:app --host 0.0.0.0 --port 8000"
     environment:
       APP_ENV: ${APP_ENV:-production}
-      DATABASE_URL: postgresql+psycopg://postgres:postgres@postgres:5432/pvr-core
+      POSTGRES_HOST: postgres
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD in .env}
       JWT_SECRET: ${JWT_SECRET:?set JWT_SECRET in .env}
       JWT_ISSUER: priv-view-core
       JWT_AUDIENCE: priv-view-api
@@ -160,7 +164,6 @@ services:
       CLASSIFICATION_BASE_URL: http://classification-api:8003
       CLASSIFICATION_SERVICE_TOKEN: ${CLASSIFICATION_SERVICE_TOKEN:?set CLASSIFICATION_SERVICE_TOKEN in .env}
       DBOS_ENABLED: "true"
-      DBOS_SYSTEM_DATABASE_URL: postgresql+psycopg://postgres:postgres@postgres:5432/pvr-core
       DBOS_SYSTEM_SCHEMA: dbos
       DBOS_APPLICATION_NAME: priv-view-workflows
       DBOS_APPLICATION_VERSION: 0.1.0
@@ -228,11 +231,12 @@ services:
       python -m app.workflow_worker"
     environment:
       APP_ENV: ${APP_ENV:-production}
-      DATABASE_URL: postgresql+psycopg://postgres:postgres@postgres:5432/pvr-core
+      POSTGRES_HOST: postgres
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD in .env}
       JWT_SECRET: ${JWT_SECRET:?set JWT_SECRET in .env}
       ARTIFACT_MODE: remote
       ARTIFACT_BASE_URL: http://artifact-api:8001
-      ARTIFACT_DATABASE_URL: postgresql+psycopg://postgres:postgres@postgres:5432/pvr-artifact
       ARTIFACT_DELEGATION_SECRET: ${ARTIFACT_DELEGATION_SECRET:?set ARTIFACT_DELEGATION_SECRET in .env}
       ARTIFACT_DELEGATION_ISSUER: priv-view-core
       ARTIFACT_DELEGATION_AUDIENCE: priv-view-artifact
@@ -240,7 +244,6 @@ services:
       CLASSIFICATION_BASE_URL: http://classification-api:8003
       CLASSIFICATION_SERVICE_TOKEN: ${CLASSIFICATION_SERVICE_TOKEN:?set CLASSIFICATION_SERVICE_TOKEN in .env}
       DBOS_ENABLED: "true"
-      DBOS_SYSTEM_DATABASE_URL: postgresql+psycopg://postgres:postgres@postgres:5432/pvr-core
       DBOS_SYSTEM_SCHEMA: dbos
       DBOS_APPLICATION_NAME: priv-view-workflows
       DBOS_APPLICATION_VERSION: 0.1.0
