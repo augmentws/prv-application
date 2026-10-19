@@ -2,7 +2,7 @@ import hashlib
 import uuid
 from datetime import datetime, timezone
 
-from conftest import TestingSessionLocal
+from conftest import TestingSessionLocal, create_client_tenant
 from fastapi.testclient import TestClient
 from sqlalchemy import select
 
@@ -165,7 +165,7 @@ def test_review_batch_delete_archives_without_removing_history(
     root_token: str,
     root_admin,
 ) -> None:
-    matter_id = create_matter(client, root_token, str(root_admin.tenant_id))
+    matter_id = create_matter(client, root_token, create_client_tenant(client, root_token))
     add_documents(matter_id, root_admin.id, count=2)
     created = client.post(
         f"/v1/matters/{matter_id}/review-batches",
@@ -212,7 +212,7 @@ def test_random_assessment_batch_samples_full_persisted_candidate_pool(
     root_token: str,
     root_admin,
 ) -> None:
-    matter_id = create_matter(client, root_token, str(root_admin.tenant_id))
+    matter_id = create_matter(client, root_token, create_client_tenant(client, root_token))
     document_ids = add_documents(matter_id, root_admin.id, count=6)
     assessment_id = add_assessment_candidates(matter_id, document_ids, root_admin.id)
     seed = "assessment-sample-seed"
@@ -269,7 +269,7 @@ def test_random_assessment_batch_requires_a_persisted_candidate_pool(
     root_token: str,
     root_admin,
 ) -> None:
-    matter_id = create_matter(client, root_token, str(root_admin.tenant_id))
+    matter_id = create_matter(client, root_token, create_client_tenant(client, root_token))
     assessment_id = add_assessment_candidates(matter_id, [], root_admin.id, selected_count=1)
 
     created = client.post(
@@ -292,7 +292,7 @@ def test_review_batch_common_execution_can_be_canceled_and_retried(
     root_token: str,
     root_admin,
 ) -> None:
-    matter_id = create_matter(client, root_token, str(root_admin.tenant_id))
+    matter_id = create_matter(client, root_token, create_client_tenant(client, root_token))
     with TestingSessionLocal() as db:
         batch = ReviewBatch(
             matter_id=uuid.UUID(matter_id),
@@ -337,7 +337,7 @@ def test_batch_membership_group_snapshot_runs_and_comparison(
     root_token: str,
     root_admin,
 ) -> None:
-    matter_id = create_matter(client, root_token, str(root_admin.tenant_id))
+    matter_id = create_matter(client, root_token, create_client_tenant(client, root_token))
     document_ids = add_documents(matter_id, root_admin.id)
     with TestingSessionLocal() as db:
         definition_id = db.scalar(
@@ -870,7 +870,7 @@ def test_batch_membership_group_snapshot_runs_and_comparison(
 
 
 def test_batch_selection_validation(client: TestClient, root_token: str, root_admin) -> None:
-    matter_id = create_matter(client, root_token, str(root_admin.tenant_id))
+    matter_id = create_matter(client, root_token, create_client_tenant(client, root_token))
     response = client.post(
         f"/v1/matters/{matter_id}/review-batches",
         headers=auth(root_token),
@@ -901,7 +901,7 @@ def test_random_saved_search_batch_snapshots_and_samples_matching_documents(
     root_admin,
     monkeypatch,
 ) -> None:
-    matter_id = create_matter(client, root_token, str(root_admin.tenant_id))
+    matter_id = create_matter(client, root_token, create_client_tenant(client, root_token))
     document_ids = add_documents(matter_id, root_admin.id, count=5)
     eligible_ids = document_ids[:4]
     with TestingSessionLocal() as db:
@@ -994,7 +994,7 @@ def test_workflow_review_run_has_workflow_owner(
     root_token: str,
     root_admin,
 ) -> None:
-    matter_id = create_matter(client, root_token, str(root_admin.tenant_id))
+    matter_id = create_matter(client, root_token, create_client_tenant(client, root_token))
     add_documents(matter_id, root_admin.id, count=1)
     base = f"/v1/matters/{matter_id}/review-batches"
     created = client.post(
@@ -1083,7 +1083,7 @@ def test_batch_search_injects_authoritative_membership_filter(
     root_admin,
     monkeypatch,
 ) -> None:
-    matter_id = create_matter(client, root_token, str(root_admin.tenant_id))
+    matter_id = create_matter(client, root_token, create_client_tenant(client, root_token))
     document_id = add_documents(matter_id, root_admin.id, count=1)[0]
     base = f"/v1/matters/{matter_id}/review-batches"
     created = client.post(
@@ -1313,7 +1313,7 @@ def test_selecting_a_retained_batch_coding_run_reuses_its_projection(
     root_token: str,
     root_admin,
 ) -> None:
-    matter_id = create_matter(client, root_token, str(root_admin.tenant_id))
+    matter_id = create_matter(client, root_token, create_client_tenant(client, root_token))
     document_id = add_documents(matter_id, root_admin.id, count=1)[0]
     base = f"/v1/matters/{matter_id}/review-batches"
     created = client.post(

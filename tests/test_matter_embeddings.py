@@ -5,6 +5,7 @@ from datetime import datetime, timezone
 from types import SimpleNamespace
 from unittest.mock import Mock
 
+from conftest import create_client_tenant
 from fastapi.testclient import TestClient
 from sqlalchemy.orm import Session
 
@@ -136,7 +137,7 @@ def test_create_list_and_cancel_embedding_job(
     root_admin: User,
 ) -> None:
     headers = auth(root_token)
-    tenant_id = client.get("/v1/auth/me", headers=headers).json()["tenant_id"]
+    tenant_id = create_client_tenant(client, root_token)
     client_record = client.post(
         f"/v1/tenants/{tenant_id}/clients",
         headers=headers,
@@ -265,7 +266,7 @@ def test_embedding_job_read_reconciles_durable_failure_and_batch_totals(
     monkeypatch,
 ) -> None:
     headers = auth(root_token)
-    tenant_id = client.get("/v1/auth/me", headers=headers).json()["tenant_id"]
+    tenant_id = create_client_tenant(client, root_token)
     client_record = client.post(
         f"/v1/tenants/{tenant_id}/clients",
         headers=headers,
@@ -333,7 +334,7 @@ def test_retry_embedding_index_reuses_completed_batches(
     db: Session,
 ) -> None:
     headers = auth(root_token)
-    tenant_id = client.get("/v1/auth/me", headers=headers).json()["tenant_id"]
+    tenant_id = create_client_tenant(client, root_token)
     client_record = client.post(
         f"/v1/tenants/{tenant_id}/clients",
         headers=headers,
@@ -404,7 +405,7 @@ def test_retry_embedding_index_reuses_completed_batches(
 
 def test_derived_artifact_upload_is_idempotent(client: TestClient, root_token: str) -> None:
     headers = auth(root_token)
-    tenant_id = client.get("/v1/auth/me", headers=headers).json()["tenant_id"]
+    tenant_id = create_client_tenant(client, root_token)
     client_id = client.post(
         f"/v1/tenants/{tenant_id}/clients",
         headers=headers,

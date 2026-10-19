@@ -4,6 +4,7 @@ from datetime import datetime, timedelta, timezone
 
 import jwt
 import pytest
+from conftest import create_client_tenant
 from fastapi.testclient import TestClient
 from pydantic import ValidationError
 
@@ -82,7 +83,7 @@ def test_date_histogram_does_not_fill_extreme_empty_ranges() -> None:
 
 
 def test_individual_email_upload_with_source_container(client: TestClient, root_token: str) -> None:
-    tenant_id = client.get("/v1/auth/me", headers=auth(root_token)).json()["tenant_id"]
+    tenant_id = create_client_tenant(client, root_token)
     client_response = client.post(
         f"/v1/tenants/{tenant_id}/clients",
         headers=auth(root_token),
@@ -112,7 +113,7 @@ def test_individual_email_upload_with_source_container(client: TestClient, root_
     )
     assert storage_response.status_code == 201, storage_response.text
     bucket_name = storage_response.json()["bucket_name"]
-    assert bucket_name.startswith("pv-artifacts-root-")
+    assert bucket_name.startswith("pv-artifacts-client-tenant-")
     assert len(bucket_name.rsplit("-", 1)[1]) == 10
 
     collection_response = client.post(
@@ -371,7 +372,7 @@ def test_collection_item_file_date_uses_email_parent_or_source_modified(
     client: TestClient,
     root_token: str,
 ) -> None:
-    tenant_id = client.get("/v1/auth/me", headers=auth(root_token)).json()["tenant_id"]
+    tenant_id = create_client_tenant(client, root_token)
     client_id = client.post(
         f"/v1/tenants/{tenant_id}/clients",
         headers=auth(root_token),
@@ -499,7 +500,7 @@ def test_collection_item_file_date_uses_email_parent_or_source_modified(
 
 
 def test_collection_text_processing_profile_test_and_run(client: TestClient, root_token: str) -> None:
-    tenant_id = client.get("/v1/auth/me", headers=auth(root_token)).json()["tenant_id"]
+    tenant_id = create_client_tenant(client, root_token)
     client_id = client.post(
         f"/v1/tenants/{tenant_id}/clients",
         headers=auth(root_token),
@@ -888,7 +889,7 @@ Body without a subject header
 
 
 def test_upload_rejects_unknown_custodian(client: TestClient, root_token: str) -> None:
-    tenant_id = client.get("/v1/auth/me", headers=auth(root_token)).json()["tenant_id"]
+    tenant_id = create_client_tenant(client, root_token)
     client_id = client.post(
         f"/v1/tenants/{tenant_id}/clients",
         headers=auth(root_token),
@@ -923,7 +924,7 @@ def test_collection_search_returns_results_before_requested_disjunctive_facets(
     client: TestClient,
     root_token: str,
 ) -> None:
-    tenant_id = client.get("/v1/auth/me", headers=auth(root_token)).json()["tenant_id"]
+    tenant_id = create_client_tenant(client, root_token)
     client_id = client.post(
         f"/v1/tenants/{tenant_id}/clients",
         headers=auth(root_token),

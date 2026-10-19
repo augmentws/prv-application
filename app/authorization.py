@@ -230,10 +230,13 @@ def user_can(
     if permission_key not in ALL_PERMISSION_KEYS or user.status != "ACTIVE":
         return False
     resource = resolve_resource(db, resource_ref)
-    if resource is None or user.tenant_id != resource.tenant_id:
+    if resource is None:
         return False
+    # The root administrator is a system-wide administrator, matching can(); this check must precede the tenant comparison.
     if user.tenant.is_root and user.tenant_role == "ADMIN":
         return True
+    if user.tenant_id != resource.tenant_id:
+        return False
     if user.tenant_role == "ADMIN":
         return True
     if _has_legacy_admin_access(db, user, resource):

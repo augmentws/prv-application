@@ -10,6 +10,7 @@ import pytest
 from conftest import (
     ArtifactTestingSessionLocal,
     TestingSessionLocal,
+    create_client_tenant,
     memory_storage,
 )
 from fastapi.testclient import TestClient
@@ -398,7 +399,7 @@ def test_matter_snapshot_resolves_precedence_deduplicates_and_reuses_identity(
     root_admin,
     monkeypatch,
 ) -> None:
-    matter = create_matter(client, root_token, root_admin.tenant_id, "Precedence")
+    matter = create_matter(client, root_token, create_client_tenant(client, root_token), "Precedence")
     definition = create_field(
         client,
         root_token,
@@ -522,7 +523,7 @@ def test_dynamic_text_classes_are_discovered_and_frozen_per_snapshot(
     root_admin,
     monkeypatch,
 ) -> None:
-    matter = create_matter(client, root_token, root_admin.tenant_id, "Dynamic text classes")
+    matter = create_matter(client, root_token, create_client_tenant(client, root_token), "Dynamic text classes")
     definition = create_field(
         client,
         root_token,
@@ -601,7 +602,7 @@ def test_hierarchical_text_classes_are_projected_to_configured_level(
     root_admin,
     monkeypatch,
 ) -> None:
-    matter = create_matter(client, root_token, root_admin.tenant_id, "Hierarchy classes")
+    matter = create_matter(client, root_token, create_client_tenant(client, root_token), "Hierarchy classes")
     definition = create_field(
         client,
         root_token,
@@ -682,7 +683,7 @@ def test_target_distribution_counts_current_coding_for_matter_and_batch_scope(
     root_token: str,
     root_admin,
 ) -> None:
-    matter = create_matter(client, root_token, root_admin.tenant_id, "Target distribution")
+    matter = create_matter(client, root_token, create_client_tenant(client, root_token), "Target distribution")
     definition = create_field(client, root_token, matter["id"], key="distribution_target")
     documents = add_documents(matter["id"], root_admin.id, 4)
     for document, value in zip(
@@ -756,7 +757,7 @@ def test_review_batch_scope_is_exact_and_rejects_wrong_matter(
     root_admin,
     monkeypatch,
 ) -> None:
-    matter = create_matter(client, root_token, root_admin.tenant_id, "Batch Scope")
+    matter = create_matter(client, root_token, create_client_tenant(client, root_token), "Batch Scope")
     definition = create_field(client, root_token, matter["id"], key="dataset_batch_target")
     documents = add_documents(matter["id"], root_admin.id, 4)
     configure_artifact_gateway(monkeypatch, documents)
@@ -801,7 +802,7 @@ def test_review_batch_scope_is_exact_and_rejects_wrong_matter(
     assert second.json()["population_count"] == 2
     assert second.json()["aggregate_hash"] == first.json()["aggregate_hash"]
 
-    other = create_matter(client, root_token, root_admin.tenant_id, "Wrong Batch")
+    other = create_matter(client, root_token, create_client_tenant(client, root_token), "Wrong Batch")
     other_documents = add_documents(other["id"], root_admin.id, 1)
     wrong_batch_id, _ = create_review_source(
         matter_id=other["id"],
@@ -828,7 +829,7 @@ def test_multiclass_reviewer_conflicts_are_reported(
     root_admin,
     monkeypatch,
 ) -> None:
-    matter = create_matter(client, root_token, root_admin.tenant_id, "Conflicts")
+    matter = create_matter(client, root_token, create_client_tenant(client, root_token), "Conflicts")
     definition = create_field(client, root_token, matter["id"], key="dataset_conflict_target")
     documents = add_documents(matter["id"], root_admin.id, 2)
     configure_artifact_gateway(monkeypatch, documents)
@@ -879,7 +880,7 @@ def test_one_vs_rest_reviewer_source_uses_the_selected_class_set(
     root_admin,
     monkeypatch,
 ) -> None:
-    matter = create_matter(client, root_token, root_admin.tenant_id, "Observed Mask")
+    matter = create_matter(client, root_token, create_client_tenant(client, root_token), "Observed Mask")
     definition = create_field(
         client,
         root_token,
@@ -936,7 +937,7 @@ def test_snapshot_rows_are_listed_and_scoped_to_model(
     root_admin,
     monkeypatch,
 ) -> None:
-    matter = create_matter(client, root_token, root_admin.tenant_id, "Listing")
+    matter = create_matter(client, root_token, create_client_tenant(client, root_token), "Listing")
     definition = create_field(client, root_token, matter["id"], key="dataset_list_target")
     documents = add_documents(matter["id"], root_admin.id, 1)
     configure_artifact_gateway(monkeypatch, documents)
@@ -1102,7 +1103,7 @@ def test_feature_and_split_materialization_is_deterministic_and_group_aware(
     root_admin,
     monkeypatch,
 ) -> None:
-    matter = create_matter(client, root_token, root_admin.tenant_id, "Features")
+    matter = create_matter(client, root_token, create_client_tenant(client, root_token), "Features")
     definition = create_field(client, root_token, matter["id"], key="dataset_feature_target")
     documents = add_documents(matter["id"], root_admin.id, 10)
     configure_artifact_gateway(monkeypatch, documents)
@@ -1276,7 +1277,7 @@ def test_feature_split_rejects_class_confined_to_one_connected_group(
     root_admin,
     monkeypatch,
 ) -> None:
-    matter = create_matter(client, root_token, root_admin.tenant_id, "Split support")
+    matter = create_matter(client, root_token, create_client_tenant(client, root_token), "Split support")
     definition = create_field(client, root_token, matter["id"], key="dataset_split_support")
     documents = add_documents(matter["id"], root_admin.id, 6)
     positive_family = uuid.uuid4()
@@ -1366,7 +1367,7 @@ def test_one_vs_rest_feature_split_excludes_unsupported_class(
     root_admin,
     monkeypatch,
 ) -> None:
-    matter = create_matter(client, root_token, root_admin.tenant_id, "OVR class exclusion")
+    matter = create_matter(client, root_token, create_client_tenant(client, root_token), "OVR class exclusion")
     definition = create_field(
         client,
         root_token,

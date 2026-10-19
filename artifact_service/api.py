@@ -377,14 +377,10 @@ def build_router(
     principal_dependency: PrincipalDependency,
     *,
     expose_internal_deletion_control: bool = False,
+    expose_internal_storage_control: bool = False,
 ) -> APIRouter:
     router = APIRouter(prefix="/v1", tags=["artifacts"])
 
-    @router.post(
-        "/tenants/{tenant_id}/artifact-storage/ensure",
-        response_model=TenantStorageRead,
-        status_code=status.HTTP_201_CREATED,
-    )
     def ensure_storage(
         tenant_id: uuid.UUID,
         payload: TenantStorageEnsure,
@@ -400,6 +396,15 @@ def build_router(
         if existing is not None and existing.tenant_slug_snapshot != payload.tenant_slug:
             return existing
         return result
+
+    # Provisioning is a Core-owned action. Only the standalone service exposes it, to Core's delegated calls;
+    # the embedded mount never does, so tenant users cannot reach it directly.
+    if expose_internal_storage_control:
+        router.post(
+            "/tenants/{tenant_id}/artifact-storage/ensure",
+            response_model=TenantStorageRead,
+            status_code=status.HTTP_201_CREATED,
+        )(ensure_storage)
 
     @router.post(
         "/workflow-artifacts:upload",

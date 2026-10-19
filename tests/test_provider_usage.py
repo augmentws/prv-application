@@ -1,5 +1,6 @@
 import uuid
 
+from conftest import create_client_tenant
 from fastapi.testclient import TestClient
 from sqlalchemy.orm import Session
 
@@ -72,9 +73,10 @@ def test_matter_provider_usage_reports_complete_totals_and_breakdowns(
     root_admin: User,
     root_token: str,
 ) -> None:
+    tenant_id = create_client_tenant(client, root_token)
     headers = {"Authorization": f"Bearer {root_token}"}
     created_client = client.post(
-        f"/v1/tenants/{root_admin.tenant_id}/clients",
+        f"/v1/tenants/{tenant_id}/clients",
         headers=headers,
         json={"name": "Usage client"},
     )

@@ -64,3 +64,11 @@ def test_tenant_administrator_can_execute_matter_changes(client: TestClient, roo
     _, matter = create_matter(client, admin_token, created["tenant"]["id"])
 
     assert _authorization_decision(created["initial_admin"]["id"], matter["id"]) is True
+
+
+def test_root_administrator_can_execute_matter_changes_in_a_subtenant(client: TestClient, root_token: str, root_admin) -> None:
+    created = create_tenant(client, root_token, slug="agent-authz-root")
+    admin_token = login(client, created["initial_admin"]["email"], "rbac-administrator-password")
+    _, matter = create_matter(client, admin_token, created["tenant"]["id"])
+
+    assert _authorization_decision(str(root_admin.id), matter["id"]) is True

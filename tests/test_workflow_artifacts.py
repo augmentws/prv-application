@@ -6,7 +6,7 @@ import zipfile
 from types import SimpleNamespace
 
 import pytest
-from conftest import ArtifactTestingSessionLocal, memory_storage
+from conftest import ArtifactTestingSessionLocal, create_client_tenant, memory_storage
 from fastapi.testclient import TestClient
 
 from app.artifact_gateway import (
@@ -88,7 +88,7 @@ def workflow_metadata(
 
 
 def provision_core_scope(client: TestClient, root_token: str, root_admin) -> tuple[uuid.UUID, uuid.UUID]:
-    tenant_id = root_admin.tenant_id
+    tenant_id = create_client_tenant(client, root_token)
     client_response = client.post(
         f"/v1/tenants/{tenant_id}/clients",
         headers=auth(root_token),

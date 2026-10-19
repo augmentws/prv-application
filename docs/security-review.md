@@ -110,7 +110,7 @@ Five failed attempts lock an account for 15 minutes. There is no per-IP throttle
 ### Low
 
 - **L1. Local model traces contain matter content.** `.model-traces/` holds about 1.4 GB of agent request payloads, which can include privileged document content. It is gitignored, but unencrypted on disk. Add retention and purge, or confirm `MODEL_TRACE_ENABLED` is off.
-- **L2. `ensure_storage` is callable by any tenant user,** not only administrators (`artifact_service/api.py:396`). It is idempotent, so impact is limited.
+- **L2. `ensure_storage` is callable by any tenant user,** not only administrators (`artifact_service/api.py:396`). It is idempotent, so impact is limited. **Status: remediated on `fix/security-defaults`.** Storage is now provisioned by Core when a tenant is created, and the Artifact route is internal to the standalone service. The Core repair route `POST /v1/tenants/{id}/artifact-storage/ensure` requires tenant administration (`app/routers/tenants.py`).
 - **L3. Downloads lack `X-Content-Type-Options: nosniff`.** The attachment disposition largely mitigates this.
 - **L4. Default database and object-store credentials** in config and compose (`postgres`, `minioadmin`). Deployment aspect covered under H1.
 

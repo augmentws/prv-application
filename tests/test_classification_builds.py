@@ -4,7 +4,7 @@ import uuid
 from types import SimpleNamespace
 
 import pytest
-from conftest import TestingSessionLocal
+from conftest import TestingSessionLocal, create_client_tenant
 from fastapi.testclient import TestClient
 from sqlalchemy import func, select
 from sqlalchemy.exc import IntegrityError
@@ -335,7 +335,7 @@ def test_build_preview_launch_is_idempotent_and_scoped(
     matter, model, snapshot = ready_build_fixture(
         client,
         root_token,
-        str(root_admin.tenant_id),
+        create_client_tenant(client, root_token),
         root_admin.id,
         suffix="Build",
     )
@@ -374,7 +374,7 @@ def test_build_preview_launch_is_idempotent_and_scoped(
     assert listed.status_code == 200
     assert [item["id"] for item in listed.json()] == [launched["training_run"]["id"]]
 
-    second_matter = create_matter(client, root_token, str(root_admin.tenant_id), "Wrong Build Scope")
+    second_matter = create_matter(client, root_token, create_client_tenant(client, root_token), "Wrong Build Scope")
     wrong_scope = client.get(
         f"/v1/matters/{second_matter['id']}/classification-models/{model['id']}"
         f"/builds/{launched['training_run']['id']}",
@@ -392,7 +392,7 @@ def test_launch_recovers_an_existing_run_after_a_uniqueness_race(
     matter, model, snapshot = ready_build_fixture(
         client,
         root_token,
-        str(root_admin.tenant_id),
+        create_client_tenant(client, root_token),
         root_admin.id,
         suffix="Launch Race",
     )
@@ -425,7 +425,7 @@ def test_runtime_finalization_creates_one_inactive_candidate(
     matter, model, snapshot = ready_build_fixture(
         client,
         root_token,
-        str(root_admin.tenant_id),
+        create_client_tenant(client, root_token),
         root_admin.id,
         suffix="Finalize",
     )
@@ -545,7 +545,7 @@ def test_runtime_failure_is_persisted_without_a_candidate(
     matter, model, snapshot = ready_build_fixture(
         client,
         root_token,
-        str(root_admin.tenant_id),
+        create_client_tenant(client, root_token),
         root_admin.id,
         suffix=suffix,
     )
@@ -582,7 +582,7 @@ def test_worker_reauthorizes_the_execution_actor_before_runtime_dispatch(
     matter, model, snapshot = ready_build_fixture(
         client,
         root_token,
-        str(root_admin.tenant_id),
+        create_client_tenant(client, root_token),
         root_admin.id,
         suffix="Reauthorize",
     )
@@ -619,7 +619,7 @@ def test_canceled_build_is_not_dispatched_to_runtime(
     matter, model, snapshot = ready_build_fixture(
         client,
         root_token,
-        str(root_admin.tenant_id),
+        create_client_tenant(client, root_token),
         root_admin.id,
         suffix="Cancel",
     )
@@ -645,7 +645,7 @@ def test_retriable_failed_build_reuses_the_run_with_a_new_workflow_attempt(
     matter, model, snapshot = ready_build_fixture(
         client,
         root_token,
-        str(root_admin.tenant_id),
+        create_client_tenant(client, root_token),
         root_admin.id,
         suffix="Retry",
     )
@@ -689,7 +689,7 @@ def test_non_retriable_integrity_failure_cannot_be_requeued(
     matter, model, snapshot = ready_build_fixture(
         client,
         root_token,
-        str(root_admin.tenant_id),
+        create_client_tenant(client, root_token),
         root_admin.id,
         suffix="No Retry",
     )
@@ -720,7 +720,7 @@ def test_reconciliation_recovers_outputs_published_before_a_timeout(
     matter, model, snapshot = ready_build_fixture(
         client,
         root_token,
-        str(root_admin.tenant_id),
+        create_client_tenant(client, root_token),
         root_admin.id,
         suffix="Reconcile",
     )

@@ -4,6 +4,7 @@ from types import SimpleNamespace
 
 import numpy as np
 import pytest
+from conftest import create_client_tenant
 from fastapi.testclient import TestClient
 from sqlalchemy.orm import Session
 
@@ -31,7 +32,7 @@ def auth(token: str) -> dict[str, str]:
 
 def _matter(client: TestClient, token: str) -> dict:
     headers = auth(token)
-    tenant_id = client.get("/v1/auth/me", headers=headers).json()["tenant_id"]
+    tenant_id = create_client_tenant(client, token)
     client_record = client.post(
         f"/v1/tenants/{tenant_id}/clients",
         headers=headers,

@@ -1,6 +1,6 @@
 import uuid
 
-from conftest import TestingSessionLocal
+from conftest import TestingSessionLocal, create_client_tenant
 from fastapi.testclient import TestClient
 from test_classification_models import (
     auth,
@@ -63,7 +63,7 @@ def test_training_job_is_created_before_dataset_preparation(
     root_token: str,
     root_admin,
 ) -> None:
-    matter = create_matter(client, root_token, root_admin.tenant_id, "Durable training")
+    matter = create_matter(client, root_token, create_client_tenant(client, root_token), "Durable training")
     definition = create_enum_field(client, root_token, matter["id"], key="durable_training_target")
     model = create_model(client, root_token, matter["id"], definition["id"])
     configuration_response = client.post(

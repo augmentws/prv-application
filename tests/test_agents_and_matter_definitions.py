@@ -1,6 +1,7 @@
 import uuid
 
 import pytest
+from conftest import create_client_tenant
 from fastapi.testclient import TestClient
 from sqlalchemy import func, select
 from sqlalchemy.orm import Session
@@ -22,7 +23,7 @@ def auth(token: str) -> dict[str, str]:
 
 
 def create_tenant_context(client: TestClient, root_token: str) -> tuple[str, str, str]:
-    root_tenant_id = client.get("/v1/auth/me", headers=auth(root_token)).json()["tenant_id"]
+    root_tenant_id = create_client_tenant(client, root_token)
     tenant_response = client.post(
         "/v1/tenants",
         headers=auth(root_token),
@@ -160,7 +161,7 @@ def test_generic_agent_package_discovery_and_invocation(
 ) -> None:
     assert ensure_standard_agents(db, root_admin.tenant, root_admin) is True
     db.commit()
-    tenant_id = str(root_admin.tenant_id)
+    tenant_id = create_client_tenant(client, root_token)
     client_response = client.post(
         f"/v1/tenants/{tenant_id}/clients",
         headers=auth(root_token),

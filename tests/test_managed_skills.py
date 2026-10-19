@@ -1,6 +1,6 @@
 import uuid
 
-from conftest import TestingSessionLocal
+from conftest import TestingSessionLocal, create_client_tenant
 from fastapi.testclient import TestClient
 from sqlalchemy import select
 
@@ -37,7 +37,7 @@ def skill_payload(key: str, role_key: str, *, schema_override: str | None = None
 
 
 def create_child_tenant(client: TestClient, root_token: str) -> str:
-    root_tenant_id = client.get("/v1/auth/me", headers=auth(root_token)).json()["tenant_id"]
+    root_tenant_id = create_client_tenant(client, root_token)
     suffix = uuid.uuid4().hex[:8]
     response = client.post(
         "/v1/tenants",

@@ -46,6 +46,7 @@ from artifact_service.schemas import (
     CollectionItemGroupingSnapshotsRequest,
     CollectionItemRead,
     CollectionSelectionCreate,
+    TenantStorageRead,
     WorkflowArtifactLineageInput,
     WorkflowArtifactUploadMetadata,
 )
@@ -56,7 +57,8 @@ from artifact_service.selections import (
     get_collection_selection_batch_custodians,
     get_collection_selection_batch_unmapped_metadata,
 )
-from artifact_service.storage import get_storage
+from artifact_service.service import ensure_tenant_storage
+from artifact_service.storage import BlobStorage, get_storage
 from artifact_service.workflow_artifact_types import ArtifactType
 from artifact_service.workflow_artifacts import (
     find_matching_workflow_artifact,
@@ -730,6 +732,41 @@ def get_collection_snapshot(
         name=data["name"],
         status=data["status"],
     )
+
+
+def ensure_tenant_artifact_storage(
+    *,
+    tenant_id: uuid.UUID,
+    tenant_slug: str,
+    actor_user_id: uuid.UUID,
+    artifact_db: Session | None = None,
+    storage: BlobStorage | None = None,
+) -> dict[str, Any]:
+    """Provision a tenant's artifact bucket and record. Idempotent: an existing tenant is only checked."""
+
+    settings = get_settings()
+    if settings.artifact_mode == "embedded":
+        if artifact_db is None:
+            raise ValueError("Embedded Artifact access requires a database session")
+        if storage is None:
+            storage = get_storage()
+        record = ensure_tenant_storage(artifact_db, storage, get_artifact_settings(), tenant_id, tenant_slug)
+        artifact_db.commit()
+        return TenantStorageRead.model_validate(record).model_dump(mode="json")
+    principal = ArtifactPrincipal(
+        actor_user_id=actor_user_id,
+        allowed_tenant_ids=frozenset({tenant_id}),
+        allowed_clients=frozenset(),
+        allowed_custodians=frozenset(),
+    )
+    with httpx.Client(base_url=settings.artifact_base_url, timeout=30) as client:
+        response = client.post(
+            f"/v1/tenants/{tenant_id}/artifact-storage/ensure",
+            headers=_delegated_headers(principal),
+            json={"tenant_slug": tenant_slug},
+        )
+    response.raise_for_status()
+    return response.json()
 
 
 def create_collection_deletion(

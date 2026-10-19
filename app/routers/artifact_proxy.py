@@ -82,7 +82,6 @@ def _proxy_route(path: str, methods: list[str]) -> None:
     router.add_api_route(path, endpoint, methods=methods, include_in_schema=False)
 
 
-_proxy_route("/v1/tenants/{tenant_id}/artifact-storage/ensure", ["POST"])
 _proxy_route("/v1/tenants/{tenant_id}/clients/{client_id}/collections", ["GET", "POST"])
 _proxy_route("/v1/collections/{collection_id}", ["GET"])
 _proxy_route("/v1/collections/{collection_id}/text-processing/profile", ["GET", "PUT"])

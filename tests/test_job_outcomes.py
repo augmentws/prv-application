@@ -2,6 +2,7 @@ import hashlib
 import uuid
 from datetime import datetime, timezone
 
+from conftest import create_client_tenant
 from fastapi.testclient import TestClient
 from sqlalchemy.orm import Session
 
@@ -23,7 +24,7 @@ def auth(token: str) -> dict[str, str]:
 
 def create_embedding_job(client: TestClient, root_token: str) -> tuple[dict, dict]:
     headers = auth(root_token)
-    tenant_id = client.get("/v1/auth/me", headers=headers).json()["tenant_id"]
+    tenant_id = create_client_tenant(client, root_token)
     client_record = client.post(
         f"/v1/tenants/{tenant_id}/clients",
         headers=headers,
