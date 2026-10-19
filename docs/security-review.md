@@ -91,6 +91,8 @@ Document text can be attacker-controlled, so a crafted value such as `=HYPERLINK
 
 #### M4. Agent execution authorization bypasses the RBAC model
 
+**Status: remediated on `fix/security-defaults`.** Execution-time re-authorization of an approving actor now uses the `matter.configure` permission through `user_can` (`app/agent_runtime.py`, `_actor_can_execute_matter_changes`), so RBAC grants apply. Tenant and matter administrators are still allowed. Client-level ADMIN memberships are now allowed too, which matches `can_admin_matter` and is wider than the old check. Tests: `tests/test_agent_execution_authorization.py`. Per-tool permissions are not yet checked; that is a follow-up.
+
 - `app/agent_runtime.py:176-199` (`_require_actor_access`)
 
 Execution-time re-authorization checks only legacy `tenant_role == ADMIN` and matter `ADMIN` membership, not `can()`. It fails closed today. It will drift from the explicit-permission model that the project requires for new access decisions, and users granted a matter-scoped permission cannot run agents at all.
