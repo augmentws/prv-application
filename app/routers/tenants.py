@@ -1,15 +1,19 @@
+import logging
 import uuid
+from typing import Any
 
 from fastapi import APIRouter, Depends, HTTPException, status
 from sqlalchemy import select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
+from app.artifact_gateway import ensure_tenant_artifact_storage
 from app.audit import record_audit
 from app.authorization import legacy_or_can_manage_tenant
 from app.database import get_db
 from app.dependencies import (
     Principal,
+    can_admin_tenant,
     get_principal,
     require_root_admin,
 )
@@ -25,7 +29,10 @@ from app.schemas import (
     normalize_email,
 )
 from app.security import hash_password
+from artifact_service.database import get_artifact_db
+from artifact_service.storage import BlobStorage, get_storage
 
+logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/v1/tenants", tags=["tenants"])
 
 
@@ -46,6 +53,8 @@ def create_tenant(
     payload: TenantCreate,
     principal: Principal = Depends(require_root_admin),
     db: Session = Depends(get_db),
+    artifact_db: Session = Depends(get_artifact_db),
+    storage: BlobStorage = Depends(get_storage),
 ) -> TenantCreated:
     parent = db.scalar(select(Tenant).where(Tenant.id == payload.parent_tenant_id))
     if parent is None:
@@ -115,12 +124,52 @@ def create_tenant(
             "authorization_revision_after": tenant.authorization_revision,
         },
     )
+    # Storage is provisioned before the tenant commits, so a failed provisioning leaves no tenant behind.
+    try:
+        ensure_tenant_artifact_storage(
+            tenant_id=tenant.id,
+            tenant_slug=tenant.slug,
+            actor_user_id=principal.user.id,
+            artifact_db=artifact_db,
+            storage=storage,
+        )
+    except Exception:
+        logger.exception("Artifact storage provisioning failed for new tenant %s", tenant.id)
+        db.rollback()
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="Tenant artifact storage could not be provisioned; the tenant was not created",
+        )
     try:
         db.commit()
     except IntegrityError as exc:
         db.rollback()
         raise conflict("Tenant slug or initial administrator email already exists") from exc
     return TenantCreated(tenant=TenantRead.model_validate(tenant), initial_admin=UserRead.model_validate(admin))
+
+
+@router.post("/{tenant_id}/artifact-storage/ensure", status_code=status.HTTP_201_CREATED)
+def ensure_artifact_storage(
+    tenant_id: uuid.UUID,
+    principal: Principal = Depends(get_principal),
+    db: Session = Depends(get_db),
+    artifact_db: Session = Depends(get_artifact_db),
+    storage: BlobStorage = Depends(get_storage),
+) -> dict[str, Any]:
+    """Repair or re-check a tenant's artifact storage. Creation normally happens with the tenant."""
+
+    tenant = db.scalar(select(Tenant).where(Tenant.id == tenant_id))
+    if tenant is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Tenant not found")
+    if not can_admin_tenant(principal, tenant.id):
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Tenant ADMIN required")
+    return ensure_tenant_artifact_storage(
+        tenant_id=tenant.id,
+        tenant_slug=tenant.slug,
+        actor_user_id=principal.user.id,
+        artifact_db=artifact_db,
+        storage=storage,
+    )
 
 
 @router.get("/{tenant_id}", response_model=TenantRead)

@@ -4,6 +4,7 @@ import threading
 from dbos import DBOS
 
 from app.config import get_settings
+from app.deployment_policy import load_core_runtime_settings
 
 logger = logging.getLogger(__name__)
 
@@ -13,6 +14,7 @@ def main() -> None:
         level=logging.INFO,
         format="%(asctime)s %(levelname)s %(name)s: %(message)s",
     )
+    load_core_runtime_settings()
     settings = get_settings()
     logger.info(
         "Starting workflow worker application=%s version=%s",

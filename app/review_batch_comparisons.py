@@ -14,6 +14,7 @@ import pyarrow.parquet as pq
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
+from app.csv_safety import spreadsheet_safe_row
 from app.document_metadata import event_value
 from app.models import (
     MatterDocument,
@@ -498,7 +499,7 @@ def export_coding_comparison(
         output = io.StringIO(newline="")
         writer = csv.DictWriter(output, fieldnames=fieldnames)
         writer.writeheader()
-        writer.writerows(rows())
+        writer.writerows(spreadsheet_safe_row(row) for row in rows())
         return output.getvalue().encode("utf-8"), "text/csv; charset=utf-8", f"batch-coding-{safe_field}.csv"
 
     schema = pa.schema(

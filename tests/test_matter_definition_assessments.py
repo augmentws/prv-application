@@ -6,7 +6,7 @@ from types import SimpleNamespace
 from typing import get_args
 
 import pytest
-from conftest import TestingSessionLocal
+from conftest import TestingSessionLocal, create_client_tenant
 from fastapi.testclient import TestClient
 from pydantic_ai.models.test import TestModel
 from sqlalchemy import select
@@ -84,8 +84,9 @@ def test_guidance_refinement_failure_message_uses_last_step_error() -> None:
 
 
 def create_assessment_matter(client: TestClient, root_token: str, root_admin) -> str:
+    tenant_id = create_client_tenant(client, root_token)
     created_client = client.post(
-        f"/v1/tenants/{root_admin.tenant_id}/clients",
+        f"/v1/tenants/{tenant_id}/clients",
         headers=auth(root_token),
         json={"name": "Assessment Client"},
     )

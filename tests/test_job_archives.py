@@ -1,6 +1,6 @@
 import uuid
 
-from conftest import TestingSessionLocal
+from conftest import TestingSessionLocal, create_client_tenant
 from fastapi.testclient import TestClient
 from sqlalchemy import select
 from test_review_batches import add_documents, auth, create_matter
@@ -13,7 +13,7 @@ def test_terminal_job_delete_archives_without_removing_job(
     root_token: str,
     root_admin,
 ) -> None:
-    matter_id = create_matter(client, root_token, str(root_admin.tenant_id))
+    matter_id = create_matter(client, root_token, create_client_tenant(client, root_token))
     add_documents(matter_id, root_admin.id, count=1)
     with TestingSessionLocal() as db:
         job = db.scalar(
@@ -67,7 +67,7 @@ def test_active_job_cannot_be_deleted(
     root_token: str,
     root_admin,
 ) -> None:
-    matter_id = create_matter(client, root_token, str(root_admin.tenant_id))
+    matter_id = create_matter(client, root_token, create_client_tenant(client, root_token))
     add_documents(matter_id, root_admin.id, count=1)
     with TestingSessionLocal() as db:
         job = db.scalar(

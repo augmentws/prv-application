@@ -6,7 +6,7 @@ from datetime import datetime, timedelta, timezone
 
 import pyarrow as pa
 import pyarrow.parquet as pq
-from conftest import TestingSessionLocal
+from conftest import TestingSessionLocal, create_client_tenant
 from fastapi.testclient import TestClient
 from sqlalchemy import select
 from test_classification_builds import FakeClassificationGateway, launch_build, ready_build_fixture
@@ -112,7 +112,7 @@ def approved_version_fixture(
     matter, model, snapshot = ready_build_fixture(
         client,
         token,
-        str(root_admin.tenant_id),
+        create_client_tenant(client, token),
         root_admin.id,
         suffix="Scoring",
     )

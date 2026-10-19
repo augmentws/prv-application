@@ -38,6 +38,12 @@ def create_client(
     tenant = db.scalar(select(Tenant).where(Tenant.id == tenant_id))
     if tenant is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Tenant not found")
+    # The root tenant is the system administration tenant. Clients, matters, and collections belong to subtenants.
+    if tenant.is_root:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="The root tenant cannot contain clients, matters, or collections",
+        )
     if tenant.status != "ACTIVE":
         raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="Tenant is not active")
     if not can_admin_tenant(principal, tenant.id):

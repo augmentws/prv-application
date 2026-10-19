@@ -1,6 +1,6 @@
 import uuid
 
-from conftest import TestingSessionLocal
+from conftest import TestingSessionLocal, create_client_tenant
 from fastapi.testclient import TestClient
 from sqlalchemy import func, select
 
@@ -21,8 +21,9 @@ def create_matter_document(
     monkeypatch,
 ) -> tuple[str, str, dict[str, dict]]:
     monkeypatch.setattr(matter_imports, "SessionLocal", TestingSessionLocal)
+    tenant_id = create_client_tenant(client, root_token)
     client_record = client.post(
-        f"/v1/tenants/{root_admin.tenant_id}/clients",
+        f"/v1/tenants/{tenant_id}/clients",
         headers=auth(root_token),
         json={"name": "Document Metadata Client"},
     ).json()
@@ -32,12 +33,12 @@ def create_matter_document(
         json={"name": "Document Metadata Matter"},
     ).json()
     client.post(
-        f"/v1/tenants/{root_admin.tenant_id}/artifact-storage/ensure",
+        f"/v1/tenants/{tenant_id}/artifact-storage/ensure",
         headers=auth(root_token),
         json={"tenant_slug": "root"},
     )
     collection = client.post(
-        f"/v1/tenants/{root_admin.tenant_id}/clients/{client_record['id']}/collections",
+        f"/v1/tenants/{tenant_id}/clients/{client_record['id']}/collections",
         headers=auth(root_token),
         json={"name": "Metadata source"},
     ).json()

@@ -1,8 +1,15 @@
 import os
+import uuid
 
+os.environ.setdefault("APP_ENV", "development")
 os.environ.setdefault("DATABASE_URL", "sqlite+pysqlite:///:memory:")
 os.environ.setdefault("ARTIFACT_DATABASE_URL", "sqlite+pysqlite:///:memory:")
 os.environ.setdefault("JWT_SECRET", "test-secret-that-is-long-enough-for-jwt-signing")
+os.environ.setdefault("CLASSIFICATION_SERVICE_TOKEN", "test-classification-service-token")
+os.environ.setdefault("EMBEDDING_SERVICE_TOKEN", "test-embedding-service-token-long-enough-0123")
+os.environ.setdefault("ARTIFACT_DELEGATION_SECRET", "test-artifact-delegation-secret-long-enough-0123")
+os.environ.setdefault("ARTIFACT_STORAGE_ACCESS_KEY", "test-storage-access-key")
+os.environ.setdefault("ARTIFACT_STORAGE_SECRET_KEY", "test-storage-secret-key")
 os.environ.setdefault("DBOS_ENABLED", "false")
 os.environ.setdefault("PYDANTIC_AI_NO_BANNER", "1")
 os.environ["EMBEDDING_MODE"] = "embedded"
@@ -123,3 +130,26 @@ def root_token(client: TestClient, root_admin: User) -> str:
     )
     assert response.status_code == 200, response.text
     return response.json()["access_token"]
+
+
+def create_client_tenant(client: TestClient, root_token: str) -> str:
+    """Create a fresh subtenant for a test that needs clients. The root tenant cannot contain clients."""
+
+    root_tenant_id = client.get("/v1/auth/me", headers={"Authorization": f"Bearer {root_token}"}).json()["tenant_id"]
+    slug = f"client-tenant-{uuid.uuid4().hex[:12]}"
+    response = client.post(
+        "/v1/tenants",
+        headers={"Authorization": f"Bearer {root_token}"},
+        json={
+            "parent_tenant_id": root_tenant_id,
+            "slug": slug,
+            "name": slug,
+            "initial_admin": {
+                "email": f"{slug}@example.com",
+                "display_name": slug,
+                "password": "client-tenant-password-123",
+            },
+        },
+    )
+    assert response.status_code == 201, response.text
+    return response.json()["tenant"]["id"]

@@ -1,3 +1,4 @@
+from conftest import create_client_tenant
 from fastapi.testclient import TestClient
 
 
@@ -323,7 +324,7 @@ def test_login_rejects_client_supplied_tenant_and_uses_server_assignment(
 
 
 def test_user_email_is_unique_across_tenants(client: TestClient, root_token: str) -> None:
-    root_tenant_id = client.get("/v1/auth/me", headers=auth(root_token)).json()["tenant_id"]
+    root_tenant_id = create_client_tenant(client, root_token)
     response = client.post(
         "/v1/tenants",
         headers=auth(root_token),
@@ -343,7 +344,7 @@ def test_user_email_is_unique_across_tenants(client: TestClient, root_token: str
 
 
 def test_subtenant_admin_cannot_create_tenant(client: TestClient, root_token: str) -> None:
-    root_tenant_id = client.get("/v1/auth/me", headers=auth(root_token)).json()["tenant_id"]
+    root_tenant_id = create_client_tenant(client, root_token)
     tenant_response = client.post(
         "/v1/tenants",
         headers=auth(root_token),
@@ -385,9 +386,10 @@ def test_subtenant_admin_cannot_create_tenant(client: TestClient, root_token: st
 
 
 def test_metadata_groups_preferences_templates_and_clone(client: TestClient, root_token: str) -> None:
+    tenant_id = create_client_tenant(client, root_token)
     me = client.get("/v1/auth/me", headers=auth(root_token)).json()
     client_response = client.post(
-        f"/v1/tenants/{me['tenant_id']}/clients",
+        f"/v1/tenants/{tenant_id}/clients",
         headers=auth(root_token),
         json={"name": "Template Test Client"},
     )
@@ -462,7 +464,7 @@ def test_metadata_groups_preferences_templates_and_clone(client: TestClient, roo
     assert shared_group.status_code == 201, shared_group.text
 
     second_user_response = client.post(
-        f"/v1/tenants/{me['tenant_id']}/users",
+        f"/v1/tenants/{tenant_id}/users",
         headers=auth(root_token),
         json={
             "email": "second-reviewer@example.com",
@@ -474,13 +476,13 @@ def test_metadata_groups_preferences_templates_and_clone(client: TestClient, roo
     matter_admin_role = next(
         role
         for role in client.get(
-            f"/v1/tenants/{me['tenant_id']}/roles",
+            f"/v1/tenants/{tenant_id}/roles",
             headers=auth(root_token),
         ).json()
         if role["key"] == "MATTER_ADMINISTRATOR"
     )
     grant_response = client.post(
-        f"/v1/tenants/{me['tenant_id']}/authorization-grants",
+        f"/v1/tenants/{tenant_id}/authorization-grants",
         headers=auth(root_token),
         json={
             "subject": {"type": "USER", "id": second_user_response.json()["id"]},

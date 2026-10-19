@@ -4,21 +4,27 @@ from typing import Literal
 from pydantic import Field, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
+from app.database_urls import build_postgres_url
+from app.deployment_policy import AppEnvironment, reject_development_secrets
+
 
 class Settings(BaseSettings):
     model_config = SettingsConfigDict(env_file=".env", env_file_encoding="utf-8", extra="ignore")
 
     app_name: str = "Priv-View Core"
-    app_env: str = "development"
-    database_url: str = "postgresql+psycopg://postgres:postgres@localhost:5432/pvr-core"
+    app_env: AppEnvironment = "production"
+    postgres_host: str = "localhost"
+    postgres_port: int = Field(default=5432, ge=1, le=65535)
+    postgres_user: str = Field(default="postgres", min_length=1)
+    postgres_password: str = Field(min_length=1)
+    postgres_core_database: str = Field(default="pvr-core", min_length=1)
+    # Optional full-URL override, used by the test suite; normally unset.
+    database_url_override: str | None = Field(default=None, validation_alias="DATABASE_URL")
     artifact_mode: str = "embedded"
     artifact_base_url: str = "http://localhost:8001"
     classification_mode: Literal["embedded", "remote"] = "embedded"
     classification_base_url: str = "http://localhost:8003"
-    classification_service_token: str = Field(
-        default="development-classification-service-token",
-        min_length=16,
-    )
+    classification_service_token: str = Field(min_length=16)
     classification_request_timeout_seconds: float = Field(default=120.0, gt=0, le=3600)
     classification_max_concurrency: int = Field(default=2, ge=1, le=64)
     classification_runtime_image_digest: str = Field(default="development-runtime", min_length=1, max_length=500)
@@ -117,11 +123,13 @@ class Settings(BaseSettings):
     definition_assessment_provider_batch_size: int = Field(default=50, ge=1, le=100)
     definition_assessment_provider_batch_poll_seconds: float = Field(default=15.0, ge=1, le=300)
 
-    jwt_secret: str = Field(default="development-only-change-me-please", min_length=32)
+    jwt_secret: str = Field(min_length=32)
     jwt_issuer: str = "priv-view-core"
     jwt_audience: str = "priv-view-api"
     access_token_minutes: int = Field(default=15, ge=1, le=1440)
     refresh_token_days: int = Field(default=14, ge=1, le=90)
+    # A rotated refresh token presented within this window is a benign race, not theft.
+    refresh_reuse_grace_seconds: int = Field(default=30, ge=0, le=300)
     login_max_failed_attempts: int = Field(default=5, ge=1, le=20)
     login_lockout_minutes: int = Field(default=15, ge=1, le=1440)
 
@@ -130,6 +138,26 @@ class Settings(BaseSettings):
     bootstrap_superuser_email: str | None = None
     bootstrap_superuser_password: str | None = None
     bootstrap_superuser_display_name: str = "Super Admin"
+
+    @property
+    def database_url(self) -> str:
+        if self.database_url_override:
+            return self.database_url_override
+        return build_postgres_url(
+            user=self.postgres_user,
+            password=self.postgres_password,
+            host=self.postgres_host,
+            port=self.postgres_port,
+            database=self.postgres_core_database,
+        )
+
+    @model_validator(mode="after")
+    def validate_deployment_secrets(self) -> "Settings":
+        reject_development_secrets(
+            self.app_env,
+            {"JWT_SECRET": self.jwt_secret, "CLASSIFICATION_SERVICE_TOKEN": self.classification_service_token},
+        )
+        return self
 
     @model_validator(mode="after")
     def validate_chunking(self) -> "Settings":

@@ -4,6 +4,8 @@ from typing import Literal
 from pydantic import AliasChoices, Field, SecretStr, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
+from app.deployment_policy import AppEnvironment, reject_development_secrets
+
 
 class EmbeddingSettings(BaseSettings):
     model_config = SettingsConfigDict(
@@ -14,6 +16,7 @@ class EmbeddingSettings(BaseSettings):
         extra="ignore",
     )
 
+    app_env: AppEnvironment = Field(default="production", validation_alias="APP_ENV")
     mode: Literal["embedded", "remote"] = "embedded"
     provider: Literal["sentence_transformers", "voyage_api"] = "sentence_transformers"
     model: str = "voyageai/voyage-4-nano"
@@ -26,7 +29,7 @@ class EmbeddingSettings(BaseSettings):
     max_inputs: int = Field(default=256, ge=1, le=1000)
     max_input_characters: int = Field(default=200_000, ge=1_000, le=10_000_000)
     base_url: str = "http://localhost:8002"
-    service_token: str = Field(default="development-embedding-service-token", min_length=32)
+    service_token: str = Field(min_length=32)
     request_timeout_seconds: float = Field(default=300.0, gt=0, le=3600)
     query_mode: Literal["embedded", "remote"] = "embedded"
     query_model: str | None = None
@@ -47,6 +50,11 @@ class EmbeddingSettings(BaseSettings):
     voyage_realtime_concurrency: int = Field(default=8, ge=1, le=100)
     voyage_tokens_per_minute: int = Field(default=3_000_000, ge=1_000, le=1_000_000_000)
     voyage_requests_per_minute: int = Field(default=2_000, ge=1, le=100_000)
+
+    @model_validator(mode="after")
+    def validate_deployment_secrets(self) -> "EmbeddingSettings":
+        reject_development_secrets(self.app_env, {"EMBEDDING_SERVICE_TOKEN": self.service_token})
+        return self
 
     @model_validator(mode="after")
     def validate_provider(self) -> "EmbeddingSettings":

@@ -1,5 +1,6 @@
 import uuid
 
+from conftest import create_client_tenant
 from fastapi.testclient import TestClient
 from sqlalchemy import select
 from sqlalchemy.orm import Session
@@ -115,7 +116,7 @@ def test_create_revise_list_and_read_classification_model(
     root_admin,
     db: Session,
 ) -> None:
-    tenant_id = str(root_admin.tenant_id)
+    tenant_id = create_client_tenant(client, root_token)
     matter = create_matter(client, root_token, tenant_id, "Registry")
     definition = create_enum_field(client, root_token, matter["id"])
     model = create_model(client, root_token, matter["id"], definition["id"])
@@ -209,7 +210,7 @@ def test_hierarchy_level_requires_a_delimited_text_target(
     root_token: str,
     root_admin,
 ) -> None:
-    matter = create_matter(client, root_token, str(root_admin.tenant_id), "Hierarchy validation")
+    matter = create_matter(client, root_token, create_client_tenant(client, root_token), "Hierarchy validation")
     definition = create_enum_field(client, root_token, matter["id"])
     model = create_model(client, root_token, matter["id"], definition["id"])
     payload = binary_configuration()
@@ -230,7 +231,7 @@ def test_registry_accepts_asserted_text_and_non_reviewable_fields_but_rejects_wr
     root_token: str,
     root_admin,
 ) -> None:
-    tenant_id = str(root_admin.tenant_id)
+    tenant_id = create_client_tenant(client, root_token)
     first_matter = create_matter(client, root_token, tenant_id, "First Scope")
     second_matter = create_matter(client, root_token, tenant_id, "Second Scope")
     first_field = create_enum_field(client, root_token, first_matter["id"])
@@ -320,7 +321,7 @@ def test_class_catalog_changes_remain_compatible_and_archive_blocks_revision(
     root_token: str,
     root_admin,
 ) -> None:
-    matter = create_matter(client, root_token, str(root_admin.tenant_id), "Compatibility")
+    matter = create_matter(client, root_token, create_client_tenant(client, root_token), "Compatibility")
     definition = create_enum_field(client, root_token, matter["id"])
     model = create_model(client, root_token, matter["id"], definition["id"])
     base = f"/v1/matters/{matter['id']}/classification-models/{model['id']}"
@@ -364,7 +365,7 @@ def test_classification_registry_requires_matter_admin(
     root_token: str,
     root_admin,
 ) -> None:
-    matter = create_matter(client, root_token, str(root_admin.tenant_id), "Authorization")
+    matter = create_matter(client, root_token, create_client_tenant(client, root_token), "Authorization")
     definition = create_enum_field(client, root_token, matter["id"])
 
     tenant = client.post(

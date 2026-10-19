@@ -29,6 +29,7 @@ from app.artifact_gateway import (
     store_workflow_artifact,
 )
 from app.audit import record_audit
+from app.csv_safety import spreadsheet_safe_row
 from app.embeddings.configuration import canonical_hash
 from app.job_executions import MATTER_EMBEDDING_JOB_TYPE, current_job_execution
 from app.models import JobOutcomeManifest, Matter, MatterEmbeddingBatch, MatterEmbeddingJob, WorkflowRun
@@ -928,7 +929,7 @@ def iter_job_outcomes_csv(
                 buffer = io.StringIO(newline="")
                 writer = csv.DictWriter(buffer, fieldnames=fields)
                 for row in pa.Table.from_batches([batch]).to_pylist():
-                    writer.writerow(row)
+                    writer.writerow(spreadsheet_safe_row(row))
                 yield buffer.getvalue().encode("utf-8")
         finally:
             file.close()

@@ -3,7 +3,7 @@ from types import SimpleNamespace
 from unittest.mock import Mock
 
 import pytest
-from conftest import TestingSessionLocal
+from conftest import TestingSessionLocal, create_client_tenant
 from fastapi.testclient import TestClient
 from sqlalchemy import func, select
 from test_classification_builds import (
@@ -37,7 +37,7 @@ def candidate_fixture(
     matter, model, snapshot = ready_build_fixture(
         client,
         token,
-        str(root_admin.tenant_id),
+        create_client_tenant(client, token),
         root_admin.id,
         suffix=suffix,
     )

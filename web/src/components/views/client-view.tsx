@@ -51,10 +51,6 @@ export function ClientView({ clientId }: { clientId: string }) {
     mutationFn: async (values: CreateCollectionValues) => {
       if (!client.data) throw new Error("Client is still loading.");
       const tenant = await coreApi<TenantRead>(`/v1/tenants/${client.data.tenant_id}`);
-      await coreApi(`/v1/tenants/${tenant.id}/artifact-storage/ensure`, {
-        method: "POST",
-        body: JSON.stringify({ tenant_slug: tenant.slug }),
-      });
       return coreApi<CollectionRead>(`/v1/tenants/${tenant.id}/clients/${clientId}/collections`, {
         method: "POST",
         body: JSON.stringify({ name: values.name, description: values.description || null }),

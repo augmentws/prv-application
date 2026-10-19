@@ -20,8 +20,11 @@ class FakeBackend:
         return [[marker, float(len(value)), *([0.0] * 30)] for value in inputs]
 
 
+TEST_EMBEDDING_TOKEN = "test-embedding-service-token-0123456789abcdef"
+
+
 def test_standalone_embedding_api_requires_token_and_returns_configured_vectors() -> None:
-    settings = EmbeddingSettings(dimensions=32)
+    settings = EmbeddingSettings(dimensions=32, service_token=TEST_EMBEDDING_TOKEN)
     embedding_app.dependency_overrides[get_embedding_backend] = lambda: FakeBackend()
     embedding_app.dependency_overrides[get_embedding_settings] = lambda: settings
     try:
@@ -31,7 +34,7 @@ def test_standalone_embedding_api_requires_token_and_returns_configured_vectors(
 
             response = client.post(
                 "/v1/embeddings",
-                headers={"Authorization": "Bearer development-embedding-service-token"},
+                headers={"Authorization": f"Bearer {TEST_EMBEDDING_TOKEN}"},
                 json={"inputs": ["hello", "world!"], "input_type": "query"},
             )
             assert response.status_code == 200, response.text
@@ -82,7 +85,7 @@ def test_gateway_applies_batch_limits_before_invoking_either_mode() -> None:
 
 def test_remote_gateway_uses_private_service_contract() -> None:
     def handler(request: httpx.Request) -> httpx.Response:
-        assert request.headers["authorization"] == "Bearer development-embedding-service-token"
+        assert request.headers["authorization"] == f"Bearer {get_embedding_settings().service_token}"
         assert request.url.path == "/v1/embeddings"
         assert request.read() == b'{"inputs":["evidence"],"input_type":"document"}'
         return httpx.Response(

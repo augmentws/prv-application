@@ -1,14 +1,16 @@
 from functools import lru_cache
 
-from pydantic import Field
+from pydantic import Field, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
+
+from app.deployment_policy import AppEnvironment, reject_development_secrets
 
 
 class ClassificationSettings(BaseSettings):
     model_config = SettingsConfigDict(env_file=".env", env_file_encoding="utf-8", extra="ignore")
 
+    app_env: AppEnvironment = Field(default="production", validation_alias="APP_ENV")
     service_token: str = Field(
-        default="development-classification-service-token",
         min_length=16,
         validation_alias="CLASSIFICATION_SERVICE_TOKEN",
     )
@@ -46,6 +48,11 @@ class ClassificationSettings(BaseSettings):
         le=2 * 1024 * 1024 * 1024,
         validation_alias="CLASSIFICATION_PACKAGE_MAX_BYTES",
     )
+
+    @model_validator(mode="after")
+    def validate_deployment_secrets(self) -> "ClassificationSettings":
+        reject_development_secrets(self.app_env, {"CLASSIFICATION_SERVICE_TOKEN": self.service_token})
+        return self
 
 
 @lru_cache

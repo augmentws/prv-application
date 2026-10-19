@@ -21,6 +21,7 @@ from app.agent_events import publish_agent_event
 from app.agent_models import resolve_agent_model
 from app.agent_tools import AGENT_TOOL_REGISTRY, EXECUTABLE_AGENT_TOOL_KEYS
 from app.artifact_gateway import read_artifact_bytes
+from app.authorization import ResourceRef, user_can
 from app.config import get_settings
 from app.database import SessionLocal
 from app.execution_accounting import (
@@ -63,7 +64,6 @@ from app.models import (
     Matter,
     MatterDefinitionAssessmentRun,
     MatterDefinitionRevision,
-    MatterMembership,
     MetadataDefinition,
     ReviewBatch,
     SkillDefinition,
@@ -173,6 +173,16 @@ class AgentRunOutcome:
     invocations: tuple[InvocationTelemetry, ...]
 
 
+def _actor_can_execute_matter_changes(db, user: User, matter: Matter) -> bool:
+    """Re-check, at execution time, that the approving actor may change this matter.
+
+    Uses the same explicit permission as the matter administration API, so RBAC grants
+    and the existing tenant, client, and matter administrator paths all apply.
+    """
+
+    return user_can(db, user, "matter.configure", ResourceRef.matter(matter.id))
+
+
 def _require_actor_access(db, deps: AgentRuntimeDeps) -> tuple[User, Matter, AgentRun]:
     user = db.get(User, deps.actor_user_id)
     matter = db.get(Matter, deps.matter_id)
@@ -181,22 +191,8 @@ def _require_actor_access(db, deps: AgentRuntimeDeps) -> tuple[User, Matter, Age
         raise PermissionError("Agent execution context is no longer available")
     if user.status != "ACTIVE" or user.tenant.status != "ACTIVE" or matter.client.tenant.status != "ACTIVE":
         raise PermissionError("Agent actor or tenant is not active")
-    authorized = (user.tenant.is_root and user.tenant_role == "ADMIN") or (
-        user.tenant_id == matter.client.tenant_id and user.tenant_role == "ADMIN"
-    )
-    if not authorized:
-        authorized = (
-            db.scalar(
-                select(MatterMembership).where(
-                    MatterMembership.matter_id == matter.id,
-                    MatterMembership.user_id == user.id,
-                    MatterMembership.role == "ADMIN",
-                )
-            )
-            is not None
-        )
-    if not authorized:
-        raise PermissionError("Matter ADMIN required")
+    if not _actor_can_execute_matter_changes(db, user, matter):
+        raise PermissionError("Permission required: matter.configure")
     conversation = db.get(AgentConversation, deps.conversation_id)
     if conversation is None or conversation.matter_id != matter.id or run.conversation_id != conversation.id:
         raise PermissionError("Agent execution scope does not match the conversation")

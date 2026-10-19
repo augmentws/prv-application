@@ -5,6 +5,7 @@ from fastapi.responses import JSONResponse
 
 from artifact_service.api import build_router
 from artifact_service.auth import get_delegated_artifact_principal
+from artifact_service.config import get_artifact_settings
 
 app = FastAPI(
     title="Priv-View Artifact API",
@@ -37,9 +38,12 @@ def health() -> dict[str, str]:
     return {"status": "ok"}
 
 
+# Load settings at import so a development secret outside development stops startup.
+get_artifact_settings()
 app.include_router(
     build_router(
         get_delegated_artifact_principal,
         expose_internal_deletion_control=True,
+        expose_internal_storage_control=True,
     )
 )

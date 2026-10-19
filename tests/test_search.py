@@ -7,6 +7,7 @@ from types import SimpleNamespace
 from unittest.mock import Mock
 
 import pytest
+from conftest import create_client_tenant
 from fastapi import HTTPException
 from fastapi.testclient import TestClient
 from sqlalchemy import delete, select
@@ -2130,7 +2131,7 @@ def test_matter_creation_queues_index_and_search_waits_for_active_generation(
     root_token: str,
 ) -> None:
     headers = auth(root_token)
-    tenant_id = client.get("/v1/auth/me", headers=headers).json()["tenant_id"]
+    tenant_id = create_client_tenant(client, root_token)
     created_client = client.post(
         f"/v1/tenants/{tenant_id}/clients",
         headers=headers,
@@ -2161,7 +2162,7 @@ def test_search_operations_lists_batch_coding_sync_kind(
     db: Session,
 ) -> None:
     headers = auth(root_token)
-    tenant_id = client.get("/v1/auth/me", headers=headers).json()["tenant_id"]
+    tenant_id = create_client_tenant(client, root_token)
     created_client = client.post(
         f"/v1/tenants/{tenant_id}/clients",
         headers=headers,
@@ -2195,7 +2196,7 @@ def test_search_index_status_reports_missing_index_on_configured_server(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     headers = auth(root_token)
-    tenant_id = client.get("/v1/auth/me", headers=headers).json()["tenant_id"]
+    tenant_id = create_client_tenant(client, root_token)
     created_client = client.post(
         f"/v1/tenants/{tenant_id}/clients",
         headers=headers,
@@ -2239,7 +2240,7 @@ def test_reindex_confirmation_requeues_the_schema_operation(
     db: Session,
 ) -> None:
     headers = auth(root_token)
-    tenant_id = client.get("/v1/auth/me", headers=headers).json()["tenant_id"]
+    tenant_id = create_client_tenant(client, root_token)
     created_client = client.post(
         f"/v1/tenants/{tenant_id}/clients",
         headers=headers,
@@ -2304,7 +2305,7 @@ def test_explicit_rebuild_installs_missing_default_system_definitions(
     db: Session,
 ) -> None:
     headers = auth(root_token)
-    tenant_id = client.get("/v1/auth/me", headers=headers).json()["tenant_id"]
+    tenant_id = create_client_tenant(client, root_token)
     created_client = client.post(
         f"/v1/tenants/{tenant_id}/clients",
         headers=headers,
@@ -2359,7 +2360,7 @@ def test_failed_document_upserts_can_be_requeued_in_bulk(
     db: Session,
 ) -> None:
     headers = auth(root_token)
-    tenant_id = client.get("/v1/auth/me", headers=headers).json()["tenant_id"]
+    tenant_id = create_client_tenant(client, root_token)
     created_client = client.post(
         f"/v1/tenants/{tenant_id}/clients",
         headers=headers,
@@ -2435,7 +2436,7 @@ def test_durable_workflow_errors_can_be_requeued_when_operation_is_stranded_runn
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     headers = auth(root_token)
-    tenant_id = client.get("/v1/auth/me", headers=headers).json()["tenant_id"]
+    tenant_id = create_client_tenant(client, root_token)
     created_client = client.post(
         f"/v1/tenants/{tenant_id}/clients",
         headers=headers,

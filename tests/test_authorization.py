@@ -1,7 +1,7 @@
 import uuid
 
 import pytest
-from conftest import TestingSessionLocal
+from conftest import TestingSessionLocal, create_client_tenant
 from fastapi.testclient import TestClient
 from sqlalchemy import select
 from sqlalchemy.orm import Session
@@ -26,7 +26,7 @@ def auth(token: str) -> dict[str, str]:
 
 
 def create_tenant(client: TestClient, root_token: str, *, slug: str = "rbac-test") -> dict:
-    root_tenant_id = client.get("/v1/auth/me", headers=auth(root_token)).json()["tenant_id"]
+    root_tenant_id = create_client_tenant(client, root_token)
     response = client.post(
         "/v1/tenants",
         headers=auth(root_token),

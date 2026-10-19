@@ -5,6 +5,7 @@ from fastapi.responses import JSONResponse
 
 from app.agent_events import agent_event_lifespan
 from app.config import get_settings
+from app.deployment_policy import load_core_runtime_settings
 from app.routers import (
     agent_conversations,
     agents,
@@ -41,6 +42,9 @@ from app.routers import (
 )
 from artifact_service.api import build_router as build_artifact_router
 from artifact_service.auth import get_embedded_artifact_principal
+
+# Load every settings object at import so a development secret outside development stops startup.
+load_core_runtime_settings()
 
 app = FastAPI(
     title="Priv-View Core API",

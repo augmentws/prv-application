@@ -1,7 +1,7 @@
 import json
 import uuid
 
-from conftest import ArtifactTestingSessionLocal, TestingSessionLocal, memory_storage
+from conftest import ArtifactTestingSessionLocal, TestingSessionLocal, create_client_tenant, memory_storage
 from fastapi.testclient import TestClient
 from sqlalchemy import func, select
 
@@ -102,7 +102,7 @@ def test_collection_deletion_removes_database_rows_and_unshared_blob(
     root_token: str,
     root_admin,
 ) -> None:
-    tenant_id = str(root_admin.tenant_id)
+    tenant_id = create_client_tenant(client, root_token)
     client_id, custodian_id = setup_client_scope(client, root_token, tenant_id)
     collection_id, item_id = create_collection_with_item(
         client,
@@ -145,7 +145,7 @@ def test_collection_deletion_preserves_blob_shared_by_another_collection(
     root_token: str,
     root_admin,
 ) -> None:
-    tenant_id = str(root_admin.tenant_id)
+    tenant_id = create_client_tenant(client, root_token)
     client_id, custodian_id = setup_client_scope(client, root_token, tenant_id)
     first_id, _ = create_collection_with_item(
         client,
@@ -181,7 +181,7 @@ def test_collection_deletion_is_blocked_by_matter_documents_and_active_imports(
     root_token: str,
     root_admin,
 ) -> None:
-    tenant_id = str(root_admin.tenant_id)
+    tenant_id = create_client_tenant(client, root_token)
     client_id, custodian_id = setup_client_scope(client, root_token, tenant_id)
     collection_id, item_id = create_collection_with_item(
         client,

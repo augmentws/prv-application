@@ -1,7 +1,7 @@
 import uuid
 from datetime import datetime, timezone
 
-from conftest import ArtifactTestingSessionLocal, TestingSessionLocal
+from conftest import ArtifactTestingSessionLocal, TestingSessionLocal, create_client_tenant
 from sqlalchemy import delete, func, select
 
 from app import matter_imports
@@ -17,7 +17,8 @@ from artifact_service.models import CollectionItem, CollectionItemCustodian
 from scripts.backfill_matter_document_custodians import backfill_matter_document_custodians
 
 
-def test_create_list_and_cancel_matter_document_import(client, root_admin) -> None:
+def test_create_list_and_cancel_matter_document_import(client, root_admin, root_token) -> None:
+    tenant_id = create_client_tenant(client, root_token)
     login = client.post(
         "/v1/auth/login",
         json={"email": "root@example.com", "password": "correct-horse-battery-staple"},
@@ -26,7 +27,7 @@ def test_create_list_and_cancel_matter_document_import(client, root_admin) -> No
     headers = {"Authorization": f"Bearer {login.json()['access_token']}"}
 
     created_client = client.post(
-        f"/v1/tenants/{root_admin.tenant_id}/clients",
+        f"/v1/tenants/{tenant_id}/clients",
         json={"name": "Import Client"},
         headers=headers,
     )
@@ -43,13 +44,13 @@ def test_create_list_and_cancel_matter_document_import(client, root_admin) -> No
     assert overview.status_code == 200
     assert overview.json() == {"document_count": 0, "custodian_count": 0}
     storage = client.post(
-        f"/v1/tenants/{root_admin.tenant_id}/artifact-storage/ensure",
+        f"/v1/tenants/{tenant_id}/artifact-storage/ensure",
         json={"tenant_slug": "root"},
         headers=headers,
     )
     assert storage.status_code == 201, storage.text
     collection = client.post(
-        f"/v1/tenants/{root_admin.tenant_id}/clients/{client_id}/collections",
+        f"/v1/tenants/{tenant_id}/clients/{client_id}/collections",
         json={"name": "Source collection", "description": None},
         headers=headers,
     )
@@ -134,16 +135,18 @@ def test_create_list_and_cancel_matter_document_import(client, root_admin) -> No
 def test_document_import_read_reconciles_durable_failure_and_batch_totals(
     client,
     root_admin,
+    root_token,
     db,
     monkeypatch,
 ) -> None:
+    tenant_id = create_client_tenant(client, root_token)
     login = client.post(
         "/v1/auth/login",
         json={"email": "root@example.com", "password": "correct-horse-battery-staple"},
     )
     headers = {"Authorization": f"Bearer {login.json()['access_token']}"}
     created_client = client.post(
-        f"/v1/tenants/{root_admin.tenant_id}/clients",
+        f"/v1/tenants/{tenant_id}/clients",
         json={"name": "Import Reconciliation Client"},
         headers=headers,
     ).json()
@@ -153,12 +156,12 @@ def test_document_import_read_reconciles_durable_failure_and_batch_totals(
         headers=headers,
     ).json()
     client.post(
-        f"/v1/tenants/{root_admin.tenant_id}/artifact-storage/ensure",
+        f"/v1/tenants/{tenant_id}/artifact-storage/ensure",
         json={"tenant_slug": "root"},
         headers=headers,
     )
     collection = client.post(
-        f"/v1/tenants/{root_admin.tenant_id}/clients/{created_client['id']}/collections",
+        f"/v1/tenants/{tenant_id}/clients/{created_client['id']}/collections",
         json={"name": "Import Reconciliation Collection", "description": None},
         headers=headers,
     ).json()
@@ -215,25 +218,26 @@ def test_document_import_read_reconciles_durable_failure_and_batch_totals(
     assert response.json()["execution"]["progress_completed"] == 10
 
 
-def test_collection_selection_is_idempotent_and_removable(client, root_admin) -> None:
+def test_collection_selection_is_idempotent_and_removable(client, root_admin, root_token) -> None:
+    tenant_id = create_client_tenant(client, root_token)
     login = client.post(
         "/v1/auth/login",
         json={"email": "root@example.com", "password": "correct-horse-battery-staple"},
     )
     headers = {"Authorization": f"Bearer {login.json()['access_token']}"}
     created_client = client.post(
-        f"/v1/tenants/{root_admin.tenant_id}/clients",
+        f"/v1/tenants/{tenant_id}/clients",
         json={"name": "Selection Client"},
         headers=headers,
     )
     client_id = created_client.json()["id"]
     client.post(
-        f"/v1/tenants/{root_admin.tenant_id}/artifact-storage/ensure",
+        f"/v1/tenants/{tenant_id}/artifact-storage/ensure",
         json={"tenant_slug": "root"},
         headers=headers,
     )
     collection = client.post(
-        f"/v1/tenants/{root_admin.tenant_id}/clients/{client_id}/collections",
+        f"/v1/tenants/{tenant_id}/clients/{client_id}/collections",
         json={"name": "Selection source", "description": None},
         headers=headers,
     ).json()
@@ -259,7 +263,8 @@ def test_collection_selection_is_idempotent_and_removable(client, root_admin) ->
     assert removed.status_code == 204
 
 
-def test_imported_document_and_custodian_counts_are_core_aggregates(client, root_admin, monkeypatch) -> None:
+def test_imported_document_and_custodian_counts_are_core_aggregates(client, root_admin, root_token, monkeypatch) -> None:
+    tenant_id = create_client_tenant(client, root_token)
     monkeypatch.setattr(matter_imports, "SessionLocal", TestingSessionLocal)
     login = client.post(
         "/v1/auth/login",
@@ -267,7 +272,7 @@ def test_imported_document_and_custodian_counts_are_core_aggregates(client, root
     )
     headers = {"Authorization": f"Bearer {login.json()['access_token']}"}
     created_client = client.post(
-        f"/v1/tenants/{root_admin.tenant_id}/clients",
+        f"/v1/tenants/{tenant_id}/clients",
         json={"name": "Overview Count Client"},
         headers=headers,
     ).json()
@@ -285,12 +290,12 @@ def test_imported_document_and_custodian_counts_are_core_aggregates(client, root
         for name in ("Alex Primary", "Casey Common")
     ]
     client.post(
-        f"/v1/tenants/{root_admin.tenant_id}/artifact-storage/ensure",
+        f"/v1/tenants/{tenant_id}/artifact-storage/ensure",
         json={"tenant_slug": "root"},
         headers=headers,
     )
     collection = client.post(
-        f"/v1/tenants/{root_admin.tenant_id}/clients/{created_client['id']}/collections",
+        f"/v1/tenants/{tenant_id}/clients/{created_client['id']}/collections",
         json={"name": "Count source", "description": None},
         headers=headers,
     ).json()
@@ -416,8 +421,10 @@ def test_imported_document_and_custodian_counts_are_core_aggregates(client, root
 def test_matter_publication_creates_idempotent_imported_metadata_labels(
     client,
     root_admin,
+    root_token,
     monkeypatch,
 ) -> None:
+    tenant_id = create_client_tenant(client, root_token)
     monkeypatch.setattr(matter_imports, "SessionLocal", TestingSessionLocal)
     login = client.post(
         "/v1/auth/login",
@@ -425,7 +432,7 @@ def test_matter_publication_creates_idempotent_imported_metadata_labels(
     )
     headers = {"Authorization": f"Bearer {login.json()['access_token']}"}
     created_client = client.post(
-        f"/v1/tenants/{root_admin.tenant_id}/clients",
+        f"/v1/tenants/{tenant_id}/clients",
         json={"name": "Imported Labels Client"},
         headers=headers,
     ).json()
@@ -459,12 +466,12 @@ def test_matter_publication_creates_idempotent_imported_metadata_labels(
     )
     assert single_definition_response.status_code == 201, single_definition_response.text
     client.post(
-        f"/v1/tenants/{root_admin.tenant_id}/artifact-storage/ensure",
+        f"/v1/tenants/{tenant_id}/artifact-storage/ensure",
         json={"tenant_slug": "root"},
         headers=headers,
     )
     collection = client.post(
-        f"/v1/tenants/{root_admin.tenant_id}/clients/{created_client['id']}/collections",
+        f"/v1/tenants/{tenant_id}/clients/{created_client['id']}/collections",
         json={"name": "Imported label source"},
         headers=headers,
     ).json()

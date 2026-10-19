@@ -1,5 +1,6 @@
 import uuid
 
+from conftest import create_client_tenant
 from fastapi.testclient import TestClient
 from sqlalchemy import delete, select
 from sqlalchemy.orm import Session
@@ -32,7 +33,7 @@ def test_update_installs_missing_email_domain_field_for_existing_matter(
     root_token: str,
     db: Session,
 ) -> None:
-    tenant_id = client.get("/v1/auth/me", headers=auth(root_token)).json()["tenant_id"]
+    tenant_id = create_client_tenant(client, root_token)
     client_response = client.post(
         f"/v1/tenants/{tenant_id}/clients",
         headers=auth(root_token),
