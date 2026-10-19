@@ -75,8 +75,10 @@ export function FactsListPanel({ clientId, matterId, canReview, canExport = fals
       ? [
           {
             id: "select",
-            size: 44,
-            minSize: 44,
+            // Cells have 16px padding each side; 56px leaves room for the 16px checkbox and its focus outline.
+            size: 56,
+            minSize: 56,
+            enableResizing: false,
             header: () => (
               <input
                 type="checkbox"
