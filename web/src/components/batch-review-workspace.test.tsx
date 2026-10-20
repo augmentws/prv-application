@@ -187,6 +187,7 @@ function questionAnsweringJob(run: ReviewBatchRunRead): ReviewBatchAnalysisJobRe
 
 afterEach(() => {
   cleanup();
+  window.localStorage.clear();
   vi.clearAllMocks();
 });
 
@@ -659,12 +660,12 @@ describe("BatchReviewWorkspace", () => {
     expect(filterPanel).toHaveClass("min-h-0", "overflow-y-auto", "overscroll-contain");
     const issueFilters = within(filterPanel).getByRole("region", { name: "Issue metadata filters" });
     const issueGroupToggle = within(issueFilters).getByRole("button", { name: "Issue metadata filter group" });
-    expect(issueFilters).toHaveTextContent("Issue Coding");
-    await user.click(issueGroupToggle);
     expect(issueGroupToggle).toHaveAttribute("aria-expanded", "false");
     expect(within(issueFilters).queryByRole("button", { name: "Issue Coding" })).not.toBeInTheDocument();
     await user.click(issueGroupToggle);
     expect(issueGroupToggle).toHaveAttribute("aria-expanded", "true");
+    expect(issueFilters).toHaveTextContent("Issue Coding");
+    expect(window.localStorage.getItem("priv-view:metadata-filter-groups:batch:matter-1:group-issue")).toBe("open");
     expect(screen.getAllByText("Issue Coding").length).toBeGreaterThan(0);
     expect(screen.queryByText("issue_coding")).not.toBeInTheDocument();
     expect(screen.getByText("Matter Definition assessment")).toBeInTheDocument();
