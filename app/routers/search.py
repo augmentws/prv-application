@@ -53,6 +53,7 @@ from app.search.coding_provenance import coded_by_labels, matching_coded_by_toke
 from app.search.mappings import CODED_BY_FIELD
 from app.search.operations import create_search_operation
 from app.search.query import (
+    compile_keyword_search_scope,
     execute_batch_coding_facets,
     execute_batch_topic_facets,
     execute_date_histogram,
@@ -379,6 +380,7 @@ def execute_matter_search(
     db: Session,
     settings: Settings,
     required_filters: list[dict[str, Any]] | None = None,
+    keyword_search_scope: MatterSearchRequest | None = None,
 ) -> MatterSearchResponse:
     if not settings.search_enabled:
         raise HTTPException(status_code=status.HTTP_503_SERVICE_UNAVAILABLE, detail="Search is disabled")
@@ -400,6 +402,16 @@ def execute_matter_search(
     )
     client = OpenSearchClient(settings)
     try:
+        scoped_filters = list(required_filters or [])
+        if keyword_search_scope is not None:
+            scoped_filters.append(
+                compile_keyword_search_scope(
+                    keyword_search_scope,
+                    definitions,
+                    tenant_id=str(matter.client.tenant_id),
+                    matter_id=str(matter.id),
+                )
+            )
         query_vector = None
         if payload.search_mode != "KEYWORD":
             try:
@@ -422,7 +434,7 @@ def execute_matter_search(
             tenant_id=str(matter.client.tenant_id),
             matter_id=str(matter.id),
             query_vector=query_vector,
-            required_filters=required_filters,
+            required_filters=scoped_filters,
         )
     except OpenSearchError as exc:
         logger.exception(

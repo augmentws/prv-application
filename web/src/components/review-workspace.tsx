@@ -11,6 +11,7 @@ import {
   FileText,
   Filter,
   GripVertical,
+  MessageSquareText,
   PanelRight,
   RotateCcw,
   Save,
@@ -33,6 +34,7 @@ import { QueryError } from "@/components/query-state";
 import { ResultPagination } from "@/components/result-pagination";
 import { SavedSearchesDialog, SaveSearchDialog, UpdateSavedSearchDialog } from "@/components/saved-search-dialogs";
 import { SearchExportDialog } from "@/components/search-export-dialog";
+import { SearchChatPanel } from "@/components/search-chat-panel";
 import { parseMinimumSimilarity, SemanticThresholdControl } from "@/components/semantic-threshold-control";
 import { ThemeToggle } from "@/components/theme-toggle";
 import { Badge } from "@/components/ui/badge";
@@ -319,6 +321,7 @@ export function ReviewWorkspace({
   const [filtersOpen, setFiltersOpen] = useState(false);
   const [codingOpen, setCodingOpen] = useState(false);
   const [bulkTagOpen, setBulkTagOpen] = useState(false);
+  const [searchChatOpen, setSearchChatOpen] = useState(false);
   const [bulkTagJobId, setBulkTagJobId] = useState("");
   const [executedSavedSearchId, setExecutedSavedSearchId] = useState("");
   const [facetWidth, setFacetWidth] = useState(248);
@@ -333,6 +336,7 @@ export function ReviewWorkspace({
   const canBulkCode = permissionKeys.has("document.bulk_code");
   const canViewJobs = permissionKeys.has("job.view");
   const canExport = permissionKeys.has("document.export");
+  const canChat = permissionKeys.has("matter.configure");
 
   const refreshAfterSearchProjection = useCallback(async (operationIds: string[]) => {
     if (!canViewJobs) {
@@ -783,6 +787,7 @@ export function ReviewWorkspace({
             />
           ) : null}
           <SaveSearchDialog search={searchRequest} users={tenantUsers.data ?? []} currentUserId={currentUser.data?.id} onCreate={(payload) => createSavedSearchMutation.mutateAsync(payload).then(() => undefined)} />
+          {canChat ? <Button variant="outline" size="sm" disabled={!total || searchResults.isFetching} onClick={() => setSearchChatOpen(true)}><MessageSquareText />Chat results</Button> : null}
           {canExport ? <SearchExportDialog matterId={matterId} search={searchRequest} resultCount={searchResults.data?.total ?? 0} disabled={!searchResults.data?.total || searchResults.isFetching} onCreated={() => router.push(matterJobsHref(matter.data?.client_id ?? "", matterId, "SEARCH_EXPORTS"))} /> : null}
           <HelpLink topic="matterReview" />
           <ThemeToggle />
@@ -851,6 +856,21 @@ export function ReviewWorkspace({
         <DialogContent className="flex h-[min(90vh,52rem)] max-w-xl flex-col overflow-hidden p-0 2xl:hidden">
           <DialogTitle className="sr-only">Document details</DialogTitle>
           <DocumentDetailsPanel canReview={canReview} matterId={matterId} definitions={definitions.data ?? []} groups={groups.data ?? []} hit={selectedHit} values={metadataValues.data} valuesVersion={metadataValues.dataUpdatedAt} loading={metadataValues.isPending && Boolean(effectiveSelectedDocumentId)} saving={metadataMutation.isPending} onSave={(actions) => metadataMutation.mutateAsync(actions).then(() => undefined)} onBulkTag={hasActiveSearch && canBulkCode ? openBulkTag : undefined} />
+        </DialogContent>
+      </Dialog>
+
+      <Dialog open={searchChatOpen} onOpenChange={setSearchChatOpen}>
+        <DialogContent className="flex h-[min(90vh,52rem)] max-w-2xl flex-col overflow-hidden p-0">
+          <DialogTitle className="sr-only">Chat with search results</DialogTitle>
+          <SearchChatPanel
+            matterId={matterId}
+            search={searchRequest}
+            resultCount={total}
+            onOpenDocument={(reference) => {
+              setSearchChatOpen(false);
+              selectDocument(reference.documentId);
+            }}
+          />
         </DialogContent>
       </Dialog>
 

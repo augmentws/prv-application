@@ -18,6 +18,7 @@ from app.models import (
     MatterDefinition,
     ReviewBatch,
 )
+from app.schemas import MatterSearchRequest
 from app.workflows.dispatcher import enqueue_agent_run
 
 
@@ -34,6 +35,7 @@ def create_conversation(
     workflow_type: str,
     review_batch_id: uuid.UUID | None,
     matter_definition_id: uuid.UUID | None = None,
+    search_definition: MatterSearchRequest | None = None,
     actor_user_id: uuid.UUID,
 ) -> AgentConversation:
     if agent.status != "ACTIVE" or agent.published_version is None:
@@ -50,6 +52,14 @@ def create_conversation(
             raise AgentConversationError("Review batch must be ready before starting a chat")
     elif review_batch_id is not None:
         raise AgentConversationError("Review batch scope is supported only for batch chat")
+    if workflow_type == "SEARCH_CHAT":
+        if search_definition is None:
+            raise AgentConversationError("Search chat requires a search definition")
+        search_definition = search_definition.model_copy(
+            update={"facets": [], "sort": [], "offset": 0, "size": 500}
+        )
+    elif search_definition is not None:
+        raise AgentConversationError("Search scope is supported only for search chat")
     if workflow_type == "MATTER_DEFINITION_SETUP" and matter_definition_id is not None:
         guidance = db.get(MatterDefinition, matter_definition_id)
         if guidance is None or guidance.matter_id != matter.id:
@@ -69,6 +79,7 @@ def create_conversation(
         matter_id=matter.id,
         matter_definition_id=matter_definition_id,
         review_batch_id=review_batch_id,
+        search_definition=(search_definition.model_dump(mode="json", by_alias=True) if search_definition else None),
         agent_definition_id=agent.id,
         agent_definition_version_id=version.id,
         title=title,

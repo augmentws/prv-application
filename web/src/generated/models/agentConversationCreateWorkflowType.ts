@@ -12,4 +12,5 @@ export type AgentConversationCreateWorkflowType = typeof AgentConversationCreate
 export const AgentConversationCreateWorkflowType = {
   MATTER_DEFINITION_SETUP: 'MATTER_DEFINITION_SETUP',
   BATCH_CHAT: 'BATCH_CHAT',
+  SEARCH_CHAT: 'SEARCH_CHAT',
 } as const;

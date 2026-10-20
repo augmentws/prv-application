@@ -95,6 +95,7 @@ def start_agent_conversation(
             workflow_type=payload.workflow_type,
             review_batch_id=payload.review_batch_id,
             matter_definition_id=payload.matter_definition_id,
+            search_definition=payload.search_definition,
             actor_user_id=principal.user.id,
         )
     except AgentConversationError as exc:
@@ -114,6 +115,11 @@ def start_agent_conversation(
             "workflow_type": payload.workflow_type,
             "review_batch_id": str(payload.review_batch_id) if payload.review_batch_id else None,
             "guidance_id": str(payload.matter_definition_id) if payload.matter_definition_id else None,
+            "search_definition": (
+                payload.search_definition.model_dump(mode="json", by_alias=True)
+                if payload.search_definition is not None
+                else None
+            ),
         },
     )
     db.commit()

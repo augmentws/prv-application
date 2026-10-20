@@ -6,6 +6,7 @@
  * OpenAPI spec version: 0.1.0
  */
 import type { AgentConversationCreateWorkflowType } from './agentConversationCreateWorkflowType';
+import type { MatterSearchRequest } from './matterSearchRequest';
 
 export interface AgentConversationCreate {
   agent_definition_id: string;
@@ -13,4 +14,5 @@ export interface AgentConversationCreate {
   workflow_type?: AgentConversationCreateWorkflowType;
   review_batch_id?: string | null;
   matter_definition_id?: string | null;
+  search_definition?: MatterSearchRequest | null;
 }

@@ -78,10 +78,12 @@ AGENT_TOOL_SPECS = (
     ),
     AgentToolSpec(
         key="batch.search_summaries",
-        name="Search batch summaries",
+        name="Search scoped documents",
         description=(
-            "Run a semantic search limited to the conversation's review batch and return reusable "
-            "structured document summaries for the strongest matches."
+            "Run a semantic search limited to the conversation's review batch or frozen search results and "
+            "return source document text plus an optional reusable structured summary for the strongest new "
+            "matches. Documents already retained in conversation context are returned only as lightweight "
+            "previous-context references."
         ),
         requires_approval=False,
     ),

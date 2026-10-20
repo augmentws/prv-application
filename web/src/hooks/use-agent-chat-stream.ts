@@ -3,7 +3,7 @@
 import { useQueryClient } from "@tanstack/react-query";
 import { useEffect, useMemo, useRef, useState } from "react";
 
-type WorkflowType = "MATTER_DEFINITION_SETUP" | "BATCH_CHAT";
+type WorkflowType = "MATTER_DEFINITION_SETUP" | "BATCH_CHAT" | "SEARCH_CHAT";
 export type AgentChatStreamState = "connecting" | "live" | "reconnecting" | "fallback" | "offline";
 
 interface AgentLifecycleEvent {
@@ -73,7 +73,9 @@ export function useAgentChatStream({ matterId, workflowType, reviewBatchId }: {
 
     const conversationKey = workflowType === "BATCH_CHAT"
       ? ["batch-chat-conversations", matterId, reviewBatchId]
-      : ["agent-conversations", matterId];
+      : workflowType === "SEARCH_CHAT"
+        ? ["search-chat-conversations", matterId]
+        : ["agent-conversations", matterId];
 
     async function hydrate() {
       await Promise.all([

@@ -3091,7 +3091,7 @@ class ReviewDecisionResultRead(ORMModel):
     created_at: datetime
 
 
-AgentConversationWorkflow = Literal["MATTER_DEFINITION_SETUP", "BATCH_CHAT"]
+AgentConversationWorkflow = Literal["MATTER_DEFINITION_SETUP", "BATCH_CHAT", "SEARCH_CHAT"]
 AgentConversationStatus = Literal["ACTIVE", "WAITING_APPROVAL", "FAILED", "ARCHIVED"]
 AgentExecutionStatus = Literal["QUEUED", "RUNNING", "WAITING_APPROVAL", "COMPLETED", "FAILED", "CANCELED"]
 AgentActionStatus = Literal["PENDING", "APPROVED", "REJECTED", "EXECUTED", "FAILED"]
@@ -3104,6 +3104,7 @@ class AgentConversationCreate(BaseModel):
     workflow_type: AgentConversationWorkflow = "MATTER_DEFINITION_SETUP"
     review_batch_id: uuid.UUID | None = None
     matter_definition_id: uuid.UUID | None = None
+    search_definition: MatterSearchRequest | None = None
 
     @model_validator(mode="after")
     def validate_workflow_scope(self) -> "AgentConversationCreate":
@@ -3112,6 +3113,12 @@ class AgentConversationCreate(BaseModel):
         if self.workflow_type != "BATCH_CHAT" and self.review_batch_id is not None:
             raise ValueError("review_batch_id is supported only for BATCH_CHAT conversations")
         if self.workflow_type == "BATCH_CHAT" and self.matter_definition_id is not None:
+            raise ValueError("matter_definition_id is supported only for Matter Definition conversations")
+        if self.workflow_type == "SEARCH_CHAT" and self.search_definition is None:
+            raise ValueError("SEARCH_CHAT conversations require search_definition")
+        if self.workflow_type != "SEARCH_CHAT" and self.search_definition is not None:
+            raise ValueError("search_definition is supported only for SEARCH_CHAT conversations")
+        if self.workflow_type == "SEARCH_CHAT" and self.matter_definition_id is not None:
             raise ValueError("matter_definition_id is supported only for Matter Definition conversations")
         return self
 
@@ -3127,6 +3134,7 @@ class AgentConversationRead(ORMModel):
     matter_id: uuid.UUID
     matter_definition_id: uuid.UUID | None
     review_batch_id: uuid.UUID | None
+    search_definition: MatterSearchRequest | None
     agent_definition_id: uuid.UUID
     agent_definition_version_id: uuid.UUID
     title: str | None

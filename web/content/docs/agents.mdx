@@ -42,11 +42,19 @@ Agent definitions select a code-owned model policy key. Provider credentials and
 
 Model calls use shared process-wide request and estimated-input-token limits for each provider/model pair. Provider 429 responses pause the affected bucket and are retried using provider retry guidance plus bounded exponential backoff. Operators should configure the limits for the quota assigned to their provider project and divide that allowance across processes when running more than one workflow worker.
 
+## Document chat retrieval
+
+The managed `batch_chat` agent supports two code-owned workflows. **Batch Chat** fixes retrieval to one ready review batch. **Search Results Chat** fixes retrieval to the query, mode, threshold, candidate limit, search fields, and filters active when the conversation starts. The browser cannot change either scope after creation, and the server reapplies the scope to every semantic evidence search.
+
+Both workflows use the same evidence contract. A retrieval asks for eight newly encountered documents by default, with a hard limit of 20 per call. The agent may make multiple focused calls within its configured tool-call limit. Each result contains preferred source text and may contain a compatible structured summary; summaries supplement source text and are never required. Source text is limited to `AGENT_BATCH_CHAT_DOCUMENT_MAX_CHARACTERS` characters per document, 20,000 by default. Documents within the limit are supplied in full, while longer documents use a window centered on the strongest semantic passage and are marked as truncated.
+
+Completed retrievals persist the supplied document IDs with the agent run. Before a later tool call loads evidence, Core walks the retained successful run history plus completed calls in the current run. A document already present in that context is omitted from the full results and returned in `previous_context_results` with lightweight identity and match information. This preserves its relevance to the new question without repeating its text or summary. Runs without retained message history, including failed or abandoned runs, do not contribute deduplication state. Additional semantic candidates are requested as the retained document set grows, up to the search response limit, so repeated matches do not unnecessarily prevent new documents from entering context.
+
 ## Current limitations
 
 - The administration UI currently manages root-owned system agents. Tenant-agent APIs exist, but a tenant administration screen is not yet available.
-- Agents can only be launched by workflows implemented in the application. The current interactive workflows are Matter Definition setup, batch chat, and collection rule building with the Document Cleaner Agent.
-- Matter Definition setup uses the standard `matter_definition_setup` key, and summary-backed batch RAG uses `batch_chat`. General root-managed workflow bindings and rollback controls are not yet available.
+- Agents can only be launched by workflows implemented in the application. The current interactive workflows are Matter Definition setup, batch chat, search-results chat, and collection rule building with the Document Cleaner Agent.
+- Matter Definition setup uses the standard `matter_definition_setup` key. Batch chat and search-results chat both use the `batch_chat` agent for document-text RAG with optional summaries. General root-managed workflow bindings and rollback controls are not yet available.
 - Agent execution analytics and cross-matter run monitoring are not yet available in the administration UI.
 
 Existing installations keep previously published agent versions unchanged. To grant an existing Matter Definition agent the new metadata tools, create and publish a new version in **Agents** with the desired tools selected. New installations bootstrap the standard agent with the complete Matter Definition toolset.

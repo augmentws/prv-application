@@ -1867,7 +1867,8 @@
             "schema": {
               "enum": [
                 "MATTER_DEFINITION_SETUP",
-                "BATCH_CHAT"
+                "BATCH_CHAT",
+                "SEARCH_CHAT"
               ],
               "type": "string",
               "default": "MATTER_DEFINITION_SETUP",
@@ -2611,7 +2612,8 @@
                 {
                   "enum": [
                     "MATTER_DEFINITION_SETUP",
-                    "BATCH_CHAT"
+                    "BATCH_CHAT",
+                    "SEARCH_CHAT"
                   ],
                   "type": "string"
                 },
@@ -2819,7 +2821,8 @@
             "schema": {
               "enum": [
                 "MATTER_DEFINITION_SETUP",
-                "BATCH_CHAT"
+                "BATCH_CHAT",
+                "SEARCH_CHAT"
               ],
               "type": "string",
               "title": "Workflow Type"
@@ -23364,7 +23367,8 @@
             "type": "string",
             "enum": [
               "MATTER_DEFINITION_SETUP",
-              "BATCH_CHAT"
+              "BATCH_CHAT",
+              "SEARCH_CHAT"
             ],
             "title": "Workflow Type",
             "default": "MATTER_DEFINITION_SETUP"
@@ -23392,6 +23396,16 @@
               }
             ],
             "title": "Matter Definition Id"
+          },
+          "search_definition": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/MatterSearchRequest"
+              },
+              {
+                "type": "null"
+              }
+            ]
           }
         },
         "type": "object",
@@ -23446,6 +23460,16 @@
             ],
             "title": "Review Batch Id"
           },
+          "search_definition": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/MatterSearchRequest"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
           "agent_definition_id": {
             "type": "string",
             "format": "uuid",
@@ -23471,7 +23495,8 @@
             "type": "string",
             "enum": [
               "MATTER_DEFINITION_SETUP",
-              "BATCH_CHAT"
+              "BATCH_CHAT",
+              "SEARCH_CHAT"
             ],
             "title": "Workflow Type"
           },
@@ -23509,6 +23534,7 @@
           "matter_id",
           "matter_definition_id",
           "review_batch_id",
+          "search_definition",
           "agent_definition_id",
           "agent_definition_version_id",
           "title",

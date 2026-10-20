@@ -7,6 +7,7 @@
  */
 import type { AgentConversationReadStatus } from './agentConversationReadStatus';
 import type { AgentConversationReadWorkflowType } from './agentConversationReadWorkflowType';
+import type { MatterSearchRequest } from './matterSearchRequest';
 
 export interface AgentConversationRead {
   id: string;
@@ -15,6 +16,7 @@ export interface AgentConversationRead {
   matter_id: string;
   matter_definition_id: string | null;
   review_batch_id: string | null;
+  search_definition: MatterSearchRequest | null;
   agent_definition_id: string;
   agent_definition_version_id: string;
   title: string | null;
