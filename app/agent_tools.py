@@ -81,7 +81,9 @@ AGENT_TOOL_SPECS = (
         name="Search scoped documents",
         description=(
             "Run a semantic search limited to the conversation's review batch or frozen search results and "
-            "return source document text plus an optional reusable structured summary for the strongest matches."
+            "return source document text plus an optional reusable structured summary for the strongest new "
+            "matches. Documents already retained in conversation context are returned only as lightweight "
+            "previous-context references."
         ),
         requires_approval=False,
     ),

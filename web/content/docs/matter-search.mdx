@@ -259,7 +259,7 @@ Matter administrators can select **Chat results** after a search returns at leas
 
 The chat agent searches only within that saved scope. A Keyword scope reapplies the original keyword query and filters to every retrieval. Semantic and Hybrid scopes first recreate their bounded ranked result population, up to 10,000 document IDs, and then restrict the agent's evidence search to those exact candidates. As with the main search, this is a saved search definition rather than a permanent snapshot: later document, coding, or index changes can affect which documents match when a question is asked.
 
-Answers use each matching document's preferred source text and include its generated summary when one is available. A missing summary does not exclude the document. Long documents are supplied as bounded windows centered on their strongest matching passage, and document references in answers can be selected to open the source document in the workspace.
+Answers use each matching document's preferred source text and include its generated summary when one is available. A missing summary does not exclude the document. Long documents are supplied as bounded windows centered on their strongest matching passage. After a document has been supplied to a conversation, later questions reuse that retained evidence instead of adding the same document text and summary again. The retrieval result still identifies repeated matches so the agent knows they are relevant to the new question. Document references in answers can be selected to open the source document in the workspace.
 
 ### Bulk tag search results
 

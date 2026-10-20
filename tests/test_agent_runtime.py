@@ -23,6 +23,7 @@ from app.models import (
     AgentConversation,
     AgentConversationEvent,
     AgentRun,
+    AgentToolExecution,
     AuditRecord,
     MatterDocument,
     MatterDocumentImportJob,
@@ -418,6 +419,71 @@ def test_batch_chat_is_batch_scoped_and_calls_semantic_summary_search(
     assert len(source_reads) == 1
     assert source_reads[0]["collection_item_id"] == collection_item_id
     assert "No summary exists for this document" in repr(model_inputs[1])
+
+    persist_agent_run_outcome(uuid.UUID(run_id), outcome)
+    second_turn = client.post(
+        f"/v1/agent-conversations/{conversation_id}/turns",
+        headers=auth(tenant_token),
+        json={"message": "Was the renewal date specific?"},
+    )
+    assert second_turn.status_code == 202, second_turn.text
+    second_calls = 0
+
+    def second_model_function(_messages, _info):
+        nonlocal second_calls
+        second_calls += 1
+        if second_calls == 1:
+            return ModelResponse(
+                parts=[
+                    ToolCallPart(
+                        tool_name="batch_search_summaries",
+                        args={"query": "specific renewal date", "max_results": 5},
+                        tool_call_id="batch-search-2",
+                    )
+                ]
+            )
+        return ModelResponse(parts=[TextPart("The retained document says May 4.")])
+
+    second_prepared = prepare_agent_run(uuid.UUID(second_turn.json()["run"]["id"]))
+    second_outcome = asyncio.run(
+        execute_prepared_agent_run(
+            second_prepared,
+            build_agent(),
+            model=FunctionModel(second_model_function),
+        )
+    )
+
+    assert second_outcome.status == "COMPLETED"
+    assert len(source_reads) == 1
+    with TestingSessionLocal() as db:
+        executions = list(
+            db.scalars(
+                select(AgentToolExecution)
+                .join(AgentRun, AgentRun.id == AgentToolExecution.agent_run_id)
+                .where(
+                    AgentRun.conversation_id == uuid.UUID(conversation_id),
+                    AgentToolExecution.tool_key == "batch.search_summaries",
+                    AgentToolExecution.status == "COMPLETED",
+                )
+                .order_by(AgentToolExecution.started_at, AgentToolExecution.id)
+            )
+        )
+    assert len(executions) == 2
+    assert executions[0].result is not None
+    assert executions[0].result["results"][0]["document_id"] == str(document_id)
+    assert executions[1].result is not None
+    assert executions[1].result["results"] == []
+    assert executions[1].result["deduplicated_document_count"] == 1
+    assert executions[1].result["previous_context_results"] == [
+        {
+            "document_id": str(document_id),
+            "title": "renewal.txt",
+            "original_filename": "renewal.txt",
+            "source_path": None,
+            "semantic_score": 0.94,
+            "already_in_context": True,
+        }
+    ]
 
 
 def test_search_chat_is_scoped_to_frozen_semantic_results(
