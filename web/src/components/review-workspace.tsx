@@ -773,7 +773,7 @@ export function ReviewWorkspace({
             <Button type="submit">Search</Button>
           </form>
           <Button variant="outline" size="sm" className="xl:hidden" onClick={() => setFiltersOpen(true)}><Filter />Filters{activeFilterCount ? <Badge variant="accent">{activeFilterCount}</Badge> : null}</Button>
-          <Button variant="outline" size="sm" className="2xl:hidden" disabled={!effectiveSelectedDocumentId} onClick={() => setCodingOpen(true)}><PanelRight />Details</Button>
+          <Button variant="outline" size="sm" className="2xl:hidden" disabled={!effectiveSelectedDocumentId && !canChat} onClick={() => setCodingOpen(true)}><PanelRight />Details</Button>
           <SavedSearchesDialog searches={savedSearches.data ?? []} loading={savedSearches.isPending} onRun={runSavedSearch} onDelete={(saved) => deleteSavedSearchMutation.mutateAsync(saved).then(() => undefined)} />
           {executedSavedSearch?.is_owner ? (
             <UpdateSavedSearchDialog
