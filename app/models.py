@@ -4386,6 +4386,95 @@ class MatterAnalysisTaskRun(TimestampMixin, Base):
         return self.feature_ready_count + self.feature_missing_count + self.feature_failed_count
 
 
+class AnalysisTaskBatchSetRun(TimestampMixin, Base):
+    __tablename__ = "analysis_task_batch_set_run"
+    __table_args__ = (
+        CheckConstraint(
+            "task_type IN ('QUESTION_ANSWERING', 'CLASSIFICATION', 'FACT_DEVELOPMENT')",
+            name="ck_analysis_task_batch_set_run_task_type",
+        ),
+        CheckConstraint(
+            "status IN ('QUEUED', 'RUNNING', 'COMPLETED', 'COMPLETED_WITH_ERRORS', 'FAILED', 'CANCELED')",
+            name="ck_analysis_task_batch_set_run_status",
+        ),
+        CheckConstraint(
+            "child_count >= 0 AND completed_child_count >= 0 AND failed_child_count >= 0",
+            name="ck_analysis_task_batch_set_run_counts",
+        ),
+        UniqueConstraint("analysis_task_batch_set_id", "idempotency_key", name="uq_batch_set_run_idempotency"),
+        UniqueConstraint("workflow_id", name="uq_batch_set_run_workflow"),
+        Index("ix_batch_set_run_set_created", "analysis_task_batch_set_id", "created_at"),
+        Index("ix_batch_set_run_matter_status", "matter_id", "status"),
+    )
+
+    id: Mapped[uuid.UUID] = mapped_column(Uuid, primary_key=True, default=uuid.uuid4)
+    tenant_id: Mapped[uuid.UUID] = mapped_column(Uuid, ForeignKey("tenant.id", ondelete="RESTRICT"))
+    matter_id: Mapped[uuid.UUID] = mapped_column(Uuid, ForeignKey("matter.id", ondelete="CASCADE"))
+    analysis_task_batch_set_id: Mapped[uuid.UUID] = mapped_column(
+        Uuid, ForeignKey("analysis_task_batch_set.id", ondelete="RESTRICT")
+    )
+    matter_analysis_task_id: Mapped[uuid.UUID] = mapped_column(
+        Uuid, ForeignKey("matter_analysis_task.id", ondelete="RESTRICT")
+    )
+    matter_analysis_task_version_id: Mapped[uuid.UUID] = mapped_column(
+        Uuid, ForeignKey("matter_analysis_task_version.id", ondelete="RESTRICT")
+    )
+    task_type: Mapped[str] = mapped_column(String(30))
+    status: Mapped[str] = mapped_column(String(30), default="QUEUED")
+    configuration_snapshot: Mapped[dict[str, Any]] = mapped_column(JSON, default=dict)
+    idempotency_key: Mapped[str] = mapped_column(String(200))
+    workflow_id: Mapped[str] = mapped_column(String(500))
+    current_workflow_run_id: Mapped[uuid.UUID | None] = mapped_column(
+        Uuid, ForeignKey("workflow_run.id", ondelete="SET NULL"), nullable=True
+    )
+    child_count: Mapped[int] = mapped_column(Integer, default=0)
+    completed_child_count: Mapped[int] = mapped_column(Integer, default=0)
+    failed_child_count: Mapped[int] = mapped_column(Integer, default=0)
+    created_by_user_id: Mapped[uuid.UUID] = mapped_column(Uuid, ForeignKey("app_user.id", ondelete="RESTRICT"))
+    started_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    completed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    canceled_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    current_workflow_run: Mapped[WorkflowRun | None] = relationship(foreign_keys=[current_workflow_run_id])
+    children: Mapped[list["AnalysisTaskBatchSetRunChild"]] = relationship(
+        back_populates="batch_set_run", cascade="all, delete-orphan", order_by="AnalysisTaskBatchSetRunChild.ordinal"
+    )
+
+    @property
+    def execution(self) -> WorkflowRun | None:
+        return self.current_workflow_run
+
+
+class AnalysisTaskBatchSetRunChild(TimestampMixin, Base):
+    __tablename__ = "analysis_task_batch_set_run_child"
+    __table_args__ = (
+        CheckConstraint("ordinal > 0", name="ck_batch_set_run_child_ordinal"),
+        CheckConstraint("attempt_count >= 0", name="ck_batch_set_run_child_attempt_count"),
+        CheckConstraint(
+            "status IN ('PENDING', 'QUEUED', 'RUNNING', 'COMPLETED', 'COMPLETED_WITH_ERRORS', 'FAILED', 'CANCELED')",
+            name="ck_batch_set_run_child_status",
+        ),
+        UniqueConstraint("batch_set_run_id", "ordinal", name="uq_batch_set_run_child_ordinal"),
+        UniqueConstraint("batch_set_run_id", "review_batch_id", name="uq_batch_set_run_child_batch"),
+        Index("ix_batch_set_run_child_parent_status", "batch_set_run_id", "status"),
+        Index("ix_batch_set_run_child_run", "child_run_id"),
+    )
+
+    id: Mapped[uuid.UUID] = mapped_column(Uuid, primary_key=True, default=uuid.uuid4)
+    batch_set_run_id: Mapped[uuid.UUID] = mapped_column(
+        Uuid, ForeignKey("analysis_task_batch_set_run.id", ondelete="CASCADE")
+    )
+    review_batch_id: Mapped[uuid.UUID] = mapped_column(Uuid, ForeignKey("review_batch.id", ondelete="RESTRICT"))
+    ordinal: Mapped[int] = mapped_column(Integer)
+    run_type: Mapped[str | None] = mapped_column(String(30), nullable=True)
+    child_run_id: Mapped[uuid.UUID | None] = mapped_column(Uuid, nullable=True)
+    status: Mapped[str] = mapped_column(String(30), default="PENDING")
+    attempt_count: Mapped[int] = mapped_column(Integer, default=0)
+    error_message: Mapped[str | None] = mapped_column(Text, nullable=True)
+    started_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    completed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    batch_set_run: Mapped[AnalysisTaskBatchSetRun] = relationship(back_populates="children")
+
+
 class MatterAnalysisTaskRunChunk(TimestampMixin, Base):
     """Execution state for one fixed-size range of a fact-development run's input manifest.
 

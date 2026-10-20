@@ -11,6 +11,7 @@ from sqlalchemy.orm import Session
 from app.audit import record_audit
 from app.models import (
     AnalysisTaskBatchSet,
+    AnalysisTaskBatchSetRun,
     ClassificationScoringRun,
     ClassificationTrainingJob,
     Matter,
@@ -36,6 +37,7 @@ REVIEW_BATCH_CODING_PROMOTION_JOB_TYPE = "REVIEW_BATCH_CODING_PROMOTION"
 MATTER_SEARCH_EXPORT_JOB_TYPE = "MATTER_SEARCH_EXPORT"
 FACT_DEVELOPMENT_ANALYSIS_TASK_JOB_TYPE = "FACT_DEVELOPMENT_ANALYSIS_TASK"
 ANALYSIS_TASK_BATCH_SET_JOB_TYPE = "ANALYSIS_TASK_BATCH_SET"
+ANALYSIS_TASK_BATCH_SET_RUN_JOB_TYPE = "ANALYSIS_TASK_BATCH_SET_RUN"
 
 EXECUTION_TERMINAL_STATUSES = {
     "COMPLETED",
@@ -413,6 +415,38 @@ class AnalysisTaskBatchSetExecutionAdapter:
             job.status = "CANCELED"
 
 
+class AnalysisTaskBatchSetRunExecutionAdapter:
+    job_type = ANALYSIS_TASK_BATCH_SET_RUN_JOB_TYPE
+    supports_retry = False
+
+    def load(self, db: Session, job_id: uuid.UUID, *, for_update: bool = False) -> AnalysisTaskBatchSetRun | None:
+        statement = select(AnalysisTaskBatchSetRun).where(AnalysisTaskBatchSetRun.id == job_id)
+        if for_update:
+            statement = statement.with_for_update()
+        return db.scalar(statement)
+
+    def scope(self, db: Session, job: AnalysisTaskBatchSetRun) -> tuple[JobScope, Matter | None]:
+        matter = db.get(Matter, job.matter_id)
+        if matter is None:
+            raise JobExecutionNotFound("Analysis Task Batch Set run matter was not found")
+        return JobScope(job.tenant_id, matter.client_id, matter.id), matter
+
+    def project(self, job: AnalysisTaskBatchSetRun, execution: WorkflowRun) -> None:
+        job.current_workflow_run_id = execution.id
+        job.current_workflow_run = execution
+        job.workflow_id = execution.dbos_workflow_id
+        job.started_at = execution.started_at
+        job.completed_at = execution.completed_at
+        if execution.status == "QUEUED":
+            job.status = "QUEUED"
+        elif execution.status in {"RUNNING", "WAITING"}:
+            job.status = "RUNNING"
+        else:
+            job.status = execution.status
+        if execution.status == "CANCELED":
+            job.canceled_at = execution.completed_at or utcnow()
+
+
 class ClassificationTrainingJobExecutionAdapter:
     job_type = CLASSIFICATION_TRAINING_JOB_TYPE
     supports_retry = True
@@ -683,6 +717,7 @@ class FactDevelopmentAnalysisTaskExecutionAdapter:
 
 _ADAPTERS: dict[str, JobExecutionAdapter] = {
     ANALYSIS_TASK_BATCH_SET_JOB_TYPE: AnalysisTaskBatchSetExecutionAdapter(),
+    ANALYSIS_TASK_BATCH_SET_RUN_JOB_TYPE: AnalysisTaskBatchSetRunExecutionAdapter(),
     ANALYSIS_TASK_BATCH_RUN_JOB_TYPE: AnalysisTaskBatchRunExecutionAdapter(),
     CLASSIFICATION_ANALYSIS_TASK_JOB_TYPE: ClassificationAnalysisTaskExecutionAdapter(),
     MATTER_DOCUMENT_IMPORT_JOB_TYPE: MatterDocumentImportExecutionAdapter(),

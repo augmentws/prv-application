@@ -7,6 +7,12 @@ from sqlalchemy import func, select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session, selectinload
 
+from app.analysis_task_batch_set_runs import (
+    AnalysisTaskBatchSetRunError,
+    cancel_batch_set_run,
+    create_batch_set_run,
+    retry_batch_set_run,
+)
 from app.analysis_task_batch_sets import (
     AnalysisTaskBatchSetError,
     batch_set_child_ids,
@@ -57,6 +63,7 @@ from app.job_executions import (
 )
 from app.models import (
     AnalysisTaskBatchSet,
+    AnalysisTaskBatchSetRun,
     ClassificationModelVersion,
     Matter,
     MatterAnalysisTask,
@@ -82,6 +89,8 @@ from app.schemas import (
     AnalysisTaskBatchSetPreviewCreate,
     AnalysisTaskBatchSetPreviewRead,
     AnalysisTaskBatchSetRead,
+    AnalysisTaskBatchSetRunCreate,
+    AnalysisTaskBatchSetRunRead,
     FactDevelopmentRunCreate,
     FactDevelopmentRunEstimateCreate,
     FactDevelopmentRunEstimateRead,
@@ -105,11 +114,13 @@ from app.schemas import (
 from app.search.service import sync_review_batch_search
 from app.workflow_specs import MATTER_ANALYSIS_TASK_PLAYGROUND_SPEC
 from app.workflows.dispatcher import (
+    cancel_analysis_task_batch_set_run_workflow,
     cancel_analysis_task_batch_set_workflow,
     cancel_classification_analysis_task,
     cancel_classification_model_scoring,
     cancel_fact_development_run_workflow,
     enqueue_analysis_task_batch_set,
+    enqueue_analysis_task_batch_set_run,
     enqueue_classification_analysis_task,
     enqueue_fact_development_run,
 )
@@ -199,6 +210,59 @@ def _require_batch_set(
     if batch_set is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Analysis Task Batch Set not found")
     return batch_set
+
+
+def _require_batch_set_run(
+    db: Session,
+    *,
+    batch_set: AnalysisTaskBatchSet,
+    run_id: uuid.UUID,
+    for_update: bool = False,
+) -> AnalysisTaskBatchSetRun:
+    statement = (
+        select(AnalysisTaskBatchSetRun)
+        .where(
+            AnalysisTaskBatchSetRun.id == run_id,
+            AnalysisTaskBatchSetRun.analysis_task_batch_set_id == batch_set.id,
+        )
+        .options(
+            selectinload(AnalysisTaskBatchSetRun.children),
+            selectinload(AnalysisTaskBatchSetRun.current_workflow_run),
+        )
+    )
+    if for_update:
+        statement = statement.with_for_update()
+    run = db.scalar(statement)
+    if run is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Batch Set run not found")
+    return run
+
+
+def _batch_set_run_configuration(
+    task: MatterAnalysisTask,
+    payload: AnalysisTaskBatchSetRunCreate,
+) -> dict:
+    configuration: dict = {"max_concurrency": payload.max_concurrency}
+    if task.task_type == "CLASSIFICATION":
+        if payload.embedding_job_id is None:
+            raise HTTPException(
+                status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
+                detail="Classification run-all requires embedding_job_id",
+            )
+        configuration["embedding_job_id"] = str(payload.embedding_job_id)
+    elif payload.embedding_job_id is not None:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
+            detail="embedding_job_id applies only to classification tasks",
+        )
+    if task.task_type == "FACT_DEVELOPMENT":
+        configuration.update(coding_source=payload.coding_source, use_batch_api=payload.use_batch_api)
+    elif payload.use_batch_api:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
+            detail="use_batch_api applies only to fact-development tasks",
+        )
+    return configuration
 
 
 def _batch_set_search_source(
@@ -767,6 +831,157 @@ def retry_analysis_task_batch_set(
     if not settings.dbos_enabled:
         batch_set = _materialize_batch_set_inline(db, batch_set_id=batch_set.id, settings=settings)
     return _batch_set_read(db, batch_set)
+
+
+@router.get(
+    "/{task_id}/batch-sets/{batch_set_id}/runs",
+    response_model=list[AnalysisTaskBatchSetRunRead],
+)
+def list_analysis_task_batch_set_runs(
+    matter_id: uuid.UUID,
+    task_id: uuid.UUID,
+    batch_set_id: uuid.UUID,
+    principal: Principal = Depends(get_principal),
+    db: Session = Depends(get_db),
+) -> list[AnalysisTaskBatchSetRun]:
+    _require_matter_admin(db, principal, matter_id)
+    _require_task(db, matter_id=matter_id, task_id=task_id)
+    batch_set = _require_batch_set(db, matter_id=matter_id, task_id=task_id, batch_set_id=batch_set_id)
+    return list(
+        db.scalars(
+            select(AnalysisTaskBatchSetRun)
+            .where(AnalysisTaskBatchSetRun.analysis_task_batch_set_id == batch_set.id)
+            .options(
+                selectinload(AnalysisTaskBatchSetRun.children),
+                selectinload(AnalysisTaskBatchSetRun.current_workflow_run),
+            )
+            .order_by(AnalysisTaskBatchSetRun.created_at.desc(), AnalysisTaskBatchSetRun.id.desc())
+        )
+    )
+
+
+@router.post(
+    "/{task_id}/batch-sets/{batch_set_id}/runs",
+    response_model=AnalysisTaskBatchSetRunRead,
+    status_code=status.HTTP_202_ACCEPTED,
+)
+def start_analysis_task_batch_set_run(
+    matter_id: uuid.UUID,
+    task_id: uuid.UUID,
+    batch_set_id: uuid.UUID,
+    payload: AnalysisTaskBatchSetRunCreate,
+    principal: Principal = Depends(get_principal),
+    db: Session = Depends(get_db),
+) -> AnalysisTaskBatchSetRun:
+    matter = _require_matter_admin(db, principal, matter_id)
+    task = _require_task(db, matter_id=matter_id, task_id=task_id)
+    batch_set = _require_batch_set(db, matter_id=matter_id, task_id=task_id, batch_set_id=batch_set_id)
+    task_version = db.get(MatterAnalysisTaskVersion, batch_set.matter_analysis_task_version_id)
+    if task_version is None:
+        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="Batch Set task version was not found")
+    try:
+        run, created = create_batch_set_run(
+            db,
+            matter=matter,
+            batch_set=batch_set,
+            task=task,
+            task_version=task_version,
+            configuration=_batch_set_run_configuration(task, payload),
+            idempotency_key=payload.idempotency_key,
+            actor_user_id=principal.user.id,
+        )
+    except AnalysisTaskBatchSetRunError as exc:
+        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=str(exc)) from exc
+    if created:
+        record_audit(
+            db,
+            tenant_id=matter.client.tenant_id,
+            actor_user_id=principal.user.id,
+            action="analysis_task_batch_set.run.started",
+            target_type="analysis_task_batch_set_run",
+            target_id=run.id,
+            details={
+                "matter_id": str(matter.id),
+                "task_id": str(task.id),
+                "batch_set_id": str(batch_set.id),
+                "child_count": run.child_count,
+                "max_concurrency": run.configuration_snapshot["max_concurrency"],
+            },
+        )
+        enqueue_analysis_task_batch_set_run(db, run.workflow_id, str(run.id))
+    db.commit()
+    return _require_batch_set_run(db, batch_set=batch_set, run_id=run.id)
+
+
+@router.post(
+    "/{task_id}/batch-sets/{batch_set_id}/runs/{run_id}/cancel",
+    response_model=AnalysisTaskBatchSetRunRead,
+)
+def cancel_analysis_task_batch_set_run(
+    matter_id: uuid.UUID,
+    task_id: uuid.UUID,
+    batch_set_id: uuid.UUID,
+    run_id: uuid.UUID,
+    principal: Principal = Depends(get_principal),
+    db: Session = Depends(get_db),
+) -> AnalysisTaskBatchSetRun:
+    matter = _require_matter_admin(db, principal, matter_id)
+    _require_task(db, matter_id=matter_id, task_id=task_id)
+    batch_set = _require_batch_set(db, matter_id=matter_id, task_id=task_id, batch_set_id=batch_set_id)
+    run = _require_batch_set_run(db, batch_set=batch_set, run_id=run_id, for_update=True)
+    execution, canceled, _ = cancel_batch_set_run(db, run, actor_user_id=principal.user.id)
+    record_audit(
+        db,
+        tenant_id=matter.client.tenant_id,
+        actor_user_id=principal.user.id,
+        action="analysis_task_batch_set.run.canceled",
+        target_type="analysis_task_batch_set_run",
+        target_id=run.id,
+        details={"matter_id": str(matter.id), "cancellation_applied": canceled},
+    )
+    workflow_id = execution.dbos_workflow_id
+    db.commit()
+    if canceled:
+        try:
+            cancel_analysis_task_batch_set_run_workflow(workflow_id)
+        except Exception as exc:  # noqa: BLE001 - durable cancellation is already committed
+            logger.warning("DBOS cancellation request failed for %s: %s", workflow_id, exc)
+    return _require_batch_set_run(db, batch_set=batch_set, run_id=run.id)
+
+
+@router.post(
+    "/{task_id}/batch-sets/{batch_set_id}/runs/{run_id}/retry",
+    response_model=AnalysisTaskBatchSetRunRead,
+    status_code=status.HTTP_202_ACCEPTED,
+)
+def retry_analysis_task_batch_set_run_endpoint(
+    matter_id: uuid.UUID,
+    task_id: uuid.UUID,
+    batch_set_id: uuid.UUID,
+    run_id: uuid.UUID,
+    principal: Principal = Depends(get_principal),
+    db: Session = Depends(get_db),
+) -> AnalysisTaskBatchSetRun:
+    matter = _require_matter_admin(db, principal, matter_id)
+    _require_task(db, matter_id=matter_id, task_id=task_id)
+    batch_set = _require_batch_set(db, matter_id=matter_id, task_id=task_id, batch_set_id=batch_set_id)
+    run = _require_batch_set_run(db, batch_set=batch_set, run_id=run_id, for_update=True)
+    try:
+        execution = retry_batch_set_run(db, run, actor_user_id=principal.user.id)
+    except JobExecutionConflict as exc:
+        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=str(exc)) from exc
+    record_audit(
+        db,
+        tenant_id=matter.client.tenant_id,
+        actor_user_id=principal.user.id,
+        action="analysis_task_batch_set.run.retried",
+        target_type="analysis_task_batch_set_run",
+        target_id=run.id,
+        details={"matter_id": str(matter.id), "attempt_number": execution.attempt_number},
+    )
+    enqueue_analysis_task_batch_set_run(db, execution.dbos_workflow_id, str(run.id))
+    db.commit()
+    return _require_batch_set_run(db, batch_set=batch_set, run_id=run.id)
 
 
 @router.get("/{task_id}/versions", response_model=list[MatterAnalysisTaskVersionRead])

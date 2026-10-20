@@ -20,6 +20,8 @@ import type {
   AnalysisTaskBatchSetPreviewCreate,
   AnalysisTaskBatchSetPreviewRead,
   AnalysisTaskBatchSetRead,
+  AnalysisTaskBatchSetRunCreate,
+  AnalysisTaskBatchSetRunRead,
   FactDevelopmentRunEstimateRead,
   FactDevelopmentRunRead,
   MatterAnalysisTaskRead,
@@ -43,6 +45,7 @@ const SOURCE_LABELS: Record<PopulationSource, string> = {
 };
 
 const ACTIVE_STATUSES = new Set(["QUEUED", "BUILDING"]);
+const ACTIVE_RUN_STATUSES = new Set(["QUEUED", "RUNNING"]);
 
 export function AnalysisTaskBatchSetsPanel({ matterId, task }: { matterId: string; task: MatterAnalysisTaskRead }) {
   const queryClient = useQueryClient();
@@ -95,6 +98,7 @@ export function AnalysisTaskBatchSetsPanel({ matterId, task }: { matterId: strin
                 {set.search_index_generation_id ? <p className="mt-1 font-mono text-xs text-muted-foreground">Search generation {set.search_index_generation_id}</p> : null}
               </div>
               <div className="flex gap-2">
+                {set.status === "READY" ? <BatchSetRunAllDialog matterId={matterId} task={task} batchSet={set} /> : null}
                 {ACTIVE_STATUSES.has(set.status) ? <Button variant="outline" size="sm" onClick={() => cancel.mutate(set.id)} disabled={cancel.isPending}><Ban />Cancel</Button> : null}
                 {["FAILED", "CANCELED"].includes(set.status) ? <Button variant="outline" size="sm" onClick={() => retry.mutate(set.id)} disabled={retry.isPending}><RefreshCw />Retry</Button> : null}
               </div>
@@ -106,12 +110,102 @@ export function AnalysisTaskBatchSetsPanel({ matterId, task }: { matterId: strin
                 {set.children.map((child) => <div key={child.id} className="flex flex-wrap items-center justify-between gap-3 border-b px-3 py-2 last:border-b-0"><div><p className="text-sm font-medium">{child.ordinal}. {child.name}</p><p className="text-xs text-muted-foreground">{child.document_count.toLocaleString()} documents</p></div><div className="flex flex-wrap items-center gap-2"><StatusBadge status={child.status} /><Badge variant="outline">Search: {friendly(child.search_status)}</Badge>{child.search_error_message ? <span className="max-w-xs text-xs text-destructive">{child.search_error_message}</span> : null}{set.status === "READY" && child.status === "READY" ? <BatchSetChildRunDialog matterId={matterId} task={task} batchSet={set} child={child} /> : null}</div></div>)}
               </div>
             ) : null}
+            <BatchSetRuns matterId={matterId} task={task} batchSet={set} />
             <p className="mt-3 text-xs text-muted-foreground">Created {formatDate(set.created_at)}. Exclusivity applies within this set only; the same document may still belong to unrelated batches or another set.</p>
           </div>
         ))}
       </CardContent>
     </Card>
   );
+}
+
+function BatchSetRunAllDialog({ matterId, task, batchSet }: {
+  matterId: string;
+  task: MatterAnalysisTaskRead;
+  batchSet: AnalysisTaskBatchSetRead;
+}) {
+  const queryClient = useQueryClient();
+  const [open, setOpen] = useState(false);
+  const [maxConcurrency, setMaxConcurrency] = useState("2");
+  const [embeddingJobId, setEmbeddingJobId] = useState("");
+  const [useBatchApi, setUseBatchApi] = useState(false);
+  const versions = useQuery({
+    queryKey: ["analysis-task-versions", matterId, task.id],
+    queryFn: () => coreApi<MatterAnalysisTaskVersionRead[]>(`/v1/matters/${matterId}/analysis-tasks/${task.id}/versions`),
+    enabled: open && task.task_type === "CLASSIFICATION",
+  });
+  const embeddings = useQuery({
+    queryKey: ["matter-embedding-jobs", matterId],
+    queryFn: () => coreApi<MatterEmbeddingJobRead[]>(`/v1/matters/${matterId}/embedding-jobs`),
+    enabled: open && task.task_type === "CLASSIFICATION",
+  });
+  const pinnedVersion = versions.data?.find((version) => version.id === batchSet.matter_analysis_task_version_id);
+  const usableEmbeddings = (embeddings.data ?? []).filter((job) => (
+    ["COMPLETED", "COMPLETED_WITH_ERRORS"].includes(job.status)
+    && (!pinnedVersion?.classification_embedding_job_id || job.id === pinnedVersion.classification_embedding_job_id)
+  ));
+  const effectiveEmbeddingJobId = usableEmbeddings.some((job) => job.id === embeddingJobId)
+    ? embeddingJobId
+    : usableEmbeddings[0]?.id ?? "";
+  const concurrency = Number(maxConcurrency);
+  const valid = Number.isInteger(concurrency) && concurrency >= 1 && concurrency <= 32
+    && (task.task_type !== "CLASSIFICATION" || Boolean(effectiveEmbeddingJobId));
+  const create = useMutation({
+    mutationFn: () => coreApi<AnalysisTaskBatchSetRunRead>(`/v1/matters/${matterId}/analysis-tasks/${task.id}/batch-sets/${batchSet.id}/runs`, {
+      method: "POST",
+      body: JSON.stringify({
+        idempotency_key: crypto.randomUUID(),
+        max_concurrency: concurrency,
+        embedding_job_id: task.task_type === "CLASSIFICATION" ? effectiveEmbeddingJobId : null,
+        coding_source: "MATTER_METADATA",
+        use_batch_api: task.task_type === "FACT_DEVELOPMENT" && useBatchApi,
+      } satisfies AnalysisTaskBatchSetRunCreate),
+    }),
+    onSuccess: () => {
+      void queryClient.invalidateQueries({ queryKey: ["analysis-task-batch-set-runs", matterId, task.id, batchSet.id] });
+      toast.success("Run-all execution queued.");
+      setOpen(false);
+    },
+    onError: (error) => toast.error(error.message),
+  });
+  return (
+    <Dialog open={open} onOpenChange={setOpen}>
+      <DialogTrigger asChild><Button size="sm"><Play />Run all</Button></DialogTrigger>
+      <DialogContent>
+        <DialogHeader><DialogTitle>Run task across this set</DialogTitle><DialogDescription>Queue one tracked parent execution for all {batchSet.batch_count.toLocaleString()} mutually exclusive child batches. Results remain on their native child runs.</DialogDescription></DialogHeader>
+        <Field label="Simultaneous child batches" htmlFor={`batch-set-run-window-${batchSet.id}`}><Input id={`batch-set-run-window-${batchSet.id}`} type="number" min={1} max={32} value={maxConcurrency} onChange={(event) => setMaxConcurrency(event.target.value)} /></Field>
+        {task.task_type === "CLASSIFICATION" ? <Field label="Compatible document embeddings" htmlFor={`batch-set-run-embedding-${batchSet.id}`}><Select value={effectiveEmbeddingJobId} onValueChange={setEmbeddingJobId}><SelectTrigger id={`batch-set-run-embedding-${batchSet.id}`}><SelectValue placeholder={embeddings.isPending ? "Loading embeddings…" : "Select embeddings"} /></SelectTrigger><SelectContent>{usableEmbeddings.map((job) => <SelectItem key={job.id} value={job.id}>{job.embedding_model} · {job.processed_count.toLocaleString()} docs</SelectItem>)}</SelectContent></Select></Field> : null}
+        {task.task_type === "FACT_DEVELOPMENT" ? <label className="flex items-center gap-2 text-sm"><input type="checkbox" checked={useBatchApi} onChange={(event) => setUseBatchApi(event.target.checked)} />Use provider Batch API for each child</label> : null}
+        {create.error ? <p role="alert" className="text-sm text-destructive">{create.error.message}</p> : null}
+        <DialogFooter><Button variant="outline" onClick={() => setOpen(false)} disabled={create.isPending}>Cancel</Button><Button onClick={() => create.mutate()} disabled={!valid || create.isPending}>{create.isPending ? <LoaderCircle className="animate-spin" /> : <Play />}Queue run all</Button></DialogFooter>
+      </DialogContent>
+    </Dialog>
+  );
+}
+
+function BatchSetRuns({ matterId, task, batchSet }: {
+  matterId: string;
+  task: MatterAnalysisTaskRead;
+  batchSet: AnalysisTaskBatchSetRead;
+}) {
+  const queryClient = useQueryClient();
+  const queryKey = ["analysis-task-batch-set-runs", matterId, task.id, batchSet.id] as const;
+  const path = `/v1/matters/${matterId}/analysis-tasks/${task.id}/batch-sets/${batchSet.id}/runs`;
+  const runs = useQuery({
+    queryKey,
+    queryFn: () => coreApi<AnalysisTaskBatchSetRunRead[]>(path),
+    refetchInterval: (query) => query.state.data?.some((run) => ACTIVE_RUN_STATUSES.has(run.status)) ? 1500 : false,
+  });
+  const action = useMutation({
+    mutationFn: ({ runId, verb }: { runId: string; verb: "cancel" | "retry" }) => coreApi<AnalysisTaskBatchSetRunRead>(`${path}/${runId}/${verb}`, { method: "POST" }),
+    onSuccess: (updated) => {
+      queryClient.setQueryData<AnalysisTaskBatchSetRunRead[]>(queryKey, (current) => current?.map((run) => run.id === updated.id ? updated : run) ?? [updated]);
+      toast.success(updated.status === "CANCELED" ? "Run-all execution canceled." : "Failed child batches requeued.");
+    },
+    onError: (error) => toast.error(error.message),
+  });
+  if (runs.isPending || runs.error || !runs.data.length) return runs.error ? <QueryError message={runs.error.message} /> : null;
+  return <div className="mt-4 space-y-2"><p className="text-xs font-semibold uppercase tracking-wide text-muted-foreground">Run-all history</p>{runs.data.map((run) => <div key={run.id} className="rounded-md border bg-muted/10 p-3"><div className="flex flex-wrap items-center justify-between gap-2"><div className="flex flex-wrap items-center gap-2"><StatusBadge status={run.status} /><span className="text-sm">{run.completed_child_count.toLocaleString()} completed · {run.failed_child_count.toLocaleString()} failed · {run.child_count.toLocaleString()} total</span><Badge variant="outline">Window {String(run.configuration_snapshot.max_concurrency ?? "—")}</Badge></div><div className="flex gap-2">{ACTIVE_RUN_STATUSES.has(run.status) ? <Button size="sm" variant="outline" onClick={() => action.mutate({ runId: run.id, verb: "cancel" })}><Ban />Cancel</Button> : null}{["FAILED", "CANCELED", "COMPLETED_WITH_ERRORS"].includes(run.status) ? <Button size="sm" variant="outline" onClick={() => action.mutate({ runId: run.id, verb: "retry" })}><RefreshCw />Retry failed</Button> : null}</div></div><div className="mt-2 flex flex-wrap gap-1">{run.children?.map((child) => <Badge key={child.id} variant="outline">{child.ordinal}: {friendly(child.status)}</Badge>)}</div><p className="mt-2 text-xs text-muted-foreground">Started {formatDate(run.created_at)} · execution {shortId(run.id)}</p></div>)}</div>;
 }
 
 function BatchSetChildRunDialog({ matterId, task, batchSet, child }: {

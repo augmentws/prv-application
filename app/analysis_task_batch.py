@@ -50,6 +50,7 @@ def queue_analysis_task_batch(
     task: MatterAnalysisTask,
     task_version: MatterAnalysisTaskVersion,
     initiated_by_user_id: uuid.UUID,
+    dispatch: bool = True,
 ) -> tuple[WorkflowRun, ReviewBatchRun]:
     if batch.matter_id != matter.id or batch.status != "READY":
         raise MatterAnalysisTaskConflict("A ready review batch is required")
@@ -210,7 +211,8 @@ def queue_analysis_task_batch(
         ]
     )
     db.flush()
-    enqueue_analysis_task_batch(db, workflow_id, str(workflow.id))
+    if dispatch:
+        enqueue_analysis_task_batch(db, workflow_id, str(workflow.id))
     return workflow, review_run
 
 

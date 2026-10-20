@@ -2942,6 +2942,69 @@ class AnalysisTaskBatchSetRead(ORMModel):
     children: list[AnalysisTaskBatchSetChildRead] = Field(default_factory=list)
 
 
+AnalysisTaskBatchSetRunStatus = Literal[
+    "QUEUED", "RUNNING", "COMPLETED", "COMPLETED_WITH_ERRORS", "FAILED", "CANCELED"
+]
+AnalysisTaskBatchSetRunChildStatus = Literal[
+    "PENDING", "QUEUED", "RUNNING", "COMPLETED", "COMPLETED_WITH_ERRORS", "FAILED", "CANCELED"
+]
+
+
+class AnalysisTaskBatchSetRunCreate(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    idempotency_key: str = Field(min_length=1, max_length=200)
+    max_concurrency: int = Field(default=2, ge=1, le=32)
+    embedding_job_id: uuid.UUID | None = None
+    coding_source: Literal["MATTER_METADATA"] = "MATTER_METADATA"
+    use_batch_api: bool = False
+
+    @field_validator("idempotency_key")
+    @classmethod
+    def normalize_batch_set_run_idempotency_key(cls, value: str) -> str:
+        normalized = value.strip()
+        if not normalized:
+            raise ValueError("Idempotency key is required")
+        return normalized
+
+class AnalysisTaskBatchSetRunChildRead(ORMModel):
+    id: uuid.UUID
+    review_batch_id: uuid.UUID
+    ordinal: int
+    run_type: MatterAnalysisTaskType | None
+    child_run_id: uuid.UUID | None
+    status: AnalysisTaskBatchSetRunChildStatus
+    attempt_count: int
+    error_message: str | None
+    started_at: datetime | None
+    completed_at: datetime | None
+
+
+class AnalysisTaskBatchSetRunRead(ORMModel):
+    id: uuid.UUID
+    tenant_id: uuid.UUID
+    matter_id: uuid.UUID
+    analysis_task_batch_set_id: uuid.UUID
+    matter_analysis_task_id: uuid.UUID
+    matter_analysis_task_version_id: uuid.UUID
+    task_type: MatterAnalysisTaskType
+    status: AnalysisTaskBatchSetRunStatus
+    configuration_snapshot: dict[str, Any]
+    idempotency_key: str
+    workflow_id: str
+    child_count: int
+    completed_child_count: int
+    failed_child_count: int
+    created_by_user_id: uuid.UUID
+    started_at: datetime | None
+    completed_at: datetime | None
+    canceled_at: datetime | None
+    created_at: datetime
+    updated_at: datetime
+    execution: JobExecutionRead | None
+    children: list[AnalysisTaskBatchSetRunChildRead] = Field(default_factory=list)
+
+
 class MatterAnalysisTaskRunCreate(BaseModel):
     model_config = ConfigDict(extra="forbid")
 

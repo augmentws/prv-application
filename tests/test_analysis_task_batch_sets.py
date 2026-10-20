@@ -8,10 +8,13 @@ from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
 import app.analysis_task_batch_sets as batch_sets
+from app.analysis_task_batch_set_runs import complete_batch_set_run
 from app.analysis_task_skills import ensure_standard_analysis_task_skills
 from app.artifact_gateway import CollectionItemGroupingSnapshot
+from app.job_executions import ANALYSIS_TASK_BATCH_SET_RUN_JOB_TYPE, transition_job_execution
 from app.models import (
     AnalysisTaskBatchSet,
+    AnalysisTaskBatchSetRun,
     Matter,
     MatterAnalysisTask,
     MatterAnalysisTaskVersion,
@@ -57,6 +60,119 @@ def _published_partitioned_task(client: TestClient, token: str, matter_id: str) 
     )
     assert response.status_code == 200, response.text
     return response.json()
+
+
+def _ready_batch_set(
+    client: TestClient,
+    token: str,
+    matter_id: str,
+    task_id: str,
+    *,
+    target_batch_size: int = 2,
+) -> dict:
+    response = client.post(
+        f"/v1/matters/{matter_id}/analysis-tasks/{task_id}/batch-sets",
+        headers=auth(token),
+        json={
+            "name": "Run-all partition",
+            "population_source_type": "ALL_MATTER",
+            "target_batch_size": target_batch_size,
+        },
+    )
+    assert response.status_code == 202, response.text
+    assert response.json()["status"] == "READY"
+    return response.json()
+
+
+def test_batch_set_run_creates_one_parent_with_ordered_child_references(
+    client: TestClient,
+    root_token: str,
+    db: Session,
+) -> None:
+    _, token, matter_id = create_tenant_context(client, root_token)
+    task = _published_partitioned_task(client, token, matter_id)
+    user_id = uuid.UUID(client.get("/v1/auth/me", headers=auth(token)).json()["id"])
+    add_documents(matter_id, user_id, count=5)
+    batch_set = _ready_batch_set(client, token, matter_id, task["id"])
+    path = f"/v1/matters/{matter_id}/analysis-tasks/{task['id']}/batch-sets/{batch_set['id']}/runs"
+    payload = {"idempotency_key": "run-all-1", "max_concurrency": 2}
+
+    response = client.post(path, headers=auth(token), json=payload)
+    assert response.status_code == 202, response.text
+    run = response.json()
+    assert run["status"] == "QUEUED"
+    assert run["child_count"] == 3
+    assert [child["ordinal"] for child in run["children"]] == [1, 2, 3]
+    assert [child["review_batch_id"] for child in run["children"]] == [
+        child["id"] for child in batch_set["children"]
+    ]
+    assert run["execution"]["status"] == "QUEUED"
+
+    duplicate = client.post(path, headers=auth(token), json=payload)
+    assert duplicate.status_code == 202, duplicate.text
+    assert duplicate.json()["id"] == run["id"]
+    assert db.scalar(select(func.count()).select_from(AnalysisTaskBatchSetRun)) == 1
+
+
+def test_batch_set_run_partial_completion_retries_only_failed_children(
+    client: TestClient,
+    root_token: str,
+    db: Session,
+) -> None:
+    _, token, matter_id = create_tenant_context(client, root_token)
+    task = _published_partitioned_task(client, token, matter_id)
+    user_id = uuid.UUID(client.get("/v1/auth/me", headers=auth(token)).json()["id"])
+    add_documents(matter_id, user_id, count=3)
+    batch_set = _ready_batch_set(client, token, matter_id, task["id"])
+    path = f"/v1/matters/{matter_id}/analysis-tasks/{task['id']}/batch-sets/{batch_set['id']}/runs"
+    response = client.post(path, headers=auth(token), json={"idempotency_key": "partial-1"})
+    assert response.status_code == 202, response.text
+    run = db.get(AnalysisTaskBatchSetRun, uuid.UUID(response.json()["id"]))
+    assert run is not None
+    completed_id = uuid.uuid4()
+    failed_id = uuid.uuid4()
+    run.children[0].status = "COMPLETED"
+    run.children[0].run_type = "QUESTION_ANSWERING"
+    run.children[0].child_run_id = completed_id
+    run.children[1].status = "FAILED"
+    run.children[1].run_type = "QUESTION_ANSWERING"
+    run.children[1].child_run_id = failed_id
+    run.children[1].error_message = "provider failed"
+    transition_job_execution(
+        db,
+        job_type=ANALYSIS_TASK_BATCH_SET_RUN_JOB_TYPE,
+        job_id=run.id,
+        status="RUNNING",
+    )
+    complete_batch_set_run(db, run.id)
+    db.commit()
+
+    retry = client.post(f"{path}/{run.id}/retry", headers=auth(token))
+    assert retry.status_code == 202, retry.text
+    retried = retry.json()
+    assert retried["status"] == "QUEUED"
+    assert retried["children"][0]["status"] == "COMPLETED"
+    assert retried["children"][0]["child_run_id"] == str(completed_id)
+    assert retried["children"][1]["status"] == "PENDING"
+    assert retried["children"][1]["child_run_id"] is None
+
+
+def test_cancel_batch_set_run_prevents_pending_child_launches(
+    client: TestClient,
+    root_token: str,
+) -> None:
+    _, token, matter_id = create_tenant_context(client, root_token)
+    task = _published_partitioned_task(client, token, matter_id)
+    user_id = uuid.UUID(client.get("/v1/auth/me", headers=auth(token)).json()["id"])
+    add_documents(matter_id, user_id, count=3)
+    batch_set = _ready_batch_set(client, token, matter_id, task["id"])
+    path = f"/v1/matters/{matter_id}/analysis-tasks/{task['id']}/batch-sets/{batch_set['id']}/runs"
+    created = client.post(path, headers=auth(token), json={"idempotency_key": "cancel-1"}).json()
+
+    canceled = client.post(f"{path}/{created['id']}/cancel", headers=auth(token))
+    assert canceled.status_code == 200, canceled.text
+    assert canceled.json()["status"] == "CANCELED"
+    assert {child["status"] for child in canceled.json()["children"]} == {"CANCELED"}
 
 
 def test_partitioned_batch_set_materializes_exact_non_overlapping_children(

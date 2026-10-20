@@ -405,6 +405,24 @@ def enqueue_analysis_task_batch_set(db: Session, workflow_id: str, batch_set_id:
     get_dbos_client().enqueue_in_transaction(db, options, batch_set_id)
 
 
+def enqueue_analysis_task_batch_set_run(db: Session, workflow_id: str, run_id: str) -> None:
+    settings = get_settings()
+    if not settings.dbos_enabled:
+        return
+    options: EnqueueOptions = {
+        "workflow_name": "analysis_task_batch_set_run_v1",
+        "queue_name": "analysis-task-batch-set-runs",
+        "workflow_id": workflow_id,
+        "application_name": settings.dbos_application_name,
+    }
+    get_dbos_client().enqueue_in_transaction(db, options, run_id)
+
+
+def cancel_analysis_task_batch_set_run_workflow(workflow_id: str) -> None:
+    if get_settings().dbos_enabled:
+        get_dbos_client().cancel_workflow(workflow_id, cancel_children=True)
+
+
 def cancel_analysis_task_batch_set_workflow(workflow_id: str) -> None:
     if get_settings().dbos_enabled:
         get_dbos_client().cancel_workflow(workflow_id, cancel_children=True)

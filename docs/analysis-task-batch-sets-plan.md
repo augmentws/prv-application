@@ -18,7 +18,7 @@ for the same task, and in sets owned by other tasks.
 
 ### Current implementation status
 
-Delivery Slices 1 through 4 are implemented:
+Delivery Slices 1 through 5 are implemented:
 
 - task versions persist and expose the three-mode scope policy with compatibility defaults;
 - `analysis_task_batch_set` is a durable Core domain record backed by a common `WorkflowRun`;
@@ -50,9 +50,16 @@ Delivery Slices 1 through 4 are implemented:
 - the Analysis Task detail surface provides a preview-first partition builder and monitoring detail for source
   provenance, population identity, ordered children, lifecycle actions, search projection state, and per-child run
   actions for every supported task type.
+- a run-all command creates one common parent execution with ordered, typed references to the native child runs;
+- run-all preserves child order, limits simultaneous children with a configurable concurrency window, and aggregates
+  successful, partially successful, failed, and canceled child outcomes without copying document results;
+- canceling a parent prevents pending launches and cancels active question-answering, classification, and
+  fact-development children through their normal cancellation paths; retry creates a new parent attempt and resets
+  only failed or canceled children;
+- the Analysis Task detail surface exposes Run all, parent/child progress, cancellation, and failed-child retry.
 
 The following remain planned: communication-thread and duplicate keep-together groups; fixed-count and randomized
-allocation; set-wide run orchestration; and native whole-matter manifests for question answering and fact development.
+allocation; and native whole-matter manifests for question answering and fact development.
 Search-backed sources currently accept keyword searches; semantic and hybrid population freezing require a separately
 versioned contract.
 
@@ -379,7 +386,10 @@ GET  /v1/matters/{matter_id}/analysis-tasks/{task_id}/batch-sets
 GET  /v1/matters/{matter_id}/analysis-tasks/{task_id}/batch-sets/{set_id}
 POST /v1/matters/{matter_id}/analysis-tasks/{task_id}/batch-sets/{set_id}/cancel
 POST /v1/matters/{matter_id}/analysis-tasks/{task_id}/batch-sets/{set_id}/retry
+GET  /v1/matters/{matter_id}/analysis-tasks/{task_id}/batch-sets/{set_id}/runs
 POST /v1/matters/{matter_id}/analysis-tasks/{task_id}/batch-sets/{set_id}/runs
+POST /v1/matters/{matter_id}/analysis-tasks/{task_id}/batch-sets/{set_id}/runs/{run_id}/cancel
+POST /v1/matters/{matter_id}/analysis-tasks/{task_id}/batch-sets/{set_id}/runs/{run_id}/retry
 ```
 
 Preview is read-only and returns population count, estimated child count and sizes, oversized groups, and
@@ -576,6 +586,13 @@ selection for classification, and preview-first current-matter-coding execution 
 ### Slice 5: run-all orchestration
 
 Add the parent domain run, bounded child concurrency, aggregate status, cancellation, and failed-child retry.
+
+Status: implemented. A Batch Set run is a common-execution-backed parent domain record whose ordered children retain
+typed references to the existing question-answering, classification, or fact-development runs. The durable parent
+workflow launches at most the configured number of children, records launch failures without blocking siblings,
+aggregates partial failure as `COMPLETED_WITH_ERRORS`, cancels pending and active children, and retries only failed or
+canceled children while preserving successful child run references. The generated API client and Analysis Task UI
+support creation, monitoring, cancellation, and retry.
 
 ### Slice 6: native whole-matter manifests
 

@@ -127,6 +127,7 @@ describe("AnalysisTaskBatchSetsPanel", () => {
     } as AnalysisTaskBatchSetRead;
     vi.mocked(coreApi).mockImplementation(async (path, init) => {
       if (path.endsWith("/batch-sets") && !init?.method) return [readySet] as never;
+      if (path.endsWith("/batch-sets/set-1/runs") && !init?.method) return [] as never;
       if (path.endsWith("/review-batches/batch-1/analysis-runs") && init?.method === "POST") return { id: "run-1" } as never;
       throw new Error(`Unexpected API call: ${path}`);
     });
@@ -146,5 +147,46 @@ describe("AnalysisTaskBatchSetsPanel", () => {
       matter_analysis_task_id: "task-1",
       matter_analysis_task_version_id: "version-pinned",
     });
+  });
+
+  it("queues one bounded parent run for every child in a ready set", async () => {
+    const readySet = {
+      ...createdSet,
+      status: "READY",
+      population_count: 4,
+      batch_count: 2,
+      population_hash: "a".repeat(64),
+      children: [],
+    } as AnalysisTaskBatchSetRead;
+    vi.mocked(coreApi).mockImplementation(async (path, init) => {
+      if (path.endsWith("/batch-sets") && !init?.method) return [readySet] as never;
+      if (path.endsWith("/batch-sets/set-1/runs") && !init?.method) return [] as never;
+      if (path.endsWith("/batch-sets/set-1/runs") && init?.method === "POST") return {
+        id: "parent-run-1",
+        status: "QUEUED",
+        children: [],
+      } as never;
+      throw new Error(`Unexpected API call: ${path}`);
+    });
+    const client = new QueryClient({ defaultOptions: { queries: { retry: false }, mutations: { retry: false } } });
+    const user = userEvent.setup();
+    render(<QueryClientProvider client={client}><AnalysisTaskBatchSetsPanel matterId="matter-1" task={task} /></QueryClientProvider>);
+
+    await user.click(await screen.findByRole("button", { name: "Run all" }));
+    await user.clear(screen.getByLabelText("Simultaneous child batches"));
+    await user.type(screen.getByLabelText("Simultaneous child batches"), "1");
+    await user.click(screen.getByRole("button", { name: "Queue run all" }));
+
+    await waitFor(() => expect(coreApi).toHaveBeenCalledWith(
+      "/v1/matters/matter-1/analysis-tasks/task-1/batch-sets/set-1/runs",
+      expect.objectContaining({ method: "POST" }),
+    ));
+    const call = vi.mocked(coreApi).mock.calls.find(([path, init]) => path.endsWith("/batch-sets/set-1/runs") && init?.method === "POST");
+    expect(JSON.parse(String(call?.[1]?.body))).toEqual(expect.objectContaining({
+      max_concurrency: 1,
+      embedding_job_id: null,
+      coding_source: "MATTER_METADATA",
+      use_batch_api: false,
+    }));
   });
 });
