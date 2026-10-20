@@ -5,6 +5,7 @@
  * Phase-one Core API for authentication, hierarchical tenants, clients, matters, and matter metadata definitions.
  * OpenAPI spec version: 0.1.0
  */
+import type { AnalysisTaskBatchSetChildReadSearchStatus } from './analysisTaskBatchSetChildReadSearchStatus';
 import type { AnalysisTaskBatchSetChildReadStatus } from './analysisTaskBatchSetChildReadStatus';
 
 export interface AnalysisTaskBatchSetChildRead {
@@ -12,5 +13,7 @@ export interface AnalysisTaskBatchSetChildRead {
   ordinal: number;
   name: string;
   status: AnalysisTaskBatchSetChildReadStatus;
+  search_status: AnalysisTaskBatchSetChildReadSearchStatus;
+  search_error_message: string | null;
   document_count: number;
 }

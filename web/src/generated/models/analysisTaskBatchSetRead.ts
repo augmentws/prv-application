@@ -23,6 +23,7 @@ export interface AnalysisTaskBatchSetRead {
   population_source_type: AnalysisTaskBatchSetReadPopulationSourceType;
   selection_definition: AnalysisTaskBatchSetReadSelectionDefinition;
   source_review_batch_id: string | null;
+  search_index_generation_id: string | null;
   target_batch_size: number;
   allocation_policy: AnalysisTaskBatchSetReadAllocationPolicy;
   random_seed: string;

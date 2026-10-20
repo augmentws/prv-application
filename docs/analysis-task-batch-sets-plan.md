@@ -18,7 +18,7 @@ for the same task, and in sets owned by other tasks.
 
 ### Current implementation status
 
-Delivery Slices 1 and 2 are implemented:
+Delivery Slices 1 through 3 are implemented:
 
 - task versions persist and expose the three-mode scope policy with compatibility defaults;
 - `analysis_task_batch_set` is a durable Core domain record backed by a common `WorkflowRun`;
@@ -33,15 +33,23 @@ Delivery Slices 1 and 2 are implemented:
   cancellation between durable partition boundaries;
 - optional `FAMILY` keep-together planning resolves Artifact-owned family IDs, assigns atomic families with stable
   least-loaded balancing, and keeps oversized families intact with an explicit warning;
+- direct keyword-search and accessible saved-search populations resolve against and pin the active physical search
+  generation, snapshot the canonical query, and page all matching document IDs in stable order;
 - managed children use deterministic IDs, remain unavailable while membership is incomplete, and become ready only
   after set-wide coverage verification;
+- each managed child is projected through the existing Review Batch search projection; per-child search state and
+  failures are exposed without invalidating authoritative Core membership, and partial projection failure completes
+  the common execution with errors plus a durable warning;
 - inline development execution and a DBOS worker workflow use the same materializer;
 - question-answering, classification, and fact-development launches enforce the selected mode and the set's
-  pinned task version.
+  pinned task version;
+- the Analysis Task detail surface provides a preview-first partition builder and monitoring detail for source
+  provenance, population identity, ordered children, lifecycle actions, and search projection state.
 
-The following remain planned: search-backed populations; communication-thread and duplicate keep-together groups;
-search projection for managed children; set-wide run orchestration; UI; expanded child-run provenance; and native
-whole-matter manifests for question answering and fact development.
+The following remain planned: communication-thread and duplicate keep-together groups; fixed-count and randomized
+allocation; set-wide run orchestration; expanded child-run provenance and per-child launch actions; and native
+whole-matter manifests for question answering and fact development. Search-backed sources currently accept keyword
+searches; semantic and hybrid population freezing require a separately versioned contract.
 
 ## 2. Existing behavior to preserve
 
@@ -443,7 +451,7 @@ belongs in Core and the child batch filter is sufficient for current search beha
 
 ## 14. Migration and compatibility
 
-Implementation requires one Core Alembic migration that:
+Implementation uses additive Core Alembic migrations. The initial migration:
 
 1. creates `analysis_task_batch_set`;
 2. adds task-version scope policy storage;
@@ -452,6 +460,10 @@ Implementation requires one Core Alembic migration that:
 5. adds the composite foreign key and scoped uniqueness constraints;
 6. extends the Review Batch selection-type constraint with `TASK_BATCH_PARTITION`;
 7. derives compatibility scope policies for existing task versions by task type.
+
+A follow-up migration extends the source constraint for `SEARCH_QUERY` and `SAVED_SEARCH` and adds the restricted,
+indexed foreign key to the pinned `search_index_generation` row. Existing sets and ordinary Review Batches are not
+rewritten.
 
 No existing Review Batch receives a set ID. No existing membership is rewritten. The interactive Review Batch
 create contract retains its current selection literals.
@@ -533,6 +545,13 @@ IDs and membership. `FAMILY` is the first keep-together option, with oversized g
 
 Add search and saved-search sources, pinned generation handling, OpenSearch projection status, the partition
 builder, and Batch Set detail UI.
+
+Status: implemented. Search sources currently require keyword mode and are frozen as a canonical request plus the
+physical generation identity. Managed children reuse the normal Review Batch projection path. The set becomes ready
+after authoritative membership verification even if a child projection fails; the common execution records
+`COMPLETED_WITH_ERRORS`, the failed child IDs are retained as a warning, and the projection remains retryable through
+the existing batch search lifecycle. The preview-first UI supports all four population sources, family keep-together,
+target batch size, cancel/retry monitoring, pinned provenance, warnings, and ordered child status.
 
 ### Slice 4: task execution integration
 

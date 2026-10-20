@@ -7,6 +7,7 @@ import { useState } from "react";
 import { toast } from "sonner";
 
 import { FactTaskWorkspace } from "@/components/facts/fact-task-workspace";
+import { AnalysisTaskBatchSetsPanel } from "@/components/analysis-task-batch-sets-panel";
 import { QueryError, TableLoading } from "@/components/query-state";
 import { StatusBadge } from "@/components/status-badge";
 import { Badge } from "@/components/ui/badge";
@@ -267,8 +268,14 @@ function AnalysisTaskDetail({ clientId, matterId, task, definitions, onTaskUpdat
               onTaskUpdated={handleTaskUpdated}
             />
       )}
+      {allowsPartitionedSets(task) ? <AnalysisTaskBatchSetsPanel matterId={matterId} task={task} /> : null}
     </div>
   );
+}
+
+function allowsPartitionedSets(task: MatterAnalysisTaskRead) {
+  const policy = task.published_version_details?.scope_policy as { allowed_modes?: string[] } | undefined;
+  return policy?.allowed_modes?.includes("PARTITIONED_SET") ?? false;
 }
 
 function ClassificationVersionWorkspace({ clientId, matterId, task, version, onTaskUpdated }: { clientId?: string; matterId: string; task: MatterAnalysisTaskRead; version: MatterAnalysisTaskVersionRead; onTaskUpdated: (task: MatterAnalysisTaskRead) => void }) {

@@ -12,4 +12,6 @@ export type AnalysisTaskBatchSetReadPopulationSourceType = typeof AnalysisTaskBa
 export const AnalysisTaskBatchSetReadPopulationSourceType = {
   ALL_MATTER: 'ALL_MATTER',
   SOURCE_BATCH: 'SOURCE_BATCH',
+  SEARCH_QUERY: 'SEARCH_QUERY',
+  SAVED_SEARCH: 'SAVED_SEARCH',
 } as const;

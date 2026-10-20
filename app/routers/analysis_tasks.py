@@ -9,7 +9,9 @@ from sqlalchemy.orm import Session, selectinload
 
 from app.analysis_task_batch_sets import (
     AnalysisTaskBatchSetError,
+    batch_set_child_ids,
     cancel_batch_set,
+    complete_batch_set_materialization,
     create_batch_set,
     materialize_batch_set,
     preview_batch_set,
@@ -62,6 +64,7 @@ from app.models import (
     MatterAnalysisTaskVersion,
     MatterDefinition,
     MatterDefinitionRevision,
+    MatterSavedSearch,
     ReviewBatch,
     ReviewBatchDocument,
     ReviewBatchReviewerCoding,
@@ -72,6 +75,7 @@ from app.models import (
     SkillRun,
     WorkflowRun,
 )
+from app.routers.saved_searches import _saved_search
 from app.schemas import (
     AnalysisTaskBatchSetChildRead,
     AnalysisTaskBatchSetCreate,
@@ -96,7 +100,9 @@ from app.schemas import (
     MatterAnalysisTaskVersionCreate,
     MatterAnalysisTaskVersionRead,
     MatterQuestionAnsweringJobRead,
+    MatterSearchRequest,
 )
+from app.search.service import sync_review_batch_search
 from app.workflow_specs import MATTER_ANALYSIS_TASK_PLAYGROUND_SPEC
 from app.workflows.dispatcher import (
     cancel_analysis_task_batch_set_workflow,
@@ -166,6 +172,8 @@ def _batch_set_read(db: Session, batch_set: AnalysisTaskBatchSet) -> AnalysisTas
                     ordinal=child.batch_set_ordinal or 0,
                     name=child.name,
                     status=child.status,
+                    search_status=child.search_status,
+                    search_error_message=child.search_error_message,
                     document_count=child.document_count,
                 )
                 for child in children
@@ -190,6 +198,52 @@ def _require_batch_set(
     )
     if batch_set is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Analysis Task Batch Set not found")
+    return batch_set
+
+
+def _batch_set_search_source(
+    db: Session,
+    *,
+    matter: Matter,
+    payload: AnalysisTaskBatchSetCreate | AnalysisTaskBatchSetPreviewCreate,
+    principal: Principal,
+) -> tuple[MatterSearchRequest | None, MatterSavedSearch | None]:
+    if payload.population_source_type == "SEARCH_QUERY":
+        return payload.search, None
+    if payload.population_source_type != "SAVED_SEARCH" or payload.saved_search_id is None:
+        return None, None
+    saved = _saved_search(db, matter.id, payload.saved_search_id, principal)
+    search = MatterSearchRequest.model_validate(saved.search_definition)
+    if search.search_mode != "KEYWORD":
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
+            detail="Batch Set search populations currently require a Keyword saved search",
+        )
+    return search, saved
+
+
+def _materialize_batch_set_inline(
+    db: Session,
+    *,
+    batch_set_id: uuid.UUID,
+    settings: Settings,
+) -> AnalysisTaskBatchSet:
+    try:
+        batch_set = materialize_batch_set(db, batch_set_id, settings)
+    except Exception:
+        failed = db.get(AnalysisTaskBatchSet, batch_set_id)
+        if failed is None:
+            raise
+        return failed
+    if settings.search_enabled and db.get_bind().dialect.name == "postgresql":
+        for child_id in batch_set_child_ids(db, batch_set.id):
+            try:
+                sync_review_batch_search(child_id, settings)
+            except Exception:
+                logger.exception("Batch Set child search projection failed child_batch_id=%s", child_id)
+        db.expire_all()
+    batch_set = complete_batch_set_materialization(db, batch_set.id)
+    db.commit()
     return batch_set
 
 
@@ -496,12 +550,14 @@ def preview_analysis_task_batch_set(
     payload: AnalysisTaskBatchSetPreviewCreate,
     principal: Principal = Depends(get_principal),
     db: Session = Depends(get_db),
+    settings: Settings = Depends(get_settings),
 ) -> AnalysisTaskBatchSetPreviewRead:
     matter = _require_matter_admin(db, principal, matter_id)
     task = _require_task(db, matter_id=matter_id, task_id=task_id)
     if task.published_version is None:
         raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="Analysis Task has no published version")
     task_version = _task_version(db, task_id=task.id, version_number=task.published_version)
+    search, _ = _batch_set_search_source(db, matter=matter, payload=payload, principal=principal)
     try:
         plan = preview_batch_set(
             db,
@@ -510,9 +566,11 @@ def preview_analysis_task_batch_set(
             task_version=task_version,
             population_source_type=payload.population_source_type,
             source_review_batch_id=payload.source_review_batch_id,
+            search=search,
             target_batch_size=payload.target_batch_size,
             keep_together=list(payload.keep_together),
             actor_user_id=principal.user.id,
+            settings=settings,
         )
     except AnalysisTaskBatchSetError as exc:
         raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=str(exc)) from exc
@@ -565,6 +623,12 @@ def create_analysis_task_batch_set(
     if task.published_version is None:
         raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="Analysis Task has no published version")
     task_version = _task_version(db, task_id=task.id, version_number=task.published_version)
+    search, saved_search = _batch_set_search_source(
+        db,
+        matter=matter,
+        payload=payload,
+        principal=principal,
+    )
     try:
         batch_set = create_batch_set(
             db,
@@ -575,6 +639,10 @@ def create_analysis_task_batch_set(
             description=payload.description,
             population_source_type=payload.population_source_type,
             source_review_batch_id=payload.source_review_batch_id,
+            search=search,
+            saved_search_id=saved_search.id if saved_search else None,
+            saved_search_name=saved_search.name if saved_search else None,
+            saved_search_updated_at=saved_search.updated_at if saved_search else None,
             target_batch_size=payload.target_batch_size,
             keep_together=list(payload.keep_together),
             random_seed=payload.random_seed,
@@ -594,18 +662,22 @@ def create_analysis_task_batch_set(
             "task_id": str(task.id),
             "task_version_id": str(task_version.id),
             "population_source_type": batch_set.population_source_type,
+            "source_review_batch_id": (
+                str(batch_set.source_review_batch_id) if batch_set.source_review_batch_id else None
+            ),
+            "saved_search_id": batch_set.selection_definition.get("saved_search_id"),
+            "search_index_generation_id": (
+                str(batch_set.search_index_generation_id)
+                if batch_set.search_index_generation_id
+                else None
+            ),
             "target_batch_size": batch_set.target_batch_size,
         },
     )
     enqueue_analysis_task_batch_set(db, batch_set.workflow_id, str(batch_set.id))
     db.commit()
     if not settings.dbos_enabled:
-        try:
-            batch_set = materialize_batch_set(db, batch_set.id)
-        except AnalysisTaskBatchSetError as exc:
-            batch_set = db.get(AnalysisTaskBatchSet, batch_set.id) or batch_set
-            if batch_set.status != "FAILED":
-                raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=str(exc)) from exc
+        batch_set = _materialize_batch_set_inline(db, batch_set_id=batch_set.id, settings=settings)
     return _batch_set_read(db, batch_set)
 
 
@@ -693,10 +765,7 @@ def retry_analysis_task_batch_set(
     enqueue_analysis_task_batch_set(db, execution.dbos_workflow_id, str(batch_set.id))
     db.commit()
     if not settings.dbos_enabled:
-        try:
-            batch_set = materialize_batch_set(db, batch_set.id)
-        except AnalysisTaskBatchSetError:
-            batch_set = db.get(AnalysisTaskBatchSet, batch_set.id) or batch_set
+        batch_set = _materialize_batch_set_inline(db, batch_set_id=batch_set.id, settings=settings)
     return _batch_set_read(db, batch_set)
 
 

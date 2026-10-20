@@ -25108,6 +25108,28 @@
             ],
             "title": "Status"
           },
+          "search_status": {
+            "type": "string",
+            "enum": [
+              "QUEUED",
+              "SYNCING",
+              "READY",
+              "FAILED",
+              "NOT_CONFIGURED"
+            ],
+            "title": "Search Status"
+          },
+          "search_error_message": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Search Error Message"
+          },
           "document_count": {
             "type": "integer",
             "title": "Document Count"
@@ -25119,6 +25141,8 @@
           "ordinal",
           "name",
           "status",
+          "search_status",
+          "search_error_message",
           "document_count"
         ],
         "title": "AnalysisTaskBatchSetChildRead"
@@ -25129,7 +25153,9 @@
             "type": "string",
             "enum": [
               "ALL_MATTER",
-              "SOURCE_BATCH"
+              "SOURCE_BATCH",
+              "SEARCH_QUERY",
+              "SAVED_SEARCH"
             ],
             "title": "Population Source Type"
           },
@@ -25144,6 +25170,28 @@
               }
             ],
             "title": "Source Review Batch Id"
+          },
+          "search": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/MatterSearchRequest"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "saved_search_id": {
+            "anyOf": [
+              {
+                "type": "string",
+                "format": "uuid"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Saved Search Id"
           },
           "target_batch_size": {
             "type": "integer",
@@ -25207,7 +25255,9 @@
             "type": "string",
             "enum": [
               "ALL_MATTER",
-              "SOURCE_BATCH"
+              "SOURCE_BATCH",
+              "SEARCH_QUERY",
+              "SAVED_SEARCH"
             ],
             "title": "Population Source Type"
           },
@@ -25222,6 +25272,28 @@
               }
             ],
             "title": "Source Review Batch Id"
+          },
+          "search": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/MatterSearchRequest"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "saved_search_id": {
+            "anyOf": [
+              {
+                "type": "string",
+                "format": "uuid"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Saved Search Id"
           },
           "target_batch_size": {
             "type": "integer",
@@ -25340,7 +25412,9 @@
             "type": "string",
             "enum": [
               "ALL_MATTER",
-              "SOURCE_BATCH"
+              "SOURCE_BATCH",
+              "SEARCH_QUERY",
+              "SAVED_SEARCH"
             ],
             "title": "Population Source Type"
           },
@@ -25360,6 +25434,18 @@
               }
             ],
             "title": "Source Review Batch Id"
+          },
+          "search_index_generation_id": {
+            "anyOf": [
+              {
+                "type": "string",
+                "format": "uuid"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Search Index Generation Id"
           },
           "target_batch_size": {
             "type": "integer",
@@ -25479,6 +25565,7 @@
           "population_source_type",
           "selection_definition",
           "source_review_batch_id",
+          "search_index_generation_id",
           "target_batch_size",
           "allocation_policy",
           "random_seed",

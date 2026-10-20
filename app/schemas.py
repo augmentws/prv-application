@@ -2844,7 +2844,7 @@ class MatterAnalysisTaskRead(ORMModel):
     published_version_details: MatterAnalysisTaskVersionRead | None = None
 
 
-AnalysisTaskBatchSetSourceType = Literal["ALL_MATTER", "SOURCE_BATCH"]
+AnalysisTaskBatchSetSourceType = Literal["ALL_MATTER", "SOURCE_BATCH", "SEARCH_QUERY", "SAVED_SEARCH"]
 AnalysisTaskBatchSetStatus = Literal["QUEUED", "BUILDING", "READY", "FAILED", "CANCELED", "ARCHIVED"]
 
 
@@ -2853,6 +2853,8 @@ class AnalysisTaskBatchSetPlanRequest(BaseModel):
 
     population_source_type: AnalysisTaskBatchSetSourceType
     source_review_batch_id: uuid.UUID | None = None
+    search: MatterSearchRequest | None = None
+    saved_search_id: uuid.UUID | None = None
     target_batch_size: int = Field(ge=1, le=10_000_000)
     keep_together: list[Literal["FAMILY"]] = Field(default_factory=list, max_length=1)
 
@@ -2862,6 +2864,17 @@ class AnalysisTaskBatchSetPlanRequest(BaseModel):
             raise ValueError("SOURCE_BATCH requires source_review_batch_id")
         if self.population_source_type != "SOURCE_BATCH" and self.source_review_batch_id is not None:
             raise ValueError("source_review_batch_id is only valid for SOURCE_BATCH")
+        if self.population_source_type == "SEARCH_QUERY":
+            if self.search is None:
+                raise ValueError("SEARCH_QUERY requires search")
+            if self.search.search_mode != "KEYWORD":
+                raise ValueError("Batch Set search populations currently require a Keyword search")
+        elif self.search is not None:
+            raise ValueError("search is only valid for SEARCH_QUERY")
+        if self.population_source_type == "SAVED_SEARCH" and self.saved_search_id is None:
+            raise ValueError("SAVED_SEARCH requires saved_search_id")
+        if self.population_source_type != "SAVED_SEARCH" and self.saved_search_id is not None:
+            raise ValueError("saved_search_id is only valid for SAVED_SEARCH")
         if len(self.keep_together) != len(set(self.keep_together)):
             raise ValueError("keep_together values must be unique")
         return self
@@ -2891,6 +2904,8 @@ class AnalysisTaskBatchSetChildRead(BaseModel):
     ordinal: int
     name: str
     status: ReviewBatchStatus
+    search_status: ReviewBatchSearchStatus
+    search_error_message: str | None
     document_count: int
 
 
@@ -2905,6 +2920,7 @@ class AnalysisTaskBatchSetRead(ORMModel):
     population_source_type: AnalysisTaskBatchSetSourceType
     selection_definition: dict[str, Any]
     source_review_batch_id: uuid.UUID | None
+    search_index_generation_id: uuid.UUID | None
     target_batch_size: int
     allocation_policy: dict[str, Any]
     random_seed: str

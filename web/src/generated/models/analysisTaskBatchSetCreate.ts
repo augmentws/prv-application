@@ -6,10 +6,13 @@
  * OpenAPI spec version: 0.1.0
  */
 import type { AnalysisTaskBatchSetCreatePopulationSourceType } from './analysisTaskBatchSetCreatePopulationSourceType';
+import type { MatterSearchRequest } from './matterSearchRequest';
 
 export interface AnalysisTaskBatchSetCreate {
   population_source_type: AnalysisTaskBatchSetCreatePopulationSourceType;
   source_review_batch_id?: string | null;
+  search?: MatterSearchRequest | null;
+  saved_search_id?: string | null;
   /**
      * @minimum 1
      * @maximum 10000000

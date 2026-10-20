@@ -72,6 +72,7 @@ export * from './agentVersionCreateOutputSchema';
 export * from './analysisInputEmail';
 export * from './analysisInputEmailRecipients';
 export * from './analysisTaskBatchSetChildRead';
+export * from './analysisTaskBatchSetChildReadSearchStatus';
 export * from './analysisTaskBatchSetChildReadStatus';
 export * from './analysisTaskBatchSetCreate';
 export * from './analysisTaskBatchSetCreatePopulationSourceType';

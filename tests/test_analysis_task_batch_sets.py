@@ -1,4 +1,5 @@
 import uuid
+from datetime import datetime, timezone
 
 import pytest
 from fastapi.testclient import TestClient
@@ -16,6 +17,7 @@ from app.models import (
     MatterDocument,
     ReviewBatch,
     ReviewBatchDocument,
+    SearchIndexGeneration,
     WorkflowRun,
 )
 from tests.test_agents_and_matter_definitions import auth, create_tenant_context
@@ -262,6 +264,10 @@ def test_queued_batch_set_can_be_canceled(
         description=None,
         population_source_type="ALL_MATTER",
         source_review_batch_id=None,
+        search=None,
+        saved_search_id=None,
+        saved_search_name=None,
+        saved_search_updated_at=None,
         target_batch_size=2,
         keep_together=[],
         random_seed=None,
@@ -364,3 +370,163 @@ def test_family_keep_together_and_oversized_warning(
         )
     )
     assert len(family_child_ids) == 1
+
+
+def test_search_and_saved_search_populations_pin_generation_and_query(
+    client: TestClient,
+    root_token: str,
+    db: Session,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _, token, matter_id = create_tenant_context(client, root_token)
+    task = _published_partitioned_task(client, token, matter_id)
+    user_id = uuid.UUID(client.get("/v1/auth/me", headers=auth(token)).json()["id"])
+    document_ids = add_documents(matter_id, user_id, count=4)
+    generation = SearchIndexGeneration(
+        matter_id=uuid.UUID(matter_id),
+        generation=7,
+        index_name=f"matter-{matter_id}-000007",
+        alias_name=f"matter-{matter_id}",
+        schema_hash="a" * 64,
+        status="ACTIVE",
+        document_count=4,
+        schema_snapshot={},
+        activated_at=datetime.now(timezone.utc),
+    )
+    db.add(generation)
+    db.commit()
+
+    class FakeOpenSearchClient:
+        def __init__(self, _settings: object) -> None:
+            pass
+
+        def search(self, index_name: str, body: dict) -> dict:
+            assert index_name == generation.index_name
+            assert body["sort"] == [{"document_id": "asc"}]
+            return {
+                "hits": {
+                    "hits": [
+                        {"_source": {"document_id": document_id}, "sort": [document_id]}
+                        for document_id in document_ids[:3]
+                    ]
+                }
+            }
+
+        def close(self) -> None:
+            pass
+
+    monkeypatch.setattr(batch_sets, "OpenSearchClient", FakeOpenSearchClient)
+    direct = client.post(
+        f"/v1/matters/{matter_id}/analysis-tasks/{task['id']}/batch-sets",
+        headers=auth(token),
+        json={
+            "name": "Keyword partition",
+            "population_source_type": "SEARCH_QUERY",
+            "search": {"query": "contract", "search_mode": "KEYWORD"},
+            "target_batch_size": 2,
+        },
+    )
+    assert direct.status_code == 202, direct.text
+    assert direct.json()["status"] == "READY"
+    assert direct.json()["population_count"] == 3
+    assert direct.json()["search_index_generation_id"] == str(generation.id)
+    assert direct.json()["selection_definition"]["search"]["query"] == "contract"
+    assert direct.json()["selection_definition"]["search_index_generation"]["generation"] == 7
+
+    saved = client.post(
+        f"/v1/matters/{matter_id}/saved-searches",
+        headers=auth(token),
+        json={
+            "name": "Contract documents",
+            "visibility": "PRIVATE",
+            "search": {"query": "contract", "search_mode": "KEYWORD"},
+        },
+    )
+    assert saved.status_code == 201, saved.text
+    preview = client.post(
+        f"/v1/matters/{matter_id}/analysis-tasks/{task['id']}/batch-sets/preview",
+        headers=auth(token),
+        json={
+            "population_source_type": "SAVED_SEARCH",
+            "saved_search_id": saved.json()["id"],
+            "target_batch_size": 2,
+        },
+    )
+    assert preview.status_code == 200, preview.text
+    assert preview.json()["estimated_batch_sizes"] == [2, 1]
+
+    created = client.post(
+        f"/v1/matters/{matter_id}/analysis-tasks/{task['id']}/batch-sets",
+        headers=auth(token),
+        json={
+            "name": "Saved partition",
+            "population_source_type": "SAVED_SEARCH",
+            "saved_search_id": saved.json()["id"],
+            "target_batch_size": 2,
+        },
+    )
+    assert created.status_code == 202, created.text
+    assert created.json()["status"] == "READY"
+    assert created.json()["selection_definition"]["saved_search_id"] == saved.json()["id"]
+    assert created.json()["selection_definition"]["saved_search_name"] == "Contract documents"
+
+
+def test_child_search_projection_failure_completes_set_with_warning(
+    client: TestClient,
+    root_token: str,
+    db: Session,
+) -> None:
+    _, token, matter_id = create_tenant_context(client, root_token)
+    task_payload = _published_partitioned_task(client, token, matter_id)
+    user_id = uuid.UUID(client.get("/v1/auth/me", headers=auth(token)).json()["id"])
+    add_documents(matter_id, user_id, count=2)
+    matter = db.get(Matter, uuid.UUID(matter_id))
+    task = db.get(MatterAnalysisTask, uuid.UUID(task_payload["id"]))
+    task_version = db.get(MatterAnalysisTaskVersion, uuid.UUID(task_payload["version"]["id"]))
+    assert matter is not None and task is not None and task_version is not None
+    batch_set = batch_sets.create_batch_set(
+        db,
+        matter=matter,
+        task=task,
+        task_version=task_version,
+        name="Projection warning",
+        description=None,
+        population_source_type="ALL_MATTER",
+        source_review_batch_id=None,
+        search=None,
+        saved_search_id=None,
+        saved_search_name=None,
+        saved_search_updated_at=None,
+        target_batch_size=2,
+        keep_together=[],
+        random_seed=None,
+        actor_user_id=user_id,
+    )
+    db.commit()
+    settings = batch_sets.get_settings().model_copy(update={"search_enabled": False})
+
+    batch_sets.materialize_batch_set(db, batch_set.id, settings)
+    child = db.scalar(select(ReviewBatch).where(ReviewBatch.analysis_task_batch_set_id == batch_set.id))
+    assert child is not None
+    child.search_status = "FAILED"
+    child.search_error_message = "OpenSearch unavailable"
+    db.commit()
+    completed = batch_sets.complete_batch_set_materialization(db, batch_set.id)
+    db.commit()
+
+    assert completed.status == "READY"
+    assert completed.warning_details == [
+        {
+            "code": "SEARCH_PROJECTION_FAILED",
+            "child_batch_ids": [str(child.id)],
+            "child_count": 1,
+        }
+    ]
+    execution = db.scalar(
+        select(WorkflowRun).where(
+            WorkflowRun.job_id == batch_set.id,
+            WorkflowRun.attempt_number == 1,
+        )
+    )
+    assert execution is not None
+    assert execution.status == "COMPLETED_WITH_ERRORS"
