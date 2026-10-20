@@ -125,6 +125,27 @@ The pairwise confusion matrix is emitted only for `SINGLE` enum and Boolean fiel
 
 Run summaries return at most the 200 most frequent values per source, and the UI chart shows the 40 most frequent values across selected sources. These display limits do not truncate document comparison or export. `GET .../coding-comparison/export` streams every row matching `ALL`, `AGREEMENT`, `DISAGREEMENT`, or `INCOMPLETE`. CSV and Parquet include `matter_document_id`, `collection_item_id`, stable `batch_sequence`, `agreement_status`, and one display-valued column per run. Non-evaluated states use bracketed markers and an evaluated empty set is `[NO VALUE]`. Parquet metadata stores the field identity and a run-column-to-run-ID map.
 
+When the document matrix is filtered to **Disagreements**, a manager with
+`batch.create` may create a `COMPARISON_RESULT` child review batch directly
+from the selected field and sources. The child includes both partial and fully
+disjoint disagreements, copies the parent's frozen coding layout, and records
+the parent batch, field, source identities, labels, and candidate count in its
+selection provenance. Human sources pin their canonical reviewer revision at
+creation; immutable evaluation sources retain their run IDs. The normal durable
+review-batch materializer resolves that pinned comparison and creates ordinary
+`review_batch_document` membership in parent-batch order.
+
+Opening a `COMPARISON_RESULT` batch defaults the review workspace to a dedicated
+**Disagreements** panel titled with the compared field. For the selected child
+document, `GET .../disagreements/documents/{document_id}` replays the parent
+comparison from the persisted run IDs and reviewer revisions. The panel shows
+every selected analysis task or reviewer source, its frozen value set, run
+detail, reviewer revision, and available confidence. Selecting a source copies
+its typed values into an editable correct-coding control; **Save & next** writes
+only the compared field through the ordinary immutable reviewer-coding command.
+This records a review decision in the child batch but does not publish it to
+matter metadata.
+
 Agreement is symmetric and is not presented as accuracy. A later reference-source workflow may add precision, recall, and F1 only after a user explicitly designates an adjudicated or other reference source.
 
 The older `GET .../comparisons` endpoint remains as a lightweight two-run field summary for compatibility. The richer batch view uses `comparison-options`, `coding-comparison`, and `coding-comparison/export`.
@@ -133,11 +154,11 @@ The durable, artifact-backed replacement for classifier/Jev and large-population
 
 ## Follow-on work
 
-- Use pinned human reviewer revisions when persisted asynchronous comparison
-  artifacts and disagreement child batches are implemented. The immutable ledger
-  and as-of resolver are specified in
-  [`reviewer-coding-immutable-history-implementation-plan.md`](reviewer-coding-immutable-history-implementation-plan.md).
+- Persist comparison summaries and detail rows as Artifact-owned outputs for
+  repeated whole-matter or very large-cohort analysis. The current disagreement
+  child batch replays pinned reviewer revisions and immutable run IDs against
+  the ready parent batch during durable materialization.
 - Drive agent runs through a durable per-document execution workflow.
-- Add explicit publish/adjudication into matter metadata.
+- Add explicit adjudication status and controlled publication into matter metadata.
 - Add persisted comparison records and asynchronous artifact generation for repeated whole-matter or very large-cohort analysis.
 - Add an outcome manifest if per-document materialization failures become possible; ordinary membership insertion is currently atomic per bounded chunk.

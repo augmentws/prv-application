@@ -712,6 +712,103 @@ def test_batch_membership_group_snapshot_runs_and_comparison(
         },
     ]
 
+    disagreement_request = {
+        "metadata_definition_id": str(definition_id),
+        "source_ids": [reviewer_coding.json()["id"], additional_source_ids[1]],
+    }
+    disagreement_preview = client.post(
+        f"{base}/{batch['id']}/coding-comparison/review-batches/preview",
+        headers=auth(root_token),
+        json=disagreement_request,
+    )
+    assert disagreement_preview.status_code == 200, disagreement_preview.text
+    assert disagreement_preview.json()["candidate_count"] == 1
+    assert disagreement_preview.json()["sources"] == [
+        {
+            "id": reviewer_coding.json()["id"],
+            "source_type": "REVIEWER",
+            "label": root_admin.display_name,
+            "reviewer_revision": 1,
+        },
+        {
+            "id": additional_source_ids[1],
+            "source_type": "RUN",
+            "label": "Comparison source 3",
+            "reviewer_revision": None,
+        },
+    ]
+    disagreement_batch_response = client.post(
+        f"{base}/{batch['id']}/coding-comparison/review-batches",
+        headers=auth(root_token),
+        json={
+            **disagreement_request,
+            "name": "Key document disagreements",
+            "description": "Resolve coding conflicts from the first comparison.",
+        },
+    )
+    assert disagreement_batch_response.status_code == 202, disagreement_batch_response.text
+    disagreement_batch = disagreement_batch_response.json()
+    assert disagreement_batch["status"] == "READY"
+    assert disagreement_batch["search_status"] == "NOT_CONFIGURED"
+    assert disagreement_batch["selection_type"] == "COMPARISON_RESULT"
+    assert disagreement_batch["source_batch_id"] == batch["id"]
+    assert disagreement_batch["document_count"] == 1
+    assert disagreement_batch["selection_definition"]["candidate_count"] == 1
+    assert disagreement_batch["selection_definition"]["row_filter"] == "DISAGREEMENT"
+    assert disagreement_batch["selection_definition"]["sources"][0]["reviewer_revision"] == 1
+    assert disagreement_batch["coding_groups"][0]["display_name"] == batch["coding_groups"][0]["display_name"]
+    with TestingSessionLocal() as db:
+        derived_ids = list(
+            db.scalars(
+                select(ReviewBatchDocument.matter_document_id).where(
+                    ReviewBatchDocument.review_batch_id == uuid.UUID(disagreement_batch["id"])
+                )
+            )
+        )
+    assert derived_ids == [uuid.UUID(document_ids[0])]
+    disagreement_document = client.get(
+        f"{base}/{disagreement_batch['id']}/disagreements/documents/{document_ids[0]}",
+        headers=auth(root_token),
+    )
+    assert disagreement_document.status_code == 200, disagreement_document.text
+    assert disagreement_document.json() == {
+        "review_batch_id": disagreement_batch["id"],
+        "source_batch_id": batch["id"],
+        "matter_document_id": document_ids[0],
+        "metadata_definition_id": str(definition_id),
+        "field_display_name": "Key document",
+        "field_type": "BOOLEAN",
+        "cardinality": "SINGLE",
+        "allowed_values": [],
+        "agreement_status": "DISAGREEMENT",
+        "sources": [
+            {
+                "id": reviewer_coding.json()["id"],
+                "source_type": "REVIEWER",
+                "run_type": None,
+                "label": root_admin.display_name,
+                "detail": root_admin.email,
+                "reviewer_revision": 1,
+                "state": "EVALUATED",
+                "values": [True],
+                "display_values": ["Yes"],
+                "top_confidence": None,
+            },
+            {
+                "id": additional_source_ids[1],
+                "source_type": "RUN",
+                "run_type": "WORKFLOW",
+                "label": "Comparison source 3",
+                "detail": None,
+                "reviewer_revision": None,
+                "state": "EVALUATED",
+                "values": [False],
+                "display_values": ["No"],
+                "top_confidence": None,
+            },
+        ],
+    }
+
     comparison_export = client.get(
         f"{base}/{batch['id']}/coding-comparison/export",
         headers=auth(root_token),

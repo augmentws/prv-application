@@ -25,6 +25,7 @@ from app.models import (
     ReviewBatchRunDocument,
     ReviewBatchRunValue,
 )
+from app.reviewer_coding import resolve_reviewer_coding_as_of
 from app.schemas import (
     ReviewBatchCodingComparisonRead,
     ReviewBatchComparisonClassAgreementRead,
@@ -72,6 +73,7 @@ def _value_labels(definition: MetadataDefinition) -> dict[str, str]:
 class SourceValue:
     state: str
     value_keys: tuple[str, ...]
+    values: tuple[Any, ...]
     top_confidence: float | None
 
 
@@ -134,13 +136,17 @@ def iter_comparison_documents(
     batch_id: uuid.UUID,
     definition_id: uuid.UUID,
     source_options: list[ReviewBatchComparisonSourceOptionRead],
+    reviewer_revisions: dict[uuid.UUID, int] | None = None,
+    matter_document_ids: list[uuid.UUID] | None = None,
 ) -> Iterator[ComparisonDocument]:
     run_ids = [source.id for source in source_options if source.source_type == "RUN"]
     reviewer_ids = [source.id for source in source_options if source.source_type == "REVIEWER"]
+    pinned_reviewer_revisions = reviewer_revisions or {}
+    current_reviewer_ids = [source_id for source_id in reviewer_ids if source_id not in pinned_reviewer_revisions]
     source_ids = [source.id for source in source_options]
     last_sequence = 0
     while True:
-        documents = db.execute(
+        statement = (
             select(
                 ReviewBatchDocument.matter_document_id,
                 ReviewBatchDocument.sequence_number,
@@ -153,7 +159,10 @@ def iter_comparison_documents(
             )
             .order_by(ReviewBatchDocument.sequence_number)
             .limit(COMPARISON_CHUNK_SIZE)
-        ).all()
+        )
+        if matter_document_ids is not None:
+            statement = statement.where(ReviewBatchDocument.matter_document_id.in_(matter_document_ids))
+        documents = db.execute(statement).all()
         if not documents:
             return
         document_ids = [row.matter_document_id for row in documents]
@@ -171,13 +180,13 @@ def iter_comparison_documents(
                 (row.reviewer_coding_id, row.matter_document_id): row.status
                 for row in db.scalars(
                     select(ReviewBatchReviewerDocument).where(
-                        ReviewBatchReviewerDocument.reviewer_coding_id.in_(reviewer_ids),
+                        ReviewBatchReviewerDocument.reviewer_coding_id.in_(current_reviewer_ids),
                         ReviewBatchReviewerDocument.matter_document_id.in_(document_ids),
                     )
                 )
             }
         )
-        values: dict[tuple[uuid.UUID, uuid.UUID], list[tuple[int, str, float | None]]] = defaultdict(list)
+        values: dict[tuple[uuid.UUID, uuid.UUID], list[tuple[int, str, float | None, Any]]] = defaultdict(list)
         for row in db.scalars(
             select(ReviewBatchRunValue).where(
                 ReviewBatchRunValue.review_batch_run_id.in_(run_ids),
@@ -185,28 +194,51 @@ def iter_comparison_documents(
                 ReviewBatchRunValue.metadata_definition_id == definition_id,
             )
         ):
+            value = event_value(row)
             values[(row.review_batch_run_id, row.matter_document_id)].append(
-                (row.value_ordinal, _value_key(event_value(row)), row.confidence)
+                (row.value_ordinal, _value_key(value), row.confidence, value)
             )
         for row in db.scalars(
             select(ReviewBatchReviewerValue).where(
-                ReviewBatchReviewerValue.reviewer_coding_id.in_(reviewer_ids),
+                ReviewBatchReviewerValue.reviewer_coding_id.in_(current_reviewer_ids),
                 ReviewBatchReviewerValue.matter_document_id.in_(document_ids),
                 ReviewBatchReviewerValue.metadata_definition_id == definition_id,
             )
         ):
+            value = event_value(row)
             values[(row.reviewer_coding_id, row.matter_document_id)].append(
-                (row.value_ordinal, _value_key(event_value(row)), None)
+                (row.value_ordinal, _value_key(value), None, value)
             )
+        for reviewer_id, revision in pinned_reviewer_revisions.items():
+            resolved = resolve_reviewer_coding_as_of(
+                db,
+                reviewer_coding_id=reviewer_id,
+                revision=revision,
+                document_ids=document_ids,
+                metadata_definition_ids=[definition_id],
+            )
+            statuses.update(
+                {
+                    (reviewer_id, row.matter_document_id): row.status
+                    for row in resolved.documents
+                }
+            )
+            for row in resolved.values:
+                value = event_value(row)
+                values[(reviewer_id, row.matter_document_id)].append(
+                    (row.value_ordinal, _value_key(value), None, value)
+                )
         for document in documents:
             source_values: dict[uuid.UUID, SourceValue] = {}
             for source_id in source_ids:
                 rows = sorted(values.get((source_id, document.matter_document_id), []))
-                unique_keys = tuple(dict.fromkeys(row[1] for row in rows))
+                unique_rows = list({row[1]: row for row in rows}.values())
+                unique_keys = tuple(row[1] for row in unique_rows)
                 confidences = [row[2] for row in rows if row[2] is not None]
                 source_values[source_id] = SourceValue(
                     state=_source_state(statuses.get((source_id, document.matter_document_id)), bool(rows)),
                     value_keys=unique_keys,
+                    values=tuple(row[3] for row in unique_rows),
                     top_confidence=max(confidences) if confidences else None,
                 )
             yield ComparisonDocument(
@@ -217,6 +249,54 @@ def iter_comparison_documents(
                 sources=source_values,
             )
         last_sequence = documents[-1].sequence_number
+
+
+def comparison_document(
+    db: Session,
+    *,
+    batch_id: uuid.UUID,
+    matter_document_id: uuid.UUID,
+    definition_id: uuid.UUID,
+    source_options: list[ReviewBatchComparisonSourceOptionRead],
+    reviewer_revisions: dict[uuid.UUID, int] | None = None,
+) -> ComparisonDocument | None:
+    """Replay one comparison row from its frozen source provenance."""
+
+    return next(
+        iter_comparison_documents(
+            db,
+            batch_id=batch_id,
+            definition_id=definition_id,
+            source_options=source_options,
+            reviewer_revisions=reviewer_revisions,
+            matter_document_ids=[matter_document_id],
+        ),
+        None,
+    )
+
+
+def comparison_document_ids(
+    db: Session,
+    *,
+    batch_id: uuid.UUID,
+    definition_id: uuid.UUID,
+    source_options: list[ReviewBatchComparisonSourceOptionRead],
+    row_filter: str,
+    reviewer_revisions: dict[uuid.UUID, int] | None = None,
+) -> list[uuid.UUID]:
+    """Resolve one reproducible comparison stratum in parent-batch order."""
+
+    return [
+        document.matter_document_id
+        for document in iter_comparison_documents(
+            db,
+            batch_id=batch_id,
+            definition_id=definition_id,
+            source_options=source_options,
+            reviewer_revisions=reviewer_revisions,
+        )
+        if _matches_filter(document.agreement_status, row_filter)
+    ]
 
 
 def _matches_filter(status: str, row_filter: str) -> bool:
