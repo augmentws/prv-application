@@ -6,7 +6,18 @@ from sqlalchemy import func, select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
-from app.models import ReviewBatch, ReviewBatchDocument
+import app.analysis_task_batch_sets as batch_sets
+from app.artifact_gateway import CollectionItemGroupingSnapshot
+from app.models import (
+    AnalysisTaskBatchSet,
+    Matter,
+    MatterAnalysisTask,
+    MatterAnalysisTaskVersion,
+    MatterDocument,
+    ReviewBatch,
+    ReviewBatchDocument,
+    WorkflowRun,
+)
 from tests.test_agents_and_matter_definitions import auth, create_tenant_context
 from tests.test_analysis_tasks import _specification
 from tests.test_review_batches import add_documents
@@ -140,3 +151,216 @@ def test_partitioned_batch_set_requires_opted_in_published_version(
     )
     assert response.status_code == 409
     assert response.json()["error"]["message"] == "Analysis Task has no published version"
+
+
+def test_batch_set_preview_is_read_only(
+    client: TestClient,
+    root_token: str,
+    db: Session,
+) -> None:
+    _, token, matter_id = create_tenant_context(client, root_token)
+    task = _published_partitioned_task(client, token, matter_id)
+    user_id = uuid.UUID(client.get("/v1/auth/me", headers=auth(token)).json()["id"])
+    add_documents(matter_id, user_id, count=5)
+
+    response = client.post(
+        f"/v1/matters/{matter_id}/analysis-tasks/{task['id']}/batch-sets/preview",
+        headers=auth(token),
+        json={
+            "population_source_type": "ALL_MATTER",
+            "target_batch_size": 2,
+        },
+    )
+
+    assert response.status_code == 200, response.text
+    assert response.json()["population_count"] == 5
+    assert response.json()["estimated_batch_count"] == 3
+    assert response.json()["estimated_batch_sizes"] == [2, 2, 1]
+    assert response.json()["warnings"] == []
+    assert db.scalar(select(func.count()).select_from(AnalysisTaskBatchSet)) == 0
+
+
+def test_failed_batch_set_can_retry_with_a_new_execution(
+    client: TestClient,
+    root_token: str,
+    db: Session,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _, token, matter_id = create_tenant_context(client, root_token)
+    task = _published_partitioned_task(client, token, matter_id)
+    user_id = uuid.UUID(client.get("/v1/auth/me", headers=auth(token)).json()["id"])
+    add_documents(matter_id, user_id, count=3)
+    def fail_grouping_snapshots(**_: object) -> dict[uuid.UUID, CollectionItemGroupingSnapshot]:
+        raise batch_sets.AnalysisTaskBatchSetError("Temporary family lookup failure")
+
+    monkeypatch.setattr(batch_sets, "get_collection_item_grouping_snapshots", fail_grouping_snapshots)
+
+    response = client.post(
+        f"/v1/matters/{matter_id}/analysis-tasks/{task['id']}/batch-sets",
+        headers=auth(token),
+        json={
+            "name": "Retry partition",
+            "population_source_type": "ALL_MATTER",
+            "target_batch_size": 2,
+            "keep_together": ["FAMILY"],
+        },
+    )
+    assert response.status_code == 202, response.text
+    failed = response.json()
+    assert failed["status"] == "FAILED"
+
+    monkeypatch.setattr(
+        batch_sets,
+        "get_collection_item_grouping_snapshots",
+        lambda **kwargs: {
+            item_id: CollectionItemGroupingSnapshot(
+                item_id=item_id,
+                family_id=None,
+                record_type="file",
+                native_content_hash=None,
+            )
+            for item_id in kwargs["item_ids"]
+        },
+    )
+    response = client.post(
+        f"/v1/matters/{matter_id}/analysis-tasks/{task['id']}/batch-sets/{failed['id']}/retry",
+        headers=auth(token),
+    )
+
+    assert response.status_code == 202, response.text
+    assert response.json()["status"] == "READY"
+    assert response.json()["population_count"] == 3
+    executions = list(
+        db.scalars(
+            select(WorkflowRun)
+            .where(WorkflowRun.job_id == uuid.UUID(failed["id"]))
+            .order_by(WorkflowRun.attempt_number)
+        )
+    )
+    assert [execution.attempt_number for execution in executions] == [1, 2]
+    assert executions[1].retry_of_workflow_run_id == executions[0].id
+
+
+def test_queued_batch_set_can_be_canceled(
+    client: TestClient,
+    root_token: str,
+    db: Session,
+) -> None:
+    _, token, matter_id = create_tenant_context(client, root_token)
+    task_payload = _published_partitioned_task(client, token, matter_id)
+    user_id = uuid.UUID(client.get("/v1/auth/me", headers=auth(token)).json()["id"])
+    matter = db.get(Matter, uuid.UUID(matter_id))
+    task = db.get(MatterAnalysisTask, uuid.UUID(task_payload["id"]))
+    task_version = db.get(MatterAnalysisTaskVersion, uuid.UUID(task_payload["version"]["id"]))
+    assert matter is not None and task is not None and task_version is not None
+    batch_set = batch_sets.create_batch_set(
+        db,
+        matter=matter,
+        task=task,
+        task_version=task_version,
+        name="Cancelable partition",
+        description=None,
+        population_source_type="ALL_MATTER",
+        source_review_batch_id=None,
+        target_batch_size=2,
+        keep_together=[],
+        random_seed=None,
+        actor_user_id=user_id,
+    )
+    db.commit()
+
+    response = client.post(
+        f"/v1/matters/{matter_id}/analysis-tasks/{task.id}/batch-sets/{batch_set.id}/cancel",
+        headers=auth(token),
+    )
+
+    assert response.status_code == 200, response.text
+    assert response.json()["status"] == "CANCELED"
+    db.expire_all()
+    execution = db.scalar(
+        select(WorkflowRun).where(
+            WorkflowRun.job_id == batch_set.id,
+            WorkflowRun.attempt_number == 1,
+        )
+    )
+    assert execution is not None
+    assert execution.status == "CANCELED"
+    assert execution.cancel_requested_by_user_id == user_id
+
+
+def test_family_keep_together_and_oversized_warning(
+    client: TestClient,
+    root_token: str,
+    db: Session,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _, token, matter_id = create_tenant_context(client, root_token)
+    task = _published_partitioned_task(client, token, matter_id)
+    user_id = uuid.UUID(client.get("/v1/auth/me", headers=auth(token)).json()["id"])
+    document_ids = add_documents(matter_id, user_id, count=5)
+    documents = list(
+        db.scalars(
+            select(MatterDocument)
+            .where(MatterDocument.id.in_([uuid.UUID(value) for value in document_ids]))
+            .order_by(MatterDocument.created_at, MatterDocument.id)
+        )
+    )
+    family_id = uuid.uuid4()
+
+    def grouping_snapshots(**kwargs: object) -> dict[uuid.UUID, CollectionItemGroupingSnapshot]:
+        item_ids = kwargs["item_ids"]
+        assert isinstance(item_ids, list)
+        return {
+            item_id: CollectionItemGroupingSnapshot(
+                item_id=item_id,
+                family_id=family_id if index < 3 else None,
+                record_type="file",
+                native_content_hash=None,
+            )
+            for index, item_id in enumerate(item_ids)
+        }
+
+    monkeypatch.setattr(batch_sets, "get_collection_item_grouping_snapshots", grouping_snapshots)
+
+    preview = client.post(
+        f"/v1/matters/{matter_id}/analysis-tasks/{task['id']}/batch-sets/preview",
+        headers=auth(token),
+        json={
+            "population_source_type": "ALL_MATTER",
+            "target_batch_size": 2,
+            "keep_together": ["FAMILY"],
+        },
+    )
+    assert preview.status_code == 200, preview.text
+    assert preview.json()["estimated_batch_sizes"] == [3, 1, 1]
+    assert preview.json()["oversized_groups"] == [
+        {
+            "code": "OVERSIZED_FAMILY",
+            "family_id": str(family_id),
+            "document_count": 3,
+            "target_batch_size": 2,
+        }
+    ]
+
+    response = client.post(
+        f"/v1/matters/{matter_id}/analysis-tasks/{task['id']}/batch-sets",
+        headers=auth(token),
+        json={
+            "name": "Family partition",
+            "population_source_type": "ALL_MATTER",
+            "target_batch_size": 2,
+            "keep_together": ["FAMILY"],
+        },
+    )
+    assert response.status_code == 202, response.text
+    assert response.json()["status"] == "READY"
+    assert [child["document_count"] for child in response.json()["children"]] == [3, 1, 1]
+    family_child_ids = set(
+        db.scalars(
+            select(ReviewBatchDocument.review_batch_id).where(
+                ReviewBatchDocument.analysis_task_batch_set_id == uuid.UUID(response.json()["id"]),
+                ReviewBatchDocument.matter_document_id.in_([document.id for document in documents[:3]]),
+            )
+        )
+    )
+    assert len(family_child_ids) == 1

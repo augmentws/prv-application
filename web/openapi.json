@@ -4608,6 +4608,74 @@
         }
       }
     },
+    "/v1/matters/{matter_id}/analysis-tasks/{task_id}/batch-sets/preview": {
+      "post": {
+        "tags": [
+          "matter analysis tasks"
+        ],
+        "summary": "Preview Analysis Task Batch Set",
+        "operationId": "preview_analysis_task_batch_set_v1_matters__matter_id__analysis_tasks__task_id__batch_sets_preview_post",
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "matter_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid",
+              "title": "Matter Id"
+            }
+          },
+          {
+            "name": "task_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid",
+              "title": "Task Id"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/AnalysisTaskBatchSetPreviewCreate"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AnalysisTaskBatchSetPreviewRead"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/v1/matters/{matter_id}/analysis-tasks/{task_id}/batch-sets/{batch_set_id}": {
       "get": {
         "tags": [
@@ -4654,6 +4722,142 @@
         ],
         "responses": {
           "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AnalysisTaskBatchSetRead"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v1/matters/{matter_id}/analysis-tasks/{task_id}/batch-sets/{batch_set_id}/cancel": {
+      "post": {
+        "tags": [
+          "matter analysis tasks"
+        ],
+        "summary": "Cancel Analysis Task Batch Set",
+        "operationId": "cancel_analysis_task_batch_set_v1_matters__matter_id__analysis_tasks__task_id__batch_sets__batch_set_id__cancel_post",
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "matter_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid",
+              "title": "Matter Id"
+            }
+          },
+          {
+            "name": "task_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid",
+              "title": "Task Id"
+            }
+          },
+          {
+            "name": "batch_set_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid",
+              "title": "Batch Set Id"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AnalysisTaskBatchSetRead"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v1/matters/{matter_id}/analysis-tasks/{task_id}/batch-sets/{batch_set_id}/retry": {
+      "post": {
+        "tags": [
+          "matter analysis tasks"
+        ],
+        "summary": "Retry Analysis Task Batch Set",
+        "operationId": "retry_analysis_task_batch_set_v1_matters__matter_id__analysis_tasks__task_id__batch_sets__batch_set_id__retry_post",
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "matter_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid",
+              "title": "Matter Id"
+            }
+          },
+          {
+            "name": "task_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid",
+              "title": "Task Id"
+            }
+          },
+          {
+            "name": "batch_set_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid",
+              "title": "Batch Set Id"
+            }
+          }
+        ],
+        "responses": {
+          "202": {
             "description": "Successful Response",
             "content": {
               "application/json": {
@@ -24921,24 +25125,6 @@
       },
       "AnalysisTaskBatchSetCreate": {
         "properties": {
-          "name": {
-            "type": "string",
-            "maxLength": 200,
-            "minLength": 1,
-            "title": "Name"
-          },
-          "description": {
-            "anyOf": [
-              {
-                "type": "string",
-                "maxLength": 4000
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "title": "Description"
-          },
           "population_source_type": {
             "type": "string",
             "enum": [
@@ -24965,6 +25151,33 @@
             "minimum": 1.0,
             "title": "Target Batch Size"
           },
+          "keep_together": {
+            "items": {
+              "type": "string",
+              "const": "FAMILY"
+            },
+            "type": "array",
+            "maxItems": 1,
+            "title": "Keep Together"
+          },
+          "name": {
+            "type": "string",
+            "maxLength": 200,
+            "minLength": 1,
+            "title": "Name"
+          },
+          "description": {
+            "anyOf": [
+              {
+                "type": "string",
+                "maxLength": 4000
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Description"
+          },
           "random_seed": {
             "anyOf": [
               {
@@ -24982,11 +25195,104 @@
         "additionalProperties": false,
         "type": "object",
         "required": [
-          "name",
+          "population_source_type",
+          "target_batch_size",
+          "name"
+        ],
+        "title": "AnalysisTaskBatchSetCreate"
+      },
+      "AnalysisTaskBatchSetPreviewCreate": {
+        "properties": {
+          "population_source_type": {
+            "type": "string",
+            "enum": [
+              "ALL_MATTER",
+              "SOURCE_BATCH"
+            ],
+            "title": "Population Source Type"
+          },
+          "source_review_batch_id": {
+            "anyOf": [
+              {
+                "type": "string",
+                "format": "uuid"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Source Review Batch Id"
+          },
+          "target_batch_size": {
+            "type": "integer",
+            "maximum": 10000000.0,
+            "minimum": 1.0,
+            "title": "Target Batch Size"
+          },
+          "keep_together": {
+            "items": {
+              "type": "string",
+              "const": "FAMILY"
+            },
+            "type": "array",
+            "maxItems": 1,
+            "title": "Keep Together"
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
           "population_source_type",
           "target_batch_size"
         ],
-        "title": "AnalysisTaskBatchSetCreate"
+        "title": "AnalysisTaskBatchSetPreviewCreate"
+      },
+      "AnalysisTaskBatchSetPreviewRead": {
+        "properties": {
+          "population_count": {
+            "type": "integer",
+            "title": "Population Count"
+          },
+          "estimated_batch_count": {
+            "type": "integer",
+            "title": "Estimated Batch Count"
+          },
+          "estimated_batch_sizes": {
+            "items": {
+              "type": "integer"
+            },
+            "type": "array",
+            "title": "Estimated Batch Sizes"
+          },
+          "population_hash": {
+            "type": "string",
+            "title": "Population Hash"
+          },
+          "oversized_groups": {
+            "items": {
+              "additionalProperties": true,
+              "type": "object"
+            },
+            "type": "array",
+            "title": "Oversized Groups"
+          },
+          "warnings": {
+            "items": {
+              "additionalProperties": true,
+              "type": "object"
+            },
+            "type": "array",
+            "title": "Warnings"
+          }
+        },
+        "type": "object",
+        "required": [
+          "population_count",
+          "estimated_batch_count",
+          "estimated_batch_sizes",
+          "population_hash"
+        ],
+        "title": "AnalysisTaskBatchSetPreviewRead"
       },
       "AnalysisTaskBatchSetRead": {
         "properties": {

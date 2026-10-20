@@ -405,6 +405,11 @@ def enqueue_analysis_task_batch_set(db: Session, workflow_id: str, batch_set_id:
     get_dbos_client().enqueue_in_transaction(db, options, batch_set_id)
 
 
+def cancel_analysis_task_batch_set_workflow(workflow_id: str) -> None:
+    if get_settings().dbos_enabled:
+        get_dbos_client().cancel_workflow(workflow_id, cancel_children=True)
+
+
 def cancel_review_batch(workflow_id: str) -> None:
     if get_settings().dbos_enabled:
         get_dbos_client().cancel_workflow(workflow_id, cancel_children=True)

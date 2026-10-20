@@ -8,12 +8,6 @@
 import type { AnalysisTaskBatchSetCreatePopulationSourceType } from './analysisTaskBatchSetCreatePopulationSourceType';
 
 export interface AnalysisTaskBatchSetCreate {
-  /**
-     * @minLength 1
-     * @maxLength 200
-     */
-  name: string;
-  description?: string | null;
   population_source_type: AnalysisTaskBatchSetCreatePopulationSourceType;
   source_review_batch_id?: string | null;
   /**
@@ -21,5 +15,13 @@ export interface AnalysisTaskBatchSetCreate {
      * @maximum 10000000
      */
   target_batch_size: number;
+  /** @maxItems 1 */
+  keep_together?: 'FAMILY'[];
+  /**
+     * @minLength 1
+     * @maxLength 200
+     */
+  name: string;
+  description?: string | null;
   random_seed?: string | null;
 }

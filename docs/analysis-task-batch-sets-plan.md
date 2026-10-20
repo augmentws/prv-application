@@ -18,7 +18,7 @@ for the same task, and in sets owned by other tasks.
 
 ### Current implementation status
 
-The first backend slice is implemented:
+Delivery Slices 1 and 2 are implemented:
 
 - task versions persist and expose the three-mode scope policy with compatibility defaults;
 - `analysis_task_batch_set` is a durable Core domain record backed by a common `WorkflowRun`;
@@ -27,13 +27,21 @@ The first backend slice is implemented:
 - the database enforces one membership per `(batch set, matter document)` while leaving ordinary batches
   overlapping;
 - list, get, and create APIs are available under the owning Analysis Task;
+- read-only preview reports the exact population count, proposed child sizes, population hash, oversized families,
+  and warnings without persisting a set;
+- cancel and retry commands use the common execution history, with a new workflow attempt on retry and cooperative
+  cancellation between durable partition boundaries;
+- optional `FAMILY` keep-together planning resolves Artifact-owned family IDs, assigns atomic families with stable
+  least-loaded balancing, and keeps oversized families intact with an explicit warning;
+- managed children use deterministic IDs, remain unavailable while membership is incomplete, and become ready only
+  after set-wide coverage verification;
 - inline development execution and a DBOS worker workflow use the same materializer;
 - question-answering, classification, and fact-development launches enforce the selected mode and the set's
   pinned task version.
 
-The following remain planned: preview, cancel and retry commands; search-backed populations; family/thread or
-duplicate keep-together groups; search projection for managed children; set-wide run orchestration; UI; and
-native whole-matter manifests for question answering and fact development.
+The following remain planned: search-backed populations; communication-thread and duplicate keep-together groups;
+search projection for managed children; set-wide run orchestration; UI; expanded child-run provenance; and native
+whole-matter manifests for question answering and fact development.
 
 ## 2. Existing behavior to preserve
 
@@ -509,10 +517,17 @@ The deployment order is:
 Add the set model, nullable child ownership, scoped membership uniqueness, task-version scope policy, read models,
 and compatibility defaults. Do not expose creation yet.
 
+Status: implemented. The initial implementation also delivered compatible create/read APIs and task-version scope
+enforcement that had originally been assigned to later slices.
+
 ### Slice 2: deterministic materialization
 
 Add preview, create, status, cancel, and retry APIs plus the durable planner. Initially support `ALL_MATTER`,
 `SOURCE_BATCH`, stable ordering, target batch size, and family keep-together.
+
+Status: implemented. Preview is non-authoritative and read-only; creation freezes its own snapshot. Retries retain
+the Batch Set and frozen source contract, create a new common execution attempt, and deterministically recreate child
+IDs and membership. `FAMILY` is the first keep-together option, with oversized groups preserved and reported.
 
 ### Slice 3: search-backed populations and UI
 

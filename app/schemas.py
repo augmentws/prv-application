@@ -2848,23 +2848,42 @@ AnalysisTaskBatchSetSourceType = Literal["ALL_MATTER", "SOURCE_BATCH"]
 AnalysisTaskBatchSetStatus = Literal["QUEUED", "BUILDING", "READY", "FAILED", "CANCELED", "ARCHIVED"]
 
 
-class AnalysisTaskBatchSetCreate(BaseModel):
+class AnalysisTaskBatchSetPlanRequest(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
-    name: str = Field(min_length=1, max_length=200)
-    description: str | None = Field(default=None, max_length=4000)
     population_source_type: AnalysisTaskBatchSetSourceType
     source_review_batch_id: uuid.UUID | None = None
     target_batch_size: int = Field(ge=1, le=10_000_000)
-    random_seed: str | None = Field(default=None, min_length=1, max_length=100)
+    keep_together: list[Literal["FAMILY"]] = Field(default_factory=list, max_length=1)
 
     @model_validator(mode="after")
-    def validate_source(self) -> "AnalysisTaskBatchSetCreate":
+    def validate_source(self) -> "AnalysisTaskBatchSetPlanRequest":
         if self.population_source_type == "SOURCE_BATCH" and self.source_review_batch_id is None:
             raise ValueError("SOURCE_BATCH requires source_review_batch_id")
         if self.population_source_type != "SOURCE_BATCH" and self.source_review_batch_id is not None:
             raise ValueError("source_review_batch_id is only valid for SOURCE_BATCH")
+        if len(self.keep_together) != len(set(self.keep_together)):
+            raise ValueError("keep_together values must be unique")
         return self
+
+
+class AnalysisTaskBatchSetPreviewCreate(AnalysisTaskBatchSetPlanRequest):
+    pass
+
+
+class AnalysisTaskBatchSetCreate(AnalysisTaskBatchSetPlanRequest):
+    name: str = Field(min_length=1, max_length=200)
+    description: str | None = Field(default=None, max_length=4000)
+    random_seed: str | None = Field(default=None, min_length=1, max_length=100)
+
+
+class AnalysisTaskBatchSetPreviewRead(BaseModel):
+    population_count: int
+    estimated_batch_count: int
+    estimated_batch_sizes: list[int]
+    population_hash: str
+    oversized_groups: list[dict[str, Any]] = Field(default_factory=list)
+    warnings: list[dict[str, Any]] = Field(default_factory=list)
 
 
 class AnalysisTaskBatchSetChildRead(BaseModel):
