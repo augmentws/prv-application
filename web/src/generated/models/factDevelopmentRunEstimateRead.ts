@@ -6,13 +6,16 @@
  * OpenAPI spec version: 0.1.0
  */
 import type { FactDevelopmentRunEstimateReadCodingSource } from './factDevelopmentRunEstimateReadCodingSource';
+import type { FactDevelopmentRunEstimateReadScopeType } from './factDevelopmentRunEstimateReadScopeType';
 import type { FactIssueMembershipCount } from './factIssueMembershipCount';
 
 /**
  * What a run launched now would process. Token figures are planning approximations, not billing figures.
  */
 export interface FactDevelopmentRunEstimateRead {
-  review_batch_id: string;
+  scope_type: FactDevelopmentRunEstimateReadScopeType;
+  scope_id: string;
+  review_batch_id: string | null;
   task_version: number;
   coding_source: FactDevelopmentRunEstimateReadCodingSource;
   reviewer_coding_revision: number | null;

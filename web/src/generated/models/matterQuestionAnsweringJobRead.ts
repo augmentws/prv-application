@@ -7,11 +7,14 @@
  */
 import type { JobExecutionRead } from './jobExecutionRead';
 import type { MatterQuestionAnsweringJobReadDecisionProvider } from './matterQuestionAnsweringJobReadDecisionProvider';
+import type { MatterQuestionAnsweringJobReadScopeType } from './matterQuestionAnsweringJobReadScopeType';
 import type { MatterQuestionAnsweringJobReadStatus } from './matterQuestionAnsweringJobReadStatus';
 
 export interface MatterQuestionAnsweringJobRead {
   id: string;
-  review_batch_id: string;
+  scope_type?: MatterQuestionAnsweringJobReadScopeType;
+  scope_id: string;
+  review_batch_id: string | null;
   review_batch_name: string;
   matter_analysis_task_id: string | null;
   task_name: string;

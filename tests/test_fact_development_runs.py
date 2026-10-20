@@ -26,6 +26,7 @@ from app.models import (
     JobOutcomeManifest,
     MatterAnalysisTaskRun,
     MatterAnalysisTaskRunChunk,
+    MatterAnalysisTaskVersion,
     MatterDocument,
     MatterEntity,
     MatterFact,
@@ -548,6 +549,60 @@ def test_population_is_frozen_in_a_chronological_input_manifest(
         }
     # Only the one ready document's pinned text was read; nothing was re-resolved at execution time.
     assert inputs["text_reads"] == 1
+
+
+def test_whole_matter_run_freezes_native_matter_manifest(
+    client: TestClient,
+    run_ctx: dict,
+    artifacts: dict,
+) -> None:
+    ctx = run_ctx
+    with TestingSessionLocal() as db:
+        version = db.scalar(
+            select(MatterAnalysisTaskVersion).where(
+                MatterAnalysisTaskVersion.matter_analysis_task_id == uuid.UUID(ctx["task_id"]),
+                MatterAnalysisTaskVersion.status == "PUBLISHED",
+            )
+        )
+        assert version is not None
+        version.scope_policy = {
+            "allowed_modes": ["AD_HOC_BATCH", "WHOLE_MATTER"],
+            "default_mode": "WHOLE_MATTER",
+        }
+        db.commit()
+
+    estimate = client.post(
+        f"/v1/matters/{ctx['matter_id']}/analysis-tasks/{ctx['task_id']}/fact-runs/estimate",
+        headers=auth(ctx["token"]),
+        json={"scope_type": "MATTER", "coding_source": "MATTER_METADATA"},
+    )
+    assert estimate.status_code == 200, estimate.text
+    assert estimate.json()["scope_type"] == "MATTER"
+    assert estimate.json()["scope_id"] == ctx["matter_id"]
+    assert estimate.json()["review_batch_id"] is None
+
+    response = client.post(
+        f"/v1/matters/{ctx['matter_id']}/analysis-tasks/{ctx['task_id']}/fact-runs",
+        headers=auth(ctx["token"]),
+        json={
+            "scope_type": "MATTER",
+            "coding_source": "MATTER_METADATA",
+            "idempotency_key": "whole-matter-facts",
+        },
+    )
+    assert response.status_code == 202, response.text
+    run = response.json()
+    assert (run["scope_type"], run["scope_id"]) == ("MATTER", ctx["matter_id"])
+    assert run["population_document_count"] == len(ctx["documents"])
+
+    with TestingSessionLocal() as db:
+        prepare_fact_development_run(db, uuid.UUID(run["id"]))
+        run_row = db.get(MatterAnalysisTaskRun, uuid.UUID(run["id"]))
+        assert run_row is not None
+        manifest = db.get(AnalysisInputManifest, run_row.analysis_input_manifest_id)
+        assert manifest is not None
+        assert (manifest.scope_type, manifest.scope_id) == ("MATTER", uuid.UUID(ctx["matter_id"]))
+        assert manifest.item_count == len(ctx["documents"])
 
 
 def test_chunks_refuse_a_mismatched_or_unsupported_input_manifest(

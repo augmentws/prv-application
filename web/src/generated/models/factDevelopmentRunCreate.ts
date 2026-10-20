@@ -6,9 +6,11 @@
  * OpenAPI spec version: 0.1.0
  */
 import type { FactDevelopmentRunCreateCodingSource } from './factDevelopmentRunCreateCodingSource';
+import type { FactDevelopmentRunCreateScopeType } from './factDevelopmentRunCreateScopeType';
 
 export interface FactDevelopmentRunCreate {
-  review_batch_id: string;
+  scope_type?: FactDevelopmentRunCreateScopeType;
+  review_batch_id?: string | null;
   coding_source?: FactDevelopmentRunCreateCodingSource;
   reviewer_coding_id?: string | null;
   /**
@@ -17,4 +19,5 @@ export interface FactDevelopmentRunCreate {
      */
   idempotency_key: string;
   use_batch_api?: boolean;
+  matter_analysis_task_version_id?: string | null;
 }

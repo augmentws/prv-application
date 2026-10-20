@@ -41,7 +41,7 @@ export function QuestionAnsweringJobs() {
   });
   const columns = useMemo<ColumnDef<MatterQuestionAnsweringJobRead>[]>(() => [
     { accessorKey: "task_name", header: "Analysis task", cell: ({ row }) => <div><p className="font-semibold">{row.original.task_name}</p>{row.original.task_version != null ? <p className="text-xs text-muted-foreground">Published v{row.original.task_version}</p> : null}</div> },
-    { accessorKey: "review_batch_name", header: "Review batch", cell: ({ row }) => <Link className="font-medium text-primary hover:underline" href={`/review/matters/${matterId}?batch=${row.original.review_batch_id}`}>{row.original.review_batch_name}</Link> },
+    { accessorKey: "review_batch_name", header: "Population", cell: ({ row }) => row.original.review_batch_id ? <Link className="font-medium text-primary hover:underline" href={`/review/matters/${matterId}?batch=${row.original.review_batch_id}`}>{row.original.review_batch_name}</Link> : <span className="font-medium">Entire matter</span> },
     { accessorKey: "decision_provider", header: "Provider", cell: ({ row }) => <div><p>{row.original.decision_provider === "OPENAI_DECISIONS" ? "OpenAI Decisions" : "Jev"}</p><p className="max-w-48 truncate text-xs text-muted-foreground" title={row.original.model_key}>{row.original.model_key}</p></div> },
     { accessorKey: "status", header: "Status", cell: ({ row }) => {
       const opensFailures = row.original.status === "COMPLETED_WITH_ERRORS" && (row.original.failed_document_count ?? 0) > 0;
@@ -55,21 +55,23 @@ export function QuestionAnsweringJobs() {
       return <div className="min-w-44"><ProgressBar percent={percent} /><p className="text-xs tabular-nums text-muted-foreground">{successful.toLocaleString()} / {total.toLocaleString()} successful</p></div>;
     } },
     { accessorKey: "created_at", header: "Created", cell: ({ row }) => <span className="whitespace-nowrap text-muted-foreground">{formatDate(row.original.created_at)}</span> },
-    { id: "actions", header: "", cell: ({ row }) => <div className="flex justify-end gap-2">{row.original.execution?.available_actions.includes("CANCEL") ? <Button size="sm" variant="outline" disabled={cancelQuestionAnsweringMutation.isPending} onClick={() => cancelQuestionAnsweringMutation.mutate(row.original.id)}><Ban />Cancel</Button> : null}<QuestionAnsweringJobActions matterId={matterId} job={row.original} canDelete={canDeleteJobs && TERMINAL_JOB_STATUSES.includes(row.original.status)} onDelete={deleteJob} /></div> },
-  ], [canDeleteJobs, cancelQuestionAnsweringMutation, deleteJob, matterId]);
+    { id: "actions", header: "", cell: ({ row }) => <div className="flex justify-end gap-2">{row.original.execution?.available_actions.includes("CANCEL") ? <Button size="sm" variant="outline" disabled={cancelQuestionAnsweringMutation.isPending} onClick={() => cancelQuestionAnsweringMutation.mutate(row.original.id)}><Ban />Cancel</Button> : null}<QuestionAnsweringJobActions clientId={clientId} matterId={matterId} job={row.original} canDelete={canDeleteJobs && TERMINAL_JOB_STATUSES.includes(row.original.status)} onDelete={deleteJob} /></div> },
+  ], [canDeleteJobs, cancelQuestionAnsweringMutation, clientId, deleteJob, matterId]);
 
   if (questionAnsweringJobs.isPending) return <TableLoading />;
   if (questionAnsweringJobs.error) return <QueryError message={questionAnsweringJobs.error.message} />;
   return <section className="space-y-4">
-    <div className="flex flex-wrap items-start justify-between gap-3"><div><h2 className="flex items-center gap-2 text-lg font-semibold"><Sparkles className="size-5 text-primary" />Question answering</h2><p className="text-sm text-muted-foreground">Question-answering Analysis Task runs across review batches. Results remain isolated until explicitly published.</p></div><Button asChild variant="outline"><Link href={matterHref(clientId, matterId, "analysis")}><FileSearch />Analysis tasks</Link></Button></div>
+    <div className="flex flex-wrap items-start justify-between gap-3"><div><h2 className="flex items-center gap-2 text-lg font-semibold"><Sparkles className="size-5 text-primary" />Question answering</h2><p className="text-sm text-muted-foreground">Question-answering Analysis Task runs across frozen review batches or native whole-matter manifests. Results remain isolated until explicitly published.</p></div><Button asChild variant="outline"><Link href={matterHref(clientId, matterId, "analysis")}><FileSearch />Analysis tasks</Link></Button></div>
     <DataTable columns={columns} data={questionAnsweringJobs.data} emptyMessage="No question-answering jobs have been started for this matter." />
   </section>;
 }
 
-function QuestionAnsweringJobActions({ matterId, job, canDelete, onDelete }: { matterId: string; job: MatterQuestionAnsweringJobRead; canDelete: boolean; onDelete: (jobType: string, jobId: string) => Promise<void> }) {
+function QuestionAnsweringJobActions({ clientId, matterId, job, canDelete, onDelete }: { clientId: string; matterId: string; job: MatterQuestionAnsweringJobRead; canDelete: boolean; onDelete: (jobType: string, jobId: string) => Promise<void> }) {
   const [failuresOpen, setFailuresOpen] = useState(false);
   const [deleteOpen, setDeleteOpen] = useState(false);
-  const primary = <Link href={`/review/matters/${matterId}?batch=${job.review_batch_id}`}><FileSearch />Open batch</Link>;
+  const primary = job.review_batch_id
+    ? <Link href={`/review/matters/${matterId}?batch=${job.review_batch_id}`}><FileSearch />Open batch</Link>
+    : <Link href={matterHref(clientId, matterId, "analysis")}><FileSearch />Open task</Link>;
   const actions = [
     ...((job.failed_document_count ?? 0) ? [{
       id: "view-errors",

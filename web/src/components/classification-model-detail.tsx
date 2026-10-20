@@ -264,6 +264,7 @@ export function ClassificationModelDetail({
       return coreApi<ReviewBatchRunRead>(`/v1/matters/${matterId}/review-batches/${projectionBatchId}/classifier-runs`, { method: "POST", body: JSON.stringify(payload) });
     },
     onSuccess: (run) => {
+      if (!run.review_batch_id) throw new Error("Classifier projection did not return a review batch");
       const batchName = compatibleBatches.find((batch) => batch.id === run.review_batch_id)?.name ?? "Review batch";
       queryClient.invalidateQueries({ queryKey: ["review-batch-runs", matterId, run.review_batch_id] });
       queryClient.invalidateQueries({ queryKey: ["review-batch", matterId, run.review_batch_id] });

@@ -4480,6 +4480,710 @@
         }
       }
     },
+    "/v1/matters/{matter_id}/analysis-tasks/{task_id}/batch-sets": {
+      "get": {
+        "tags": [
+          "matter analysis tasks"
+        ],
+        "summary": "List Analysis Task Batch Sets",
+        "operationId": "list_analysis_task_batch_sets_v1_matters__matter_id__analysis_tasks__task_id__batch_sets_get",
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "matter_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid",
+              "title": "Matter Id"
+            }
+          },
+          {
+            "name": "task_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid",
+              "title": "Task Id"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "array",
+                  "items": {
+                    "$ref": "#/components/schemas/AnalysisTaskBatchSetRead"
+                  },
+                  "title": "Response List Analysis Task Batch Sets V1 Matters  Matter Id  Analysis Tasks  Task Id  Batch Sets Get"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      },
+      "post": {
+        "tags": [
+          "matter analysis tasks"
+        ],
+        "summary": "Create Analysis Task Batch Set",
+        "operationId": "create_analysis_task_batch_set_v1_matters__matter_id__analysis_tasks__task_id__batch_sets_post",
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "matter_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid",
+              "title": "Matter Id"
+            }
+          },
+          {
+            "name": "task_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid",
+              "title": "Task Id"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/AnalysisTaskBatchSetCreate"
+              }
+            }
+          }
+        },
+        "responses": {
+          "202": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AnalysisTaskBatchSetRead"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v1/matters/{matter_id}/analysis-tasks/{task_id}/batch-sets/preview": {
+      "post": {
+        "tags": [
+          "matter analysis tasks"
+        ],
+        "summary": "Preview Analysis Task Batch Set",
+        "operationId": "preview_analysis_task_batch_set_v1_matters__matter_id__analysis_tasks__task_id__batch_sets_preview_post",
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "matter_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid",
+              "title": "Matter Id"
+            }
+          },
+          {
+            "name": "task_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid",
+              "title": "Task Id"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/AnalysisTaskBatchSetPreviewCreate"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AnalysisTaskBatchSetPreviewRead"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v1/matters/{matter_id}/analysis-tasks/{task_id}/batch-sets/{batch_set_id}": {
+      "get": {
+        "tags": [
+          "matter analysis tasks"
+        ],
+        "summary": "Get Analysis Task Batch Set",
+        "operationId": "get_analysis_task_batch_set_v1_matters__matter_id__analysis_tasks__task_id__batch_sets__batch_set_id__get",
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "matter_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid",
+              "title": "Matter Id"
+            }
+          },
+          {
+            "name": "task_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid",
+              "title": "Task Id"
+            }
+          },
+          {
+            "name": "batch_set_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid",
+              "title": "Batch Set Id"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AnalysisTaskBatchSetRead"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v1/matters/{matter_id}/analysis-tasks/{task_id}/batch-sets/{batch_set_id}/cancel": {
+      "post": {
+        "tags": [
+          "matter analysis tasks"
+        ],
+        "summary": "Cancel Analysis Task Batch Set",
+        "operationId": "cancel_analysis_task_batch_set_v1_matters__matter_id__analysis_tasks__task_id__batch_sets__batch_set_id__cancel_post",
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "matter_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid",
+              "title": "Matter Id"
+            }
+          },
+          {
+            "name": "task_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid",
+              "title": "Task Id"
+            }
+          },
+          {
+            "name": "batch_set_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid",
+              "title": "Batch Set Id"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AnalysisTaskBatchSetRead"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v1/matters/{matter_id}/analysis-tasks/{task_id}/batch-sets/{batch_set_id}/retry": {
+      "post": {
+        "tags": [
+          "matter analysis tasks"
+        ],
+        "summary": "Retry Analysis Task Batch Set",
+        "operationId": "retry_analysis_task_batch_set_v1_matters__matter_id__analysis_tasks__task_id__batch_sets__batch_set_id__retry_post",
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "matter_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid",
+              "title": "Matter Id"
+            }
+          },
+          {
+            "name": "task_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid",
+              "title": "Task Id"
+            }
+          },
+          {
+            "name": "batch_set_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid",
+              "title": "Batch Set Id"
+            }
+          }
+        ],
+        "responses": {
+          "202": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AnalysisTaskBatchSetRead"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v1/matters/{matter_id}/analysis-tasks/{task_id}/batch-sets/{batch_set_id}/runs": {
+      "get": {
+        "tags": [
+          "matter analysis tasks"
+        ],
+        "summary": "List Analysis Task Batch Set Runs",
+        "operationId": "list_analysis_task_batch_set_runs_v1_matters__matter_id__analysis_tasks__task_id__batch_sets__batch_set_id__runs_get",
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "matter_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid",
+              "title": "Matter Id"
+            }
+          },
+          {
+            "name": "task_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid",
+              "title": "Task Id"
+            }
+          },
+          {
+            "name": "batch_set_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid",
+              "title": "Batch Set Id"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "array",
+                  "items": {
+                    "$ref": "#/components/schemas/AnalysisTaskBatchSetRunRead"
+                  },
+                  "title": "Response List Analysis Task Batch Set Runs V1 Matters  Matter Id  Analysis Tasks  Task Id  Batch Sets  Batch Set Id  Runs Get"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      },
+      "post": {
+        "tags": [
+          "matter analysis tasks"
+        ],
+        "summary": "Start Analysis Task Batch Set Run",
+        "operationId": "start_analysis_task_batch_set_run_v1_matters__matter_id__analysis_tasks__task_id__batch_sets__batch_set_id__runs_post",
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "matter_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid",
+              "title": "Matter Id"
+            }
+          },
+          {
+            "name": "task_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid",
+              "title": "Task Id"
+            }
+          },
+          {
+            "name": "batch_set_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid",
+              "title": "Batch Set Id"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/AnalysisTaskBatchSetRunCreate"
+              }
+            }
+          }
+        },
+        "responses": {
+          "202": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AnalysisTaskBatchSetRunRead"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v1/matters/{matter_id}/analysis-tasks/{task_id}/batch-sets/{batch_set_id}/runs/{run_id}/cancel": {
+      "post": {
+        "tags": [
+          "matter analysis tasks"
+        ],
+        "summary": "Cancel Analysis Task Batch Set Run",
+        "operationId": "cancel_analysis_task_batch_set_run_v1_matters__matter_id__analysis_tasks__task_id__batch_sets__batch_set_id__runs__run_id__cancel_post",
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "matter_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid",
+              "title": "Matter Id"
+            }
+          },
+          {
+            "name": "task_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid",
+              "title": "Task Id"
+            }
+          },
+          {
+            "name": "batch_set_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid",
+              "title": "Batch Set Id"
+            }
+          },
+          {
+            "name": "run_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid",
+              "title": "Run Id"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AnalysisTaskBatchSetRunRead"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v1/matters/{matter_id}/analysis-tasks/{task_id}/batch-sets/{batch_set_id}/runs/{run_id}/retry": {
+      "post": {
+        "tags": [
+          "matter analysis tasks"
+        ],
+        "summary": "Retry Analysis Task Batch Set Run Endpoint",
+        "operationId": "retry_analysis_task_batch_set_run_endpoint_v1_matters__matter_id__analysis_tasks__task_id__batch_sets__batch_set_id__runs__run_id__retry_post",
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "matter_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid",
+              "title": "Matter Id"
+            }
+          },
+          {
+            "name": "task_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid",
+              "title": "Task Id"
+            }
+          },
+          {
+            "name": "batch_set_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid",
+              "title": "Batch Set Id"
+            }
+          },
+          {
+            "name": "run_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid",
+              "title": "Run Id"
+            }
+          }
+        ],
+        "responses": {
+          "202": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AnalysisTaskBatchSetRunRead"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/v1/matters/{matter_id}/analysis-tasks/{task_id}/versions": {
       "get": {
         "tags": [
@@ -4591,6 +5295,74 @@
               "application/json": {
                 "schema": {
                   "$ref": "#/components/schemas/MatterAnalysisTaskRead"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v1/matters/{matter_id}/analysis-tasks/{task_id}/question-answering-runs": {
+      "post": {
+        "tags": [
+          "matter analysis tasks"
+        ],
+        "summary": "Start Whole Matter Question Answering Run",
+        "operationId": "start_whole_matter_question_answering_run_v1_matters__matter_id__analysis_tasks__task_id__question_answering_runs_post",
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "matter_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid",
+              "title": "Matter Id"
+            }
+          },
+          {
+            "name": "task_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid",
+              "title": "Task Id"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/QuestionAnsweringWholeMatterRunCreate"
+              }
+            }
+          }
+        },
+        "responses": {
+          "202": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ReviewBatchRunRead"
                 }
               }
             }
@@ -24681,6 +25453,874 @@
         ],
         "title": "AnalysisInputEmail"
       },
+      "AnalysisTaskBatchSetChildRead": {
+        "properties": {
+          "id": {
+            "type": "string",
+            "format": "uuid",
+            "title": "Id"
+          },
+          "ordinal": {
+            "type": "integer",
+            "title": "Ordinal"
+          },
+          "name": {
+            "type": "string",
+            "title": "Name"
+          },
+          "status": {
+            "type": "string",
+            "enum": [
+              "QUEUED",
+              "BUILDING",
+              "READY",
+              "FAILED",
+              "CANCELED",
+              "ARCHIVED"
+            ],
+            "title": "Status"
+          },
+          "search_status": {
+            "type": "string",
+            "enum": [
+              "QUEUED",
+              "SYNCING",
+              "READY",
+              "FAILED",
+              "NOT_CONFIGURED"
+            ],
+            "title": "Search Status"
+          },
+          "search_error_message": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Search Error Message"
+          },
+          "document_count": {
+            "type": "integer",
+            "title": "Document Count"
+          }
+        },
+        "type": "object",
+        "required": [
+          "id",
+          "ordinal",
+          "name",
+          "status",
+          "search_status",
+          "search_error_message",
+          "document_count"
+        ],
+        "title": "AnalysisTaskBatchSetChildRead"
+      },
+      "AnalysisTaskBatchSetCreate": {
+        "properties": {
+          "population_source_type": {
+            "type": "string",
+            "enum": [
+              "ALL_MATTER",
+              "SOURCE_BATCH",
+              "SEARCH_QUERY",
+              "SAVED_SEARCH"
+            ],
+            "title": "Population Source Type"
+          },
+          "source_review_batch_id": {
+            "anyOf": [
+              {
+                "type": "string",
+                "format": "uuid"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Source Review Batch Id"
+          },
+          "search": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/MatterSearchRequest"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "saved_search_id": {
+            "anyOf": [
+              {
+                "type": "string",
+                "format": "uuid"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Saved Search Id"
+          },
+          "target_batch_size": {
+            "type": "integer",
+            "maximum": 10000000.0,
+            "minimum": 1.0,
+            "title": "Target Batch Size"
+          },
+          "keep_together": {
+            "items": {
+              "type": "string",
+              "const": "FAMILY"
+            },
+            "type": "array",
+            "maxItems": 1,
+            "title": "Keep Together"
+          },
+          "name": {
+            "type": "string",
+            "maxLength": 200,
+            "minLength": 1,
+            "title": "Name"
+          },
+          "description": {
+            "anyOf": [
+              {
+                "type": "string",
+                "maxLength": 4000
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Description"
+          },
+          "random_seed": {
+            "anyOf": [
+              {
+                "type": "string",
+                "maxLength": 100,
+                "minLength": 1
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Random Seed"
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "population_source_type",
+          "target_batch_size",
+          "name"
+        ],
+        "title": "AnalysisTaskBatchSetCreate"
+      },
+      "AnalysisTaskBatchSetPreviewCreate": {
+        "properties": {
+          "population_source_type": {
+            "type": "string",
+            "enum": [
+              "ALL_MATTER",
+              "SOURCE_BATCH",
+              "SEARCH_QUERY",
+              "SAVED_SEARCH"
+            ],
+            "title": "Population Source Type"
+          },
+          "source_review_batch_id": {
+            "anyOf": [
+              {
+                "type": "string",
+                "format": "uuid"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Source Review Batch Id"
+          },
+          "search": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/MatterSearchRequest"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "saved_search_id": {
+            "anyOf": [
+              {
+                "type": "string",
+                "format": "uuid"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Saved Search Id"
+          },
+          "target_batch_size": {
+            "type": "integer",
+            "maximum": 10000000.0,
+            "minimum": 1.0,
+            "title": "Target Batch Size"
+          },
+          "keep_together": {
+            "items": {
+              "type": "string",
+              "const": "FAMILY"
+            },
+            "type": "array",
+            "maxItems": 1,
+            "title": "Keep Together"
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "population_source_type",
+          "target_batch_size"
+        ],
+        "title": "AnalysisTaskBatchSetPreviewCreate"
+      },
+      "AnalysisTaskBatchSetPreviewRead": {
+        "properties": {
+          "population_count": {
+            "type": "integer",
+            "title": "Population Count"
+          },
+          "estimated_batch_count": {
+            "type": "integer",
+            "title": "Estimated Batch Count"
+          },
+          "estimated_batch_sizes": {
+            "items": {
+              "type": "integer"
+            },
+            "type": "array",
+            "title": "Estimated Batch Sizes"
+          },
+          "population_hash": {
+            "type": "string",
+            "title": "Population Hash"
+          },
+          "oversized_groups": {
+            "items": {
+              "additionalProperties": true,
+              "type": "object"
+            },
+            "type": "array",
+            "title": "Oversized Groups"
+          },
+          "warnings": {
+            "items": {
+              "additionalProperties": true,
+              "type": "object"
+            },
+            "type": "array",
+            "title": "Warnings"
+          }
+        },
+        "type": "object",
+        "required": [
+          "population_count",
+          "estimated_batch_count",
+          "estimated_batch_sizes",
+          "population_hash"
+        ],
+        "title": "AnalysisTaskBatchSetPreviewRead"
+      },
+      "AnalysisTaskBatchSetRead": {
+        "properties": {
+          "id": {
+            "type": "string",
+            "format": "uuid",
+            "title": "Id"
+          },
+          "tenant_id": {
+            "type": "string",
+            "format": "uuid",
+            "title": "Tenant Id"
+          },
+          "matter_id": {
+            "type": "string",
+            "format": "uuid",
+            "title": "Matter Id"
+          },
+          "matter_analysis_task_id": {
+            "type": "string",
+            "format": "uuid",
+            "title": "Matter Analysis Task Id"
+          },
+          "matter_analysis_task_version_id": {
+            "type": "string",
+            "format": "uuid",
+            "title": "Matter Analysis Task Version Id"
+          },
+          "name": {
+            "type": "string",
+            "title": "Name"
+          },
+          "description": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Description"
+          },
+          "population_source_type": {
+            "type": "string",
+            "enum": [
+              "ALL_MATTER",
+              "SOURCE_BATCH",
+              "SEARCH_QUERY",
+              "SAVED_SEARCH"
+            ],
+            "title": "Population Source Type"
+          },
+          "selection_definition": {
+            "additionalProperties": true,
+            "type": "object",
+            "title": "Selection Definition"
+          },
+          "source_review_batch_id": {
+            "anyOf": [
+              {
+                "type": "string",
+                "format": "uuid"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Source Review Batch Id"
+          },
+          "search_index_generation_id": {
+            "anyOf": [
+              {
+                "type": "string",
+                "format": "uuid"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Search Index Generation Id"
+          },
+          "target_batch_size": {
+            "type": "integer",
+            "title": "Target Batch Size"
+          },
+          "allocation_policy": {
+            "additionalProperties": true,
+            "type": "object",
+            "title": "Allocation Policy"
+          },
+          "random_seed": {
+            "type": "string",
+            "title": "Random Seed"
+          },
+          "allocation_algorithm_version": {
+            "type": "string",
+            "title": "Allocation Algorithm Version"
+          },
+          "status": {
+            "type": "string",
+            "enum": [
+              "QUEUED",
+              "BUILDING",
+              "READY",
+              "FAILED",
+              "CANCELED",
+              "ARCHIVED"
+            ],
+            "title": "Status"
+          },
+          "workflow_id": {
+            "type": "string",
+            "title": "Workflow Id"
+          },
+          "population_count": {
+            "type": "integer",
+            "title": "Population Count"
+          },
+          "batch_count": {
+            "type": "integer",
+            "title": "Batch Count"
+          },
+          "population_hash": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Population Hash"
+          },
+          "warning_details": {
+            "items": {
+              "additionalProperties": true,
+              "type": "object"
+            },
+            "type": "array",
+            "title": "Warning Details"
+          },
+          "error_message": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Error Message"
+          },
+          "created_by_user_id": {
+            "type": "string",
+            "format": "uuid",
+            "title": "Created By User Id"
+          },
+          "created_at": {
+            "type": "string",
+            "format": "date-time",
+            "title": "Created At"
+          },
+          "updated_at": {
+            "type": "string",
+            "format": "date-time",
+            "title": "Updated At"
+          },
+          "completed_at": {
+            "anyOf": [
+              {
+                "type": "string",
+                "format": "date-time"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Completed At"
+          },
+          "children": {
+            "items": {
+              "$ref": "#/components/schemas/AnalysisTaskBatchSetChildRead"
+            },
+            "type": "array",
+            "title": "Children"
+          }
+        },
+        "type": "object",
+        "required": [
+          "id",
+          "tenant_id",
+          "matter_id",
+          "matter_analysis_task_id",
+          "matter_analysis_task_version_id",
+          "name",
+          "description",
+          "population_source_type",
+          "selection_definition",
+          "source_review_batch_id",
+          "search_index_generation_id",
+          "target_batch_size",
+          "allocation_policy",
+          "random_seed",
+          "allocation_algorithm_version",
+          "status",
+          "workflow_id",
+          "population_count",
+          "batch_count",
+          "population_hash",
+          "warning_details",
+          "error_message",
+          "created_by_user_id",
+          "created_at",
+          "updated_at",
+          "completed_at"
+        ],
+        "title": "AnalysisTaskBatchSetRead"
+      },
+      "AnalysisTaskBatchSetRunChildRead": {
+        "properties": {
+          "id": {
+            "type": "string",
+            "format": "uuid",
+            "title": "Id"
+          },
+          "review_batch_id": {
+            "type": "string",
+            "format": "uuid",
+            "title": "Review Batch Id"
+          },
+          "ordinal": {
+            "type": "integer",
+            "title": "Ordinal"
+          },
+          "run_type": {
+            "anyOf": [
+              {
+                "type": "string",
+                "enum": [
+                  "QUESTION_ANSWERING",
+                  "CLASSIFICATION",
+                  "FACT_DEVELOPMENT"
+                ]
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Run Type"
+          },
+          "child_run_id": {
+            "anyOf": [
+              {
+                "type": "string",
+                "format": "uuid"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Child Run Id"
+          },
+          "status": {
+            "type": "string",
+            "enum": [
+              "PENDING",
+              "QUEUED",
+              "RUNNING",
+              "COMPLETED",
+              "COMPLETED_WITH_ERRORS",
+              "FAILED",
+              "CANCELED"
+            ],
+            "title": "Status"
+          },
+          "attempt_count": {
+            "type": "integer",
+            "title": "Attempt Count"
+          },
+          "error_message": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Error Message"
+          },
+          "started_at": {
+            "anyOf": [
+              {
+                "type": "string",
+                "format": "date-time"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Started At"
+          },
+          "completed_at": {
+            "anyOf": [
+              {
+                "type": "string",
+                "format": "date-time"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Completed At"
+          }
+        },
+        "type": "object",
+        "required": [
+          "id",
+          "review_batch_id",
+          "ordinal",
+          "run_type",
+          "child_run_id",
+          "status",
+          "attempt_count",
+          "error_message",
+          "started_at",
+          "completed_at"
+        ],
+        "title": "AnalysisTaskBatchSetRunChildRead"
+      },
+      "AnalysisTaskBatchSetRunCreate": {
+        "properties": {
+          "idempotency_key": {
+            "type": "string",
+            "maxLength": 200,
+            "minLength": 1,
+            "title": "Idempotency Key"
+          },
+          "max_concurrency": {
+            "type": "integer",
+            "maximum": 32.0,
+            "minimum": 1.0,
+            "title": "Max Concurrency",
+            "default": 2
+          },
+          "embedding_job_id": {
+            "anyOf": [
+              {
+                "type": "string",
+                "format": "uuid"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Embedding Job Id"
+          },
+          "coding_source": {
+            "type": "string",
+            "const": "MATTER_METADATA",
+            "title": "Coding Source",
+            "default": "MATTER_METADATA"
+          },
+          "use_batch_api": {
+            "type": "boolean",
+            "title": "Use Batch Api",
+            "default": false
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "idempotency_key"
+        ],
+        "title": "AnalysisTaskBatchSetRunCreate"
+      },
+      "AnalysisTaskBatchSetRunRead": {
+        "properties": {
+          "id": {
+            "type": "string",
+            "format": "uuid",
+            "title": "Id"
+          },
+          "tenant_id": {
+            "type": "string",
+            "format": "uuid",
+            "title": "Tenant Id"
+          },
+          "matter_id": {
+            "type": "string",
+            "format": "uuid",
+            "title": "Matter Id"
+          },
+          "analysis_task_batch_set_id": {
+            "type": "string",
+            "format": "uuid",
+            "title": "Analysis Task Batch Set Id"
+          },
+          "matter_analysis_task_id": {
+            "type": "string",
+            "format": "uuid",
+            "title": "Matter Analysis Task Id"
+          },
+          "matter_analysis_task_version_id": {
+            "type": "string",
+            "format": "uuid",
+            "title": "Matter Analysis Task Version Id"
+          },
+          "task_type": {
+            "type": "string",
+            "enum": [
+              "QUESTION_ANSWERING",
+              "CLASSIFICATION",
+              "FACT_DEVELOPMENT"
+            ],
+            "title": "Task Type"
+          },
+          "status": {
+            "type": "string",
+            "enum": [
+              "QUEUED",
+              "RUNNING",
+              "COMPLETED",
+              "COMPLETED_WITH_ERRORS",
+              "FAILED",
+              "CANCELED"
+            ],
+            "title": "Status"
+          },
+          "configuration_snapshot": {
+            "additionalProperties": true,
+            "type": "object",
+            "title": "Configuration Snapshot"
+          },
+          "idempotency_key": {
+            "type": "string",
+            "title": "Idempotency Key"
+          },
+          "workflow_id": {
+            "type": "string",
+            "title": "Workflow Id"
+          },
+          "child_count": {
+            "type": "integer",
+            "title": "Child Count"
+          },
+          "completed_child_count": {
+            "type": "integer",
+            "title": "Completed Child Count"
+          },
+          "failed_child_count": {
+            "type": "integer",
+            "title": "Failed Child Count"
+          },
+          "created_by_user_id": {
+            "type": "string",
+            "format": "uuid",
+            "title": "Created By User Id"
+          },
+          "started_at": {
+            "anyOf": [
+              {
+                "type": "string",
+                "format": "date-time"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Started At"
+          },
+          "completed_at": {
+            "anyOf": [
+              {
+                "type": "string",
+                "format": "date-time"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Completed At"
+          },
+          "canceled_at": {
+            "anyOf": [
+              {
+                "type": "string",
+                "format": "date-time"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Canceled At"
+          },
+          "created_at": {
+            "type": "string",
+            "format": "date-time",
+            "title": "Created At"
+          },
+          "updated_at": {
+            "type": "string",
+            "format": "date-time",
+            "title": "Updated At"
+          },
+          "execution": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/JobExecutionRead"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "children": {
+            "items": {
+              "$ref": "#/components/schemas/AnalysisTaskBatchSetRunChildRead"
+            },
+            "type": "array",
+            "title": "Children"
+          }
+        },
+        "type": "object",
+        "required": [
+          "id",
+          "tenant_id",
+          "matter_id",
+          "analysis_task_batch_set_id",
+          "matter_analysis_task_id",
+          "matter_analysis_task_version_id",
+          "task_type",
+          "status",
+          "configuration_snapshot",
+          "idempotency_key",
+          "workflow_id",
+          "child_count",
+          "completed_child_count",
+          "failed_child_count",
+          "created_by_user_id",
+          "started_at",
+          "completed_at",
+          "canceled_at",
+          "created_at",
+          "updated_at",
+          "execution"
+        ],
+        "title": "AnalysisTaskBatchSetRunRead"
+      },
+      "AnalysisTaskScopePolicy": {
+        "properties": {
+          "allowed_modes": {
+            "items": {
+              "type": "string",
+              "enum": [
+                "AD_HOC_BATCH",
+                "WHOLE_MATTER",
+                "PARTITIONED_SET"
+              ]
+            },
+            "type": "array",
+            "maxItems": 3,
+            "minItems": 1,
+            "title": "Allowed Modes"
+          },
+          "default_mode": {
+            "type": "string",
+            "enum": [
+              "AD_HOC_BATCH",
+              "WHOLE_MATTER",
+              "PARTITIONED_SET"
+            ],
+            "title": "Default Mode"
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "allowed_modes",
+          "default_mode"
+        ],
+        "title": "AnalysisTaskScopePolicy"
+      },
       "ArtifactLineageRead": {
         "properties": {
           "artifact_id": {
@@ -32632,9 +34272,25 @@
       },
       "FactDevelopmentRunCreate": {
         "properties": {
-          "review_batch_id": {
+          "scope_type": {
             "type": "string",
-            "format": "uuid",
+            "enum": [
+              "MATTER",
+              "REVIEW_BATCH"
+            ],
+            "title": "Scope Type",
+            "default": "REVIEW_BATCH"
+          },
+          "review_batch_id": {
+            "anyOf": [
+              {
+                "type": "string",
+                "format": "uuid"
+              },
+              {
+                "type": "null"
+              }
+            ],
             "title": "Review Batch Id"
           },
           "coding_source": {
@@ -32668,21 +34324,48 @@
             "type": "boolean",
             "title": "Use Batch Api",
             "default": false
+          },
+          "matter_analysis_task_version_id": {
+            "anyOf": [
+              {
+                "type": "string",
+                "format": "uuid"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Matter Analysis Task Version Id"
           }
         },
         "additionalProperties": false,
         "type": "object",
         "required": [
-          "review_batch_id",
           "idempotency_key"
         ],
         "title": "FactDevelopmentRunCreate"
       },
       "FactDevelopmentRunEstimateCreate": {
         "properties": {
-          "review_batch_id": {
+          "scope_type": {
             "type": "string",
-            "format": "uuid",
+            "enum": [
+              "MATTER",
+              "REVIEW_BATCH"
+            ],
+            "title": "Scope Type",
+            "default": "REVIEW_BATCH"
+          },
+          "review_batch_id": {
+            "anyOf": [
+              {
+                "type": "string",
+                "format": "uuid"
+              },
+              {
+                "type": "null"
+              }
+            ],
             "title": "Review Batch Id"
           },
           "coding_source": {
@@ -32705,20 +34388,49 @@
               }
             ],
             "title": "Reviewer Coding Id"
+          },
+          "matter_analysis_task_version_id": {
+            "anyOf": [
+              {
+                "type": "string",
+                "format": "uuid"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Matter Analysis Task Version Id"
           }
         },
         "additionalProperties": false,
         "type": "object",
-        "required": [
-          "review_batch_id"
-        ],
         "title": "FactDevelopmentRunEstimateCreate"
       },
       "FactDevelopmentRunEstimateRead": {
         "properties": {
-          "review_batch_id": {
+          "scope_type": {
+            "type": "string",
+            "enum": [
+              "MATTER",
+              "REVIEW_BATCH"
+            ],
+            "title": "Scope Type"
+          },
+          "scope_id": {
             "type": "string",
             "format": "uuid",
+            "title": "Scope Id"
+          },
+          "review_batch_id": {
+            "anyOf": [
+              {
+                "type": "string",
+                "format": "uuid"
+              },
+              {
+                "type": "null"
+              }
+            ],
             "title": "Review Batch Id"
           },
           "task_version": {
@@ -32802,6 +34514,8 @@
         },
         "type": "object",
         "required": [
+          "scope_type",
+          "scope_id",
           "review_batch_id",
           "task_version",
           "coding_source",
@@ -32845,6 +34559,29 @@
             "format": "uuid",
             "title": "Matter Analysis Task Version Id"
           },
+          "analysis_task_batch_set_id": {
+            "anyOf": [
+              {
+                "type": "string",
+                "format": "uuid"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Analysis Task Batch Set Id"
+          },
+          "batch_set_ordinal": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Batch Set Ordinal"
+          },
           "run_kind": {
             "type": "string",
             "const": "FACT_DEVELOPMENT",
@@ -32852,7 +34589,10 @@
           },
           "scope_type": {
             "type": "string",
-            "const": "REVIEW_BATCH",
+            "enum": [
+              "MATTER",
+              "REVIEW_BATCH"
+            ],
             "title": "Scope Type"
           },
           "scope_id": {
@@ -34967,6 +36707,16 @@
               }
             ],
             "title": "Review Guidance Revision"
+          },
+          "scope_policy": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/AnalysisTaskScopePolicy"
+              },
+              {
+                "type": "null"
+              }
+            ]
           }
         },
         "additionalProperties": false,
@@ -35215,6 +36965,18 @@
             "maxLength": 200,
             "minLength": 1,
             "title": "Idempotency Key"
+          },
+          "matter_analysis_task_version_id": {
+            "anyOf": [
+              {
+                "type": "string",
+                "format": "uuid"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Matter Analysis Task Version Id"
           }
         },
         "additionalProperties": false,
@@ -35253,6 +37015,29 @@
             "type": "string",
             "format": "uuid",
             "title": "Matter Analysis Task Version Id"
+          },
+          "analysis_task_batch_set_id": {
+            "anyOf": [
+              {
+                "type": "string",
+                "format": "uuid"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Analysis Task Batch Set Id"
+          },
+          "batch_set_ordinal": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Batch Set Ordinal"
           },
           "scope_type": {
             "type": "string",
@@ -35614,6 +37399,16 @@
               }
             ],
             "title": "Review Guidance Revision"
+          },
+          "scope_policy": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/AnalysisTaskScopePolicy"
+              },
+              {
+                "type": "null"
+              }
+            ]
           }
         },
         "additionalProperties": false,
@@ -35840,6 +37635,11 @@
             "type": "object",
             "title": "Routing Policy"
           },
+          "scope_policy": {
+            "additionalProperties": true,
+            "type": "object",
+            "title": "Scope Policy"
+          },
           "compiler_skill_definition_version_id": {
             "anyOf": [
               {
@@ -35951,6 +37751,7 @@
           "output_contract",
           "evidence_policy",
           "routing_policy",
+          "scope_policy",
           "compiler_skill_definition_version_id",
           "compiler_skill_run_id",
           "compiler_workflow_run_id",
@@ -40739,9 +42540,30 @@
             "format": "uuid",
             "title": "Id"
           },
-          "review_batch_id": {
+          "scope_type": {
+            "type": "string",
+            "enum": [
+              "MATTER",
+              "REVIEW_BATCH"
+            ],
+            "title": "Scope Type",
+            "default": "REVIEW_BATCH"
+          },
+          "scope_id": {
             "type": "string",
             "format": "uuid",
+            "title": "Scope Id"
+          },
+          "review_batch_id": {
+            "anyOf": [
+              {
+                "type": "string",
+                "format": "uuid"
+              },
+              {
+                "type": "null"
+              }
+            ],
             "title": "Review Batch Id"
           },
           "review_batch_name": {
@@ -40880,6 +42702,7 @@
         "type": "object",
         "required": [
           "id",
+          "scope_id",
           "review_batch_id",
           "review_batch_name",
           "matter_analysis_task_id",
@@ -44173,6 +45996,34 @@
         ],
         "title": "ProviderUsageTotalsRead"
       },
+      "QuestionAnsweringWholeMatterRunCreate": {
+        "properties": {
+          "idempotency_key": {
+            "type": "string",
+            "maxLength": 200,
+            "minLength": 1,
+            "title": "Idempotency Key"
+          },
+          "matter_analysis_task_version_id": {
+            "anyOf": [
+              {
+                "type": "string",
+                "format": "uuid"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Matter Analysis Task Version Id"
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "idempotency_key"
+        ],
+        "title": "QuestionAnsweringWholeMatterRunCreate"
+      },
       "RefreshRequest": {
         "properties": {
           "refresh_token": {
@@ -44302,6 +46153,18 @@
             "type": "string",
             "format": "uuid",
             "title": "Matter Analysis Task Id"
+          },
+          "matter_analysis_task_version_id": {
+            "anyOf": [
+              {
+                "type": "string",
+                "format": "uuid"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Matter Analysis Task Version Id"
           }
         },
         "additionalProperties": false,
@@ -46533,7 +48396,8 @@
               "RANDOM_ASSESSMENT",
               "DEFINITION_ASSESSMENT",
               "CLASSIFICATION_PREDICTIONS",
-              "COMPARISON_RESULT"
+              "COMPARISON_RESULT",
+              "TASK_BATCH_PARTITION"
             ],
             "title": "Selection Type"
           },
@@ -46553,6 +48417,29 @@
               }
             ],
             "title": "Source Batch Id"
+          },
+          "analysis_task_batch_set_id": {
+            "anyOf": [
+              {
+                "type": "string",
+                "format": "uuid"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Analysis Task Batch Set Id"
+          },
+          "batch_set_ordinal": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Batch Set Ordinal"
           },
           "search_index_generation_id": {
             "anyOf": [
@@ -47489,9 +49376,72 @@
             "title": "Id"
           },
           "review_batch_id": {
-            "type": "string",
-            "format": "uuid",
+            "anyOf": [
+              {
+                "type": "string",
+                "format": "uuid"
+              },
+              {
+                "type": "null"
+              }
+            ],
             "title": "Review Batch Id"
+          },
+          "scope_type": {
+            "type": "string",
+            "enum": [
+              "MATTER",
+              "REVIEW_BATCH"
+            ],
+            "title": "Scope Type",
+            "default": "REVIEW_BATCH"
+          },
+          "scope_id": {
+            "anyOf": [
+              {
+                "type": "string",
+                "format": "uuid"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Scope Id"
+          },
+          "analysis_input_manifest_id": {
+            "anyOf": [
+              {
+                "type": "string",
+                "format": "uuid"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Analysis Input Manifest Id"
+          },
+          "analysis_task_batch_set_id": {
+            "anyOf": [
+              {
+                "type": "string",
+                "format": "uuid"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Analysis Task Batch Set Id"
+          },
+          "batch_set_ordinal": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Batch Set Ordinal"
           },
           "run_type": {
             "type": "string",

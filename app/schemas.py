@@ -1189,6 +1189,7 @@ ReviewBatchSelectionType = Literal[
     "DEFINITION_ASSESSMENT",
     "CLASSIFICATION_PREDICTIONS",
     "COMPARISON_RESULT",
+    "TASK_BATCH_PARTITION",
 ]
 InteractiveReviewBatchSelectionType = Literal[
     "ALL_MATTER",
@@ -1308,6 +1309,8 @@ class ReviewBatchRead(BaseModel):
     selection_type: ReviewBatchSelectionType
     selection_definition: dict[str, Any]
     source_batch_id: uuid.UUID | None
+    analysis_task_batch_set_id: uuid.UUID | None = None
+    batch_set_ordinal: int | None = None
     search_index_generation_id: uuid.UUID | None
     sample_size: int | None
     random_seed: str | None
@@ -1372,7 +1375,12 @@ class ReviewBatchRunCreate(BaseModel):
 
 class ReviewBatchRunRead(ORMModel):
     id: uuid.UUID
-    review_batch_id: uuid.UUID
+    review_batch_id: uuid.UUID | None
+    scope_type: Literal["MATTER", "REVIEW_BATCH"] = "REVIEW_BATCH"
+    scope_id: uuid.UUID | None = None
+    analysis_input_manifest_id: uuid.UUID | None = None
+    analysis_task_batch_set_id: uuid.UUID | None = None
+    batch_set_ordinal: int | None = None
     run_type: ReviewBatchRunType
     purpose: ReviewBatchRunPurpose
     status: ReviewBatchRunStatus
@@ -1402,6 +1410,22 @@ class ReviewBatchAnalysisRunCreate(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     matter_analysis_task_id: uuid.UUID
+    matter_analysis_task_version_id: uuid.UUID | None = None
+
+
+class QuestionAnsweringWholeMatterRunCreate(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    idempotency_key: str = Field(min_length=1, max_length=200)
+    matter_analysis_task_version_id: uuid.UUID | None = None
+
+    @field_validator("idempotency_key")
+    @classmethod
+    def normalize_question_answering_idempotency_key(cls, value: str) -> str:
+        normalized = value.strip()
+        if not normalized:
+            raise ValueError("idempotency_key cannot be blank")
+        return normalized
 
 
 class ReviewBatchClassifierRunCreate(BaseModel):
@@ -2660,6 +2684,24 @@ class MatterDefinitionCloneCreate(BaseModel):
         return name
 
 
+AnalysisTaskScopeMode = Literal["AD_HOC_BATCH", "WHOLE_MATTER", "PARTITIONED_SET"]
+
+
+class AnalysisTaskScopePolicy(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    allowed_modes: list[AnalysisTaskScopeMode] = Field(min_length=1, max_length=3)
+    default_mode: AnalysisTaskScopeMode
+
+    @model_validator(mode="after")
+    def validate_modes(self) -> "AnalysisTaskScopePolicy":
+        if len(self.allowed_modes) != len(set(self.allowed_modes)):
+            raise ValueError("allowed_modes must be unique")
+        if self.default_mode not in self.allowed_modes:
+            raise ValueError("default_mode must be included in allowed_modes")
+        return self
+
+
 class MatterAnalysisTaskCreate(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
@@ -2673,6 +2715,7 @@ class MatterAnalysisTaskCreate(BaseModel):
     classification_model_version_id: uuid.UUID | None = None
     review_guidance_id: uuid.UUID | None = None
     review_guidance_revision: int | None = Field(default=None, ge=1)
+    scope_policy: AnalysisTaskScopePolicy | None = None
 
     @field_validator("destination_metadata_definition_ids")
     @classmethod
@@ -2691,6 +2734,7 @@ class MatterAnalysisTaskVersionCreate(BaseModel):
     destination_metadata_definition_ids: list[uuid.UUID] | None = Field(default=None, max_length=100)
     classification_model_version_id: uuid.UUID | None = None
     review_guidance_revision: int | None = Field(default=None, ge=1)
+    scope_policy: AnalysisTaskScopePolicy | None = None
 
     @field_validator("destination_metadata_definition_ids")
     @classmethod
@@ -2789,6 +2833,7 @@ class MatterAnalysisTaskVersionRead(ORMModel):
     output_contract: dict[str, Any]
     evidence_policy: dict[str, Any]
     routing_policy: dict[str, Any]
+    scope_policy: dict[str, Any]
     compiler_skill_definition_version_id: uuid.UUID | None
     compiler_skill_run_id: uuid.UUID | None
     compiler_workflow_run_id: uuid.UUID | None
@@ -2820,6 +2865,164 @@ class MatterAnalysisTaskRead(ORMModel):
     published_version_details: MatterAnalysisTaskVersionRead | None = None
 
 
+AnalysisTaskBatchSetSourceType = Literal["ALL_MATTER", "SOURCE_BATCH", "SEARCH_QUERY", "SAVED_SEARCH"]
+AnalysisTaskBatchSetStatus = Literal["QUEUED", "BUILDING", "READY", "FAILED", "CANCELED", "ARCHIVED"]
+
+
+class AnalysisTaskBatchSetPlanRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    population_source_type: AnalysisTaskBatchSetSourceType
+    source_review_batch_id: uuid.UUID | None = None
+    search: MatterSearchRequest | None = None
+    saved_search_id: uuid.UUID | None = None
+    target_batch_size: int = Field(ge=1, le=10_000_000)
+    keep_together: list[Literal["FAMILY"]] = Field(default_factory=list, max_length=1)
+
+    @model_validator(mode="after")
+    def validate_source(self) -> "AnalysisTaskBatchSetPlanRequest":
+        if self.population_source_type == "SOURCE_BATCH" and self.source_review_batch_id is None:
+            raise ValueError("SOURCE_BATCH requires source_review_batch_id")
+        if self.population_source_type != "SOURCE_BATCH" and self.source_review_batch_id is not None:
+            raise ValueError("source_review_batch_id is only valid for SOURCE_BATCH")
+        if self.population_source_type == "SEARCH_QUERY":
+            if self.search is None:
+                raise ValueError("SEARCH_QUERY requires search")
+            if self.search.search_mode != "KEYWORD":
+                raise ValueError("Batch Set search populations currently require a Keyword search")
+        elif self.search is not None:
+            raise ValueError("search is only valid for SEARCH_QUERY")
+        if self.population_source_type == "SAVED_SEARCH" and self.saved_search_id is None:
+            raise ValueError("SAVED_SEARCH requires saved_search_id")
+        if self.population_source_type != "SAVED_SEARCH" and self.saved_search_id is not None:
+            raise ValueError("saved_search_id is only valid for SAVED_SEARCH")
+        if len(self.keep_together) != len(set(self.keep_together)):
+            raise ValueError("keep_together values must be unique")
+        return self
+
+
+class AnalysisTaskBatchSetPreviewCreate(AnalysisTaskBatchSetPlanRequest):
+    pass
+
+
+class AnalysisTaskBatchSetCreate(AnalysisTaskBatchSetPlanRequest):
+    name: str = Field(min_length=1, max_length=200)
+    description: str | None = Field(default=None, max_length=4000)
+    random_seed: str | None = Field(default=None, min_length=1, max_length=100)
+
+
+class AnalysisTaskBatchSetPreviewRead(BaseModel):
+    population_count: int
+    estimated_batch_count: int
+    estimated_batch_sizes: list[int]
+    population_hash: str
+    oversized_groups: list[dict[str, Any]] = Field(default_factory=list)
+    warnings: list[dict[str, Any]] = Field(default_factory=list)
+
+
+class AnalysisTaskBatchSetChildRead(BaseModel):
+    id: uuid.UUID
+    ordinal: int
+    name: str
+    status: ReviewBatchStatus
+    search_status: ReviewBatchSearchStatus
+    search_error_message: str | None
+    document_count: int
+
+
+class AnalysisTaskBatchSetRead(ORMModel):
+    id: uuid.UUID
+    tenant_id: uuid.UUID
+    matter_id: uuid.UUID
+    matter_analysis_task_id: uuid.UUID
+    matter_analysis_task_version_id: uuid.UUID
+    name: str
+    description: str | None
+    population_source_type: AnalysisTaskBatchSetSourceType
+    selection_definition: dict[str, Any]
+    source_review_batch_id: uuid.UUID | None
+    search_index_generation_id: uuid.UUID | None
+    target_batch_size: int
+    allocation_policy: dict[str, Any]
+    random_seed: str
+    allocation_algorithm_version: str
+    status: AnalysisTaskBatchSetStatus
+    workflow_id: str
+    population_count: int
+    batch_count: int
+    population_hash: str | None
+    warning_details: list[dict[str, Any]]
+    error_message: str | None
+    created_by_user_id: uuid.UUID
+    created_at: datetime
+    updated_at: datetime
+    completed_at: datetime | None
+    children: list[AnalysisTaskBatchSetChildRead] = Field(default_factory=list)
+
+
+AnalysisTaskBatchSetRunStatus = Literal[
+    "QUEUED", "RUNNING", "COMPLETED", "COMPLETED_WITH_ERRORS", "FAILED", "CANCELED"
+]
+AnalysisTaskBatchSetRunChildStatus = Literal[
+    "PENDING", "QUEUED", "RUNNING", "COMPLETED", "COMPLETED_WITH_ERRORS", "FAILED", "CANCELED"
+]
+
+
+class AnalysisTaskBatchSetRunCreate(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    idempotency_key: str = Field(min_length=1, max_length=200)
+    max_concurrency: int = Field(default=2, ge=1, le=32)
+    embedding_job_id: uuid.UUID | None = None
+    coding_source: Literal["MATTER_METADATA"] = "MATTER_METADATA"
+    use_batch_api: bool = False
+
+    @field_validator("idempotency_key")
+    @classmethod
+    def normalize_batch_set_run_idempotency_key(cls, value: str) -> str:
+        normalized = value.strip()
+        if not normalized:
+            raise ValueError("Idempotency key is required")
+        return normalized
+
+class AnalysisTaskBatchSetRunChildRead(ORMModel):
+    id: uuid.UUID
+    review_batch_id: uuid.UUID
+    ordinal: int
+    run_type: MatterAnalysisTaskType | None
+    child_run_id: uuid.UUID | None
+    status: AnalysisTaskBatchSetRunChildStatus
+    attempt_count: int
+    error_message: str | None
+    started_at: datetime | None
+    completed_at: datetime | None
+
+
+class AnalysisTaskBatchSetRunRead(ORMModel):
+    id: uuid.UUID
+    tenant_id: uuid.UUID
+    matter_id: uuid.UUID
+    analysis_task_batch_set_id: uuid.UUID
+    matter_analysis_task_id: uuid.UUID
+    matter_analysis_task_version_id: uuid.UUID
+    task_type: MatterAnalysisTaskType
+    status: AnalysisTaskBatchSetRunStatus
+    configuration_snapshot: dict[str, Any]
+    idempotency_key: str
+    workflow_id: str
+    child_count: int
+    completed_child_count: int
+    failed_child_count: int
+    created_by_user_id: uuid.UUID
+    started_at: datetime | None
+    completed_at: datetime | None
+    canceled_at: datetime | None
+    created_at: datetime
+    updated_at: datetime
+    execution: JobExecutionRead | None
+    children: list[AnalysisTaskBatchSetRunChildRead] = Field(default_factory=list)
+
+
 class MatterAnalysisTaskRunCreate(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
@@ -2827,6 +3030,7 @@ class MatterAnalysisTaskRunCreate(BaseModel):
     scope_id: uuid.UUID
     embedding_job_id: uuid.UUID
     idempotency_key: str = Field(min_length=1, max_length=200)
+    matter_analysis_task_version_id: uuid.UUID | None = None
 
     @field_validator("idempotency_key")
     @classmethod
@@ -2847,12 +3051,14 @@ class JobExecutionHistoryRead(BaseModel):
 class FactDevelopmentRunCreate(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
-    review_batch_id: uuid.UUID
+    scope_type: Literal["MATTER", "REVIEW_BATCH"] = "REVIEW_BATCH"
+    review_batch_id: uuid.UUID | None = None
     coding_source: Literal["MATTER_METADATA", "REVIEWER_CODING"] = "MATTER_METADATA"
     reviewer_coding_id: uuid.UUID | None = None
     idempotency_key: str = Field(min_length=1, max_length=200)
     # Submit extraction calls through the provider's Batch API: lower cost, results in minutes to hours.
     use_batch_api: bool = False
+    matter_analysis_task_version_id: uuid.UUID | None = None
 
     @field_validator("idempotency_key")
     @classmethod
@@ -2862,19 +3068,43 @@ class FactDevelopmentRunCreate(BaseModel):
             raise ValueError("idempotency_key cannot be blank")
         return normalized
 
+    @model_validator(mode="after")
+    def validate_fact_scope(self) -> "FactDevelopmentRunCreate":
+        if self.scope_type == "REVIEW_BATCH" and self.review_batch_id is None:
+            raise ValueError("REVIEW_BATCH scope requires review_batch_id")
+        if self.scope_type == "MATTER" and self.review_batch_id is not None:
+            raise ValueError("review_batch_id applies only to REVIEW_BATCH scope")
+        if self.scope_type == "MATTER" and self.coding_source == "REVIEWER_CODING":
+            raise ValueError("Reviewer coding applies only to REVIEW_BATCH scope")
+        return self
+
 
 class FactDevelopmentRunEstimateCreate(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
-    review_batch_id: uuid.UUID
+    scope_type: Literal["MATTER", "REVIEW_BATCH"] = "REVIEW_BATCH"
+    review_batch_id: uuid.UUID | None = None
     coding_source: Literal["MATTER_METADATA", "REVIEWER_CODING"] = "MATTER_METADATA"
     reviewer_coding_id: uuid.UUID | None = None
+    matter_analysis_task_version_id: uuid.UUID | None = None
+
+    @model_validator(mode="after")
+    def validate_fact_estimate_scope(self) -> "FactDevelopmentRunEstimateCreate":
+        if self.scope_type == "REVIEW_BATCH" and self.review_batch_id is None:
+            raise ValueError("REVIEW_BATCH scope requires review_batch_id")
+        if self.scope_type == "MATTER" and self.review_batch_id is not None:
+            raise ValueError("review_batch_id applies only to REVIEW_BATCH scope")
+        if self.scope_type == "MATTER" and self.coding_source == "REVIEWER_CODING":
+            raise ValueError("Reviewer coding applies only to REVIEW_BATCH scope")
+        return self
 
 
 class FactDevelopmentRunEstimateRead(BaseModel):
     """What a run launched now would process. Token figures are planning approximations, not billing figures."""
 
-    review_batch_id: uuid.UUID
+    scope_type: Literal["MATTER", "REVIEW_BATCH"]
+    scope_id: uuid.UUID
+    review_batch_id: uuid.UUID | None
     task_version: int
     coding_source: Literal["MATTER_METADATA", "REVIEWER_CODING"]
     reviewer_coding_revision: int | None
@@ -2899,8 +3129,10 @@ class FactDevelopmentRunRead(ORMModel):
     matter_id: uuid.UUID
     matter_analysis_task_id: uuid.UUID
     matter_analysis_task_version_id: uuid.UUID
+    analysis_task_batch_set_id: uuid.UUID | None = None
+    batch_set_ordinal: int | None = None
     run_kind: Literal["FACT_DEVELOPMENT"]
-    scope_type: Literal["REVIEW_BATCH"]
+    scope_type: Literal["MATTER", "REVIEW_BATCH"]
     scope_id: uuid.UUID
     status: Literal[
         "QUEUED",
@@ -2935,6 +3167,8 @@ class MatterAnalysisTaskRunRead(ORMModel):
     matter_id: uuid.UUID
     matter_analysis_task_id: uuid.UUID
     matter_analysis_task_version_id: uuid.UUID
+    analysis_task_batch_set_id: uuid.UUID | None = None
+    batch_set_ordinal: int | None = None
     scope_type: Literal["MATTER", "REVIEW_BATCH"]
     scope_id: uuid.UUID
     classification_model_id: uuid.UUID
@@ -3002,7 +3236,9 @@ class ReviewBatchAnalysisJobRead(BaseModel):
 
 class MatterQuestionAnsweringJobRead(BaseModel):
     id: uuid.UUID
-    review_batch_id: uuid.UUID
+    scope_type: Literal["MATTER", "REVIEW_BATCH"] = "REVIEW_BATCH"
+    scope_id: uuid.UUID
+    review_batch_id: uuid.UUID | None
     review_batch_name: str
     matter_analysis_task_id: uuid.UUID | None
     task_name: str

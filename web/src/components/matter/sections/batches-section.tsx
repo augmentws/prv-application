@@ -140,7 +140,7 @@ function ReviewBatchActions({ matterId, batch, canDelete, onDelete }: { matterId
 
 function BatchDeleteAction({ batch, canDelete, onDelete }: { batch: ReviewBatchRead; canDelete: boolean; onDelete: (batchId: string) => Promise<void> }) {
   const [open, setOpen] = useState(false);
-  if (!canDelete) return null;
+  if (!canDelete || batch.analysis_task_batch_set_id != null) return null;
   return <>
     <Button type="button" size="sm" variant="outline" onClick={() => setOpen(true)}><Trash2 />Delete batch</Button>
     <SoftDeleteDialog open={open} onOpenChange={setOpen} resourceType="batch" resourceName={batch.name} onDelete={() => onDelete(batch.id)} />
@@ -185,6 +185,9 @@ function batchSelectionLabel(batch: ReviewBatchRead) {
   if (batch.selection_type === "COMPARISON_RESULT") {
     const fieldName = batch.selection_definition.field_display_name;
     return typeof fieldName === "string" ? `${fieldName} disagreements` : "Coding disagreements";
+  }
+  if (batch.selection_type === "TASK_BATCH_PARTITION") {
+    return batch.batch_set_ordinal == null ? "Task partition" : `Task partition · ${batch.batch_set_ordinal}`;
   }
   return { ALL_MATTER: "All matter documents", SEARCH_QUERY: "Keyword search", RANDOM_MATTER: "Random matter sample", RANDOM_BATCH: "Random batch sample", RANDOM_ASSESSMENT: "Random assessment-candidate sample", DEFINITION_ASSESSMENT: "Matter Definition assessment" }[batch.selection_type];
 }

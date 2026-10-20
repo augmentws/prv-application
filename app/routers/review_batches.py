@@ -44,6 +44,7 @@ from app.job_executions import (
 from app.models import (
     AgentDefinition,
     AgentDefinitionVersion,
+    AnalysisTaskBatchSet,
     BatchTopic,
     BatchTopicAssignment,
     BatchTopicTaxonomy,
@@ -402,6 +403,8 @@ def _read_batch(db: Session, batch: ReviewBatch) -> ReviewBatchRead:
         selection_type=batch.selection_type,
         selection_definition=batch.selection_definition,
         source_batch_id=batch.source_batch_id,
+        analysis_task_batch_set_id=batch.analysis_task_batch_set_id,
+        batch_set_ordinal=batch.batch_set_ordinal,
         search_index_generation_id=batch.search_index_generation_id,
         sample_size=batch.sample_size,
         random_seed=batch.random_seed,
@@ -944,6 +947,11 @@ def archive_review_batch(
     batch = _batch(db, matter_id, batch_id)
     if batch.status == "ARCHIVED":
         return Response(status_code=status.HTTP_204_NO_CONTENT)
+    if batch.analysis_task_batch_set_id is not None:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail="Managed partition batches are archived through their Analysis Task Batch Set",
+        )
     if batch.status in {"QUEUED", "BUILDING"}:
         raise HTTPException(
             status_code=status.HTTP_409_CONFLICT,
@@ -2223,14 +2231,26 @@ def start_review_batch_analysis_run(
             status_code=409,
             detail="Classification tasks must be run from the matter Analysis tab",
         )
-    if task.published_version is None:
-        raise HTTPException(status_code=409, detail="Analysis task has no published version")
-    task_version = db.scalar(
-        select(MatterAnalysisTaskVersion).where(
-            MatterAnalysisTaskVersion.matter_analysis_task_id == task.id,
-            MatterAnalysisTaskVersion.version == task.published_version,
+    requested_version_id = payload.matter_analysis_task_version_id
+    if requested_version_id is None and batch.analysis_task_batch_set_id is not None:
+        batch_set = db.get(AnalysisTaskBatchSet, batch.analysis_task_batch_set_id)
+        requested_version_id = batch_set.matter_analysis_task_version_id if batch_set else None
+    if requested_version_id is not None:
+        task_version = db.scalar(
+            select(MatterAnalysisTaskVersion).where(
+                MatterAnalysisTaskVersion.id == requested_version_id,
+                MatterAnalysisTaskVersion.matter_analysis_task_id == task.id,
+            )
         )
-    )
+    else:
+        if task.published_version is None:
+            raise HTTPException(status_code=409, detail="Analysis task has no published version")
+        task_version = db.scalar(
+            select(MatterAnalysisTaskVersion).where(
+                MatterAnalysisTaskVersion.matter_analysis_task_id == task.id,
+                MatterAnalysisTaskVersion.version == task.published_version,
+            )
+        )
     if task_version is None:
         raise HTTPException(status_code=409, detail="Published analysis task version is unavailable")
     try:
@@ -2257,6 +2277,10 @@ def start_review_batch_analysis_run(
             "task_id": str(task.id),
             "task_version_id": str(task_version.id),
             "task_version": task_version.version,
+            "analysis_task_batch_set_id": (
+                str(batch.analysis_task_batch_set_id) if batch.analysis_task_batch_set_id else None
+            ),
+            "batch_set_ordinal": batch.batch_set_ordinal,
         },
     )
     db.commit()
