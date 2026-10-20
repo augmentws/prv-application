@@ -21,6 +21,7 @@ import type {
 } from "@/generated/models";
 import { useAgentChatStream } from "@/hooks/use-agent-chat-stream";
 import { coreApi } from "@/lib/api-client";
+import { chatTitleFromFirstMessage } from "@/lib/chat";
 import type { BatchDocumentReference } from "@/lib/document-references";
 import { formatDate } from "@/lib/format";
 import { cn } from "@/lib/utils";
@@ -38,10 +39,6 @@ export function normalizeSearchChatScope(search: MatterSearchRequest): MatterSea
     offset: 0,
     size: 500,
   };
-}
-
-export function searchChatTitle(firstMessage: string): string {
-  return Array.from(firstMessage.trim().replace(/\s+/g, " ")).slice(0, 50).join("");
 }
 
 function stableJson(value: unknown): string {
@@ -127,7 +124,7 @@ export function SearchChatPanel({ matterId, search, resultCount, searchLoading =
         method: "POST",
         body: JSON.stringify({
           agent_definition_id: agents.data![0].id,
-          title: searchChatTitle(content),
+          title: chatTitleFromFirstMessage(content),
           workflow_type: "SEARCH_CHAT",
           search_definition: scope,
         }),

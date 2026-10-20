@@ -515,23 +515,41 @@ describe("BatchReviewWorkspace", () => {
       if (path.endsWith(`/reviewer-coding/documents/${citedDocumentId}`) && !init?.method) return { matter_document_id: citedDocumentId, review_status: "NOT_STARTED", values: [], reviewer_values: [] } as never;
       if (path.endsWith("/reviewer-coding/documents/document-1/values") && init?.method === "PUT") return [] as never;
       if (path === "/v1/matters/matter-1/agents?workflow_type=BATCH_CHAT") return [{ id: "batch-agent-1", name: "Batch Chat Agent" }] as never;
-      if (path === "/v1/matters/matter-1/agent-conversations?workflow_type=BATCH_CHAT&review_batch_id=batch-1") return [] as never;
-      if (path === "/v1/matters/matter-1/agent-conversations" && init?.method === "POST") return {
-        id: "conversation-1",
-        tenant_id: "tenant-1",
-        client_id: "client-1",
-        matter_id: "matter-1",
-        review_batch_id: "batch-1",
-        agent_definition_id: "batch-agent-1",
-        agent_definition_version_id: "batch-agent-version-1",
-        title: "Renewal questions",
-        workflow_type: "BATCH_CHAT",
-        status: "ACTIVE",
-        initiated_by_user_id: "user-1",
-        created_at: "2026-09-15T12:00:00Z",
-        updated_at: "2026-09-15T12:00:00Z",
-      } as never;
-      if (path === "/v1/agent-conversations/conversation-1/messages") return [{ id: "message-1", conversation_id: "conversation-1", turn_id: "turn-1", sequence: 1, role: "ASSISTANT", content: `See [Document ${citedDocumentId} ¶1-5].`, agent_run_id: "agent-run-1", created_by_user_id: null, created_at: "2026-09-15T12:00:00Z" }] as never;
+      if (path === "/v1/matters/matter-1/agent-conversations?workflow_type=BATCH_CHAT&review_batch_id=batch-1") return [{
+        id: "conversation-existing", tenant_id: "tenant-1", client_id: "client-1", matter_id: "matter-1", review_batch_id: "batch-1",
+        agent_definition_id: "batch-agent-1", agent_definition_version_id: "batch-agent-version-1", title: "Existing renewal chat",
+        workflow_type: "BATCH_CHAT", status: "ACTIVE", initiated_by_user_id: "user-1",
+        created_at: "2026-09-14T12:00:00Z", updated_at: "2026-09-14T12:00:00Z",
+      }] as never;
+      if (path === "/v1/matters/matter-1/agent-conversations" && init?.method === "POST") {
+        const payload = JSON.parse(String(init.body));
+        return {
+          id: "conversation-1",
+          tenant_id: "tenant-1",
+          client_id: "client-1",
+          matter_id: "matter-1",
+          review_batch_id: "batch-1",
+          agent_definition_id: "batch-agent-1",
+          agent_definition_version_id: "batch-agent-version-1",
+          title: payload.title,
+          workflow_type: "BATCH_CHAT",
+          status: "ACTIVE",
+          initiated_by_user_id: "user-1",
+          created_at: "2026-09-15T12:00:00Z",
+          updated_at: "2026-09-15T12:00:00Z",
+        } as never;
+      }
+      if (path === "/v1/agent-conversations/conversation-1/turns" && init?.method === "POST") {
+        const payload = JSON.parse(String(init.body));
+        return {
+          turn: { id: "turn-1", conversation_id: "conversation-1", sequence: 1, status: "QUEUED", created_by_user_id: "user-1", completed_at: null, error_message: null, created_at: "2026-09-15T12:00:00Z", updated_at: "2026-09-15T12:00:00Z" },
+          message: { id: "message-user-1", conversation_id: "conversation-1", turn_id: "turn-1", sequence: 1, role: "USER", content: payload.message, message_data: {}, created_by_user_id: "user-1", agent_run_id: null, created_at: "2026-09-15T12:00:00Z" },
+          run: { id: "agent-run-1", conversation_id: "conversation-1", turn_id: "turn-1", sequence: 1, workflow_id: "agent-run:agent-run-1", parent_run_id: null, deferred_from_run_id: null, agent_definition_version_id: "batch-agent-version-1", actor_user_id: "user-1", model_key: "configured-default", status: "QUEUED", output_text: null, request_count: 0, tool_call_count: 0, input_tokens: 0, cached_input_tokens: 0, cache_write_tokens: 0, output_tokens: 0, error_message: null, started_at: null, completed_at: null, created_at: "2026-09-15T12:00:00Z" },
+        } as never;
+      }
+      if (path === "/v1/agent-conversations/conversation-existing/messages") return [{ id: "message-1", conversation_id: "conversation-existing", turn_id: "turn-existing", sequence: 1, role: "ASSISTANT", content: `See [Document ${citedDocumentId} ¶1-5].`, agent_run_id: "agent-run-existing", created_by_user_id: null, created_at: "2026-09-14T12:00:00Z" }] as never;
+      if (path === "/v1/agent-conversations/conversation-existing/runs") return [] as never;
+      if (path === "/v1/agent-conversations/conversation-1/messages") return [] as never;
       if (path === "/v1/agent-conversations/conversation-1/runs") return [] as never;
       throw new Error(`Unexpected request: ${path}`);
     });
@@ -677,20 +695,28 @@ describe("BatchReviewWorkspace", () => {
 
     await user.click(screen.getByRole("button", { name: "Chat" }));
     expect(screen.getByLabelText("Batch review layout")).toHaveStyle({ gridTemplateColumns: "24rem minmax(0, 1fr) 30rem" });
+    expect(await screen.findByRole("combobox", { name: "Previous batch chats" })).toBeInTheDocument();
+    await user.click(await screen.findByRole("button", { name: `Document ${citedDocumentId} ¶1-5` }));
+    expect(await screen.findByText("cited-document.eml")).toBeInTheDocument();
+    expect(screen.getByTestId("highlighted-paragraphs")).toHaveTextContent("1,2,3,4,5");
+    await user.click(screen.getByRole("button", { name: "New batch chat" }));
     expect(await screen.findByText("Chat with this batch")).toBeInTheDocument();
-    await user.type(screen.getByRole("textbox", { name: "Batch chat name" }), "Renewal questions");
-    await user.click(screen.getByRole("button", { name: "Start batch chat" }));
+    await user.click(screen.getByRole("button", { name: "Start chat and send" }));
+    expect(screen.getByRole("alert")).toHaveTextContent("Enter your first question before starting the chat.");
+    const firstQuestion = "Which documents discuss renewal timing, termination risk, and proposed contract changes?";
+    await user.type(screen.getByRole("textbox", { name: "Starting message Batch Chat" }), firstQuestion);
+    await user.click(screen.getByRole("button", { name: "Start chat and send" }));
     await waitFor(() => {
       const createCall = vi.mocked(coreApi).mock.calls.find(([path, init]) => path === "/v1/matters/matter-1/agent-conversations" && init?.method === "POST");
       expect(JSON.parse(String(createCall?.[1]?.body))).toEqual({
         agent_definition_id: "batch-agent-1",
-        title: "Renewal questions",
+        title: firstQuestion.slice(0, 50),
         workflow_type: "BATCH_CHAT",
         review_batch_id: "batch-1",
       });
+      const turnCall = vi.mocked(coreApi).mock.calls.find(([path, init]) => path === "/v1/agent-conversations/conversation-1/turns" && init?.method === "POST");
+      expect(JSON.parse(String(turnCall?.[1]?.body))).toEqual({ message: firstQuestion });
     });
-    await user.click(await screen.findByRole("button", { name: `[Document ${citedDocumentId} ¶1-5]` }));
-    expect(await screen.findByText("cited-document.eml")).toBeInTheDocument();
-    expect(screen.getByTestId("highlighted-paragraphs")).toHaveTextContent("1,2,3,4,5");
+    expect(screen.getByRole("combobox", { name: "Previous batch chats" })).toBeInTheDocument();
   }, 20_000);
 });
