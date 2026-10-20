@@ -19,6 +19,7 @@ from artifact_service.config import ArtifactSettings, get_artifact_settings
 from artifact_service.database import get_artifact_db
 from artifact_service.deletion import create_deletion_job, fail_deletion, retry_deletion_job
 from artifact_service.derived import store_derived_artifact
+from artifact_service.family_relationships import collection_item_relationship_snapshots, default_family_id
 from artifact_service.models import (
     Artifact,
     ArtifactLineage,
@@ -52,6 +53,10 @@ from artifact_service.schemas import (
     CollectionItemGroupingSnapshot,
     CollectionItemGroupingSnapshotsRequest,
     CollectionItemRead,
+    CollectionItemRelationshipReconcileRequest,
+    CollectionItemRelationshipReconcileResponse,
+    CollectionItemRelationshipSnapshot,
+    CollectionItemRelationshipSnapshotsRequest,
     CollectionItemSearchResponse,
     CollectionItemUploadMetadata,
     CollectionItemUploadResponse,
@@ -1065,6 +1070,27 @@ def build_router(
             parent = db.get(CollectionItem, payload.parent_collection_item_id)
             if parent is None or parent.collection_id != collection.id:
                 raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_CONTENT, detail="Invalid parent item")
+        family_id = payload.family_id
+        if parent is not None:
+            existing_child_family_ids = set(
+                db.scalars(
+                    select(CollectionItem.family_id).where(
+                        CollectionItem.parent_collection_item_id == parent.id,
+                        CollectionItem.family_id.is_not(None),
+                    )
+                )
+            )
+            family_candidates = {
+                candidate
+                for candidate in (family_id, parent.family_id, *existing_child_family_ids)
+                if candidate is not None
+            }
+            if len(family_candidates) > 1:
+                raise HTTPException(
+                    status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
+                    detail="Parent and child family IDs must match",
+                )
+            family_id = next(iter(family_candidates), default_family_id(parent.source_item_id))
         if payload.source_container_artifact_id is not None:
             source_container = db.scalar(
                 select(Artifact)
@@ -1097,7 +1123,26 @@ def build_router(
                         status_code=status.HTTP_409_CONFLICT,
                         detail="source_item_id already exists with different content",
                     )
+                if payload.parent_collection_item_id != existing_item.parent_collection_item_id:
+                    raise HTTPException(
+                        status_code=status.HTTP_409_CONFLICT,
+                        detail=(
+                            "source_item_id already exists with different parent metadata; "
+                            "use relationship reconciliation"
+                        ),
+                    )
+                if family_id is not None and existing_item.family_id != family_id:
+                    raise HTTPException(
+                        status_code=status.HTTP_409_CONFLICT,
+                        detail=(
+                            "source_item_id already exists with different family metadata; "
+                            "use relationship reconciliation"
+                        ),
+                    )
                 return CollectionItemUploadResponse(item=existing_read, created=False)
+
+            if parent is not None and parent.family_id is None:
+                parent.family_id = family_id
 
             item = CollectionItem(
                 tenant_id=collection.tenant_id,
@@ -1117,7 +1162,7 @@ def build_router(
                     if parent is not None
                     else payload.source_modified_at
                 ),
-                family_id=payload.family_id,
+                family_id=family_id,
                 parent_collection_item_id=payload.parent_collection_item_id,
                 processing_status=payload.processing_status,
                 raw_metadata=payload.raw_metadata,
@@ -1463,6 +1508,193 @@ def build_router(
             for item_id, family_id, record_type, content_hash in rows
         }
         return [by_id[item_id] for item_id in payload.item_ids if item_id in by_id]
+
+    @router.post(
+        "/collection-items/relationship-snapshots",
+        response_model=list[CollectionItemRelationshipSnapshot],
+    )
+    def get_collection_item_relationship_snapshots(
+        payload: CollectionItemRelationshipSnapshotsRequest,
+        principal: ArtifactPrincipal = Depends(principal_dependency),
+        db: Session = Depends(get_artifact_db),
+    ) -> list[CollectionItemRelationshipSnapshot]:
+        require_client(principal, payload.tenant_id, payload.client_id)
+        return collection_item_relationship_snapshots(
+            db,
+            tenant_id=payload.tenant_id,
+            client_id=payload.client_id,
+            item_ids=payload.item_ids,
+        )
+
+    @router.post(
+        "/collections/{collection_id}/item-relationships:reconcile",
+        response_model=CollectionItemRelationshipReconcileResponse,
+    )
+    def reconcile_collection_item_relationships(
+        collection_id: uuid.UUID,
+        payload: CollectionItemRelationshipReconcileRequest,
+        principal: ArtifactPrincipal = Depends(principal_dependency),
+        db: Session = Depends(get_artifact_db),
+    ) -> CollectionItemRelationshipReconcileResponse:
+        collection = _get_collection(db, collection_id, principal, for_update=True)
+        if collection.status != "OPEN":
+            raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="Collection is not open")
+
+        requested_source_ids = {
+            source_item_id
+            for relationship in payload.relationships
+            for source_item_id in (
+                relationship.child_source_item_id,
+                relationship.parent_source_item_id,
+                relationship.expected_parent_source_item_id,
+            )
+            if source_item_id is not None
+        }
+        requested_items = list(
+            db.scalars(
+                select(CollectionItem).where(
+                    CollectionItem.collection_id == collection.id,
+                    CollectionItem.source_item_id.in_(requested_source_ids),
+                )
+            )
+        )
+        by_source_id = {item.source_item_id: item for item in requested_items}
+        missing_source_ids = sorted(requested_source_ids - set(by_source_id))
+        if missing_source_ids:
+            raise HTTPException(
+                status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
+                detail=f"Unknown collection source item IDs: {', '.join(missing_source_ids[:20])}",
+            )
+
+        children = [by_source_id[relationship.child_source_item_id] for relationship in payload.relationships]
+        target_parents = [by_source_id[relationship.parent_source_item_id] for relationship in payload.relationships]
+        current_parent_ids = {
+            child.parent_collection_item_id
+            for child in children
+            if child.parent_collection_item_id is not None
+        }
+
+        # Load current ancestry in bounded waves so cycle validation does not
+        # require retaining every collection relationship in memory.
+        parent_map: dict[uuid.UUID, uuid.UUID | None] = {}
+        ancestry_items: dict[uuid.UUID, CollectionItem] = {item.id: item for item in requested_items}
+        frontier = {parent.id for parent in target_parents} | current_parent_ids
+        while frontier:
+            rows = list(
+                db.scalars(
+                    select(CollectionItem).where(
+                        CollectionItem.collection_id == collection.id,
+                        CollectionItem.id.in_(frontier),
+                    )
+                )
+            )
+            next_frontier: set[uuid.UUID] = set()
+            for row in rows:
+                ancestry_items[row.id] = row
+                parent_map[row.id] = row.parent_collection_item_id
+                if row.parent_collection_item_id is not None and row.parent_collection_item_id not in parent_map:
+                    next_frontier.add(row.parent_collection_item_id)
+            frontier = next_frontier
+
+        proposed_parent = {
+            by_source_id[relationship.child_source_item_id].id: by_source_id[
+                relationship.parent_source_item_id
+            ].id
+            for relationship in payload.relationships
+        }
+        for child_id, parent_id in proposed_parent.items():
+            seen = {child_id}
+            cursor: uuid.UUID | None = parent_id
+            while cursor is not None:
+                if cursor in seen:
+                    raise HTTPException(
+                        status_code=status.HTTP_409_CONFLICT,
+                        detail="Relationship reconciliation would create a cycle",
+                    )
+                seen.add(cursor)
+                cursor = proposed_parent.get(cursor, parent_map.get(cursor))
+
+        # Existing children of target parents participate in family validation.
+        target_parent_ids = {parent.id for parent in target_parents}
+        existing_family_rows = db.execute(
+            select(CollectionItem.parent_collection_item_id, CollectionItem.family_id).where(
+                CollectionItem.collection_id == collection.id,
+                CollectionItem.parent_collection_item_id.in_(target_parent_ids),
+                CollectionItem.family_id.is_not(None),
+            )
+        ).all()
+        child_families_by_parent: dict[uuid.UUID, set[uuid.UUID]] = {}
+        for parent_id, family_id in existing_family_rows:
+            child_families_by_parent.setdefault(parent_id, set()).add(family_id)
+
+        created_count = 0
+        unchanged_count = 0
+        affected_item_ids: set[uuid.UUID] = set()
+        for relationship in payload.relationships:
+            child = by_source_id[relationship.child_source_item_id]
+            parent = by_source_id[relationship.parent_source_item_id]
+            current_parent = ancestry_items.get(child.parent_collection_item_id)
+            current_parent_source_id = current_parent.source_item_id if current_parent is not None else None
+            if (
+                relationship.expected_parent_source_item_id is not None
+                and relationship.expected_parent_source_item_id != current_parent_source_id
+            ):
+                raise HTTPException(
+                    status_code=status.HTTP_409_CONFLICT,
+                    detail=f"Child {child.source_item_id!r} no longer has the expected parent",
+                )
+            if (
+                child.parent_collection_item_id not in (None, parent.id)
+                and relationship.expected_parent_source_item_id is None
+            ):
+                raise HTTPException(
+                    status_code=status.HTTP_409_CONFLICT,
+                    detail=f"Child {child.source_item_id!r} already has a different parent",
+                )
+
+            family_candidates = {
+                family_id
+                for family_id in (
+                    relationship.family_id,
+                    child.family_id,
+                    parent.family_id,
+                    *child_families_by_parent.get(parent.id, set()),
+                )
+                if family_id is not None
+            }
+            if len(family_candidates) > 1:
+                raise HTTPException(
+                    status_code=status.HTTP_409_CONFLICT,
+                    detail=f"Parent and child family IDs conflict for {child.source_item_id!r}",
+                )
+            family_id = next(iter(family_candidates), default_family_id(parent.source_item_id))
+
+            if (
+                child.parent_collection_item_id == parent.id
+                and child.family_id == family_id
+                and parent.family_id == family_id
+                and child.file_date == parent.file_date
+            ):
+                unchanged_count += 1
+                continue
+
+            if current_parent is not None and current_parent.id != parent.id:
+                affected_item_ids.add(current_parent.id)
+            child.parent_collection_item_id = parent.id
+            child.family_id = family_id
+            child.file_date = parent.file_date
+            if parent.family_id is None:
+                parent.family_id = family_id
+            created_count += 1
+            affected_item_ids.update((child.id, parent.id))
+
+        db.commit()
+        return CollectionItemRelationshipReconcileResponse(
+            created_count=created_count,
+            unchanged_count=unchanged_count,
+            affected_item_ids=sorted(affected_item_ids, key=str),
+            requires_search_rebuild=bool(affected_item_ids),
+        )
 
     @router.post(
         "/collection-items/analysis-input-snapshots",

@@ -99,6 +99,10 @@ import type {
   CollectionItemGroupingSnapshot,
   CollectionItemGroupingSnapshotsRequest,
   CollectionItemRead,
+  CollectionItemRelationshipReconcileRequest,
+  CollectionItemRelationshipReconcileResponse,
+  CollectionItemRelationshipSnapshot,
+  CollectionItemRelationshipSnapshotsRequest,
   CollectionItemSearchResponse,
   CollectionItemUploadResponse,
   CollectionRead,
@@ -18992,6 +18996,135 @@ const res = await fetch(getGetCollectionItemGroupingSnapshotsV1CollectionItemsGr
 
   const data: getCollectionItemGroupingSnapshotsV1CollectionItemsGroupingSnapshotsPostResponse['data'] = body ? JSON.parse(body) : {}
   return { data, status: res.status, headers: res.headers } as getCollectionItemGroupingSnapshotsV1CollectionItemsGroupingSnapshotsPostResponse
+}
+
+
+
+export type getCollectionItemRelationshipSnapshotsV1CollectionItemsRelationshipSnapshotsPostResponse200 = {
+  data: CollectionItemRelationshipSnapshot[]
+  status: 200
+}
+
+export type getCollectionItemRelationshipSnapshotsV1CollectionItemsRelationshipSnapshotsPostResponse422 = {
+  data: HTTPValidationError
+  status: 422
+}
+
+export type getCollectionItemRelationshipSnapshotsV1CollectionItemsRelationshipSnapshotsPostResponseSuccess = (getCollectionItemRelationshipSnapshotsV1CollectionItemsRelationshipSnapshotsPostResponse200) & {
+  headers: Headers;
+};
+export type getCollectionItemRelationshipSnapshotsV1CollectionItemsRelationshipSnapshotsPostResponseError = (getCollectionItemRelationshipSnapshotsV1CollectionItemsRelationshipSnapshotsPostResponse422) & {
+  headers: Headers;
+};
+
+export type getCollectionItemRelationshipSnapshotsV1CollectionItemsRelationshipSnapshotsPostResponse = (getCollectionItemRelationshipSnapshotsV1CollectionItemsRelationshipSnapshotsPostResponseSuccess | getCollectionItemRelationshipSnapshotsV1CollectionItemsRelationshipSnapshotsPostResponseError)
+
+export const getGetCollectionItemRelationshipSnapshotsV1CollectionItemsRelationshipSnapshotsPostUrl = () => {
+
+
+
+
+  return `/api/core/v1/collection-items/relationship-snapshots`
+}
+
+/**
+ * @summary Get Collection Item Relationship Snapshots
+ */
+export const getCollectionItemRelationshipSnapshotsV1CollectionItemsRelationshipSnapshotsPost = async (collectionItemRelationshipSnapshotsRequest: CollectionItemRelationshipSnapshotsRequest, options?: RequestInit): Promise<getCollectionItemRelationshipSnapshotsV1CollectionItemsRelationshipSnapshotsPostResponse> => {
+
+    const getHeaders = (h?: NonNullable<RequestInit['headers']>): Record<string, string | readonly string[]> => {
+    if (!h) return {};
+    if (h instanceof Headers) return Object.fromEntries(h.entries());
+    if (Symbol.iterator in h) {
+      return Object.fromEntries(
+        Array.from(h as Iterable<Iterable<string>>, (entry) => Array.from(entry) as [string, string]),
+      );
+    }
+    const headers: Record<string, string | readonly string[]> = {};
+    for (const [name, value] of Object.entries<string | readonly string[] | undefined>(h)) {
+      if (value !== undefined) headers[name] = value;
+    }
+    return headers;
+  };
+const res = await fetch(getGetCollectionItemRelationshipSnapshotsV1CollectionItemsRelationshipSnapshotsPostUrl(),
+  {
+    ...options,
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json', ...getHeaders(options?.headers) },
+    body: JSON.stringify(collectionItemRelationshipSnapshotsRequest)
+  }
+)
+
+
+  const body = [204, 205, 304].includes(res.status) ? null : await res.text();
+
+  const data: getCollectionItemRelationshipSnapshotsV1CollectionItemsRelationshipSnapshotsPostResponse['data'] = body ? JSON.parse(body) : {}
+  return { data, status: res.status, headers: res.headers } as getCollectionItemRelationshipSnapshotsV1CollectionItemsRelationshipSnapshotsPostResponse
+}
+
+
+
+export type reconcileCollectionItemRelationshipsV1CollectionsCollectionIdItemRelationshipsReconcilePostResponse200 = {
+  data: CollectionItemRelationshipReconcileResponse
+  status: 200
+}
+
+export type reconcileCollectionItemRelationshipsV1CollectionsCollectionIdItemRelationshipsReconcilePostResponse422 = {
+  data: HTTPValidationError
+  status: 422
+}
+
+export type reconcileCollectionItemRelationshipsV1CollectionsCollectionIdItemRelationshipsReconcilePostResponseSuccess = (reconcileCollectionItemRelationshipsV1CollectionsCollectionIdItemRelationshipsReconcilePostResponse200) & {
+  headers: Headers;
+};
+export type reconcileCollectionItemRelationshipsV1CollectionsCollectionIdItemRelationshipsReconcilePostResponseError = (reconcileCollectionItemRelationshipsV1CollectionsCollectionIdItemRelationshipsReconcilePostResponse422) & {
+  headers: Headers;
+};
+
+export type reconcileCollectionItemRelationshipsV1CollectionsCollectionIdItemRelationshipsReconcilePostResponse = (reconcileCollectionItemRelationshipsV1CollectionsCollectionIdItemRelationshipsReconcilePostResponseSuccess | reconcileCollectionItemRelationshipsV1CollectionsCollectionIdItemRelationshipsReconcilePostResponseError)
+
+export const getReconcileCollectionItemRelationshipsV1CollectionsCollectionIdItemRelationshipsReconcilePostUrl = (collectionId: string,) => {
+
+
+
+
+  return `/api/core/v1/collections/${collectionId}/item-relationships:reconcile`
+}
+
+/**
+ * @summary Reconcile Collection Item Relationships
+ */
+export const reconcileCollectionItemRelationshipsV1CollectionsCollectionIdItemRelationshipsReconcilePost = async (collectionId: string,
+    collectionItemRelationshipReconcileRequest: CollectionItemRelationshipReconcileRequest, options?: RequestInit): Promise<reconcileCollectionItemRelationshipsV1CollectionsCollectionIdItemRelationshipsReconcilePostResponse> => {
+
+    const getHeaders = (h?: NonNullable<RequestInit['headers']>): Record<string, string | readonly string[]> => {
+    if (!h) return {};
+    if (h instanceof Headers) return Object.fromEntries(h.entries());
+    if (Symbol.iterator in h) {
+      return Object.fromEntries(
+        Array.from(h as Iterable<Iterable<string>>, (entry) => Array.from(entry) as [string, string]),
+      );
+    }
+    const headers: Record<string, string | readonly string[]> = {};
+    for (const [name, value] of Object.entries<string | readonly string[] | undefined>(h)) {
+      if (value !== undefined) headers[name] = value;
+    }
+    return headers;
+  };
+const res = await fetch(getReconcileCollectionItemRelationshipsV1CollectionsCollectionIdItemRelationshipsReconcilePostUrl(collectionId),
+  {
+    ...options,
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json', ...getHeaders(options?.headers) },
+    body: JSON.stringify(collectionItemRelationshipReconcileRequest)
+  }
+)
+
+
+  const body = [204, 205, 304].includes(res.status) ? null : await res.text();
+
+  const data: reconcileCollectionItemRelationshipsV1CollectionsCollectionIdItemRelationshipsReconcilePostResponse['data'] = body ? JSON.parse(body) : {}
+  return { data, status: res.status, headers: res.headers } as reconcileCollectionItemRelationshipsV1CollectionsCollectionIdItemRelationshipsReconcilePostResponse
 }
 
 

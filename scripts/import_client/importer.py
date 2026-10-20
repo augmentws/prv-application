@@ -17,7 +17,7 @@ from pathlib import Path, PurePosixPath
 from typing import Any
 
 from scripts.import_client.adapters.base import DatasetAdapter
-from scripts.import_client.api import OpenApiClient
+from scripts.import_client.api import ApiError, OpenApiClient
 from scripts.import_client.email_parser import email_metadata, parse_message
 from scripts.import_client.models import CustodianSpec, EmailMetadata, EmailRecipient, ImportItem, SourceContainer
 
@@ -607,6 +607,8 @@ class BaseImporter:
             for warning in email_warnings:
                 self.progress(f"Warning {item.source_item_id}: {warning}")
         raw_metadata = dict(item.raw_metadata)
+        if item.parent_source_item_id is not None:
+            raw_metadata.setdefault("parent_source_item_id", item.parent_source_item_id)
         if email_warnings:
             existing_warnings = raw_metadata.get("email_metadata_warnings")
             raw_metadata["email_metadata_warnings"] = [
@@ -630,10 +632,35 @@ class BaseImporter:
             "unmapped_metadata": item.unmapped_metadata,
             "source_container_artifact_id": source_artifact_id,
         }
-        return self.api.upload_item(
-            collection_id,
-            item.original_filename,
-            item.content,
-            item.media_type,
-            metadata,
-        )
+        try:
+            return self.api.upload_item(
+                collection_id,
+                item.original_filename,
+                item.content,
+                item.media_type,
+                metadata,
+            )
+        except ApiError as exc:
+            if (
+                exc.status_code != 409
+                or item.parent_source_item_id is None
+                or "relationship reconciliation" not in str(exc)
+            ):
+                raise
+            self.api.reconcile_item_relationships(
+                collection_id,
+                [
+                    {
+                        "child_source_item_id": item.source_item_id,
+                        "parent_source_item_id": item.parent_source_item_id,
+                        "family_id": item.family_id,
+                    }
+                ],
+            )
+            return self.api.upload_item(
+                collection_id,
+                item.original_filename,
+                item.content,
+                item.media_type,
+                metadata,
+            )

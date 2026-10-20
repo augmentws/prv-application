@@ -317,6 +317,8 @@ describe("ReviewWorkspace", () => {
     expect(screen.getByRole("main")).toHaveStyle({ overflow: "clip" });
     const searchFilters = screen.getByRole("complementary", { name: "Search filters" });
     expect(searchFilters.querySelector(".overflow-y-auto")).toHaveClass("overscroll-contain");
+    expect(within(searchFilters).getByRole("region", { name: "Document fields filters" })).toHaveTextContent("Coded by");
+    expect(within(searchFilters).getByRole("region", { name: "Review filters" })).toHaveTextContent("Custodian");
     expect(within(screen.getByRole("list", { name: "Document search results" })).getByLabelText("Result 51")).toHaveTextContent("51");
     expect(screen.getByPlaceholderText("Search document body, filenames, paths, email headers, and metadata")).toBeInTheDocument();
     expect(screen.getByText(/moved to a private communications channel/)).toBeInTheDocument();

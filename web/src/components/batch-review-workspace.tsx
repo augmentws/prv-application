@@ -67,12 +67,12 @@ import { coreApi } from "@/lib/api-client";
 import type { BatchDocumentReference } from "@/lib/document-references";
 import { normalizeParagraphReference, parseParagraphNumbers } from "@/lib/document-references";
 import { HAS_VALUE_FILTER_TOKEN, NO_VALUE_FILTER_TOKEN, toggleFacetFilterToken } from "@/lib/search-filters";
+import { organizeMetadataFilterDefinitions } from "@/lib/metadata-filter-groups";
 import { cn } from "@/lib/utils";
 import { matterHref } from "@/lib/matter-routes";
 
 const PAGE_SIZE = 50;
 const FACET_PAGE_SIZE = 8;
-const PREFERRED_FACETS = ["custodian", "file_extension", "responsiveness", "privilege", "key_document", "topics"];
 const SEARCH_PLACEHOLDERS: Record<MatterSearchRequestSearchMode, string> = {
   KEYWORD: "Search this batch's body, filenames, paths, email headers, and metadata",
   SEMANTIC: "Find documents in this batch by concept or meaning",
@@ -378,12 +378,11 @@ export function BatchReviewWorkspace({ matterId, batchId, initialDocumentId, ini
   });
 
   const facetDefinitions = useMemo(() => (definitions.data ?? [])
-    .filter((definition) => definition.status === "ACTIVE" && definition.searchable && definition.facetable && ["TEXT", "ENUM", "BOOLEAN"].includes(definition.type))
-    .sort((left, right) => {
-      const leftRank = PREFERRED_FACETS.indexOf(left.key);
-      const rightRank = PREFERRED_FACETS.indexOf(right.key);
-      return (leftRank < 0 ? 1000 : leftRank) - (rightRank < 0 ? 1000 : rightRank) || left.display_name.localeCompare(right.display_name);
-    }), [definitions.data]);
+    .filter((definition) => definition.status === "ACTIVE" && definition.searchable && definition.facetable && ["TEXT", "ENUM", "BOOLEAN"].includes(definition.type)), [definitions.data]);
+  const facetGroups = useMemo(
+    () => organizeMetadataFilterDefinitions(facetDefinitions, groups.data ?? []),
+    [facetDefinitions, groups.data],
+  );
   const searchRequest = useMemo<ReviewBatchSearchRequest>(() => {
     const definitionByKey = new Map(facetDefinitions.map((definition) => [definition.key, definition]));
     const searchFilters = Object.entries(filters).flatMap<MatterSearchFilter>(([key, values]) => {
@@ -845,7 +844,7 @@ export function BatchReviewWorkspace({ matterId, batchId, initialDocumentId, ini
             <div ref={filterScrollRef} className="min-h-0 flex-1 divide-y overflow-y-auto overscroll-contain" role="tabpanel" aria-label="Filters">
               {taxonomy.data ? <BatchTopicFacet taxonomy={taxonomy.data} values={topicFacets.data} selected={selectedTopicKeys} onToggle={toggleTopic} /> : null}
               {batch.data?.searchable_coding_status === "READY" && batch.data.searchable_coding_fields.length ? <section ref={searchableCodingFieldsRef} tabIndex={-1} aria-label="Batch Coding fields" className="scroll-mt-2 border-b bg-accent/5 outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-ring"><div className="px-3 pb-1 pt-3"><h3 className="flex items-center gap-1.5 text-sm font-semibold"><Sparkles className="size-3.5 text-accent" />Batch Coding</h3><p className="mt-0.5 text-xs text-muted-foreground">Selected run only · open a field to filter this batch</p>{selectedCodingRun?.run_type === "CLASSIFIER" ? <p className="mt-1 text-xs text-muted-foreground">Classifier probabilities are model-specific and should not be compared directly with question-answering confidence.</p> : null}</div>{batch.data.searchable_coding_fields.map((field) => <BatchCodingFacetSection key={field.metadata_definition_id} matterId={matterId} batchId={batchId} searchRequest={searchRequest} field={field} selected={codingFilters[field.key] ?? []} confidence={codingConfidence[field.key] ?? { preset: "any", minimum: null, maximum: null }} projectedMinimum={projectedMinimum} projectedMaximum={projectedMaximum} onToggle={toggleCodingFilter} onConfidenceChange={setCodingConfidenceRange} />)}</section> : null}
-              {facetDefinitions.map((definition) => <BatchFacetSection key={definition.id} matterId={matterId} batchId={batchId} searchRequest={searchRequest} definition={definition} selected={filters[definition.key] ?? []} negated={negatedFilterFields.has(definition.key)} custodianNames={new Map((custodians.data ?? []).map((custodian) => [custodian.id, custodian.display_name]))} onToggle={toggleFilter} onToggleNegation={() => toggleFilterNegation(definition.key)} />)}
+              {facetGroups.map((group) => <section key={group.id} aria-label={`${group.displayName} filters`}><h3 className="border-b bg-muted/30 px-3 py-2 text-xs font-bold uppercase tracking-[0.08em] text-muted-foreground">{group.displayName}</h3><div className="divide-y">{group.definitions.map((definition) => <BatchFacetSection key={definition.id} matterId={matterId} batchId={batchId} searchRequest={searchRequest} definition={definition} selected={filters[definition.key] ?? []} negated={negatedFilterFields.has(definition.key)} custodianNames={new Map((custodians.data ?? []).map((custodian) => [custodian.id, custodian.display_name]))} onToggle={toggleFilter} onToggleNegation={() => toggleFilterNegation(definition.key)} />)}</div></section>)}
               {!facetDefinitions.length ? <p className="p-3 text-xs text-muted-foreground">No batch filters are configured.</p> : null}
             </div>
           ) : (

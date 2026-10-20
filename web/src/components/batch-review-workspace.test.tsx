@@ -461,7 +461,13 @@ describe("BatchReviewWorkspace", () => {
         searchable: true,
         facetable: true,
       }] as never;
-      if (path === "/v1/matters/matter-1/metadata-groups") return [] as never;
+      if (path === "/v1/matters/matter-1/metadata-groups") return [{
+        id: "group-issue",
+        display_name: "Issue metadata",
+        sort_order: 10,
+        definition_ids: ["definition-issue"],
+        status: "ACTIVE",
+      }] as never;
       if (path === "/v1/matters/matter-1/review-batches/batch-1" && !init?.method) return codingSearchReady ? {
         ...batch,
         searchable_coding_run_id: "analysis-run-1",
@@ -650,6 +656,7 @@ describe("BatchReviewWorkspace", () => {
     await user.click(screen.getByRole("tab", { name: "Filters" }));
     expect(screen.getByRole("tab", { name: "Filters" })).toHaveAttribute("aria-selected", "true");
     expect(screen.getByRole("tabpanel", { name: "Filters" })).toHaveClass("min-h-0", "overflow-y-auto", "overscroll-contain");
+    expect(within(screen.getByRole("tabpanel", { name: "Filters" })).getByRole("region", { name: "Issue metadata filters" })).toHaveTextContent("Issue Coding");
     expect(screen.getAllByText("Issue Coding").length).toBeGreaterThan(0);
     expect(screen.queryByText("issue_coding")).not.toBeInTheDocument();
     expect(screen.getByText("Matter Definition assessment")).toBeInTheDocument();

@@ -45,6 +45,7 @@ from artifact_service.schemas import (
     CollectionItemAnalysisInputSnapshotsRequest,
     CollectionItemGroupingSnapshotsRequest,
     CollectionItemRead,
+    CollectionItemRelationshipSnapshotsRequest,
     CollectionSelectionCreate,
     TenantStorageRead,
     WorkflowArtifactLineageInput,
@@ -69,6 +70,7 @@ from artifact_service.workflow_artifacts import (
 from artifact_service.workflow_artifacts import store_workflow_artifact as persist_workflow_artifact
 
 REMOTE_GROUPING_SNAPSHOT_BATCH_SIZE = 5000
+REMOTE_RELATIONSHIP_SNAPSHOT_BATCH_SIZE = 5000
 
 
 def get_collection_item_read(
@@ -148,6 +150,8 @@ class SearchItemSnapshot:
     raw_metadata: dict[str, Any]
     unmapped_metadata: dict[str, Any]
     body_text: str | None
+    parent_identifier: str | None = None
+    child_identifiers: list[str] = field(default_factory=list)
 
 
 @dataclass(frozen=True)
@@ -248,6 +252,18 @@ class CollectionItemGroupingSnapshot:
     family_id: uuid.UUID | None
     record_type: str
     native_content_hash: str | None
+
+
+@dataclass(frozen=True)
+class CollectionItemRelationshipSnapshot:
+    item_id: uuid.UUID
+    family_id: uuid.UUID | None
+    parent_item_id: uuid.UUID | None
+    parent_source_item_id: str | None
+    parent_identifier: str | None
+    child_item_ids: list[uuid.UUID]
+    child_source_item_ids: list[str]
+    child_identifiers: list[str]
 
 
 @dataclass(frozen=True)
@@ -547,6 +563,76 @@ def get_collection_item_grouping_snapshots(
                     family_id=uuid.UUID(value["family_id"]) if value.get("family_id") else None,
                     record_type=value["record_type"],
                     native_content_hash=value.get("native_content_hash"),
+                )
+    return snapshots
+
+
+def get_collection_item_relationship_snapshots(
+    *,
+    item_ids: list[uuid.UUID],
+    actor_user_id: uuid.UUID,
+    tenant_id: uuid.UUID,
+    client_id: uuid.UUID,
+) -> dict[uuid.UUID, CollectionItemRelationshipSnapshot]:
+    if not item_ids:
+        return {}
+    unique_item_ids = list(dict.fromkeys(item_ids))
+    settings = get_settings()
+    snapshots: dict[uuid.UUID, CollectionItemRelationshipSnapshot] = {}
+
+    if settings.artifact_mode == "embedded":
+        from artifact_service.family_relationships import collection_item_relationship_snapshots
+
+        with ArtifactSessionLocal() as db:
+            values = collection_item_relationship_snapshots(
+                db,
+                tenant_id=tenant_id,
+                client_id=client_id,
+                item_ids=unique_item_ids,
+            )
+        for value in values:
+            snapshots[value.item_id] = CollectionItemRelationshipSnapshot(
+                item_id=value.item_id,
+                family_id=value.family_id,
+                parent_item_id=value.parent_item_id,
+                parent_source_item_id=value.parent_source_item_id,
+                parent_identifier=value.parent_identifier,
+                child_item_ids=value.child_item_ids,
+                child_source_item_ids=value.child_source_item_ids,
+                child_identifiers=value.child_identifiers,
+            )
+        return snapshots
+
+    with httpx.Client(base_url=settings.artifact_base_url, timeout=120) as client:
+        for offset in range(0, len(unique_item_ids), REMOTE_RELATIONSHIP_SNAPSHOT_BATCH_SIZE):
+            payload = CollectionItemRelationshipSnapshotsRequest(
+                tenant_id=tenant_id,
+                client_id=client_id,
+                item_ids=unique_item_ids[
+                    offset : offset + REMOTE_RELATIONSHIP_SNAPSHOT_BATCH_SIZE
+                ],
+            )
+            response = client.post(
+                "/v1/collection-items/relationship-snapshots",
+                json=payload.model_dump(mode="json"),
+                headers=_headers(actor_user_id, tenant_id, client_id),
+            )
+            if response.status_code == 403:
+                raise PermissionError("Collection items are not available to this matter")
+            response.raise_for_status()
+            for value in response.json():
+                item_id = uuid.UUID(value["item_id"])
+                snapshots[item_id] = CollectionItemRelationshipSnapshot(
+                    item_id=item_id,
+                    family_id=uuid.UUID(value["family_id"]) if value.get("family_id") else None,
+                    parent_item_id=(
+                        uuid.UUID(value["parent_item_id"]) if value.get("parent_item_id") else None
+                    ),
+                    parent_source_item_id=value.get("parent_source_item_id"),
+                    parent_identifier=value.get("parent_identifier"),
+                    child_item_ids=[uuid.UUID(child_id) for child_id in value["child_item_ids"]],
+                    child_source_item_ids=value["child_source_item_ids"],
+                    child_identifiers=value["child_identifiers"],
                 )
     return snapshots
 
@@ -1065,6 +1151,12 @@ def get_search_item_snapshot(
     client_id: uuid.UUID,
 ) -> SearchItemSnapshot:
     settings = get_settings()
+    relationship = get_collection_item_relationship_snapshots(
+        item_ids=[collection_item_id],
+        actor_user_id=actor_user_id,
+        tenant_id=tenant_id,
+        client_id=client_id,
+    ).get(collection_item_id)
     if settings.artifact_mode == "embedded":
         with ArtifactSessionLocal() as db:
             item = db.get(CollectionItem, collection_item_id)
@@ -1125,6 +1217,8 @@ def get_search_item_snapshot(
                 raw_metadata=item.raw_metadata or {},
                 unmapped_metadata=item.unmapped_metadata or {},
                 body_text=_embedded_body_text(db, item, settings.search_body_text_max_bytes),
+                parent_identifier=relationship.parent_identifier if relationship is not None else None,
+                child_identifiers=relationship.child_identifiers if relationship is not None else [],
             )
 
     with httpx.Client(base_url=settings.artifact_base_url, timeout=30) as client:
@@ -1192,6 +1286,8 @@ def get_search_item_snapshot(
             raw_metadata=data.get("raw_metadata") or {},
             unmapped_metadata=data.get("unmapped_metadata") or {},
             body_text=body_text,
+            parent_identifier=relationship.parent_identifier if relationship is not None else None,
+            child_identifiers=relationship.child_identifiers if relationship is not None else [],
         )
 
 

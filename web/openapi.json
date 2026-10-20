@@ -20599,6 +20599,114 @@
         ]
       }
     },
+    "/v1/collection-items/relationship-snapshots": {
+      "post": {
+        "tags": [
+          "artifacts"
+        ],
+        "summary": "Get Collection Item Relationship Snapshots",
+        "operationId": "get_collection_item_relationship_snapshots_v1_collection_items_relationship_snapshots_post",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/CollectionItemRelationshipSnapshotsRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "items": {
+                    "$ref": "#/components/schemas/CollectionItemRelationshipSnapshot"
+                  },
+                  "type": "array",
+                  "title": "Response Get Collection Item Relationship Snapshots V1 Collection Items Relationship Snapshots Post"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ]
+      }
+    },
+    "/v1/collections/{collection_id}/item-relationships:reconcile": {
+      "post": {
+        "tags": [
+          "artifacts"
+        ],
+        "summary": "Reconcile Collection Item Relationships",
+        "operationId": "reconcile_collection_item_relationships_v1_collections__collection_id__item_relationships_reconcile_post",
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "collection_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid",
+              "title": "Collection Id"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/CollectionItemRelationshipReconcileRequest"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/CollectionItemRelationshipReconcileResponse"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/v1/collection-items/analysis-input-snapshots": {
       "post": {
         "tags": [
@@ -32007,6 +32115,228 @@
           "created_at"
         ],
         "title": "CollectionItemRead"
+      },
+      "CollectionItemRelationshipReconcileEntry": {
+        "properties": {
+          "child_source_item_id": {
+            "type": "string",
+            "maxLength": 500,
+            "minLength": 1,
+            "title": "Child Source Item Id"
+          },
+          "parent_source_item_id": {
+            "type": "string",
+            "maxLength": 500,
+            "minLength": 1,
+            "title": "Parent Source Item Id"
+          },
+          "family_id": {
+            "anyOf": [
+              {
+                "type": "string",
+                "format": "uuid"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Family Id"
+          },
+          "expected_parent_source_item_id": {
+            "anyOf": [
+              {
+                "type": "string",
+                "maxLength": 500,
+                "minLength": 1
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Expected Parent Source Item Id"
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "child_source_item_id",
+          "parent_source_item_id"
+        ],
+        "title": "CollectionItemRelationshipReconcileEntry"
+      },
+      "CollectionItemRelationshipReconcileRequest": {
+        "properties": {
+          "relationships": {
+            "items": {
+              "$ref": "#/components/schemas/CollectionItemRelationshipReconcileEntry"
+            },
+            "type": "array",
+            "maxItems": 5000,
+            "minItems": 1,
+            "title": "Relationships"
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "relationships"
+        ],
+        "title": "CollectionItemRelationshipReconcileRequest"
+      },
+      "CollectionItemRelationshipReconcileResponse": {
+        "properties": {
+          "created_count": {
+            "type": "integer",
+            "minimum": 0.0,
+            "title": "Created Count"
+          },
+          "unchanged_count": {
+            "type": "integer",
+            "minimum": 0.0,
+            "title": "Unchanged Count"
+          },
+          "affected_item_ids": {
+            "items": {
+              "type": "string",
+              "format": "uuid"
+            },
+            "type": "array",
+            "title": "Affected Item Ids"
+          },
+          "requires_search_rebuild": {
+            "type": "boolean",
+            "title": "Requires Search Rebuild"
+          }
+        },
+        "type": "object",
+        "required": [
+          "created_count",
+          "unchanged_count",
+          "affected_item_ids",
+          "requires_search_rebuild"
+        ],
+        "title": "CollectionItemRelationshipReconcileResponse"
+      },
+      "CollectionItemRelationshipSnapshot": {
+        "properties": {
+          "item_id": {
+            "type": "string",
+            "format": "uuid",
+            "title": "Item Id"
+          },
+          "family_id": {
+            "anyOf": [
+              {
+                "type": "string",
+                "format": "uuid"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Family Id"
+          },
+          "parent_item_id": {
+            "anyOf": [
+              {
+                "type": "string",
+                "format": "uuid"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Parent Item Id"
+          },
+          "parent_source_item_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Parent Source Item Id"
+          },
+          "parent_identifier": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Parent Identifier"
+          },
+          "child_item_ids": {
+            "items": {
+              "type": "string",
+              "format": "uuid"
+            },
+            "type": "array",
+            "title": "Child Item Ids"
+          },
+          "child_source_item_ids": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array",
+            "title": "Child Source Item Ids"
+          },
+          "child_identifiers": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array",
+            "title": "Child Identifiers"
+          }
+        },
+        "type": "object",
+        "required": [
+          "item_id",
+          "family_id",
+          "parent_item_id",
+          "parent_source_item_id",
+          "parent_identifier",
+          "child_item_ids",
+          "child_source_item_ids",
+          "child_identifiers"
+        ],
+        "title": "CollectionItemRelationshipSnapshot"
+      },
+      "CollectionItemRelationshipSnapshotsRequest": {
+        "properties": {
+          "tenant_id": {
+            "type": "string",
+            "format": "uuid",
+            "title": "Tenant Id"
+          },
+          "client_id": {
+            "type": "string",
+            "format": "uuid",
+            "title": "Client Id"
+          },
+          "item_ids": {
+            "items": {
+              "type": "string",
+              "format": "uuid"
+            },
+            "type": "array",
+            "maxItems": 5000,
+            "minItems": 1,
+            "title": "Item Ids"
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "tenant_id",
+          "client_id",
+          "item_ids"
+        ],
+        "title": "CollectionItemRelationshipSnapshotsRequest"
       },
       "CollectionItemSearchResponse": {
         "properties": {
