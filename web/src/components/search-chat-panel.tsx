@@ -9,7 +9,6 @@ import { DocumentChatMessageContent } from "@/components/batch-chat-panel";
 import { QueryError } from "@/components/query-state";
 import { StatusBadge } from "@/components/status-badge";
 import { Button } from "@/components/ui/button";
-import { Input } from "@/components/ui/input";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Textarea } from "@/components/ui/textarea";
 import type {
@@ -41,6 +40,10 @@ export function normalizeSearchChatScope(search: MatterSearchRequest): MatterSea
   };
 }
 
+export function searchChatTitle(firstMessage: string): string {
+  return Array.from(firstMessage.trim().replace(/\s+/g, " ")).slice(0, 50).join("");
+}
+
 function stableJson(value: unknown): string {
   if (Array.isArray(value)) return `[${value.map(stableJson).join(",")}]`;
   if (value && typeof value === "object") {
@@ -59,7 +62,6 @@ export function SearchChatPanel({ matterId, search, resultCount, searchLoading =
   const queryClient = useQueryClient();
   const [selectedConversationId, setSelectedConversationId] = useState("");
   const [creating, setCreating] = useState(false);
-  const [newTitle, setNewTitle] = useState("");
   const [message, setMessage] = useState("");
   const scrollRef = useRef<HTMLDivElement>(null);
   const scope = useMemo(() => normalizeSearchChatScope(search), [search]);
@@ -100,23 +102,35 @@ export function SearchChatPanel({ matterId, search, resultCount, searchLoading =
   }, [messages.data?.length, activeRun]);
 
   const startConversation = useMutation({
-    mutationFn: (title: string) => coreApi<AgentConversationRead>(`/v1/matters/${matterId}/agent-conversations`, {
-      method: "POST",
-      body: JSON.stringify({
-        agent_definition_id: agents.data![0].id,
-        title,
-        workflow_type: "SEARCH_CHAT",
-        search_definition: scope,
-      }),
-    }),
-    onSuccess: (created) => {
+    mutationFn: async (content: string) => {
+      const conversation = await coreApi<AgentConversationRead>(`/v1/matters/${matterId}/agent-conversations`, {
+        method: "POST",
+        body: JSON.stringify({
+          agent_definition_id: agents.data![0].id,
+          title: searchChatTitle(content),
+          workflow_type: "SEARCH_CHAT",
+          search_definition: scope,
+        }),
+      });
+      const turn = await coreApi<AgentTurnCreated>(`/v1/agent-conversations/${conversation.id}/turns`, {
+        method: "POST",
+        body: JSON.stringify({ message: content }),
+      });
+      return { conversation, turn };
+    },
+    onSuccess: ({ conversation: created, turn }) => {
       queryClient.setQueryData<AgentConversationRead[]>(["search-chat-conversations", matterId], (current) => [created, ...(current ?? []).filter((item) => item.id !== created.id)]);
+      queryClient.setQueryData<AgentMessageRead[]>(["agent-messages", created.id], [turn.message]);
+      queryClient.setQueryData<AgentRunRead[]>(["agent-runs", created.id], [turn.run]);
       setSelectedConversationId(created.id);
       setCreating(false);
-      setNewTitle("");
+      setMessage("");
       toast.success("Search chat started.");
     },
-    onError: (error) => toast.error(error instanceof Error ? error.message : "The search chat could not be started."),
+    onError: (error) => {
+      void queryClient.invalidateQueries({ queryKey: ["search-chat-conversations", matterId] });
+      toast.error(error instanceof Error ? error.message : "The search chat or its first question could not be started.");
+    },
   });
   const submitTurn = useMutation({
     mutationFn: (content: string) => coreApi<AgentTurnCreated>(`/v1/agent-conversations/${effectiveConversationId}/turns`, {
@@ -141,7 +155,7 @@ export function SearchChatPanel({ matterId, search, resultCount, searchLoading =
         <h3 className="mt-4 font-semibold">Chat with these search results</h3>
         <p className="mt-2 text-sm leading-6 text-muted-foreground">{searchLoading ? "Wait for the current search to finish before starting a conversation." : <>The conversation is fixed to the current {resultCount.toLocaleString()} search {resultCount === 1 ? "result" : "results"} and uses document text plus available summaries.</>}</p>
         {agents.isPending || conversations.isPending ? <LoaderCircle className="mx-auto mt-5 animate-spin text-muted-foreground" />
-          : agents.data?.length ? <div className="mt-5 space-y-2 text-left"><Input value={newTitle} maxLength={200} onChange={(event) => setNewTitle(event.target.value)} placeholder="Chat name" aria-label="Search chat name" /><div className="flex gap-2">{creating && scopedConversations.length ? <Button className="flex-1" variant="outline" onClick={() => setCreating(false)}>Cancel</Button> : null}<Button className="flex-1" disabled={!newTitle.trim() || !resultCount || searchLoading || startConversation.isPending} onClick={() => startConversation.mutate(newTitle.trim())}>{startConversation.isPending ? <LoaderCircle className="animate-spin" /> : <Plus />}Start search chat</Button></div></div>
+          : agents.data?.length ? <div className="mt-5 space-y-2 text-left"><Textarea value={message} maxLength={2000} disabled={startConversation.isPending} onChange={(event) => setMessage(event.target.value)} onKeyDown={(event) => { if (event.key === "Enter" && !event.shiftKey) { event.preventDefault(); if (message.trim()) startConversation.mutate(message.trim()); } }} placeholder="Ask your first question…" aria-label="Starting message Search Chat" className="min-h-24 resize-none" /><p className="text-xs text-muted-foreground">The first 50 characters become the chat title.</p><div className="flex gap-2">{creating && scopedConversations.length ? <Button className="flex-1" variant="outline" onClick={() => { setCreating(false); setMessage(""); }}>Cancel</Button> : null}<Button className="flex-1" disabled={!message.trim() || !resultCount || searchLoading || startConversation.isPending} onClick={() => startConversation.mutate(message.trim())}>{startConversation.isPending ? <LoaderCircle className="animate-spin" /> : <Plus />}Start search chat</Button></div></div>
             : <p className="mt-5 rounded-lg border border-warning/30 bg-warning/10 p-3 text-sm text-warning">The document chat agent is not configured.</p>}
       </div>
     </div>;
@@ -156,7 +170,7 @@ export function SearchChatPanel({ matterId, search, resultCount, searchLoading =
   return <div className="flex min-h-0 flex-1 flex-col">
     <div className="space-y-2 border-b p-3">
       <div className="flex items-center justify-between gap-2"><div className="flex items-center gap-2 text-sm font-semibold text-agent"><Bot className="size-4" />Search Chat <span className="text-xs font-normal text-muted-foreground">{chatStream.state === "live" ? "Live" : chatStream.state === "fallback" ? "Polling" : chatStream.state === "offline" ? "Offline" : "Connecting"}</span></div><StatusBadge status={selectedConversation.status} /></div>
-      <div className="flex gap-2"><Select value={effectiveConversationId} onValueChange={setSelectedConversationId}><SelectTrigger className="min-w-0 flex-1" aria-label="Search chat"><SelectValue /></SelectTrigger><SelectContent>{scopedConversations.map((conversation) => <SelectItem key={conversation.id} value={conversation.id}>{conversation.title ?? formatDate(conversation.created_at)}</SelectItem>)}</SelectContent></Select><Button size="icon" variant="outline" aria-label="New search chat" onClick={() => setCreating(true)}><Plus /></Button></div>
+      <div className="flex gap-2"><Select value={effectiveConversationId} onValueChange={setSelectedConversationId}><SelectTrigger className="min-w-0 flex-1" aria-label="Previous search chats"><SelectValue /></SelectTrigger><SelectContent>{scopedConversations.map((conversation) => <SelectItem key={conversation.id} value={conversation.id}>{conversation.title ?? formatDate(conversation.created_at)}</SelectItem>)}</SelectContent></Select><Button size="sm" variant="outline" aria-label="New search chat" onClick={() => setCreating(true)}><Plus />New</Button></div>
       <p className="text-xs text-muted-foreground">Scope frozen to this search definition · currently {resultCount.toLocaleString()} results.</p>
     </div>
     <div ref={scrollRef} className="min-h-0 flex-1 space-y-3 overflow-y-auto p-4" aria-live="polite">

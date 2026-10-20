@@ -172,6 +172,27 @@ describe("ReviewWorkspace", () => {
       }
       if (path === "/v1/agent-conversations/conversation-search-1/messages") return [] as never;
       if (path === "/v1/agent-conversations/conversation-search-1/runs") return [] as never;
+      if (path === "/v1/agent-conversations/conversation-search-1/turns" && init?.method === "POST") {
+        const payload = JSON.parse(String(init.body));
+        return {
+          turn: {
+            id: "turn-search-1", conversation_id: "conversation-search-1", sequence: 1, status: "QUEUED", created_by_user_id: "user-1",
+            completed_at: null, error_message: null, created_at: "2026-09-14T12:03:00Z", updated_at: "2026-09-14T12:03:00Z",
+          },
+          message: {
+            id: "message-search-1", conversation_id: "conversation-search-1", turn_id: "turn-search-1", sequence: 1, role: "USER",
+            content: payload.message, message_data: {}, created_by_user_id: "user-1", agent_run_id: null,
+            created_at: "2026-09-14T12:03:00Z",
+          },
+          run: {
+            id: "run-search-1", conversation_id: "conversation-search-1", turn_id: "turn-search-1", sequence: 1, workflow_id: "agent-run:run-search-1",
+            parent_run_id: null, deferred_from_run_id: null, agent_definition_version_id: "agent-version-1", actor_user_id: "user-1",
+            model_key: "configured-default", status: "QUEUED", output_text: null, request_count: 0, tool_call_count: 0,
+            input_tokens: 0, cached_input_tokens: 0, cache_write_tokens: 0, output_tokens: 0, error_message: null,
+            started_at: null, completed_at: null, created_at: "2026-09-14T12:03:00Z",
+          },
+        } as never;
+      }
       if (path.endsWith("/metadata-definitions")) return definitions as never;
       if (path.endsWith("/metadata-groups")) return groups as never;
       if (path === "/v1/matters/matter-1/custodians") return [{ id: "custodian-1", client_id: "client-1", display_name: "Alice Adams", email_addresses: [], external_reference: null, status: "ACTIVE", created_at: "2026-09-14T12:00:00Z" }] as never;
@@ -439,14 +460,15 @@ describe("ReviewWorkspace", () => {
 
     expect(screen.queryByRole("button", { name: "Chat results" })).not.toBeInTheDocument();
     await user.click(within(details).getByRole("tab", { name: "Chat" }));
-    await user.type(within(details).getByRole("textbox", { name: "Search chat name" }), "Pricing patterns");
+    const firstQuestion = "What concealed pricing discussions mention discounts and timing?";
+    await user.type(within(details).getByRole("textbox", { name: "Starting message Search Chat" }), firstQuestion);
     await user.click(within(details).getByRole("button", { name: "Start search chat" }));
     await waitFor(() => {
       const createCall = vi.mocked(coreApi).mock.calls.find(([path, init]) => path === "/v1/matters/matter-1/agent-conversations" && init?.method === "POST");
       const payload = JSON.parse(String(createCall?.[1]?.body));
       expect(payload).toMatchObject({
         workflow_type: "SEARCH_CHAT",
-        title: "Pricing patterns",
+        title: firstQuestion.slice(0, 50),
         search_definition: {
           query: "concealed pricing discussion",
           search_mode: "SEMANTIC",
@@ -461,6 +483,8 @@ describe("ReviewWorkspace", () => {
         expect.objectContaining({ field: "document_date" }),
         expect.objectContaining({ field: "email_sent" }),
       ]));
+      const turnCall = vi.mocked(coreApi).mock.calls.find(([path, init]) => path === "/v1/agent-conversations/conversation-search-1/turns" && init?.method === "POST");
+      expect(JSON.parse(String(turnCall?.[1]?.body))).toEqual({ message: firstQuestion });
     });
     await user.click(within(details).getByRole("tab", { name: "Coding" }));
 
