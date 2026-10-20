@@ -144,7 +144,7 @@ export function DocumentChatMessageContent({ content, linkDocuments, onOpenDocum
   onOpenDocument: (reference: BatchDocumentReference) => void;
 }) {
   if (!linkDocuments) return content;
-  const pattern = /\[Document\s+([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12})(?:\s+([^\]]+))?\]/g;
+  const pattern = /Document\s+([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12})(?:\s+((?:¶\s*)?\d+(?:\s*(?:[-–—,]\s*(?:¶\s*)?\d+))*))?/g;
   const parts = [];
   let cursor = 0;
   for (const match of content.matchAll(pattern)) {
@@ -152,7 +152,7 @@ export function DocumentChatMessageContent({ content, linkDocuments, onOpenDocum
     if (index > cursor) parts.push(content.slice(cursor, index));
     const documentId = match[1];
     const paragraphReference = normalizeParagraphReference(match[2]);
-    parts.push(<button key={`${index}:${documentId}`} type="button" className="rounded bg-primary/10 px-1.5 py-0.5 font-medium text-primary hover:bg-primary/20" onClick={() => onOpenDocument({ documentId, paragraphReference })}>{match[0]}</button>);
+    parts.push(<button key={`${index}:${documentId}`} type="button" title="Open document" className="rounded bg-primary/10 px-1.5 py-0.5 font-medium text-primary hover:bg-primary/20" onClick={() => onOpenDocument({ documentId, paragraphReference })}>{match[0]}</button>);
     cursor = index + match[0].length;
   }
   if (cursor < content.length) parts.push(content.slice(cursor));

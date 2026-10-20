@@ -490,12 +490,9 @@ export function ReviewWorkspace({
     },
   });
 
-  const effectiveSelectedDocumentId = searchResults.data?.hits.some((hit) => hit.document_id === selectedDocumentId)
-    ? selectedDocumentId
-    : searchResults.data?.hits[0]?.document_id ?? "";
+  const effectiveSelectedDocumentId = selectedDocumentId || searchResults.data?.hits[0]?.document_id || "";
   const selectedHit = searchResults.data?.hits.find((hit) => hit.document_id === effectiveSelectedDocumentId);
   const selectedHighlightTerms = useMemo(() => selectedHit ? resultHighlightTerms(selectedHit) : [], [selectedHit]);
-  const selectedCollectionItemId = typeof selectedHit?.fields.collection_item_id === "string" ? selectedHit.fields.collection_item_id : "";
   const collectionItem = useQuery({
     queryKey: ["matter-document-collection-item", matterId, effectiveSelectedDocumentId],
     queryFn: () => coreApi<CollectionItemRead>(`/v1/matters/${matterId}/documents/${effectiveSelectedDocumentId}/collection-item`),
@@ -826,7 +823,7 @@ export function ReviewWorkspace({
         <ResizeHandle className="hidden md:flex" label="Resize result panel" value={resultsWidth} min={288} max={640} onChange={setResultsWidth} />
 
         <section className={cn("min-h-0 min-w-0 flex-1 overflow-hidden bg-background", mobileDocumentOpen ? "flex" : "hidden md:flex")} aria-label="Selected document">
-          {collectionItem.isPending && selectedCollectionItemId ? <DocumentLoading />
+          {collectionItem.isPending && effectiveSelectedDocumentId ? <DocumentLoading />
             : collectionItem.error ? <div className="w-full p-5"><QueryError message={collectionItem.error.message} /></div>
             : collectionItem.data ? <DocumentViewerSurface item={collectionItem.data} contentPath={`/v1/matters/${matterId}/documents/${effectiveSelectedDocumentId}/content`} highlightTerms={selectedHighlightTerms} className="h-full w-full" />
             : <DocumentEmpty />}
