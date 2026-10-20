@@ -118,6 +118,7 @@ import type {
   DownloadJobOutcomesV1MattersMatterIdJobOutcomesJobTypeJobIdDownloadGetParams,
   EffectivePermissionsRead,
   EmailDomainUpdateRead,
+  EnsureArtifactStorageV1TenantsTenantIdArtifactStorageEnsurePost201,
   ExplainAuthorizationV1AuthorizationExplainGetParams,
   ExportReviewBatchCodingComparisonV1MattersMatterIdReviewBatchesBatchIdCodingComparisonExportGetParams,
   ExternalProviderUsageRead,
@@ -316,8 +317,6 @@ import type {
   TenantCreate,
   TenantCreated,
   TenantRead,
-  TenantStorageEnsure,
-  TenantStorageRead,
   TokenPair,
   UserCreate,
   UserRead,
@@ -3539,6 +3538,57 @@ const res = await fetch(getCreateTenantV1TenantsPostUrl(),
 
   const data: createTenantV1TenantsPostResponse['data'] = body ? JSON.parse(body) : {}
   return { data, status: res.status, headers: res.headers } as createTenantV1TenantsPostResponse
+}
+
+
+
+export type ensureArtifactStorageV1TenantsTenantIdArtifactStorageEnsurePostResponse201 = {
+  data: EnsureArtifactStorageV1TenantsTenantIdArtifactStorageEnsurePost201
+  status: 201
+}
+
+export type ensureArtifactStorageV1TenantsTenantIdArtifactStorageEnsurePostResponse422 = {
+  data: HTTPValidationError
+  status: 422
+}
+
+export type ensureArtifactStorageV1TenantsTenantIdArtifactStorageEnsurePostResponseSuccess = (ensureArtifactStorageV1TenantsTenantIdArtifactStorageEnsurePostResponse201) & {
+  headers: Headers;
+};
+export type ensureArtifactStorageV1TenantsTenantIdArtifactStorageEnsurePostResponseError = (ensureArtifactStorageV1TenantsTenantIdArtifactStorageEnsurePostResponse422) & {
+  headers: Headers;
+};
+
+export type ensureArtifactStorageV1TenantsTenantIdArtifactStorageEnsurePostResponse = (ensureArtifactStorageV1TenantsTenantIdArtifactStorageEnsurePostResponseSuccess | ensureArtifactStorageV1TenantsTenantIdArtifactStorageEnsurePostResponseError)
+
+export const getEnsureArtifactStorageV1TenantsTenantIdArtifactStorageEnsurePostUrl = (tenantId: string,) => {
+
+
+
+
+  return `/api/core/v1/tenants/${tenantId}/artifact-storage/ensure`
+}
+
+/**
+ * Repair or re-check a tenant's artifact storage. Creation normally happens with the tenant.
+ * @summary Ensure Artifact Storage
+ */
+export const ensureArtifactStorageV1TenantsTenantIdArtifactStorageEnsurePost = async (tenantId: string, options?: RequestInit): Promise<ensureArtifactStorageV1TenantsTenantIdArtifactStorageEnsurePostResponse> => {
+
+  const res = await fetch(getEnsureArtifactStorageV1TenantsTenantIdArtifactStorageEnsurePostUrl(tenantId),
+  {
+    ...options,
+    method: 'POST'
+
+
+  }
+)
+
+
+  const body = [204, 205, 304].includes(res.status) ? null : await res.text();
+
+  const data: ensureArtifactStorageV1TenantsTenantIdArtifactStorageEnsurePostResponse['data'] = body ? JSON.parse(body) : {}
+  return { data, status: res.status, headers: res.headers } as ensureArtifactStorageV1TenantsTenantIdArtifactStorageEnsurePostResponse
 }
 
 
@@ -16652,71 +16702,6 @@ export const downloadFactExportV1MattersMatterIdFactExportsExportIdDownloadGet =
 
   const data: downloadFactExportV1MattersMatterIdFactExportsExportIdDownloadGetResponse['data'] = body ? JSON.parse(body) : {}
   return { data, status: res.status, headers: res.headers } as downloadFactExportV1MattersMatterIdFactExportsExportIdDownloadGetResponse
-}
-
-
-
-export type ensureStorageV1TenantsTenantIdArtifactStorageEnsurePostResponse201 = {
-  data: TenantStorageRead
-  status: 201
-}
-
-export type ensureStorageV1TenantsTenantIdArtifactStorageEnsurePostResponse422 = {
-  data: HTTPValidationError
-  status: 422
-}
-
-export type ensureStorageV1TenantsTenantIdArtifactStorageEnsurePostResponseSuccess = (ensureStorageV1TenantsTenantIdArtifactStorageEnsurePostResponse201) & {
-  headers: Headers;
-};
-export type ensureStorageV1TenantsTenantIdArtifactStorageEnsurePostResponseError = (ensureStorageV1TenantsTenantIdArtifactStorageEnsurePostResponse422) & {
-  headers: Headers;
-};
-
-export type ensureStorageV1TenantsTenantIdArtifactStorageEnsurePostResponse = (ensureStorageV1TenantsTenantIdArtifactStorageEnsurePostResponseSuccess | ensureStorageV1TenantsTenantIdArtifactStorageEnsurePostResponseError)
-
-export const getEnsureStorageV1TenantsTenantIdArtifactStorageEnsurePostUrl = (tenantId: string,) => {
-
-
-
-
-  return `/api/core/v1/tenants/${tenantId}/artifact-storage/ensure`
-}
-
-/**
- * @summary Ensure Storage
- */
-export const ensureStorageV1TenantsTenantIdArtifactStorageEnsurePost = async (tenantId: string,
-    tenantStorageEnsure: TenantStorageEnsure, options?: RequestInit): Promise<ensureStorageV1TenantsTenantIdArtifactStorageEnsurePostResponse> => {
-
-    const getHeaders = (h?: NonNullable<RequestInit['headers']>): Record<string, string | readonly string[]> => {
-    if (!h) return {};
-    if (h instanceof Headers) return Object.fromEntries(h.entries());
-    if (Symbol.iterator in h) {
-      return Object.fromEntries(
-        Array.from(h as Iterable<Iterable<string>>, (entry) => Array.from(entry) as [string, string]),
-      );
-    }
-    const headers: Record<string, string | readonly string[]> = {};
-    for (const [name, value] of Object.entries<string | readonly string[] | undefined>(h)) {
-      if (value !== undefined) headers[name] = value;
-    }
-    return headers;
-  };
-const res = await fetch(getEnsureStorageV1TenantsTenantIdArtifactStorageEnsurePostUrl(tenantId),
-  {
-    ...options,
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json', ...getHeaders(options?.headers) },
-    body: JSON.stringify(tenantStorageEnsure)
-  }
-)
-
-
-  const body = [204, 205, 304].includes(res.status) ? null : await res.text();
-
-  const data: ensureStorageV1TenantsTenantIdArtifactStorageEnsurePostResponse['data'] = body ? JSON.parse(body) : {}
-  return { data, status: res.status, headers: res.headers } as ensureStorageV1TenantsTenantIdArtifactStorageEnsurePostResponse
 }
 
 

@@ -71,6 +71,7 @@ class Settings(BaseSettings):
     agent_default_model: str | None = None
     agent_turn_queue_concurrency: int = Field(default=4, ge=1, le=100)
     agent_approval_timeout_seconds: int = Field(default=7 * 24 * 60 * 60, ge=60, le=30 * 24 * 60 * 60)
+    agent_batch_chat_document_max_characters: int = Field(default=20_000, ge=1_000, le=2_000_000)
     agent_streaming_enabled: bool = True
     agent_stream_heartbeat_seconds: float = Field(default=15.0, ge=1, le=60)
     agent_stream_max_lifetime_seconds: int = Field(default=600, ge=30, le=3600)

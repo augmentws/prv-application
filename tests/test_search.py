@@ -58,6 +58,7 @@ from app.search.query import (
     compile_batch_topic_facet_request,
     compile_date_histogram_request,
     compile_facet_values_request,
+    compile_keyword_search_scope,
     compile_search_request,
     execute_batch_coding_facets,
     execute_date_histogram,
@@ -66,6 +67,21 @@ from app.search.query import (
 )
 from app.search.schema import SearchReindexRequired, plan_schema_change
 from app.search.service import SearchIndexManager, build_document_projection
+
+
+def test_keyword_search_scope_can_filter_a_later_semantic_query() -> None:
+    scope = compile_keyword_search_scope(
+        MatterSearchRequest(query="renewal notice", search_mode="KEYWORD"),
+        [],
+        tenant_id="tenant-1",
+        matter_id="matter-1",
+    )
+
+    assert scope["bool"]["filter"] == [
+        {"term": {"tenant_id": "tenant-1"}},
+        {"term": {"matter_id": "matter-1"}},
+    ]
+    assert scope["bool"]["must"][0]["simple_query_string"]["query"] == "renewal notice"
 
 
 def auth(token: str) -> dict[str, str]:

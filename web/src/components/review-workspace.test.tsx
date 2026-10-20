@@ -155,9 +155,23 @@ describe("ReviewWorkspace", () => {
       if (path === "/v1/auth/me") return { id: "user-1", tenant_id: "tenant-1", email: "reviewer@example.com", display_name: "Review User", status: "ACTIVE", tenant_role: "ADMIN", is_superuser: false, created_at: "2026-09-14T12:00:00Z" } as never;
       if (path === "/v1/matters/matter-1") return { id: "matter-1", client_id: "client-1", name: "Acme Investigation", status: "ACTIVE", created_at: "2026-09-14T12:00:00Z" } as never;
       if (path === "/v1/clients/client-1") return { id: "client-1", tenant_id: "tenant-1", name: "Acme", status: "ACTIVE", created_at: "2026-09-14T12:00:00Z" } as never;
-      if (path === "/v1/authorization/effective?resource_type=MATTER&resource_id=matter-1") return { resource_type: "MATTER", resource_id: "matter-1", permission_keys: ["matter.view", "metadata.view", "document.view", "document.review", "document.view_history", "document.bulk_code"] } as never;
+      if (path === "/v1/authorization/effective?resource_type=MATTER&resource_id=matter-1") return { resource_type: "MATTER", resource_id: "matter-1", permission_keys: ["matter.view", "matter.configure", "metadata.view", "document.view", "document.review", "document.view_history", "document.bulk_code"] } as never;
       if (path === "/v1/matters/matter-1/access-users?permission_key=document.view") return [{ id: "user-1", tenant_id: "tenant-1", email: "reviewer@example.com", display_name: "Review User", status: "ACTIVE", tenant_role: "ADMIN", is_superuser: false, created_at: "2026-09-14T12:00:00Z" }] as never;
       if (path === "/v1/matters/matter-1/saved-searches" && !init?.method) return [] as never;
+      if (path === "/v1/matters/matter-1/agents?workflow_type=SEARCH_CHAT") return [{ id: "agent-search-chat", name: "Batch Chat Agent" }] as never;
+      if (path === "/v1/matters/matter-1/agent-conversations?workflow_type=SEARCH_CHAT" && !init?.method) return [] as never;
+      if (path === "/v1/matters/matter-1/agent-conversations" && init?.method === "POST") {
+        const payload = JSON.parse(String(init.body));
+        return {
+          id: "conversation-search-1", tenant_id: "tenant-1", client_id: "client-1", matter_id: "matter-1",
+          matter_definition_id: null, review_batch_id: null, search_definition: payload.search_definition,
+          agent_definition_id: "agent-search-chat", agent_definition_version_id: "agent-version-1", title: payload.title,
+          workflow_type: "SEARCH_CHAT", status: "ACTIVE", initiated_by_user_id: "user-1",
+          created_at: "2026-09-14T12:00:00Z", updated_at: "2026-09-14T12:00:00Z",
+        } as never;
+      }
+      if (path === "/v1/agent-conversations/conversation-search-1/messages") return [] as never;
+      if (path === "/v1/agent-conversations/conversation-search-1/runs") return [] as never;
       if (path.endsWith("/metadata-definitions")) return definitions as never;
       if (path.endsWith("/metadata-groups")) return groups as never;
       if (path === "/v1/matters/matter-1/custodians") return [{ id: "custodian-1", client_id: "client-1", display_name: "Alice Adams", email_addresses: [], external_reference: null, status: "ACTIVE", created_at: "2026-09-14T12:00:00Z" }] as never;
@@ -422,6 +436,33 @@ describe("ReviewWorkspace", () => {
       const lastRequest = JSON.parse(String(searchCalls.at(-1)?.[1]?.body)) as { query: string; search_mode: string; minimum_similarity: number };
       expect(lastRequest).toMatchObject({ query: "concealed pricing discussion", search_mode: "SEMANTIC", minimum_similarity: 0.035 });
     });
+
+    await user.click(screen.getByRole("button", { name: "Chat results" }));
+    const searchChatDialog = screen.getByRole("dialog", { name: "Chat with search results" });
+    await user.type(within(searchChatDialog).getByRole("textbox", { name: "Search chat name" }), "Pricing patterns");
+    await user.click(within(searchChatDialog).getByRole("button", { name: "Start search chat" }));
+    await waitFor(() => {
+      const createCall = vi.mocked(coreApi).mock.calls.find(([path, init]) => path === "/v1/matters/matter-1/agent-conversations" && init?.method === "POST");
+      const payload = JSON.parse(String(createCall?.[1]?.body));
+      expect(payload).toMatchObject({
+        workflow_type: "SEARCH_CHAT",
+        title: "Pricing patterns",
+        search_definition: {
+          query: "concealed pricing discussion",
+          search_mode: "SEMANTIC",
+          minimum_similarity: 0.035,
+          candidate_limit: 1600,
+          offset: 0,
+          size: 500,
+        },
+      });
+      expect(payload.search_definition.filters).toEqual(expect.arrayContaining([
+        expect.objectContaining({ field: "custodian" }),
+        expect.objectContaining({ field: "document_date" }),
+        expect.objectContaining({ field: "email_sent" }),
+      ]));
+    });
+    await user.click(within(searchChatDialog).getByRole("button", { name: "Close" }));
 
     expect(within(details).getByRole("button", { name: "Bulk tag results" })).toBeInTheDocument();
     await user.click(within(details).getByRole("button", { name: "Bulk tag results" }));

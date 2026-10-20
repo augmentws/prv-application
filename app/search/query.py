@@ -407,6 +407,25 @@ def compile_search_request(
     return body
 
 
+def compile_keyword_search_scope(
+    request: MatterSearchRequest,
+    definitions: list[MetadataDefinition],
+    *,
+    tenant_id: str,
+    matter_id: str,
+) -> dict[str, Any]:
+    """Compile a frozen keyword result set into a filter usable by a later semantic search."""
+    if request.search_mode != "KEYWORD":
+        raise ValueError("Only keyword search scopes can be compiled as a document filter")
+    scoped = request.model_copy(update={"facets": [], "sort": [], "offset": 0, "size": 1})
+    return compile_search_request(
+        scoped,
+        definitions,
+        tenant_id=tenant_id,
+        matter_id=matter_id,
+    )["query"]
+
+
 def compile_search_export_request(
     request: MatterSearchRequest,
     definitions: list[MetadataDefinition],

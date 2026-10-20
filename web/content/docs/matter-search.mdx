@@ -253,6 +253,14 @@ Keyword and Hybrid result cards show up to two matching fragments returned direc
 
 Metadata coding updates Core immediately and queues a high-priority search projection update. After saving, the workspace reports that search is updating, watches the projection operation, and refreshes the result and facet data when it completes. If projection fails, the workspace reports the index error while preserving the successfully saved Core value.
 
+### Chat with search results
+
+Matter administrators can select **Chat results** after a search returns at least one document. Starting a conversation freezes the active query, search mode, minimum-similarity threshold, semantic candidate limit, search fields, and filters. Pagination, facets, and presentation sorting are removed from the saved definition, so the conversation covers the result population instead of only the visible page. Changing the main search later does not alter an existing conversation; opening chat from a different search shows the conversations associated with that new definition.
+
+The chat agent searches only within that saved scope. A Keyword scope reapplies the original keyword query and filters to every retrieval. Semantic and Hybrid scopes first recreate their bounded ranked result population, up to 10,000 document IDs, and then restrict the agent's evidence search to those exact candidates. As with the main search, this is a saved search definition rather than a permanent snapshot: later document, coding, or index changes can affect which documents match when a question is asked.
+
+Answers use each matching document's preferred source text and include its generated summary when one is available. A missing summary does not exclude the document. Long documents are supplied as bounded windows centered on their strongest matching passage, and document references in answers can be selected to open the source document in the workspace.
+
 ### Bulk tag search results
 
 Matter administrators can apply coding values to documents returned by an active Keyword, Semantic, or Hybrid search. Enter a query or apply at least one filter, open the **Coding** panel, and select **Bulk tag results**. The action is absent when no search or filter is active and is not available in a review batch.

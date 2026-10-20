@@ -11,22 +11,26 @@ from sqlalchemy import select
 
 from app import agent_runtime
 from app.agent_runtime import (
+    _document_text_window,
     build_agent,
     execute_prepared_agent_run,
     fail_agent_run,
     persist_agent_run_outcome,
     prepare_agent_run,
 )
+from app.artifact_gateway import PreferredTextSource
 from app.models import (
     AgentConversation,
     AgentConversationEvent,
     AgentRun,
     AuditRecord,
+    MatterDocument,
+    MatterDocumentImportJob,
     ModelInvocation,
     ReviewBatch,
     User,
 )
-from app.schemas import MatterSearchResponse
+from app.schemas import MatterSearchHit, MatterSearchPassage, MatterSearchResponse
 from tests.test_agents_and_matter_definitions import agent_payload, auth, create_tenant_context
 
 
@@ -38,6 +42,29 @@ def test_durable_agent_registers_rate_limit_hooks_at_construction() -> None:
         isinstance(capability, Hooks) and capability.id == "provider_model_rate_limit"
         for capability in capabilities
     )
+
+
+def test_batch_chat_document_window_centers_long_text_on_semantic_passage() -> None:
+    text = "a" * 100 + "renewal evidence" + "b" * 100
+    passage = MatterSearchPassage(
+        chunk_id="chunk-1",
+        ordinal=1,
+        char_start=100,
+        char_end=116,
+        text="renewal evidence",
+        score=0.9,
+    )
+
+    window, start, end, truncated = _document_text_window(
+        text,
+        passage=passage,
+        max_characters=60,
+    )
+
+    assert truncated is True
+    assert len(window) == 60
+    assert window == text[start:end]
+    assert "renewal evidence" in window
 
 
 def create_published_agent(
@@ -240,6 +267,26 @@ def test_batch_chat_is_batch_scoped_and_calls_semantic_summary_search(
     with TestingSessionLocal() as db:
         actor = db.scalar(select(User).where(User.email == "agent-admin@example.com"))
         assert actor is not None
+        source_collection_id = uuid.uuid4()
+        import_job = MatterDocumentImportJob(
+            matter_id=uuid.UUID(matter_id),
+            source_collection_id=source_collection_id,
+            selection_type="EXPLICIT",
+            selection={},
+            selection_summary="Batch chat source",
+            status="COMPLETED",
+            workflow_id=f"test-import:{uuid.uuid4()}",
+            created_by_user_id=actor.id,
+        )
+        db.add(import_job)
+        db.flush()
+        document = MatterDocument(
+            matter_id=uuid.UUID(matter_id),
+            source_collection_id=source_collection_id,
+            collection_item_id=uuid.uuid4(),
+            added_by_import_job_id=import_job.id,
+        )
+        db.add(document)
         batch = ReviewBatch(
             matter_id=uuid.UUID(matter_id),
             name="Interview documents",
@@ -256,6 +303,8 @@ def test_batch_chat_is_batch_scoped_and_calls_semantic_summary_search(
         db.add(batch)
         db.commit()
         batch_id = str(batch.id)
+        document_id = document.id
+        collection_item_id = document.collection_item_id
 
     payload = agent_payload(key="batch_chat")
     payload["name"] = "Batch Chat Agent"
@@ -299,15 +348,51 @@ def test_batch_chat_is_batch_scoped_and_calls_semantic_summary_search(
 
     def fake_search(_matter, request, **kwargs):
         semantic_requests.append((request, kwargs["required_filters"]))
-        return MatterSearchResponse(total=0, took_ms=1, timed_out=False, hits=[], facets={})
+        return MatterSearchResponse(
+            total=1,
+            took_ms=1,
+            timed_out=False,
+            hits=[
+                MatterSearchHit(
+                    document_id=document_id,
+                    score=0.94,
+                    fields={"original_filename": "renewal.txt"},
+                    best_passage=MatterSearchPassage(
+                        chunk_id="chunk-1",
+                        ordinal=0,
+                        char_start=0,
+                        char_end=28,
+                        text="The renewal meeting was May 4.",
+                        score=0.94,
+                    ),
+                )
+            ],
+            facets={},
+        )
+
+    source_reads = []
+
+    def fake_text_source(**kwargs):
+        source_reads.append(kwargs)
+        return PreferredTextSource(
+            artifact_id=uuid.uuid4(),
+            content_hash="a" * 64,
+            artifact_role="NORMALIZED_TEXT",
+            media_type="text/plain",
+            text="The renewal meeting was May 4. No summary exists for this document.",
+            original_filename="renewal.txt",
+        )
 
     monkeypatch.setattr(agent_runtime, "SessionLocal", TestingSessionLocal)
     monkeypatch.setattr("app.routers.search.execute_matter_search", fake_search)
+    monkeypatch.setattr(agent_runtime, "get_preferred_text_source", fake_text_source)
     calls = 0
+    model_inputs = []
 
-    def model_function(_messages, _info):
+    def model_function(messages, _info):
         nonlocal calls
         calls += 1
+        model_inputs.append(messages)
         if calls == 1:
             return ModelResponse(
                 parts=[
@@ -318,10 +403,11 @@ def test_batch_chat_is_batch_scoped_and_calls_semantic_summary_search(
                     )
                 ]
             )
-        return ModelResponse(parts=[TextPart("No summary-backed matches were returned for that query.")])
+        return ModelResponse(parts=[TextPart("The renewal meeting was May 4.")])
 
     prepared = prepare_agent_run(uuid.UUID(run_id))
     assert prepared.deps.review_batch_id == uuid.UUID(batch_id)
+    assert any("supersedes any older statement" in instruction for instruction in prepared.instructions)
     outcome = asyncio.run(
         execute_prepared_agent_run(prepared, build_agent(), model=FunctionModel(model_function))
     )
@@ -329,6 +415,100 @@ def test_batch_chat_is_batch_scoped_and_calls_semantic_summary_search(
     assert len(semantic_requests) == 1
     assert semantic_requests[0][0].search_mode == "SEMANTIC"
     assert semantic_requests[0][1] == [{"term": {"batch_ids": batch_id}}]
+    assert len(source_reads) == 1
+    assert source_reads[0]["collection_item_id"] == collection_item_id
+    assert "No summary exists for this document" in repr(model_inputs[1])
+
+
+def test_search_chat_is_scoped_to_frozen_semantic_results(
+    client: TestClient,
+    root_token: str,
+    monkeypatch,
+) -> None:
+    _, tenant_token, matter_id = create_tenant_context(client, root_token)
+    payload = agent_payload(key="batch_chat")
+    payload["name"] = "Document Chat Agent"
+    payload["initial_version"]["tools"] = [{"key": "batch.search_summaries", "configuration": {}}]
+    agent_response = client.post("/v1/admin/agents", headers=auth(root_token), json=payload)
+    assert agent_response.status_code == 201, agent_response.text
+    agent_id = agent_response.json()["agent"]["id"]
+    assert client.post(f"/v1/agents/{agent_id}/versions/1/publish", headers=auth(root_token)).status_code == 200
+
+    conversation_response = client.post(
+        f"/v1/matters/{matter_id}/agent-conversations",
+        headers=auth(tenant_token),
+        json={
+            "agent_definition_id": agent_id,
+            "workflow_type": "SEARCH_CHAT",
+            "title": "Renewal search",
+            "search_definition": {
+                "query": "renewal notice",
+                "search_mode": "SEMANTIC",
+                "minimum_similarity": 0.3,
+                "candidate_limit": 100,
+                "offset": 50,
+                "size": 50,
+                "facets": ["custodian"],
+                "sort": [{"field": "_score", "direction": "DESC"}],
+            },
+        },
+    )
+    assert conversation_response.status_code == 201, conversation_response.text
+    conversation = conversation_response.json()
+    assert conversation["search_definition"]["offset"] == 0
+    assert conversation["search_definition"]["size"] == 500
+    assert conversation["search_definition"]["facets"] == []
+    assert conversation["search_definition"]["sort"] == []
+
+    turn = client.post(
+        f"/v1/agent-conversations/{conversation['id']}/turns",
+        headers=auth(tenant_token),
+        json={"message": "Who discussed renewal timing?"},
+    )
+    assert turn.status_code == 202, turn.text
+    run_id = turn.json()["run"]["id"]
+    scoped_document_id = uuid.uuid4()
+    search_calls = []
+
+    def fake_search(_matter, request, **kwargs):
+        search_calls.append((request, kwargs))
+        if len(search_calls) == 1:
+            return MatterSearchResponse(
+                total=1,
+                took_ms=1,
+                timed_out=False,
+                hits=[MatterSearchHit(document_id=scoped_document_id, score=0.9, fields={})],
+                facets={},
+            )
+        return MatterSearchResponse(total=0, took_ms=1, timed_out=False, hits=[], facets={})
+
+    monkeypatch.setattr(agent_runtime, "SessionLocal", TestingSessionLocal)
+    monkeypatch.setattr("app.routers.search.execute_matter_search", fake_search)
+    calls = 0
+
+    def model_function(_messages, _info):
+        nonlocal calls
+        calls += 1
+        if calls == 1:
+            return ModelResponse(parts=[ToolCallPart(
+                tool_name="batch_search_summaries",
+                args={"query": "renewal timing", "max_results": 5},
+                tool_call_id="search-chat-1",
+            )])
+        return ModelResponse(parts=[TextPart("No matching source text was returned.")])
+
+    prepared = prepare_agent_run(uuid.UUID(run_id))
+    assert prepared.deps.search_definition == conversation["search_definition"]
+    assert any("frozen search scope" in instruction for instruction in prepared.instructions)
+    outcome = asyncio.run(execute_prepared_agent_run(prepared, build_agent(), model=FunctionModel(model_function)))
+
+    assert outcome.status == "COMPLETED"
+    assert len(search_calls) == 2
+    assert search_calls[0][0].query == "renewal notice"
+    assert search_calls[0][0].size == 100
+    assert search_calls[1][1]["required_filters"] == [
+        {"terms": {"document_id": [str(scoped_document_id)]}}
+    ]
 
 
 def test_approval_request_rejection_resumes_as_a_new_run(

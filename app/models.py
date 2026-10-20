@@ -3707,13 +3707,16 @@ class AgentConversation(TimestampMixin, Base):
     __tablename__ = "agent_conversation"
     __table_args__ = (
         CheckConstraint(
-            "workflow_type IN ('MATTER_DEFINITION_SETUP', 'BATCH_CHAT')",
+            "workflow_type IN ('MATTER_DEFINITION_SETUP', 'BATCH_CHAT', 'SEARCH_CHAT')",
             name="ck_agent_conversation_workflow_type",
         ),
         CheckConstraint(
-            "(workflow_type = 'MATTER_DEFINITION_SETUP' AND review_batch_id IS NULL) OR "
+            "(workflow_type = 'MATTER_DEFINITION_SETUP' AND review_batch_id IS NULL "
+            "AND search_definition IS NULL) OR "
             "(workflow_type = 'BATCH_CHAT' AND review_batch_id IS NOT NULL "
-            "AND matter_definition_id IS NULL)",
+            "AND matter_definition_id IS NULL AND search_definition IS NULL) OR "
+            "(workflow_type = 'SEARCH_CHAT' AND review_batch_id IS NULL "
+            "AND matter_definition_id IS NULL AND search_definition IS NOT NULL)",
             name="ck_agent_conversation_workflow_scope",
         ),
         CheckConstraint(
@@ -3733,6 +3736,7 @@ class AgentConversation(TimestampMixin, Base):
     review_batch_id: Mapped[uuid.UUID | None] = mapped_column(
         Uuid, ForeignKey("review_batch.id", ondelete="RESTRICT"), nullable=True, index=True
     )
+    search_definition: Mapped[dict[str, Any] | None] = mapped_column(JSON(none_as_null=True), nullable=True)
     agent_definition_id: Mapped[uuid.UUID] = mapped_column(
         Uuid, ForeignKey("agent_definition.id", ondelete="RESTRICT"), index=True
     )

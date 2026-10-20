@@ -6,7 +6,4 @@
  * OpenAPI spec version: 0.1.0
  */
 
-export interface TenantStorageEnsure {
-  /** @pattern ^[a-z][a-z0-9-]{1,78}[a-z0-9]$ */
-  tenant_slug: string;
-}
+export type EnsureArtifactStorageV1TenantsTenantIdArtifactStorageEnsurePost201 = { [key: string]: unknown };

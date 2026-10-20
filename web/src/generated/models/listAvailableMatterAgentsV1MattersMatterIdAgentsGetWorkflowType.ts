@@ -12,4 +12,5 @@ export type ListAvailableMatterAgentsV1MattersMatterIdAgentsGetWorkflowType = ty
 export const ListAvailableMatterAgentsV1MattersMatterIdAgentsGetWorkflowType = {
   MATTER_DEFINITION_SETUP: 'MATTER_DEFINITION_SETUP',
   BATCH_CHAT: 'BATCH_CHAT',
+  SEARCH_CHAT: 'SEARCH_CHAT',
 } as const;

@@ -1867,7 +1867,8 @@
             "schema": {
               "enum": [
                 "MATTER_DEFINITION_SETUP",
-                "BATCH_CHAT"
+                "BATCH_CHAT",
+                "SEARCH_CHAT"
               ],
               "type": "string",
               "default": "MATTER_DEFINITION_SETUP",
@@ -2611,7 +2612,8 @@
                 {
                   "enum": [
                     "MATTER_DEFINITION_SETUP",
-                    "BATCH_CHAT"
+                    "BATCH_CHAT",
+                    "SEARCH_CHAT"
                   ],
                   "type": "string"
                 },
@@ -2819,7 +2821,8 @@
             "schema": {
               "enum": [
                 "MATTER_DEFINITION_SETUP",
-                "BATCH_CHAT"
+                "BATCH_CHAT",
+                "SEARCH_CHAT"
               ],
               "type": "string",
               "title": "Workflow Type"
@@ -3274,6 +3277,57 @@
             "HTTPBearer": []
           }
         ]
+      }
+    },
+    "/v1/tenants/{tenant_id}/artifact-storage/ensure": {
+      "post": {
+        "tags": [
+          "tenants"
+        ],
+        "summary": "Ensure Artifact Storage",
+        "description": "Repair or re-check a tenant's artifact storage. Creation normally happens with the tenant.",
+        "operationId": "ensure_artifact_storage_v1_tenants__tenant_id__artifact_storage_ensure_post",
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "tenant_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid",
+              "title": "Tenant Id"
+            }
+          }
+        ],
+        "responses": {
+          "201": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "additionalProperties": true,
+                  "title": "Response Ensure Artifact Storage V1 Tenants  Tenant Id  Artifact Storage Ensure Post"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
       }
     },
     "/v1/tenants/{tenant_id}": {
@@ -17514,64 +17568,6 @@
         }
       }
     },
-    "/v1/tenants/{tenant_id}/artifact-storage/ensure": {
-      "post": {
-        "tags": [
-          "artifacts"
-        ],
-        "summary": "Ensure Storage",
-        "operationId": "ensure_storage_v1_tenants__tenant_id__artifact_storage_ensure_post",
-        "security": [
-          {
-            "HTTPBearer": []
-          }
-        ],
-        "parameters": [
-          {
-            "name": "tenant_id",
-            "in": "path",
-            "required": true,
-            "schema": {
-              "type": "string",
-              "format": "uuid",
-              "title": "Tenant Id"
-            }
-          }
-        ],
-        "requestBody": {
-          "required": true,
-          "content": {
-            "application/json": {
-              "schema": {
-                "$ref": "#/components/schemas/TenantStorageEnsure"
-              }
-            }
-          }
-        },
-        "responses": {
-          "201": {
-            "description": "Successful Response",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/TenantStorageRead"
-                }
-              }
-            }
-          },
-          "422": {
-            "description": "Validation Error",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/HTTPValidationError"
-                }
-              }
-            }
-          }
-        }
-      }
-    },
     "/v1/workflow-artifacts:upload": {
       "post": {
         "tags": [
@@ -23167,7 +23163,8 @@
             "type": "string",
             "enum": [
               "MATTER_DEFINITION_SETUP",
-              "BATCH_CHAT"
+              "BATCH_CHAT",
+              "SEARCH_CHAT"
             ],
             "title": "Workflow Type",
             "default": "MATTER_DEFINITION_SETUP"
@@ -23195,6 +23192,16 @@
               }
             ],
             "title": "Matter Definition Id"
+          },
+          "search_definition": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/MatterSearchRequest"
+              },
+              {
+                "type": "null"
+              }
+            ]
           }
         },
         "type": "object",
@@ -23249,6 +23256,16 @@
             ],
             "title": "Review Batch Id"
           },
+          "search_definition": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/MatterSearchRequest"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
           "agent_definition_id": {
             "type": "string",
             "format": "uuid",
@@ -23274,7 +23291,8 @@
             "type": "string",
             "enum": [
               "MATTER_DEFINITION_SETUP",
-              "BATCH_CHAT"
+              "BATCH_CHAT",
+              "SEARCH_CHAT"
             ],
             "title": "Workflow Type"
           },
@@ -23312,6 +23330,7 @@
           "matter_id",
           "matter_definition_id",
           "review_batch_id",
+          "search_definition",
           "agent_definition_id",
           "agent_definition_version_id",
           "title",
@@ -49378,55 +49397,6 @@
           "created_at"
         ],
         "title": "TenantRead"
-      },
-      "TenantStorageEnsure": {
-        "properties": {
-          "tenant_slug": {
-            "type": "string",
-            "pattern": "^[a-z][a-z0-9-]{1,78}[a-z0-9]$",
-            "title": "Tenant Slug"
-          }
-        },
-        "type": "object",
-        "required": [
-          "tenant_slug"
-        ],
-        "title": "TenantStorageEnsure"
-      },
-      "TenantStorageRead": {
-        "properties": {
-          "tenant_id": {
-            "type": "string",
-            "format": "uuid",
-            "title": "Tenant Id"
-          },
-          "tenant_slug_snapshot": {
-            "type": "string",
-            "title": "Tenant Slug Snapshot"
-          },
-          "bucket_name": {
-            "type": "string",
-            "title": "Bucket Name"
-          },
-          "status": {
-            "type": "string",
-            "title": "Status"
-          },
-          "created_at": {
-            "type": "string",
-            "format": "date-time",
-            "title": "Created At"
-          }
-        },
-        "type": "object",
-        "required": [
-          "tenant_id",
-          "tenant_slug_snapshot",
-          "bucket_name",
-          "status",
-          "created_at"
-        ],
-        "title": "TenantStorageRead"
       },
       "TextProcessingChange": {
         "properties": {

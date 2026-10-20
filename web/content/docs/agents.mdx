@@ -45,8 +45,8 @@ Model calls use shared process-wide request and estimated-input-token limits for
 ## Current limitations
 
 - The administration UI currently manages root-owned system agents. Tenant-agent APIs exist, but a tenant administration screen is not yet available.
-- Agents can only be launched by workflows implemented in the application. The current interactive workflows are Matter Definition setup, batch chat, and collection rule building with the Document Cleaner Agent.
-- Matter Definition setup uses the standard `matter_definition_setup` key, and summary-backed batch RAG uses `batch_chat`. General root-managed workflow bindings and rollback controls are not yet available.
+- Agents can only be launched by workflows implemented in the application. The current interactive workflows are Matter Definition setup, batch chat, search-results chat, and collection rule building with the Document Cleaner Agent.
+- Matter Definition setup uses the standard `matter_definition_setup` key. Batch chat and search-results chat both use the `batch_chat` agent for document-text RAG with optional summaries. General root-managed workflow bindings and rollback controls are not yet available.
 - Agent execution analytics and cross-matter run monitoring are not yet available in the administration UI.
 
 Existing installations keep previously published agent versions unchanged. To grant an existing Matter Definition agent the new metadata tools, create and publish a new version in **Agents** with the desired tools selected. New installations bootstrap the standard agent with the complete Matter Definition toolset.
