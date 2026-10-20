@@ -1,13 +1,14 @@
 "use client";
 
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { Bot, LoaderCircle, MessageSquareText, Plus, Send } from "lucide-react";
+import { Bot, LoaderCircle, MessageSquareText, PencilLine, Plus, Send } from "lucide-react";
 import { useEffect, useRef, useState } from "react";
 import { toast } from "sonner";
 
 import { QueryError } from "@/components/query-state";
 import { StatusBadge } from "@/components/status-badge";
 import { Button } from "@/components/ui/button";
+import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle } from "@/components/ui/dialog";
 import { Input } from "@/components/ui/input";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Textarea } from "@/components/ui/textarea";
@@ -19,6 +20,7 @@ import type {
   AgentTurnCreated,
 } from "@/generated/models";
 import { coreApi } from "@/lib/api-client";
+import { chatTitleFromFirstMessage } from "@/lib/chat";
 import type { BatchDocumentReference } from "@/lib/document-references";
 import { normalizeParagraphReference } from "@/lib/document-references";
 import { formatDate } from "@/lib/format";
@@ -34,9 +36,12 @@ export function BatchChatPanel({ matterId, batchId, searchReady, onOpenDocument 
   const queryClient = useQueryClient();
   const [selectedConversationId, setSelectedConversationId] = useState("");
   const [creating, setCreating] = useState(false);
-  const [newTitle, setNewTitle] = useState("");
   const [message, setMessage] = useState("");
+  const [startValidationError, setStartValidationError] = useState("");
+  const [renameOpen, setRenameOpen] = useState(false);
+  const [renameTitle, setRenameTitle] = useState("");
   const scrollRef = useRef<HTMLDivElement>(null);
+  const firstMessageRef = useRef<HTMLTextAreaElement>(null);
   const chatStream = useAgentChatStream({ matterId, workflowType: "BATCH_CHAT", reviewBatchId: batchId });
   const agents = useQuery({
     queryKey: ["matter-agents", matterId, "BATCH_CHAT"],
@@ -69,23 +74,36 @@ export function BatchChatPanel({ matterId, batchId, searchReady, onOpenDocument 
   }, [messages.data?.length, activeRun]);
 
   const startConversation = useMutation({
-    mutationFn: (title: string) => coreApi<AgentConversationRead>(`/v1/matters/${matterId}/agent-conversations`, {
-      method: "POST",
-      body: JSON.stringify({
-        agent_definition_id: agents.data![0].id,
-        title,
-        workflow_type: "BATCH_CHAT",
-        review_batch_id: batchId,
-      }),
-    }),
-    onSuccess: (created) => {
+    mutationFn: async (content: string) => {
+      const conversation = await coreApi<AgentConversationRead>(`/v1/matters/${matterId}/agent-conversations`, {
+        method: "POST",
+        body: JSON.stringify({
+          agent_definition_id: agents.data![0].id,
+          title: chatTitleFromFirstMessage(content),
+          workflow_type: "BATCH_CHAT",
+          review_batch_id: batchId,
+        }),
+      });
+      const turn = await coreApi<AgentTurnCreated>(`/v1/agent-conversations/${conversation.id}/turns`, {
+        method: "POST",
+        body: JSON.stringify({ message: content }),
+      });
+      return { conversation, turn };
+    },
+    onSuccess: ({ conversation: created, turn }) => {
       queryClient.setQueryData<AgentConversationRead[]>(["batch-chat-conversations", matterId, batchId], (current) => [created, ...(current ?? []).filter((item) => item.id !== created.id)]);
+      queryClient.setQueryData<AgentMessageRead[]>(["agent-messages", created.id], [turn.message]);
+      queryClient.setQueryData<AgentRunRead[]>(["agent-runs", created.id], [turn.run]);
       setSelectedConversationId(created.id);
       setCreating(false);
-      setNewTitle("");
+      setMessage("");
+      setStartValidationError("");
       toast.success("Batch chat started.");
     },
-    onError: (error) => toast.error(error instanceof Error ? error.message : "The batch chat could not be started."),
+    onError: (error) => {
+      void queryClient.invalidateQueries({ queryKey: ["batch-chat-conversations", matterId, batchId] });
+      toast.error(error instanceof Error ? error.message : "The batch chat or its first question could not be started.");
+    },
   });
   const submitTurn = useMutation({
     mutationFn: (content: string) => coreApi<AgentTurnCreated>(`/v1/agent-conversations/${effectiveConversationId}/turns`, {
@@ -99,9 +117,44 @@ export function BatchChatPanel({ matterId, batchId, searchReady, onOpenDocument 
     },
     onError: (error) => toast.error(error instanceof Error ? error.message : "The question could not be sent."),
   });
+  const renameConversation = useMutation({
+    mutationFn: ({ conversationId, title }: { conversationId: string; title: string }) => coreApi<AgentConversationRead>(`/v1/agent-conversations/${conversationId}`, {
+      method: "PATCH",
+      body: JSON.stringify({ title }),
+    }),
+    onSuccess: (updated) => {
+      queryClient.setQueryData<AgentConversationRead[]>(["batch-chat-conversations", matterId, batchId], (current) => current?.map((conversation) => conversation.id === updated.id ? updated : conversation));
+      setRenameOpen(false);
+      toast.success("Chat renamed.");
+    },
+    onError: (error) => toast.error(error instanceof Error ? error.message : "The chat could not be renamed."),
+  });
 
   const error = agents.error ?? conversations.error ?? messages.error ?? runs.error;
   if (error) return <div className="p-4"><QueryError message={error.message} /></div>;
+
+  function beginConversation() {
+    const content = message.trim();
+    if (!content) {
+      setStartValidationError("Enter your first question before starting the chat.");
+      firstMessageRef.current?.focus();
+      return;
+    }
+    setStartValidationError("");
+    startConversation.mutate(content);
+  }
+
+  function openRename() {
+    if (!selectedConversation) return;
+    setRenameTitle(selectedConversation.title ?? "");
+    setRenameOpen(true);
+  }
+
+  function submitRename() {
+    const title = renameTitle.trim();
+    if (!selectedConversation || !title) return;
+    renameConversation.mutate({ conversationId: selectedConversation.id, title });
+  }
 
   if (!selectedConversation) {
     return <div className="grid flex-1 place-items-center p-5 text-center">
@@ -111,7 +164,7 @@ export function BatchChatPanel({ matterId, batchId, searchReady, onOpenDocument 
         <p className="mt-2 text-sm leading-6 text-muted-foreground">Questions use semantic search limited to this batch, then answer from source document text and available summaries.</p>
         {!searchReady ? <p className="mt-5 rounded-lg border border-warning/30 bg-warning/10 p-3 text-sm text-warning">Batch semantic search is not ready. Chat becomes available after the batch search projection is ready.</p>
           : agents.isPending || conversations.isPending ? <LoaderCircle className="mx-auto mt-5 animate-spin text-muted-foreground" />
-            : agents.data?.length ? <div className="mt-5 space-y-2 text-left"><Input value={newTitle} maxLength={200} onChange={(event) => setNewTitle(event.target.value)} placeholder="Chat name" aria-label="Batch chat name" /><div className="flex gap-2">{creating && conversations.data?.length ? <Button className="flex-1" variant="outline" onClick={() => setCreating(false)}>Cancel</Button> : null}<Button className="flex-1" disabled={!newTitle.trim() || startConversation.isPending} onClick={() => startConversation.mutate(newTitle.trim())}>{startConversation.isPending ? <LoaderCircle className="animate-spin" /> : <Plus />}Start batch chat</Button></div></div>
+            : agents.data?.length ? <div className="mt-5 space-y-2 text-left"><Textarea ref={firstMessageRef} value={message} maxLength={2000} disabled={startConversation.isPending} onChange={(event) => { setMessage(event.target.value); setStartValidationError(""); startConversation.reset(); }} onKeyDown={(event) => { if (event.key === "Enter" && !event.shiftKey) { event.preventDefault(); beginConversation(); } }} placeholder="Ask your first question…" aria-label="Starting message Batch Chat" aria-invalid={Boolean(startValidationError || startConversation.error)} className="min-h-24 resize-none" /><p className="text-xs text-muted-foreground">Enter your first question, then start the chat. Its first 50 characters become the title.</p>{startValidationError || startConversation.error ? <p role="alert" className="text-xs text-destructive">{startValidationError || (startConversation.error instanceof Error ? startConversation.error.message : "The batch chat could not be started.")}</p> : null}<div className="flex gap-2">{creating && conversations.data?.length ? <Button className="flex-1" variant="outline" onClick={() => { setCreating(false); setMessage(""); setStartValidationError(""); startConversation.reset(); }}>Cancel</Button> : null}<Button className="flex-1" disabled={startConversation.isPending} onClick={beginConversation}>{startConversation.isPending ? <LoaderCircle className="animate-spin" /> : <Send />}Start chat and send</Button></div></div>
             : <p className="mt-5 rounded-lg border border-warning/30 bg-warning/10 p-3 text-sm text-warning">The Batch Chat Agent is not configured. Run the application bootstrap after deploying this version.</p>}
       </div>
     </div>;
@@ -126,7 +179,7 @@ export function BatchChatPanel({ matterId, batchId, searchReady, onOpenDocument 
   return <div className="flex min-h-0 flex-1 flex-col">
     <div className="space-y-2 border-b p-3">
       <div className="flex items-center justify-between gap-2"><div className="flex items-center gap-2 text-sm font-semibold text-agent"><Bot className="size-4" />Batch Chat Agent <span className="text-xs font-normal text-muted-foreground">{chatStream.state === "live" ? "Live" : chatStream.state === "fallback" ? "Polling" : chatStream.state === "offline" ? "Offline" : "Connecting"}</span></div><StatusBadge status={selectedConversation.status} /></div>
-      <div className="flex gap-2"><Select value={effectiveConversationId} onValueChange={setSelectedConversationId}><SelectTrigger className="min-w-0 flex-1" aria-label="Batch chat"><SelectValue /></SelectTrigger><SelectContent>{conversations.data?.map((conversation) => <SelectItem key={conversation.id} value={conversation.id}>{conversation.title ?? formatDate(conversation.created_at)}</SelectItem>)}</SelectContent></Select><Button size="icon" variant="outline" aria-label="New batch chat" onClick={() => setCreating(true)}><Plus /></Button></div>
+      <div className="flex gap-2"><Select value={effectiveConversationId} onValueChange={setSelectedConversationId}><SelectTrigger className="min-w-0 flex-1" aria-label="Previous batch chats"><SelectValue /></SelectTrigger><SelectContent>{conversations.data?.map((conversation) => <SelectItem key={conversation.id} value={conversation.id}>{conversation.title ?? formatDate(conversation.created_at)}</SelectItem>)}</SelectContent></Select><Button size="icon" variant="outline" disabled={renameConversation.isPending} aria-label="Rename batch chat" onClick={openRename}><PencilLine /></Button><Button size="sm" variant="outline" aria-label="New batch chat" onClick={() => setCreating(true)}><Plus />New</Button></div>
     </div>
     <div ref={scrollRef} className="min-h-0 flex-1 space-y-3 overflow-y-auto p-4" aria-live="polite">
       {!messages.data?.length ? <div className="rounded-lg border border-dashed p-4 text-sm leading-6 text-muted-foreground">Ask about people, events, themes, communications, or patterns in this batch. Answers use document text, supplemented by summaries when available.</div> : null}
@@ -135,6 +188,7 @@ export function BatchChatPanel({ matterId, batchId, searchReady, onOpenDocument 
       {latestRun?.status === "FAILED" ? <div className="rounded-lg bg-destructive/10 p-3 text-sm text-destructive">{latestRun.error_message ?? "The batch chat run failed."}</div> : null}
     </div>
     <div className="border-t bg-muted/25 p-3"><Textarea value={message} disabled={activeRun || submitTurn.isPending} onChange={(event) => setMessage(event.target.value)} onKeyDown={(event) => { if (event.key === "Enter" && !event.shiftKey) { event.preventDefault(); void sendMessage(); } }} placeholder="Ask a question about this batch…" aria-label="Message the Batch Chat Agent" className="min-h-20 resize-none" /><div className="mt-2 flex items-center justify-between gap-2"><p className="text-xs text-muted-foreground">Answers use document text and optional summaries.</p><Button size="sm" disabled={!message.trim() || activeRun || submitTurn.isPending} onClick={() => void sendMessage()}>{submitTurn.isPending ? <LoaderCircle className="animate-spin" /> : <Send />}Send</Button></div></div>
+    <Dialog open={renameOpen} onOpenChange={setRenameOpen}><DialogContent className="max-w-sm"><DialogHeader><DialogTitle>Rename batch chat</DialogTitle><DialogDescription>Change the history label for this conversation.</DialogDescription></DialogHeader><Input value={renameTitle} maxLength={200} aria-label="Batch chat title" onChange={(event) => setRenameTitle(event.target.value)} onKeyDown={(event) => { if (event.key === "Enter") { event.preventDefault(); submitRename(); } }} /><DialogFooter><Button variant="outline" onClick={() => setRenameOpen(false)}>Cancel</Button><Button disabled={!renameTitle.trim() || renameConversation.isPending} onClick={submitRename}>{renameConversation.isPending ? <LoaderCircle className="animate-spin" /> : null}Rename</Button></DialogFooter></DialogContent></Dialog>
   </div>;
 }
 
@@ -144,7 +198,7 @@ export function DocumentChatMessageContent({ content, linkDocuments, onOpenDocum
   onOpenDocument: (reference: BatchDocumentReference) => void;
 }) {
   if (!linkDocuments) return content;
-  const pattern = /\[Document\s+([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12})(?:\s+([^\]]+))?\]/g;
+  const pattern = /Document\s+([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12})(?:\s+((?:¶\s*)?\d+(?:\s*(?:[-–—,]\s*(?:¶\s*)?\d+))*))?/g;
   const parts = [];
   let cursor = 0;
   for (const match of content.matchAll(pattern)) {
@@ -152,7 +206,7 @@ export function DocumentChatMessageContent({ content, linkDocuments, onOpenDocum
     if (index > cursor) parts.push(content.slice(cursor, index));
     const documentId = match[1];
     const paragraphReference = normalizeParagraphReference(match[2]);
-    parts.push(<button key={`${index}:${documentId}`} type="button" className="rounded bg-primary/10 px-1.5 py-0.5 font-medium text-primary hover:bg-primary/20" onClick={() => onOpenDocument({ documentId, paragraphReference })}>{match[0]}</button>);
+    parts.push(<button key={`${index}:${documentId}`} type="button" title="Open document" className="rounded bg-primary/10 px-1.5 py-0.5 font-medium text-primary hover:bg-primary/20" onClick={() => onOpenDocument({ documentId, paragraphReference })}>{match[0]}</button>);
     cursor = index + match[0].length;
   }
   if (cursor < content.length) parts.push(content.slice(cursor));
