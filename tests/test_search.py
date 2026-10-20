@@ -2401,6 +2401,57 @@ def test_explicit_rebuild_installs_missing_default_system_definitions(
     assert all(definition.value_source == "SYSTEM" for definition in installed)
 
 
+def test_explicit_rebuild_upgrades_v6_family_relationship_definitions(
+    client: TestClient,
+    root_token: str,
+    db: Session,
+) -> None:
+    headers = auth(root_token)
+    tenant_id = create_client_tenant(client, root_token)
+    created_client = client.post(
+        f"/v1/tenants/{tenant_id}/clients",
+        headers=headers,
+        json={"name": "Family Filter Upgrade Client"},
+    ).json()
+    matter = client.post(
+        f"/v1/clients/{created_client['id']}/matters",
+        headers=headers,
+        json={"name": "Legacy Family Filter Matter"},
+    ).json()
+    matter_id = uuid.UUID(matter["id"])
+    definitions = list(
+        db.scalars(
+            select(MetadataDefinition).where(
+                MetadataDefinition.matter_id == matter_id,
+                MetadataDefinition.key.in_(["parent_id", "child_id"]),
+            )
+        )
+    )
+    for definition in definitions:
+        definition.facetable = False
+        definition.template_version = 6
+    db.commit()
+
+    response = client.post(
+        f"/v1/matters/{matter_id}/search-indexes/rebuild",
+        headers=headers,
+    )
+
+    assert response.status_code == 202, response.text
+    db.expire_all()
+    upgraded = list(
+        db.scalars(
+            select(MetadataDefinition).where(
+                MetadataDefinition.matter_id == matter_id,
+                MetadataDefinition.key.in_(["parent_id", "child_id"]),
+            )
+        )
+    )
+    assert {definition.key for definition in upgraded} == {"parent_id", "child_id"}
+    assert all(definition.facetable for definition in upgraded)
+    assert all(definition.template_version == 7 for definition in upgraded)
+
+
 def test_failed_document_upserts_can_be_requeued_in_bulk(
     client: TestClient,
     root_token: str,

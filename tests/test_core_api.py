@@ -85,7 +85,7 @@ def test_core_phase_one_flow(client: TestClient, root_token: str) -> None:
         "type": "TEXT",
         "cardinality": "SINGLE",
         "value_source": "SYSTEM",
-        "facetable": False,
+        "facetable": True,
         "reviewable": False,
     }
     assert {
@@ -96,7 +96,7 @@ def test_core_phase_one_flow(client: TestClient, root_token: str) -> None:
         "type": "TEXT",
         "cardinality": "MULTIPLE",
         "value_source": "SYSTEM",
-        "facetable": False,
+        "facetable": True,
         "reviewable": False,
     }
     assert definitions_by_key["file_size"]["type"] == "INTEGER"
@@ -128,7 +128,7 @@ def test_core_phase_one_flow(client: TestClient, root_token: str) -> None:
     assert definitions_by_key["email_subject"]["normalize_to_lowercase"] is False
     assert definitions_by_key["responsiveness"]["value_source"] == "ASSERTED"
     assert definitions_by_key["responsiveness"]["template_key"] == "edrm-core"
-    assert definitions_by_key["responsiveness"]["template_version"] == 6
+    assert definitions_by_key["responsiveness"]["template_version"] == 7
 
     update_domains = client.post(
         f"/v1/matters/{matter_id}/metadata-definitions/email-domain/update",
