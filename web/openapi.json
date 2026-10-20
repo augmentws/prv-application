@@ -40513,9 +40513,16 @@
             "title": "Entity Type"
           },
           "display_name": {
-            "type": "string",
-            "maxLength": 300,
-            "minLength": 1,
+            "anyOf": [
+              {
+                "type": "string",
+                "maxLength": 300,
+                "minLength": 1
+              },
+              {
+                "type": "null"
+              }
+            ],
             "title": "Display Name"
           },
           "email": {
@@ -40591,8 +40598,7 @@
         "additionalProperties": false,
         "type": "object",
         "required": [
-          "entity_type",
-          "display_name"
+          "entity_type"
         ],
         "title": "MatterEntityCreate"
       },
@@ -40659,7 +40665,14 @@
             "title": "Entity Type"
           },
           "display_name": {
-            "type": "string",
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
             "title": "Display Name"
           },
           "email": {
@@ -40924,7 +40937,14 @@
             "title": "Id"
           },
           "display_name": {
-            "type": "string",
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
             "title": "Display Name"
           },
           "email": {

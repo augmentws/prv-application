@@ -44,7 +44,7 @@ from app.classification_analysis_tasks import (
 )
 from app.config import Settings, get_settings
 from app.database import get_db
-from app.dependencies import Principal, can_admin_matter, get_principal
+from app.dependencies import Principal, get_principal
 from app.fact_development import (
     FactDevelopmentRunError,
     cancel_fact_development_run,
@@ -133,13 +133,33 @@ router = APIRouter(prefix="/v1/matters/{matter_id}/analysis-tasks", tags=["matte
 logger = logging.getLogger(__name__)
 
 
-def _require_matter_admin(db: Session, principal: Principal, matter_id: uuid.UUID) -> Matter:
+def _require_task_permission(
+    db: Session,
+    principal: Principal,
+    matter_id: uuid.UUID,
+    permission_key: str,
+) -> Matter:
     matter = db.scalar(select(Matter).where(Matter.id == matter_id))
     if matter is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Matter not found")
-    if not can_admin_matter(db, principal, matter):
-        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Matter ADMIN required")
+    if not can(db, principal, permission_key, ResourceRef.matter(matter.id)):
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail=f"Permission required: {permission_key}",
+        )
     return matter
+
+
+def _require_task_viewer(db: Session, principal: Principal, matter_id: uuid.UUID) -> Matter:
+    return _require_task_permission(db, principal, matter_id, "analysis_task.view")
+
+
+def _require_task_manager(db: Session, principal: Principal, matter_id: uuid.UUID) -> Matter:
+    return _require_task_permission(db, principal, matter_id, "analysis_task.manage")
+
+
+def _require_task_runner(db: Session, principal: Principal, matter_id: uuid.UUID) -> Matter:
+    return _require_task_permission(db, principal, matter_id, "analysis_task.run")
 
 
 def _require_task(db: Session, *, matter_id: uuid.UUID, task_id: uuid.UUID) -> MatterAnalysisTask:
@@ -414,7 +434,7 @@ def list_analysis_tasks(
     principal: Principal = Depends(get_principal),
     db: Session = Depends(get_db),
 ) -> list[MatterAnalysisTaskRead]:
-    _require_matter_admin(db, principal, matter_id)
+    _require_task_viewer(db, principal, matter_id)
     tasks = db.scalars(
         select(MatterAnalysisTask)
         .where(MatterAnalysisTask.matter_id == matter_id)
@@ -429,7 +449,7 @@ def list_question_answering_jobs(
     principal: Principal = Depends(get_principal),
     db: Session = Depends(get_db),
 ) -> list[MatterQuestionAnsweringJobRead]:
-    _require_matter_admin(db, principal, matter_id)
+    _require_task_viewer(db, principal, matter_id)
     rows = db.execute(
         select(ReviewBatchRun, ReviewBatch)
         .outerjoin(ReviewBatch, ReviewBatch.id == ReviewBatchRun.review_batch_id)
@@ -547,7 +567,7 @@ def create_matter_analysis_task(
     principal: Principal = Depends(get_principal),
     db: Session = Depends(get_db),
 ) -> MatterAnalysisTaskRead:
-    matter = _require_matter_admin(db, principal, matter_id)
+    matter = _require_task_manager(db, principal, matter_id)
     try:
         task, task_version = create_analysis_task(
             db,
@@ -598,7 +618,7 @@ def get_analysis_task(
     principal: Principal = Depends(get_principal),
     db: Session = Depends(get_db),
 ) -> MatterAnalysisTaskRead:
-    _require_matter_admin(db, principal, matter_id)
+    _require_task_viewer(db, principal, matter_id)
     return _task_read(db, _require_task(db, matter_id=matter_id, task_id=task_id))
 
 
@@ -609,7 +629,7 @@ def list_analysis_task_batch_sets(
     principal: Principal = Depends(get_principal),
     db: Session = Depends(get_db),
 ) -> list[AnalysisTaskBatchSetRead]:
-    _require_matter_admin(db, principal, matter_id)
+    _require_task_viewer(db, principal, matter_id)
     task = _require_task(db, matter_id=matter_id, task_id=task_id)
     rows = list(
         db.scalars(
@@ -630,7 +650,7 @@ def preview_analysis_task_batch_set(
     db: Session = Depends(get_db),
     settings: Settings = Depends(get_settings),
 ) -> AnalysisTaskBatchSetPreviewRead:
-    matter = _require_matter_admin(db, principal, matter_id)
+    matter = _require_task_manager(db, principal, matter_id)
     task = _require_task(db, matter_id=matter_id, task_id=task_id)
     if task.published_version is None:
         raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="Analysis Task has no published version")
@@ -670,7 +690,7 @@ def get_analysis_task_batch_set(
     principal: Principal = Depends(get_principal),
     db: Session = Depends(get_db),
 ) -> AnalysisTaskBatchSetRead:
-    _require_matter_admin(db, principal, matter_id)
+    _require_task_viewer(db, principal, matter_id)
     _require_task(db, matter_id=matter_id, task_id=task_id)
     return _batch_set_read(
         db,
@@ -696,7 +716,7 @@ def create_analysis_task_batch_set(
     db: Session = Depends(get_db),
     settings: Settings = Depends(get_settings),
 ) -> AnalysisTaskBatchSetRead:
-    matter = _require_matter_admin(db, principal, matter_id)
+    matter = _require_task_manager(db, principal, matter_id)
     task = _require_task(db, matter_id=matter_id, task_id=task_id)
     if task.published_version is None:
         raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="Analysis Task has no published version")
@@ -767,7 +787,7 @@ def cancel_analysis_task_batch_set(
     principal: Principal = Depends(get_principal),
     db: Session = Depends(get_db),
 ) -> AnalysisTaskBatchSetRead:
-    matter = _require_matter_admin(db, principal, matter_id)
+    matter = _require_task_manager(db, principal, matter_id)
     _require_task(db, matter_id=matter_id, task_id=task_id)
     batch_set = _require_batch_set(
         db,
@@ -814,7 +834,7 @@ def retry_analysis_task_batch_set(
     db: Session = Depends(get_db),
     settings: Settings = Depends(get_settings),
 ) -> AnalysisTaskBatchSetRead:
-    matter = _require_matter_admin(db, principal, matter_id)
+    matter = _require_task_manager(db, principal, matter_id)
     _require_task(db, matter_id=matter_id, task_id=task_id)
     batch_set = _require_batch_set(
         db,
@@ -858,7 +878,7 @@ def list_analysis_task_batch_set_runs(
     principal: Principal = Depends(get_principal),
     db: Session = Depends(get_db),
 ) -> list[AnalysisTaskBatchSetRun]:
-    _require_matter_admin(db, principal, matter_id)
+    _require_task_viewer(db, principal, matter_id)
     _require_task(db, matter_id=matter_id, task_id=task_id)
     batch_set = _require_batch_set(db, matter_id=matter_id, task_id=task_id, batch_set_id=batch_set_id)
     return list(
@@ -887,7 +907,7 @@ def start_analysis_task_batch_set_run(
     principal: Principal = Depends(get_principal),
     db: Session = Depends(get_db),
 ) -> AnalysisTaskBatchSetRun:
-    matter = _require_matter_admin(db, principal, matter_id)
+    matter = _require_task_runner(db, principal, matter_id)
     task = _require_task(db, matter_id=matter_id, task_id=task_id)
     batch_set = _require_batch_set(db, matter_id=matter_id, task_id=task_id, batch_set_id=batch_set_id)
     task_version = db.get(MatterAnalysisTaskVersion, batch_set.matter_analysis_task_version_id)
@@ -939,7 +959,7 @@ def cancel_analysis_task_batch_set_run(
     principal: Principal = Depends(get_principal),
     db: Session = Depends(get_db),
 ) -> AnalysisTaskBatchSetRun:
-    matter = _require_matter_admin(db, principal, matter_id)
+    matter = _require_task_runner(db, principal, matter_id)
     _require_task(db, matter_id=matter_id, task_id=task_id)
     batch_set = _require_batch_set(db, matter_id=matter_id, task_id=task_id, batch_set_id=batch_set_id)
     run = _require_batch_set_run(db, batch_set=batch_set, run_id=run_id, for_update=True)
@@ -976,7 +996,7 @@ def retry_analysis_task_batch_set_run_endpoint(
     principal: Principal = Depends(get_principal),
     db: Session = Depends(get_db),
 ) -> AnalysisTaskBatchSetRun:
-    matter = _require_matter_admin(db, principal, matter_id)
+    matter = _require_task_runner(db, principal, matter_id)
     _require_task(db, matter_id=matter_id, task_id=task_id)
     batch_set = _require_batch_set(db, matter_id=matter_id, task_id=task_id, batch_set_id=batch_set_id)
     run = _require_batch_set_run(db, batch_set=batch_set, run_id=run_id, for_update=True)
@@ -1005,7 +1025,7 @@ def list_analysis_task_versions(
     principal: Principal = Depends(get_principal),
     db: Session = Depends(get_db),
 ) -> list[MatterAnalysisTaskVersionRead]:
-    _require_matter_admin(db, principal, matter_id)
+    _require_task_viewer(db, principal, matter_id)
     task = _require_task(db, matter_id=matter_id, task_id=task_id)
     versions = list(
         db.scalars(
@@ -1029,7 +1049,7 @@ def start_whole_matter_question_answering_run(
     principal: Principal = Depends(get_principal),
     db: Session = Depends(get_db),
 ) -> ReviewBatchRun:
-    matter = _require_matter_admin(db, principal, matter_id)
+    matter = _require_task_runner(db, principal, matter_id)
     task = _require_task(db, matter_id=matter_id, task_id=task_id)
     if task.task_type != "QUESTION_ANSWERING":
         raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="A question-answering task is required")
@@ -1088,7 +1108,7 @@ def list_analysis_task_runs(
     principal: Principal = Depends(get_principal),
     db: Session = Depends(get_db),
 ) -> list[MatterAnalysisTaskRun]:
-    _require_matter_admin(db, principal, matter_id)
+    _require_task_viewer(db, principal, matter_id)
     task = _require_task(db, matter_id=matter_id, task_id=task_id)
     return list(
         db.scalars(
@@ -1115,7 +1135,7 @@ def start_analysis_task_run(
     principal: Principal = Depends(get_principal),
     db: Session = Depends(get_db),
 ) -> MatterAnalysisTaskRun:
-    matter = _require_matter_admin(db, principal, matter_id)
+    matter = _require_task_runner(db, principal, matter_id)
     task = _require_task(db, matter_id=matter_id, task_id=task_id)
     try:
         run, created = create_classification_analysis_run(
@@ -1154,7 +1174,7 @@ def cancel_analysis_task_run(
     principal: Principal = Depends(get_principal),
     db: Session = Depends(get_db),
 ) -> MatterAnalysisTaskRun:
-    _require_matter_admin(db, principal, matter_id)
+    _require_task_runner(db, principal, matter_id)
     task = _require_task(db, matter_id=matter_id, task_id=task_id)
     run = db.scalar(
         select(MatterAnalysisTaskRun)
@@ -1216,7 +1236,7 @@ def create_analysis_task_version(
     principal: Principal = Depends(get_principal),
     db: Session = Depends(get_db),
 ) -> MatterAnalysisTaskRead:
-    matter = _require_matter_admin(db, principal, matter_id)
+    matter = _require_task_manager(db, principal, matter_id)
     _require_task(db, matter_id=matter_id, task_id=task_id)
     try:
         task, task_version = append_analysis_task_version(
@@ -1262,7 +1282,7 @@ def update_analysis_task_specification(
     principal: Principal = Depends(get_principal),
     db: Session = Depends(get_db),
 ) -> MatterAnalysisTaskRead:
-    matter = _require_matter_admin(db, principal, matter_id)
+    matter = _require_task_manager(db, principal, matter_id)
     task = _require_task(db, matter_id=matter_id, task_id=task_id)
     if task.task_type != "QUESTION_ANSWERING":
         raise HTTPException(
@@ -1324,7 +1344,7 @@ def update_fact_development_specification(
 ) -> MatterAnalysisTaskRead:
     """Save a reviewer-edited issue catalog; it is validated deterministically before it becomes READY."""
 
-    matter = _require_matter_admin(db, principal, matter_id)
+    matter = _require_task_manager(db, principal, matter_id)
     task = _require_task(db, matter_id=matter_id, task_id=task_id)
     prior = _task_version(db, task_id=task.id, version_number=version_number)
     try:
@@ -1374,7 +1394,7 @@ def preview_fact_issue_membership(
 ) -> FactIssueMembershipPreviewRead:
     """Count how many documents of a ready batch belong to each issue, without starting a run."""
 
-    _require_matter_admin(db, principal, matter_id)
+    _require_task_manager(db, principal, matter_id)
     task = _require_task(db, matter_id=matter_id, task_id=task_id)
     if task.task_type != "FACT_DEVELOPMENT":
         raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="Only fact-development tasks have issues")
@@ -1450,7 +1470,7 @@ def compile_analysis_task_specification(
     principal: Principal = Depends(get_principal),
     db: Session = Depends(get_db),
 ) -> MatterAnalysisTaskRead:
-    matter = _require_matter_admin(db, principal, matter_id)
+    matter = _require_task_manager(db, principal, matter_id)
     task = _require_task(db, matter_id=matter_id, task_id=task_id)
     if task.task_type not in {"QUESTION_ANSWERING", "FACT_DEVELOPMENT"}:
         raise HTTPException(
@@ -1504,7 +1524,7 @@ def start_analysis_task_playground_run(
     principal: Principal = Depends(get_principal),
     db: Session = Depends(get_db),
 ) -> MatterAnalysisTaskPlaygroundRunRead:
-    matter = _require_matter_admin(db, principal, matter_id)
+    matter = _require_task_runner(db, principal, matter_id)
     task = _require_task(db, matter_id=matter_id, task_id=task_id)
     if task.task_type != "QUESTION_ANSWERING":
         raise HTTPException(
@@ -1556,7 +1576,7 @@ def get_analysis_task_playground_run(
     principal: Principal = Depends(get_principal),
     db: Session = Depends(get_db),
 ) -> MatterAnalysisTaskPlaygroundRunRead:
-    _require_matter_admin(db, principal, matter_id)
+    _require_task_viewer(db, principal, matter_id)
     task = _require_task(db, matter_id=matter_id, task_id=task_id)
     task_version = _task_version(db, task_id=task.id, version_number=version_number)
     workflow = db.get(WorkflowRun, workflow_run_id)
@@ -1587,7 +1607,7 @@ def publish_analysis_task(
     principal: Principal = Depends(get_principal),
     db: Session = Depends(get_db),
 ) -> MatterAnalysisTaskRead:
-    matter = _require_matter_admin(db, principal, matter_id)
+    matter = _require_task_manager(db, principal, matter_id)
     _require_task(db, matter_id=matter_id, task_id=task_id)
     try:
         task, task_version = publish_analysis_task_version(
@@ -1614,12 +1634,7 @@ def publish_analysis_task(
 
 
 def _require_fact_runner(db: Session, principal: Principal, matter_id: uuid.UUID) -> Matter:
-    matter = db.scalar(select(Matter).where(Matter.id == matter_id))
-    if matter is None:
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Matter not found")
-    if not can(db, principal, "analysis_task.run", ResourceRef.matter(matter.id)):
-        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Permission required to run Analysis Tasks")
-    return matter
+    return _require_task_runner(db, principal, matter_id)
 
 
 def _fact_run(

@@ -95,6 +95,7 @@ from app.job_outcomes import (
     publish_outcome_fragment,
     register_job_outcome_adapter,
 )
+from app.matter_entities import entity_display_label
 from app.model_batching import resolve_batch_target
 from app.models import (
     AnalysisInputManifest,
@@ -1352,7 +1353,7 @@ def _known_entities(db: Session, context: _RunContext, metadata: dict[str, Any])
             continue
         known.append(
             {
-                "name": canonical.display_name,
+                "name": entity_display_label(canonical),
                 "email": row.email,
                 "entity_type": canonical.entity_type,
                 "status": canonical.status,

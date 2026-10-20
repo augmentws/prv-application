@@ -19,7 +19,7 @@ import { Label } from "@/components/ui/label";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import type { MatterEntityCreate, MatterEntityPage, MatterEntityRead } from "@/generated/models";
 import { coreApi } from "@/lib/api-client";
-import { entityDetailHref } from "@/lib/facts";
+import { entityDetailHref, entityLabel } from "@/lib/facts";
 
 export type EntitiesTab = "directory" | "proposed";
 const PAGE_SIZE = 50;
@@ -47,7 +47,7 @@ export function useOrganizationNames(matterId: string, enabled = true) {
     enabled,
     staleTime: 60_000,
   });
-  const names = useMemo(() => new Map((organizations.data?.items ?? []).map((item) => [item.id, item.display_name])), [organizations.data]);
+  const names = useMemo(() => new Map((organizations.data?.items ?? []).map((item) => [item.id, entityLabel(item)])), [organizations.data]);
   return { organizations, names };
 }
 
@@ -110,7 +110,7 @@ export function EntitiesPanel({ clientId, matterId, tab, canManage }: { clientId
         body: JSON.stringify({ lock_version: entity.lock_version }),
       }),
     onSuccess: (entity, { action }) => {
-      toast.success(`${entity.display_name} ${action === "confirm" ? "confirmed" : "rejected"}`);
+      toast.success(`${entityLabel(entity)} ${action === "confirm" ? "confirmed" : "rejected"}`);
       setRejecting(null);
       refresh();
       // Rejecting removes the entity from facts, so fact lists must reload.
@@ -125,7 +125,7 @@ export function EntitiesPanel({ clientId, matterId, tab, canManage }: { clientId
   const create = useMutation({
     mutationFn: (payload: MatterEntityCreate) => coreApi<MatterEntityRead>(`/v1/matters/${matterId}/entities`, { method: "POST", body: JSON.stringify(payload) }),
     onSuccess: (entity) => {
-      toast.success(`${entity.display_name} added`);
+      toast.success(`${entityLabel(entity)} added`);
       setCreating(false);
       refresh();
     },
@@ -139,9 +139,9 @@ export function EntitiesPanel({ clientId, matterId, tab, canManage }: { clientId
       size: 260,
       cell: ({ row }) => (
         <div className="min-w-0">
-          <Link href={entityDetailHref(clientId, matterId, row.original.id)} className="font-medium hover:text-primary">{row.original.display_name}</Link>
+          <Link href={entityDetailHref(clientId, matterId, row.original.id)} className="font-medium hover:text-primary">{entityLabel(row.original)}</Link>
           {row.original.created_by_workflow_run_id ? <span className="ml-2 inline-flex items-center gap-1 text-xs text-agent"><Bot className="size-3" aria-hidden="true" />Agent</span> : null}
-          {row.original.variants?.length ? <p className="truncate text-xs text-muted-foreground">Also: {row.original.variants.map((variant) => variant.email ?? variant.display_name).join(", ")}</p> : null}
+          {row.original.variants?.length ? <p className="truncate text-xs text-muted-foreground">Also: {row.original.variants.map((variant) => variant.email ?? entityLabel(variant)).join(", ")}</p> : null}
         </div>
       ),
     },
@@ -166,10 +166,10 @@ export function EntitiesPanel({ clientId, matterId, tab, canManage }: { clientId
           size: 210,
           cell: ({ row }) => (
             <div className="flex gap-1">
-              <Button size="sm" variant="outline" disabled={review.isPending} onClick={() => review.mutate({ entity: row.original, action: "confirm" })} aria-label={`Confirm ${row.original.display_name}`}>
+              <Button size="sm" variant="outline" disabled={review.isPending} onClick={() => review.mutate({ entity: row.original, action: "confirm" })} aria-label={`Confirm ${entityLabel(row.original)}`}>
                 <CheckCircle2 aria-hidden="true" />Confirm
               </Button>
-              <Button size="sm" variant="ghost" disabled={review.isPending} onClick={() => setRejecting(row.original)} aria-label={`Reject ${row.original.display_name}`}>
+              <Button size="sm" variant="ghost" disabled={review.isPending} onClick={() => setRejecting(row.original)} aria-label={`Reject ${entityLabel(row.original)}`}>
                 <XCircle aria-hidden="true" />Reject
               </Button>
             </div>
@@ -231,7 +231,7 @@ export function RejectEntityDialog({ entity, busy, onCancel, onReject }: { entit
     <Dialog open={Boolean(entity)} onOpenChange={(open) => { if (!open) onCancel(); }}>
       <DialogContent className="max-w-md">
         <DialogHeader>
-          <DialogTitle>Reject {entity?.display_name}?</DialogTitle>
+          <DialogTitle>Reject {entity ? entityLabel(entity) : "entity"}?</DialogTitle>
           <DialogDescription>
             {entity?.fact_count
               ? `It will be removed as owner or participant from ${entity.fact_count} ${entity.fact_count === 1 ? "fact" : "facts"}. The facts themselves are kept.`
@@ -265,7 +265,7 @@ function CreateEntityDialog({ open, busy, onClose, onCreate }: { open: boolean; 
             event.preventDefault();
             onCreate({
               entity_type: type,
-              display_name: name.trim(),
+              display_name: name.trim() || null,
               email: email.trim() || null,
               title: type === "PERSON" ? title.trim() || null : null,
               status: "CONFIRMED",
@@ -284,7 +284,7 @@ function CreateEntityDialog({ open, busy, onClose, onCreate }: { open: boolean; 
           </div>
           <div className="space-y-2">
             <Label htmlFor="entity-name">Name</Label>
-            <Input id="entity-name" required value={name} onChange={(event) => setName(event.target.value)} />
+            <Input id="entity-name" value={name} onChange={(event) => setName(event.target.value)} />
           </div>
           <div className="space-y-2">
             <Label htmlFor="entity-email">Email address</Label>
@@ -298,7 +298,7 @@ function CreateEntityDialog({ open, busy, onClose, onCreate }: { open: boolean; 
           ) : null}
           <DialogFooter>
             <Button type="button" variant="ghost" onClick={onClose}>Cancel</Button>
-            <Button type="submit" disabled={busy || !name.trim()}>Add</Button>
+            <Button type="submit" disabled={busy || (!name.trim() && !email.trim())}>Add</Button>
           </DialogFooter>
         </form>
       </DialogContent>

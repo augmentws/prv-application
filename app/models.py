@@ -5042,6 +5042,11 @@ class MatterEntity(TimestampMixin, Base):
             "(created_by_user_id IS NULL) <> (created_by_workflow_run_id IS NULL)",
             name="ck_matter_entity_creator",
         ),
+        CheckConstraint("display_name IS NOT NULL OR email IS NOT NULL", name="ck_matter_entity_name_or_email"),
+        CheckConstraint(
+            "(display_name IS NULL) = (normalized_name IS NULL)",
+            name="ck_matter_entity_name_pair",
+        ),
         CheckConstraint("(email IS NULL) = (normalized_email IS NULL)", name="ck_matter_entity_email_pair"),
         CheckConstraint("lock_version > 0", name="ck_matter_entity_lock_version"),
         Index(
@@ -5062,8 +5067,8 @@ class MatterEntity(TimestampMixin, Base):
         Uuid, ForeignKey("matter_entity.id", ondelete="RESTRICT"), nullable=True, index=True
     )
     entity_type: Mapped[str] = mapped_column(String(20))
-    display_name: Mapped[str] = mapped_column(String(300))
-    normalized_name: Mapped[str] = mapped_column(String(300))
+    display_name: Mapped[str | None] = mapped_column(String(300), nullable=True)
+    normalized_name: Mapped[str | None] = mapped_column(String(300), nullable=True)
     email: Mapped[str | None] = mapped_column(String(320), nullable=True)
     normalized_email: Mapped[str | None] = mapped_column(String(320), nullable=True)
     title: Mapped[str | None] = mapped_column(String(200), nullable=True)

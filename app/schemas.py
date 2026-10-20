@@ -4409,13 +4409,19 @@ class MatterEntityCreate(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     entity_type: EntityTypeLiteral
-    display_name: str = Field(min_length=1, max_length=300)
+    display_name: str | None = Field(default=None, min_length=1, max_length=300)
     email: str | None = Field(default=None, max_length=320)
     title: str | None = Field(default=None, max_length=200)
     organization_id: uuid.UUID | None = None
     custodian_id: uuid.UUID | None = None
     description: str | None = Field(default=None, max_length=10_000)
     status: Literal["PROPOSED", "CONFIRMED"] = "CONFIRMED"
+
+    @model_validator(mode="after")
+    def validate_identity(self) -> "MatterEntityCreate":
+        if not self.display_name and not self.email:
+            raise ValueError("An entity requires a display name or an email address")
+        return self
 
 
 class MatterEntityUpdate(BaseModel):
@@ -4455,7 +4461,7 @@ class MatterEntityMerge(BaseModel):
 
 class MatterEntityVariantRead(ORMModel):
     id: uuid.UUID
-    display_name: str
+    display_name: str | None
     email: str | None
     lock_version: int
     created_at: datetime
@@ -4465,7 +4471,7 @@ class MatterEntityRead(ORMModel):
     id: uuid.UUID
     matter_id: uuid.UUID
     entity_type: EntityTypeLiteral
-    display_name: str
+    display_name: str | None
     email: str | None
     title: str | None
     organization_id: uuid.UUID | None

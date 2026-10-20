@@ -522,7 +522,13 @@ def fact_facet(
 def _entity_names(db: Session, entity_ids: list[uuid.UUID]) -> dict[uuid.UUID, str]:
     if not entity_ids:
         return {}
-    return dict(db.execute(select(MatterEntity.id, MatterEntity.display_name).where(MatterEntity.id.in_(entity_ids))).all())
+    return dict(
+        db.execute(
+            select(MatterEntity.id, func.coalesce(MatterEntity.display_name, MatterEntity.email)).where(
+                MatterEntity.id.in_(entity_ids)
+            )
+        ).all()
+    )
 
 
 def issue_names(db: Session, matter_id: uuid.UUID) -> dict[str, str]:

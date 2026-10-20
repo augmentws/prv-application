@@ -13,7 +13,7 @@ export interface MatterEntityRead {
   id: string;
   matter_id: string;
   entity_type: MatterEntityReadEntityType;
-  display_name: string;
+  display_name: string | null;
   email: string | null;
   title: string | null;
   organization_id: string | null;

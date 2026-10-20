@@ -42,6 +42,7 @@ from app.facts import (
     revise_fact,
     unmerge_fact,
 )
+from app.matter_entities import entity_display_label
 from app.models import (
     DocumentMetadataCurrent,
     Matter,
@@ -159,8 +160,8 @@ def _entity_ref(pair: tuple[MatterEntity, MatterEntity], role: str | None = None
     return MatterFactEntityRef(
         entity_id=row.id,
         canonical_entity_id=canonical.id,
-        display_name=row.display_name,
-        canonical_display_name=canonical.display_name,
+        display_name=entity_display_label(row),
+        canonical_display_name=entity_display_label(canonical),
         entity_type=canonical.entity_type,  # type: ignore[arg-type]
         role=role,  # type: ignore[arg-type]
     )

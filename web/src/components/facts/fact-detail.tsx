@@ -36,7 +36,7 @@ import type {
 } from "@/generated/models";
 import { ApiError, coreApi } from "@/lib/api-client";
 import { formatDate } from "@/lib/format";
-import { FACT_PRECISION_LABELS, factDetailHref, formatFactDate } from "@/lib/facts";
+import { entityLabel, FACT_PRECISION_LABELS, factDetailHref, formatFactDate } from "@/lib/facts";
 import { matterHref } from "@/lib/matter-routes";
 
 const PRECISIONS = ["DAY", "MONTH", "QUARTER", "YEAR", "RANGE", "UNKNOWN"] as const;
@@ -147,7 +147,7 @@ export function FactDetail({ clientId, matterId, factId }: { clientId: string; m
   });
   const entityNames = useMemo(() => {
     const map = new Map<string, string>();
-    for (const entity of entities.data?.items ?? []) map.set(entity.id, entity.display_name);
+    for (const entity of entities.data?.items ?? []) map.set(entity.id, entityLabel(entity));
     for (const ref of [fact.data?.owner, ...(fact.data?.participants ?? [])]) if (ref) map.set(ref.entity_id, ref.canonical_display_name);
     return map;
   }, [entities.data, fact.data]);
@@ -470,7 +470,7 @@ function FactEditForm({ fact, catalog, entities, entitiesAvailable, saving, onCa
   const [edit, setEdit] = useState<EditState>(() => editStateFor(fact));
   const undated = edit.datePrecision === "UNKNOWN";
   const knownEntities = useMemo(() => {
-    const byId = new Map(entities.map((entity) => [entity.id, entity.display_name]));
+    const byId = new Map(entities.map((entity) => [entity.id, entityLabel(entity)]));
     for (const ref of [fact.owner, ...fact.participants]) if (ref && !byId.has(ref.entity_id)) byId.set(ref.entity_id, ref.canonical_display_name);
     return [...byId.entries()].sort((left, right) => left[1].localeCompare(right[1]));
   }, [entities, fact]);
