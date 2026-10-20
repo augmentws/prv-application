@@ -2047,6 +2047,11 @@ class ReviewBatchRun(TimestampMixin, Base):
             "(analysis_task_batch_set_id IS NOT NULL AND batch_set_ordinal IS NOT NULL AND batch_set_ordinal > 0)",
             name="ck_review_batch_run_batch_set_provenance",
         ),
+        CheckConstraint(
+            "(review_batch_id IS NOT NULL AND analysis_input_manifest_id IS NULL) OR "
+            "(review_batch_id IS NULL AND analysis_input_manifest_id IS NOT NULL)",
+            name="ck_review_batch_run_population_source",
+        ),
         Index("ix_review_batch_run_batch_created", "review_batch_id", "created_at"),
         Index(
             "uq_review_batch_classifier_idempotency",
@@ -2068,8 +2073,8 @@ class ReviewBatchRun(TimestampMixin, Base):
     )
 
     id: Mapped[uuid.UUID] = mapped_column(Uuid, primary_key=True, default=uuid.uuid4)
-    review_batch_id: Mapped[uuid.UUID] = mapped_column(
-        Uuid, ForeignKey("review_batch.id", ondelete="CASCADE"), index=True
+    review_batch_id: Mapped[uuid.UUID | None] = mapped_column(
+        Uuid, ForeignKey("review_batch.id", ondelete="CASCADE"), nullable=True, index=True
     )
     analysis_task_batch_set_id: Mapped[uuid.UUID | None] = mapped_column(
         Uuid, ForeignKey("analysis_task_batch_set.id", ondelete="RESTRICT"), nullable=True, index=True
@@ -2111,16 +2116,32 @@ class ReviewBatchRun(TimestampMixin, Base):
         nullable=True,
         index=True,
     )
+    analysis_input_manifest_id: Mapped[uuid.UUID | None] = mapped_column(
+        Uuid,
+        ForeignKey("analysis_input_manifest.id", ondelete="RESTRICT"),
+        nullable=True,
+        index=True,
+    )
     processed_document_count: Mapped[int] = mapped_column(Integer, default=0)
     error_message: Mapped[str | None] = mapped_column(Text)
     started_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), default=utcnow)
     completed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
 
     current_workflow_run: Mapped["WorkflowRun | None"] = relationship(foreign_keys=[current_workflow_run_id])
+    analysis_input_manifest: Mapped["AnalysisInputManifest | None"] = relationship()
 
     @property
     def execution(self) -> "WorkflowRun | None":
         return self.current_workflow_run
+
+    @property
+    def scope_type(self) -> str:
+        return str(self.configuration_snapshot.get("scope_type") or "REVIEW_BATCH")
+
+    @property
+    def scope_id(self) -> uuid.UUID | None:
+        raw = self.configuration_snapshot.get("scope_id") or self.review_batch_id
+        return uuid.UUID(str(raw)) if raw is not None else None
 
 
 class ReviewBatchRunDocument(Base):
@@ -2132,6 +2153,10 @@ class ReviewBatchRunDocument(Base):
         ),
         Index("ix_review_batch_run_document_run_status", "review_batch_run_id", "status"),
         Index("ix_review_batch_run_document_last_workflow", "last_workflow_run_id"),
+        CheckConstraint(
+            "input_manifest_ordinal IS NULL OR input_manifest_ordinal > 0",
+            name="ck_review_batch_run_document_manifest_ordinal",
+        ),
     )
 
     review_batch_run_id: Mapped[uuid.UUID] = mapped_column(
@@ -2141,6 +2166,7 @@ class ReviewBatchRunDocument(Base):
         Uuid, ForeignKey("matter_document.id", ondelete="CASCADE"), primary_key=True, index=True
     )
     status: Mapped[str] = mapped_column(String(20), default="IN_PROGRESS")
+    input_manifest_ordinal: Mapped[int | None] = mapped_column(Integer, nullable=True)
     last_workflow_run_id: Mapped[uuid.UUID | None] = mapped_column(
         Uuid,
         ForeignKey("workflow_run.id", ondelete="SET NULL"),

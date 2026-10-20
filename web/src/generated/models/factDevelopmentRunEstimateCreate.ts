@@ -6,9 +6,11 @@
  * OpenAPI spec version: 0.1.0
  */
 import type { FactDevelopmentRunEstimateCreateCodingSource } from './factDevelopmentRunEstimateCreateCodingSource';
+import type { FactDevelopmentRunEstimateCreateScopeType } from './factDevelopmentRunEstimateCreateScopeType';
 
 export interface FactDevelopmentRunEstimateCreate {
-  review_batch_id: string;
+  scope_type?: FactDevelopmentRunEstimateCreateScopeType;
+  review_batch_id?: string | null;
   coding_source?: FactDevelopmentRunEstimateCreateCodingSource;
   reviewer_coding_id?: string | null;
   matter_analysis_task_version_id?: string | null;

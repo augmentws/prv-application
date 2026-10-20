@@ -7,6 +7,7 @@
  */
 import type { FactDevelopmentRunReadConfigurationSnapshot } from './factDevelopmentRunReadConfigurationSnapshot';
 import type { FactDevelopmentRunReadReport } from './factDevelopmentRunReadReport';
+import type { FactDevelopmentRunReadScopeType } from './factDevelopmentRunReadScopeType';
 import type { FactDevelopmentRunReadStatus } from './factDevelopmentRunReadStatus';
 import type { JobExecutionRead } from './jobExecutionRead';
 
@@ -18,7 +19,7 @@ export interface FactDevelopmentRunRead {
   analysis_task_batch_set_id?: string | null;
   batch_set_ordinal?: number | null;
   run_kind: 'FACT_DEVELOPMENT';
-  scope_type: 'REVIEW_BATCH';
+  scope_type: FactDevelopmentRunReadScopeType;
   scope_id: string;
   status: FactDevelopmentRunReadStatus;
   current_stage: string;

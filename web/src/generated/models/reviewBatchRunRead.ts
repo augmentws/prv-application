@@ -11,11 +11,15 @@ import type { ReviewBatchRunReadPurpose } from './reviewBatchRunReadPurpose';
 import type { ReviewBatchRunReadResultPolicy } from './reviewBatchRunReadResultPolicy';
 import type { ReviewBatchRunReadResultSummary } from './reviewBatchRunReadResultSummary';
 import type { ReviewBatchRunReadRunType } from './reviewBatchRunReadRunType';
+import type { ReviewBatchRunReadScopeType } from './reviewBatchRunReadScopeType';
 import type { ReviewBatchRunReadStatus } from './reviewBatchRunReadStatus';
 
 export interface ReviewBatchRunRead {
   id: string;
-  review_batch_id: string;
+  review_batch_id: string | null;
+  scope_type?: ReviewBatchRunReadScopeType;
+  scope_id?: string | null;
+  analysis_input_manifest_id?: string | null;
   analysis_task_batch_set_id?: string | null;
   batch_set_ordinal?: number | null;
   run_type: ReviewBatchRunReadRunType;

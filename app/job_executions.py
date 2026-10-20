@@ -10,6 +10,7 @@ from sqlalchemy.orm import Session
 
 from app.audit import record_audit
 from app.models import (
+    AnalysisInputManifest,
     AnalysisTaskBatchSet,
     AnalysisTaskBatchSetRun,
     ClassificationScoringRun,
@@ -189,10 +190,16 @@ class AnalysisTaskBatchRunExecutionAdapter:
         db: Session,
         job: ReviewBatchRun,
     ) -> tuple[JobScope, Matter | None]:
-        batch = db.get(ReviewBatch, job.review_batch_id)
-        matter = db.get(Matter, batch.matter_id) if batch is not None else None
-        if batch is None or matter is None:
-            raise JobExecutionNotFound("Analysis Task batch or matter was not found")
+        batch = db.get(ReviewBatch, job.review_batch_id) if job.review_batch_id is not None else None
+        manifest = (
+            db.get(AnalysisInputManifest, job.analysis_input_manifest_id)
+            if job.analysis_input_manifest_id is not None
+            else None
+        )
+        matter_id = batch.matter_id if batch is not None else manifest.matter_id if manifest is not None else None
+        matter = db.get(Matter, matter_id) if matter_id is not None else None
+        if matter is None:
+            raise JobExecutionNotFound("Analysis Task run matter was not found")
         return (
             JobScope(
                 tenant_id=matter.client.tenant_id,

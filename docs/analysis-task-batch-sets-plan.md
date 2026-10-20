@@ -18,7 +18,7 @@ for the same task, and in sets owned by other tasks.
 
 ### Current implementation status
 
-Delivery Slices 1 through 5 are implemented:
+Delivery Slices 1 through 6 are implemented:
 
 - task versions persist and expose the three-mode scope policy with compatibility defaults;
 - `analysis_task_batch_set` is a durable Core domain record backed by a common `WorkflowRun`;
@@ -57,11 +57,17 @@ Delivery Slices 1 through 5 are implemented:
   fact-development children through their normal cancellation paths; retry creates a new parent attempt and resets
   only failed or canceled children;
 - the Analysis Task detail surface exposes Run all, parent/child progress, cancellation, and failed-child retry.
+- question-answering and fact-development task versions that allow `WHOLE_MATTER` can launch directly against a
+  timestamp-frozen matter population without creating an `ALL_MATTER` Review Batch;
+- both runtimes publish an immutable Artifact-owned Analysis Input Manifest, retain the manifest identity in Core,
+  and execute from the pinned source artifact references; question-answering records manifest ordinals on its durable
+  document work items, while fact development retains its bounded chronological chunk execution;
+- whole-matter and review-batch runs remain visible through the same job and run monitoring surfaces, with explicit
+  population labels and unchanged ad hoc batch behavior.
 
 The following remain planned: communication-thread and duplicate keep-together groups; fixed-count and randomized
-allocation; and native whole-matter manifests for question answering and fact development.
-Search-backed sources currently accept keyword searches; semantic and hybrid population freezing require a separately
-versioned contract.
+allocation. Search-backed sources currently accept keyword searches; semantic and hybrid population freezing require
+a separately versioned contract.
 
 ## 2. Existing behavior to preserve
 
@@ -363,17 +369,17 @@ creation and processes that exact population even if the matter later changes.
 
 Classification already supports `MATTER` and `REVIEW_BATCH` run scopes. Preserve that implementation.
 
-Question answering currently consumes `ReviewBatchDocument` rows, and fact development currently launches from
-a ready Review Batch. Deliver whole-matter support for those runtimes in two steps:
+Question answering historically consumed `ReviewBatchDocument` rows, and fact development historically launched only
+from a ready Review Batch. Whole-matter support was delivered in two steps:
 
 1. Compatibility step: allow the user to create or select the existing frozen `ALL_MATTER` Review Batch and run
    the task through its current path.
-2. Target step: migrate the runtime to the generic Analysis Input Manifest contract, with one immutable
-   Artifact-owned population manifest and bounded chunk execution. Do not create a synthetic permanent Review
-   Batch solely to represent a large task run after this adoption.
+2. Target step: both runtimes now use the generic Analysis Input Manifest contract for native whole-matter runs, with
+   one immutable Artifact-owned population manifest and bounded execution. No synthetic permanent Review Batch is
+   created solely to represent the corpus run.
 
-The UI may label the compatibility behavior as Entire matter, but the API response and run provenance must make
-the underlying frozen batch explicit until the target runtime is implemented.
+The UI labels native corpus scope as Entire matter. API responses distinguish `MATTER` from `REVIEW_BATCH` and expose
+the manifest-backed provenance.
 
 ## 10. API contract
 
@@ -390,6 +396,9 @@ GET  /v1/matters/{matter_id}/analysis-tasks/{task_id}/batch-sets/{set_id}/runs
 POST /v1/matters/{matter_id}/analysis-tasks/{task_id}/batch-sets/{set_id}/runs
 POST /v1/matters/{matter_id}/analysis-tasks/{task_id}/batch-sets/{set_id}/runs/{run_id}/cancel
 POST /v1/matters/{matter_id}/analysis-tasks/{task_id}/batch-sets/{set_id}/runs/{run_id}/retry
+POST /v1/matters/{matter_id}/analysis-tasks/{task_id}/question-answering-runs
+POST /v1/matters/{matter_id}/analysis-tasks/{task_id}/fact-runs
+POST /v1/matters/{matter_id}/analysis-tasks/{task_id}/fact-runs/estimate
 ```
 
 Preview is read-only and returns population count, estimated child count and sizes, oversized groups, and
@@ -483,6 +492,12 @@ rewritten.
 A second follow-up migration adds nullable Batch Set ID and child ordinal provenance to question-answering Review
 Batch runs and to classification/fact-development Analysis Task runs. Both fields are either present together or null,
 so ordinary run rows retain their existing representation.
+
+The run-all migration adds the parent Batch Set run and ordered child-reference tables. The whole-matter migration
+makes the question-answering run's Review Batch reference nullable only when a native manifest owns its population,
+adds that manifest reference, and records the one-based manifest ordinal on each durable document work item. Existing
+batch-backed rows remain unchanged. A follow-on constraint requires every question-answering run to reference exactly
+one of those population sources.
 
 No existing Review Batch receives a set ID. No existing membership is rewritten. The interactive Review Batch
 create contract retains its current selection literals.
@@ -599,6 +614,12 @@ support creation, monitoring, cancellation, and retry.
 Migrate question answering and fact development from Review Batch-only population discovery to immutable
 Analysis Input Manifests. Retain `ALL_MATTER` Review Batches for review use, but stop requiring them solely for
 whole-corpus task execution.
+
+Status: implemented. Fact-development create and estimate contracts now accept `MATTER` or `REVIEW_BATCH`; matter
+runs pin a population timestamp and reuse the existing manifest/chunk runtime. Question answering has a task-owned
+whole-matter launch endpoint whose nullable batch reference is replaced by an immutable manifest reference and
+ordered manifest ordinals on durable document work items. Evaluation reads and verifies the exact pinned text
+artifact from the manifest. Job listings and task UI distinguish Entire matter from review-batch populations.
 
 ## 17. Acceptance criteria
 

@@ -1375,7 +1375,10 @@ class ReviewBatchRunCreate(BaseModel):
 
 class ReviewBatchRunRead(ORMModel):
     id: uuid.UUID
-    review_batch_id: uuid.UUID
+    review_batch_id: uuid.UUID | None
+    scope_type: Literal["MATTER", "REVIEW_BATCH"] = "REVIEW_BATCH"
+    scope_id: uuid.UUID | None = None
+    analysis_input_manifest_id: uuid.UUID | None = None
     analysis_task_batch_set_id: uuid.UUID | None = None
     batch_set_ordinal: int | None = None
     run_type: ReviewBatchRunType
@@ -1408,6 +1411,21 @@ class ReviewBatchAnalysisRunCreate(BaseModel):
 
     matter_analysis_task_id: uuid.UUID
     matter_analysis_task_version_id: uuid.UUID | None = None
+
+
+class QuestionAnsweringWholeMatterRunCreate(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    idempotency_key: str = Field(min_length=1, max_length=200)
+    matter_analysis_task_version_id: uuid.UUID | None = None
+
+    @field_validator("idempotency_key")
+    @classmethod
+    def normalize_question_answering_idempotency_key(cls, value: str) -> str:
+        normalized = value.strip()
+        if not normalized:
+            raise ValueError("idempotency_key cannot be blank")
+        return normalized
 
 
 class ReviewBatchClassifierRunCreate(BaseModel):
@@ -3033,7 +3051,8 @@ class JobExecutionHistoryRead(BaseModel):
 class FactDevelopmentRunCreate(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
-    review_batch_id: uuid.UUID
+    scope_type: Literal["MATTER", "REVIEW_BATCH"] = "REVIEW_BATCH"
+    review_batch_id: uuid.UUID | None = None
     coding_source: Literal["MATTER_METADATA", "REVIEWER_CODING"] = "MATTER_METADATA"
     reviewer_coding_id: uuid.UUID | None = None
     idempotency_key: str = Field(min_length=1, max_length=200)
@@ -3049,20 +3068,43 @@ class FactDevelopmentRunCreate(BaseModel):
             raise ValueError("idempotency_key cannot be blank")
         return normalized
 
+    @model_validator(mode="after")
+    def validate_fact_scope(self) -> "FactDevelopmentRunCreate":
+        if self.scope_type == "REVIEW_BATCH" and self.review_batch_id is None:
+            raise ValueError("REVIEW_BATCH scope requires review_batch_id")
+        if self.scope_type == "MATTER" and self.review_batch_id is not None:
+            raise ValueError("review_batch_id applies only to REVIEW_BATCH scope")
+        if self.scope_type == "MATTER" and self.coding_source == "REVIEWER_CODING":
+            raise ValueError("Reviewer coding applies only to REVIEW_BATCH scope")
+        return self
+
 
 class FactDevelopmentRunEstimateCreate(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
-    review_batch_id: uuid.UUID
+    scope_type: Literal["MATTER", "REVIEW_BATCH"] = "REVIEW_BATCH"
+    review_batch_id: uuid.UUID | None = None
     coding_source: Literal["MATTER_METADATA", "REVIEWER_CODING"] = "MATTER_METADATA"
     reviewer_coding_id: uuid.UUID | None = None
     matter_analysis_task_version_id: uuid.UUID | None = None
+
+    @model_validator(mode="after")
+    def validate_fact_estimate_scope(self) -> "FactDevelopmentRunEstimateCreate":
+        if self.scope_type == "REVIEW_BATCH" and self.review_batch_id is None:
+            raise ValueError("REVIEW_BATCH scope requires review_batch_id")
+        if self.scope_type == "MATTER" and self.review_batch_id is not None:
+            raise ValueError("review_batch_id applies only to REVIEW_BATCH scope")
+        if self.scope_type == "MATTER" and self.coding_source == "REVIEWER_CODING":
+            raise ValueError("Reviewer coding applies only to REVIEW_BATCH scope")
+        return self
 
 
 class FactDevelopmentRunEstimateRead(BaseModel):
     """What a run launched now would process. Token figures are planning approximations, not billing figures."""
 
-    review_batch_id: uuid.UUID
+    scope_type: Literal["MATTER", "REVIEW_BATCH"]
+    scope_id: uuid.UUID
+    review_batch_id: uuid.UUID | None
     task_version: int
     coding_source: Literal["MATTER_METADATA", "REVIEWER_CODING"]
     reviewer_coding_revision: int | None
@@ -3090,7 +3132,7 @@ class FactDevelopmentRunRead(ORMModel):
     analysis_task_batch_set_id: uuid.UUID | None = None
     batch_set_ordinal: int | None = None
     run_kind: Literal["FACT_DEVELOPMENT"]
-    scope_type: Literal["REVIEW_BATCH"]
+    scope_type: Literal["MATTER", "REVIEW_BATCH"]
     scope_id: uuid.UUID
     status: Literal[
         "QUEUED",
@@ -3194,7 +3236,9 @@ class ReviewBatchAnalysisJobRead(BaseModel):
 
 class MatterQuestionAnsweringJobRead(BaseModel):
     id: uuid.UUID
-    review_batch_id: uuid.UUID
+    scope_type: Literal["MATTER", "REVIEW_BATCH"] = "REVIEW_BATCH"
+    scope_id: uuid.UUID
+    review_batch_id: uuid.UUID | None
     review_batch_name: str
     matter_analysis_task_id: uuid.UUID | None
     task_name: str

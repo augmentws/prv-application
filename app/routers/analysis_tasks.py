@@ -3,10 +3,11 @@ import uuid
 from typing import Never
 
 from fastapi import APIRouter, Depends, HTTPException, status
-from sqlalchemy import func, select
+from sqlalchemy import func, or_, select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session, selectinload
 
+from app.analysis_task_batch import queue_analysis_task_matter
 from app.analysis_task_batch_set_runs import (
     AnalysisTaskBatchSetRunError,
     cancel_batch_set_run,
@@ -62,6 +63,7 @@ from app.job_executions import (
     JobExecutionConflict,
 )
 from app.models import (
+    AnalysisInputManifest,
     AnalysisTaskBatchSet,
     AnalysisTaskBatchSetRun,
     ClassificationModelVersion,
@@ -110,6 +112,8 @@ from app.schemas import (
     MatterAnalysisTaskVersionRead,
     MatterQuestionAnsweringJobRead,
     MatterSearchRequest,
+    QuestionAnsweringWholeMatterRunCreate,
+    ReviewBatchRunRead,
 )
 from app.search.service import sync_review_batch_search
 from app.workflow_specs import MATTER_ANALYSIS_TASK_PLAYGROUND_SPEC
@@ -428,9 +432,13 @@ def list_question_answering_jobs(
     _require_matter_admin(db, principal, matter_id)
     rows = db.execute(
         select(ReviewBatchRun, ReviewBatch)
-        .join(ReviewBatch, ReviewBatch.id == ReviewBatchRun.review_batch_id)
+        .outerjoin(ReviewBatch, ReviewBatch.id == ReviewBatchRun.review_batch_id)
+        .outerjoin(
+            AnalysisInputManifest,
+            AnalysisInputManifest.id == ReviewBatchRun.analysis_input_manifest_id,
+        )
         .where(
-            ReviewBatch.matter_id == matter_id,
+            or_(ReviewBatch.matter_id == matter_id, AnalysisInputManifest.matter_id == matter_id),
             ReviewBatchRun.run_type == "WORKFLOW",
             job_not_archived(ANALYSIS_TASK_BATCH_RUN_JOB_TYPE, ReviewBatchRun.id),
         )
@@ -502,8 +510,10 @@ def list_question_answering_jobs(
         jobs.append(
             MatterQuestionAnsweringJobRead(
                 id=run.id,
-                review_batch_id=batch.id,
-                review_batch_name=batch.name,
+                scope_type=run.scope_type,
+                scope_id=run.scope_id or matter_id,
+                review_batch_id=batch.id if batch is not None else None,
+                review_batch_name=batch.name if batch is not None else "Entire matter",
                 matter_analysis_task_id=task_id,
                 task_name=task_name,
                 task_version=task_version,
@@ -512,7 +522,11 @@ def list_question_answering_jobs(
                 status=run.status,
                 processed_document_count=run.processed_document_count,
                 successful_document_count=outcome_counts.get(run.id, (0, 0, 0))[0],
-                document_count=batch.document_count,
+                document_count=(
+                    batch.document_count
+                    if batch is not None
+                    else int(workflow_input.get("document_count") or 0)
+                ),
                 failed_document_count=outcome_counts.get(run.id, (0, 0, 0))[1],
                 retryable_failed_document_count=outcome_counts.get(run.id, (0, 0, 0))[2],
                 error_message=run.error_message,
@@ -1001,6 +1015,70 @@ def list_analysis_task_versions(
         )
     )
     return [_task_version_read(db, version) for version in versions]
+
+
+@router.post(
+    "/{task_id}/question-answering-runs",
+    response_model=ReviewBatchRunRead,
+    status_code=status.HTTP_202_ACCEPTED,
+)
+def start_whole_matter_question_answering_run(
+    matter_id: uuid.UUID,
+    task_id: uuid.UUID,
+    payload: QuestionAnsweringWholeMatterRunCreate,
+    principal: Principal = Depends(get_principal),
+    db: Session = Depends(get_db),
+) -> ReviewBatchRun:
+    matter = _require_matter_admin(db, principal, matter_id)
+    task = _require_task(db, matter_id=matter_id, task_id=task_id)
+    if task.task_type != "QUESTION_ANSWERING":
+        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="A question-answering task is required")
+    if payload.matter_analysis_task_version_id is not None:
+        task_version = db.scalar(
+            select(MatterAnalysisTaskVersion).where(
+                MatterAnalysisTaskVersion.id == payload.matter_analysis_task_version_id,
+                MatterAnalysisTaskVersion.matter_analysis_task_id == task.id,
+            )
+        )
+    else:
+        task_version = (
+            _task_version(db, task_id=task.id, version_number=task.published_version)
+            if task.published_version is not None
+            else None
+        )
+    if task_version is None:
+        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="Published task version is unavailable")
+    try:
+        workflow, run, created = queue_analysis_task_matter(
+            db,
+            matter=matter,
+            task=task,
+            task_version=task_version,
+            initiated_by_user_id=principal.user.id,
+            idempotency_key=payload.idempotency_key,
+        )
+    except MatterAnalysisTaskError as exc:
+        _raise_task_error(exc)
+    if created:
+        record_audit(
+            db,
+            tenant_id=matter.client.tenant_id,
+            actor_user_id=principal.user.id,
+            action="matter_analysis_task.question_answering_run.created",
+            target_type="review_batch_run",
+            target_id=run.id,
+            details={
+                "matter_id": str(matter.id),
+                "task_id": str(task.id),
+                "task_version_id": str(task_version.id),
+                "scope_type": "MATTER",
+                "analysis_input_manifest_id": str(run.analysis_input_manifest_id),
+                "workflow_run_id": str(workflow.id),
+            },
+        )
+    db.commit()
+    db.refresh(run)
+    return run
 
 
 @router.get("/{task_id}/runs", response_model=list[MatterAnalysisTaskRunRead])
@@ -1611,6 +1689,7 @@ def start_fact_development_run(
             matter=matter,
             task=task,
             review_batch_id=payload.review_batch_id,
+            scope_type=payload.scope_type,
             coding_source=payload.coding_source,
             reviewer_coding_id=payload.reviewer_coding_id,
             idempotency_key=payload.idempotency_key,
@@ -1660,6 +1739,7 @@ def estimate_fact_development_run_endpoint(
             matter=matter,
             task=task,
             review_batch_id=payload.review_batch_id,
+            scope_type=payload.scope_type,
             coding_source=payload.coding_source,
             reviewer_coding_id=payload.reviewer_coding_id,
             task_version_id=payload.matter_analysis_task_version_id,

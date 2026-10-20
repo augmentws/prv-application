@@ -5312,6 +5312,74 @@
         }
       }
     },
+    "/v1/matters/{matter_id}/analysis-tasks/{task_id}/question-answering-runs": {
+      "post": {
+        "tags": [
+          "matter analysis tasks"
+        ],
+        "summary": "Start Whole Matter Question Answering Run",
+        "operationId": "start_whole_matter_question_answering_run_v1_matters__matter_id__analysis_tasks__task_id__question_answering_runs_post",
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "matter_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid",
+              "title": "Matter Id"
+            }
+          },
+          {
+            "name": "task_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid",
+              "title": "Task Id"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/QuestionAnsweringWholeMatterRunCreate"
+              }
+            }
+          }
+        },
+        "responses": {
+          "202": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ReviewBatchRunRead"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/v1/matters/{matter_id}/analysis-tasks/{task_id}/runs": {
       "get": {
         "tags": [
@@ -34204,9 +34272,25 @@
       },
       "FactDevelopmentRunCreate": {
         "properties": {
-          "review_batch_id": {
+          "scope_type": {
             "type": "string",
-            "format": "uuid",
+            "enum": [
+              "MATTER",
+              "REVIEW_BATCH"
+            ],
+            "title": "Scope Type",
+            "default": "REVIEW_BATCH"
+          },
+          "review_batch_id": {
+            "anyOf": [
+              {
+                "type": "string",
+                "format": "uuid"
+              },
+              {
+                "type": "null"
+              }
+            ],
             "title": "Review Batch Id"
           },
           "coding_source": {
@@ -34257,16 +34341,31 @@
         "additionalProperties": false,
         "type": "object",
         "required": [
-          "review_batch_id",
           "idempotency_key"
         ],
         "title": "FactDevelopmentRunCreate"
       },
       "FactDevelopmentRunEstimateCreate": {
         "properties": {
-          "review_batch_id": {
+          "scope_type": {
             "type": "string",
-            "format": "uuid",
+            "enum": [
+              "MATTER",
+              "REVIEW_BATCH"
+            ],
+            "title": "Scope Type",
+            "default": "REVIEW_BATCH"
+          },
+          "review_batch_id": {
+            "anyOf": [
+              {
+                "type": "string",
+                "format": "uuid"
+              },
+              {
+                "type": "null"
+              }
+            ],
             "title": "Review Batch Id"
           },
           "coding_source": {
@@ -34305,16 +34404,33 @@
         },
         "additionalProperties": false,
         "type": "object",
-        "required": [
-          "review_batch_id"
-        ],
         "title": "FactDevelopmentRunEstimateCreate"
       },
       "FactDevelopmentRunEstimateRead": {
         "properties": {
-          "review_batch_id": {
+          "scope_type": {
+            "type": "string",
+            "enum": [
+              "MATTER",
+              "REVIEW_BATCH"
+            ],
+            "title": "Scope Type"
+          },
+          "scope_id": {
             "type": "string",
             "format": "uuid",
+            "title": "Scope Id"
+          },
+          "review_batch_id": {
+            "anyOf": [
+              {
+                "type": "string",
+                "format": "uuid"
+              },
+              {
+                "type": "null"
+              }
+            ],
             "title": "Review Batch Id"
           },
           "task_version": {
@@ -34398,6 +34514,8 @@
         },
         "type": "object",
         "required": [
+          "scope_type",
+          "scope_id",
           "review_batch_id",
           "task_version",
           "coding_source",
@@ -34471,7 +34589,10 @@
           },
           "scope_type": {
             "type": "string",
-            "const": "REVIEW_BATCH",
+            "enum": [
+              "MATTER",
+              "REVIEW_BATCH"
+            ],
             "title": "Scope Type"
           },
           "scope_id": {
@@ -42419,9 +42540,30 @@
             "format": "uuid",
             "title": "Id"
           },
-          "review_batch_id": {
+          "scope_type": {
+            "type": "string",
+            "enum": [
+              "MATTER",
+              "REVIEW_BATCH"
+            ],
+            "title": "Scope Type",
+            "default": "REVIEW_BATCH"
+          },
+          "scope_id": {
             "type": "string",
             "format": "uuid",
+            "title": "Scope Id"
+          },
+          "review_batch_id": {
+            "anyOf": [
+              {
+                "type": "string",
+                "format": "uuid"
+              },
+              {
+                "type": "null"
+              }
+            ],
             "title": "Review Batch Id"
           },
           "review_batch_name": {
@@ -42560,6 +42702,7 @@
         "type": "object",
         "required": [
           "id",
+          "scope_id",
           "review_batch_id",
           "review_batch_name",
           "matter_analysis_task_id",
@@ -45852,6 +45995,34 @@
           "total_tokens"
         ],
         "title": "ProviderUsageTotalsRead"
+      },
+      "QuestionAnsweringWholeMatterRunCreate": {
+        "properties": {
+          "idempotency_key": {
+            "type": "string",
+            "maxLength": 200,
+            "minLength": 1,
+            "title": "Idempotency Key"
+          },
+          "matter_analysis_task_version_id": {
+            "anyOf": [
+              {
+                "type": "string",
+                "format": "uuid"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Matter Analysis Task Version Id"
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "idempotency_key"
+        ],
+        "title": "QuestionAnsweringWholeMatterRunCreate"
       },
       "RefreshRequest": {
         "properties": {
@@ -49205,9 +49376,49 @@
             "title": "Id"
           },
           "review_batch_id": {
-            "type": "string",
-            "format": "uuid",
+            "anyOf": [
+              {
+                "type": "string",
+                "format": "uuid"
+              },
+              {
+                "type": "null"
+              }
+            ],
             "title": "Review Batch Id"
+          },
+          "scope_type": {
+            "type": "string",
+            "enum": [
+              "MATTER",
+              "REVIEW_BATCH"
+            ],
+            "title": "Scope Type",
+            "default": "REVIEW_BATCH"
+          },
+          "scope_id": {
+            "anyOf": [
+              {
+                "type": "string",
+                "format": "uuid"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Scope Id"
+          },
+          "analysis_input_manifest_id": {
+            "anyOf": [
+              {
+                "type": "string",
+                "format": "uuid"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Analysis Input Manifest Id"
           },
           "analysis_task_batch_set_id": {
             "anyOf": [

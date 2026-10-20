@@ -265,6 +265,7 @@ import type {
   MetadataMutationRead,
   PermissionRead,
   PreviewClassificationModelScoringPredictionsV1MattersMatterIdClassificationModelsClassificationModelIdScoringRunsScoringRunIdPredictionsGetParams,
+  QuestionAnsweringWholeMatterRunCreate,
   RefreshRequest,
   RemoveMatterFactEvidenceV1MattersMatterIdFactsFactIdEvidenceEvidenceIdDeleteParams,
   ResolveWorkflowArtifactDerivationV1WorkflowArtifactsByDerivationGetParams,
@@ -5487,6 +5488,73 @@ const res = await fetch(getCreateAnalysisTaskVersionV1MattersMatterIdAnalysisTas
 
   const data: createAnalysisTaskVersionV1MattersMatterIdAnalysisTasksTaskIdVersionsPostResponse['data'] = body ? JSON.parse(body) : {}
   return { data, status: res.status, headers: res.headers } as createAnalysisTaskVersionV1MattersMatterIdAnalysisTasksTaskIdVersionsPostResponse
+}
+
+
+
+export type startWholeMatterQuestionAnsweringRunV1MattersMatterIdAnalysisTasksTaskIdQuestionAnsweringRunsPostResponse202 = {
+  data: ReviewBatchRunRead
+  status: 202
+}
+
+export type startWholeMatterQuestionAnsweringRunV1MattersMatterIdAnalysisTasksTaskIdQuestionAnsweringRunsPostResponse422 = {
+  data: HTTPValidationError
+  status: 422
+}
+
+export type startWholeMatterQuestionAnsweringRunV1MattersMatterIdAnalysisTasksTaskIdQuestionAnsweringRunsPostResponseSuccess = (startWholeMatterQuestionAnsweringRunV1MattersMatterIdAnalysisTasksTaskIdQuestionAnsweringRunsPostResponse202) & {
+  headers: Headers;
+};
+export type startWholeMatterQuestionAnsweringRunV1MattersMatterIdAnalysisTasksTaskIdQuestionAnsweringRunsPostResponseError = (startWholeMatterQuestionAnsweringRunV1MattersMatterIdAnalysisTasksTaskIdQuestionAnsweringRunsPostResponse422) & {
+  headers: Headers;
+};
+
+export type startWholeMatterQuestionAnsweringRunV1MattersMatterIdAnalysisTasksTaskIdQuestionAnsweringRunsPostResponse = (startWholeMatterQuestionAnsweringRunV1MattersMatterIdAnalysisTasksTaskIdQuestionAnsweringRunsPostResponseSuccess | startWholeMatterQuestionAnsweringRunV1MattersMatterIdAnalysisTasksTaskIdQuestionAnsweringRunsPostResponseError)
+
+export const getStartWholeMatterQuestionAnsweringRunV1MattersMatterIdAnalysisTasksTaskIdQuestionAnsweringRunsPostUrl = (matterId: string,
+    taskId: string,) => {
+
+
+
+
+  return `/api/core/v1/matters/${matterId}/analysis-tasks/${taskId}/question-answering-runs`
+}
+
+/**
+ * @summary Start Whole Matter Question Answering Run
+ */
+export const startWholeMatterQuestionAnsweringRunV1MattersMatterIdAnalysisTasksTaskIdQuestionAnsweringRunsPost = async (matterId: string,
+    taskId: string,
+    questionAnsweringWholeMatterRunCreate: QuestionAnsweringWholeMatterRunCreate, options?: RequestInit): Promise<startWholeMatterQuestionAnsweringRunV1MattersMatterIdAnalysisTasksTaskIdQuestionAnsweringRunsPostResponse> => {
+
+    const getHeaders = (h?: NonNullable<RequestInit['headers']>): Record<string, string | readonly string[]> => {
+    if (!h) return {};
+    if (h instanceof Headers) return Object.fromEntries(h.entries());
+    if (Symbol.iterator in h) {
+      return Object.fromEntries(
+        Array.from(h as Iterable<Iterable<string>>, (entry) => Array.from(entry) as [string, string]),
+      );
+    }
+    const headers: Record<string, string | readonly string[]> = {};
+    for (const [name, value] of Object.entries<string | readonly string[] | undefined>(h)) {
+      if (value !== undefined) headers[name] = value;
+    }
+    return headers;
+  };
+const res = await fetch(getStartWholeMatterQuestionAnsweringRunV1MattersMatterIdAnalysisTasksTaskIdQuestionAnsweringRunsPostUrl(matterId,taskId),
+  {
+    ...options,
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json', ...getHeaders(options?.headers) },
+    body: JSON.stringify(questionAnsweringWholeMatterRunCreate)
+  }
+)
+
+
+  const body = [204, 205, 304].includes(res.status) ? null : await res.text();
+
+  const data: startWholeMatterQuestionAnsweringRunV1MattersMatterIdAnalysisTasksTaskIdQuestionAnsweringRunsPostResponse['data'] = body ? JSON.parse(body) : {}
+  return { data, status: res.status, headers: res.headers } as startWholeMatterQuestionAnsweringRunV1MattersMatterIdAnalysisTasksTaskIdQuestionAnsweringRunsPostResponse
 }
 
 

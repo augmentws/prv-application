@@ -10,6 +10,7 @@ from typing import Any
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
+from app.analysis_input_manifests import AnalysisInputManifestError, AnalysisInputManifestReader
 from app.analysis_task_evidence import (
     EVIDENCE_LOCALIZATION_VERSION,
     build_conditional_evidence_questions,
@@ -23,7 +24,7 @@ from app.analysis_tasks import (
     decision_provider_engine_key,
     json_content_hash,
 )
-from app.artifact_gateway import get_preferred_text_source
+from app.artifact_gateway import TextSourceReference, get_preferred_text_source, read_text_source
 from app.config import Settings, get_settings
 from app.decision_engine import DecisionRequest
 from app.decision_execution import execute_decision_request
@@ -34,6 +35,7 @@ from app.document_metadata import event_value, value_columns
 from app.execution_accounting import ProviderUsageContext, persist_model_invocations
 from app.jev_decision_engine import get_shared_decision_engine_registry
 from app.models import (
+    AnalysisInputManifest,
     DocumentMetadataCurrent,
     Matter,
     MatterAnalysisTask,
@@ -439,14 +441,66 @@ def execute_analysis_task_document(
     if task_version.decision_specification is None:
         raise MatterAnalysisTaskConflict("Pinned task version has no Decision Specification")
     specification = DecisionSpecification.model_validate(task_version.decision_specification)
-    source = get_preferred_text_source(
-        collection_item_id=document.collection_item_id,
-        actor_user_id=workflow.initiated_by_user_id,
-        tenant_id=workflow.tenant_id,
-        client_id=workflow.client_id,
-    )
-    if source is None:
-        raise MatterAnalysisTaskConflict("Document has no faithful text source")
+    if review_run.analysis_input_manifest_id is not None:
+        manifest = db.get(AnalysisInputManifest, review_run.analysis_input_manifest_id)
+        ordinal = run_document.input_manifest_ordinal
+        if (
+            manifest is None
+            or manifest.owner_type != "REVIEW_BATCH_RUN"
+            or manifest.owner_id != review_run.id
+            or manifest.scope_type != "MATTER"
+            or manifest.scope_id != matter.id
+            or manifest.input_contract.get("key") != "question-answering.population"
+            or manifest.input_contract.get("version") != 1
+            or manifest.input_contract.get("resolver_version")
+            != "question-answering-population-resolver-v1"
+            or ordinal is None
+        ):
+            raise MatterAnalysisTaskConflict("Whole-matter input manifest provenance is invalid")
+        try:
+            row = AnalysisInputManifestReader(
+                manifest,
+                actor_user_id=workflow.initiated_by_user_id,
+            ).rows(ordinal - 1, 1)[0]
+        except (AnalysisInputManifestError, IndexError) as exc:
+            raise MatterAnalysisTaskConflict("Whole-matter input manifest is unreadable") from exc
+        if row["matter_document_id"] != str(document.id):
+            raise MatterAnalysisTaskConflict("Whole-matter input manifest document order changed")
+        if row["input_status"] != "READY":
+            raise MatterAnalysisTaskConflict(
+                f"Document input was unavailable when the population was frozen: {row['failure_code']}"
+            )
+        frozen_source = row["resolved_inputs"]["text_source"]
+        source_artifact_id = uuid.UUID(row["source_artifact_id"])
+        source_content_hash = row["source_content_hash"]
+        source_text = read_text_source(
+            TextSourceReference(
+                artifact_id=source_artifact_id,
+                role=frozen_source["role"],
+                media_type=frozen_source["media_type"],
+                original_filename=frozen_source["original_filename"],
+                content_hash=source_content_hash,
+                byte_length=int(frozen_source["byte_length"]),
+            ),
+            record_type=frozen_source["record_type"],
+            actor_user_id=workflow.initiated_by_user_id,
+            tenant_id=workflow.tenant_id,
+            client_id=workflow.client_id,
+        )
+        if source_text is None:
+            raise MatterAnalysisTaskConflict("The pinned text source has no faithful text")
+    else:
+        source = get_preferred_text_source(
+            collection_item_id=document.collection_item_id,
+            actor_user_id=workflow.initiated_by_user_id,
+            tenant_id=workflow.tenant_id,
+            client_id=workflow.client_id,
+        )
+        if source is None:
+            raise MatterAnalysisTaskConflict("Document has no faithful text source")
+        source_artifact_id = source.artifact_id
+        source_content_hash = source.content_hash
+        source_text = source.text
     decision_context = specification.decision_context.model_dump(mode="json")
     if not decision_context.get("source_material"):
         # Specifications published before exact source material was embedded still receive the
@@ -461,8 +515,8 @@ def execute_analysis_task_document(
         matter=matter,
         document=document,
         decision_context=_runtime_decision_context(decision_context),
-        source_content_hash=source.content_hash,
-        source_text=source.text,
+        source_content_hash=source_content_hash,
+        source_text=source_text,
     )
     missing_paths = [
         path for path in specification.state_contract.required_paths if not _state_path_exists(state, path)
@@ -529,7 +583,7 @@ def execute_analysis_task_document(
             {
                 "phase": "CLASSIFICATION",
                 "task_version_id": str(task_version.id),
-                "source_content_hash": source.content_hash,
+                "source_content_hash": source_content_hash,
                 "state_hash": json_content_hash(state),
                 "model_key": model_key,
             }
@@ -598,7 +652,7 @@ def execute_analysis_task_document(
         evidence_state = {
             "document": {
                 "id": str(document.id),
-                "source_content_hash": source.content_hash,
+                "source_content_hash": source_content_hash,
                 "paragraphs": [paragraph.as_dict() for paragraph in paragraph_map.paragraphs],
             },
             "classification": {
@@ -641,7 +695,7 @@ def execute_analysis_task_document(
                 {
                     "phase": "EVIDENCE_LOCALIZATION",
                     "task_version_id": str(task_version.id),
-                    "source_content_hash": source.content_hash,
+                    "source_content_hash": source_content_hash,
                     "classification_answers": evidence_state["classification"]["answers"],
                     "question_keys": evidence_question_keys,
                     "model_key": model_key,
@@ -697,8 +751,8 @@ def execute_analysis_task_document(
         evaluation_skill_run_id=skill_run.id,
         model_invocation_id=invocations[0].id,
         engine_key=engine_key,
-        source_artifact_id=source.artifact_id,
-        source_content_hash=source.content_hash,
+        source_artifact_id=source_artifact_id,
+        source_content_hash=source_content_hash,
         state=state,
         paragraph_map_version=paragraph_map.version,
         envelope=primary_envelope,

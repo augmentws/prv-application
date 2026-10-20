@@ -198,11 +198,14 @@ def _published_version(db: Session, task: MatterAnalysisTask) -> tuple[MatterAna
 class _LaunchInputs:
     task_version: MatterAnalysisTaskVersion
     specification: FactDevelopmentSpecification
-    batch: ReviewBatch
+    batch: ReviewBatch | None
     batch_set: AnalysisTaskBatchSet | None
     reviewer_coding_revision: int | None
     document_count: int
     bindings: dict[str, Any]
+    scope_type: str
+    scope_id: uuid.UUID
+    population_snapshot_at: datetime
 
 
 def _launch_inputs(
@@ -210,18 +213,30 @@ def _launch_inputs(
     *,
     matter: Matter,
     task: MatterAnalysisTask,
-    review_batch_id: uuid.UUID,
+    review_batch_id: uuid.UUID | None,
+    scope_type: str = "REVIEW_BATCH",
     coding_source: CodingSource,
     reviewer_coding_id: uuid.UUID | None,
     task_version_id: uuid.UUID | None = None,
 ) -> _LaunchInputs:
     if task.task_type != "FACT_DEVELOPMENT" or task.status != "ACTIVE":
         raise FactDevelopmentRunError("An active fact-development Analysis Task is required")
-    batch = db.scalar(select(ReviewBatch).where(ReviewBatch.id == review_batch_id, ReviewBatch.matter_id == matter.id))
-    if batch is None or batch.status != "READY":
-        raise FactDevelopmentRunError("A ready review batch in this matter is required")
+    if scope_type not in {"MATTER", "REVIEW_BATCH"}:
+        raise FactDevelopmentRunError("scope_type must be MATTER or REVIEW_BATCH")
+    population_snapshot_at = utcnow()
+    batch = None
     batch_set = None
-    if batch.analysis_task_batch_set_id is not None:
+    if scope_type == "REVIEW_BATCH":
+        if review_batch_id is None:
+            raise FactDevelopmentRunError("A review batch is required for REVIEW_BATCH scope")
+        batch = db.scalar(
+            select(ReviewBatch).where(ReviewBatch.id == review_batch_id, ReviewBatch.matter_id == matter.id)
+        )
+        if batch is None or batch.status != "READY":
+            raise FactDevelopmentRunError("A ready review batch in this matter is required")
+    elif review_batch_id is not None:
+        raise FactDevelopmentRunError("review_batch_id applies only to REVIEW_BATCH scope")
+    if batch is not None and batch.analysis_task_batch_set_id is not None:
         batch_set = db.get(AnalysisTaskBatchSet, batch.analysis_task_batch_set_id)
         if batch_set is None or batch_set.matter_analysis_task_id != task.id:
             raise FactDevelopmentRunError("Managed batch belongs to another Analysis Task")
@@ -246,13 +261,16 @@ def _launch_inputs(
     else:
         task_version, specification = _published_version(db, task)
         if task_version_id is not None and task_version_id != task_version.id:
-            raise FactDevelopmentRunError("Ad hoc runs must use the currently published task version")
-    if batch_set is None and "AD_HOC_BATCH" not in (task_version.scope_policy or {}).get(
+            raise FactDevelopmentRunError("Runs must use the currently published task version")
+    required_mode = "WHOLE_MATTER" if scope_type == "MATTER" else "AD_HOC_BATCH"
+    if batch_set is None and required_mode not in (task_version.scope_policy or {}).get(
         "allowed_modes", ["AD_HOC_BATCH"]
     ):
-        raise FactDevelopmentRunError("This task version does not allow ad hoc batch execution")
+        raise FactDevelopmentRunError(f"This task version does not allow {required_mode} execution")
     reviewer_coding_revision: int | None = None
     if coding_source == "REVIEWER_CODING":
+        if batch is None:
+            raise FactDevelopmentRunError("Reviewer coding is available only for review-batch runs")
         coding = db.get(ReviewBatchReviewerCoding, reviewer_coding_id) if reviewer_coding_id is not None else None
         if coding is None or coding.review_batch_id != batch.id:
             raise FactDevelopmentRunError("Reviewer coding was not found for this review batch")
@@ -260,10 +278,18 @@ def _launch_inputs(
     elif reviewer_coding_id is not None:
         raise FactDevelopmentRunError("reviewer_coding_id applies only to the REVIEWER_CODING source")
     document_count = int(
-        db.scalar(select(func.count()).where(ReviewBatchDocument.review_batch_id == batch.id)) or 0
+        db.scalar(
+            select(func.count()).where(ReviewBatchDocument.review_batch_id == batch.id)
+            if batch is not None
+            else select(func.count()).where(
+                MatterDocument.matter_id == matter.id,
+                MatterDocument.created_at <= population_snapshot_at,
+            )
+        )
+        or 0
     )
     if document_count == 0:
-        raise FactDevelopmentRunError("The review batch has no documents")
+        raise FactDevelopmentRunError("The selected population has no documents")
     try:
         bindings = resolve_workflow_skill_bindings(
             db,
@@ -280,6 +306,9 @@ def _launch_inputs(
         reviewer_coding_revision,
         document_count,
         bindings,
+        scope_type,
+        batch.id if batch is not None else matter.id,
+        population_snapshot_at,
     )
 
 
@@ -295,7 +324,8 @@ def estimate_fact_development_run(
     *,
     matter: Matter,
     task: MatterAnalysisTask,
-    review_batch_id: uuid.UUID,
+    review_batch_id: uuid.UUID | None,
+    scope_type: str = "REVIEW_BATCH",
     coding_source: CodingSource,
     reviewer_coding_id: uuid.UUID | None,
     task_version_id: uuid.UUID | None = None,
@@ -310,6 +340,7 @@ def estimate_fact_development_run(
         matter=matter,
         task=task,
         review_batch_id=review_batch_id,
+        scope_type=scope_type,
         coding_source=coding_source,
         reviewer_coding_id=reviewer_coding_id,
         task_version_id=task_version_id,
@@ -321,7 +352,9 @@ def estimate_fact_development_run(
         exclude_run_id=None,
         specification=launch.specification,
         specification_hash=canonical_hash(launch.specification.model_dump(mode="json")),
-        batch_id=launch.batch.id,
+        scope_type=launch.scope_type,
+        scope_id=launch.scope_id,
+        population_snapshot_at=launch.population_snapshot_at,
         expected_count=None,
         coding_source=coding_source,
         reviewer_coding_id=reviewer_coding_id,
@@ -334,7 +367,9 @@ def estimate_fact_development_run(
     extraction_version = launch.bindings[FACT_EXTRACTION_ROLE][2]
     extraction_model = resolve_agent_model(extraction_version.model_key, settings)
     return {
-        "review_batch_id": launch.batch.id,
+        "scope_type": launch.scope_type,
+        "scope_id": launch.scope_id,
+        "review_batch_id": launch.batch.id if launch.batch is not None else None,
         "task_version": launch.task_version.version,
         "coding_source": coding_source,
         "reviewer_coding_revision": launch.reviewer_coding_revision,
@@ -363,7 +398,8 @@ def create_fact_development_run(
     *,
     matter: Matter,
     task: MatterAnalysisTask,
-    review_batch_id: uuid.UUID,
+    review_batch_id: uuid.UUID | None,
+    scope_type: str = "REVIEW_BATCH",
     coding_source: CodingSource,
     reviewer_coding_id: uuid.UUID | None,
     idempotency_key: str,
@@ -388,6 +424,7 @@ def create_fact_development_run(
         matter=matter,
         task=task,
         review_batch_id=review_batch_id,
+        scope_type=scope_type,
         coding_source=coding_source,
         reviewer_coding_id=reviewer_coding_id,
         task_version_id=task_version_id,
@@ -407,9 +444,12 @@ def create_fact_development_run(
         "task_version_id": str(task_version.id),
         "task_version": task_version.version,
         "specification_hash": canonical_hash(specification.model_dump(mode="json")),
-        "review_batch_id": str(batch.id),
+        "scope_type": launch.scope_type,
+        "scope_id": str(launch.scope_id),
+        "population_snapshot_at": launch.population_snapshot_at.isoformat(),
+        "review_batch_id": str(batch.id) if batch is not None else None,
         "analysis_task_batch_set_id": str(launch.batch_set.id) if launch.batch_set else None,
-        "batch_set_ordinal": batch.batch_set_ordinal,
+        "batch_set_ordinal": batch.batch_set_ordinal if batch is not None else None,
         "coding_source": coding_source,
         "reviewer_coding_id": str(reviewer_coding_id) if reviewer_coding_id else None,
         "reviewer_coding_revision": reviewer_coding_revision,
@@ -438,10 +478,10 @@ def create_fact_development_run(
         matter_analysis_task_id=task.id,
         matter_analysis_task_version_id=task_version.id,
         analysis_task_batch_set_id=launch.batch_set.id if launch.batch_set else None,
-        batch_set_ordinal=batch.batch_set_ordinal if launch.batch_set else None,
+        batch_set_ordinal=batch.batch_set_ordinal if launch.batch_set and batch is not None else None,
         run_kind="FACT_DEVELOPMENT",
-        scope_type="REVIEW_BATCH",
-        scope_id=batch.id,
+        scope_type=launch.scope_type,
+        scope_id=launch.scope_id,
         configuration_snapshot=configuration,
         report={},
         idempotency_key=idempotency_key,
@@ -467,9 +507,11 @@ def create_fact_development_run(
             "matter_id": str(matter.id),
             "task_id": str(task.id),
             "task_version_id": str(task_version.id),
-            "review_batch_id": str(batch.id),
+            "scope_type": launch.scope_type,
+            "scope_id": str(launch.scope_id),
+            "review_batch_id": str(batch.id) if batch is not None else None,
             "analysis_task_batch_set_id": str(launch.batch_set.id) if launch.batch_set else None,
-            "batch_set_ordinal": batch.batch_set_ordinal,
+            "batch_set_ordinal": batch.batch_set_ordinal if batch is not None else None,
             "coding_source": coding_source,
             "reviewer_coding_revision": reviewer_coding_revision,
             "document_count": document_count,
@@ -657,7 +699,7 @@ def _manifest_reader(db: Session, run: MatterAnalysisTaskRun) -> AnalysisInputMa
         or manifest.owner_id != run.id
         or manifest.matter_id != run.matter_id
         or manifest.item_count != run.population_document_count
-        or manifest.scope_type != "REVIEW_BATCH"
+        or manifest.scope_type != run.scope_type
         or manifest.scope_id != run.scope_id
     ):
         raise FactDevelopmentRunError(
@@ -948,24 +990,41 @@ def _resolve_population(
     exclude_run_id: uuid.UUID | None,
     specification: FactDevelopmentSpecification,
     specification_hash: str,
-    batch_id: uuid.UUID,
+    scope_type: str,
+    scope_id: uuid.UUID,
+    population_snapshot_at: datetime,
     expected_count: int | None,
     coding_source: CodingSource,
     reviewer_coding_id: uuid.UUID | None,
     reviewer_coding_revision: int | None,
     actor_user_id: uuid.UUID,
 ) -> _ResolvedPopulation:
-    """Resolve every batch document once, in chronological order, into input-manifest rows.
+    """Resolve every scoped document once, in chronological order, into input-manifest rows.
 
     Shared by the run freeze and the launch estimate so the estimate counts exactly what a run would do.
     """
 
-    members = db.execute(
-        select(MatterDocument, ReviewBatchDocument.sequence_number)
-        .join(ReviewBatchDocument, ReviewBatchDocument.matter_document_id == MatterDocument.id)
-        .where(ReviewBatchDocument.review_batch_id == batch_id, MatterDocument.matter_id == matter.id)
-        .order_by(ReviewBatchDocument.sequence_number)
-    ).all()
+    if scope_type == "REVIEW_BATCH":
+        members = db.execute(
+            select(MatterDocument, ReviewBatchDocument.sequence_number)
+            .join(ReviewBatchDocument, ReviewBatchDocument.matter_document_id == MatterDocument.id)
+            .where(ReviewBatchDocument.review_batch_id == scope_id, MatterDocument.matter_id == matter.id)
+            .order_by(ReviewBatchDocument.sequence_number)
+        ).all()
+    elif scope_type == "MATTER" and scope_id == matter.id:
+        documents = list(
+            db.scalars(
+                select(MatterDocument)
+                .where(
+                    MatterDocument.matter_id == matter.id,
+                    MatterDocument.created_at <= population_snapshot_at,
+                )
+                .order_by(MatterDocument.created_at, MatterDocument.id)
+            )
+        )
+        members = [(document, sequence) for sequence, document in enumerate(documents, start=1)]
+    else:
+        raise FactDevelopmentRunError("The run scope does not belong to this matter")
     if expected_count is not None and len(members) != expected_count:
         raise FactDevelopmentRunError("The review batch's documents changed after the run was launched")
     document_ids = [document.id for document, _ in members]
@@ -1094,6 +1153,7 @@ def _freeze_input_manifest(db: Session, run: MatterAnalysisTaskRun) -> AnalysisI
     if canonical_hash(specification.model_dump(mode="json")) != configuration["specification_hash"]:
         raise FactDevelopmentRunError("The pinned issue catalog changed after the run was launched")
     reviewer_coding_id = configuration.get("reviewer_coding_id")
+    snapshot_at = datetime.fromisoformat(configuration["population_snapshot_at"])
     population = _resolve_population(
         db,
         matter=matter,
@@ -1101,7 +1161,9 @@ def _freeze_input_manifest(db: Session, run: MatterAnalysisTaskRun) -> AnalysisI
         exclude_run_id=run.id,
         specification=specification,
         specification_hash=configuration["specification_hash"],
-        batch_id=run.scope_id,
+        scope_type=run.scope_type,
+        scope_id=run.scope_id,
+        population_snapshot_at=snapshot_at,
         expected_count=run.population_document_count,
         coding_source=configuration["coding_source"],
         reviewer_coding_id=uuid.UUID(reviewer_coding_id) if reviewer_coding_id else None,
@@ -1121,7 +1183,7 @@ def _freeze_input_manifest(db: Session, run: MatterAnalysisTaskRun) -> AnalysisI
         prepared = prepare_analysis_input_manifest(
             rows,
             contract=_input_contract(run),
-            scope_type="REVIEW_BATCH",
+            scope_type=run.scope_type,
             scope_id=run.scope_id,
         )
         manifest, _ = publish_analysis_input_manifest(

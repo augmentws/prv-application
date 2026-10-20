@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import hashlib
 import uuid
 from datetime import UTC, datetime
 from types import SimpleNamespace
@@ -30,8 +31,10 @@ from app.analysis_task_promotions import (
 )
 from app.analysis_task_skills import ensure_standard_analysis_task_skills
 from app.analysis_tasks import MatterAnalysisTaskConflict
+from app.artifact_gateway import AnalysisInputItemSnapshot, TextSourceReference, WorkflowArtifactReference
 from app.decision_engine import DecisionEngineRegistry, DecisionEnvelope
 from app.models import (
+    AnalysisInputManifest,
     DocumentMetadataCurrent,
     ExternalProviderUsage,
     MatterAnalysisTaskVersion,
@@ -727,6 +730,155 @@ def test_openai_decisions_batch_run_requires_api_key_before_fan_out(
     assert response.status_code == 409, response.text
     assert "OpenAI Decisions is not configured" in response.text
     assert "OPENAI_API_KEY" in response.text
+
+
+def test_whole_matter_question_answering_uses_native_input_manifest(
+    client: TestClient,
+    root_token: str,
+    root_admin,
+    db: Session,
+    monkeypatch,
+) -> None:
+    _bootstrap_skills(db, root_admin)
+    _, token, matter_id = create_tenant_context(client, root_token)
+    document_ids = add_documents(matter_id, root_admin.id, count=2)
+    task = _create_published_task(client, token, matter_id)
+    version = db.get(MatterAnalysisTaskVersion, uuid.UUID(task["version"]["id"]))
+    assert version is not None
+    version.scope_policy = {
+        "allowed_modes": ["AD_HOC_BATCH", "WHOLE_MATTER"],
+        "default_mode": "WHOLE_MATTER",
+    }
+    db.commit()
+
+    content_by_id: dict[uuid.UUID, bytes] = {}
+    references: dict[uuid.UUID, WorkflowArtifactReference] = {}
+
+    def snapshots(*, item_ids, **_):
+        return {
+            item_id: AnalysisInputItemSnapshot(
+                item_id=item_id,
+                family_id=None,
+                record_type="TEXT",
+                original_filename="document.txt",
+                file_date=None,
+                email_sender=None,
+                email_subject=None,
+                email_sent_at=None,
+                email_recipients={"TO": [], "CC": [], "BCC": []},
+                text_source=TextSourceReference(
+                    artifact_id=uuid.uuid5(item_id, "text"),
+                    role="EXTRACTED_TEXT",
+                    media_type="text/plain",
+                    original_filename="document.txt",
+                    content_hash="a" * 64,
+                    byte_length=20,
+                ),
+            )
+            for item_id in item_ids
+        }
+
+    def store(**kwargs):
+        stream = kwargs["content"]
+        stream.seek(0)
+        content = stream.read()
+        artifact_id = uuid.uuid4()
+        reference = WorkflowArtifactReference(
+            artifact_id=artifact_id,
+            tenant_id=kwargs["tenant_id"],
+            client_id=kwargs["client_id"],
+            core_scope_kind=kwargs["core_scope_kind"],
+            core_scope_id=kwargs["core_scope_id"],
+            artifact_type=kwargs["artifact_type"],
+            schema_version=kwargs["schema_version"],
+            derivation_key=kwargs["derivation_key"],
+            content_hash=hashlib.sha256(content).hexdigest(),
+            media_type=kwargs["media_type"],
+            byte_length=len(content),
+            producer_kind=kwargs["producer_kind"],
+            producer_run_id=kwargs["producer_run_id"],
+            metadata=kwargs["artifact_metadata"],
+            created_at=datetime.now(UTC),
+        )
+        content_by_id[artifact_id] = content
+        references[artifact_id] = reference
+        return reference, True
+
+    def copy(**kwargs):
+        content = content_by_id[kwargs["artifact_id"]]
+        kwargs["destination"].write(content)
+        return len(content)
+
+    monkeypatch.setattr("app.analysis_task_batch.get_collection_item_analysis_input_snapshots", snapshots)
+    monkeypatch.setattr("app.analysis_input_manifests.store_workflow_artifact", store)
+    monkeypatch.setattr(
+        "app.analysis_input_manifests.get_workflow_artifact_reference",
+        lambda **kwargs: references[kwargs["artifact_id"]],
+    )
+    monkeypatch.setattr("app.analysis_input_manifests.copy_workflow_artifact_content", copy)
+
+    path = f"/v1/matters/{matter_id}/analysis-tasks/{task['id']}/question-answering-runs"
+    response = client.post(path, headers=auth(token), json={"idempotency_key": "whole-question-run"})
+    assert response.status_code == 202, response.text
+    run = response.json()
+    assert run["review_batch_id"] is None
+    assert (run["scope_type"], run["scope_id"]) == ("MATTER", matter_id)
+    assert run["analysis_input_manifest_id"] is not None
+    duplicate = client.post(path, headers=auth(token), json={"idempotency_key": "whole-question-run"})
+    assert duplicate.status_code == 202
+    assert duplicate.json()["id"] == run["id"]
+    execution = client.get(
+        f"/v1/jobs/ANALYSIS_TASK_BATCH_RUN/{run['id']}/execution",
+        headers=auth(token),
+    )
+    assert execution.status_code == 200, execution.text
+    assert execution.json()["current_execution"]["status"] == "QUEUED"
+
+    manifest = db.get(AnalysisInputManifest, uuid.UUID(run["analysis_input_manifest_id"]))
+    assert manifest is not None
+    assert (manifest.scope_type, manifest.scope_id, manifest.item_count) == (
+        "MATTER",
+        uuid.UUID(matter_id),
+        2,
+    )
+    documents = list(
+        db.scalars(
+            select(ReviewBatchRunDocument)
+            .where(ReviewBatchRunDocument.review_batch_run_id == uuid.UUID(run["id"]))
+            .order_by(ReviewBatchRunDocument.input_manifest_ordinal)
+        )
+    )
+    assert [str(document.matter_document_id) for document in documents] == document_ids
+    assert [document.input_manifest_ordinal for document in documents] == [1, 2]
+
+    def read_pinned_text(reference, **_):
+        assert reference.content_hash == "a" * 64
+        return "Counsel provided legal advice to the client in a confidential communication."
+
+    monkeypatch.setattr("app.analysis_task_playground.read_text_source", read_pinned_text)
+    registry = DecisionEngineRegistry()
+    registry.register("jev", _FakeDecisionEngine())
+    with TestingSessionLocal() as execution_db:
+        review_run = execution_db.get(ReviewBatchRun, uuid.UUID(run["id"]))
+        assert review_run is not None and review_run.workflow_run_record_id is not None
+        prepared = prepare_analysis_task_batch(execution_db, review_run.workflow_run_record_id)
+        assert [str(document_id) for document_id in prepared] == document_ids
+        result = execute_analysis_task_document(
+            execution_db,
+            review_run.workflow_run_record_id,
+            prepared[0],
+            complete_run=False,
+            registry=registry,
+        )
+        assert result.status == "COMPLETED"
+
+    jobs = client.get(
+        f"/v1/matters/{matter_id}/analysis-tasks/question-answering-jobs",
+        headers=auth(token),
+    )
+    assert jobs.status_code == 200, jobs.text
+    assert jobs.json()[0]["review_batch_name"] == "Entire matter"
+    assert jobs.json()[0]["scope_type"] == "MATTER"
 
 
 def test_published_analysis_task_runs_against_every_document_in_batch(

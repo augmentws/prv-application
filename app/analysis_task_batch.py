@@ -2,10 +2,19 @@ from __future__ import annotations
 
 import uuid
 
+import httpx
 from sqlalchemy import func, select, update
 from sqlalchemy.orm import Session
 
+from app.analysis_input_manifests import (
+    AnalysisInputContract,
+    AnalysisInputDocument,
+    AnalysisInputManifestError,
+    prepare_analysis_input_manifest,
+    publish_analysis_input_manifest,
+)
 from app.analysis_tasks import MatterAnalysisTaskConflict, decision_provider_engine_key
+from app.artifact_gateway import get_collection_item_analysis_input_snapshots
 from app.config import get_settings
 from app.execution_accounting import refresh_workflow_execution_usage
 from app.job_executions import (
@@ -22,6 +31,7 @@ from app.models import (
     Matter,
     MatterAnalysisTask,
     MatterAnalysisTaskVersion,
+    MatterDocument,
     MetadataDefinition,
     ReviewBatch,
     ReviewBatchDocument,
@@ -40,6 +50,11 @@ from app.workflow_specs import (
     validate_skill_version_for_role,
 )
 from app.workflows.dispatcher import enqueue_analysis_task_batch
+
+QUESTION_ANSWERING_INPUT_OWNER_TYPE = "REVIEW_BATCH_RUN"
+QUESTION_ANSWERING_INPUT_CONTRACT_KEY = "question-answering.population"
+QUESTION_ANSWERING_INPUT_CONTRACT_VERSION = 1
+QUESTION_ANSWERING_INPUT_RESOLVER_VERSION = "question-answering-population-resolver-v1"
 
 
 def queue_analysis_task_batch(
@@ -144,6 +159,8 @@ def queue_analysis_task_batch(
             "definition_content_hash": task_version.definition_content_hash,
             "specification_content_hash": task_version.specification_content_hash,
             "review_batch_id": str(batch.id),
+            "scope_type": "REVIEW_BATCH",
+            "scope_id": str(batch.id),
             "analysis_task_batch_set_id": str(batch_set.id) if batch_set else None,
             "batch_set_ordinal": batch.batch_set_ordinal,
             "document_count": len(documents),
@@ -183,6 +200,8 @@ def queue_analysis_task_batch(
         current_workflow_run_id=workflow.id,
         configuration_snapshot={
             "mode": "BATCH",
+            "scope_type": "REVIEW_BATCH",
+            "scope_id": str(batch.id),
             "task_id": str(task.id),
             "task_name": task.name,
             "task_version_id": str(task_version.id),
@@ -214,6 +233,256 @@ def queue_analysis_task_batch(
     if dispatch:
         enqueue_analysis_task_batch(db, workflow_id, str(workflow.id))
     return workflow, review_run
+
+
+def queue_analysis_task_matter(
+    db: Session,
+    *,
+    matter: Matter,
+    task: MatterAnalysisTask,
+    task_version: MatterAnalysisTaskVersion,
+    initiated_by_user_id: uuid.UUID,
+    idempotency_key: str,
+) -> tuple[WorkflowRun, ReviewBatchRun, bool]:
+    """Freeze and queue a native whole-matter question-answering run without a synthetic Review Batch."""
+
+    if task.task_type != "QUESTION_ANSWERING" or task.matter_id != matter.id:
+        raise MatterAnalysisTaskConflict("An active question-answering task in this matter is required")
+    if task_version.matter_analysis_task_id != task.id:
+        raise MatterAnalysisTaskConflict("Analysis task version does not belong to this matter")
+    if task_version.status != "PUBLISHED" or task_version.compilation_status != "READY":
+        raise MatterAnalysisTaskConflict("Whole-matter evaluation requires a ready, published task version")
+    if "WHOLE_MATTER" not in (task_version.scope_policy or {}).get("allowed_modes", []):
+        raise MatterAnalysisTaskConflict("This task version does not allow WHOLE_MATTER execution")
+    if task_version.decision_provider == "OPENAI_DECISIONS" and not get_settings().openai_api_key:
+        raise MatterAnalysisTaskConflict(
+            "OpenAI Decisions is not configured. Set OPENAI_API_KEY before starting this analysis run."
+        )
+    existing = next(
+        (
+            run
+            for run in db.scalars(
+                select(ReviewBatchRun).where(
+                    ReviewBatchRun.review_batch_id.is_(None),
+                    ReviewBatchRun.run_type == "WORKFLOW",
+                    ReviewBatchRun.idempotency_key == idempotency_key,
+                )
+            )
+            if run.configuration_snapshot.get("task_id") == str(task.id)
+        ),
+        None,
+    )
+    if existing is not None:
+        workflow = db.get(WorkflowRun, existing.current_workflow_run_id)
+        if workflow is None:
+            raise MatterAnalysisTaskConflict("Whole-matter run execution is unavailable")
+        return workflow, existing, False
+
+    snapshot_at = utcnow()
+    documents = list(
+        db.scalars(
+            select(MatterDocument)
+            .where(MatterDocument.matter_id == matter.id, MatterDocument.created_at <= snapshot_at)
+            .order_by(MatterDocument.created_at, MatterDocument.id)
+        )
+    )
+    if not documents:
+        raise MatterAnalysisTaskConflict("The matter has no documents")
+    try:
+        snapshots = get_collection_item_analysis_input_snapshots(
+            item_ids=[document.collection_item_id for document in documents],
+            actor_user_id=initiated_by_user_id,
+            tenant_id=matter.client.tenant_id,
+            client_id=matter.client_id,
+        )
+    except (httpx.HTTPError, PermissionError, ValueError) as exc:
+        raise MatterAnalysisTaskConflict(f"Document inputs are unavailable: {exc}") from exc
+    rows: list[AnalysisInputDocument] = []
+    for ordinal, document in enumerate(documents, start=1):
+        snapshot = snapshots.get(document.collection_item_id)
+        source = snapshot.text_source if snapshot is not None else None
+        common = {
+            "matter_document_id": document.id,
+            "collection_item_id": document.collection_item_id,
+            "source_collection_id": document.source_collection_id,
+            "scope_ordinal": ordinal,
+        }
+        if snapshot is None:
+            rows.append(
+                AnalysisInputDocument(**common, input_status="MISSING", failure_code="question.item_unavailable")
+            )
+        elif source is None:
+            rows.append(
+                AnalysisInputDocument(**common, input_status="MISSING", failure_code="question.no_text_source")
+            )
+        else:
+            rows.append(
+                AnalysisInputDocument(
+                    **common,
+                    source_artifact_id=source.artifact_id,
+                    source_content_hash=source.content_hash,
+                    resolved_inputs={
+                        "text_source": {
+                            "role": source.role,
+                            "media_type": source.media_type,
+                            "original_filename": source.original_filename,
+                            "byte_length": source.byte_length,
+                            "record_type": snapshot.record_type,
+                        }
+                    },
+                )
+            )
+    contract = AnalysisInputContract(
+        key=QUESTION_ANSWERING_INPUT_CONTRACT_KEY,
+        version=QUESTION_ANSWERING_INPUT_CONTRACT_VERSION,
+        resolver_version=QUESTION_ANSWERING_INPUT_RESOLVER_VERSION,
+        required_input_paths=[
+            "text_source.role",
+            "text_source.media_type",
+            "text_source.original_filename",
+            "text_source.byte_length",
+            "text_source.record_type",
+        ],
+        source_artifact_required=True,
+        options={
+            "task_version_id": str(task_version.id),
+            "population_snapshot_at": snapshot_at.isoformat(),
+        },
+    )
+    run_id = uuid.uuid4()
+    try:
+        prepared = prepare_analysis_input_manifest(rows, contract=contract, scope_type="MATTER", scope_id=matter.id)
+        manifest, _ = publish_analysis_input_manifest(
+            db,
+            prepared=prepared,
+            tenant_id=matter.client.tenant_id,
+            client_id=matter.client_id,
+            matter_id=matter.id,
+            owner_type=QUESTION_ANSWERING_INPUT_OWNER_TYPE,
+            owner_id=run_id,
+            producer_kind="CORE",
+            producer_run_id=run_id,
+            actor_user_id=initiated_by_user_id,
+        )
+    except AnalysisInputManifestError as exc:
+        raise MatterAnalysisTaskConflict(str(exc)) from exc
+
+    resolved, binding_workflow_key = _resolve_decision_binding(db, matter.client.tenant_id)
+    bindings = binding_snapshot(resolved)
+    role_binding = bindings["decision_evaluation"]
+    role_binding["binding_workflow_key"] = binding_workflow_key
+    engine_key = decision_provider_engine_key(task_version.decision_provider)
+    model_key = task_version.decision_model or str(role_binding["model_key"])
+    destination_ids = [uuid.UUID(value) for value in (task_version.destination_metadata_definition_ids or [])]
+    destination_definitions = {
+        definition.id: definition
+        for definition in db.scalars(
+            select(MetadataDefinition).where(
+                MetadataDefinition.matter_id == matter.id,
+                MetadataDefinition.id.in_(destination_ids),
+            )
+        )
+    }
+    destination_fields = [
+        {"id": str(definition.id), "key": definition.key, "display_name": definition.display_name}
+        for destination_id in destination_ids
+        if (definition := destination_definitions.get(destination_id)) is not None
+    ]
+    workflow_id = f"analysis-task:{task.id}:version:{task_version.version}:matter:{matter.id}:{run_id}"
+    workflow = WorkflowRun(
+        tenant_id=matter.client.tenant_id,
+        client_id=matter.client_id,
+        matter_id=matter.id,
+        job_type=ANALYSIS_TASK_BATCH_RUN_JOB_TYPE,
+        job_id=run_id,
+        attempt_number=1,
+        workflow_key=MATTER_ANALYSIS_TASK_BATCH_SPEC.key,
+        code_version=MATTER_ANALYSIS_TASK_BATCH_SPEC.code_version,
+        dbos_workflow_id=workflow_id,
+        status="QUEUED",
+        current_stage="QUEUED",
+        progress_completed=0,
+        progress_total=len(documents),
+        progress_unit="documents",
+        input_snapshot={
+            "task_id": str(task.id),
+            "task_name": task.name,
+            "task_version_id": str(task_version.id),
+            "task_version": task_version.version,
+            "definition_content_hash": task_version.definition_content_hash,
+            "specification_content_hash": task_version.specification_content_hash,
+            "scope_type": "MATTER",
+            "scope_id": str(matter.id),
+            "analysis_input_manifest_id": str(manifest.id),
+            "population_snapshot_at": snapshot_at.isoformat(),
+            "document_count": len(documents),
+        },
+        binding_snapshot=bindings,
+        configuration_snapshot={
+            "engine_key": engine_key,
+            "model_key": model_key,
+            "decision_provider": task_version.decision_provider,
+            "result_policy": "ISOLATED",
+        },
+        progress={"stage": "QUEUED", "total": len(documents), "completed": 0, "failed": 0},
+        initiated_by_user_id=initiated_by_user_id,
+    )
+    db.add(workflow)
+    db.flush()
+    db.add(
+        WorkflowStepRun(
+            workflow_run_id=workflow.id,
+            role_key="decision_evaluation",
+            ordinal=1,
+            fan_out_group="documents",
+            status="QUEUED",
+            total_count=len(documents),
+        )
+    )
+    review_run = ReviewBatchRun(
+        id=run_id,
+        review_batch_id=None,
+        run_type="WORKFLOW",
+        purpose="REVIEW",
+        status="QUEUED",
+        result_policy="ISOLATED",
+        workflow_run_record_id=workflow.id,
+        current_workflow_run_id=workflow.id,
+        analysis_input_manifest_id=manifest.id,
+        idempotency_key=idempotency_key,
+        configuration_snapshot={
+            "mode": "WHOLE_MATTER",
+            "scope_type": "MATTER",
+            "scope_id": str(matter.id),
+            "task_id": str(task.id),
+            "task_name": task.name,
+            "task_version_id": str(task_version.id),
+            "task_version": task_version.version,
+            "analysis_input_manifest_id": str(manifest.id),
+            "population_snapshot_at": snapshot_at.isoformat(),
+            "engine_key": engine_key,
+            "model_key": model_key,
+            "decision_provider": task_version.decision_provider,
+            "destination_fields": destination_fields,
+        },
+        initiated_by_user_id=initiated_by_user_id,
+        dbos_workflow_id=workflow_id,
+    )
+    db.add(review_run)
+    db.flush()
+    db.add_all(
+        ReviewBatchRunDocument(
+            review_batch_run_id=review_run.id,
+            matter_document_id=document.id,
+            status="QUEUED",
+            input_manifest_ordinal=ordinal,
+            last_workflow_run_id=workflow.id,
+        )
+        for ordinal, document in enumerate(documents, start=1)
+    )
+    db.flush()
+    enqueue_analysis_task_batch(db, workflow_id, str(workflow.id))
+    return workflow, review_run, True
 
 
 def _resolve_decision_binding(db: Session, tenant_id: uuid.UUID):
@@ -253,6 +522,11 @@ def _resolve_decision_binding(db: Session, tenant_id: uuid.UUID):
 
 def prepare_analysis_task_batch(db: Session, workflow_run_id: uuid.UUID) -> list[uuid.UUID]:
     _, review_run, step = _records(db, workflow_run_id)
+    ordering = (
+        ReviewBatchRunDocument.input_manifest_ordinal
+        if review_run.analysis_input_manifest_id is not None
+        else ReviewBatchRunDocument.matter_document_id
+    )
     document_ids = list(
         db.scalars(
             select(ReviewBatchRunDocument.matter_document_id)
@@ -261,7 +535,7 @@ def prepare_analysis_task_batch(db: Session, workflow_run_id: uuid.UUID) -> list
                 ReviewBatchRunDocument.last_workflow_run_id == workflow_run_id,
                 ReviewBatchRunDocument.status == "QUEUED",
             )
-            .order_by(ReviewBatchRunDocument.matter_document_id)
+            .order_by(ordering)
         )
     )
     if not document_ids:

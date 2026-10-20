@@ -31,6 +31,7 @@ import type {
   MetadataDefinitionRead,
   ReviewBatchDocumentRead,
   ReviewBatchRead,
+  ReviewBatchRunRead,
   ReviewDecisionResultRead,
 } from "@/generated/models";
 import { ApiError, coreApi } from "@/lib/api-client";
@@ -551,9 +552,31 @@ function VersionWorkspace({ matterId, task, version, definitions, onTaskUpdated 
         </Card>
       </div>
       <VersionMetadata version={version} />
+      {version.status === "PUBLISHED" && version.compilation_status === "READY" && versionAllowsScope(version, "WHOLE_MATTER") ? <WholeMatterQuestionRun matterId={matterId} task={task} version={version} /> : null}
       {version.status === "PUBLISHED" && version.compilation_status === "READY" ? <PlaygroundPanel matterId={matterId} task={task} version={version} /> : <Card className="p-4 text-sm text-muted-foreground">Publish a ready task version to enable the single-document playground.</Card>}
     </>
   );
+}
+
+function versionAllowsScope(version: MatterAnalysisTaskVersionRead, mode: string) {
+  const policy = version.scope_policy as { allowed_modes?: string[] } | null | undefined;
+  return policy?.allowed_modes?.includes(mode) ?? false;
+}
+
+function WholeMatterQuestionRun({ matterId, task, version }: { matterId: string; task: MatterAnalysisTaskRead; version: MatterAnalysisTaskVersionRead }) {
+  const queryClient = useQueryClient();
+  const start = useMutation({
+    mutationFn: () => coreApi<ReviewBatchRunRead>(`/v1/matters/${matterId}/analysis-tasks/${task.id}/question-answering-runs`, {
+      method: "POST",
+      body: JSON.stringify({ idempotency_key: crypto.randomUUID(), matter_analysis_task_version_id: version.id }),
+    }),
+    onSuccess: () => {
+      void queryClient.invalidateQueries({ queryKey: ["matter-question-answering-jobs", matterId] });
+      toast.success("Whole-matter question answering was queued.");
+    },
+    onError: (error) => toast.error(error.message),
+  });
+  return <Card><CardHeader className="border-b"><CardTitle className="flex items-center gap-2"><Play className="size-4 text-primary" />Run entire matter</CardTitle><p className="text-sm text-muted-foreground">Freeze the current corpus into an immutable Analysis Input Manifest and evaluate that exact population without creating a Review Batch.</p></CardHeader><CardContent className="flex items-center justify-between gap-3 p-4"><p className="text-sm text-muted-foreground">Results remain isolated and appear in Question-answering jobs.</p><Button onClick={() => start.mutate()} disabled={start.isPending}>{start.isPending ? <LoaderCircle className="animate-spin" /> : <Play />}Run entire matter</Button></CardContent></Card>;
 }
 
 function CompilationProgress({ progress }: { progress?: Record<string, unknown> }) {
