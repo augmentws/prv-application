@@ -66,7 +66,7 @@ Publishing a Batch Coding run uses the active index directly. If the index preda
 
 The batch review workspace uses those scoped endpoints for keyword, semantic, and hybrid search, facets, type-ahead facet values, indexed document titles, and passages. It separately loads the authenticated reviewer's current document status from Core. Search result order may change with the active query and sort, while `review_batch_document.sequence_number` remains the stable frozen order and is shown with each result.
 
-The workspace filter panel organizes ordinary matter facets by active metadata-group sort order and each group's ordered `definition_ids`. A facet present in several groups is shown only in the first active group, and an otherwise eligible ungrouped facet is shown under **Matter metadata**. Batch topics and projected Batch Coding fields retain dedicated sections above those matter metadata groups. Table and document visibility preferences do not suppress search filters.
+The workspace filter panel organizes ordinary matter facets by active metadata-group sort order and each group's ordered `definition_ids`. A facet present in several groups is shown only in the first active group, and an otherwise eligible ungrouped facet is shown under **Matter metadata**. Metadata filter groups start expanded and can be collapsed from their headings; active selections remain summarized with a count on a collapsed heading. Batch topics and projected Batch Coding fields retain dedicated sections above those matter metadata groups. Table and document visibility preferences do not suppress search filters.
 
 ## Comparisons
 
