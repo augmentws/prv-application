@@ -1208,6 +1208,8 @@ def test_document_projection_includes_artifact_body_text(monkeypatch: pytest.Mon
         raw_metadata={"initiative": "Initiatives/344"},
         unmapped_metadata={},
         body_text="The confidential project is Juniper.",
+        parent_identifier="PARENT001",
+        child_identifiers=["CHILD001", "CHILD002"],
     )
     db = Mock()
     db.get.side_effect = lambda model, identifier: (
@@ -1228,12 +1230,15 @@ def test_document_projection_includes_artifact_body_text(monkeypatch: pytest.Mon
         definition("email_from", "TEXT", facetable=True, normalize_to_lowercase=True),
         definition("email_to", "TEXT", facetable=True, normalize_to_lowercase=True),
         definition("email_domain", "TEXT", facetable=True, normalize_to_lowercase=True),
+        definition("parent_id", "TEXT"),
+        definition("child_id", "TEXT"),
         definition("file_date", "DATETIME", facetable=True),
         definition("initiative", "TEXT", facetable=True, hierarchy_separator="/"),
         definition("fact_state", "ENUM", facetable=True),
     ]
     definitions[1].cardinality = "MULTIPLE"
     definitions[2].cardinality = "MULTIPLE"
+    definitions[4].cardinality = "MULTIPLE"
     projection = build_document_projection(db, document, definitions, batch_ids=batch_ids)
 
     assert projection["body_text"] == "The confidential project is Juniper."
@@ -1244,6 +1249,8 @@ def test_document_projection_includes_artifact_body_text(monkeypatch: pytest.Mon
     assert projection["metadata"]["email_from"] == "sender@example.com"
     assert projection["metadata"]["email_to"] == ["recipient@example.com"]
     assert projection["metadata"]["email_domain"] == ["example.com"]
+    assert projection["metadata"]["parent_id"] == "PARENT001"
+    assert projection["metadata"]["child_id"] == ["CHILD001", "CHILD002"]
     assert projection["metadata"]["file_date"] == "2001-05-14T23:39:00+00:00"
     assert projection["metadata"]["initiative"] == "Initiatives/344"
     assert projection["metadata"]["fact_state"] == "confirmed"
@@ -2337,11 +2344,23 @@ def test_explicit_rebuild_installs_missing_default_system_definitions(
         db.scalars(
             select(MetadataDefinition).where(
                 MetadataDefinition.matter_id == matter_id,
-                MetadataDefinition.key.in_(["email_domain", "file_date", "fact_state"]),
+                MetadataDefinition.key.in_([
+                    "email_domain",
+                    "file_date",
+                    "fact_state",
+                    "parent_id",
+                    "child_id",
+                ]),
             )
         )
     )
-    assert {definition.key for definition in missing_definitions} == {"email_domain", "file_date", "fact_state"}
+    assert {definition.key for definition in missing_definitions} == {
+        "email_domain",
+        "file_date",
+        "fact_state",
+        "parent_id",
+        "child_id",
+    }
     db.execute(
         delete(MetadataGroupField).where(
             MetadataGroupField.metadata_definition_id.in_([definition.id for definition in missing_definitions])
@@ -2362,11 +2381,23 @@ def test_explicit_rebuild_installs_missing_default_system_definitions(
         db.scalars(
             select(MetadataDefinition).where(
                 MetadataDefinition.matter_id == matter_id,
-                MetadataDefinition.key.in_(["email_domain", "file_date", "fact_state"]),
+                MetadataDefinition.key.in_([
+                    "email_domain",
+                    "file_date",
+                    "fact_state",
+                    "parent_id",
+                    "child_id",
+                ]),
             )
         )
     )
-    assert {definition.key for definition in installed} == {"email_domain", "file_date", "fact_state"}
+    assert {definition.key for definition in installed} == {
+        "email_domain",
+        "file_date",
+        "fact_state",
+        "parent_id",
+        "child_id",
+    }
     assert all(definition.value_source == "SYSTEM" for definition in installed)
 
 

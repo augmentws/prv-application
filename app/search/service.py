@@ -49,6 +49,7 @@ from app.search.client import OpenSearchBulkError, OpenSearchClient
 from app.search.coding_provenance import coded_by_tokens, coded_by_tokens_for_documents
 from app.search.mappings import compile_document_index, schema_hash
 from app.search.schema import SearchReindexRequired, plan_schema_change
+from artifact_service.document_identifiers import document_identifier, metadata_value
 from embedding_service.config import get_embedding_settings
 
 logger = logging.getLogger(__name__)
@@ -135,12 +136,7 @@ def document_index_name(settings: Settings, matter_id: uuid.UUID, generation: in
 
 
 def _metadata_lookup(snapshot: SearchItemSnapshot, *keys: str) -> Any:
-    combined = {str(key).casefold(): value for key, value in {**snapshot.unmapped_metadata, **snapshot.raw_metadata}.items()}
-    for key in keys:
-        value = combined.get(key.casefold())
-        if value not in (None, ""):
-            return value
-    return None
+    return metadata_value(snapshot.raw_metadata, snapshot.unmapped_metadata, *keys)
 
 
 def _json_value(value: Any) -> Any:
@@ -230,10 +226,16 @@ def build_document_projection(
     )
     recipients = snapshot.email_recipients
     values: dict[str, Any] = {
-        "control_number": _metadata_lookup(snapshot, "BEGDOC", "BEGBATES", "CONTROL_NUMBER") or snapshot.source_item_id,
+        "control_number": document_identifier(
+            snapshot.source_item_id,
+            snapshot.raw_metadata,
+            snapshot.unmapped_metadata,
+        ),
         "original_filename": snapshot.original_filename,
         "document_title": _metadata_lookup(snapshot, "DOCTITLE", "DOCUMENT_TITLE"),
         "family_id": str(snapshot.family_id) if snapshot.family_id else None,
+        "parent_id": snapshot.parent_identifier,
+        "child_id": snapshot.child_identifiers,
         "custodian": [str(value) for value in snapshot.custodian_ids],
         "source_path": snapshot.original_source_path,
         "email_from": snapshot.email_sender,

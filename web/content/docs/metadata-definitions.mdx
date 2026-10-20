@@ -7,10 +7,10 @@ A metadata definition describes a field available within one matter. Every new m
 
 ## Default matter profile
 
-Matter creation automatically adds 26 definitions covering:
+Matter creation automatically adds 29 definitions covering:
 
 - identification, including control number, original filename, and document title;
-- family and custodian relationships;
+- family, direct parent/child, and custodian relationships;
 - source path, a canonical document date, and source-system timestamps;
 - email sender, recipients, unique participant domains, subject, sent date, and received date;
 - file extension, size, page count, MD5, and SHA-256; and
@@ -18,7 +18,7 @@ Matter creation automatically adds 26 definitions covering:
 
 The **Source** column identifies how values will be supplied:
 
-- **System** fields resolve from Priv-View relationships. Custodian and family ID are mandatory system fields.
+- **System** fields resolve from Priv-View relationships or derived Core state. Custodian, Family ID, Parent ID, and Child ID are mandatory system fields.
 - **Imported** fields come from the promoted collection item and retain source provenance.
 - **Asserted** fields accept reviewer assertions through the Core API and are ready for later agent assertions through the same command service.
 
@@ -32,6 +32,8 @@ The profile is copied into the matter as ordinary database rows, so later matter
 | Identification | **Original filename** (`original_filename`) | Text | Single | Imported | Filename recorded for the source item before import. |
 | Identification | **Document title** (`document_title`) | Text | Single | Imported | Source-system document title when one is available. |
 | Family | **Family ID** (`family_id`) | Text | Single | System | Stable identifier shared by a parent document and all members of its family. |
+| Family | **Parent ID** (`parent_id`) | Text | Single | System | Canonical document identifier of the document's direct parent. |
+| Family | **Child ID** (`child_id`) | Text | Multiple | System | Canonical document identifiers of the document's direct children. |
 | Custodian & Source | **Custodian** (`custodian`) | Text | Multiple | System reference | Client-scoped person, account, device, or source from which the document was collected. |
 | Custodian & Source | **Source path** (`source_path`) | Long text | Single | Imported | Original folder path or source-system location of the collected item. |
 | Email | **Email from** (`email_from`) | Text | Single | Imported | Sender address or display value recorded on an email. |
@@ -54,8 +56,15 @@ The profile is copied into the matter as ordinary database rows, so later matter
 | Review Coding | **Privilege** (`privilege`) | Enum | Single | Asserted | Review decision describing whether the document may contain privileged material. |
 | Review Coding | **Key document** (`key_document`) | Boolean | Single | Asserted | Marks a document as important to the matter. |
 | Review Coding | **Review notes** (`review_notes`) | Long text | Single | Asserted | Reviewer or agent narrative notes about the document. |
+| Facts | **Facts** (`fact_state`) | Enum | Single | System | Whether a live confirmed or working fact cites the document. |
 
 Responsiveness options are **Responsive**, **Not responsive**, and **Needs review**. Privilege options are **Privileged**, **Not privileged**, and **Needs review**.
+
+### Family relationships
+
+**Family ID** groups the complete document family. **Parent ID** and **Child ID** describe only direct edges: a child has at most one Parent ID, while a parent may have multiple Child IDs. These values use the same source control-number precedence as Control number, falling back to the collection source-item ID. Internal collection-item UUIDs remain the authoritative relationship keys and are not shown as Parent ID or Child ID.
+
+Relationships are established during collection ingestion. Sharing a Family ID alone does not identify a parent, so Priv-View does not guess parent/child edges for family-only source data.
 
 ### File date and source dates
 
@@ -181,3 +190,11 @@ Select **Create group** to collect existing fields into either:
 - a matter group available to everyone who can access the matter.
 
 Personal groups and personal visibility preferences are never included in templates or clones. Matter groups, field order, and default visibility are included.
+
+### Filter organization
+
+Search & Review and the batch review workspace use active metadata groups to organize their filter panels. Groups follow their configured sort order, and fields inside each group follow the order in the group's definition. Only active definitions that are configured for search and filtering appear.
+
+If a field belongs to more than one active group, the first group in configured order owns that filter so the same control is not repeated. Filterable fields that do not belong to an active group remain available under **Matter metadata**. Search & Review also places its virtual **Coded by** filter under **Document fields**. Batch-specific topic and Batch Coding filters remain in their own sections above the matter metadata groups.
+
+The **Table** and **Document** visibility controls affect their named result and document surfaces; they do not remove a field from the filter panel. Archive or suspend a group, or change a definition's search/filter settings, when it should no longer organize an available filter.

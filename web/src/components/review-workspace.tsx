@@ -73,6 +73,7 @@ import type {
 import { coreApi } from "@/lib/api-client";
 import { bulkTagDisplayStatus, bulkTagIsWaiting } from "@/lib/bulk-tag-jobs";
 import { HAS_VALUE_FILTER_TOKEN, NO_VALUE_FILTER_TOKEN, toggleFacetFilterToken } from "@/lib/search-filters";
+import { organizeMetadataFilterDefinitions } from "@/lib/metadata-filter-groups";
 import { cn } from "@/lib/utils";
 import { matterHref, matterJobsHref } from "@/lib/matter-routes";
 
@@ -80,7 +81,6 @@ const PAGE_SIZE = 50;
 const FACET_PAGE_SIZE = 8;
 const SEMANTIC_CANDIDATE_LIMIT = 1600;
 const HYBRID_CANDIDATE_LIMIT = 100;
-const PREFERRED_FACETS = ["coded_by", "custodian", "file_extension", "responsiveness", "privilege", "key_document"];
 const SEARCH_PROJECTION_POLL_MS = 500;
 const SEARCH_PROJECTION_POLL_ATTEMPTS = 60;
 const SEARCH_PLACEHOLDERS: Record<MatterSearchRequestSearchMode, string> = {
@@ -407,11 +407,7 @@ export function ReviewWorkspace({
       ),
     );
     available.push(codedByFilterDefinition(matterId));
-    return available.sort((left, right) => {
-      const leftRank = PREFERRED_FACETS.indexOf(left.key);
-      const rightRank = PREFERRED_FACETS.indexOf(right.key);
-      return (leftRank < 0 ? 1000 : leftRank) - (rightRank < 0 ? 1000 : rightRank) || left.display_name.localeCompare(right.display_name);
-    });
+    return available;
   }, [definitions.data, matterId]);
 
   const searchRequest = useMemo<MatterSearchRequest>(() => {
@@ -806,7 +802,7 @@ export function ReviewWorkspace({
           style={{ "--review-facet-width": `${facetWidth}px` } as CSSProperties}
           aria-label="Search filters"
         >
-          <FacetPanel matterId={matterId} searchRequest={searchRequest} definitions={filterDefinitions} filters={filters} negatedFilterFields={negatedFilterFields} custodianNames={custodianNames} onToggle={toggleFilter} onToggleNegation={toggleFilterNegation} onDateRangeChange={changeDateRange} onClear={clearFilters} />
+          <FacetPanel matterId={matterId} searchRequest={searchRequest} definitions={filterDefinitions} groups={groups.data ?? []} filters={filters} negatedFilterFields={negatedFilterFields} custodianNames={custodianNames} onToggle={toggleFilter} onToggleNegation={toggleFilterNegation} onDateRangeChange={changeDateRange} onClear={clearFilters} />
         </aside>
         <ResizeHandle className="hidden xl:flex" label="Resize filter panel" value={facetWidth} min={184} max={420} onChange={setFacetWidth} />
 
@@ -846,7 +842,7 @@ export function ReviewWorkspace({
       <Dialog open={filtersOpen} onOpenChange={setFiltersOpen}>
         <DialogContent className="flex h-[min(86vh,48rem)] max-w-md flex-col overflow-hidden p-0 xl:hidden">
           <DialogHeader className="mb-0 border-b px-5 py-4"><DialogTitle>Filter documents</DialogTitle><DialogDescription>Narrow the current matter results.</DialogDescription></DialogHeader>
-          <FacetPanel matterId={matterId} searchRequest={searchRequest} definitions={filterDefinitions} filters={filters} negatedFilterFields={negatedFilterFields} custodianNames={custodianNames} onToggle={toggleFilter} onToggleNegation={toggleFilterNegation} onDateRangeChange={changeDateRange} onClear={clearFilters} />
+          <FacetPanel matterId={matterId} searchRequest={searchRequest} definitions={filterDefinitions} groups={groups.data ?? []} filters={filters} negatedFilterFields={negatedFilterFields} custodianNames={custodianNames} onToggle={toggleFilter} onToggleNegation={toggleFilterNegation} onDateRangeChange={changeDateRange} onClear={clearFilters} />
         </DialogContent>
       </Dialog>
 
@@ -873,10 +869,11 @@ export function ReviewWorkspace({
   );
 }
 
-function FacetPanel({ matterId, searchRequest, definitions, filters, negatedFilterFields, custodianNames, onToggle, onToggleNegation, onDateRangeChange, onClear }: {
+function FacetPanel({ matterId, searchRequest, definitions, groups, filters, negatedFilterFields, custodianNames, onToggle, onToggleNegation, onDateRangeChange, onClear }: {
   matterId: string;
   searchRequest: MatterSearchRequest;
   definitions: MetadataDefinitionRead[];
+  groups: MetadataGroupRead[];
   filters: SelectedFilters;
   negatedFilterFields: Set<string>;
   custodianNames: Map<string, string>;
@@ -886,6 +883,12 @@ function FacetPanel({ matterId, searchRequest, definitions, filters, negatedFilt
   onClear: () => void;
 }) {
   const hasFilters = Object.values(filters).some((values) => values.length);
+  const filterGroups = useMemo(
+    () => organizeMetadataFilterDefinitions(definitions, groups, {
+      documentDefinitionIds: new Set(definitions.filter((definition) => definition.id.startsWith("built-in:")).map((definition) => definition.id)),
+    }),
+    [definitions, groups],
+  );
   return (
     <div className="flex min-h-0 min-w-0 flex-1 flex-col overflow-hidden">
       <div className="flex h-11 shrink-0 items-center justify-between border-b px-3">
@@ -893,18 +896,21 @@ function FacetPanel({ matterId, searchRequest, definitions, filters, negatedFilt
         {hasFilters ? <Button variant="ghost" size="sm" onClick={onClear}>Clear</Button> : null}
       </div>
       <div className="min-h-0 min-w-0 flex-1 divide-y overflow-x-hidden overflow-y-auto overscroll-contain">
-        {definitions.map((definition) => isDateFilter(definition) ? (
-          <DateHistogramFilter
-            key={definition.id}
-            matterId={matterId}
-            searchRequest={searchRequest}
-            definition={definition}
-            range={selectedDateRange(filters[definition.key] ?? [])}
-            onChange={(range) => onDateRangeChange(definition.key, range)}
-          />
-        ) : (
-          <FacetSection key={definition.id} matterId={matterId} searchRequest={searchRequest} definition={definition} selected={filters[definition.key] ?? []} negated={negatedFilterFields.has(definition.key)} custodianNames={custodianNames} onToggle={onToggle} onToggleNegation={() => onToggleNegation(definition.key)} />
-        ))}
+        {filterGroups.map((group) => <section key={group.id} aria-label={`${group.displayName} filters`}>
+          <h3 className="border-b bg-muted/30 px-3 py-2 text-xs font-bold uppercase tracking-[0.08em] text-muted-foreground">{group.displayName}</h3>
+          <div className="divide-y">{group.definitions.map((definition) => isDateFilter(definition) ? (
+            <DateHistogramFilter
+              key={definition.id}
+              matterId={matterId}
+              searchRequest={searchRequest}
+              definition={definition}
+              range={selectedDateRange(filters[definition.key] ?? [])}
+              onChange={(range) => onDateRangeChange(definition.key, range)}
+            />
+          ) : (
+            <FacetSection key={definition.id} matterId={matterId} searchRequest={searchRequest} definition={definition} selected={filters[definition.key] ?? []} negated={negatedFilterFields.has(definition.key)} custodianNames={custodianNames} onToggle={onToggle} onToggleNegation={() => onToggleNegation(definition.key)} />
+          ))}</div>
+        </section>)}
         {!definitions.length ? <p className="p-4 text-sm text-muted-foreground">No filterable fields are configured for this matter.</p> : null}
       </div>
     </div>

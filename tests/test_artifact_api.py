@@ -406,6 +406,7 @@ def test_collection_item_file_date_uses_email_parent_or_source_modified(
             "sent_at": "2001-05-14T23:39:00Z",
             "recipients": [],
         },
+        "unmapped_metadata": {"BEGDOC": "PARENT001"},
     }
     email = client.post(
         f"/v1/collections/{collection_id}/items:upload",
@@ -423,6 +424,7 @@ def test_collection_item_file_date_uses_email_parent_or_source_modified(
         "custodian_ids": [custodian_id],
         "parent_collection_item_id": email.json()["item"]["id"],
         "source_modified_at": "2006-01-02T03:04:05Z",
+        "unmapped_metadata": {"CONTROL_NUMBER": "CHILD001"},
     }
     attachment = client.post(
         f"/v1/collections/{collection_id}/items:upload",
@@ -432,6 +434,102 @@ def test_collection_item_file_date_uses_email_parent_or_source_modified(
     )
     assert attachment.status_code == 201, attachment.text
     assert attachment.json()["item"]["file_date"] == "2001-05-14T23:39:00Z"
+    assert attachment.json()["item"]["family_id"] == client.get(
+        f"/v1/collection-items/{email.json()['item']['id']}",
+        headers=auth(root_token),
+    ).json()["family_id"]
+
+    relationships = client.post(
+        "/v1/collection-items/relationship-snapshots",
+        headers=auth(root_token),
+        json={
+            "tenant_id": tenant_id,
+            "client_id": client_id,
+            "item_ids": [email.json()["item"]["id"], attachment.json()["item"]["id"]],
+        },
+    )
+    assert relationships.status_code == 200, relationships.text
+    parent_snapshot, child_snapshot = relationships.json()
+    assert parent_snapshot["parent_identifier"] is None
+    assert parent_snapshot["child_identifiers"] == ["CHILD001"]
+    assert child_snapshot["parent_identifier"] == "PARENT001"
+    assert child_snapshot["child_identifiers"] == []
+
+    reconciled_child = client.post(
+        f"/v1/collections/{collection_id}/items:upload",
+        headers=auth(root_token),
+        data={
+            "metadata": json.dumps(
+                {
+                    "source_item_id": "attachment-existing",
+                    "record_type": "FILE",
+                    "original_filename": "existing.txt",
+                    "custodian_ids": [custodian_id],
+                    "unmapped_metadata": {"CONTROL_NUMBER": "CHILD002"},
+                }
+            )
+        },
+        files={"file": ("existing.txt", b"existing", "text/plain")},
+    )
+    assert reconciled_child.status_code == 201, reconciled_child.text
+    reconcile = client.post(
+        f"/v1/collections/{collection_id}/item-relationships:reconcile",
+        headers=auth(root_token),
+        json={
+            "relationships": [
+                {
+                    "child_source_item_id": "attachment-existing",
+                    "parent_source_item_id": "email-1",
+                }
+            ]
+        },
+    )
+    assert reconcile.status_code == 200, reconcile.text
+    assert reconcile.json()["created_count"] == 1
+    assert reconcile.json()["requires_search_rebuild"] is True
+
+    repeated_reconcile = client.post(
+        f"/v1/collections/{collection_id}/item-relationships:reconcile",
+        headers=auth(root_token),
+        json={
+            "relationships": [
+                {
+                    "child_source_item_id": "attachment-existing",
+                    "parent_source_item_id": "email-1",
+                }
+            ]
+        },
+    )
+    assert repeated_reconcile.status_code == 200, repeated_reconcile.text
+    assert repeated_reconcile.json()["created_count"] == 0
+    assert repeated_reconcile.json()["unchanged_count"] == 1
+    assert repeated_reconcile.json()["requires_search_rebuild"] is False
+
+    cycle = client.post(
+        f"/v1/collections/{collection_id}/item-relationships:reconcile",
+        headers=auth(root_token),
+        json={
+            "relationships": [
+                {
+                    "child_source_item_id": "email-1",
+                    "parent_source_item_id": "attachment-existing",
+                }
+            ]
+        },
+    )
+    assert cycle.status_code == 409, cycle.text
+    assert cycle.json()["error"]["message"] == "Relationship reconciliation would create a cycle"
+
+    parent_relationship = client.post(
+        "/v1/collection-items/relationship-snapshots",
+        headers=auth(root_token),
+        json={
+            "tenant_id": tenant_id,
+            "client_id": client_id,
+            "item_ids": [email.json()["item"]["id"]],
+        },
+    ).json()[0]
+    assert parent_relationship["child_identifiers"] == ["CHILD001", "CHILD002"]
 
     file_metadata = {
         "source_item_id": "collected-file-1",
@@ -476,7 +574,7 @@ def test_collection_item_file_date_uses_email_parent_or_source_modified(
         "2006-01-01",
         "2007-01-01",
     ]
-    assert [bucket["count"] for bucket in histogram.json()["buckets"]] == [2, 0, 0, 0, 0, 0, 1]
+    assert [bucket["count"] for bucket in histogram.json()["buckets"]] == [3, 0, 0, 0, 0, 0, 1]
     assert histogram.json()["missing_count"] == 0
 
     selection = client.post(

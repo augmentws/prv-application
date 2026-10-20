@@ -388,6 +388,71 @@ class CollectionItemGroupingSnapshot(BaseModel):
     native_content_hash: Sha256 | None
 
 
+class CollectionItemRelationshipSnapshotsRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    tenant_id: uuid.UUID
+    client_id: uuid.UUID
+    item_ids: list[uuid.UUID] = Field(min_length=1, max_length=5000)
+
+    @field_validator("item_ids")
+    @classmethod
+    def validate_unique_item_ids(cls, values: list[uuid.UUID]) -> list[uuid.UUID]:
+        if len(values) != len(set(values)):
+            raise ValueError("Collection item IDs must be unique")
+        return values
+
+
+class CollectionItemRelationshipSnapshot(BaseModel):
+    item_id: uuid.UUID
+    family_id: uuid.UUID | None
+    parent_item_id: uuid.UUID | None
+    parent_source_item_id: str | None
+    parent_identifier: str | None
+    child_item_ids: list[uuid.UUID]
+    child_source_item_ids: list[str]
+    child_identifiers: list[str]
+
+
+class CollectionItemRelationshipReconcileEntry(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    child_source_item_id: SourceItemId
+    parent_source_item_id: SourceItemId
+    family_id: uuid.UUID | None = None
+    expected_parent_source_item_id: SourceItemId | None = None
+
+    @model_validator(mode="after")
+    def validate_distinct_items(self) -> "CollectionItemRelationshipReconcileEntry":
+        if self.child_source_item_id == self.parent_source_item_id:
+            raise ValueError("A collection item cannot be its own parent")
+        return self
+
+
+class CollectionItemRelationshipReconcileRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    relationships: list[CollectionItemRelationshipReconcileEntry] = Field(min_length=1, max_length=5000)
+
+    @field_validator("relationships")
+    @classmethod
+    def validate_unique_children(
+        cls,
+        values: list[CollectionItemRelationshipReconcileEntry],
+    ) -> list[CollectionItemRelationshipReconcileEntry]:
+        child_ids = [value.child_source_item_id for value in values]
+        if len(child_ids) != len(set(child_ids)):
+            raise ValueError("Each child_source_item_id may appear only once")
+        return values
+
+
+class CollectionItemRelationshipReconcileResponse(BaseModel):
+    created_count: int = Field(ge=0)
+    unchanged_count: int = Field(ge=0)
+    affected_item_ids: list[uuid.UUID]
+    requires_search_rebuild: bool
+
+
 class CollectionItemAnalysisInputSnapshotsRequest(BaseModel):
     model_config = ConfigDict(extra="forbid")
 

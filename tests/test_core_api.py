@@ -65,7 +65,7 @@ def test_core_phase_one_flow(client: TestClient, root_token: str) -> None:
     )
     assert default_definitions.status_code == 200, default_definitions.text
     definitions_by_key = {definition["key"]: definition for definition in default_definitions.json()}
-    assert len(definitions_by_key) == 27
+    assert len(definitions_by_key) == 29
     assert {
         key: definitions_by_key["custodian"][key]
         for key in ("value_source", "reference_target", "cardinality", "facetable")
@@ -77,6 +77,28 @@ def test_core_phase_one_flow(client: TestClient, root_token: str) -> None:
     }
     assert definitions_by_key["family_id"]["value_source"] == "SYSTEM"
     assert definitions_by_key["family_id"]["facetable"] is True
+    assert {
+        key: definitions_by_key["parent_id"][key]
+        for key in ("display_name", "type", "cardinality", "value_source", "facetable", "reviewable")
+    } == {
+        "display_name": "Parent ID",
+        "type": "TEXT",
+        "cardinality": "SINGLE",
+        "value_source": "SYSTEM",
+        "facetable": False,
+        "reviewable": False,
+    }
+    assert {
+        key: definitions_by_key["child_id"][key]
+        for key in ("display_name", "type", "cardinality", "value_source", "facetable", "reviewable")
+    } == {
+        "display_name": "Child ID",
+        "type": "TEXT",
+        "cardinality": "MULTIPLE",
+        "value_source": "SYSTEM",
+        "facetable": False,
+        "reviewable": False,
+    }
     assert definitions_by_key["file_size"]["type"] == "INTEGER"
     assert {
         key: definitions_by_key["file_date"][key]
@@ -106,7 +128,7 @@ def test_core_phase_one_flow(client: TestClient, root_token: str) -> None:
     assert definitions_by_key["email_subject"]["normalize_to_lowercase"] is False
     assert definitions_by_key["responsiveness"]["value_source"] == "ASSERTED"
     assert definitions_by_key["responsiveness"]["template_key"] == "edrm-core"
-    assert definitions_by_key["responsiveness"]["template_version"] == 5
+    assert definitions_by_key["responsiveness"]["template_version"] == 6
 
     update_domains = client.post(
         f"/v1/matters/{matter_id}/metadata-definitions/email-domain/update",
@@ -121,6 +143,12 @@ def test_core_phase_one_flow(client: TestClient, root_token: str) -> None:
         f"/v1/matters/{matter_id}/metadata-groups",
         headers=auth(tenant_token),
     )
+    family_group = next(group for group in groups_response.json() if group["key"] == "family")
+    assert family_group["definition_ids"] == [
+        definitions_by_key["family_id"]["id"],
+        definitions_by_key["parent_id"]["id"],
+        definitions_by_key["child_id"]["id"],
+    ]
     email_group = next(group for group in groups_response.json() if group["key"] == "email")
     assert definitions_by_key["email_domain"]["id"] in email_group["definition_ids"]
 
@@ -515,7 +543,7 @@ def test_metadata_groups_preferences_templates_and_clone(client: TestClient, roo
     )
     assert template_response.status_code == 201, template_response.text
     template = template_response.json()
-    assert template["definition_count"] == 28
+    assert template["definition_count"] == 30
     assert template["group_count"] == 9
 
     available_templates = client.get(

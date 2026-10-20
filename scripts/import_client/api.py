@@ -157,7 +157,7 @@ class OpenApiClient:
 
     def ensure_storage(self, tenant_id: str, tenant_slug: str) -> dict[str, Any]:
         return self.request(
-            "ensure_storage_v1_tenants__tenant_id__artifact_storage_ensure_post",
+            "ensure_artifact_storage_v1_tenants__tenant_id__artifact_storage_ensure_post",
             path_params={"tenant_id": tenant_id},
             json_body={"tenant_slug": tenant_slug},
         )
@@ -232,4 +232,15 @@ class OpenApiClient:
             path_params={"collection_id": collection_id},
             data={"metadata": json.dumps(_valid_json_unicode(metadata))},
             files={"file": (filename, content, media_type)},
+        )
+
+    def reconcile_item_relationships(
+        self,
+        collection_id: str,
+        relationships: list[dict[str, Any]],
+    ) -> dict[str, Any]:
+        return self.request(
+            "reconcile_collection_item_relationships_v1_collections__collection_id__item_relationships_reconcile_post",
+            path_params={"collection_id": collection_id},
+            json_body={"relationships": relationships},
         )
