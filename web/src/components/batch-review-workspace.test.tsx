@@ -3,9 +3,9 @@ import { cleanup, render, screen, waitFor, within } from "@testing-library/react
 import userEvent from "@testing-library/user-event";
 import { afterEach, describe, expect, it, vi } from "vitest";
 
-import { AnalysisRunSelect, BatchDecisionAnalysisPanel, BatchReviewWorkspace } from "@/components/batch-review-workspace";
+import { AnalysisRunSelect, BatchDecisionAnalysisPanel, BatchReviewWorkspace, DisagreementReviewPanel } from "@/components/batch-review-workspace";
 import { ClassificationAnalysisJobDetail } from "@/components/classification-analysis-job-detail";
-import type { MatterAnalysisTaskRunRead, ReviewBatchAnalysisJobRead, ReviewBatchRead, ReviewBatchRunRead } from "@/generated/models";
+import type { MatterAnalysisTaskRunRead, ReviewBatchAnalysisJobRead, ReviewBatchDisagreementDocumentRead, ReviewBatchRead, ReviewBatchRunRead } from "@/generated/models";
 import { coreApi } from "@/lib/api-client";
 
 vi.mock("next/navigation", () => ({ useRouter: () => ({ replace: vi.fn() }) }));
@@ -191,6 +191,74 @@ afterEach(() => {
 });
 
 describe("BatchReviewWorkspace", () => {
+  it("shows every selected disagreement source and saves the chosen coding", async () => {
+    const user = userEvent.setup();
+    const onSave = vi.fn().mockResolvedValue(undefined);
+    const disagreement = {
+      review_batch_id: "disagreement-batch-1",
+      source_batch_id: "batch-1",
+      matter_document_id: "document-1",
+      metadata_definition_id: "definition-1",
+      field_display_name: "Responsiveness",
+      field_type: "ENUM",
+      cardinality: "SINGLE",
+      allowed_values: [
+        { key: "responsive", label: "Responsive", active: true },
+        { key: "not_responsive", label: "Not responsive", active: true },
+      ],
+      agreement_status: "DISAGREEMENT",
+      sources: [
+        {
+          id: "reviewer-coding-1",
+          source_type: "REVIEWER",
+          run_type: null,
+          label: "Alex Reviewer",
+          detail: "alex@example.com",
+          reviewer_revision: 4,
+          state: "EVALUATED",
+          values: ["responsive"],
+          display_values: ["Responsive"],
+          top_confidence: null,
+        },
+        {
+          id: "analysis-run-1",
+          source_type: "RUN",
+          run_type: "WORKFLOW",
+          label: "Privilege review task",
+          detail: "Published v2 · OpenAI Decisions",
+          reviewer_revision: null,
+          state: "EVALUATED",
+          values: ["not_responsive"],
+          display_values: ["Not responsive"],
+          top_confidence: 0.91,
+        },
+      ],
+    } satisfies ReviewBatchDisagreementDocumentRead;
+
+    render(<DisagreementReviewPanel
+      disagreement={disagreement}
+      coding={{ matter_document_id: "document-1", review_status: "NOT_STARTED", values: [], reviewer_values: [] }}
+      saving={false}
+      onSave={onSave}
+      onSkip={vi.fn().mockResolvedValue(undefined)}
+    />);
+
+    expect(screen.getByRole("heading", { name: "Disagreements" })).toBeInTheDocument();
+    expect(screen.getByText("Responsiveness")).toBeInTheDocument();
+    expect(screen.getByText("Alex Reviewer")).toBeInTheDocument();
+    const analysisSource = screen.getByText("Privilege review task").closest("article");
+    expect(analysisSource).not.toBeNull();
+    expect(within(analysisSource!).getByText("91%")).toBeInTheDocument();
+    await user.click(within(analysisSource!).getByRole("button", { name: "Use this coding" }));
+    expect(within(analysisSource!).getByRole("button", { name: "Selected" })).toHaveAttribute("aria-pressed", "true");
+    await user.click(screen.getByRole("button", { name: "Save & next" }));
+
+    expect(onSave).toHaveBeenCalledWith({
+      matter_document_id: "document-1",
+      fields: [{ metadata_definition_id: "definition-1", values: ["not_responsive"], confidence: null }],
+    });
+  });
+
   it("allows an active analysis run to be canceled", async () => {
     const user = userEvent.setup();
     const onCancel = vi.fn();

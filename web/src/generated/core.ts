@@ -274,6 +274,10 @@ import type {
   ReviewBatchComparisonRead,
   ReviewBatchComparisonRequest,
   ReviewBatchCreate,
+  ReviewBatchDisagreementBatchCreate,
+  ReviewBatchDisagreementBatchPreviewRead,
+  ReviewBatchDisagreementBatchPreviewRequest,
+  ReviewBatchDisagreementDocumentRead,
   ReviewBatchDocumentAnalysisRead,
   ReviewBatchDocumentCodingRead,
   ReviewBatchDocumentRead,
@@ -12042,6 +12046,60 @@ export const skipReviewBatchDocumentV1MattersMatterIdReviewBatchesBatchIdReviewe
 
 
 
+export type getDisagreementReviewDocumentV1MattersMatterIdReviewBatchesBatchIdDisagreementsDocumentsDocumentIdGetResponse200 = {
+  data: ReviewBatchDisagreementDocumentRead
+  status: 200
+}
+
+export type getDisagreementReviewDocumentV1MattersMatterIdReviewBatchesBatchIdDisagreementsDocumentsDocumentIdGetResponse422 = {
+  data: HTTPValidationError
+  status: 422
+}
+
+export type getDisagreementReviewDocumentV1MattersMatterIdReviewBatchesBatchIdDisagreementsDocumentsDocumentIdGetResponseSuccess = (getDisagreementReviewDocumentV1MattersMatterIdReviewBatchesBatchIdDisagreementsDocumentsDocumentIdGetResponse200) & {
+  headers: Headers;
+};
+export type getDisagreementReviewDocumentV1MattersMatterIdReviewBatchesBatchIdDisagreementsDocumentsDocumentIdGetResponseError = (getDisagreementReviewDocumentV1MattersMatterIdReviewBatchesBatchIdDisagreementsDocumentsDocumentIdGetResponse422) & {
+  headers: Headers;
+};
+
+export type getDisagreementReviewDocumentV1MattersMatterIdReviewBatchesBatchIdDisagreementsDocumentsDocumentIdGetResponse = (getDisagreementReviewDocumentV1MattersMatterIdReviewBatchesBatchIdDisagreementsDocumentsDocumentIdGetResponseSuccess | getDisagreementReviewDocumentV1MattersMatterIdReviewBatchesBatchIdDisagreementsDocumentsDocumentIdGetResponseError)
+
+export const getGetDisagreementReviewDocumentV1MattersMatterIdReviewBatchesBatchIdDisagreementsDocumentsDocumentIdGetUrl = (matterId: string,
+    batchId: string,
+    documentId: string,) => {
+
+
+
+
+  return `/api/core/v1/matters/${matterId}/review-batches/${batchId}/disagreements/documents/${documentId}`
+}
+
+/**
+ * @summary Get Disagreement Review Document
+ */
+export const getDisagreementReviewDocumentV1MattersMatterIdReviewBatchesBatchIdDisagreementsDocumentsDocumentIdGet = async (matterId: string,
+    batchId: string,
+    documentId: string, options?: RequestInit): Promise<getDisagreementReviewDocumentV1MattersMatterIdReviewBatchesBatchIdDisagreementsDocumentsDocumentIdGetResponse> => {
+
+  const res = await fetch(getGetDisagreementReviewDocumentV1MattersMatterIdReviewBatchesBatchIdDisagreementsDocumentsDocumentIdGetUrl(matterId,batchId,documentId),
+  {
+    ...options,
+    method: 'GET'
+
+
+  }
+)
+
+
+  const body = [204, 205, 304].includes(res.status) ? null : await res.text();
+
+  const data: getDisagreementReviewDocumentV1MattersMatterIdReviewBatchesBatchIdDisagreementsDocumentsDocumentIdGetResponse['data'] = body ? JSON.parse(body) : {}
+  return { data, status: res.status, headers: res.headers } as getDisagreementReviewDocumentV1MattersMatterIdReviewBatchesBatchIdDisagreementsDocumentsDocumentIdGetResponse
+}
+
+
+
 export type getReviewBatchComparisonOptionsV1MattersMatterIdReviewBatchesBatchIdComparisonOptionsGetResponse200 = {
   data: ReviewBatchComparisonOptionsRead
   status: 200
@@ -12157,6 +12215,140 @@ const res = await fetch(getCompareReviewBatchCodingV1MattersMatterIdReviewBatche
 
   const data: compareReviewBatchCodingV1MattersMatterIdReviewBatchesBatchIdCodingComparisonPostResponse['data'] = body ? JSON.parse(body) : {}
   return { data, status: res.status, headers: res.headers } as compareReviewBatchCodingV1MattersMatterIdReviewBatchesBatchIdCodingComparisonPostResponse
+}
+
+
+
+export type previewDisagreementReviewBatchV1MattersMatterIdReviewBatchesBatchIdCodingComparisonReviewBatchesPreviewPostResponse200 = {
+  data: ReviewBatchDisagreementBatchPreviewRead
+  status: 200
+}
+
+export type previewDisagreementReviewBatchV1MattersMatterIdReviewBatchesBatchIdCodingComparisonReviewBatchesPreviewPostResponse422 = {
+  data: HTTPValidationError
+  status: 422
+}
+
+export type previewDisagreementReviewBatchV1MattersMatterIdReviewBatchesBatchIdCodingComparisonReviewBatchesPreviewPostResponseSuccess = (previewDisagreementReviewBatchV1MattersMatterIdReviewBatchesBatchIdCodingComparisonReviewBatchesPreviewPostResponse200) & {
+  headers: Headers;
+};
+export type previewDisagreementReviewBatchV1MattersMatterIdReviewBatchesBatchIdCodingComparisonReviewBatchesPreviewPostResponseError = (previewDisagreementReviewBatchV1MattersMatterIdReviewBatchesBatchIdCodingComparisonReviewBatchesPreviewPostResponse422) & {
+  headers: Headers;
+};
+
+export type previewDisagreementReviewBatchV1MattersMatterIdReviewBatchesBatchIdCodingComparisonReviewBatchesPreviewPostResponse = (previewDisagreementReviewBatchV1MattersMatterIdReviewBatchesBatchIdCodingComparisonReviewBatchesPreviewPostResponseSuccess | previewDisagreementReviewBatchV1MattersMatterIdReviewBatchesBatchIdCodingComparisonReviewBatchesPreviewPostResponseError)
+
+export const getPreviewDisagreementReviewBatchV1MattersMatterIdReviewBatchesBatchIdCodingComparisonReviewBatchesPreviewPostUrl = (matterId: string,
+    batchId: string,) => {
+
+
+
+
+  return `/api/core/v1/matters/${matterId}/review-batches/${batchId}/coding-comparison/review-batches/preview`
+}
+
+/**
+ * @summary Preview Disagreement Review Batch
+ */
+export const previewDisagreementReviewBatchV1MattersMatterIdReviewBatchesBatchIdCodingComparisonReviewBatchesPreviewPost = async (matterId: string,
+    batchId: string,
+    reviewBatchDisagreementBatchPreviewRequest: ReviewBatchDisagreementBatchPreviewRequest, options?: RequestInit): Promise<previewDisagreementReviewBatchV1MattersMatterIdReviewBatchesBatchIdCodingComparisonReviewBatchesPreviewPostResponse> => {
+
+    const getHeaders = (h?: NonNullable<RequestInit['headers']>): Record<string, string | readonly string[]> => {
+    if (!h) return {};
+    if (h instanceof Headers) return Object.fromEntries(h.entries());
+    if (Symbol.iterator in h) {
+      return Object.fromEntries(
+        Array.from(h as Iterable<Iterable<string>>, (entry) => Array.from(entry) as [string, string]),
+      );
+    }
+    const headers: Record<string, string | readonly string[]> = {};
+    for (const [name, value] of Object.entries<string | readonly string[] | undefined>(h)) {
+      if (value !== undefined) headers[name] = value;
+    }
+    return headers;
+  };
+const res = await fetch(getPreviewDisagreementReviewBatchV1MattersMatterIdReviewBatchesBatchIdCodingComparisonReviewBatchesPreviewPostUrl(matterId,batchId),
+  {
+    ...options,
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json', ...getHeaders(options?.headers) },
+    body: JSON.stringify(reviewBatchDisagreementBatchPreviewRequest)
+  }
+)
+
+
+  const body = [204, 205, 304].includes(res.status) ? null : await res.text();
+
+  const data: previewDisagreementReviewBatchV1MattersMatterIdReviewBatchesBatchIdCodingComparisonReviewBatchesPreviewPostResponse['data'] = body ? JSON.parse(body) : {}
+  return { data, status: res.status, headers: res.headers } as previewDisagreementReviewBatchV1MattersMatterIdReviewBatchesBatchIdCodingComparisonReviewBatchesPreviewPostResponse
+}
+
+
+
+export type createDisagreementReviewBatchV1MattersMatterIdReviewBatchesBatchIdCodingComparisonReviewBatchesPostResponse202 = {
+  data: ReviewBatchRead
+  status: 202
+}
+
+export type createDisagreementReviewBatchV1MattersMatterIdReviewBatchesBatchIdCodingComparisonReviewBatchesPostResponse422 = {
+  data: HTTPValidationError
+  status: 422
+}
+
+export type createDisagreementReviewBatchV1MattersMatterIdReviewBatchesBatchIdCodingComparisonReviewBatchesPostResponseSuccess = (createDisagreementReviewBatchV1MattersMatterIdReviewBatchesBatchIdCodingComparisonReviewBatchesPostResponse202) & {
+  headers: Headers;
+};
+export type createDisagreementReviewBatchV1MattersMatterIdReviewBatchesBatchIdCodingComparisonReviewBatchesPostResponseError = (createDisagreementReviewBatchV1MattersMatterIdReviewBatchesBatchIdCodingComparisonReviewBatchesPostResponse422) & {
+  headers: Headers;
+};
+
+export type createDisagreementReviewBatchV1MattersMatterIdReviewBatchesBatchIdCodingComparisonReviewBatchesPostResponse = (createDisagreementReviewBatchV1MattersMatterIdReviewBatchesBatchIdCodingComparisonReviewBatchesPostResponseSuccess | createDisagreementReviewBatchV1MattersMatterIdReviewBatchesBatchIdCodingComparisonReviewBatchesPostResponseError)
+
+export const getCreateDisagreementReviewBatchV1MattersMatterIdReviewBatchesBatchIdCodingComparisonReviewBatchesPostUrl = (matterId: string,
+    batchId: string,) => {
+
+
+
+
+  return `/api/core/v1/matters/${matterId}/review-batches/${batchId}/coding-comparison/review-batches`
+}
+
+/**
+ * @summary Create Disagreement Review Batch
+ */
+export const createDisagreementReviewBatchV1MattersMatterIdReviewBatchesBatchIdCodingComparisonReviewBatchesPost = async (matterId: string,
+    batchId: string,
+    reviewBatchDisagreementBatchCreate: ReviewBatchDisagreementBatchCreate, options?: RequestInit): Promise<createDisagreementReviewBatchV1MattersMatterIdReviewBatchesBatchIdCodingComparisonReviewBatchesPostResponse> => {
+
+    const getHeaders = (h?: NonNullable<RequestInit['headers']>): Record<string, string | readonly string[]> => {
+    if (!h) return {};
+    if (h instanceof Headers) return Object.fromEntries(h.entries());
+    if (Symbol.iterator in h) {
+      return Object.fromEntries(
+        Array.from(h as Iterable<Iterable<string>>, (entry) => Array.from(entry) as [string, string]),
+      );
+    }
+    const headers: Record<string, string | readonly string[]> = {};
+    for (const [name, value] of Object.entries<string | readonly string[] | undefined>(h)) {
+      if (value !== undefined) headers[name] = value;
+    }
+    return headers;
+  };
+const res = await fetch(getCreateDisagreementReviewBatchV1MattersMatterIdReviewBatchesBatchIdCodingComparisonReviewBatchesPostUrl(matterId,batchId),
+  {
+    ...options,
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json', ...getHeaders(options?.headers) },
+    body: JSON.stringify(reviewBatchDisagreementBatchCreate)
+  }
+)
+
+
+  const body = [204, 205, 304].includes(res.status) ? null : await res.text();
+
+  const data: createDisagreementReviewBatchV1MattersMatterIdReviewBatchesBatchIdCodingComparisonReviewBatchesPostResponse['data'] = body ? JSON.parse(body) : {}
+  return { data, status: res.status, headers: res.headers } as createDisagreementReviewBatchV1MattersMatterIdReviewBatchesBatchIdCodingComparisonReviewBatchesPostResponse
 }
 
 

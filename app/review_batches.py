@@ -26,7 +26,8 @@ from app.models import (
     SearchIndexGeneration,
     WorkflowRun,
 )
-from app.schemas import MatterSearchRequest
+from app.review_batch_comparisons import comparison_document_ids
+from app.schemas import MatterSearchRequest, ReviewBatchComparisonSourceOptionRead
 from app.search.client import OpenSearchClient
 from app.search.query import compile_search_request
 
@@ -205,6 +206,38 @@ def _database_document_ids(db: Session, batch: ReviewBatch) -> list[uuid.UUID]:
         from app.classification_projections import classification_projection_document_ids
 
         ids = classification_projection_document_ids(db, batch)
+    elif batch.selection_type == "COMPARISON_RESULT":
+        if batch.source_batch_id is None:
+            raise ValueError("Comparison-result batch is missing its source batch")
+        source_batch = db.get(ReviewBatch, batch.source_batch_id)
+        if source_batch is None or source_batch.matter_id != batch.matter_id:
+            raise ValueError("Comparison-result source batch is unavailable")
+        if source_batch.status != "READY":
+            raise ValueError("Comparison-result source batch is not ready")
+        raw_definition_id = batch.selection_definition.get("metadata_definition_id")
+        raw_sources = batch.selection_definition.get("sources")
+        if raw_definition_id is None or not isinstance(raw_sources, list) or len(raw_sources) < 2:
+            raise ValueError("Comparison-result selection provenance is incomplete")
+        definition_id = uuid.UUID(str(raw_definition_id))
+        definition = db.get(MetadataDefinition, definition_id)
+        if definition is None or definition.matter_id != batch.matter_id:
+            raise ValueError("Comparison-result coding field is unavailable")
+        source_options = [ReviewBatchComparisonSourceOptionRead.model_validate(item) for item in raw_sources]
+        reviewer_revisions = {
+            source.id: int(raw_source["reviewer_revision"])
+            for source, raw_source in zip(source_options, raw_sources, strict=True)
+            if source.source_type == "REVIEWER" and raw_source.get("reviewer_revision") is not None
+        }
+        if len(reviewer_revisions) != sum(source.source_type == "REVIEWER" for source in source_options):
+            raise ValueError("Comparison-result reviewer revisions are incomplete")
+        ids = comparison_document_ids(
+            db,
+            batch_id=source_batch.id,
+            definition_id=definition.id,
+            source_options=source_options,
+            row_filter="DISAGREEMENT",
+            reviewer_revisions=reviewer_revisions,
+        )
     elif batch.selection_type == "RANDOM_BATCH":
         ids = list(
             db.scalars(

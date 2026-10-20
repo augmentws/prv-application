@@ -95,6 +95,12 @@ The **CSV** and **Parquet** buttons export every row matching the current docume
 
 Comparison reads authoritative reviewer coding and evaluation-run values directly from the database. It does not depend on the Batch Coding search projection, change which run is searchable, republish results, update matter coding, or rebuild OpenSearch.
 
+To create a follow-up review set, choose **Disagreements** in the document matrix and select **Create review batch**. Enter a batch name and confirm the verified document count. The new child batch includes partial and complete disagreements, keeps the parent batch's frozen coding layout, and is built through the normal review-batch workflow.
+
+Human coding is pinned to each selected reviewer's current immutable revision when the child batch is created. Later edits in the parent batch therefore do not change which documents belong to the child. Analysis sources already use immutable run IDs. The new batch appears in the matter's Review batches table with **Coding disagreements** provenance and can be opened and reviewed like any other batch. Creating the batch requires **Create review batches** permission; viewing the comparison alone does not.
+
+When you open that child batch, the review workspace starts on **Disagreements**. The panel names the compared coding field and shows every analysis task and reviewer-coding source selected when the batch was created. Each source card includes its frozen proposed value, pinned version details, and confidence when available. Choose **Use this coding** to copy a source's proposal, or enter a different value under **Correct coding**, then choose **Save & next**. The saved choice remains isolated reviewer coding in the disagreement batch until an authorized user deliberately promotes it.
+
 ### Human progress and promotion
 
 Open **Human progress & promotion** to inspect human coding. This view shows exactly one row for each reviewer, including completed and skipped document totals and the number of distinct documents coded for every snapshotted field in each coding group. A zero is retained in the display so an omitted field is visible rather than disappearing from the report.

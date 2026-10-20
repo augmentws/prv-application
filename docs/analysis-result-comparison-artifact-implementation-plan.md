@@ -1,14 +1,16 @@
 # Analysis Result Comparison Artifact Implementation Plan
 
-Status: batch-scoped interactive comparison implemented; durable stored-artifact workflow proposed.
+Status: batch-scoped interactive comparison and disagreement child-batch creation implemented; durable stored-artifact workflow proposed.
 
 The first delivered slice lives in **Batch statistics → Compare coding**. It
 compares two to six existing `review_batch_run` sources in bounded database
 chunks, provides count/agreement/document views, and exports CSV or Parquet on
 demand without adding per-document comparison rows or requiring OpenSearch.
-The persisted control-plane record, DBOS workflow, immutable Artifact-owned
-outputs, reference metrics, and reusable disagreement-batch creation described
-below remain the scale-out phase for repeated whole-matter comparisons.
+The delivered batch-scoped path can create a `COMPARISON_RESULT` child batch by
+replaying pinned human reviewer revisions and immutable evaluation runs against
+the ready parent batch. The persisted comparison control-plane record, dedicated
+DBOS comparison workflow, immutable Artifact-owned outputs, and reference metrics
+described below remain the scale-out phase for repeated whole-matter comparisons.
 
 Related documents:
 
@@ -585,6 +587,14 @@ Exit criterion: a matter manager can understand coverage and disagreement
 without interpreting raw Parquet or database identifiers.
 
 ## 11. Step 7: Create review batches from comparison results
+
+Implementation status: the existing Batch Statistics comparison can create a
+durable child batch from all partial and complete disagreement rows. The broader
+artifact-backed predicates, class/confidence filters, and deterministic sampling
+below remain proposed. Each current child batch also has a dedicated review
+panel that replays every pinned source for one document and lets the reviewer
+save the correct value through immutable child-batch reviewer coding; explicit
+adjudication status and publication remain future work.
 
 Add:
 

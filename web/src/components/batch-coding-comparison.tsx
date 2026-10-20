@@ -1,8 +1,10 @@
 "use client";
 
-import { useQuery } from "@tanstack/react-query";
-import { Check, ChevronLeft, ChevronRight, CircleHelp, Download, LoaderCircle } from "lucide-react";
+import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
+import { Check, ChevronLeft, ChevronRight, CircleHelp, Download, Layers3, LoaderCircle } from "lucide-react";
+import Link from "next/link";
 import { useMemo, useState } from "react";
+import { toast } from "sonner";
 import {
   Bar,
   BarChart,
@@ -17,6 +19,8 @@ import {
 import { QueryError } from "@/components/query-state";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
+import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle } from "@/components/ui/dialog";
+import { Input } from "@/components/ui/input";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Skeleton } from "@/components/ui/skeleton";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
@@ -26,6 +30,9 @@ import type {
   ReviewBatchComparisonRequest,
   ReviewBatchComparisonRequestRowFilter,
   ReviewBatchComparisonSourceOptionRead,
+  ReviewBatchDisagreementBatchCreate,
+  ReviewBatchDisagreementBatchPreviewRead,
+  ReviewBatchRead,
 } from "@/generated/models";
 import { coreApi } from "@/lib/api-client";
 import { formatDate } from "@/lib/format";
@@ -183,10 +190,14 @@ function MultiSourceOverlap({ comparison }: { comparison: ReviewBatchCodingCompa
 }
 
 export function BatchCodingComparison({ matterId, batchId, active }: { matterId: string; batchId: string; active: boolean }) {
+  const queryClient = useQueryClient();
   const [fieldId, setFieldId] = useState("");
   const [selectedSourceIds, setSelectedSourceIds] = useState<string[] | null>(null);
   const [rowFilter, setRowFilter] = useState<ReviewBatchComparisonRequestRowFilter>("ALL");
   const [offset, setOffset] = useState(0);
+  const [createDialogOpen, setCreateDialogOpen] = useState(false);
+  const [batchName, setBatchName] = useState("");
+  const [createdBatch, setCreatedBatch] = useState<ReviewBatchRead | null>(null);
   const options = useQuery({
     queryKey: ["review-batch-comparison-options", matterId, batchId],
     queryFn: () => coreApi<ReviewBatchComparisonOptionsRead>(`/v1/matters/${matterId}/review-batches/${batchId}/comparison-options`),
@@ -217,6 +228,27 @@ export function BatchCodingComparison({ matterId, batchId, active }: { matterId:
     enabled: active && request !== null,
   });
   const sourceMap = new Map(visibleSources.map((source) => [source.id, source]));
+  const selectedField = options.data?.fields.find((field) => field.id === effectiveFieldId);
+  const disagreementPreview = useQuery({
+    queryKey: ["review-batch-disagreement-preview", matterId, batchId, effectiveFieldId, effectiveSourceIds],
+    queryFn: () => coreApi<ReviewBatchDisagreementBatchPreviewRead>(`/v1/matters/${matterId}/review-batches/${batchId}/coding-comparison/review-batches/preview`, {
+      method: "POST",
+      body: JSON.stringify({ metadata_definition_id: effectiveFieldId, source_ids: effectiveSourceIds }),
+    }),
+    enabled: createDialogOpen && effectiveSourceIds.length >= 2,
+  });
+  const createDisagreementBatch = useMutation({
+    mutationFn: (values: ReviewBatchDisagreementBatchCreate) => coreApi<ReviewBatchRead>(`/v1/matters/${matterId}/review-batches/${batchId}/coding-comparison/review-batches`, {
+      method: "POST",
+      body: JSON.stringify(values),
+    }),
+    onSuccess: (created) => {
+      setCreatedBatch(created);
+      void queryClient.invalidateQueries({ queryKey: ["review-batches", matterId] });
+      toast.success(`${created.name} was queued for creation.`);
+    },
+    onError: (error) => toast.error(error instanceof Error ? error.message : "The disagreement batch could not be created."),
+  });
 
   const toggleRun = (sourceId: string) => {
     setOffset(0);
@@ -229,6 +261,11 @@ export function BatchCodingComparison({ matterId, batchId, active }: { matterId:
     const params = new URLSearchParams({ metadata_definition_id: effectiveFieldId, row_filter: rowFilter, format });
     for (const sourceId of effectiveSourceIds) params.append("source_id", sourceId);
     return `/api/core/v1/matters/${matterId}/review-batches/${batchId}/coding-comparison/export?${params.toString()}`;
+  };
+  const openCreateDialog = () => {
+    setBatchName(`${selectedField?.display_name ?? "Coding"} disagreements`);
+    setCreatedBatch(null);
+    setCreateDialogOpen(true);
   };
 
   if (options.isPending) return <div className="space-y-3"><Skeleton className="h-24 w-full" /><Skeleton className="h-64 w-full" /></div>;
@@ -252,11 +289,32 @@ export function BatchCodingComparison({ matterId, batchId, active }: { matterId:
       <PairwiseAgreement comparison={comparison.data} />
       <MultiSourceOverlap comparison={comparison.data} />
       <section className="rounded-lg border p-4">
-        <div className="flex flex-wrap items-end justify-between gap-3"><div><h3 className="font-semibold">Document matrix</h3><p className="mt-1 text-xs text-muted-foreground">One frozen batch document per row and one selected result set per column.</p></div><div className="flex flex-wrap items-center gap-2"><Select value={rowFilter} onValueChange={(value) => { setRowFilter(value as ReviewBatchComparisonRequestRowFilter); setOffset(0); }}><SelectTrigger className="w-40" aria-label="Document agreement filter"><SelectValue /></SelectTrigger><SelectContent><SelectItem value="ALL">All documents</SelectItem><SelectItem value="DISAGREEMENT">Disagreements</SelectItem><SelectItem value="AGREEMENT">Exact agreement</SelectItem><SelectItem value="INCOMPLETE">Incomplete</SelectItem></SelectContent></Select><Button asChild size="sm" variant="outline"><a href={exportUrl("csv")} download><Download />CSV</a></Button><Button asChild size="sm" variant="outline"><a href={exportUrl("parquet")} download><Download />Parquet</a></Button></div></div>
+        <div className="flex flex-wrap items-end justify-between gap-3"><div><h3 className="font-semibold">Document matrix</h3><p className="mt-1 text-xs text-muted-foreground">One frozen batch document per row and one selected result set per column.</p></div><div className="flex flex-wrap items-center gap-2"><Select value={rowFilter} onValueChange={(value) => { setRowFilter(value as ReviewBatchComparisonRequestRowFilter); setOffset(0); }}><SelectTrigger className="w-40" aria-label="Document agreement filter"><SelectValue /></SelectTrigger><SelectContent><SelectItem value="ALL">All documents</SelectItem><SelectItem value="DISAGREEMENT">Disagreements</SelectItem><SelectItem value="AGREEMENT">Exact agreement</SelectItem><SelectItem value="INCOMPLETE">Incomplete</SelectItem></SelectContent></Select>{rowFilter === "DISAGREEMENT" ? <Button type="button" size="sm" disabled={comparison.data.filtered_document_count === 0} onClick={openCreateDialog}><Layers3 />Create review batch</Button> : null}<Button asChild size="sm" variant="outline"><a href={exportUrl("csv")} download><Download />CSV</a></Button><Button asChild size="sm" variant="outline"><a href={exportUrl("parquet")} download><Download />Parquet</a></Button></div></div>
         <div className="mt-3"><Table><TableHeader><TableRow><TableHead className="sticky left-0 bg-muted">Document</TableHead><TableHead>Status</TableHead>{comparison.data.sources.map((source) => <TableHead key={source.id} className="min-w-48" title={runTitle(source)}>{source.label}</TableHead>)}</TableRow></TableHeader><TableBody>{comparison.data.documents.map((document) => <TableRow key={document.matter_document_id}><TableCell className="sticky left-0 bg-card font-medium tabular-nums">#{document.sequence_number}<span className="ml-2 font-mono text-xs text-muted-foreground">{document.matter_document_id.slice(0, 8)}</span></TableCell><TableCell><Badge variant={document.agreement_status === "EXACT" ? "accent" : "outline"}>{document.agreement_status.toLowerCase()}</Badge></TableCell>{document.sources.map((source) => <TableCell key={source.source_id}><span className={cn(source.state !== "EVALUATED" && "text-muted-foreground")}>{source.state === "EVALUATED" ? source.display_values.length ? source.display_values.join(" · ") : "No value" : source.state.toLowerCase().replaceAll("_", " ")}</span>{source.top_confidence != null ? <span className="ml-2 text-xs tabular-nums text-muted-foreground">{Math.round(source.top_confidence * 100)}%</span> : null}</TableCell>)}</TableRow>)}</TableBody></Table></div>
         {!comparison.data.documents.length ? <p className="py-8 text-center text-sm text-muted-foreground">No documents match this agreement filter.</p> : null}
         <div className="mt-3 flex items-center justify-between gap-3"><p className="text-xs tabular-nums text-muted-foreground">{comparison.data.filtered_document_count.toLocaleString()} matching documents{comparison.data.filtered_document_count ? ` · ${offset + 1}–${Math.min(offset + PAGE_SIZE, comparison.data.filtered_document_count)}` : ""}</p><div className="flex gap-2"><Button type="button" size="sm" variant="outline" disabled={offset === 0} onClick={() => setOffset(Math.max(0, offset - PAGE_SIZE))}><ChevronLeft />Previous</Button><Button type="button" size="sm" variant="outline" disabled={offset + PAGE_SIZE >= comparison.data.filtered_document_count} onClick={() => setOffset(offset + PAGE_SIZE)}>Next<ChevronRight /></Button></div></div>
       </section>
     </> : null}
+    <Dialog open={createDialogOpen} onOpenChange={setCreateDialogOpen}>
+      <DialogContent className="sm:max-w-xl">
+        <DialogHeader>
+          <DialogTitle>Create disagreement review batch</DialogTitle>
+          <DialogDescription>Create a frozen child batch containing the partial and complete disagreements for the selected field and result sets.</DialogDescription>
+        </DialogHeader>
+        {createdBatch ? <div className="space-y-4">
+          <div className="rounded-md border bg-muted/40 p-4 text-sm">
+            <p className="font-medium">{createdBatch.name}</p>
+            <p className="mt-1 text-muted-foreground">{Number(createdBatch.selection_definition.candidate_count ?? createdBatch.document_count).toLocaleString()} disagreement documents · {createdBatch.status.toLowerCase()}</p>
+          </div>
+          <DialogFooter><Button type="button" variant="outline" onClick={() => setCreateDialogOpen(false)}>Close</Button><Button asChild><Link href={`/review/matters/${matterId}?batch=${createdBatch.id}`}>Open review batch</Link></Button></DialogFooter>
+        </div> : <div className="space-y-4">
+          <label className="block space-y-1.5 text-sm font-medium">Batch name<Input value={batchName} maxLength={200} onChange={(event) => setBatchName(event.target.value)} /></label>
+          {disagreementPreview.isPending ? <div className="flex items-center gap-2 rounded-md border p-3 text-sm text-muted-foreground"><LoaderCircle className="size-4 animate-spin" />Verifying the disagreement set…</div> : null}
+          {disagreementPreview.error ? <QueryError message={disagreementPreview.error.message} /> : null}
+          {disagreementPreview.data ? <div className="rounded-md border bg-muted/40 p-3 text-sm"><p><span className="font-semibold tabular-nums">{disagreementPreview.data.candidate_count.toLocaleString()}</span> documents will be included.</p><p className="mt-1 text-xs text-muted-foreground">Human reviewer coding is pinned to its current immutable revision. Later edits to the parent batch will not change this child batch.</p></div> : null}
+          <DialogFooter><Button type="button" variant="outline" onClick={() => setCreateDialogOpen(false)} disabled={createDisagreementBatch.isPending}>Cancel</Button><Button type="button" disabled={!batchName.trim() || !disagreementPreview.data?.candidate_count || createDisagreementBatch.isPending} onClick={() => createDisagreementBatch.mutate({ metadata_definition_id: effectiveFieldId, source_ids: effectiveSourceIds, name: batchName.trim() })}>{createDisagreementBatch.isPending ? <LoaderCircle className="animate-spin" /> : <Layers3 />}{createDisagreementBatch.isPending ? "Creating…" : "Create batch"}</Button></DialogFooter>
+        </div>}
+      </DialogContent>
+    </Dialog>
   </div>;
 }

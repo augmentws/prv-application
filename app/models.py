@@ -1316,7 +1316,7 @@ class ReviewBatch(TimestampMixin, Base):
         CheckConstraint(
             "selection_type IN ('ALL_MATTER', 'SEARCH_QUERY', 'RANDOM_MATTER', 'RANDOM_BATCH', "
             "'RANDOM_SAVED_SEARCH', 'RANDOM_ASSESSMENT', 'DEFINITION_ASSESSMENT', "
-            "'CLASSIFICATION_PREDICTIONS')",
+            "'CLASSIFICATION_PREDICTIONS', 'COMPARISON_RESULT')",
             name="ck_review_batch_selection_type",
         ),
         CheckConstraint(

@@ -12660,6 +12660,74 @@
         }
       }
     },
+    "/v1/matters/{matter_id}/review-batches/{batch_id}/disagreements/documents/{document_id}": {
+      "get": {
+        "tags": [
+          "review batches"
+        ],
+        "summary": "Get Disagreement Review Document",
+        "operationId": "get_disagreement_review_document_v1_matters__matter_id__review_batches__batch_id__disagreements_documents__document_id__get",
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "matter_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid",
+              "title": "Matter Id"
+            }
+          },
+          {
+            "name": "batch_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid",
+              "title": "Batch Id"
+            }
+          },
+          {
+            "name": "document_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid",
+              "title": "Document Id"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ReviewBatchDisagreementDocumentRead"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/v1/matters/{matter_id}/review-batches/{batch_id}/comparison-options": {
       "get": {
         "tags": [
@@ -12769,6 +12837,142 @@
               "application/json": {
                 "schema": {
                   "$ref": "#/components/schemas/ReviewBatchCodingComparisonRead"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v1/matters/{matter_id}/review-batches/{batch_id}/coding-comparison/review-batches/preview": {
+      "post": {
+        "tags": [
+          "review batches"
+        ],
+        "summary": "Preview Disagreement Review Batch",
+        "operationId": "preview_disagreement_review_batch_v1_matters__matter_id__review_batches__batch_id__coding_comparison_review_batches_preview_post",
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "matter_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid",
+              "title": "Matter Id"
+            }
+          },
+          {
+            "name": "batch_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid",
+              "title": "Batch Id"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ReviewBatchDisagreementBatchPreviewRequest"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ReviewBatchDisagreementBatchPreviewRead"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v1/matters/{matter_id}/review-batches/{batch_id}/coding-comparison/review-batches": {
+      "post": {
+        "tags": [
+          "review batches"
+        ],
+        "summary": "Create Disagreement Review Batch",
+        "operationId": "create_disagreement_review_batch_v1_matters__matter_id__review_batches__batch_id__coding_comparison_review_batches_post",
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "matter_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid",
+              "title": "Matter Id"
+            }
+          },
+          {
+            "name": "batch_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid",
+              "title": "Batch Id"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ReviewBatchDisagreementBatchCreate"
+              }
+            }
+          }
+        },
+        "responses": {
+          "202": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ReviewBatchRead"
                 }
               }
             }
@@ -45469,6 +45673,348 @@
         ],
         "title": "ReviewBatchCreate"
       },
+      "ReviewBatchDisagreementBatchCreate": {
+        "properties": {
+          "metadata_definition_id": {
+            "type": "string",
+            "format": "uuid",
+            "title": "Metadata Definition Id"
+          },
+          "source_ids": {
+            "items": {
+              "type": "string",
+              "format": "uuid"
+            },
+            "type": "array",
+            "maxItems": 12,
+            "minItems": 2,
+            "title": "Source Ids"
+          },
+          "name": {
+            "type": "string",
+            "maxLength": 200,
+            "minLength": 1,
+            "title": "Name"
+          },
+          "description": {
+            "anyOf": [
+              {
+                "type": "string",
+                "maxLength": 4000
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Description"
+          }
+        },
+        "type": "object",
+        "required": [
+          "metadata_definition_id",
+          "source_ids",
+          "name"
+        ],
+        "title": "ReviewBatchDisagreementBatchCreate"
+      },
+      "ReviewBatchDisagreementBatchPreviewRead": {
+        "properties": {
+          "source_batch_id": {
+            "type": "string",
+            "format": "uuid",
+            "title": "Source Batch Id"
+          },
+          "metadata_definition_id": {
+            "type": "string",
+            "format": "uuid",
+            "title": "Metadata Definition Id"
+          },
+          "field_display_name": {
+            "type": "string",
+            "title": "Field Display Name"
+          },
+          "candidate_count": {
+            "type": "integer",
+            "minimum": 0.0,
+            "title": "Candidate Count"
+          },
+          "sources": {
+            "items": {
+              "$ref": "#/components/schemas/ReviewBatchDisagreementSourceSnapshotRead"
+            },
+            "type": "array",
+            "title": "Sources"
+          }
+        },
+        "type": "object",
+        "required": [
+          "source_batch_id",
+          "metadata_definition_id",
+          "field_display_name",
+          "candidate_count",
+          "sources"
+        ],
+        "title": "ReviewBatchDisagreementBatchPreviewRead"
+      },
+      "ReviewBatchDisagreementBatchPreviewRequest": {
+        "properties": {
+          "metadata_definition_id": {
+            "type": "string",
+            "format": "uuid",
+            "title": "Metadata Definition Id"
+          },
+          "source_ids": {
+            "items": {
+              "type": "string",
+              "format": "uuid"
+            },
+            "type": "array",
+            "maxItems": 12,
+            "minItems": 2,
+            "title": "Source Ids"
+          }
+        },
+        "type": "object",
+        "required": [
+          "metadata_definition_id",
+          "source_ids"
+        ],
+        "title": "ReviewBatchDisagreementBatchPreviewRequest"
+      },
+      "ReviewBatchDisagreementDocumentRead": {
+        "properties": {
+          "review_batch_id": {
+            "type": "string",
+            "format": "uuid",
+            "title": "Review Batch Id"
+          },
+          "source_batch_id": {
+            "type": "string",
+            "format": "uuid",
+            "title": "Source Batch Id"
+          },
+          "matter_document_id": {
+            "type": "string",
+            "format": "uuid",
+            "title": "Matter Document Id"
+          },
+          "metadata_definition_id": {
+            "type": "string",
+            "format": "uuid",
+            "title": "Metadata Definition Id"
+          },
+          "field_display_name": {
+            "type": "string",
+            "title": "Field Display Name"
+          },
+          "field_type": {
+            "type": "string",
+            "enum": [
+              "TEXT",
+              "LONG_TEXT",
+              "INTEGER",
+              "DECIMAL",
+              "BOOLEAN",
+              "DATE",
+              "DATETIME",
+              "ENUM",
+              "JSON"
+            ],
+            "title": "Field Type"
+          },
+          "cardinality": {
+            "type": "string",
+            "enum": [
+              "SINGLE",
+              "MULTIPLE"
+            ],
+            "title": "Cardinality"
+          },
+          "allowed_values": {
+            "items": {
+              "additionalProperties": true,
+              "type": "object"
+            },
+            "type": "array",
+            "title": "Allowed Values"
+          },
+          "agreement_status": {
+            "type": "string",
+            "enum": [
+              "PARTIAL",
+              "DISAGREEMENT"
+            ],
+            "title": "Agreement Status"
+          },
+          "sources": {
+            "items": {
+              "$ref": "#/components/schemas/ReviewBatchDisagreementDocumentSourceRead"
+            },
+            "type": "array",
+            "title": "Sources"
+          }
+        },
+        "type": "object",
+        "required": [
+          "review_batch_id",
+          "source_batch_id",
+          "matter_document_id",
+          "metadata_definition_id",
+          "field_display_name",
+          "field_type",
+          "cardinality",
+          "allowed_values",
+          "agreement_status",
+          "sources"
+        ],
+        "title": "ReviewBatchDisagreementDocumentRead"
+      },
+      "ReviewBatchDisagreementDocumentSourceRead": {
+        "properties": {
+          "id": {
+            "type": "string",
+            "format": "uuid",
+            "title": "Id"
+          },
+          "source_type": {
+            "type": "string",
+            "enum": [
+              "REVIEWER",
+              "RUN"
+            ],
+            "title": "Source Type"
+          },
+          "run_type": {
+            "anyOf": [
+              {
+                "type": "string",
+                "enum": [
+                  "AGENT",
+                  "WORKFLOW",
+                  "CLASSIFIER"
+                ]
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Run Type"
+          },
+          "label": {
+            "type": "string",
+            "title": "Label"
+          },
+          "detail": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Detail"
+          },
+          "reviewer_revision": {
+            "anyOf": [
+              {
+                "type": "integer",
+                "minimum": 0.0
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Reviewer Revision"
+          },
+          "state": {
+            "type": "string",
+            "enum": [
+              "EVALUATED",
+              "SKIPPED",
+              "FAILED",
+              "INCOMPLETE",
+              "NOT_EVALUATED"
+            ],
+            "title": "State"
+          },
+          "values": {
+            "items": {},
+            "type": "array",
+            "title": "Values"
+          },
+          "display_values": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array",
+            "title": "Display Values"
+          },
+          "top_confidence": {
+            "anyOf": [
+              {
+                "type": "number",
+                "maximum": 1.0,
+                "minimum": 0.0
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Top Confidence"
+          }
+        },
+        "type": "object",
+        "required": [
+          "id",
+          "source_type",
+          "label",
+          "state",
+          "values",
+          "display_values"
+        ],
+        "title": "ReviewBatchDisagreementDocumentSourceRead"
+      },
+      "ReviewBatchDisagreementSourceSnapshotRead": {
+        "properties": {
+          "id": {
+            "type": "string",
+            "format": "uuid",
+            "title": "Id"
+          },
+          "source_type": {
+            "type": "string",
+            "enum": [
+              "REVIEWER",
+              "RUN"
+            ],
+            "title": "Source Type"
+          },
+          "label": {
+            "type": "string",
+            "title": "Label"
+          },
+          "reviewer_revision": {
+            "anyOf": [
+              {
+                "type": "integer",
+                "minimum": 0.0
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Reviewer Revision"
+          }
+        },
+        "type": "object",
+        "required": [
+          "id",
+          "source_type",
+          "label"
+        ],
+        "title": "ReviewBatchDisagreementSourceSnapshotRead"
+      },
       "ReviewBatchDocumentAnalysisRead": {
         "properties": {
           "review_batch_run_id": {
@@ -45986,7 +46532,8 @@
               "RANDOM_SAVED_SEARCH",
               "RANDOM_ASSESSMENT",
               "DEFINITION_ASSESSMENT",
-              "CLASSIFICATION_PREDICTIONS"
+              "CLASSIFICATION_PREDICTIONS",
+              "COMPARISON_RESULT"
             ],
             "title": "Selection Type"
           },

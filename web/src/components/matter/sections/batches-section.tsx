@@ -182,5 +182,9 @@ function batchSelectionLabel(batch: ReviewBatchRead) {
       : "selected";
     return `Classifier predictions · ${range}`;
   }
+  if (batch.selection_type === "COMPARISON_RESULT") {
+    const fieldName = batch.selection_definition.field_display_name;
+    return typeof fieldName === "string" ? `${fieldName} disagreements` : "Coding disagreements";
+  }
   return { ALL_MATTER: "All matter documents", SEARCH_QUERY: "Keyword search", RANDOM_MATTER: "Random matter sample", RANDOM_BATCH: "Random batch sample", RANDOM_ASSESSMENT: "Random assessment-candidate sample", DEFINITION_ASSESSMENT: "Matter Definition assessment" }[batch.selection_type];
 }

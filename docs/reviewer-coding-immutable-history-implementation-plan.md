@@ -33,9 +33,10 @@ Implemented on October 14, 2026 through Core migration
 - reviewer revision pinning in classification dataset label-policy snapshots; and
 - a set-based baseline migration for existing current reviewer coding.
 
-Persisted asynchronous comparison snapshots, disagreement child batches, and an
-administrator-facing projection-reconciliation command remain follow-on work. Live
-Batch Statistics continues to use the latest current projection.
+Persisted asynchronous comparison snapshots and an administrator-facing
+projection-reconciliation command remain follow-on work. Batch Statistics reads
+the latest current projection interactively; a disagreement child batch pins the
+selected human revisions before its durable materializer replays the comparison.
 
 ## Goals
 
@@ -55,8 +56,9 @@ Batch Statistics continues to use the latest current projection.
 
 - This change does not create human review runs or human pass IDs.
 - It does not promote reviewer values into matter coding automatically.
-- It does not implement parent/child disagreement batches. It supplies the
-  revision-pinning prerequisite for that later feature.
+- It does not itself implement parent/child disagreement batches. The later
+  `COMPARISON_RESULT` batch workflow uses the revision-pinning prerequisite
+  supplied here.
 - It does not recover historical edits that were overwritten before this feature
   was deployed. Existing data can only be preserved as a baseline revision.
 - It does not store a complete copy of every document's coding on every save.
@@ -323,13 +325,13 @@ the as-of resolver. Add a reconciliation check proving the snapshot exactly matc
 the pinned revision before the durable promotion begins. Later edits remain new
 reviewer revisions and cannot alter the queued promotion.
 
-### Future disagreement child batches
+### Disagreement child batches
 
-This history allows a child batch to retain a parent reviewer source plus pinned
-revision for every selected human source. The child can then reproduce the exact
-values that caused the disagreement even after a reviewer changes the parent-batch
-coding. Analysis sources continue to pin immutable run IDs. Parent/child batch
-schema and the disagreement-specific coding panel remain separate follow-on work.
+The `COMPARISON_RESULT` workflow retains the parent batch plus a pinned revision
+for every selected human source. The child therefore reproduces the exact values
+that caused the disagreement even after a reviewer changes the parent-batch coding.
+Analysis sources continue to pin immutable run IDs. A specialized adjudication
+panel beyond the ordinary child-batch review workspace remains follow-on work.
 
 ### Audit log
 
