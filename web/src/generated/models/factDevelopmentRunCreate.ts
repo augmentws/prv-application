@@ -17,4 +17,5 @@ export interface FactDevelopmentRunCreate {
      */
   idempotency_key: string;
   use_batch_api?: boolean;
+  matter_analysis_task_version_id?: string | null;
 }

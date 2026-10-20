@@ -188,16 +188,46 @@ def create_classification_analysis_run(
 ) -> tuple[MatterAnalysisTaskRun, bool]:
     if task.task_type != "CLASSIFICATION" or task.status != "ACTIVE":
         raise ClassificationAnalysisTaskError("An active classification Analysis Task is required")
-    if task.published_version is None:
-        raise ClassificationAnalysisTaskError("Publish the classification task before running it")
-    task_version = db.scalar(
-        select(MatterAnalysisTaskVersion).where(
-            MatterAnalysisTaskVersion.matter_analysis_task_id == task.id,
-            MatterAnalysisTaskVersion.version == task.published_version,
+    batch = None
+    batch_set = None
+    if payload.scope_type == "REVIEW_BATCH":
+        batch = db.get(ReviewBatch, payload.scope_id)
+        if batch is None or batch.matter_id != matter.id or batch.status != "READY":
+            raise ClassificationAnalysisTaskError("Review-batch scope must identify a ready batch")
+        if batch.analysis_task_batch_set_id is not None:
+            batch_set = db.get(AnalysisTaskBatchSet, batch.analysis_task_batch_set_id)
+            if batch_set is None or batch_set.matter_analysis_task_id != task.id:
+                raise ClassificationAnalysisTaskError("Managed batch belongs to another Analysis Task")
+    requested_version_id = payload.matter_analysis_task_version_id
+    if batch_set is not None:
+        if requested_version_id is not None and requested_version_id != batch_set.matter_analysis_task_version_id:
+            raise ClassificationAnalysisTaskError("Managed batch must run with its Batch Set's pinned task version")
+        requested_version_id = batch_set.matter_analysis_task_version_id
+    if requested_version_id is not None:
+        task_version = db.scalar(
+            select(MatterAnalysisTaskVersion).where(
+                MatterAnalysisTaskVersion.id == requested_version_id,
+                MatterAnalysisTaskVersion.matter_analysis_task_id == task.id,
+            )
         )
-    )
-    if task_version is None or task_version.status != "PUBLISHED":
+    else:
+        if task.published_version is None:
+            raise ClassificationAnalysisTaskError("Publish the classification task before running it")
+        task_version = db.scalar(
+            select(MatterAnalysisTaskVersion).where(
+                MatterAnalysisTaskVersion.matter_analysis_task_id == task.id,
+                MatterAnalysisTaskVersion.version == task.published_version,
+            )
+        )
+    allowed_statuses = {"PUBLISHED", "RETIRED"} if batch_set is not None else {"PUBLISHED"}
+    if (
+        task_version is None
+        or task_version.status not in allowed_statuses
+        or task_version.compilation_status != "READY"
+    ):
         raise ClassificationAnalysisTaskError("Published classification task version is unavailable")
+    if batch_set is None and task_version.version != task.published_version:
+        raise ClassificationAnalysisTaskError("Ad hoc runs must use the currently published task version")
     if task_version.classification_model_id is None or task_version.classification_model_version_id is None:
         raise ClassificationAnalysisTaskError("Classification task version has no pinned model version")
     model = db.scalar(
@@ -243,12 +273,10 @@ def create_classification_analysis_run(
         if payload.scope_id != matter.id:
             raise ClassificationAnalysisTaskError("Matter scope must identify this matter")
     else:
-        batch = db.get(ReviewBatch, payload.scope_id)
-        if batch is None or batch.matter_id != matter.id or batch.status != "READY":
+        if batch is None:
             raise ClassificationAnalysisTaskError("Review-batch scope must identify a ready batch")
-        if batch.analysis_task_batch_set_id is not None:
-            batch_set = db.get(AnalysisTaskBatchSet, batch.analysis_task_batch_set_id)
-            if batch_set is None or batch_set.matter_analysis_task_version_id != task_version.id:
+        if batch_set is not None:
+            if batch_set.matter_analysis_task_version_id != task_version.id:
                 raise ClassificationAnalysisTaskError(
                     "Managed batch must run with its Batch Set's pinned task version"
                 )
@@ -271,6 +299,8 @@ def create_classification_analysis_run(
         matter_id=matter.id,
         matter_analysis_task_id=task.id,
         matter_analysis_task_version_id=task_version.id,
+        analysis_task_batch_set_id=batch_set.id if batch_set else None,
+        batch_set_ordinal=batch.batch_set_ordinal if batch_set and batch else None,
         scope_type=payload.scope_type,
         scope_id=payload.scope_id,
         classification_model_id=model.id,
@@ -308,6 +338,8 @@ def create_classification_analysis_run(
             "matter_analysis_task_version_id": str(task_version.id),
             "scope_type": run.scope_type,
             "scope_id": str(run.scope_id),
+            "analysis_task_batch_set_id": str(batch_set.id) if batch_set else None,
+            "batch_set_ordinal": batch.batch_set_ordinal if batch_set and batch else None,
             "embedding_job_id": str(run.embedding_job_id),
             "classification_model_id": str(run.classification_model_id),
             "classification_model_version_id": str(run.classification_model_version_id),
@@ -328,6 +360,8 @@ def create_classification_analysis_run(
             "classification_model_version_id": str(version.id),
             "scope_type": run.scope_type,
             "scope_id": str(run.scope_id),
+            "analysis_task_batch_set_id": str(batch_set.id) if batch_set else None,
+            "batch_set_ordinal": batch.batch_set_ordinal if batch_set and batch else None,
         },
     )
     return run, True

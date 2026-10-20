@@ -55,13 +55,19 @@ def queue_analysis_task_batch(
         raise MatterAnalysisTaskConflict("A ready review batch is required")
     if task.matter_id != matter.id or task_version.matter_analysis_task_id != task.id:
         raise MatterAnalysisTaskConflict("Analysis task version does not belong to this matter")
+    batch_set = None
     if batch.analysis_task_batch_set_id is not None:
         batch_set = db.get(AnalysisTaskBatchSet, batch.analysis_task_batch_set_id)
-        if batch_set is None or batch_set.matter_analysis_task_version_id != task_version.id:
+        if (
+            batch_set is None
+            or batch_set.matter_analysis_task_id != task.id
+            or batch_set.matter_analysis_task_version_id != task_version.id
+        ):
             raise MatterAnalysisTaskConflict("Managed batch must run with its Batch Set's pinned task version")
     elif "AD_HOC_BATCH" not in (task_version.scope_policy or {}).get("allowed_modes", ["AD_HOC_BATCH"]):
         raise MatterAnalysisTaskConflict("This task version does not allow ad hoc batch execution")
-    if task_version.status != "PUBLISHED" or task_version.compilation_status != "READY":
+    allowed_version_statuses = {"PUBLISHED", "RETIRED"} if batch_set is not None else {"PUBLISHED"}
+    if task_version.status not in allowed_version_statuses or task_version.compilation_status != "READY":
         raise MatterAnalysisTaskConflict("Batch evaluation requires a ready, published task version")
     if task_version.decision_provider == "OPENAI_DECISIONS" and not get_settings().openai_api_key:
         raise MatterAnalysisTaskConflict(
@@ -137,6 +143,8 @@ def queue_analysis_task_batch(
             "definition_content_hash": task_version.definition_content_hash,
             "specification_content_hash": task_version.specification_content_hash,
             "review_batch_id": str(batch.id),
+            "analysis_task_batch_set_id": str(batch_set.id) if batch_set else None,
+            "batch_set_ordinal": batch.batch_set_ordinal,
             "document_count": len(documents),
         },
         binding_snapshot=bindings,
@@ -164,6 +172,8 @@ def queue_analysis_task_batch(
     review_run = ReviewBatchRun(
         id=review_run_id,
         review_batch_id=batch.id,
+        analysis_task_batch_set_id=batch_set.id if batch_set else None,
+        batch_set_ordinal=batch.batch_set_ordinal if batch_set else None,
         run_type="WORKFLOW",
         purpose="REVIEW",
         status="QUEUED",
@@ -176,6 +186,8 @@ def queue_analysis_task_batch(
             "task_name": task.name,
             "task_version_id": str(task_version.id),
             "task_version": task_version.version,
+            "analysis_task_batch_set_id": str(batch_set.id) if batch_set else None,
+            "batch_set_ordinal": batch.batch_set_ordinal,
             "engine_key": engine_key,
             "model_key": model_key,
             "decision_provider": task_version.decision_provider,

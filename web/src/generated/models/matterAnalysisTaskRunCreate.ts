@@ -16,4 +16,5 @@ export interface MatterAnalysisTaskRunCreate {
      * @maxLength 200
      */
   idempotency_key: string;
+  matter_analysis_task_version_id?: string | null;
 }

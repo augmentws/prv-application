@@ -15,6 +15,8 @@ export interface FactDevelopmentRunRead {
   matter_id: string;
   matter_analysis_task_id: string;
   matter_analysis_task_version_id: string;
+  analysis_task_batch_set_id?: string | null;
+  batch_set_ordinal?: number | null;
   run_kind: 'FACT_DEVELOPMENT';
   scope_type: 'REVIEW_BATCH';
   scope_id: string;

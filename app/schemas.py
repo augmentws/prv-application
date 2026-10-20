@@ -1376,6 +1376,8 @@ class ReviewBatchRunCreate(BaseModel):
 class ReviewBatchRunRead(ORMModel):
     id: uuid.UUID
     review_batch_id: uuid.UUID
+    analysis_task_batch_set_id: uuid.UUID | None = None
+    batch_set_ordinal: int | None = None
     run_type: ReviewBatchRunType
     purpose: ReviewBatchRunPurpose
     status: ReviewBatchRunStatus
@@ -1405,6 +1407,7 @@ class ReviewBatchAnalysisRunCreate(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     matter_analysis_task_id: uuid.UUID
+    matter_analysis_task_version_id: uuid.UUID | None = None
 
 
 class ReviewBatchClassifierRunCreate(BaseModel):
@@ -2946,6 +2949,7 @@ class MatterAnalysisTaskRunCreate(BaseModel):
     scope_id: uuid.UUID
     embedding_job_id: uuid.UUID
     idempotency_key: str = Field(min_length=1, max_length=200)
+    matter_analysis_task_version_id: uuid.UUID | None = None
 
     @field_validator("idempotency_key")
     @classmethod
@@ -2972,6 +2976,7 @@ class FactDevelopmentRunCreate(BaseModel):
     idempotency_key: str = Field(min_length=1, max_length=200)
     # Submit extraction calls through the provider's Batch API: lower cost, results in minutes to hours.
     use_batch_api: bool = False
+    matter_analysis_task_version_id: uuid.UUID | None = None
 
     @field_validator("idempotency_key")
     @classmethod
@@ -2988,6 +2993,7 @@ class FactDevelopmentRunEstimateCreate(BaseModel):
     review_batch_id: uuid.UUID
     coding_source: Literal["MATTER_METADATA", "REVIEWER_CODING"] = "MATTER_METADATA"
     reviewer_coding_id: uuid.UUID | None = None
+    matter_analysis_task_version_id: uuid.UUID | None = None
 
 
 class FactDevelopmentRunEstimateRead(BaseModel):
@@ -3018,6 +3024,8 @@ class FactDevelopmentRunRead(ORMModel):
     matter_id: uuid.UUID
     matter_analysis_task_id: uuid.UUID
     matter_analysis_task_version_id: uuid.UUID
+    analysis_task_batch_set_id: uuid.UUID | None = None
+    batch_set_ordinal: int | None = None
     run_kind: Literal["FACT_DEVELOPMENT"]
     scope_type: Literal["REVIEW_BATCH"]
     scope_id: uuid.UUID
@@ -3054,6 +3062,8 @@ class MatterAnalysisTaskRunRead(ORMModel):
     matter_id: uuid.UUID
     matter_analysis_task_id: uuid.UUID
     matter_analysis_task_version_id: uuid.UUID
+    analysis_task_batch_set_id: uuid.UUID | None = None
+    batch_set_ordinal: int | None = None
     scope_type: Literal["MATTER", "REVIEW_BATCH"]
     scope_id: uuid.UUID
     classification_model_id: uuid.UUID

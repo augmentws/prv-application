@@ -1,7 +1,7 @@
 "use client";
 
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { AlertTriangle, Ban, Layers3, LoaderCircle, Plus, RefreshCw } from "lucide-react";
+import { AlertTriangle, Ban, Layers3, LoaderCircle, Play, Plus, RefreshCw } from "lucide-react";
 import { useState } from "react";
 import { toast } from "sonner";
 
@@ -20,9 +20,15 @@ import type {
   AnalysisTaskBatchSetPreviewCreate,
   AnalysisTaskBatchSetPreviewRead,
   AnalysisTaskBatchSetRead,
+  FactDevelopmentRunEstimateRead,
+  FactDevelopmentRunRead,
   MatterAnalysisTaskRead,
+  MatterAnalysisTaskRunRead,
+  MatterAnalysisTaskVersionRead,
+  MatterEmbeddingJobRead,
   MatterSavedSearchRead,
   ReviewBatchRead,
+  ReviewBatchRunRead,
 } from "@/generated/models";
 import { coreApi } from "@/lib/api-client";
 import { formatDate } from "@/lib/format";
@@ -97,7 +103,7 @@ export function AnalysisTaskBatchSetsPanel({ matterId, task }: { matterId: strin
             {set.warning_details.length ? <div className="mt-3 space-y-1">{set.warning_details.map((warning, index) => <p key={`${String(warning.code)}-${index}`} className="flex items-start gap-2 text-sm text-amber-700"><AlertTriangle className="mt-0.5 size-4 shrink-0" />{warningText(warning)}</p>)}</div> : null}
             {set.children?.length ? (
               <div className="mt-4 overflow-hidden rounded-md border">
-                {set.children.map((child) => <div key={child.id} className="flex flex-wrap items-center justify-between gap-3 border-b px-3 py-2 last:border-b-0"><div><p className="text-sm font-medium">{child.ordinal}. {child.name}</p><p className="text-xs text-muted-foreground">{child.document_count.toLocaleString()} documents</p></div><div className="flex flex-wrap items-center gap-2"><StatusBadge status={child.status} /><Badge variant="outline">Search: {friendly(child.search_status)}</Badge>{child.search_error_message ? <span className="max-w-xs text-xs text-destructive">{child.search_error_message}</span> : null}</div></div>)}
+                {set.children.map((child) => <div key={child.id} className="flex flex-wrap items-center justify-between gap-3 border-b px-3 py-2 last:border-b-0"><div><p className="text-sm font-medium">{child.ordinal}. {child.name}</p><p className="text-xs text-muted-foreground">{child.document_count.toLocaleString()} documents</p></div><div className="flex flex-wrap items-center gap-2"><StatusBadge status={child.status} /><Badge variant="outline">Search: {friendly(child.search_status)}</Badge>{child.search_error_message ? <span className="max-w-xs text-xs text-destructive">{child.search_error_message}</span> : null}{set.status === "READY" && child.status === "READY" ? <BatchSetChildRunDialog matterId={matterId} task={task} batchSet={set} child={child} /> : null}</div></div>)}
               </div>
             ) : null}
             <p className="mt-3 text-xs text-muted-foreground">Created {formatDate(set.created_at)}. Exclusivity applies within this set only; the same document may still belong to unrelated batches or another set.</p>
@@ -105,6 +111,112 @@ export function AnalysisTaskBatchSetsPanel({ matterId, task }: { matterId: strin
         ))}
       </CardContent>
     </Card>
+  );
+}
+
+function BatchSetChildRunDialog({ matterId, task, batchSet, child }: {
+  matterId: string;
+  task: MatterAnalysisTaskRead;
+  batchSet: AnalysisTaskBatchSetRead;
+  child: NonNullable<AnalysisTaskBatchSetRead["children"]>[number];
+}) {
+  const queryClient = useQueryClient();
+  const [open, setOpen] = useState(false);
+  const [embeddingJobId, setEmbeddingJobId] = useState("");
+  const versions = useQuery({
+    queryKey: ["analysis-task-versions", matterId, task.id],
+    queryFn: () => coreApi<MatterAnalysisTaskVersionRead[]>(`/v1/matters/${matterId}/analysis-tasks/${task.id}/versions`),
+    enabled: open && task.task_type === "CLASSIFICATION",
+  });
+  const embeddings = useQuery({
+    queryKey: ["matter-embedding-jobs", matterId],
+    queryFn: () => coreApi<MatterEmbeddingJobRead[]>(`/v1/matters/${matterId}/embedding-jobs`),
+    enabled: open && task.task_type === "CLASSIFICATION",
+  });
+  const pinnedVersion = versions.data?.find((version) => version.id === batchSet.matter_analysis_task_version_id);
+  const usableEmbeddings = (embeddings.data ?? []).filter((job) => (
+    ["COMPLETED", "COMPLETED_WITH_ERRORS"].includes(job.status)
+    && (!pinnedVersion?.classification_embedding_job_id || job.id === pinnedVersion.classification_embedding_job_id)
+  ));
+  const effectiveEmbeddingJobId = usableEmbeddings.some((job) => job.id === embeddingJobId)
+    ? embeddingJobId
+    : usableEmbeddings[0]?.id ?? "";
+  const questionRun = useMutation({
+    mutationFn: () => coreApi<ReviewBatchRunRead>(`/v1/matters/${matterId}/review-batches/${child.id}/analysis-runs`, {
+      method: "POST",
+      body: JSON.stringify({ matter_analysis_task_id: task.id, matter_analysis_task_version_id: batchSet.matter_analysis_task_version_id }),
+    }),
+    onSuccess: () => finish("Question-answering run queued."),
+    onError: (error) => toast.error(error.message),
+  });
+  const classificationRun = useMutation({
+    mutationFn: () => coreApi<MatterAnalysisTaskRunRead>(`/v1/matters/${matterId}/analysis-tasks/${task.id}/runs`, {
+      method: "POST",
+      body: JSON.stringify({
+        scope_type: "REVIEW_BATCH",
+        scope_id: child.id,
+        embedding_job_id: effectiveEmbeddingJobId,
+        matter_analysis_task_version_id: batchSet.matter_analysis_task_version_id,
+        idempotency_key: crypto.randomUUID(),
+      }),
+    }),
+    onSuccess: () => finish("Classification run queued."),
+    onError: (error) => toast.error(error.message),
+  });
+  const factEstimate = useMutation({
+    mutationFn: () => coreApi<FactDevelopmentRunEstimateRead>(`/v1/matters/${matterId}/analysis-tasks/${task.id}/fact-runs/estimate`, {
+      method: "POST",
+      body: JSON.stringify({
+        review_batch_id: child.id,
+        coding_source: "MATTER_METADATA",
+        reviewer_coding_id: null,
+        matter_analysis_task_version_id: batchSet.matter_analysis_task_version_id,
+      }),
+    }),
+    onError: (error) => toast.error(error.message),
+  });
+  const factRun = useMutation({
+    mutationFn: () => coreApi<FactDevelopmentRunRead>(`/v1/matters/${matterId}/analysis-tasks/${task.id}/fact-runs`, {
+      method: "POST",
+      body: JSON.stringify({
+        review_batch_id: child.id,
+        coding_source: "MATTER_METADATA",
+        reviewer_coding_id: null,
+        matter_analysis_task_version_id: batchSet.matter_analysis_task_version_id,
+        idempotency_key: crypto.randomUUID(),
+        use_batch_api: false,
+      }),
+    }),
+    onSuccess: () => finish("Fact-development run queued."),
+    onError: (error) => toast.error(error.message),
+  });
+
+  function finish(message: string) {
+    void queryClient.invalidateQueries({ queryKey: ["analysis-task-runs", matterId, task.id] });
+    void queryClient.invalidateQueries({ queryKey: ["fact-development-runs", matterId, task.id] });
+    toast.success(message);
+    setOpen(false);
+  }
+
+  const busy = questionRun.isPending || classificationRun.isPending || factEstimate.isPending || factRun.isPending;
+  return (
+    <Dialog open={open} onOpenChange={(next) => { setOpen(next); if (!next) factEstimate.reset(); }}>
+      <DialogTrigger asChild><Button size="sm" variant="outline"><Play />Run task</Button></DialogTrigger>
+      <DialogContent>
+        <DialogHeader><DialogTitle>Run {task.name}</DialogTitle><DialogDescription>{child.name} · {child.document_count.toLocaleString()} documents · pinned task version {shortId(batchSet.matter_analysis_task_version_id)}</DialogDescription></DialogHeader>
+        {task.task_type === "QUESTION_ANSWERING" ? <p className="text-sm text-muted-foreground">Queue the published decision workflow for every document in this managed child. Results remain isolated for review.</p> : null}
+        {task.task_type === "CLASSIFICATION" ? <div className="space-y-3"><Field label="Compatible document embeddings" htmlFor={`batch-set-embedding-${child.id}`}><Select value={effectiveEmbeddingJobId} onValueChange={setEmbeddingJobId}><SelectTrigger id={`batch-set-embedding-${child.id}`}><SelectValue placeholder={embeddings.isPending ? "Loading embeddings…" : "Select embeddings"} /></SelectTrigger><SelectContent>{usableEmbeddings.map((job) => <SelectItem key={job.id} value={job.id}>{job.embedding_model} · {job.processed_count.toLocaleString()} docs</SelectItem>)}</SelectContent></Select></Field>{!embeddings.isPending && !usableEmbeddings.length ? <p className="text-sm text-amber-700">No completed embeddings compatible with this pinned task version are available.</p> : null}</div> : null}
+        {task.task_type === "FACT_DEVELOPMENT" ? <div className="space-y-3"><p className="text-sm text-muted-foreground">This quick launch uses current matter coding. Use the full run panel when a specific reviewer&apos;s coding or the provider Batch API is required.</p>{factEstimate.data ? <div className="rounded-lg border bg-muted/20 p-3 text-sm"><p>{factEstimate.data.documents_to_extract.toLocaleString()} documents to read from {factEstimate.data.matched_document_count.toLocaleString()} issue-matched documents.</p><p className="mt-1 text-xs text-muted-foreground">Approximately {factEstimate.data.estimated_input_tokens.toLocaleString()} input and {factEstimate.data.estimated_output_tokens.toLocaleString()} output tokens.</p></div> : null}</div> : null}
+        {(versions.error || embeddings.error) ? <QueryError message={(versions.error ?? embeddings.error)!.message} /> : null}
+        <DialogFooter>
+          <Button variant="outline" onClick={() => setOpen(false)} disabled={busy}>Cancel</Button>
+          {task.task_type === "QUESTION_ANSWERING" ? <Button onClick={() => questionRun.mutate()} disabled={busy}><Play />Queue run</Button> : null}
+          {task.task_type === "CLASSIFICATION" ? <Button onClick={() => classificationRun.mutate()} disabled={busy || !effectiveEmbeddingJobId}>{classificationRun.isPending ? <LoaderCircle className="animate-spin" /> : <Play />}Queue classification</Button> : null}
+          {task.task_type === "FACT_DEVELOPMENT" && !factEstimate.data ? <Button variant="outline" onClick={() => factEstimate.mutate()} disabled={busy}>{factEstimate.isPending ? <LoaderCircle className="animate-spin" /> : null}Estimate</Button> : null}
+          {task.task_type === "FACT_DEVELOPMENT" && factEstimate.data ? <Button onClick={() => factRun.mutate()} disabled={busy || factEstimate.data.documents_to_extract === 0}>{factRun.isPending ? <LoaderCircle className="animate-spin" /> : <Play />}Queue fact development</Button> : null}
+        </DialogFooter>
+      </DialogContent>
+    </Dialog>
   );
 }
 
@@ -215,6 +327,10 @@ function Field({ label, htmlFor, children }: { label: string; htmlFor: string; c
 
 function shortHash(value: string | null) {
   return value ? `${value.slice(0, 12)}…` : "pending";
+}
+
+function shortId(value: string) {
+  return `${value.slice(0, 8)}…`;
 }
 
 function friendly(value: string) {

@@ -436,6 +436,7 @@ function ClassificationRunCard({ clientId, matterId, run, scopeName, canceling, 
         </div>
         <div className="flex items-center gap-2">
           <StatusBadge status={status} />
+          {run.analysis_task_batch_set_id ? <Badge variant="outline">Set child {run.batch_set_ordinal}</Badge> : null}
           {cancelRequested && active ? <Badge variant="outline">Cancellation requested</Badge> : null}
           {canCancel ? (
             <Button size="sm" variant="outline" disabled={canceling} onClick={onCancel}>

@@ -18,7 +18,7 @@ for the same task, and in sets owned by other tasks.
 
 ### Current implementation status
 
-Delivery Slices 1 through 3 are implemented:
+Delivery Slices 1 through 4 are implemented:
 
 - task versions persist and expose the three-mode scope policy with compatibility defaults;
 - `analysis_task_batch_set` is a durable Core domain record backed by a common `WorkflowRun`;
@@ -43,13 +43,18 @@ Delivery Slices 1 through 3 are implemented:
 - inline development execution and a DBOS worker workflow use the same materializer;
 - question-answering, classification, and fact-development launches enforce the selected mode and the set's
   pinned task version;
+- managed-child runs accept the set's pinned version explicitly, including a historically published version that
+  has since been retired, while ordinary ad hoc runs remain bound to the current published version;
+- question-answering, classification, and fact-development run records, execution snapshots, and audit events retain
+  the Batch Set ID and child ordinal as first-class provenance;
 - the Analysis Task detail surface provides a preview-first partition builder and monitoring detail for source
-  provenance, population identity, ordered children, lifecycle actions, and search projection state.
+  provenance, population identity, ordered children, lifecycle actions, search projection state, and per-child run
+  actions for every supported task type.
 
 The following remain planned: communication-thread and duplicate keep-together groups; fixed-count and randomized
-allocation; set-wide run orchestration; expanded child-run provenance and per-child launch actions; and native
-whole-matter manifests for question answering and fact development. Search-backed sources currently accept keyword
-searches; semantic and hybrid population freezing require a separately versioned contract.
+allocation; set-wide run orchestration; and native whole-matter manifests for question answering and fact development.
+Search-backed sources currently accept keyword searches; semantic and hybrid population freezing require a separately
+versioned contract.
 
 ## 2. Existing behavior to preserve
 
@@ -465,6 +470,10 @@ A follow-up migration extends the source constraint for `SEARCH_QUERY` and `SAVE
 indexed foreign key to the pinned `search_index_generation` row. Existing sets and ordinary Review Batches are not
 rewritten.
 
+A second follow-up migration adds nullable Batch Set ID and child ordinal provenance to question-answering Review
+Batch runs and to classification/fact-development Analysis Task runs. Both fields are either present together or null,
+so ordinary run rows retain their existing representation.
+
 No existing Review Batch receives a set ID. No existing membership is rewritten. The interactive Review Batch
 create contract retains its current selection literals.
 
@@ -557,6 +566,12 @@ target batch size, cancel/retry monitoring, pinned provenance, warnings, and ord
 
 Enforce published scope policies, add set provenance to child runs, and expose per-child launch actions for all
 supported task types.
+
+Status: implemented. Ordinary batches still require `AD_HOC_BATCH` and the current published version. Managed children
+resolve the immutable version pinned by their set and may continue using it after a later publication retires it. Run
+rows, workflow input/configuration snapshots, API reads, and audit details persist the set ID and ordinal. Each ready
+child exposes a task-type-aware launch dialog: direct decision execution for question answering, compatible embedding
+selection for classification, and preview-first current-matter-coding execution for fact development.
 
 ### Slice 5: run-all orchestration
 

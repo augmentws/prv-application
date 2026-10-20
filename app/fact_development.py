@@ -199,6 +199,7 @@ class _LaunchInputs:
     task_version: MatterAnalysisTaskVersion
     specification: FactDevelopmentSpecification
     batch: ReviewBatch
+    batch_set: AnalysisTaskBatchSet | None
     reviewer_coding_revision: int | None
     document_count: int
     bindings: dict[str, Any]
@@ -212,16 +213,43 @@ def _launch_inputs(
     review_batch_id: uuid.UUID,
     coding_source: CodingSource,
     reviewer_coding_id: uuid.UUID | None,
+    task_version_id: uuid.UUID | None = None,
 ) -> _LaunchInputs:
-    task_version, specification = _published_version(db, task)
+    if task.task_type != "FACT_DEVELOPMENT" or task.status != "ACTIVE":
+        raise FactDevelopmentRunError("An active fact-development Analysis Task is required")
     batch = db.scalar(select(ReviewBatch).where(ReviewBatch.id == review_batch_id, ReviewBatch.matter_id == matter.id))
     if batch is None or batch.status != "READY":
         raise FactDevelopmentRunError("A ready review batch in this matter is required")
+    batch_set = None
     if batch.analysis_task_batch_set_id is not None:
         batch_set = db.get(AnalysisTaskBatchSet, batch.analysis_task_batch_set_id)
-        if batch_set is None or batch_set.matter_analysis_task_version_id != task_version.id:
+        if batch_set is None or batch_set.matter_analysis_task_id != task.id:
+            raise FactDevelopmentRunError("Managed batch belongs to another Analysis Task")
+        if task_version_id is not None and task_version_id != batch_set.matter_analysis_task_version_id:
             raise FactDevelopmentRunError("Managed batch must run with its Batch Set's pinned task version")
-    elif "AD_HOC_BATCH" not in (task_version.scope_policy or {}).get("allowed_modes", ["AD_HOC_BATCH"]):
+        task_version = db.scalar(
+            select(MatterAnalysisTaskVersion).where(
+                MatterAnalysisTaskVersion.id == batch_set.matter_analysis_task_version_id,
+                MatterAnalysisTaskVersion.matter_analysis_task_id == task.id,
+            )
+        )
+        if (
+            task_version is None
+            or task_version.status not in {"PUBLISHED", "RETIRED"}
+            or task_version.compilation_status != "READY"
+        ):
+            raise FactDevelopmentRunError("The Batch Set's pinned task version is unavailable")
+        try:
+            specification = parse_fact_development_specification(task_version.fact_development_specification)
+        except FactSpecificationError as exc:
+            raise FactDevelopmentRunError(str(exc)) from exc
+    else:
+        task_version, specification = _published_version(db, task)
+        if task_version_id is not None and task_version_id != task_version.id:
+            raise FactDevelopmentRunError("Ad hoc runs must use the currently published task version")
+    if batch_set is None and "AD_HOC_BATCH" not in (task_version.scope_policy or {}).get(
+        "allowed_modes", ["AD_HOC_BATCH"]
+    ):
         raise FactDevelopmentRunError("This task version does not allow ad hoc batch execution")
     reviewer_coding_revision: int | None = None
     if coding_source == "REVIEWER_CODING":
@@ -244,7 +272,15 @@ def _launch_inputs(
         )
     except ValueError as exc:
         raise FactDevelopmentRunError(f"Fact extraction is not configured: {exc}") from exc
-    return _LaunchInputs(task_version, specification, batch, reviewer_coding_revision, document_count, bindings)
+    return _LaunchInputs(
+        task_version,
+        specification,
+        batch,
+        batch_set,
+        reviewer_coding_revision,
+        document_count,
+        bindings,
+    )
 
 
 # Rough prompt sizes for the launch estimate: instructions, the issue catalog and recalled facts per document, and
@@ -262,6 +298,7 @@ def estimate_fact_development_run(
     review_batch_id: uuid.UUID,
     coding_source: CodingSource,
     reviewer_coding_id: uuid.UUID | None,
+    task_version_id: uuid.UUID | None = None,
     actor_user_id: uuid.UUID,
     settings: Settings | None = None,
 ) -> dict[str, Any]:
@@ -275,6 +312,7 @@ def estimate_fact_development_run(
         review_batch_id=review_batch_id,
         coding_source=coding_source,
         reviewer_coding_id=reviewer_coding_id,
+        task_version_id=task_version_id,
     )
     population = _resolve_population(
         db,
@@ -330,6 +368,7 @@ def create_fact_development_run(
     reviewer_coding_id: uuid.UUID | None,
     idempotency_key: str,
     actor_user_id: uuid.UUID,
+    task_version_id: uuid.UUID | None = None,
     use_batch_api: bool = False,
     settings: Settings | None = None,
 ) -> tuple[MatterAnalysisTaskRun, bool]:
@@ -351,6 +390,7 @@ def create_fact_development_run(
         review_batch_id=review_batch_id,
         coding_source=coding_source,
         reviewer_coding_id=reviewer_coding_id,
+        task_version_id=task_version_id,
     )
     task_version, specification, batch = launch.task_version, launch.specification, launch.batch
     reviewer_coding_revision, document_count = launch.reviewer_coding_revision, launch.document_count
@@ -368,6 +408,8 @@ def create_fact_development_run(
         "task_version": task_version.version,
         "specification_hash": canonical_hash(specification.model_dump(mode="json")),
         "review_batch_id": str(batch.id),
+        "analysis_task_batch_set_id": str(launch.batch_set.id) if launch.batch_set else None,
+        "batch_set_ordinal": batch.batch_set_ordinal,
         "coding_source": coding_source,
         "reviewer_coding_id": str(reviewer_coding_id) if reviewer_coding_id else None,
         "reviewer_coding_revision": reviewer_coding_revision,
@@ -395,6 +437,8 @@ def create_fact_development_run(
         matter_id=matter.id,
         matter_analysis_task_id=task.id,
         matter_analysis_task_version_id=task_version.id,
+        analysis_task_batch_set_id=launch.batch_set.id if launch.batch_set else None,
+        batch_set_ordinal=batch.batch_set_ordinal if launch.batch_set else None,
         run_kind="FACT_DEVELOPMENT",
         scope_type="REVIEW_BATCH",
         scope_id=batch.id,
@@ -424,6 +468,8 @@ def create_fact_development_run(
             "task_id": str(task.id),
             "task_version_id": str(task_version.id),
             "review_batch_id": str(batch.id),
+            "analysis_task_batch_set_id": str(launch.batch_set.id) if launch.batch_set else None,
+            "batch_set_ordinal": batch.batch_set_ordinal,
             "coding_source": coding_source,
             "reviewer_coding_revision": reviewer_coding_revision,
             "document_count": document_count,
@@ -460,6 +506,8 @@ def _create_execution(
             "matter_analysis_task_id": str(run.matter_analysis_task_id),
             "matter_analysis_task_version_id": str(run.matter_analysis_task_version_id),
             "review_batch_id": configuration["review_batch_id"],
+            "analysis_task_batch_set_id": configuration.get("analysis_task_batch_set_id"),
+            "batch_set_ordinal": configuration.get("batch_set_ordinal"),
             "coding_source": configuration["coding_source"],
             "reviewer_coding_revision": configuration["reviewer_coding_revision"],
         },

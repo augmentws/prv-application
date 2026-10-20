@@ -106,4 +106,45 @@ describe("AnalysisTaskBatchSetsPanel", () => {
       keep_together: ["FAMILY"],
     }));
   });
+
+  it("launches a managed child with the set's pinned task version", async () => {
+    const readySet = {
+      ...createdSet,
+      status: "READY",
+      matter_analysis_task_version_id: "version-pinned",
+      population_count: 2,
+      batch_count: 1,
+      population_hash: "a".repeat(64),
+      children: [{
+        id: "batch-1",
+        ordinal: 1,
+        name: "Privilege wave · 1 of 1",
+        status: "READY",
+        search_status: "READY",
+        search_error_message: null,
+        document_count: 2,
+      }],
+    } as AnalysisTaskBatchSetRead;
+    vi.mocked(coreApi).mockImplementation(async (path, init) => {
+      if (path.endsWith("/batch-sets") && !init?.method) return [readySet] as never;
+      if (path.endsWith("/review-batches/batch-1/analysis-runs") && init?.method === "POST") return { id: "run-1" } as never;
+      throw new Error(`Unexpected API call: ${path}`);
+    });
+    const client = new QueryClient({ defaultOptions: { queries: { retry: false }, mutations: { retry: false } } });
+    const user = userEvent.setup();
+    render(<QueryClientProvider client={client}><AnalysisTaskBatchSetsPanel matterId="matter-1" task={task} /></QueryClientProvider>);
+
+    await user.click(await screen.findByRole("button", { name: "Run task" }));
+    await user.click(screen.getByRole("button", { name: "Queue run" }));
+
+    await waitFor(() => expect(coreApi).toHaveBeenCalledWith(
+      "/v1/matters/matter-1/review-batches/batch-1/analysis-runs",
+      expect.objectContaining({ method: "POST" }),
+    ));
+    const call = vi.mocked(coreApi).mock.calls.find(([path, init]) => path.endsWith("/review-batches/batch-1/analysis-runs") && init?.method === "POST");
+    expect(JSON.parse(String(call?.[1]?.body))).toEqual({
+      matter_analysis_task_id: "task-1",
+      matter_analysis_task_version_id: "version-pinned",
+    });
+  });
 });

@@ -1400,6 +1400,7 @@ def start_fact_development_run(
             reviewer_coding_id=payload.reviewer_coding_id,
             idempotency_key=payload.idempotency_key,
             actor_user_id=principal.user.id,
+            task_version_id=payload.matter_analysis_task_version_id,
             use_batch_api=payload.use_batch_api,
         )
         if created:
@@ -1446,6 +1447,7 @@ def estimate_fact_development_run_endpoint(
             review_batch_id=payload.review_batch_id,
             coding_source=payload.coding_source,
             reviewer_coding_id=payload.reviewer_coding_id,
+            task_version_id=payload.matter_analysis_task_version_id,
             actor_user_id=principal.user.id,
         )
     except FactDevelopmentRunError as exc:

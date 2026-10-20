@@ -16,6 +16,8 @@ import type { ReviewBatchRunReadStatus } from './reviewBatchRunReadStatus';
 export interface ReviewBatchRunRead {
   id: string;
   review_batch_id: string;
+  analysis_task_batch_set_id?: string | null;
+  batch_set_ordinal?: number | null;
   run_type: ReviewBatchRunReadRunType;
   purpose: ReviewBatchRunReadPurpose;
   status: ReviewBatchRunReadStatus;

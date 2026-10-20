@@ -2042,6 +2042,11 @@ class ReviewBatchRun(TimestampMixin, Base):
             name="ck_review_batch_run_actor",
         ),
         CheckConstraint("processed_document_count >= 0", name="ck_review_batch_run_processed_count"),
+        CheckConstraint(
+            "(analysis_task_batch_set_id IS NULL AND batch_set_ordinal IS NULL) OR "
+            "(analysis_task_batch_set_id IS NOT NULL AND batch_set_ordinal IS NOT NULL AND batch_set_ordinal > 0)",
+            name="ck_review_batch_run_batch_set_provenance",
+        ),
         Index("ix_review_batch_run_batch_created", "review_batch_id", "created_at"),
         Index(
             "uq_review_batch_classifier_idempotency",
@@ -2066,6 +2071,10 @@ class ReviewBatchRun(TimestampMixin, Base):
     review_batch_id: Mapped[uuid.UUID] = mapped_column(
         Uuid, ForeignKey("review_batch.id", ondelete="CASCADE"), index=True
     )
+    analysis_task_batch_set_id: Mapped[uuid.UUID | None] = mapped_column(
+        Uuid, ForeignKey("analysis_task_batch_set.id", ondelete="RESTRICT"), nullable=True, index=True
+    )
+    batch_set_ordinal: Mapped[int | None] = mapped_column(Integer, nullable=True)
     run_type: Mapped[str] = mapped_column(String(20))
     purpose: Mapped[str] = mapped_column(String(20))
     status: Mapped[str] = mapped_column(String(30), default="RUNNING", index=True)
@@ -4276,6 +4285,11 @@ class MatterAnalysisTaskRun(TimestampMixin, Base):
             "population_document_count >= 0",
             name="ck_analysis_task_run_population_count",
         ),
+        CheckConstraint(
+            "(analysis_task_batch_set_id IS NULL AND batch_set_ordinal IS NULL) OR "
+            "(analysis_task_batch_set_id IS NOT NULL AND batch_set_ordinal IS NOT NULL AND batch_set_ordinal > 0)",
+            name="ck_matter_analysis_task_run_batch_set_provenance",
+        ),
         Index("ix_analysis_task_run_task_created", "matter_analysis_task_id", "created_at"),
         Index("ix_analysis_task_run_matter_status", "matter_id", "status"),
         Index("ix_analysis_task_run_scoring", "classification_scoring_run_id"),
@@ -4291,6 +4305,10 @@ class MatterAnalysisTaskRun(TimestampMixin, Base):
     matter_analysis_task_version_id: Mapped[uuid.UUID] = mapped_column(
         Uuid, ForeignKey("matter_analysis_task_version.id", ondelete="RESTRICT")
     )
+    analysis_task_batch_set_id: Mapped[uuid.UUID | None] = mapped_column(
+        Uuid, ForeignKey("analysis_task_batch_set.id", ondelete="RESTRICT"), nullable=True, index=True
+    )
+    batch_set_ordinal: Mapped[int | None] = mapped_column(Integer, nullable=True)
     run_kind: Mapped[str] = mapped_column(String(30), default="CLASSIFICATION", server_default="CLASSIFICATION")
     scope_type: Mapped[str] = mapped_column(String(30))
     scope_id: Mapped[uuid.UUID] = mapped_column(Uuid)

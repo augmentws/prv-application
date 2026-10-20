@@ -15,6 +15,8 @@ export interface MatterAnalysisTaskRunRead {
   matter_id: string;
   matter_analysis_task_id: string;
   matter_analysis_task_version_id: string;
+  analysis_task_batch_set_id?: string | null;
+  batch_set_ordinal?: number | null;
   scope_type: MatterAnalysisTaskRunReadScopeType;
   scope_id: string;
   classification_model_id: string;

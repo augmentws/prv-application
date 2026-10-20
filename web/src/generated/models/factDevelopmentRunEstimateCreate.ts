@@ -11,4 +11,5 @@ export interface FactDevelopmentRunEstimateCreate {
   review_batch_id: string;
   coding_source?: FactDevelopmentRunEstimateCreateCodingSource;
   reviewer_coding_id?: string | null;
+  matter_analysis_task_version_id?: string | null;
 }

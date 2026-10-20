@@ -8,6 +8,7 @@ from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
 import app.analysis_task_batch_sets as batch_sets
+from app.analysis_task_skills import ensure_standard_analysis_task_skills
 from app.artifact_gateway import CollectionItemGroupingSnapshot
 from app.models import (
     AnalysisTaskBatchSet,
@@ -17,7 +18,9 @@ from app.models import (
     MatterDocument,
     ReviewBatch,
     ReviewBatchDocument,
+    ReviewBatchRun,
     SearchIndexGeneration,
+    Tenant,
     WorkflowRun,
 )
 from tests.test_agents_and_matter_definitions import auth, create_tenant_context
@@ -530,3 +533,58 @@ def test_child_search_projection_failure_completes_set_with_warning(
     )
     assert execution is not None
     assert execution.status == "COMPLETED_WITH_ERRORS"
+
+
+def test_managed_child_run_uses_pinned_retired_version_and_records_set_provenance(
+    client: TestClient,
+    root_token: str,
+    root_admin,
+    db: Session,
+) -> None:
+    root_tenant = db.get(Tenant, root_admin.tenant_id)
+    assert root_tenant is not None
+    ensure_standard_analysis_task_skills(db, root_tenant, root_admin)
+    db.commit()
+    _, token, matter_id = create_tenant_context(client, root_token)
+    task = _published_partitioned_task(client, token, matter_id)
+    user_id = uuid.UUID(client.get("/v1/auth/me", headers=auth(token)).json()["id"])
+    add_documents(matter_id, user_id, count=2)
+    created = client.post(
+        f"/v1/matters/{matter_id}/analysis-tasks/{task['id']}/batch-sets",
+        headers=auth(token),
+        json={
+            "name": "Pinned run partition",
+            "population_source_type": "ALL_MATTER",
+            "target_batch_size": 2,
+        },
+    )
+    assert created.status_code == 202, created.text
+    batch_set = created.json()
+    child = batch_set["children"][0]
+    task_version = db.get(MatterAnalysisTaskVersion, uuid.UUID(task["version"]["id"]))
+    assert task_version is not None
+    task_version.status = "RETIRED"
+    db.commit()
+
+    response = client.post(
+        f"/v1/matters/{matter_id}/review-batches/{child['id']}/analysis-runs",
+        headers=auth(token),
+        json={
+            "matter_analysis_task_id": task["id"],
+            "matter_analysis_task_version_id": task["version"]["id"],
+        },
+    )
+
+    assert response.status_code == 202, response.text
+    payload = response.json()
+    assert payload["analysis_task_batch_set_id"] == batch_set["id"]
+    assert payload["batch_set_ordinal"] == 1
+    assert payload["configuration_snapshot"]["analysis_task_batch_set_id"] == batch_set["id"]
+    run = db.get(ReviewBatchRun, uuid.UUID(payload["id"]))
+    assert run is not None
+    assert run.analysis_task_batch_set_id == uuid.UUID(batch_set["id"])
+    assert run.batch_set_ordinal == 1
+    workflow = db.get(WorkflowRun, run.workflow_run_record_id)
+    assert workflow is not None
+    assert workflow.input_snapshot["task_version_id"] == task["version"]["id"]
+    assert workflow.input_snapshot["analysis_task_batch_set_id"] == batch_set["id"]

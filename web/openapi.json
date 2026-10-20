@@ -33605,6 +33605,18 @@
             "type": "boolean",
             "title": "Use Batch Api",
             "default": false
+          },
+          "matter_analysis_task_version_id": {
+            "anyOf": [
+              {
+                "type": "string",
+                "format": "uuid"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Matter Analysis Task Version Id"
           }
         },
         "additionalProperties": false,
@@ -33642,6 +33654,18 @@
               }
             ],
             "title": "Reviewer Coding Id"
+          },
+          "matter_analysis_task_version_id": {
+            "anyOf": [
+              {
+                "type": "string",
+                "format": "uuid"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Matter Analysis Task Version Id"
           }
         },
         "additionalProperties": false,
@@ -33781,6 +33805,29 @@
             "type": "string",
             "format": "uuid",
             "title": "Matter Analysis Task Version Id"
+          },
+          "analysis_task_batch_set_id": {
+            "anyOf": [
+              {
+                "type": "string",
+                "format": "uuid"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Analysis Task Batch Set Id"
+          },
+          "batch_set_ordinal": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Batch Set Ordinal"
           },
           "run_kind": {
             "type": "string",
@@ -36162,6 +36209,18 @@
             "maxLength": 200,
             "minLength": 1,
             "title": "Idempotency Key"
+          },
+          "matter_analysis_task_version_id": {
+            "anyOf": [
+              {
+                "type": "string",
+                "format": "uuid"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Matter Analysis Task Version Id"
           }
         },
         "additionalProperties": false,
@@ -36200,6 +36259,29 @@
             "type": "string",
             "format": "uuid",
             "title": "Matter Analysis Task Version Id"
+          },
+          "analysis_task_batch_set_id": {
+            "anyOf": [
+              {
+                "type": "string",
+                "format": "uuid"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Analysis Task Batch Set Id"
+          },
+          "batch_set_ordinal": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Batch Set Ordinal"
           },
           "scope_type": {
             "type": "string",
@@ -45265,6 +45347,18 @@
             "type": "string",
             "format": "uuid",
             "title": "Matter Analysis Task Id"
+          },
+          "matter_analysis_task_version_id": {
+            "anyOf": [
+              {
+                "type": "string",
+                "format": "uuid"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Matter Analysis Task Version Id"
           }
         },
         "additionalProperties": false,
@@ -48479,6 +48573,29 @@
             "type": "string",
             "format": "uuid",
             "title": "Review Batch Id"
+          },
+          "analysis_task_batch_set_id": {
+            "anyOf": [
+              {
+                "type": "string",
+                "format": "uuid"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Analysis Task Batch Set Id"
+          },
+          "batch_set_ordinal": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Batch Set Ordinal"
           },
           "run_type": {
             "type": "string",

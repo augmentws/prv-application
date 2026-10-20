@@ -440,6 +440,7 @@ function FactRunCard({ clientId, matterId, run, batchName, busy, onCancel, onRet
         </div>
         <div className="flex flex-wrap items-center gap-2">
           <StatusBadge status={run.status} />
+          {run.analysis_task_batch_set_id ? <Badge variant="outline">Set child {run.batch_set_ordinal}</Badge> : null}
           {batchApi ? <Badge variant="outline">Batch API</Badge> : null}
           {execution?.cancel_requested_at && active ? <Badge variant="outline">Cancellation requested</Badge> : null}
           {canCancel ? <Button size="sm" variant="outline" disabled={busy} onClick={onCancel}><Ban />Cancel</Button> : null}
