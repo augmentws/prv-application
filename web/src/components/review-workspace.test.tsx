@@ -139,6 +139,7 @@ const collectionItem: CollectionItemRead = {
 
 afterEach(() => {
   cleanup();
+  window.localStorage.clear();
   vi.clearAllMocks();
 });
 
@@ -317,8 +318,23 @@ describe("ReviewWorkspace", () => {
     expect(screen.getByRole("main")).toHaveStyle({ overflow: "clip" });
     const searchFilters = screen.getByRole("complementary", { name: "Search filters" });
     expect(searchFilters.querySelector(".overflow-y-auto")).toHaveClass("overscroll-contain");
-    expect(within(searchFilters).getByRole("region", { name: "Document fields filters" })).toHaveTextContent("Coded by");
-    expect(within(searchFilters).getByRole("region", { name: "Review filters" })).toHaveTextContent("Custodian");
+    const documentFilters = within(searchFilters).getByRole("region", { name: "Document fields filters" });
+    const documentGroupToggle = within(documentFilters).getByRole("button", { name: "Document fields filter group" });
+    expect(documentGroupToggle).toHaveAttribute("aria-expanded", "false");
+    await user.click(documentGroupToggle);
+    expect(documentFilters).toHaveTextContent("Coded by");
+    expect(window.localStorage.getItem("priv-view:metadata-filter-groups:search:matter-1:document-fields")).toBe("open");
+    const reviewFilters = within(searchFilters).getByRole("region", { name: "Review filters" });
+    const reviewGroupToggle = within(reviewFilters).getByRole("button", { name: "Review filter group" });
+    expect(reviewGroupToggle).toHaveAttribute("aria-expanded", "false");
+    expect(within(reviewFilters).queryByRole("button", { name: "Custodian" })).not.toBeInTheDocument();
+    await user.click(reviewGroupToggle);
+    expect(reviewGroupToggle).toHaveAttribute("aria-expanded", "true");
+    expect(reviewFilters).toHaveTextContent("Custodian");
+    expect(window.localStorage.getItem("priv-view:metadata-filter-groups:search:matter-1:group-1")).toBe("open");
+    await user.click(reviewGroupToggle);
+    expect(window.localStorage.getItem("priv-view:metadata-filter-groups:search:matter-1:group-1")).toBe("closed");
+    await user.click(reviewGroupToggle);
     expect(within(screen.getByRole("list", { name: "Document search results" })).getByLabelText("Result 51")).toHaveTextContent("51");
     expect(screen.getByPlaceholderText("Search document body, filenames, paths, email headers, and metadata")).toBeInTheDocument();
     expect(screen.getByText(/moved to a private communications channel/)).toBeInTheDocument();

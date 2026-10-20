@@ -26,6 +26,7 @@ import { toast } from "sonner";
 
 import { BrandMark } from "@/components/brand-mark";
 import { MatterSectionMenu } from "@/components/matter/matter-section-menu";
+import { MetadataFilterGroupSection } from "@/components/metadata-filter-group-section";
 import { DateHistogram, type DateHistogramInterval } from "@/components/date-histogram";
 import { DocumentViewerSurface } from "@/components/document-viewer-dialog";
 import { HelpLink } from "@/components/help-link";
@@ -896,9 +897,13 @@ function FacetPanel({ matterId, searchRequest, definitions, groups, filters, neg
         {hasFilters ? <Button variant="ghost" size="sm" onClick={onClear}>Clear</Button> : null}
       </div>
       <div className="min-h-0 min-w-0 flex-1 divide-y overflow-x-hidden overflow-y-auto overscroll-contain">
-        {filterGroups.map((group) => <section key={group.id} aria-label={`${group.displayName} filters`}>
-          <h3 className="border-b bg-muted/30 px-3 py-2 text-xs font-bold uppercase tracking-[0.08em] text-muted-foreground">{group.displayName}</h3>
-          <div className="divide-y">{group.definitions.map((definition) => isDateFilter(definition) ? (
+        {filterGroups.map((group) => <MetadataFilterGroupSection
+          key={group.id}
+          displayName={group.displayName}
+          storageKey={`priv-view:metadata-filter-groups:search:${matterId}:${group.id}`}
+          activeCount={group.definitions.reduce((count, definition) => count + (filters[definition.key]?.length ?? 0), 0)}
+        >
+          {group.definitions.map((definition) => isDateFilter(definition) ? (
             <DateHistogramFilter
               key={definition.id}
               matterId={matterId}
@@ -909,8 +914,8 @@ function FacetPanel({ matterId, searchRequest, definitions, groups, filters, neg
             />
           ) : (
             <FacetSection key={definition.id} matterId={matterId} searchRequest={searchRequest} definition={definition} selected={filters[definition.key] ?? []} negated={negatedFilterFields.has(definition.key)} custodianNames={custodianNames} onToggle={onToggle} onToggleNegation={() => onToggleNegation(definition.key)} />
-          ))}</div>
-        </section>)}
+          ))}
+        </MetadataFilterGroupSection>)}
         {!definitions.length ? <p className="p-4 text-sm text-muted-foreground">No filterable fields are configured for this matter.</p> : null}
       </div>
     </div>
