@@ -49,10 +49,11 @@ function stableJson(value: unknown): string {
   return JSON.stringify(value) ?? "null";
 }
 
-export function SearchChatPanel({ matterId, search, resultCount, onOpenDocument }: {
+export function SearchChatPanel({ matterId, search, resultCount, searchLoading = false, onOpenDocument }: {
   matterId: string;
   search: MatterSearchRequest;
   resultCount: number;
+  searchLoading?: boolean;
   onOpenDocument: (reference: BatchDocumentReference) => void;
 }) {
   const queryClient = useQueryClient();
@@ -138,9 +139,9 @@ export function SearchChatPanel({ matterId, search, resultCount, onOpenDocument 
       <div className="w-full max-w-sm">
         <span className="mx-auto grid size-12 place-items-center rounded-full bg-agent/10 text-agent"><MessageSquareText className="size-5" /></span>
         <h3 className="mt-4 font-semibold">Chat with these search results</h3>
-        <p className="mt-2 text-sm leading-6 text-muted-foreground">The conversation is fixed to the current {resultCount.toLocaleString()} search {resultCount === 1 ? "result" : "results"} and uses document text plus available summaries.</p>
+        <p className="mt-2 text-sm leading-6 text-muted-foreground">{searchLoading ? "Wait for the current search to finish before starting a conversation." : <>The conversation is fixed to the current {resultCount.toLocaleString()} search {resultCount === 1 ? "result" : "results"} and uses document text plus available summaries.</>}</p>
         {agents.isPending || conversations.isPending ? <LoaderCircle className="mx-auto mt-5 animate-spin text-muted-foreground" />
-          : agents.data?.length ? <div className="mt-5 space-y-2 text-left"><Input value={newTitle} maxLength={200} onChange={(event) => setNewTitle(event.target.value)} placeholder="Chat name" aria-label="Search chat name" /><div className="flex gap-2">{creating && scopedConversations.length ? <Button className="flex-1" variant="outline" onClick={() => setCreating(false)}>Cancel</Button> : null}<Button className="flex-1" disabled={!newTitle.trim() || !resultCount || startConversation.isPending} onClick={() => startConversation.mutate(newTitle.trim())}>{startConversation.isPending ? <LoaderCircle className="animate-spin" /> : <Plus />}Start search chat</Button></div></div>
+          : agents.data?.length ? <div className="mt-5 space-y-2 text-left"><Input value={newTitle} maxLength={200} onChange={(event) => setNewTitle(event.target.value)} placeholder="Chat name" aria-label="Search chat name" /><div className="flex gap-2">{creating && scopedConversations.length ? <Button className="flex-1" variant="outline" onClick={() => setCreating(false)}>Cancel</Button> : null}<Button className="flex-1" disabled={!newTitle.trim() || !resultCount || searchLoading || startConversation.isPending} onClick={() => startConversation.mutate(newTitle.trim())}>{startConversation.isPending ? <LoaderCircle className="animate-spin" /> : <Plus />}Start search chat</Button></div></div>
             : <p className="mt-5 rounded-lg border border-warning/30 bg-warning/10 p-3 text-sm text-warning">The document chat agent is not configured.</p>}
       </div>
     </div>;

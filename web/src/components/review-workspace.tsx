@@ -11,7 +11,6 @@ import {
   FileText,
   Filter,
   GripVertical,
-  MessageSquareText,
   PanelRight,
   RotateCcw,
   Save,
@@ -321,7 +320,6 @@ export function ReviewWorkspace({
   const [filtersOpen, setFiltersOpen] = useState(false);
   const [codingOpen, setCodingOpen] = useState(false);
   const [bulkTagOpen, setBulkTagOpen] = useState(false);
-  const [searchChatOpen, setSearchChatOpen] = useState(false);
   const [bulkTagJobId, setBulkTagJobId] = useState("");
   const [executedSavedSearchId, setExecutedSavedSearchId] = useState("");
   const [facetWidth, setFacetWidth] = useState(248);
@@ -787,7 +785,6 @@ export function ReviewWorkspace({
             />
           ) : null}
           <SaveSearchDialog search={searchRequest} users={tenantUsers.data ?? []} currentUserId={currentUser.data?.id} onCreate={(payload) => createSavedSearchMutation.mutateAsync(payload).then(() => undefined)} />
-          {canChat ? <Button variant="outline" size="sm" disabled={!total || searchResults.isFetching} onClick={() => setSearchChatOpen(true)}><MessageSquareText />Chat results</Button> : null}
           {canExport ? <SearchExportDialog matterId={matterId} search={searchRequest} resultCount={searchResults.data?.total ?? 0} disabled={!searchResults.data?.total || searchResults.isFetching} onCreated={() => router.push(matterJobsHref(matter.data?.client_id ?? "", matterId, "SEARCH_EXPORTS"))} /> : null}
           <HelpLink topic="matterReview" />
           <ThemeToggle />
@@ -841,7 +838,7 @@ export function ReviewWorkspace({
           style={{ "--review-details-width": `${detailsWidth}px` } as CSSProperties}
           aria-label="Document details"
         >
-          <DocumentDetailsPanel canReview={canReview} matterId={matterId} definitions={definitions.data ?? []} groups={groups.data ?? []} hit={selectedHit} values={metadataValues.data} valuesVersion={metadataValues.dataUpdatedAt} loading={metadataValues.isPending && Boolean(effectiveSelectedDocumentId)} saving={metadataMutation.isPending} onSave={(actions) => metadataMutation.mutateAsync(actions).then(() => undefined)} onBulkTag={hasActiveSearch && canBulkCode ? openBulkTag : undefined} />
+          <DocumentDetailsPanel canReview={canReview} canChat={canChat} matterId={matterId} search={searchRequest} resultCount={total} searchLoading={searchResults.isFetching} definitions={definitions.data ?? []} groups={groups.data ?? []} hit={selectedHit} values={metadataValues.data} valuesVersion={metadataValues.dataUpdatedAt} loading={metadataValues.isPending && Boolean(effectiveSelectedDocumentId)} saving={metadataMutation.isPending} onSave={(actions) => metadataMutation.mutateAsync(actions).then(() => undefined)} onBulkTag={hasActiveSearch && canBulkCode ? openBulkTag : undefined} onOpenChatDocument={(documentId) => selectDocument(documentId)} />
         </aside>
       </div>
 
@@ -855,22 +852,7 @@ export function ReviewWorkspace({
       <Dialog open={codingOpen} onOpenChange={setCodingOpen}>
         <DialogContent className="flex h-[min(90vh,52rem)] max-w-xl flex-col overflow-hidden p-0 2xl:hidden">
           <DialogTitle className="sr-only">Document details</DialogTitle>
-          <DocumentDetailsPanel canReview={canReview} matterId={matterId} definitions={definitions.data ?? []} groups={groups.data ?? []} hit={selectedHit} values={metadataValues.data} valuesVersion={metadataValues.dataUpdatedAt} loading={metadataValues.isPending && Boolean(effectiveSelectedDocumentId)} saving={metadataMutation.isPending} onSave={(actions) => metadataMutation.mutateAsync(actions).then(() => undefined)} onBulkTag={hasActiveSearch && canBulkCode ? openBulkTag : undefined} />
-        </DialogContent>
-      </Dialog>
-
-      <Dialog open={searchChatOpen} onOpenChange={setSearchChatOpen}>
-        <DialogContent className="flex h-[min(90vh,52rem)] max-w-2xl flex-col overflow-hidden p-0">
-          <DialogTitle className="sr-only">Chat with search results</DialogTitle>
-          <SearchChatPanel
-            matterId={matterId}
-            search={searchRequest}
-            resultCount={total}
-            onOpenDocument={(reference) => {
-              setSearchChatOpen(false);
-              selectDocument(reference.documentId);
-            }}
-          />
+          <DocumentDetailsPanel canReview={canReview} canChat={canChat} matterId={matterId} search={searchRequest} resultCount={total} searchLoading={searchResults.isFetching} definitions={definitions.data ?? []} groups={groups.data ?? []} hit={selectedHit} values={metadataValues.data} valuesVersion={metadataValues.dataUpdatedAt} loading={metadataValues.isPending && Boolean(effectiveSelectedDocumentId)} saving={metadataMutation.isPending} onSave={(actions) => metadataMutation.mutateAsync(actions).then(() => undefined)} onBulkTag={hasActiveSearch && canBulkCode ? openBulkTag : undefined} onOpenChatDocument={(documentId) => { setCodingOpen(false); selectDocument(documentId); }} />
         </DialogContent>
       </Dialog>
 
@@ -1209,11 +1191,15 @@ function ResizeHandle({ className, label, value, min, max, direction = 1, onChan
   );
 }
 
-type DetailsTab = "coding" | "metadata" | "history";
+type DetailsTab = "coding" | "metadata" | "history" | "chat";
 
-function DocumentDetailsPanel({ canReview, matterId, definitions, groups, hit, values, valuesVersion, loading, saving, onSave, onBulkTag }: {
+function DocumentDetailsPanel({ canReview, canChat, matterId, search, resultCount, searchLoading, definitions, groups, hit, values, valuesVersion, loading, saving, onSave, onBulkTag, onOpenChatDocument }: {
   canReview: boolean;
+  canChat: boolean;
   matterId: string;
+  search: MatterSearchRequest;
+  resultCount: number;
+  searchLoading: boolean;
   definitions: MetadataDefinitionRead[];
   groups: MetadataGroupRead[];
   hit?: MatterSearchHit;
@@ -1223,6 +1209,7 @@ function DocumentDetailsPanel({ canReview, matterId, definitions, groups, hit, v
   saving: boolean;
   onSave: (actions: CodingAction[]) => Promise<void>;
   onBulkTag?: () => void;
+  onOpenChatDocument: (documentId: string) => void;
 }) {
   const [tab, setTab] = useState<DetailsTab>(canReview ? "coding" : "metadata");
   const tabsId = useId();
@@ -1241,8 +1228,11 @@ function DocumentDetailsPanel({ canReview, matterId, definitions, groups, hit, v
         {canReview ? <button id={`${tabsId}-coding`} type="button" role="tab" aria-selected={tab === "coding"} aria-controls={`${tabsId}-panel`} onClick={() => setTab("coding")} className={detailsTabClass(tab === "coding")}>Coding</button> : null}
         <button id={`${tabsId}-metadata`} type="button" role="tab" aria-selected={tab === "metadata"} aria-controls={`${tabsId}-panel`} onClick={() => setTab("metadata")} className={detailsTabClass(tab === "metadata")}>Metadata</button>
         <button id={`${tabsId}-history`} type="button" role="tab" aria-selected={tab === "history"} aria-controls={`${tabsId}-panel`} onClick={() => setTab("history")} className={detailsTabClass(tab === "history")}>History</button>
+        {canChat ? <button id={`${tabsId}-chat`} type="button" role="tab" aria-selected={tab === "chat"} aria-controls={`${tabsId}-panel`} onClick={() => setTab("chat")} className={detailsTabClass(tab === "chat")}>Chat</button> : null}
       </div>
-      {!hit ? <div className="grid min-h-0 flex-1 place-items-center p-5 text-center text-sm text-muted-foreground">Select a document to view its metadata.</div>
+      {tab === "chat"
+        ? <div id={`${tabsId}-panel`} role="tabpanel" aria-labelledby={`${tabsId}-chat`} className="flex min-h-0 flex-1 flex-col"><SearchChatPanel matterId={matterId} search={search} resultCount={resultCount} searchLoading={searchLoading} onOpenDocument={(reference) => onOpenChatDocument(reference.documentId)} /></div>
+        : !hit ? <div className="grid min-h-0 flex-1 place-items-center p-5 text-center text-sm text-muted-foreground">Select a document to view its metadata.</div>
         : tab !== "history" && loading ? <div className="space-y-3 p-4">{Array.from({ length: 8 }, (_, index) => <Skeleton key={index} className="h-16 w-full" />)}</div>
         : tab === "coding"
           ? <CodingForm key={`${hit.document_id}:${valuesVersion}`} id={`${tabsId}-panel`} definitions={definitions} visibleGroups={visibleGroups} definitionById={definitionById} valueByDefinition={valueByDefinition} projectedMetadata={resultMetadata(hit)} saving={saving} onSave={onSave} onBulkTag={onBulkTag} />

@@ -437,10 +437,10 @@ describe("ReviewWorkspace", () => {
       expect(lastRequest).toMatchObject({ query: "concealed pricing discussion", search_mode: "SEMANTIC", minimum_similarity: 0.035 });
     });
 
-    await user.click(screen.getByRole("button", { name: "Chat results" }));
-    const searchChatDialog = screen.getByRole("dialog", { name: "Chat with search results" });
-    await user.type(within(searchChatDialog).getByRole("textbox", { name: "Search chat name" }), "Pricing patterns");
-    await user.click(within(searchChatDialog).getByRole("button", { name: "Start search chat" }));
+    expect(screen.queryByRole("button", { name: "Chat results" })).not.toBeInTheDocument();
+    await user.click(within(details).getByRole("tab", { name: "Chat" }));
+    await user.type(within(details).getByRole("textbox", { name: "Search chat name" }), "Pricing patterns");
+    await user.click(within(details).getByRole("button", { name: "Start search chat" }));
     await waitFor(() => {
       const createCall = vi.mocked(coreApi).mock.calls.find(([path, init]) => path === "/v1/matters/matter-1/agent-conversations" && init?.method === "POST");
       const payload = JSON.parse(String(createCall?.[1]?.body));
@@ -462,7 +462,7 @@ describe("ReviewWorkspace", () => {
         expect.objectContaining({ field: "email_sent" }),
       ]));
     });
-    await user.click(within(searchChatDialog).getByRole("button", { name: "Close" }));
+    await user.click(within(details).getByRole("tab", { name: "Coding" }));
 
     expect(within(details).getByRole("button", { name: "Bulk tag results" })).toBeInTheDocument();
     await user.click(within(details).getByRole("button", { name: "Bulk tag results" }));
