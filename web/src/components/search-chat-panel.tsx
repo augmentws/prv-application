@@ -52,6 +52,23 @@ function stableJson(value: unknown): string {
   return JSON.stringify(value) ?? "null";
 }
 
+function searchChatScopeKey(search: MatterSearchRequest | null | undefined): string {
+  if (!search) return "";
+  const normalized = normalizeSearchChatScope(search);
+  return stableJson({
+    ...normalized,
+    filters: (normalized.filters ?? []).map((filter) => ({
+      field: filter.field,
+      operator: filter.operator,
+      value: filter.value ?? null,
+      values: filter.values ?? null,
+      from: filter.from ?? null,
+      to: filter.to ?? null,
+      include_missing: filter.include_missing ?? false,
+    })),
+  });
+}
+
 export function SearchChatPanel({ matterId, search, resultCount, searchLoading = false, onOpenDocument }: {
   matterId: string;
   search: MatterSearchRequest;
@@ -63,9 +80,11 @@ export function SearchChatPanel({ matterId, search, resultCount, searchLoading =
   const [selectedConversationId, setSelectedConversationId] = useState("");
   const [creating, setCreating] = useState(false);
   const [message, setMessage] = useState("");
+  const [startValidationError, setStartValidationError] = useState("");
   const scrollRef = useRef<HTMLDivElement>(null);
+  const firstMessageRef = useRef<HTMLTextAreaElement>(null);
   const scope = useMemo(() => normalizeSearchChatScope(search), [search]);
-  const scopeKey = useMemo(() => stableJson(scope), [scope]);
+  const scopeKey = useMemo(() => searchChatScopeKey(scope), [scope]);
   const chatStream = useAgentChatStream({ matterId, workflowType: "SEARCH_CHAT" });
   const agents = useQuery({
     queryKey: ["matter-agents", matterId, "SEARCH_CHAT"],
@@ -77,10 +96,11 @@ export function SearchChatPanel({ matterId, search, resultCount, searchLoading =
     refetchInterval: chatStream.pollingEnabled ? 2000 : false,
   });
   const scopedConversations = useMemo(
-    () => (conversations.data ?? []).filter((conversation) => stableJson(conversation.search_definition) === scopeKey),
+    () => (conversations.data ?? []).filter((conversation) => searchChatScopeKey(conversation.search_definition) === scopeKey),
     [conversations.data, scopeKey],
   );
-  const effectiveConversationId = creating ? "" : selectedConversationId || scopedConversations[0]?.id || "";
+  const selectedScopedConversation = scopedConversations.find((item) => item.id === selectedConversationId);
+  const effectiveConversationId = creating ? "" : selectedScopedConversation?.id || scopedConversations[0]?.id || "";
   const selectedConversation = scopedConversations.find((item) => item.id === effectiveConversationId);
   const messages = useQuery({
     queryKey: ["agent-messages", effectiveConversationId],
@@ -125,6 +145,7 @@ export function SearchChatPanel({ matterId, search, resultCount, searchLoading =
       setSelectedConversationId(created.id);
       setCreating(false);
       setMessage("");
+      setStartValidationError("");
       toast.success("Search chat started.");
     },
     onError: (error) => {
@@ -148,6 +169,17 @@ export function SearchChatPanel({ matterId, search, resultCount, searchLoading =
   const error = agents.error ?? conversations.error ?? messages.error ?? runs.error;
   if (error) return <div className="p-4"><QueryError message={error.message} /></div>;
 
+  function beginConversation() {
+    const content = message.trim();
+    if (!content) {
+      setStartValidationError("Enter your first question before starting the chat.");
+      firstMessageRef.current?.focus();
+      return;
+    }
+    setStartValidationError("");
+    startConversation.mutate(content);
+  }
+
   if (!selectedConversation) {
     return <div className="grid min-h-0 flex-1 place-items-center p-5 text-center">
       <div className="w-full max-w-sm">
@@ -155,7 +187,7 @@ export function SearchChatPanel({ matterId, search, resultCount, searchLoading =
         <h3 className="mt-4 font-semibold">Chat with these search results</h3>
         <p className="mt-2 text-sm leading-6 text-muted-foreground">{searchLoading ? "Wait for the current search to finish before starting a conversation." : <>The conversation is fixed to the current {resultCount.toLocaleString()} search {resultCount === 1 ? "result" : "results"} and uses document text plus available summaries.</>}</p>
         {agents.isPending || conversations.isPending ? <LoaderCircle className="mx-auto mt-5 animate-spin text-muted-foreground" />
-          : agents.data?.length ? <div className="mt-5 space-y-2 text-left"><Textarea value={message} maxLength={2000} disabled={startConversation.isPending} onChange={(event) => setMessage(event.target.value)} onKeyDown={(event) => { if (event.key === "Enter" && !event.shiftKey) { event.preventDefault(); if (message.trim()) startConversation.mutate(message.trim()); } }} placeholder="Ask your first question…" aria-label="Starting message Search Chat" className="min-h-24 resize-none" /><p className="text-xs text-muted-foreground">The first 50 characters become the chat title.</p><div className="flex gap-2">{creating && scopedConversations.length ? <Button className="flex-1" variant="outline" onClick={() => { setCreating(false); setMessage(""); }}>Cancel</Button> : null}<Button className="flex-1" disabled={!message.trim() || !resultCount || searchLoading || startConversation.isPending} onClick={() => startConversation.mutate(message.trim())}>{startConversation.isPending ? <LoaderCircle className="animate-spin" /> : <Plus />}Start search chat</Button></div></div>
+          : agents.data?.length ? <div className="mt-5 space-y-2 text-left"><Textarea ref={firstMessageRef} value={message} maxLength={2000} disabled={startConversation.isPending} onChange={(event) => { setMessage(event.target.value); setStartValidationError(""); startConversation.reset(); }} onKeyDown={(event) => { if (event.key === "Enter" && !event.shiftKey) { event.preventDefault(); beginConversation(); } }} placeholder="Ask your first question…" aria-label="Starting message Search Chat" aria-invalid={Boolean(startValidationError || startConversation.error)} className="min-h-24 resize-none" /><p className="text-xs text-muted-foreground">Enter your first question, then start the chat. Its first 50 characters become the title.</p>{startValidationError || startConversation.error ? <p role="alert" className="text-xs text-destructive">{startValidationError || (startConversation.error instanceof Error ? startConversation.error.message : "The search chat could not be started.")}</p> : null}<div className="flex gap-2">{creating && scopedConversations.length ? <Button className="flex-1" variant="outline" onClick={() => { setCreating(false); setMessage(""); setStartValidationError(""); startConversation.reset(); }}>Cancel</Button> : null}<Button className="flex-1" disabled={!resultCount || searchLoading || startConversation.isPending} onClick={beginConversation}>{startConversation.isPending ? <LoaderCircle className="animate-spin" /> : <Send />}Start chat and send</Button></div></div>
             : <p className="mt-5 rounded-lg border border-warning/30 bg-warning/10 p-3 text-sm text-warning">The document chat agent is not configured.</p>}
       </div>
     </div>;

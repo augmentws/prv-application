@@ -164,7 +164,18 @@ describe("ReviewWorkspace", () => {
         const payload = JSON.parse(String(init.body));
         return {
           id: "conversation-search-1", tenant_id: "tenant-1", client_id: "client-1", matter_id: "matter-1",
-          matter_definition_id: null, review_batch_id: null, search_definition: payload.search_definition,
+          matter_definition_id: null, review_batch_id: null,
+          search_definition: {
+            ...payload.search_definition,
+            filters: payload.search_definition.filters.map((filter: Record<string, unknown>) => ({
+              ...filter,
+              value: filter.value ?? null,
+              values: filter.values ?? null,
+              from: filter.from ?? null,
+              to: filter.to ?? null,
+              include_missing: filter.include_missing ?? false,
+            })),
+          },
           agent_definition_id: "agent-search-chat", agent_definition_version_id: "agent-version-1", title: payload.title,
           workflow_type: "SEARCH_CHAT", status: "ACTIVE", initiated_by_user_id: "user-1",
           created_at: "2026-09-14T12:00:00Z", updated_at: "2026-09-14T12:00:00Z",
@@ -460,9 +471,12 @@ describe("ReviewWorkspace", () => {
 
     expect(screen.queryByRole("button", { name: "Chat results" })).not.toBeInTheDocument();
     await user.click(within(details).getByRole("tab", { name: "Chat" }));
+    await user.click(within(details).getByRole("button", { name: "Start chat and send" }));
+    expect(within(details).getByRole("alert")).toHaveTextContent("Enter your first question before starting the chat.");
+    expect(vi.mocked(coreApi).mock.calls.filter(([path, init]) => path === "/v1/matters/matter-1/agent-conversations" && init?.method === "POST")).toHaveLength(0);
     const firstQuestion = "What concealed pricing discussions mention discounts and timing?";
     await user.type(within(details).getByRole("textbox", { name: "Starting message Search Chat" }), firstQuestion);
-    await user.click(within(details).getByRole("button", { name: "Start search chat" }));
+    await user.click(within(details).getByRole("button", { name: "Start chat and send" }));
     await waitFor(() => {
       const createCall = vi.mocked(coreApi).mock.calls.find(([path, init]) => path === "/v1/matters/matter-1/agent-conversations" && init?.method === "POST");
       const payload = JSON.parse(String(createCall?.[1]?.body));
@@ -486,6 +500,8 @@ describe("ReviewWorkspace", () => {
       const turnCall = vi.mocked(coreApi).mock.calls.find(([path, init]) => path === "/v1/agent-conversations/conversation-search-1/turns" && init?.method === "POST");
       expect(JSON.parse(String(turnCall?.[1]?.body))).toEqual({ message: firstQuestion });
     });
+    expect(within(details).getByRole("combobox", { name: "Previous search chats" })).toBeInTheDocument();
+    expect(within(details).queryByRole("textbox", { name: "Starting message Search Chat" })).not.toBeInTheDocument();
     await user.click(within(details).getByRole("tab", { name: "Coding" }));
 
     expect(within(details).getByRole("button", { name: "Bulk tag results" })).toBeInTheDocument();
