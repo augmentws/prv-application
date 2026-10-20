@@ -1,7 +1,7 @@
 "use client";
 
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { Bot, LoaderCircle, MessageSquareText, Plus, Send } from "lucide-react";
+import { Bot, LoaderCircle, MessageSquareText, PencilLine, Plus, Send } from "lucide-react";
 import { useEffect, useMemo, useRef, useState } from "react";
 import { toast } from "sonner";
 
@@ -9,6 +9,8 @@ import { DocumentChatMessageContent } from "@/components/batch-chat-panel";
 import { QueryError } from "@/components/query-state";
 import { StatusBadge } from "@/components/status-badge";
 import { Button } from "@/components/ui/button";
+import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle } from "@/components/ui/dialog";
+import { Input } from "@/components/ui/input";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Textarea } from "@/components/ui/textarea";
 import type {
@@ -66,18 +68,21 @@ function searchChatScopeKey(search: MatterSearchRequest | null | undefined): str
   });
 }
 
-export function SearchChatPanel({ matterId, search, resultCount, searchLoading = false, onOpenDocument }: {
+export function SearchChatPanel({ matterId, search, resultCount, searchLoading = false, onOpenDocument, onOpenConversation }: {
   matterId: string;
   search: MatterSearchRequest;
   resultCount: number;
   searchLoading?: boolean;
   onOpenDocument: (reference: BatchDocumentReference) => void;
+  onOpenConversation: (search: MatterSearchRequest, title: string) => void;
 }) {
   const queryClient = useQueryClient();
   const [selectedConversationId, setSelectedConversationId] = useState("");
   const [creating, setCreating] = useState(false);
   const [message, setMessage] = useState("");
   const [startValidationError, setStartValidationError] = useState("");
+  const [renameOpen, setRenameOpen] = useState(false);
+  const [renameTitle, setRenameTitle] = useState("");
   const scrollRef = useRef<HTMLDivElement>(null);
   const firstMessageRef = useRef<HTMLTextAreaElement>(null);
   const scope = useMemo(() => normalizeSearchChatScope(search), [search]);
@@ -96,9 +101,10 @@ export function SearchChatPanel({ matterId, search, resultCount, searchLoading =
     () => (conversations.data ?? []).filter((conversation) => searchChatScopeKey(conversation.search_definition) === scopeKey),
     [conversations.data, scopeKey],
   );
-  const selectedScopedConversation = scopedConversations.find((item) => item.id === selectedConversationId);
-  const effectiveConversationId = creating ? "" : selectedScopedConversation?.id || scopedConversations[0]?.id || "";
-  const selectedConversation = scopedConversations.find((item) => item.id === effectiveConversationId);
+  const allConversations = conversations.data ?? [];
+  const explicitlySelectedConversation = allConversations.find((item) => item.id === selectedConversationId);
+  const selectedConversation = creating ? undefined : explicitlySelectedConversation ?? scopedConversations[0];
+  const effectiveConversationId = selectedConversation?.id ?? "";
   const messages = useQuery({
     queryKey: ["agent-messages", effectiveConversationId],
     queryFn: () => coreApi<AgentMessageRead[]>(`/v1/agent-conversations/${effectiveConversationId}/messages`),
@@ -162,6 +168,18 @@ export function SearchChatPanel({ matterId, search, resultCount, searchLoading =
     },
     onError: (error) => toast.error(error instanceof Error ? error.message : "The question could not be sent."),
   });
+  const renameConversation = useMutation({
+    mutationFn: ({ conversationId, title }: { conversationId: string; title: string }) => coreApi<AgentConversationRead>(`/v1/agent-conversations/${conversationId}`, {
+      method: "PATCH",
+      body: JSON.stringify({ title }),
+    }),
+    onSuccess: (updated) => {
+      queryClient.setQueryData<AgentConversationRead[]>(["search-chat-conversations", matterId], (current) => current?.map((conversation) => conversation.id === updated.id ? updated : conversation));
+      setRenameOpen(false);
+      toast.success("Chat renamed.");
+    },
+    onError: (error) => toast.error(error instanceof Error ? error.message : "The chat could not be renamed."),
+  });
 
   const error = agents.error ?? conversations.error ?? messages.error ?? runs.error;
   if (error) return <div className="p-4"><QueryError message={error.message} /></div>;
@@ -177,12 +195,33 @@ export function SearchChatPanel({ matterId, search, resultCount, searchLoading =
     startConversation.mutate(content);
   }
 
+  function openConversation(conversationId: string) {
+    const conversation = allConversations.find((item) => item.id === conversationId);
+    if (!conversation?.search_definition) return;
+    setCreating(false);
+    setSelectedConversationId(conversation.id);
+    onOpenConversation(conversation.search_definition, conversation.title ?? formatDate(conversation.created_at));
+  }
+
+  function openRename() {
+    if (!selectedConversation) return;
+    setRenameTitle(selectedConversation.title ?? "");
+    setRenameOpen(true);
+  }
+
+  function submitRename() {
+    const title = renameTitle.trim();
+    if (!selectedConversation || !title) return;
+    renameConversation.mutate({ conversationId: selectedConversation.id, title });
+  }
+
   if (!selectedConversation) {
     return <div className="grid min-h-0 flex-1 place-items-center p-5 text-center">
       <div className="w-full max-w-sm">
         <span className="mx-auto grid size-12 place-items-center rounded-full bg-agent/10 text-agent"><MessageSquareText className="size-5" /></span>
         <h3 className="mt-4 font-semibold">Chat with these search results</h3>
         <p className="mt-2 text-sm leading-6 text-muted-foreground">{searchLoading ? "Wait for the current search to finish before starting a conversation." : <>The conversation is fixed to the current {resultCount.toLocaleString()} search {resultCount === 1 ? "result" : "results"} and uses document text plus available summaries.</>}</p>
+        {allConversations.length ? <Select value={undefined} onValueChange={openConversation}><SelectTrigger className="mt-5 w-full text-left" aria-label="All search chats"><SelectValue placeholder="Open an earlier chat" /></SelectTrigger><SelectContent>{allConversations.map((conversation) => <SelectItem key={conversation.id} value={conversation.id}>{conversation.title ?? formatDate(conversation.created_at)}</SelectItem>)}</SelectContent></Select> : null}
         {agents.isPending || conversations.isPending ? <LoaderCircle className="mx-auto mt-5 animate-spin text-muted-foreground" />
           : agents.data?.length ? <div className="mt-5 space-y-2 text-left"><Textarea ref={firstMessageRef} value={message} maxLength={2000} disabled={startConversation.isPending} onChange={(event) => { setMessage(event.target.value); setStartValidationError(""); startConversation.reset(); }} onKeyDown={(event) => { if (event.key === "Enter" && !event.shiftKey) { event.preventDefault(); beginConversation(); } }} placeholder="Ask your first question…" aria-label="Starting message Search Chat" aria-invalid={Boolean(startValidationError || startConversation.error)} className="min-h-24 resize-none" /><p className="text-xs text-muted-foreground">Enter your first question, then start the chat. Its first 50 characters become the title.</p>{startValidationError || startConversation.error ? <p role="alert" className="text-xs text-destructive">{startValidationError || (startConversation.error instanceof Error ? startConversation.error.message : "The search chat could not be started.")}</p> : null}<div className="flex gap-2">{creating && scopedConversations.length ? <Button className="flex-1" variant="outline" onClick={() => { setCreating(false); setMessage(""); setStartValidationError(""); startConversation.reset(); }}>Cancel</Button> : null}<Button className="flex-1" disabled={!resultCount || searchLoading || startConversation.isPending} onClick={beginConversation}>{startConversation.isPending ? <LoaderCircle className="animate-spin" /> : <Send />}Start chat and send</Button></div></div>
             : <p className="mt-5 rounded-lg border border-warning/30 bg-warning/10 p-3 text-sm text-warning">The document chat agent is not configured.</p>}
@@ -199,7 +238,7 @@ export function SearchChatPanel({ matterId, search, resultCount, searchLoading =
   return <div className="flex min-h-0 flex-1 flex-col">
     <div className="space-y-2 border-b p-3">
       <div className="flex items-center justify-between gap-2"><div className="flex items-center gap-2 text-sm font-semibold text-agent"><Bot className="size-4" />Search Chat <span className="text-xs font-normal text-muted-foreground">{chatStream.state === "live" ? "Live" : chatStream.state === "fallback" ? "Polling" : chatStream.state === "offline" ? "Offline" : "Connecting"}</span></div><StatusBadge status={selectedConversation.status} /></div>
-      <div className="flex gap-2"><Select value={effectiveConversationId} onValueChange={setSelectedConversationId}><SelectTrigger className="min-w-0 flex-1" aria-label="Previous search chats"><SelectValue /></SelectTrigger><SelectContent>{scopedConversations.map((conversation) => <SelectItem key={conversation.id} value={conversation.id}>{conversation.title ?? formatDate(conversation.created_at)}</SelectItem>)}</SelectContent></Select><Button size="sm" variant="outline" aria-label="New search chat" onClick={() => setCreating(true)}><Plus />New</Button></div>
+      <div className="flex gap-2"><Select value={effectiveConversationId} onValueChange={openConversation}><SelectTrigger className="min-w-0 flex-1" aria-label="All search chats"><SelectValue /></SelectTrigger><SelectContent>{allConversations.map((conversation) => <SelectItem key={conversation.id} value={conversation.id}>{conversation.title ?? formatDate(conversation.created_at)}</SelectItem>)}</SelectContent></Select><Button size="icon" variant="outline" disabled={renameConversation.isPending} aria-label="Rename search chat" onClick={openRename}><PencilLine /></Button><Button size="sm" variant="outline" aria-label="New search chat" onClick={() => setCreating(true)}><Plus />New</Button></div>
       <p className="text-xs text-muted-foreground">Scope frozen to this search definition · currently {resultCount.toLocaleString()} results.</p>
     </div>
     <div ref={scrollRef} className="min-h-0 flex-1 space-y-3 overflow-y-auto p-4" aria-live="polite">
@@ -209,5 +248,6 @@ export function SearchChatPanel({ matterId, search, resultCount, searchLoading =
       {latestRun?.status === "FAILED" ? <div className="rounded-lg bg-destructive/10 p-3 text-sm text-destructive">{latestRun.error_message ?? "The search chat run failed."}</div> : null}
     </div>
     <div className="border-t bg-muted/25 p-3"><Textarea value={message} disabled={activeRun || submitTurn.isPending} onChange={(event) => setMessage(event.target.value)} onKeyDown={(event) => { if (event.key === "Enter" && !event.shiftKey) { event.preventDefault(); void sendMessage(); } }} placeholder="Ask about these results…" aria-label="Message Search Chat" className="min-h-20 resize-none" /><div className="mt-2 flex items-center justify-end"><Button size="sm" disabled={!message.trim() || activeRun || submitTurn.isPending} onClick={() => void sendMessage()}>{submitTurn.isPending ? <LoaderCircle className="animate-spin" /> : <Send />}Send</Button></div></div>
+    <Dialog open={renameOpen} onOpenChange={setRenameOpen}><DialogContent className="max-w-sm"><DialogHeader><DialogTitle>Rename search chat</DialogTitle><DialogDescription>Change the history label for this conversation.</DialogDescription></DialogHeader><Input value={renameTitle} maxLength={200} aria-label="Search chat title" onChange={(event) => setRenameTitle(event.target.value)} onKeyDown={(event) => { if (event.key === "Enter") { event.preventDefault(); submitRename(); } }} /><DialogFooter><Button variant="outline" onClick={() => setRenameOpen(false)}>Cancel</Button><Button disabled={!renameTitle.trim() || renameConversation.isPending} onClick={submitRename}>{renameConversation.isPending ? <LoaderCircle className="animate-spin" /> : null}Rename</Button></DialogFooter></DialogContent></Dialog>
   </div>;
 }

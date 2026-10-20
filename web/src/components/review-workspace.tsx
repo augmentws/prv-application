@@ -674,13 +674,13 @@ export function ReviewWorkspace({
     syncUrl(query, filters, nextOffset);
   };
 
-  const runSavedSearch = (saved: MatterSavedSearchRead) => {
-    const nextQuery = saved.search.query?.trim() ?? "";
-    const nextMode = nextQuery ? (saved.search.search_mode ?? "KEYWORD") : "KEYWORD";
-    const nextMinimumSimilarity = nextMode === "SEMANTIC" ? saved.search.minimum_similarity ?? null : null;
+  const executeSearchDefinition = (search: MatterSearchRequest, successMessage: string, savedSearchId = "") => {
+    const nextQuery = search.query?.trim() ?? "";
+    const nextMode = nextQuery ? (search.search_mode ?? "KEYWORD") : "KEYWORD";
+    const nextMinimumSimilarity = nextMode === "SEMANTIC" ? search.minimum_similarity ?? null : null;
     const nextFilters: SelectedFilters = {};
     const nextNegatedFilterFields = new Set<string>();
-    for (const filter of saved.search.filters ?? []) {
+    for (const filter of search.filters ?? []) {
       const definition = filterDefinitions.find((candidate) => candidate.key === filter.field);
       if (filter.operator === "RANGE" && definition && isDateFilter(definition)) {
         const tokens = dateRangeTokens({
@@ -716,9 +716,13 @@ export function ReviewWorkspace({
     setOffset(0);
     setSelectedDocumentId("");
     setMobileDocumentOpen(false);
-    setExecutedSavedSearchId(saved.id);
+    setExecutedSavedSearchId(savedSearchId);
     syncUrl(nextQuery, nextFilters, 0, undefined, nextMode, nextMinimumSimilarity, nextNegatedFilterFields);
-    toast.success(`Running ${saved.name}.`);
+    toast.success(successMessage);
+  };
+
+  const runSavedSearch = (saved: MatterSavedSearchRead) => {
+    executeSearchDefinition(saved.search, `Running ${saved.name}.`, saved.id);
   };
 
   const custodianNames = useMemo(() => new Map((custodians.data ?? []).map((custodian) => [custodian.id, custodian.display_name])), [custodians.data]);
@@ -835,7 +839,7 @@ export function ReviewWorkspace({
           style={{ "--review-details-width": `${detailsWidth}px` } as CSSProperties}
           aria-label="Document details"
         >
-          <DocumentDetailsPanel canReview={canReview} canChat={canChat} matterId={matterId} search={searchRequest} resultCount={total} searchLoading={searchResults.isFetching} definitions={definitions.data ?? []} groups={groups.data ?? []} hit={selectedHit} values={metadataValues.data} valuesVersion={metadataValues.dataUpdatedAt} loading={metadataValues.isPending && Boolean(effectiveSelectedDocumentId)} saving={metadataMutation.isPending} onSave={(actions) => metadataMutation.mutateAsync(actions).then(() => undefined)} onBulkTag={hasActiveSearch && canBulkCode ? openBulkTag : undefined} onOpenChatDocument={(documentId) => selectDocument(documentId)} />
+          <DocumentDetailsPanel canReview={canReview} canChat={canChat} matterId={matterId} search={searchRequest} resultCount={total} searchLoading={searchResults.isFetching} definitions={definitions.data ?? []} groups={groups.data ?? []} hit={selectedHit} values={metadataValues.data} valuesVersion={metadataValues.dataUpdatedAt} loading={metadataValues.isPending && Boolean(effectiveSelectedDocumentId)} saving={metadataMutation.isPending} onSave={(actions) => metadataMutation.mutateAsync(actions).then(() => undefined)} onBulkTag={hasActiveSearch && canBulkCode ? openBulkTag : undefined} onOpenChatDocument={(documentId) => selectDocument(documentId)} onOpenChatConversation={(conversationSearch, title) => executeSearchDefinition(conversationSearch, `Running the search for ${title}.`)} />
         </aside>
       </div>
 
@@ -849,7 +853,7 @@ export function ReviewWorkspace({
       <Dialog open={codingOpen} onOpenChange={setCodingOpen}>
         <DialogContent className="flex h-[min(90vh,52rem)] max-w-xl flex-col overflow-hidden p-0 2xl:hidden">
           <DialogTitle className="sr-only">Document details</DialogTitle>
-          <DocumentDetailsPanel canReview={canReview} canChat={canChat} matterId={matterId} search={searchRequest} resultCount={total} searchLoading={searchResults.isFetching} definitions={definitions.data ?? []} groups={groups.data ?? []} hit={selectedHit} values={metadataValues.data} valuesVersion={metadataValues.dataUpdatedAt} loading={metadataValues.isPending && Boolean(effectiveSelectedDocumentId)} saving={metadataMutation.isPending} onSave={(actions) => metadataMutation.mutateAsync(actions).then(() => undefined)} onBulkTag={hasActiveSearch && canBulkCode ? openBulkTag : undefined} onOpenChatDocument={(documentId) => { setCodingOpen(false); selectDocument(documentId); }} />
+          <DocumentDetailsPanel canReview={canReview} canChat={canChat} matterId={matterId} search={searchRequest} resultCount={total} searchLoading={searchResults.isFetching} definitions={definitions.data ?? []} groups={groups.data ?? []} hit={selectedHit} values={metadataValues.data} valuesVersion={metadataValues.dataUpdatedAt} loading={metadataValues.isPending && Boolean(effectiveSelectedDocumentId)} saving={metadataMutation.isPending} onSave={(actions) => metadataMutation.mutateAsync(actions).then(() => undefined)} onBulkTag={hasActiveSearch && canBulkCode ? openBulkTag : undefined} onOpenChatDocument={(documentId) => { setCodingOpen(false); selectDocument(documentId); }} onOpenChatConversation={(conversationSearch, title) => executeSearchDefinition(conversationSearch, `Running the search for ${title}.`)} />
         </DialogContent>
       </Dialog>
 
@@ -1190,7 +1194,7 @@ function ResizeHandle({ className, label, value, min, max, direction = 1, onChan
 
 type DetailsTab = "coding" | "metadata" | "history" | "chat";
 
-function DocumentDetailsPanel({ canReview, canChat, matterId, search, resultCount, searchLoading, definitions, groups, hit, values, valuesVersion, loading, saving, onSave, onBulkTag, onOpenChatDocument }: {
+function DocumentDetailsPanel({ canReview, canChat, matterId, search, resultCount, searchLoading, definitions, groups, hit, values, valuesVersion, loading, saving, onSave, onBulkTag, onOpenChatDocument, onOpenChatConversation }: {
   canReview: boolean;
   canChat: boolean;
   matterId: string;
@@ -1207,6 +1211,7 @@ function DocumentDetailsPanel({ canReview, canChat, matterId, search, resultCoun
   onSave: (actions: CodingAction[]) => Promise<void>;
   onBulkTag?: () => void;
   onOpenChatDocument: (documentId: string) => void;
+  onOpenChatConversation: (search: MatterSearchRequest, title: string) => void;
 }) {
   const [tab, setTab] = useState<DetailsTab>(canReview ? "coding" : "metadata");
   const tabsId = useId();
@@ -1228,7 +1233,7 @@ function DocumentDetailsPanel({ canReview, canChat, matterId, search, resultCoun
         {canChat ? <button id={`${tabsId}-chat`} type="button" role="tab" aria-selected={tab === "chat"} aria-controls={`${tabsId}-panel`} onClick={() => setTab("chat")} className={detailsTabClass(tab === "chat")}>Chat</button> : null}
       </div>
       {tab === "chat"
-        ? <div id={`${tabsId}-panel`} role="tabpanel" aria-labelledby={`${tabsId}-chat`} className="flex min-h-0 flex-1 flex-col"><SearchChatPanel matterId={matterId} search={search} resultCount={resultCount} searchLoading={searchLoading} onOpenDocument={(reference) => onOpenChatDocument(reference.documentId)} /></div>
+        ? <div id={`${tabsId}-panel`} role="tabpanel" aria-labelledby={`${tabsId}-chat`} className="flex min-h-0 flex-1 flex-col"><SearchChatPanel matterId={matterId} search={search} resultCount={resultCount} searchLoading={searchLoading} onOpenDocument={(reference) => onOpenChatDocument(reference.documentId)} onOpenConversation={onOpenChatConversation} /></div>
         : !hit ? <div className="grid min-h-0 flex-1 place-items-center p-5 text-center text-sm text-muted-foreground">Select a document to view its metadata.</div>
         : tab !== "history" && loading ? <div className="space-y-3 p-4">{Array.from({ length: 8 }, (_, index) => <Skeleton key={index} className="h-16 w-full" />)}</div>
         : tab === "coding"

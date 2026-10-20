@@ -151,6 +151,7 @@ describe("ReviewWorkspace", () => {
   it("searches, facets, opens a document, and keeps coding available", async () => {
     let tr2016Values: string[] = [];
     let tr2016EventSequence = 0;
+    let latestSearchRequest: Record<string, unknown> | undefined;
     vi.mocked(coreApi).mockImplementation(async (path, init) => {
       if (path === "/v1/auth/me") return { id: "user-1", tenant_id: "tenant-1", email: "reviewer@example.com", display_name: "Review User", status: "ACTIVE", tenant_role: "ADMIN", is_superuser: false, created_at: "2026-09-14T12:00:00Z" } as never;
       if (path === "/v1/matters/matter-1") return { id: "matter-1", client_id: "client-1", name: "Acme Investigation", status: "ACTIVE", created_at: "2026-09-14T12:00:00Z" } as never;
@@ -159,7 +160,25 @@ describe("ReviewWorkspace", () => {
       if (path === "/v1/matters/matter-1/access-users?permission_key=document.view") return [{ id: "user-1", tenant_id: "tenant-1", email: "reviewer@example.com", display_name: "Review User", status: "ACTIVE", tenant_role: "ADMIN", is_superuser: false, created_at: "2026-09-14T12:00:00Z" }] as never;
       if (path === "/v1/matters/matter-1/saved-searches" && !init?.method) return [] as never;
       if (path === "/v1/matters/matter-1/agents?workflow_type=SEARCH_CHAT") return [{ id: "agent-search-chat", name: "Batch Chat Agent" }] as never;
-      if (path === "/v1/matters/matter-1/agent-conversations?workflow_type=SEARCH_CHAT" && !init?.method) return [] as never;
+      if (path === "/v1/matters/matter-1/agent-conversations?workflow_type=SEARCH_CHAT" && !init?.method) {
+        const currentSearch = latestSearchRequest ?? {};
+        const currentScope = {
+          ...currentSearch,
+          filters: ((currentSearch.filters as Array<Record<string, unknown>> | undefined) ?? []).map((filter) => ({
+            ...filter,
+            value: filter.value ?? null,
+            values: filter.values ?? null,
+            from: filter.from ?? null,
+            to: filter.to ?? null,
+            include_missing: filter.include_missing ?? false,
+          })),
+          facets: [], sort: [], offset: 0, size: 500,
+        };
+        return [
+          { id: "conversation-current", tenant_id: "tenant-1", client_id: "client-1", matter_id: "matter-1", matter_definition_id: null, review_batch_id: null, search_definition: currentScope, agent_definition_id: "agent-search-chat", agent_definition_version_id: "agent-version-1", title: "Current pricing chat", workflow_type: "SEARCH_CHAT", status: "ACTIVE", initiated_by_user_id: "user-1", created_at: "2026-09-14T12:02:00Z", updated_at: "2026-09-14T12:02:00Z" },
+          { id: "conversation-legacy", tenant_id: "tenant-1", client_id: "client-1", matter_id: "matter-1", matter_definition_id: null, review_batch_id: null, search_definition: { query: "legacy pricing", search_mode: "KEYWORD", minimum_similarity: null, candidate_limit: null, query_fields: [], filters: [], facets: [], sort: [], offset: 0, size: 500 }, agent_definition_id: "agent-search-chat", agent_definition_version_id: "agent-version-1", title: "Legacy search chat", workflow_type: "SEARCH_CHAT", status: "ACTIVE", initiated_by_user_id: "user-1", created_at: "2026-09-13T12:02:00Z", updated_at: "2026-09-13T12:02:00Z" },
+        ] as never;
+      }
       if (path === "/v1/matters/matter-1/agent-conversations" && init?.method === "POST") {
         const payload = JSON.parse(String(init.body));
         return {
@@ -183,6 +202,11 @@ describe("ReviewWorkspace", () => {
       }
       if (path === "/v1/agent-conversations/conversation-search-1/messages") return [] as never;
       if (path === "/v1/agent-conversations/conversation-search-1/runs") return [] as never;
+      if (["/v1/agent-conversations/conversation-current/messages", "/v1/agent-conversations/conversation-current/runs", "/v1/agent-conversations/conversation-legacy/messages", "/v1/agent-conversations/conversation-legacy/runs"].includes(path)) return [] as never;
+      if (path === "/v1/agent-conversations/conversation-current" && init?.method === "PATCH") {
+        const payload = JSON.parse(String(init.body));
+        return { id: "conversation-current", tenant_id: "tenant-1", client_id: "client-1", matter_id: "matter-1", matter_definition_id: null, review_batch_id: null, search_definition: latestSearchRequest, agent_definition_id: "agent-search-chat", agent_definition_version_id: "agent-version-1", title: payload.title, workflow_type: "SEARCH_CHAT", status: "ACTIVE", initiated_by_user_id: "user-1", created_at: "2026-09-14T12:02:00Z", updated_at: "2026-09-14T12:04:00Z" } as never;
+      }
       if (path === "/v1/agent-conversations/conversation-search-1/turns" && init?.method === "POST") {
         const payload = JSON.parse(String(init.body));
         return {
@@ -207,7 +231,10 @@ describe("ReviewWorkspace", () => {
       if (path.endsWith("/metadata-definitions")) return definitions as never;
       if (path.endsWith("/metadata-groups")) return groups as never;
       if (path === "/v1/matters/matter-1/custodians") return [{ id: "custodian-1", client_id: "client-1", display_name: "Alice Adams", email_addresses: [], external_reference: null, status: "ACTIVE", created_at: "2026-09-14T12:00:00Z" }] as never;
-      if (path.endsWith("/search") && init?.method === "POST") return searchResponse as never;
+      if (path.endsWith("/search") && init?.method === "POST") {
+        latestSearchRequest = JSON.parse(String(init.body));
+        return searchResponse as never;
+      }
       if (path.endsWith("/facets/coded_by/values") && init?.method === "POST") return {
         field: "coded_by",
         values: [{ value: "user:reviewer@example.com", label: "Review User (reviewer@example.com)", count: 12 }],
@@ -471,6 +498,20 @@ describe("ReviewWorkspace", () => {
 
     expect(screen.queryByRole("button", { name: "Chat results" })).not.toBeInTheDocument();
     await user.click(within(details).getByRole("tab", { name: "Chat" }));
+    const chatHistory = within(details).getByRole("combobox", { name: "All search chats" });
+    await user.click(chatHistory);
+    await user.click(screen.getByRole("option", { name: "Legacy search chat" }));
+    await waitFor(() => expect(latestSearchRequest).toMatchObject({ query: "legacy pricing", search_mode: "KEYWORD" }));
+    await user.click(within(details).getByRole("combobox", { name: "All search chats" }));
+    await user.click(screen.getByRole("option", { name: "Current pricing chat" }));
+    await waitFor(() => expect(latestSearchRequest).toMatchObject({ query: "concealed pricing discussion", search_mode: "SEMANTIC", minimum_similarity: 0.035 }));
+    await user.click(within(details).getByRole("button", { name: "Rename search chat" }));
+    const renameDialog = screen.getByRole("dialog", { name: "Rename search chat" });
+    await user.clear(within(renameDialog).getByRole("textbox", { name: "Search chat title" }));
+    await user.type(within(renameDialog).getByRole("textbox", { name: "Search chat title" }), "Pricing evidence review");
+    await user.click(within(renameDialog).getByRole("button", { name: "Rename" }));
+    await waitFor(() => expect(coreApi).toHaveBeenCalledWith("/v1/agent-conversations/conversation-current", expect.objectContaining({ method: "PATCH", body: JSON.stringify({ title: "Pricing evidence review" }) })));
+    await user.click(within(details).getByRole("button", { name: "New search chat" }));
     await user.click(within(details).getByRole("button", { name: "Start chat and send" }));
     expect(within(details).getByRole("alert")).toHaveTextContent("Enter your first question before starting the chat.");
     expect(vi.mocked(coreApi).mock.calls.filter(([path, init]) => path === "/v1/matters/matter-1/agent-conversations" && init?.method === "POST")).toHaveLength(0);
@@ -500,7 +541,7 @@ describe("ReviewWorkspace", () => {
       const turnCall = vi.mocked(coreApi).mock.calls.find(([path, init]) => path === "/v1/agent-conversations/conversation-search-1/turns" && init?.method === "POST");
       expect(JSON.parse(String(turnCall?.[1]?.body))).toEqual({ message: firstQuestion });
     });
-    expect(within(details).getByRole("combobox", { name: "Previous search chats" })).toBeInTheDocument();
+    expect(within(details).getByRole("combobox", { name: "All search chats" })).toBeInTheDocument();
     expect(within(details).queryByRole("textbox", { name: "Starting message Search Chat" })).not.toBeInTheDocument();
     await user.click(within(details).getByRole("tab", { name: "Coding" }));
 

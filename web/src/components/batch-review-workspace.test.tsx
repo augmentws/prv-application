@@ -549,6 +549,10 @@ describe("BatchReviewWorkspace", () => {
       }
       if (path === "/v1/agent-conversations/conversation-existing/messages") return [{ id: "message-1", conversation_id: "conversation-existing", turn_id: "turn-existing", sequence: 1, role: "ASSISTANT", content: `See [Document ${citedDocumentId} ¶1-5].`, agent_run_id: "agent-run-existing", created_by_user_id: null, created_at: "2026-09-14T12:00:00Z" }] as never;
       if (path === "/v1/agent-conversations/conversation-existing/runs") return [] as never;
+      if (path === "/v1/agent-conversations/conversation-existing" && init?.method === "PATCH") {
+        const payload = JSON.parse(String(init.body));
+        return { id: "conversation-existing", tenant_id: "tenant-1", client_id: "client-1", matter_id: "matter-1", review_batch_id: "batch-1", agent_definition_id: "batch-agent-1", agent_definition_version_id: "batch-agent-version-1", title: payload.title, workflow_type: "BATCH_CHAT", status: "ACTIVE", initiated_by_user_id: "user-1", created_at: "2026-09-14T12:00:00Z", updated_at: "2026-09-14T12:01:00Z" } as never;
+      }
       if (path === "/v1/agent-conversations/conversation-1/messages") return [] as never;
       if (path === "/v1/agent-conversations/conversation-1/runs") return [] as never;
       throw new Error(`Unexpected request: ${path}`);
@@ -699,6 +703,12 @@ describe("BatchReviewWorkspace", () => {
     await user.click(await screen.findByRole("button", { name: `Document ${citedDocumentId} ¶1-5` }));
     expect(await screen.findByText("cited-document.eml")).toBeInTheDocument();
     expect(screen.getByTestId("highlighted-paragraphs")).toHaveTextContent("1,2,3,4,5");
+    await user.click(screen.getByRole("button", { name: "Rename batch chat" }));
+    const renameDialog = screen.getByRole("dialog", { name: "Rename batch chat" });
+    await user.clear(within(renameDialog).getByRole("textbox", { name: "Batch chat title" }));
+    await user.type(within(renameDialog).getByRole("textbox", { name: "Batch chat title" }), "Renewal evidence review");
+    await user.click(within(renameDialog).getByRole("button", { name: "Rename" }));
+    await waitFor(() => expect(coreApi).toHaveBeenCalledWith("/v1/agent-conversations/conversation-existing", expect.objectContaining({ method: "PATCH", body: JSON.stringify({ title: "Renewal evidence review" }) })));
     await user.click(screen.getByRole("button", { name: "New batch chat" }));
     expect(await screen.findByText("Chat with this batch")).toBeInTheDocument();
     await user.click(screen.getByRole("button", { name: "Start chat and send" }));
