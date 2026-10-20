@@ -7,6 +7,7 @@ from sqlalchemy import func, select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session, selectinload
 
+from app.analysis_task_batch_sets import AnalysisTaskBatchSetError, create_batch_set, materialize_batch_set
 from app.analysis_task_compilation import queue_analysis_task_compilation
 from app.analysis_task_playground import queue_analysis_task_playground
 from app.analysis_tasks import (
@@ -25,6 +26,7 @@ from app.classification_analysis_tasks import (
     cancel_classification_analysis_run,
     create_classification_analysis_run,
 )
+from app.config import Settings, get_settings
 from app.database import get_db
 from app.dependencies import Principal, can_admin_matter, get_principal
 from app.fact_development import (
@@ -44,6 +46,7 @@ from app.job_executions import (
     FACT_DEVELOPMENT_ANALYSIS_TASK_JOB_TYPE,
 )
 from app.models import (
+    AnalysisTaskBatchSet,
     ClassificationModelVersion,
     Matter,
     MatterAnalysisTask,
@@ -62,6 +65,9 @@ from app.models import (
     WorkflowRun,
 )
 from app.schemas import (
+    AnalysisTaskBatchSetChildRead,
+    AnalysisTaskBatchSetCreate,
+    AnalysisTaskBatchSetRead,
     FactDevelopmentRunCreate,
     FactDevelopmentRunEstimateCreate,
     FactDevelopmentRunEstimateRead,
@@ -86,6 +92,7 @@ from app.workflows.dispatcher import (
     cancel_classification_analysis_task,
     cancel_classification_model_scoring,
     cancel_fact_development_run_workflow,
+    enqueue_analysis_task_batch_set,
     enqueue_classification_analysis_task,
     enqueue_fact_development_run,
 )
@@ -130,6 +137,30 @@ def _task_version(
     if task_version is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Matter Analysis Task version not found")
     return task_version
+
+
+def _batch_set_read(db: Session, batch_set: AnalysisTaskBatchSet) -> AnalysisTaskBatchSetRead:
+    children = list(
+        db.scalars(
+            select(ReviewBatch)
+            .where(ReviewBatch.analysis_task_batch_set_id == batch_set.id)
+            .order_by(ReviewBatch.batch_set_ordinal)
+        )
+    )
+    return AnalysisTaskBatchSetRead.model_validate(batch_set).model_copy(
+        update={
+            "children": [
+                AnalysisTaskBatchSetChildRead(
+                    id=child.id,
+                    ordinal=child.batch_set_ordinal or 0,
+                    name=child.name,
+                    status=child.status,
+                    document_count=child.document_count,
+                )
+                for child in children
+            ]
+        }
+    )
 
 
 def _task_read(
@@ -370,6 +401,7 @@ def create_matter_analysis_task(
             classification_model_version_id=payload.classification_model_version_id,
             review_guidance_id=payload.review_guidance_id,
             review_guidance_revision=payload.review_guidance_revision,
+            scope_policy=payload.scope_policy.model_dump(mode="json") if payload.scope_policy else None,
         )
     except MatterAnalysisTaskError as exc:
         _raise_task_error(exc)
@@ -406,6 +438,108 @@ def get_analysis_task(
 ) -> MatterAnalysisTaskRead:
     _require_matter_admin(db, principal, matter_id)
     return _task_read(db, _require_task(db, matter_id=matter_id, task_id=task_id))
+
+
+@router.get("/{task_id}/batch-sets", response_model=list[AnalysisTaskBatchSetRead])
+def list_analysis_task_batch_sets(
+    matter_id: uuid.UUID,
+    task_id: uuid.UUID,
+    principal: Principal = Depends(get_principal),
+    db: Session = Depends(get_db),
+) -> list[AnalysisTaskBatchSetRead]:
+    _require_matter_admin(db, principal, matter_id)
+    task = _require_task(db, matter_id=matter_id, task_id=task_id)
+    rows = list(
+        db.scalars(
+            select(AnalysisTaskBatchSet)
+            .where(AnalysisTaskBatchSet.matter_analysis_task_id == task.id)
+            .order_by(AnalysisTaskBatchSet.created_at.desc(), AnalysisTaskBatchSet.id.desc())
+        )
+    )
+    return [_batch_set_read(db, row) for row in rows]
+
+
+@router.get("/{task_id}/batch-sets/{batch_set_id}", response_model=AnalysisTaskBatchSetRead)
+def get_analysis_task_batch_set(
+    matter_id: uuid.UUID,
+    task_id: uuid.UUID,
+    batch_set_id: uuid.UUID,
+    principal: Principal = Depends(get_principal),
+    db: Session = Depends(get_db),
+) -> AnalysisTaskBatchSetRead:
+    _require_matter_admin(db, principal, matter_id)
+    _require_task(db, matter_id=matter_id, task_id=task_id)
+    batch_set = db.scalar(
+        select(AnalysisTaskBatchSet).where(
+            AnalysisTaskBatchSet.id == batch_set_id,
+            AnalysisTaskBatchSet.matter_id == matter_id,
+            AnalysisTaskBatchSet.matter_analysis_task_id == task_id,
+        )
+    )
+    if batch_set is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Analysis Task Batch Set not found")
+    return _batch_set_read(db, batch_set)
+
+
+@router.post(
+    "/{task_id}/batch-sets",
+    response_model=AnalysisTaskBatchSetRead,
+    status_code=status.HTTP_202_ACCEPTED,
+)
+def create_analysis_task_batch_set(
+    matter_id: uuid.UUID,
+    task_id: uuid.UUID,
+    payload: AnalysisTaskBatchSetCreate,
+    principal: Principal = Depends(get_principal),
+    db: Session = Depends(get_db),
+    settings: Settings = Depends(get_settings),
+) -> AnalysisTaskBatchSetRead:
+    matter = _require_matter_admin(db, principal, matter_id)
+    task = _require_task(db, matter_id=matter_id, task_id=task_id)
+    if task.published_version is None:
+        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="Analysis Task has no published version")
+    task_version = _task_version(db, task_id=task.id, version_number=task.published_version)
+    try:
+        batch_set = create_batch_set(
+            db,
+            matter=matter,
+            task=task,
+            task_version=task_version,
+            name=payload.name,
+            description=payload.description,
+            population_source_type=payload.population_source_type,
+            source_review_batch_id=payload.source_review_batch_id,
+            target_batch_size=payload.target_batch_size,
+            random_seed=payload.random_seed,
+            actor_user_id=principal.user.id,
+        )
+    except AnalysisTaskBatchSetError as exc:
+        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=str(exc)) from exc
+    record_audit(
+        db,
+        tenant_id=matter.client.tenant_id,
+        actor_user_id=principal.user.id,
+        action="analysis_task_batch_set.created",
+        target_type="analysis_task_batch_set",
+        target_id=batch_set.id,
+        details={
+            "matter_id": str(matter.id),
+            "task_id": str(task.id),
+            "task_version_id": str(task_version.id),
+            "population_source_type": batch_set.population_source_type,
+            "target_batch_size": batch_set.target_batch_size,
+        },
+    )
+    enqueue_analysis_task_batch_set(db, batch_set.workflow_id, str(batch_set.id))
+    db.commit()
+    if not settings.dbos_enabled:
+        try:
+            batch_set = materialize_batch_set(db, batch_set.id)
+        except AnalysisTaskBatchSetError as exc:
+            batch_set = db.get(AnalysisTaskBatchSet, batch_set.id) or batch_set
+            if batch_set.status != "FAILED":
+                raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=str(exc)) from exc
+    return _batch_set_read(db, batch_set)
 
 
 @router.get("/{task_id}/versions", response_model=list[MatterAnalysisTaskVersionRead])
@@ -575,6 +709,7 @@ def create_analysis_task_version(
             destination_metadata_definition_ids=payload.destination_metadata_definition_ids,
             classification_model_version_id=payload.classification_model_version_id,
             review_guidance_revision=payload.review_guidance_revision,
+            scope_policy=payload.scope_policy.model_dump(mode="json") if payload.scope_policy else None,
         )
     except MatterAnalysisTaskError as exc:
         _raise_task_error(exc)

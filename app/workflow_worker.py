@@ -32,6 +32,7 @@ def main() -> None:
     from app.workflows import (  # noqa: F401
         agent_turn,
         analysis_task_batch,
+        analysis_task_batch_sets,
         analysis_task_compilation,
         analysis_task_playground,
         analysis_task_promotions,

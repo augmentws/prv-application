@@ -18,6 +18,7 @@ from app.job_executions import (
     transition_job_execution,
 )
 from app.models import (
+    AnalysisTaskBatchSet,
     Matter,
     MatterAnalysisTask,
     MatterAnalysisTaskVersion,
@@ -54,6 +55,12 @@ def queue_analysis_task_batch(
         raise MatterAnalysisTaskConflict("A ready review batch is required")
     if task.matter_id != matter.id or task_version.matter_analysis_task_id != task.id:
         raise MatterAnalysisTaskConflict("Analysis task version does not belong to this matter")
+    if batch.analysis_task_batch_set_id is not None:
+        batch_set = db.get(AnalysisTaskBatchSet, batch.analysis_task_batch_set_id)
+        if batch_set is None or batch_set.matter_analysis_task_version_id != task_version.id:
+            raise MatterAnalysisTaskConflict("Managed batch must run with its Batch Set's pinned task version")
+    elif "AD_HOC_BATCH" not in (task_version.scope_policy or {}).get("allowed_modes", ["AD_HOC_BATCH"]):
+        raise MatterAnalysisTaskConflict("This task version does not allow ad hoc batch execution")
     if task_version.status != "PUBLISHED" or task_version.compilation_status != "READY":
         raise MatterAnalysisTaskConflict("Batch evaluation requires a ready, published task version")
     if task_version.decision_provider == "OPENAI_DECISIONS" and not get_settings().openai_api_key:

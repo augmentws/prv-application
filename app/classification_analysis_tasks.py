@@ -39,6 +39,7 @@ from app.job_executions import (
     transition_job_execution,
 )
 from app.models import (
+    AnalysisTaskBatchSet,
     ClassificationDatasetSnapshot,
     ClassificationModel,
     ClassificationModelConfiguration,
@@ -234,12 +235,27 @@ def create_classification_analysis_run(
             code="FEATURE_CONTRACT_MISMATCH",
         )
     if payload.scope_type == "MATTER":
+        allowed_scope_modes = (task_version.scope_policy or {}).get(
+            "allowed_modes", ["AD_HOC_BATCH", "WHOLE_MATTER"]
+        )
+        if "WHOLE_MATTER" not in allowed_scope_modes:
+            raise ClassificationAnalysisTaskError("This task version does not allow whole-matter execution")
         if payload.scope_id != matter.id:
             raise ClassificationAnalysisTaskError("Matter scope must identify this matter")
     else:
         batch = db.get(ReviewBatch, payload.scope_id)
         if batch is None or batch.matter_id != matter.id or batch.status != "READY":
             raise ClassificationAnalysisTaskError("Review-batch scope must identify a ready batch")
+        if batch.analysis_task_batch_set_id is not None:
+            batch_set = db.get(AnalysisTaskBatchSet, batch.analysis_task_batch_set_id)
+            if batch_set is None or batch_set.matter_analysis_task_version_id != task_version.id:
+                raise ClassificationAnalysisTaskError(
+                    "Managed batch must run with its Batch Set's pinned task version"
+                )
+        elif "AD_HOC_BATCH" not in (task_version.scope_policy or {}).get(
+            "allowed_modes", ["AD_HOC_BATCH", "WHOLE_MATTER"]
+        ):
+            raise ClassificationAnalysisTaskError("This task version does not allow ad hoc batch execution")
     existing = db.scalar(
         select(MatterAnalysisTaskRun).where(
             MatterAnalysisTaskRun.matter_analysis_task_id == task.id,

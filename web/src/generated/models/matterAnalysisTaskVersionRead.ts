@@ -15,6 +15,7 @@ import type { MatterAnalysisTaskVersionReadEvidencePolicy } from './matterAnalys
 import type { MatterAnalysisTaskVersionReadInputContract } from './matterAnalysisTaskVersionReadInputContract';
 import type { MatterAnalysisTaskVersionReadOutputContract } from './matterAnalysisTaskVersionReadOutputContract';
 import type { MatterAnalysisTaskVersionReadRoutingPolicy } from './matterAnalysisTaskVersionReadRoutingPolicy';
+import type { MatterAnalysisTaskVersionReadScopePolicy } from './matterAnalysisTaskVersionReadScopePolicy';
 import type { MatterAnalysisTaskVersionReadSourceProvenance } from './matterAnalysisTaskVersionReadSourceProvenance';
 import type { MatterAnalysisTaskVersionReadStatus } from './matterAnalysisTaskVersionReadStatus';
 import type { MatterAnalysisTaskVersionReadValidationReport } from './matterAnalysisTaskVersionReadValidationReport';
@@ -45,6 +46,7 @@ export interface MatterAnalysisTaskVersionRead {
   output_contract: MatterAnalysisTaskVersionReadOutputContract;
   evidence_policy: MatterAnalysisTaskVersionReadEvidencePolicy;
   routing_policy: MatterAnalysisTaskVersionReadRoutingPolicy;
+  scope_policy: MatterAnalysisTaskVersionReadScopePolicy;
   compiler_skill_definition_version_id: string | null;
   compiler_skill_run_id: string | null;
   compiler_workflow_run_id: string | null;

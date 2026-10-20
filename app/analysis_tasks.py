@@ -40,6 +40,26 @@ DECISION_PROVIDER_MODELS: dict[str, str | None] = {
     "OPENAI_DECISIONS": "gpt-6-luna",
 }
 
+SUPPORTED_SCOPE_MODES = {"AD_HOC_BATCH", "WHOLE_MATTER", "PARTITIONED_SET"}
+
+
+def default_scope_policy(task_type: str) -> dict[str, Any]:
+    modes = ["AD_HOC_BATCH", "WHOLE_MATTER"] if task_type == "CLASSIFICATION" else ["AD_HOC_BATCH"]
+    return {"allowed_modes": modes, "default_mode": modes[0]}
+
+
+def validated_scope_policy(task_type: str, value: dict[str, Any] | None) -> dict[str, Any]:
+    policy = value or default_scope_policy(task_type)
+    modes = policy.get("allowed_modes")
+    default = policy.get("default_mode")
+    if not isinstance(modes, list) or not modes or len(modes) != len(set(modes)):
+        raise MatterAnalysisTaskError("Analysis Task scope policy requires unique allowed_modes")
+    if any(mode not in SUPPORTED_SCOPE_MODES for mode in modes) or default not in modes:
+        raise MatterAnalysisTaskError("Analysis Task scope policy contains an unsupported or invalid default mode")
+    if task_type != "CLASSIFICATION" and "WHOLE_MATTER" in modes:
+        raise MatterAnalysisTaskError("Whole-matter scope is currently supported only for classification tasks")
+    return {"allowed_modes": modes, "default_mode": default}
+
 
 class MatterAnalysisTaskError(ValueError):
     pass
@@ -280,10 +300,12 @@ def create_analysis_task(
     classification_model_version_id: uuid.UUID | None = None,
     review_guidance_id: uuid.UUID | None = None,
     review_guidance_revision: int | None = None,
+    scope_policy: dict[str, Any] | None = None,
 ) -> tuple[MatterAnalysisTask, MatterAnalysisTaskVersion]:
     workflow_key = TASK_WORKFLOW_KEYS.get(task_type)
     if workflow_key is None:
         raise MatterAnalysisTaskError(f"Unsupported analysis task type: {task_type}")
+    resolved_scope_policy = validated_scope_policy(task_type, scope_policy)
     existing = db.scalar(
         select(MatterAnalysisTask).where(
             MatterAnalysisTask.matter_id == matter.id,
@@ -380,6 +402,7 @@ def create_analysis_task(
                 else {}
             ),
         },
+        scope_policy=resolved_scope_policy,
     )
     db.add(task_version)
     db.flush()
@@ -397,6 +420,7 @@ def append_analysis_task_version(
     destination_metadata_definition_ids: list[uuid.UUID] | None,
     classification_model_version_id: uuid.UUID | None = None,
     review_guidance_revision: int | None = None,
+    scope_policy: dict[str, Any] | None = None,
 ) -> tuple[MatterAnalysisTask, MatterAnalysisTaskVersion]:
     task = db.scalar(select(MatterAnalysisTask).where(MatterAnalysisTask.id == task_id).with_for_update())
     if task is None:
@@ -426,6 +450,7 @@ def append_analysis_task_version(
         )
     )
     selected_decision_provider = decision_provider or prior_version.decision_provider
+    resolved_scope_policy = validated_scope_policy(task.task_type, scope_policy or prior_version.scope_policy)
     decision_model = decision_provider_model(selected_decision_provider)
     if task.task_type == "CLASSIFICATION" and selected_decision_provider != "JEV":
         raise MatterAnalysisTaskError("Classification tasks do not use a decision provider")
@@ -493,6 +518,7 @@ def append_analysis_task_version(
             "decision_provider": selected_decision_provider,
             "decision_model": decision_model,
         },
+        scope_policy=resolved_scope_policy,
     )
     db.add(task_version)
     db.flush()

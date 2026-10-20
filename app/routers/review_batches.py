@@ -402,6 +402,8 @@ def _read_batch(db: Session, batch: ReviewBatch) -> ReviewBatchRead:
         selection_type=batch.selection_type,
         selection_definition=batch.selection_definition,
         source_batch_id=batch.source_batch_id,
+        analysis_task_batch_set_id=batch.analysis_task_batch_set_id,
+        batch_set_ordinal=batch.batch_set_ordinal,
         search_index_generation_id=batch.search_index_generation_id,
         sample_size=batch.sample_size,
         random_seed=batch.random_seed,
@@ -944,6 +946,11 @@ def archive_review_batch(
     batch = _batch(db, matter_id, batch_id)
     if batch.status == "ARCHIVED":
         return Response(status_code=status.HTTP_204_NO_CONTENT)
+    if batch.analysis_task_batch_set_id is not None:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail="Managed partition batches are archived through their Analysis Task Batch Set",
+        )
     if batch.status in {"QUEUED", "BUILDING"}:
         raise HTTPException(
             status_code=status.HTTP_409_CONFLICT,

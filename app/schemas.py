@@ -1189,6 +1189,7 @@ ReviewBatchSelectionType = Literal[
     "DEFINITION_ASSESSMENT",
     "CLASSIFICATION_PREDICTIONS",
     "COMPARISON_RESULT",
+    "TASK_BATCH_PARTITION",
 ]
 InteractiveReviewBatchSelectionType = Literal[
     "ALL_MATTER",
@@ -1308,6 +1309,8 @@ class ReviewBatchRead(BaseModel):
     selection_type: ReviewBatchSelectionType
     selection_definition: dict[str, Any]
     source_batch_id: uuid.UUID | None
+    analysis_task_batch_set_id: uuid.UUID | None = None
+    batch_set_ordinal: int | None = None
     search_index_generation_id: uuid.UUID | None
     sample_size: int | None
     random_seed: str | None
@@ -2660,6 +2663,24 @@ class MatterDefinitionCloneCreate(BaseModel):
         return name
 
 
+AnalysisTaskScopeMode = Literal["AD_HOC_BATCH", "WHOLE_MATTER", "PARTITIONED_SET"]
+
+
+class AnalysisTaskScopePolicy(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    allowed_modes: list[AnalysisTaskScopeMode] = Field(min_length=1, max_length=3)
+    default_mode: AnalysisTaskScopeMode
+
+    @model_validator(mode="after")
+    def validate_modes(self) -> "AnalysisTaskScopePolicy":
+        if len(self.allowed_modes) != len(set(self.allowed_modes)):
+            raise ValueError("allowed_modes must be unique")
+        if self.default_mode not in self.allowed_modes:
+            raise ValueError("default_mode must be included in allowed_modes")
+        return self
+
+
 class MatterAnalysisTaskCreate(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
@@ -2673,6 +2694,7 @@ class MatterAnalysisTaskCreate(BaseModel):
     classification_model_version_id: uuid.UUID | None = None
     review_guidance_id: uuid.UUID | None = None
     review_guidance_revision: int | None = Field(default=None, ge=1)
+    scope_policy: AnalysisTaskScopePolicy | None = None
 
     @field_validator("destination_metadata_definition_ids")
     @classmethod
@@ -2691,6 +2713,7 @@ class MatterAnalysisTaskVersionCreate(BaseModel):
     destination_metadata_definition_ids: list[uuid.UUID] | None = Field(default=None, max_length=100)
     classification_model_version_id: uuid.UUID | None = None
     review_guidance_revision: int | None = Field(default=None, ge=1)
+    scope_policy: AnalysisTaskScopePolicy | None = None
 
     @field_validator("destination_metadata_definition_ids")
     @classmethod
@@ -2789,6 +2812,7 @@ class MatterAnalysisTaskVersionRead(ORMModel):
     output_contract: dict[str, Any]
     evidence_policy: dict[str, Any]
     routing_policy: dict[str, Any]
+    scope_policy: dict[str, Any]
     compiler_skill_definition_version_id: uuid.UUID | None
     compiler_skill_run_id: uuid.UUID | None
     compiler_workflow_run_id: uuid.UUID | None
@@ -2818,6 +2842,66 @@ class MatterAnalysisTaskRead(ORMModel):
     updated_at: datetime
     version: MatterAnalysisTaskVersionRead
     published_version_details: MatterAnalysisTaskVersionRead | None = None
+
+
+AnalysisTaskBatchSetSourceType = Literal["ALL_MATTER", "SOURCE_BATCH"]
+AnalysisTaskBatchSetStatus = Literal["QUEUED", "BUILDING", "READY", "FAILED", "CANCELED", "ARCHIVED"]
+
+
+class AnalysisTaskBatchSetCreate(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    name: str = Field(min_length=1, max_length=200)
+    description: str | None = Field(default=None, max_length=4000)
+    population_source_type: AnalysisTaskBatchSetSourceType
+    source_review_batch_id: uuid.UUID | None = None
+    target_batch_size: int = Field(ge=1, le=10_000_000)
+    random_seed: str | None = Field(default=None, min_length=1, max_length=100)
+
+    @model_validator(mode="after")
+    def validate_source(self) -> "AnalysisTaskBatchSetCreate":
+        if self.population_source_type == "SOURCE_BATCH" and self.source_review_batch_id is None:
+            raise ValueError("SOURCE_BATCH requires source_review_batch_id")
+        if self.population_source_type != "SOURCE_BATCH" and self.source_review_batch_id is not None:
+            raise ValueError("source_review_batch_id is only valid for SOURCE_BATCH")
+        return self
+
+
+class AnalysisTaskBatchSetChildRead(BaseModel):
+    id: uuid.UUID
+    ordinal: int
+    name: str
+    status: ReviewBatchStatus
+    document_count: int
+
+
+class AnalysisTaskBatchSetRead(ORMModel):
+    id: uuid.UUID
+    tenant_id: uuid.UUID
+    matter_id: uuid.UUID
+    matter_analysis_task_id: uuid.UUID
+    matter_analysis_task_version_id: uuid.UUID
+    name: str
+    description: str | None
+    population_source_type: AnalysisTaskBatchSetSourceType
+    selection_definition: dict[str, Any]
+    source_review_batch_id: uuid.UUID | None
+    target_batch_size: int
+    allocation_policy: dict[str, Any]
+    random_seed: str
+    allocation_algorithm_version: str
+    status: AnalysisTaskBatchSetStatus
+    workflow_id: str
+    population_count: int
+    batch_count: int
+    population_hash: str | None
+    warning_details: list[dict[str, Any]]
+    error_message: str | None
+    created_by_user_id: uuid.UUID
+    created_at: datetime
+    updated_at: datetime
+    completed_at: datetime | None
+    children: list[AnalysisTaskBatchSetChildRead] = Field(default_factory=list)
 
 
 class MatterAnalysisTaskRunCreate(BaseModel):

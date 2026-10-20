@@ -4480,6 +4480,202 @@
         }
       }
     },
+    "/v1/matters/{matter_id}/analysis-tasks/{task_id}/batch-sets": {
+      "get": {
+        "tags": [
+          "matter analysis tasks"
+        ],
+        "summary": "List Analysis Task Batch Sets",
+        "operationId": "list_analysis_task_batch_sets_v1_matters__matter_id__analysis_tasks__task_id__batch_sets_get",
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "matter_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid",
+              "title": "Matter Id"
+            }
+          },
+          {
+            "name": "task_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid",
+              "title": "Task Id"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "array",
+                  "items": {
+                    "$ref": "#/components/schemas/AnalysisTaskBatchSetRead"
+                  },
+                  "title": "Response List Analysis Task Batch Sets V1 Matters  Matter Id  Analysis Tasks  Task Id  Batch Sets Get"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      },
+      "post": {
+        "tags": [
+          "matter analysis tasks"
+        ],
+        "summary": "Create Analysis Task Batch Set",
+        "operationId": "create_analysis_task_batch_set_v1_matters__matter_id__analysis_tasks__task_id__batch_sets_post",
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "matter_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid",
+              "title": "Matter Id"
+            }
+          },
+          {
+            "name": "task_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid",
+              "title": "Task Id"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/AnalysisTaskBatchSetCreate"
+              }
+            }
+          }
+        },
+        "responses": {
+          "202": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AnalysisTaskBatchSetRead"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v1/matters/{matter_id}/analysis-tasks/{task_id}/batch-sets/{batch_set_id}": {
+      "get": {
+        "tags": [
+          "matter analysis tasks"
+        ],
+        "summary": "Get Analysis Task Batch Set",
+        "operationId": "get_analysis_task_batch_set_v1_matters__matter_id__analysis_tasks__task_id__batch_sets__batch_set_id__get",
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "matter_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid",
+              "title": "Matter Id"
+            }
+          },
+          {
+            "name": "task_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid",
+              "title": "Task Id"
+            }
+          },
+          {
+            "name": "batch_set_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid",
+              "title": "Batch Set Id"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AnalysisTaskBatchSetRead"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/v1/matters/{matter_id}/analysis-tasks/{task_id}/versions": {
       "get": {
         "tags": [
@@ -24681,6 +24877,354 @@
         ],
         "title": "AnalysisInputEmail"
       },
+      "AnalysisTaskBatchSetChildRead": {
+        "properties": {
+          "id": {
+            "type": "string",
+            "format": "uuid",
+            "title": "Id"
+          },
+          "ordinal": {
+            "type": "integer",
+            "title": "Ordinal"
+          },
+          "name": {
+            "type": "string",
+            "title": "Name"
+          },
+          "status": {
+            "type": "string",
+            "enum": [
+              "QUEUED",
+              "BUILDING",
+              "READY",
+              "FAILED",
+              "CANCELED",
+              "ARCHIVED"
+            ],
+            "title": "Status"
+          },
+          "document_count": {
+            "type": "integer",
+            "title": "Document Count"
+          }
+        },
+        "type": "object",
+        "required": [
+          "id",
+          "ordinal",
+          "name",
+          "status",
+          "document_count"
+        ],
+        "title": "AnalysisTaskBatchSetChildRead"
+      },
+      "AnalysisTaskBatchSetCreate": {
+        "properties": {
+          "name": {
+            "type": "string",
+            "maxLength": 200,
+            "minLength": 1,
+            "title": "Name"
+          },
+          "description": {
+            "anyOf": [
+              {
+                "type": "string",
+                "maxLength": 4000
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Description"
+          },
+          "population_source_type": {
+            "type": "string",
+            "enum": [
+              "ALL_MATTER",
+              "SOURCE_BATCH"
+            ],
+            "title": "Population Source Type"
+          },
+          "source_review_batch_id": {
+            "anyOf": [
+              {
+                "type": "string",
+                "format": "uuid"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Source Review Batch Id"
+          },
+          "target_batch_size": {
+            "type": "integer",
+            "maximum": 10000000.0,
+            "minimum": 1.0,
+            "title": "Target Batch Size"
+          },
+          "random_seed": {
+            "anyOf": [
+              {
+                "type": "string",
+                "maxLength": 100,
+                "minLength": 1
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Random Seed"
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "name",
+          "population_source_type",
+          "target_batch_size"
+        ],
+        "title": "AnalysisTaskBatchSetCreate"
+      },
+      "AnalysisTaskBatchSetRead": {
+        "properties": {
+          "id": {
+            "type": "string",
+            "format": "uuid",
+            "title": "Id"
+          },
+          "tenant_id": {
+            "type": "string",
+            "format": "uuid",
+            "title": "Tenant Id"
+          },
+          "matter_id": {
+            "type": "string",
+            "format": "uuid",
+            "title": "Matter Id"
+          },
+          "matter_analysis_task_id": {
+            "type": "string",
+            "format": "uuid",
+            "title": "Matter Analysis Task Id"
+          },
+          "matter_analysis_task_version_id": {
+            "type": "string",
+            "format": "uuid",
+            "title": "Matter Analysis Task Version Id"
+          },
+          "name": {
+            "type": "string",
+            "title": "Name"
+          },
+          "description": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Description"
+          },
+          "population_source_type": {
+            "type": "string",
+            "enum": [
+              "ALL_MATTER",
+              "SOURCE_BATCH"
+            ],
+            "title": "Population Source Type"
+          },
+          "selection_definition": {
+            "additionalProperties": true,
+            "type": "object",
+            "title": "Selection Definition"
+          },
+          "source_review_batch_id": {
+            "anyOf": [
+              {
+                "type": "string",
+                "format": "uuid"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Source Review Batch Id"
+          },
+          "target_batch_size": {
+            "type": "integer",
+            "title": "Target Batch Size"
+          },
+          "allocation_policy": {
+            "additionalProperties": true,
+            "type": "object",
+            "title": "Allocation Policy"
+          },
+          "random_seed": {
+            "type": "string",
+            "title": "Random Seed"
+          },
+          "allocation_algorithm_version": {
+            "type": "string",
+            "title": "Allocation Algorithm Version"
+          },
+          "status": {
+            "type": "string",
+            "enum": [
+              "QUEUED",
+              "BUILDING",
+              "READY",
+              "FAILED",
+              "CANCELED",
+              "ARCHIVED"
+            ],
+            "title": "Status"
+          },
+          "workflow_id": {
+            "type": "string",
+            "title": "Workflow Id"
+          },
+          "population_count": {
+            "type": "integer",
+            "title": "Population Count"
+          },
+          "batch_count": {
+            "type": "integer",
+            "title": "Batch Count"
+          },
+          "population_hash": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Population Hash"
+          },
+          "warning_details": {
+            "items": {
+              "additionalProperties": true,
+              "type": "object"
+            },
+            "type": "array",
+            "title": "Warning Details"
+          },
+          "error_message": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Error Message"
+          },
+          "created_by_user_id": {
+            "type": "string",
+            "format": "uuid",
+            "title": "Created By User Id"
+          },
+          "created_at": {
+            "type": "string",
+            "format": "date-time",
+            "title": "Created At"
+          },
+          "updated_at": {
+            "type": "string",
+            "format": "date-time",
+            "title": "Updated At"
+          },
+          "completed_at": {
+            "anyOf": [
+              {
+                "type": "string",
+                "format": "date-time"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Completed At"
+          },
+          "children": {
+            "items": {
+              "$ref": "#/components/schemas/AnalysisTaskBatchSetChildRead"
+            },
+            "type": "array",
+            "title": "Children"
+          }
+        },
+        "type": "object",
+        "required": [
+          "id",
+          "tenant_id",
+          "matter_id",
+          "matter_analysis_task_id",
+          "matter_analysis_task_version_id",
+          "name",
+          "description",
+          "population_source_type",
+          "selection_definition",
+          "source_review_batch_id",
+          "target_batch_size",
+          "allocation_policy",
+          "random_seed",
+          "allocation_algorithm_version",
+          "status",
+          "workflow_id",
+          "population_count",
+          "batch_count",
+          "population_hash",
+          "warning_details",
+          "error_message",
+          "created_by_user_id",
+          "created_at",
+          "updated_at",
+          "completed_at"
+        ],
+        "title": "AnalysisTaskBatchSetRead"
+      },
+      "AnalysisTaskScopePolicy": {
+        "properties": {
+          "allowed_modes": {
+            "items": {
+              "type": "string",
+              "enum": [
+                "AD_HOC_BATCH",
+                "WHOLE_MATTER",
+                "PARTITIONED_SET"
+              ]
+            },
+            "type": "array",
+            "maxItems": 3,
+            "minItems": 1,
+            "title": "Allowed Modes"
+          },
+          "default_mode": {
+            "type": "string",
+            "enum": [
+              "AD_HOC_BATCH",
+              "WHOLE_MATTER",
+              "PARTITIONED_SET"
+            ],
+            "title": "Default Mode"
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "allowed_modes",
+          "default_mode"
+        ],
+        "title": "AnalysisTaskScopePolicy"
+      },
       "ArtifactLineageRead": {
         "properties": {
           "artifact_id": {
@@ -34967,6 +35511,16 @@
               }
             ],
             "title": "Review Guidance Revision"
+          },
+          "scope_policy": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/AnalysisTaskScopePolicy"
+              },
+              {
+                "type": "null"
+              }
+            ]
           }
         },
         "additionalProperties": false,
@@ -35614,6 +36168,16 @@
               }
             ],
             "title": "Review Guidance Revision"
+          },
+          "scope_policy": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/AnalysisTaskScopePolicy"
+              },
+              {
+                "type": "null"
+              }
+            ]
           }
         },
         "additionalProperties": false,
@@ -35840,6 +36404,11 @@
             "type": "object",
             "title": "Routing Policy"
           },
+          "scope_policy": {
+            "additionalProperties": true,
+            "type": "object",
+            "title": "Scope Policy"
+          },
           "compiler_skill_definition_version_id": {
             "anyOf": [
               {
@@ -35951,6 +36520,7 @@
           "output_contract",
           "evidence_policy",
           "routing_policy",
+          "scope_policy",
           "compiler_skill_definition_version_id",
           "compiler_skill_run_id",
           "compiler_workflow_run_id",
@@ -46533,7 +47103,8 @@
               "RANDOM_ASSESSMENT",
               "DEFINITION_ASSESSMENT",
               "CLASSIFICATION_PREDICTIONS",
-              "COMPARISON_RESULT"
+              "COMPARISON_RESULT",
+              "TASK_BATCH_PARTITION"
             ],
             "title": "Selection Type"
           },
@@ -46553,6 +47124,29 @@
               }
             ],
             "title": "Source Batch Id"
+          },
+          "analysis_task_batch_set_id": {
+            "anyOf": [
+              {
+                "type": "string",
+                "format": "uuid"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Analysis Task Batch Set Id"
+          },
+          "batch_set_ordinal": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Batch Set Ordinal"
           },
           "search_index_generation_id": {
             "anyOf": [

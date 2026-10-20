@@ -98,6 +98,7 @@ from app.job_outcomes import (
 from app.model_batching import resolve_batch_target
 from app.models import (
     AnalysisInputManifest,
+    AnalysisTaskBatchSet,
     Matter,
     MatterAnalysisTask,
     MatterAnalysisTaskRun,
@@ -216,6 +217,12 @@ def _launch_inputs(
     batch = db.scalar(select(ReviewBatch).where(ReviewBatch.id == review_batch_id, ReviewBatch.matter_id == matter.id))
     if batch is None or batch.status != "READY":
         raise FactDevelopmentRunError("A ready review batch in this matter is required")
+    if batch.analysis_task_batch_set_id is not None:
+        batch_set = db.get(AnalysisTaskBatchSet, batch.analysis_task_batch_set_id)
+        if batch_set is None or batch_set.matter_analysis_task_version_id != task_version.id:
+            raise FactDevelopmentRunError("Managed batch must run with its Batch Set's pinned task version")
+    elif "AD_HOC_BATCH" not in (task_version.scope_policy or {}).get("allowed_modes", ["AD_HOC_BATCH"]):
+        raise FactDevelopmentRunError("This task version does not allow ad hoc batch execution")
     reviewer_coding_revision: int | None = None
     if coding_source == "REVIEWER_CODING":
         coding = db.get(ReviewBatchReviewerCoding, reviewer_coding_id) if reviewer_coding_id is not None else None

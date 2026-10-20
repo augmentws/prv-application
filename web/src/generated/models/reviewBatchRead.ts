@@ -24,6 +24,8 @@ export interface ReviewBatchRead {
   selection_type: ReviewBatchReadSelectionType;
   selection_definition: ReviewBatchReadSelectionDefinition;
   source_batch_id: string | null;
+  analysis_task_batch_set_id?: string | null;
+  batch_set_ordinal?: number | null;
   search_index_generation_id: string | null;
   sample_size: number | null;
   random_seed: string | null;

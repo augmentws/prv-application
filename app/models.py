@@ -1310,13 +1310,70 @@ class MatterBulkTagBatch(Base):
     error_message: Mapped[str | None] = mapped_column(Text)
 
 
+class AnalysisTaskBatchSet(TimestampMixin, Base):
+    __tablename__ = "analysis_task_batch_set"
+    __table_args__ = (
+        CheckConstraint(
+            "population_source_type IN ('ALL_MATTER', 'SOURCE_BATCH')",
+            name="ck_analysis_task_batch_set_source_type",
+        ),
+        CheckConstraint(
+            "status IN ('QUEUED', 'BUILDING', 'READY', 'FAILED', 'CANCELED', 'ARCHIVED')",
+            name="ck_analysis_task_batch_set_status",
+        ),
+        CheckConstraint("target_batch_size > 0", name="ck_analysis_task_batch_set_target_size"),
+        CheckConstraint(
+            "population_count >= 0 AND batch_count >= 0",
+            name="ck_analysis_task_batch_set_counts",
+        ),
+        Index("ix_analysis_task_batch_set_task_created", "matter_analysis_task_id", "created_at"),
+    )
+
+    id: Mapped[uuid.UUID] = mapped_column(Uuid, primary_key=True, default=uuid.uuid4)
+    tenant_id: Mapped[uuid.UUID] = mapped_column(Uuid, ForeignKey("tenant.id", ondelete="RESTRICT"), index=True)
+    matter_id: Mapped[uuid.UUID] = mapped_column(Uuid, ForeignKey("matter.id", ondelete="CASCADE"), index=True)
+    matter_analysis_task_id: Mapped[uuid.UUID] = mapped_column(
+        Uuid, ForeignKey("matter_analysis_task.id", ondelete="CASCADE"), index=True
+    )
+    matter_analysis_task_version_id: Mapped[uuid.UUID] = mapped_column(
+        Uuid, ForeignKey("matter_analysis_task_version.id", ondelete="RESTRICT"), index=True
+    )
+    name: Mapped[str] = mapped_column(String(200))
+    description: Mapped[str | None] = mapped_column(Text)
+    population_source_type: Mapped[str] = mapped_column(String(30))
+    selection_definition: Mapped[dict[str, Any]] = mapped_column(JSON_DOCUMENT, default=dict)
+    source_review_batch_id: Mapped[uuid.UUID | None] = mapped_column(
+        Uuid, ForeignKey("review_batch.id", ondelete="RESTRICT", use_alter=True), nullable=True, index=True
+    )
+    target_batch_size: Mapped[int] = mapped_column(Integer)
+    allocation_policy: Mapped[dict[str, Any]] = mapped_column(JSON_DOCUMENT, default=dict)
+    random_seed: Mapped[str] = mapped_column(String(100))
+    allocation_algorithm_version: Mapped[str] = mapped_column(String(50), default="stable-sequence-v1")
+    status: Mapped[str] = mapped_column(String(20), default="QUEUED", index=True)
+    workflow_id: Mapped[str] = mapped_column(String(255), unique=True)
+    current_workflow_run_id: Mapped[uuid.UUID | None] = mapped_column(
+        Uuid, ForeignKey("workflow_run.id", ondelete="SET NULL"), nullable=True, index=True
+    )
+    population_count: Mapped[int] = mapped_column(Integer, default=0)
+    batch_count: Mapped[int] = mapped_column(Integer, default=0)
+    population_hash: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    warning_details: Mapped[list[dict[str, Any]]] = mapped_column(JSON_DOCUMENT, default=list)
+    error_message: Mapped[str | None] = mapped_column(Text)
+    created_by_user_id: Mapped[uuid.UUID] = mapped_column(
+        Uuid, ForeignKey("app_user.id", ondelete="RESTRICT"), index=True
+    )
+    completed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+
+    current_workflow_run: Mapped["WorkflowRun | None"] = relationship(foreign_keys=[current_workflow_run_id])
+
+
 class ReviewBatch(TimestampMixin, Base):
     __tablename__ = "review_batch"
     __table_args__ = (
         CheckConstraint(
             "selection_type IN ('ALL_MATTER', 'SEARCH_QUERY', 'RANDOM_MATTER', 'RANDOM_BATCH', "
             "'RANDOM_SAVED_SEARCH', 'RANDOM_ASSESSMENT', 'DEFINITION_ASSESSMENT', "
-            "'CLASSIFICATION_PREDICTIONS', 'COMPARISON_RESULT')",
+            "'CLASSIFICATION_PREDICTIONS', 'COMPARISON_RESULT', 'TASK_BATCH_PARTITION')",
             name="ck_review_batch_selection_type",
         ),
         CheckConstraint(
@@ -1333,6 +1390,10 @@ class ReviewBatch(TimestampMixin, Base):
         ),
         CheckConstraint("document_count >= 0", name="ck_review_batch_document_count"),
         CheckConstraint("sample_size IS NULL OR sample_size > 0", name="ck_review_batch_sample_size"),
+        UniqueConstraint("id", "analysis_task_batch_set_id", name="uq_review_batch_id_batch_set"),
+        UniqueConstraint(
+            "analysis_task_batch_set_id", "batch_set_ordinal", name="uq_review_batch_batch_set_ordinal"
+        ),
         Index("ix_review_batch_matter_created", "matter_id", "created_at"),
     )
 
@@ -1345,6 +1406,10 @@ class ReviewBatch(TimestampMixin, Base):
     source_batch_id: Mapped[uuid.UUID | None] = mapped_column(
         Uuid, ForeignKey("review_batch.id", ondelete="RESTRICT"), nullable=True, index=True
     )
+    analysis_task_batch_set_id: Mapped[uuid.UUID | None] = mapped_column(
+        Uuid, ForeignKey("analysis_task_batch_set.id", ondelete="RESTRICT"), nullable=True, index=True
+    )
+    batch_set_ordinal: Mapped[int | None] = mapped_column(Integer, nullable=True)
     search_index_generation_id: Mapped[uuid.UUID | None] = mapped_column(
         Uuid, ForeignKey("search_index_generation.id", ondelete="SET NULL"), nullable=True, index=True
     )
@@ -1386,6 +1451,16 @@ class ReviewBatchDocument(Base):
     __tablename__ = "review_batch_document"
     __table_args__ = (
         UniqueConstraint("review_batch_id", "sequence_number", name="uq_review_batch_document_sequence"),
+        UniqueConstraint(
+            "analysis_task_batch_set_id",
+            "matter_document_id",
+            name="uq_review_batch_document_batch_set_document",
+        ),
+        ForeignKeyConstraint(
+            ["review_batch_id", "analysis_task_batch_set_id"],
+            ["review_batch.id", "review_batch.analysis_task_batch_set_id"],
+            name="fk_review_batch_document_batch_set",
+        ),
         CheckConstraint("sequence_number > 0", name="ck_review_batch_document_sequence"),
         CheckConstraint(
             "review_status IN ('NOT_STARTED', 'IN_PROGRESS', 'COMPLETED', 'SKIPPED')",
@@ -1398,6 +1473,9 @@ class ReviewBatchDocument(Base):
     )
     matter_document_id: Mapped[uuid.UUID] = mapped_column(
         Uuid, ForeignKey("matter_document.id", ondelete="CASCADE"), primary_key=True, index=True
+    )
+    analysis_task_batch_set_id: Mapped[uuid.UUID | None] = mapped_column(
+        Uuid, ForeignKey("analysis_task_batch_set.id", ondelete="RESTRICT"), nullable=True, index=True
     )
     sequence_number: Mapped[int] = mapped_column(Integer)
     review_status: Mapped[str] = mapped_column(String(20), default="NOT_STARTED")
@@ -4139,6 +4217,7 @@ class MatterAnalysisTaskVersion(Base):
     output_contract: Mapped[dict[str, Any]] = mapped_column(JSON, default=dict)
     evidence_policy: Mapped[dict[str, Any]] = mapped_column(JSON, default=dict)
     routing_policy: Mapped[dict[str, Any]] = mapped_column(JSON, default=dict)
+    scope_policy: Mapped[dict[str, Any]] = mapped_column(JSON_DOCUMENT, default=dict)
     compiler_skill_definition_version_id: Mapped[uuid.UUID | None] = mapped_column(
         Uuid, ForeignKey("skill_definition_version.id", ondelete="RESTRICT"), nullable=True
     )

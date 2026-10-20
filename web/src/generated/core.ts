@@ -32,6 +32,8 @@ import type {
   AgentTurnCreated,
   AgentTurnRead,
   AgentVersionCreate,
+  AnalysisTaskBatchSetCreate,
+  AnalysisTaskBatchSetRead,
   ArtifactLineageRead,
   ArtifactRead,
   AuditRecordPage,
@@ -4779,6 +4781,179 @@ export const getAnalysisTaskV1MattersMatterIdAnalysisTasksTaskIdGet = async (mat
 
   const data: getAnalysisTaskV1MattersMatterIdAnalysisTasksTaskIdGetResponse['data'] = body ? JSON.parse(body) : {}
   return { data, status: res.status, headers: res.headers } as getAnalysisTaskV1MattersMatterIdAnalysisTasksTaskIdGetResponse
+}
+
+
+
+export type listAnalysisTaskBatchSetsV1MattersMatterIdAnalysisTasksTaskIdBatchSetsGetResponse200 = {
+  data: AnalysisTaskBatchSetRead[]
+  status: 200
+}
+
+export type listAnalysisTaskBatchSetsV1MattersMatterIdAnalysisTasksTaskIdBatchSetsGetResponse422 = {
+  data: HTTPValidationError
+  status: 422
+}
+
+export type listAnalysisTaskBatchSetsV1MattersMatterIdAnalysisTasksTaskIdBatchSetsGetResponseSuccess = (listAnalysisTaskBatchSetsV1MattersMatterIdAnalysisTasksTaskIdBatchSetsGetResponse200) & {
+  headers: Headers;
+};
+export type listAnalysisTaskBatchSetsV1MattersMatterIdAnalysisTasksTaskIdBatchSetsGetResponseError = (listAnalysisTaskBatchSetsV1MattersMatterIdAnalysisTasksTaskIdBatchSetsGetResponse422) & {
+  headers: Headers;
+};
+
+export type listAnalysisTaskBatchSetsV1MattersMatterIdAnalysisTasksTaskIdBatchSetsGetResponse = (listAnalysisTaskBatchSetsV1MattersMatterIdAnalysisTasksTaskIdBatchSetsGetResponseSuccess | listAnalysisTaskBatchSetsV1MattersMatterIdAnalysisTasksTaskIdBatchSetsGetResponseError)
+
+export const getListAnalysisTaskBatchSetsV1MattersMatterIdAnalysisTasksTaskIdBatchSetsGetUrl = (matterId: string,
+    taskId: string,) => {
+
+
+
+
+  return `/api/core/v1/matters/${matterId}/analysis-tasks/${taskId}/batch-sets`
+}
+
+/**
+ * @summary List Analysis Task Batch Sets
+ */
+export const listAnalysisTaskBatchSetsV1MattersMatterIdAnalysisTasksTaskIdBatchSetsGet = async (matterId: string,
+    taskId: string, options?: RequestInit): Promise<listAnalysisTaskBatchSetsV1MattersMatterIdAnalysisTasksTaskIdBatchSetsGetResponse> => {
+
+  const res = await fetch(getListAnalysisTaskBatchSetsV1MattersMatterIdAnalysisTasksTaskIdBatchSetsGetUrl(matterId,taskId),
+  {
+    ...options,
+    method: 'GET'
+
+
+  }
+)
+
+
+  const body = [204, 205, 304].includes(res.status) ? null : await res.text();
+
+  const data: listAnalysisTaskBatchSetsV1MattersMatterIdAnalysisTasksTaskIdBatchSetsGetResponse['data'] = body ? JSON.parse(body) : {}
+  return { data, status: res.status, headers: res.headers } as listAnalysisTaskBatchSetsV1MattersMatterIdAnalysisTasksTaskIdBatchSetsGetResponse
+}
+
+
+
+export type createAnalysisTaskBatchSetV1MattersMatterIdAnalysisTasksTaskIdBatchSetsPostResponse202 = {
+  data: AnalysisTaskBatchSetRead
+  status: 202
+}
+
+export type createAnalysisTaskBatchSetV1MattersMatterIdAnalysisTasksTaskIdBatchSetsPostResponse422 = {
+  data: HTTPValidationError
+  status: 422
+}
+
+export type createAnalysisTaskBatchSetV1MattersMatterIdAnalysisTasksTaskIdBatchSetsPostResponseSuccess = (createAnalysisTaskBatchSetV1MattersMatterIdAnalysisTasksTaskIdBatchSetsPostResponse202) & {
+  headers: Headers;
+};
+export type createAnalysisTaskBatchSetV1MattersMatterIdAnalysisTasksTaskIdBatchSetsPostResponseError = (createAnalysisTaskBatchSetV1MattersMatterIdAnalysisTasksTaskIdBatchSetsPostResponse422) & {
+  headers: Headers;
+};
+
+export type createAnalysisTaskBatchSetV1MattersMatterIdAnalysisTasksTaskIdBatchSetsPostResponse = (createAnalysisTaskBatchSetV1MattersMatterIdAnalysisTasksTaskIdBatchSetsPostResponseSuccess | createAnalysisTaskBatchSetV1MattersMatterIdAnalysisTasksTaskIdBatchSetsPostResponseError)
+
+export const getCreateAnalysisTaskBatchSetV1MattersMatterIdAnalysisTasksTaskIdBatchSetsPostUrl = (matterId: string,
+    taskId: string,) => {
+
+
+
+
+  return `/api/core/v1/matters/${matterId}/analysis-tasks/${taskId}/batch-sets`
+}
+
+/**
+ * @summary Create Analysis Task Batch Set
+ */
+export const createAnalysisTaskBatchSetV1MattersMatterIdAnalysisTasksTaskIdBatchSetsPost = async (matterId: string,
+    taskId: string,
+    analysisTaskBatchSetCreate: AnalysisTaskBatchSetCreate, options?: RequestInit): Promise<createAnalysisTaskBatchSetV1MattersMatterIdAnalysisTasksTaskIdBatchSetsPostResponse> => {
+
+    const getHeaders = (h?: NonNullable<RequestInit['headers']>): Record<string, string | readonly string[]> => {
+    if (!h) return {};
+    if (h instanceof Headers) return Object.fromEntries(h.entries());
+    if (Symbol.iterator in h) {
+      return Object.fromEntries(
+        Array.from(h as Iterable<Iterable<string>>, (entry) => Array.from(entry) as [string, string]),
+      );
+    }
+    const headers: Record<string, string | readonly string[]> = {};
+    for (const [name, value] of Object.entries<string | readonly string[] | undefined>(h)) {
+      if (value !== undefined) headers[name] = value;
+    }
+    return headers;
+  };
+const res = await fetch(getCreateAnalysisTaskBatchSetV1MattersMatterIdAnalysisTasksTaskIdBatchSetsPostUrl(matterId,taskId),
+  {
+    ...options,
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json', ...getHeaders(options?.headers) },
+    body: JSON.stringify(analysisTaskBatchSetCreate)
+  }
+)
+
+
+  const body = [204, 205, 304].includes(res.status) ? null : await res.text();
+
+  const data: createAnalysisTaskBatchSetV1MattersMatterIdAnalysisTasksTaskIdBatchSetsPostResponse['data'] = body ? JSON.parse(body) : {}
+  return { data, status: res.status, headers: res.headers } as createAnalysisTaskBatchSetV1MattersMatterIdAnalysisTasksTaskIdBatchSetsPostResponse
+}
+
+
+
+export type getAnalysisTaskBatchSetV1MattersMatterIdAnalysisTasksTaskIdBatchSetsBatchSetIdGetResponse200 = {
+  data: AnalysisTaskBatchSetRead
+  status: 200
+}
+
+export type getAnalysisTaskBatchSetV1MattersMatterIdAnalysisTasksTaskIdBatchSetsBatchSetIdGetResponse422 = {
+  data: HTTPValidationError
+  status: 422
+}
+
+export type getAnalysisTaskBatchSetV1MattersMatterIdAnalysisTasksTaskIdBatchSetsBatchSetIdGetResponseSuccess = (getAnalysisTaskBatchSetV1MattersMatterIdAnalysisTasksTaskIdBatchSetsBatchSetIdGetResponse200) & {
+  headers: Headers;
+};
+export type getAnalysisTaskBatchSetV1MattersMatterIdAnalysisTasksTaskIdBatchSetsBatchSetIdGetResponseError = (getAnalysisTaskBatchSetV1MattersMatterIdAnalysisTasksTaskIdBatchSetsBatchSetIdGetResponse422) & {
+  headers: Headers;
+};
+
+export type getAnalysisTaskBatchSetV1MattersMatterIdAnalysisTasksTaskIdBatchSetsBatchSetIdGetResponse = (getAnalysisTaskBatchSetV1MattersMatterIdAnalysisTasksTaskIdBatchSetsBatchSetIdGetResponseSuccess | getAnalysisTaskBatchSetV1MattersMatterIdAnalysisTasksTaskIdBatchSetsBatchSetIdGetResponseError)
+
+export const getGetAnalysisTaskBatchSetV1MattersMatterIdAnalysisTasksTaskIdBatchSetsBatchSetIdGetUrl = (matterId: string,
+    taskId: string,
+    batchSetId: string,) => {
+
+
+
+
+  return `/api/core/v1/matters/${matterId}/analysis-tasks/${taskId}/batch-sets/${batchSetId}`
+}
+
+/**
+ * @summary Get Analysis Task Batch Set
+ */
+export const getAnalysisTaskBatchSetV1MattersMatterIdAnalysisTasksTaskIdBatchSetsBatchSetIdGet = async (matterId: string,
+    taskId: string,
+    batchSetId: string, options?: RequestInit): Promise<getAnalysisTaskBatchSetV1MattersMatterIdAnalysisTasksTaskIdBatchSetsBatchSetIdGetResponse> => {
+
+  const res = await fetch(getGetAnalysisTaskBatchSetV1MattersMatterIdAnalysisTasksTaskIdBatchSetsBatchSetIdGetUrl(matterId,taskId,batchSetId),
+  {
+    ...options,
+    method: 'GET'
+
+
+  }
+)
+
+
+  const body = [204, 205, 304].includes(res.status) ? null : await res.text();
+
+  const data: getAnalysisTaskBatchSetV1MattersMatterIdAnalysisTasksTaskIdBatchSetsBatchSetIdGetResponse['data'] = body ? JSON.parse(body) : {}
+  return { data, status: res.status, headers: res.headers } as getAnalysisTaskBatchSetV1MattersMatterIdAnalysisTasksTaskIdBatchSetsBatchSetIdGetResponse
 }
 
 
