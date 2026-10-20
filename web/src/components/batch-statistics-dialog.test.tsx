@@ -43,10 +43,12 @@ describe("BatchStatisticsPage", () => {
       pairwise_agreements: [{ left_source_id: "human-1", right_source_id: "jev-1", compared_document_count: 2, exact_match_count: 1, partial_match_count: 0, disagreement_count: 1, incomplete_document_count: 0, exact_agreement: 0.5, mean_jaccard: 0.5, confusion_matrix: [{ left_value: "responsive", right_value: "responsive", document_count: 1 }, { left_value: "responsive", right_value: "not_responsive", document_count: 1 }], class_agreement: [] }],
       documents: [{ matter_document_id: "document-1", collection_item_id: "item-1", sequence_number: 1, agreement_status: "EXACT", sources: [{ source_id: "human-1", state: "EVALUATED", value_keys: ["responsive"], display_values: ["Responsive"], top_confidence: null }, { source_id: "jev-1", state: "EVALUATED", value_keys: ["responsive"], display_values: ["Responsive"], top_confidence: 0.94 }] }],
     };
-    vi.mocked(coreApi).mockImplementation(async (path) => {
+    vi.mocked(coreApi).mockImplementation(async (path, init) => {
       if (path === "/v1/matters/matter-1/review-batches/batch-1") return { id: "batch-1", name: "QC batch", document_count: 2 } as never;
       if (path.endsWith("/comparison-options")) return options as never;
       if (path.endsWith("/statistics")) return { review_batch_id: "batch-1", document_count: 2, can_promote: false, reviewers: [] } as never;
+      if (path.endsWith("/coding-comparison/review-batches/preview")) return { source_batch_id: "batch-1", metadata_definition_id: "field-1", field_display_name: "Responsiveness", candidate_count: 1, sources: [] } as never;
+      if (path.endsWith("/coding-comparison/review-batches") && init?.method === "POST") return { id: "batch-disagreements", name: "Responsiveness disagreements", status: "QUEUED", document_count: 0, selection_definition: { candidate_count: 1 } } as never;
       return comparison as never;
     });
     const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
@@ -67,6 +69,23 @@ describe("BatchStatisticsPage", () => {
     expect(screen.getByText("Document matrix")).toBeInTheDocument();
     expect(screen.getByRole("link", { name: "CSV" })).toHaveAttribute("href", expect.stringContaining("source_id=human-1"));
     expect(screen.getByRole("link", { name: "Parquet" })).toHaveAttribute("href", expect.stringContaining("format=parquet"));
+
+    const user = userEvent.setup();
+    await user.click(screen.getByLabelText("Document agreement filter"));
+    await user.click(screen.getByRole("option", { name: "Disagreements" }));
+    await user.click(await screen.findByRole("button", { name: "Create review batch" }));
+    expect(await screen.findByRole("heading", { name: "Create disagreement review batch" })).toBeInTheDocument();
+    expect(await screen.findByText("documents will be included.", { exact: false })).toHaveTextContent("1 documents will be included.");
+    expect(screen.getByLabelText("Batch name")).toHaveValue("Responsiveness disagreements");
+    await user.click(screen.getByRole("button", { name: "Create batch" }));
+    await waitFor(() => expect(coreApi).toHaveBeenCalledWith(
+      "/v1/matters/matter-1/review-batches/batch-1/coding-comparison/review-batches",
+      {
+        method: "POST",
+        body: JSON.stringify({ metadata_definition_id: "field-1", source_ids: ["human-1", "jev-1"], name: "Responsiveness disagreements" }),
+      },
+    ));
+    expect(await screen.findByRole("link", { name: "Open review batch" })).toHaveAttribute("href", "/review/matters/matter-1?batch=batch-disagreements");
   });
 
   it("shows per-reviewer field counts and confirms matter promotion", async () => {

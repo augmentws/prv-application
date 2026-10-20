@@ -47,6 +47,7 @@ import type {
   MetadataGroupRead,
   ReviewBatchCodingFieldRead,
   ReviewBatchCodingHistoryEntryRead,
+  ReviewBatchDisagreementDocumentRead,
   ReviewBatchDocumentCodingRead,
   ReviewBatchDocumentAnalysisRead,
   ReviewBatchDocumentRead,
@@ -256,13 +257,14 @@ export function BatchReviewWorkspace({ matterId, batchId, initialDocumentId, ini
   const [selectedTopicKeys, setSelectedTopicKeys] = useState<string[]>([]);
   const [leftPanel, setLeftPanel] = useState<"filters" | "documents">("documents");
   const [filterFocusRequest, setFilterFocusRequest] = useState(0);
-  const [sidePanel, setSidePanel] = useState<"analysis" | "coding" | "history" | "chat">("analysis");
+  const [sidePanel, setSidePanel] = useState<"disagreements" | "analysis" | "coding" | "history" | "chat">("analysis");
   const [analysisDialogOpen, setAnalysisDialogOpen] = useState(initialAnalysisDialogOpen);
   const [promotionDialogOpen, setPromotionDialogOpen] = useState(false);
   const [analysisTaskId, setAnalysisTaskId] = useState("");
   const [selectedAnalysisRunId, setSelectedAnalysisRunId] = useState("");
   const filterScrollRef = useRef<HTMLDivElement>(null);
   const searchableCodingFieldsRef = useRef<HTMLElement>(null);
+  const initializedDisagreementPanel = useRef(false);
 
   useEffect(() => {
     if (leftPanel !== "filters" || filterFocusRequest === 0) return;
@@ -301,6 +303,13 @@ export function BatchReviewWorkspace({ matterId, batchId, initialDocumentId, ini
     queryFn: () => coreApi<ReviewBatchRead>(`/v1/matters/${matterId}/review-batches/${batchId}`),
     refetchInterval: (query) => ["QUEUED", "SYNCING"].includes(query.state.data?.searchable_coding_status ?? "") ? 1000 : false,
   });
+  const isDisagreementBatch = batch.data?.selection_type === "COMPARISON_RESULT";
+
+  useEffect(() => {
+    if (!isDisagreementBatch || initializedDisagreementPanel.current) return;
+    initializedDisagreementPanel.current = true;
+    setSidePanel("disagreements");
+  }, [isDisagreementBatch]);
   const analysisTasks = useQuery({
     queryKey: ["analysis-tasks", matterId],
     queryFn: () => coreApi<MatterAnalysisTaskRead[]>(`/v1/matters/${matterId}/analysis-tasks`),
@@ -466,6 +475,11 @@ export function BatchReviewWorkspace({ matterId, batchId, initialDocumentId, ini
     queryKey: ["review-batch-document-coding", matterId, batchId, run.data?.id, effectiveDocumentId],
     queryFn: () => coreApi<ReviewBatchDocumentCodingRead>(`/v1/matters/${matterId}/review-batches/${batchId}/reviewer-coding/documents/${effectiveDocumentId}`),
     enabled: Boolean(run.data?.id && effectiveDocumentId),
+  });
+  const disagreement = useQuery({
+    queryKey: ["review-batch-disagreement-document", matterId, batchId, effectiveDocumentId],
+    queryFn: () => coreApi<ReviewBatchDisagreementDocumentRead>(`/v1/matters/${matterId}/review-batches/${batchId}/disagreements/documents/${effectiveDocumentId}`),
+    enabled: isDisagreementBatch && sidePanel === "disagreements" && Boolean(effectiveDocumentId),
   });
   const analysis = useQuery({
     queryKey: ["review-batch-document-analysis", matterId, batchId, taxonomy.data?.review_batch_run_id, effectiveDocumentId],
@@ -861,8 +875,26 @@ export function BatchReviewWorkspace({ matterId, batchId, initialDocumentId, ini
         </section>
 
         <aside className="flex min-h-0 min-w-0 flex-col overflow-hidden border-l bg-card" aria-label="Batch analysis, coding, history, and chat">
-          <div className="flex h-11 shrink-0 items-center gap-1 border-b px-2"><Button type="button" size="sm" variant={sidePanel === "analysis" ? "outline" : "ghost"} onClick={() => setSidePanel("analysis")}><Sparkles />Analysis</Button><Button type="button" size="sm" variant={sidePanel === "coding" ? "outline" : "ghost"} onClick={() => setSidePanel("coding")}>Coding</Button><Button type="button" size="sm" variant={sidePanel === "history" ? "outline" : "ghost"} onClick={() => setSidePanel("history")}><Clock3 />History</Button><Button type="button" size="sm" variant={sidePanel === "chat" ? "outline" : "ghost"} onClick={() => setSidePanel("chat")}><MessageSquareText />Chat</Button><span className="ml-auto">{sidePanel !== "chat" && coding.data ? <Badge variant="outline">{statusLabel(coding.data.review_status)}</Badge> : null}</span></div>
+          <div className="flex h-11 shrink-0 items-center gap-1 border-b px-2">
+            {isDisagreementBatch ? <Button type="button" size="sm" variant={sidePanel === "disagreements" ? "outline" : "ghost"} onClick={() => setSidePanel("disagreements")}>Disagreements</Button> : null}
+            <Button type="button" size="sm" variant={sidePanel === "analysis" ? "outline" : "ghost"} onClick={() => setSidePanel("analysis")}><Sparkles />Analysis</Button>
+            <Button type="button" size="sm" variant={sidePanel === "coding" ? "outline" : "ghost"} onClick={() => setSidePanel("coding")}>Coding</Button>
+            <Button type="button" size="sm" variant={sidePanel === "history" ? "outline" : "ghost"} onClick={() => setSidePanel("history")}><Clock3 />History</Button>
+            <Button type="button" size="sm" variant={sidePanel === "chat" ? "outline" : "ghost"} onClick={() => setSidePanel("chat")}><MessageSquareText />Chat</Button>
+            <span className="ml-auto">{sidePanel !== "chat" && coding.data ? <Badge variant="outline">{statusLabel(coding.data.review_status)}</Badge> : null}</span>
+          </div>
           {sidePanel === "chat" ? <BatchChatPanel matterId={matterId} batchId={batchId} searchReady={batch.data?.search_status === "READY"} onOpenDocument={openDocumentReference} />
+            : sidePanel === "disagreements" ? disagreement.isPending && effectiveDocumentId ? <div className="space-y-3 p-4">{Array.from({ length: 5 }, (_, index) => <Skeleton key={index} className="h-20" />)}</div>
+            : disagreement.error ? <div className="p-4"><QueryError message={disagreement.error.message} /></div>
+              : disagreement.data && coding.data ? <DisagreementReviewPanel
+                key={`${effectiveDocumentId}:${coding.dataUpdatedAt}`}
+                disagreement={disagreement.data}
+                coding={coding.data}
+                saving={save.isPending || skip.isPending}
+                onSave={(payload) => save.mutateAsync(payload).then(() => undefined)}
+                onSkip={() => skip.mutateAsync().then(() => undefined)}
+              />
+                : <div className="grid flex-1 place-items-center p-5 text-center text-sm text-muted-foreground">Select a document to review its disagreement.</div>
             : sidePanel === "analysis" ? selectedClassificationRun && selectedAnalysisJob
             ? <BatchClassificationAnalysisPanel clientId={matter.data!.client_id} matterId={matterId} batchId={batchId} jobs={analysisJobs} matterDefinitionAssessment={matterDefinitionAssessment} job={selectedAnalysisJob} run={selectedClassificationRun} projectionRun={selectedClassifierProjection} searchableRunId={batch.data?.searchable_coding_run_id} searchableStatus={batch.data?.searchable_coding_status} onProjectionChanged={(projection) => { queryClient.setQueryData<ReviewBatchRunRead[]>(["review-batch-runs", matterId, batchId], (current) => [projection, ...(current ?? []).filter((item) => item.id !== projection.id)]); void queryClient.invalidateQueries({ queryKey: ["review-batch", matterId, batchId] }); }} onViewFilters={viewSearchableCodingFields} onSelectRun={setSelectedAnalysisRunId} onRunNew={() => openAnalysisDialog()} onRunAgain={(taskId) => openAnalysisDialog(taskId)} canceling={cancelAnalysis.isPending} onCancel={(runId) => cancelAnalysis.mutate({ jobType: "CLASSIFICATION_ANALYSIS_TASK", runId })} />
             : selectedAnalysisRun
@@ -1277,6 +1309,88 @@ function BatchFacetSection({ matterId, batchId, searchRequest, definition, selec
           })}</div><div className="flex min-h-8 items-center justify-between">{values.data?.has_more ? <button type="button" className="h-8 px-1.5 text-sm font-medium text-primary underline-offset-4 hover:underline disabled:opacity-50" aria-label={`Show more ${definition.display_name} values`} disabled={values.isFetching} onClick={() => setValueLimit((current) => current + FACET_PAGE_SIZE)}>{values.isFetching ? "Loading…" : "More"}</button> : <span />}<button type="button" className={cn("h-8 px-1.5 text-sm font-medium underline-offset-4 hover:underline", negated ? "text-destructive" : "text-primary")} onClick={onToggleNegation}>{negated ? "Include" : "Negate"}</button></div></div> : <p className="text-xs text-muted-foreground">No matching values.</p>}
     </div> : null}
   </section>;
+}
+
+export function DisagreementReviewPanel({ disagreement, coding, saving, onSave, onSkip }: {
+  disagreement: ReviewBatchDisagreementDocumentRead;
+  coding: ReviewBatchDocumentCodingRead;
+  saving: boolean;
+  onSave: (payload: ReviewBatchRunDocumentValues) => Promise<void>;
+  onSkip: () => Promise<void>;
+}) {
+  const allowedValues = disagreement.allowed_values.flatMap<SnapshotOption>((item) => (
+    typeof item.key === "string" && typeof item.label === "string"
+      ? [{ key: item.key, label: item.label, active: typeof item.active === "boolean" ? item.active : undefined }]
+      : []
+  ));
+  const definition: SnapshotDefinition = {
+    key: disagreement.metadata_definition_id,
+    display_name: disagreement.field_display_name,
+    description: null,
+    type: disagreement.field_type,
+    cardinality: disagreement.cardinality,
+    allowed_values: allowedValues,
+  };
+  const initial = coding.values
+    .filter((value) => value.metadata_definition_id === disagreement.metadata_definition_id)
+    .map((value) => editorValue(value.value, definition));
+  const [draft, setDraft] = useState<string[]>(initial);
+  const [selectedSourceId, setSelectedSourceId] = useState<string | null>(null);
+  const dirty = JSON.stringify(draft) !== JSON.stringify(initial);
+
+  const chooseSource = (sourceId: string, values: unknown[]) => {
+    setDraft(values.map((value) => editorValue(value, definition)));
+    setSelectedSourceId(sourceId);
+  };
+  const submit = async (event: FormEvent) => {
+    event.preventDefault();
+    try {
+      await onSave({
+        matter_document_id: coding.matter_document_id,
+        fields: [{
+          metadata_definition_id: disagreement.metadata_definition_id,
+          values: draft.filter((value) => value.trim()).map((value) => parseValue(value, definition)),
+          confidence: null,
+        }],
+      });
+    } catch (error) {
+      toast.error(error instanceof Error ? error.message : "Check the selected value.");
+    }
+  };
+
+  return <form className="flex min-h-0 flex-1 flex-col overflow-hidden" aria-label={`${disagreement.field_display_name} disagreement review`} onSubmit={submit}>
+    <div className="shrink-0 border-b px-4 py-3">
+      <div className="flex items-start justify-between gap-3">
+        <div><h2 className="text-base font-semibold">Disagreements</h2><p className="mt-0.5 text-sm text-muted-foreground">{disagreement.field_display_name}</p></div>
+        <Badge variant={disagreement.agreement_status === "PARTIAL" ? "outline" : "accent"}>{disagreement.agreement_status === "PARTIAL" ? "Partial overlap" : "Disagreement"}</Badge>
+      </div>
+      <p className="mt-2 text-xs leading-5 text-muted-foreground">Compare every selected analysis task and reviewer coding source, then choose or enter the correct value.</p>
+    </div>
+    <div className="min-h-0 flex-1 overflow-y-auto overscroll-contain">
+      <section className="space-y-2 p-3" aria-label="Selected disagreement sources">
+        {disagreement.sources.map((source) => {
+          const selected = selectedSourceId === source.id;
+          const sourceKind = source.source_type === "RUN" ? "Analysis task" : "Reviewer coding";
+          return <article key={source.id} className={cn("rounded-lg border p-3", selected && "border-primary bg-primary/5")}>
+            <div className="flex items-start justify-between gap-2">
+              <div className="min-w-0"><div className="flex flex-wrap items-center gap-1.5"><h3 className="truncate text-sm font-semibold">{source.label}</h3><Badge variant="outline">{sourceKind}</Badge></div>{source.detail ? <p className="mt-1 text-xs text-muted-foreground">{source.detail}</p> : null}</div>
+              {source.top_confidence !== null && source.top_confidence !== undefined ? <span className="shrink-0 font-mono text-xs tabular-nums text-muted-foreground">{Math.round(source.top_confidence * 100)}%</span> : null}
+            </div>
+            <div className="mt-3 flex flex-wrap gap-1.5">
+              {source.display_values.length ? source.display_values.map((value, index) => <Badge key={`${value}:${index}`}>{value}</Badge>) : <Badge variant="outline">No value</Badge>}
+            </div>
+            <div className="mt-3 flex items-center justify-between gap-2"><span className="text-xs text-muted-foreground">{source.source_type === "REVIEWER" && source.reviewer_revision !== null && source.reviewer_revision !== undefined ? `Pinned revision ${source.reviewer_revision}` : source.run_type === "CLASSIFIER" ? "Classifier result" : "Pinned analysis result"}</span><Button type="button" size="sm" variant={selected ? "default" : "outline"} disabled={saving || source.state !== "EVALUATED"} aria-pressed={selected} onClick={() => chooseSource(source.id, source.values)}>{selected ? <Check /> : null}{selected ? "Selected" : "Use this coding"}</Button></div>
+          </article>;
+        })}
+      </section>
+      <section className="border-t p-4" aria-label="Correct coding">
+        <Label htmlFor="disagreement-final-coding">Correct {disagreement.field_display_name} coding</Label>
+        <p className="mt-1 text-xs text-muted-foreground">You can use a source above or enter a different value.</p>
+        <div className="mt-2"><BatchFieldInput id="disagreement-final-coding" definition={definition} values={draft} disabled={saving} onChange={(values) => { setDraft(values); setSelectedSourceId(null); }} /></div>
+      </section>
+    </div>
+    <div className="flex shrink-0 items-center justify-between gap-2 border-t p-3"><Button type="button" variant="ghost" size="sm" disabled={saving} onClick={onSkip}><SkipForward />Skip</Button><div className="flex items-center gap-2"><span className="text-xs text-muted-foreground">{dirty ? "Unsaved choice" : coding.review_status === "COMPLETED" ? "Saved" : "Choose a value"}</span><Button type="submit" size="sm" disabled={saving}>{saving ? <LoaderCircle className="animate-spin" /> : <Save />}{saving ? "Saving…" : "Save & next"}</Button></div></div>
+  </form>;
 }
 
 function BatchCodingForm({ batch, coding, disabled, saving, onSave, onSkip }: {

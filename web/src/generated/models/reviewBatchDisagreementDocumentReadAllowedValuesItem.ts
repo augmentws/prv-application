@@ -6,10 +6,4 @@
  * OpenAPI spec version: 0.1.0
  */
 
-export interface TenantStorageRead {
-  tenant_id: string;
-  tenant_slug_snapshot: string;
-  bucket_name: string;
-  status: string;
-  created_at: string;
-}
+export type ReviewBatchDisagreementDocumentReadAllowedValuesItem = { [key: string]: unknown };

@@ -1188,6 +1188,7 @@ ReviewBatchSelectionType = Literal[
     "RANDOM_ASSESSMENT",
     "DEFINITION_ASSESSMENT",
     "CLASSIFICATION_PREDICTIONS",
+    "COMPARISON_RESULT",
 ]
 InteractiveReviewBatchSelectionType = Literal[
     "ALL_MATTER",
@@ -1736,6 +1737,63 @@ class ReviewBatchComparisonRequest(BaseModel):
         if len(self.source_ids) != len(set(self.source_ids)):
             raise ValueError("Each comparison source may be selected only once")
         return self
+
+
+class ReviewBatchDisagreementBatchPreviewRequest(BaseModel):
+    metadata_definition_id: uuid.UUID
+    source_ids: list[uuid.UUID] = Field(min_length=2, max_length=12)
+
+    @model_validator(mode="after")
+    def validate_unique_sources(self) -> "ReviewBatchDisagreementBatchPreviewRequest":
+        if len(self.source_ids) != len(set(self.source_ids)):
+            raise ValueError("Each comparison source may be selected only once")
+        return self
+
+
+class ReviewBatchDisagreementBatchCreate(ReviewBatchDisagreementBatchPreviewRequest):
+    name: str = Field(min_length=1, max_length=200)
+    description: str | None = Field(default=None, max_length=4000)
+
+
+class ReviewBatchDisagreementSourceSnapshotRead(BaseModel):
+    id: uuid.UUID
+    source_type: Literal["REVIEWER", "RUN"]
+    label: str
+    reviewer_revision: int | None = Field(default=None, ge=0)
+
+
+class ReviewBatchDisagreementBatchPreviewRead(BaseModel):
+    source_batch_id: uuid.UUID
+    metadata_definition_id: uuid.UUID
+    field_display_name: str
+    candidate_count: int = Field(ge=0)
+    sources: list[ReviewBatchDisagreementSourceSnapshotRead]
+
+
+class ReviewBatchDisagreementDocumentSourceRead(BaseModel):
+    id: uuid.UUID
+    source_type: Literal["REVIEWER", "RUN"]
+    run_type: ReviewBatchRunType | None = None
+    label: str
+    detail: str | None = None
+    reviewer_revision: int | None = Field(default=None, ge=0)
+    state: ReviewBatchComparisonSourceState
+    values: list[Any]
+    display_values: list[str]
+    top_confidence: float | None = Field(default=None, ge=0, le=1)
+
+
+class ReviewBatchDisagreementDocumentRead(BaseModel):
+    review_batch_id: uuid.UUID
+    source_batch_id: uuid.UUID
+    matter_document_id: uuid.UUID
+    metadata_definition_id: uuid.UUID
+    field_display_name: str
+    field_type: MetadataType
+    cardinality: Cardinality
+    allowed_values: list[dict[str, Any]]
+    agreement_status: Literal["PARTIAL", "DISAGREEMENT"]
+    sources: list[ReviewBatchDisagreementDocumentSourceRead]
 
 
 class ReviewBatchComparisonSourceOptionRead(BaseModel):

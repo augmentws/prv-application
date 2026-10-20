@@ -83,7 +83,12 @@ from app.models import (
     SkillRun,
     User,
 )
-from app.review_batch_comparisons import build_coding_comparison, export_coding_comparison
+from app.review_batch_comparisons import (
+    build_coding_comparison,
+    comparison_document,
+    comparison_document_ids,
+    export_coding_comparison,
+)
 from app.review_batches import (
     complete_review_batch_execution,
     create_review_batch_execution,
@@ -126,6 +131,12 @@ from app.schemas import (
     ReviewBatchComparisonRequest,
     ReviewBatchComparisonSourceOptionRead,
     ReviewBatchCreate,
+    ReviewBatchDisagreementBatchCreate,
+    ReviewBatchDisagreementBatchPreviewRead,
+    ReviewBatchDisagreementBatchPreviewRequest,
+    ReviewBatchDisagreementDocumentRead,
+    ReviewBatchDisagreementDocumentSourceRead,
+    ReviewBatchDisagreementSourceSnapshotRead,
     ReviewBatchDocumentAnalysisRead,
     ReviewBatchDocumentCodingRead,
     ReviewBatchDocumentRead,
@@ -501,6 +512,81 @@ def _snapshot_groups(
                     },
                 )
             )
+
+
+def _clone_batch_coding_groups(
+    db: Session,
+    *,
+    source_batch: ReviewBatch,
+    target_batch: ReviewBatch,
+    comparison_definition: MetadataDefinition,
+) -> None:
+    """Copy the parent's frozen coding layout and ensure the compared field is reviewable."""
+
+    source_groups = list(
+        db.scalars(
+            select(ReviewBatchCodingGroup)
+            .where(ReviewBatchCodingGroup.review_batch_id == source_batch.id)
+            .order_by(ReviewBatchCodingGroup.sort_order)
+        )
+    )
+    copied_definition_ids: set[uuid.UUID] = set()
+    next_group_order = 0
+    for source_group in source_groups:
+        target_group = ReviewBatchCodingGroup(
+            review_batch_id=target_batch.id,
+            source_metadata_group_id=source_group.source_metadata_group_id,
+            display_name=source_group.display_name,
+            description=source_group.description,
+            sort_order=source_group.sort_order,
+        )
+        db.add(target_group)
+        db.flush()
+        fields = list(
+            db.scalars(
+                select(ReviewBatchCodingField)
+                .where(ReviewBatchCodingField.review_batch_coding_group_id == source_group.id)
+                .order_by(ReviewBatchCodingField.sort_order)
+            )
+        )
+        for source_field in fields:
+            copied_definition_ids.add(source_field.metadata_definition_id)
+            db.add(
+                ReviewBatchCodingField(
+                    review_batch_coding_group_id=target_group.id,
+                    metadata_definition_id=source_field.metadata_definition_id,
+                    sort_order=source_field.sort_order,
+                    definition_snapshot=source_field.definition_snapshot,
+                )
+            )
+        next_group_order = max(next_group_order, source_group.sort_order + 1)
+
+    if comparison_definition.id in copied_definition_ids:
+        return
+    target_group = ReviewBatchCodingGroup(
+        review_batch_id=target_batch.id,
+        source_metadata_group_id=None,
+        display_name="Disagreement review",
+        description="The coding field used to select this disagreement batch.",
+        sort_order=next_group_order,
+    )
+    db.add(target_group)
+    db.flush()
+    db.add(
+        ReviewBatchCodingField(
+            review_batch_coding_group_id=target_group.id,
+            metadata_definition_id=comparison_definition.id,
+            sort_order=0,
+            definition_snapshot={
+                "key": comparison_definition.key,
+                "display_name": comparison_definition.display_name,
+                "description": comparison_definition.description,
+                "type": comparison_definition.type,
+                "cardinality": comparison_definition.cardinality,
+                "allowed_values": comparison_definition.allowed_values,
+            },
+        )
+    )
 
 
 @router.post("", response_model=ReviewBatchRead, status_code=status.HTTP_202_ACCEPTED)
@@ -3285,6 +3371,182 @@ def _comparison_definition(db: Session, matter_id: uuid.UUID, definition_id: uui
     return definition
 
 
+def _pinned_disagreement_selection(
+    db: Session,
+    *,
+    batch: ReviewBatch,
+    definition: MetadataDefinition,
+    source_ids: list[uuid.UUID],
+) -> tuple[
+    list[dict[str, Any]],
+    list[ReviewBatchDisagreementSourceSnapshotRead],
+    list[uuid.UUID],
+]:
+    eligible_options = {
+        source.id: source
+        for source in _comparison_run_options(db, batch_id=batch.id, selector_only=True)
+    }
+    missing = [source_id for source_id in source_ids if source_id not in eligible_options]
+    if missing:
+        raise HTTPException(
+            status_code=422,
+            detail="Every source must be an eligible reviewer or completed analysis result from this batch",
+        )
+    source_options = [eligible_options[source_id] for source_id in source_ids]
+    reviewer_ids = [source.id for source in source_options if source.source_type == "REVIEWER"]
+    reviewer_revisions = {
+        coding.id: coding.revision
+        for coding in db.scalars(
+            select(ReviewBatchReviewerCoding).where(ReviewBatchReviewerCoding.id.in_(reviewer_ids))
+        )
+    }
+    if len(reviewer_revisions) != len(reviewer_ids):
+        raise HTTPException(status_code=409, detail="A selected reviewer source is no longer available")
+
+    source_snapshots: list[dict[str, Any]] = []
+    source_reads: list[ReviewBatchDisagreementSourceSnapshotRead] = []
+    for source in source_options:
+        reviewer_revision = reviewer_revisions.get(source.id)
+        source_snapshots.append(
+            {
+                **source.model_dump(mode="json"),
+                "reviewer_revision": reviewer_revision,
+            }
+        )
+        source_reads.append(
+            ReviewBatchDisagreementSourceSnapshotRead(
+                id=source.id,
+                source_type=source.source_type,
+                label=source.label,
+                reviewer_revision=reviewer_revision,
+            )
+        )
+    candidate_ids = comparison_document_ids(
+        db,
+        batch_id=batch.id,
+        definition_id=definition.id,
+        source_options=source_options,
+        row_filter="DISAGREEMENT",
+        reviewer_revisions=reviewer_revisions,
+    )
+    return source_snapshots, source_reads, candidate_ids
+
+
+def _disagreement_preview(
+    db: Session,
+    *,
+    batch: ReviewBatch,
+    definition: MetadataDefinition,
+    source_ids: list[uuid.UUID],
+) -> tuple[ReviewBatchDisagreementBatchPreviewRead, list[dict[str, Any]]]:
+    source_snapshots, source_reads, candidate_ids = _pinned_disagreement_selection(
+        db,
+        batch=batch,
+        definition=definition,
+        source_ids=source_ids,
+    )
+    return (
+        ReviewBatchDisagreementBatchPreviewRead(
+            source_batch_id=batch.id,
+            metadata_definition_id=definition.id,
+            field_display_name=definition.display_name,
+            candidate_count=len(candidate_ids),
+            sources=source_reads,
+        ),
+        source_snapshots,
+    )
+
+
+def _disagreement_display_value(definition: MetadataDefinition, value: Any) -> str:
+    if isinstance(value, bool):
+        return "Yes" if value else "No"
+    labels = {
+        str(item.get("key")): str(item.get("label") or item.get("key"))
+        for item in definition.allowed_values or []
+        if item.get("key") is not None
+    }
+    return labels.get(str(value), str(value))
+
+
+@router.get(
+    "/{batch_id}/disagreements/documents/{document_id}",
+    response_model=ReviewBatchDisagreementDocumentRead,
+)
+def get_disagreement_review_document(
+    matter_id: uuid.UUID,
+    batch_id: uuid.UUID,
+    document_id: uuid.UUID,
+    principal: Principal = Depends(get_principal),
+    db: Session = Depends(get_db),
+) -> ReviewBatchDisagreementDocumentRead:
+    _matter(db, matter_id, principal, "batch.review")
+    batch = _batch(db, matter_id, batch_id)
+    _require_batch_assignment(db, principal, batch)
+    if batch.selection_type != "COMPARISON_RESULT" or batch.source_batch_id is None:
+        raise HTTPException(status_code=404, detail="This batch has no disagreement review context")
+    if db.get(ReviewBatchDocument, (batch.id, document_id)) is None:
+        raise HTTPException(status_code=404, detail="Document is not in this review batch")
+
+    raw_definition_id = batch.selection_definition.get("metadata_definition_id")
+    raw_sources = batch.selection_definition.get("sources")
+    if raw_definition_id is None or not isinstance(raw_sources, list) or len(raw_sources) < 2:
+        raise HTTPException(status_code=409, detail="Disagreement source provenance is incomplete")
+    try:
+        definition_id = uuid.UUID(str(raw_definition_id))
+        source_options = [ReviewBatchComparisonSourceOptionRead.model_validate(item) for item in raw_sources]
+        reviewer_revisions = {
+            source.id: int(raw_source["reviewer_revision"])
+            for source, raw_source in zip(source_options, raw_sources, strict=True)
+            if source.source_type == "REVIEWER"
+        }
+    except (KeyError, TypeError, ValueError) as exc:
+        raise HTTPException(status_code=409, detail="Disagreement source provenance is invalid") from exc
+    definition = db.get(MetadataDefinition, definition_id)
+    if definition is None or definition.matter_id != matter_id:
+        raise HTTPException(status_code=409, detail="The compared coding field is unavailable")
+
+    comparison = comparison_document(
+        db,
+        batch_id=batch.source_batch_id,
+        matter_document_id=document_id,
+        definition_id=definition.id,
+        source_options=source_options,
+        reviewer_revisions=reviewer_revisions,
+    )
+    if comparison is None or comparison.agreement_status not in {"PARTIAL", "DISAGREEMENT"}:
+        raise HTTPException(status_code=409, detail="The frozen disagreement could not be replayed")
+
+    return ReviewBatchDisagreementDocumentRead(
+        review_batch_id=batch.id,
+        source_batch_id=batch.source_batch_id,
+        matter_document_id=document_id,
+        metadata_definition_id=definition.id,
+        field_display_name=definition.display_name,
+        field_type=definition.type,
+        cardinality=definition.cardinality,
+        allowed_values=definition.allowed_values or [],
+        agreement_status=comparison.agreement_status,
+        sources=[
+            ReviewBatchDisagreementDocumentSourceRead(
+                id=source.id,
+                source_type=source.source_type,
+                run_type=source.run_type,
+                label=source.label,
+                detail=source.detail,
+                reviewer_revision=reviewer_revisions.get(source.id),
+                state=comparison.sources[source.id].state,
+                values=list(comparison.sources[source.id].values),
+                display_values=[
+                    _disagreement_display_value(definition, value)
+                    for value in comparison.sources[source.id].values
+                ],
+                top_confidence=comparison.sources[source.id].top_confidence,
+            )
+            for source in source_options
+        ],
+    )
+
+
 @router.get("/{batch_id}/comparison-options", response_model=ReviewBatchComparisonOptionsRead)
 def get_review_batch_comparison_options(
     matter_id: uuid.UUID,
@@ -3356,6 +3618,137 @@ def compare_review_batch_coding(
         source_options=source_options,
         document_count=batch.document_count,
     )
+
+
+@router.post(
+    "/{batch_id}/coding-comparison/review-batches/preview",
+    response_model=ReviewBatchDisagreementBatchPreviewRead,
+)
+def preview_disagreement_review_batch(
+    matter_id: uuid.UUID,
+    batch_id: uuid.UUID,
+    payload: ReviewBatchDisagreementBatchPreviewRequest,
+    principal: Principal = Depends(get_principal),
+    db: Session = Depends(get_db),
+) -> ReviewBatchDisagreementBatchPreviewRead:
+    _matter(db, matter_id, principal, "batch.view")
+    batch = _batch(db, matter_id, batch_id)
+    _require_batch_assignment(db, principal, batch)
+    if batch.status != "READY":
+        raise HTTPException(status_code=409, detail="Source batch is not ready")
+    definition = _comparison_definition(db, matter_id, payload.metadata_definition_id)
+    preview, _source_snapshots = _disagreement_preview(
+        db,
+        batch=batch,
+        definition=definition,
+        source_ids=payload.source_ids,
+    )
+    return preview
+
+
+@router.post(
+    "/{batch_id}/coding-comparison/review-batches",
+    response_model=ReviewBatchRead,
+    status_code=status.HTTP_202_ACCEPTED,
+)
+def create_disagreement_review_batch(
+    matter_id: uuid.UUID,
+    batch_id: uuid.UUID,
+    payload: ReviewBatchDisagreementBatchCreate,
+    principal: Principal = Depends(get_principal),
+    db: Session = Depends(get_db),
+    settings: Settings = Depends(get_settings),
+) -> ReviewBatchRead:
+    matter = _matter(db, matter_id, principal, "batch.create")
+    source_batch = _batch(db, matter_id, batch_id)
+    _require_batch_assignment(db, principal, source_batch)
+    if source_batch.status != "READY":
+        raise HTTPException(status_code=409, detail="Source batch is not ready")
+    definition = _comparison_definition(db, matter_id, payload.metadata_definition_id)
+    preview, source_snapshots = _disagreement_preview(
+        db,
+        batch=source_batch,
+        definition=definition,
+        source_ids=payload.source_ids,
+    )
+    if preview.candidate_count == 0:
+        raise HTTPException(status_code=409, detail="The selected comparison has no disagreement documents")
+
+    target_batch_id = uuid.uuid4()
+    batch = ReviewBatch(
+        id=target_batch_id,
+        matter_id=matter.id,
+        name=" ".join(payload.name.split()),
+        description=payload.description.strip() if payload.description else None,
+        selection_type="COMPARISON_RESULT",
+        selection_definition={
+            "type": "COMPARISON_RESULT",
+            "source_batch_id": str(source_batch.id),
+            "source_batch_name": source_batch.name,
+            "metadata_definition_id": str(definition.id),
+            "field_display_name": definition.display_name,
+            "row_filter": "DISAGREEMENT",
+            "sources": source_snapshots,
+            "candidate_count": preview.candidate_count,
+        },
+        source_batch_id=source_batch.id,
+        reviewer_value_visibility=source_batch.reviewer_value_visibility,
+        status="QUEUED",
+        workflow_id=f"review-batch:{target_batch_id}",
+        created_by_user_id=principal.user.id,
+    )
+    db.add(batch)
+    db.flush()
+    _clone_batch_coding_groups(
+        db,
+        source_batch=source_batch,
+        target_batch=batch,
+        comparison_definition=definition,
+    )
+    execution = create_review_batch_execution(db, batch, initiated_by_user_id=principal.user.id)
+    record_audit(
+        db,
+        tenant_id=matter.client.tenant_id,
+        actor_user_id=principal.user.id,
+        action="review_batch.disagreements_created",
+        target_type="review_batch",
+        target_id=batch.id,
+        details={
+            "matter_id": str(matter.id),
+            "source_batch_id": str(source_batch.id),
+            "metadata_definition_id": str(definition.id),
+            "source_ids": [str(source_id) for source_id in payload.source_ids],
+            "candidate_count": preview.candidate_count,
+        },
+    )
+    enqueue_review_batch(db, execution.dbos_workflow_id, str(batch.id))
+    db.commit()
+
+    if not settings.dbos_enabled:
+        try:
+            materialize_review_batch(db, batch.id, settings)
+        except Exception as exc:  # noqa: BLE001 - inline mode persists the durable failure contract
+            fail_review_batch_execution(db, batch.id, exc)
+            db.commit()
+        batch = db.get(ReviewBatch, batch.id) or batch
+        if batch.status == "READY":
+            if settings.search_enabled and db.get_bind().dialect.name == "postgresql":
+                try:
+                    sync_review_batch_search(batch.id, settings)
+                except Exception as exc:  # noqa: BLE001 - valid membership survives projection failure
+                    complete_review_batch_execution(db, batch.id, search_error=str(exc)[:4000])
+                    db.commit()
+                else:
+                    complete_review_batch_execution(db, batch.id)
+                    db.commit()
+            else:
+                batch = db.get(ReviewBatch, batch.id) or batch
+                batch.search_status = "NOT_CONFIGURED"
+                batch.search_error_message = None
+                complete_review_batch_execution(db, batch.id)
+                db.commit()
+        batch = db.get(ReviewBatch, batch.id) or batch
+    return _read_batch(db, batch)
 
 
 @router.get("/{batch_id}/coding-comparison/export", response_class=Response)
