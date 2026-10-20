@@ -900,6 +900,7 @@ function FacetPanel({ matterId, searchRequest, definitions, groups, filters, neg
         {filterGroups.map((group) => <MetadataFilterGroupSection
           key={group.id}
           displayName={group.displayName}
+          storageKey={`priv-view:metadata-filter-groups:search:${matterId}:${group.id}`}
           activeCount={group.definitions.reduce((count, definition) => count + (filters[definition.key]?.length ?? 0), 0)}
         >
           {group.definitions.map((definition) => isDateFilter(definition) ? (
