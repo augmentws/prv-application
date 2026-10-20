@@ -10,11 +10,7 @@ import type { MatterEntityCreateStatus } from './matterEntityCreateStatus';
 
 export interface MatterEntityCreate {
   entity_type: MatterEntityCreateEntityType;
-  /**
-     * @minLength 1
-     * @maxLength 300
-     */
-  display_name: string;
+  display_name?: string | null;
   email?: string | null;
   title?: string | null;
   organization_id?: string | null;

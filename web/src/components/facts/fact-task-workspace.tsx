@@ -314,9 +314,11 @@ function FactRunPanel({ clientId, matterId, task }: { clientId?: string; matterI
   const [useBatchApi, setUseBatchApi] = useState(false);
   // One key per estimate and option choice: retrying a launch whose response was lost returns the same run.
   const [launchKey, setLaunchKey] = useState("");
+  const [estimatedSelectionKey, setEstimatedSelectionKey] = useState("");
   const runPayload = scopeType === "MATTER"
     ? { scope_type: "MATTER" as const, review_batch_id: null, coding_source: "MATTER_METADATA" as const, reviewer_coding_id: null }
     : { ...selection.payload, scope_type: "REVIEW_BATCH" as const };
+  const selectionKey = JSON.stringify(runPayload);
   const runs = useQuery({
     queryKey: runsKey,
     queryFn: () => coreApi<FactDevelopmentRunRead[]>(`/v1/matters/${matterId}/analysis-tasks/${task.id}/fact-runs`),
@@ -328,11 +330,14 @@ function FactRunPanel({ clientId, matterId, task }: { clientId?: string; matterI
     },
   });
   const estimate = useMutation({
-    mutationFn: () => coreApi<FactDevelopmentRunEstimateRead>(`/v1/matters/${matterId}/analysis-tasks/${task.id}/fact-runs/estimate`, {
+    mutationFn: ({ payload }: { payload: typeof runPayload; selectionKey: string }) => coreApi<FactDevelopmentRunEstimateRead>(`/v1/matters/${matterId}/analysis-tasks/${task.id}/fact-runs/estimate`, {
       method: "POST",
-      body: JSON.stringify(runPayload),
+      body: JSON.stringify(payload),
     }),
-    onSuccess: () => setLaunchKey(crypto.randomUUID()),
+    onSuccess: (_data, variables) => {
+      setEstimatedSelectionKey(variables.selectionKey);
+      setLaunchKey(crypto.randomUUID());
+    },
     onError: (error) => toast.error(error.message),
   });
   const launch = useMutation({
@@ -358,7 +363,7 @@ function FactRunPanel({ clientId, matterId, task }: { clientId?: string; matterI
     onError: (error) => toast.error(error.message),
   });
   const current = estimate.data;
-  const estimateMatches = current && (current.scope_type ?? "REVIEW_BATCH") === scopeType && current.review_batch_id === runPayload.review_batch_id && current.coding_source === runPayload.coding_source;
+  const estimateMatches = current && estimatedSelectionKey === selectionKey;
 
   return (
     <Card>
@@ -367,9 +372,9 @@ function FactRunPanel({ clientId, matterId, task }: { clientId?: string; matterI
         <p className="text-sm text-muted-foreground">Agents read each coded document in date order and propose facts for review. Documents an earlier run already read are reused, not read again.</p>
       </CardHeader>
       <CardContent className="space-y-4 p-4">
-        {wholeMatterAllowed ? <div className="max-w-sm space-y-1.5"><Label htmlFor={`fact-run-scope-${task.id}`}>Population</Label><Select value={scopeType} onValueChange={(value) => { setScopeType(value as "MATTER" | "REVIEW_BATCH"); estimate.reset(); }}><SelectTrigger id={`fact-run-scope-${task.id}`}><SelectValue /></SelectTrigger><SelectContent><SelectItem value="MATTER">Entire matter</SelectItem><SelectItem value="REVIEW_BATCH">Ready review batch</SelectItem></SelectContent></Select></div> : null}
+        {wholeMatterAllowed ? <div className="max-w-sm space-y-1.5"><Label htmlFor={`fact-run-scope-${task.id}`}>Population</Label><Select value={scopeType} onValueChange={(value) => { setScopeType(value as "MATTER" | "REVIEW_BATCH"); setEstimatedSelectionKey(""); estimate.reset(); }}><SelectTrigger id={`fact-run-scope-${task.id}`}><SelectValue /></SelectTrigger><SelectContent><SelectItem value="MATTER">Entire matter</SelectItem><SelectItem value="REVIEW_BATCH">Ready review batch</SelectItem></SelectContent></Select></div> : null}
         {scopeType === "REVIEW_BATCH" ? selection.fields : <p className="rounded-md border bg-muted/20 p-3 text-sm text-muted-foreground">The run freezes every document currently in the matter into an immutable input manifest. Later imports are excluded.</p>}
-        <div className="flex justify-end"><Button variant="outline" disabled={(scopeType === "REVIEW_BATCH" && !selection.complete) || estimate.isPending} onClick={() => estimate.mutate()}>{estimate.isPending ? <LoaderCircle className="animate-spin" /> : null}Estimate</Button></div>
+        <div className="flex justify-end"><Button variant="outline" disabled={(scopeType === "REVIEW_BATCH" && !selection.complete) || estimate.isPending} onClick={() => estimate.mutate({ payload: runPayload, selectionKey })}>{estimate.isPending ? <LoaderCircle className="animate-spin" /> : null}Estimate</Button></div>
         {current && estimateMatches ? (
           <div className="space-y-3 rounded-lg border bg-muted/20 p-4 text-sm" aria-label="Run estimate">
             <dl className="grid gap-x-6 gap-y-1 sm:grid-cols-2">

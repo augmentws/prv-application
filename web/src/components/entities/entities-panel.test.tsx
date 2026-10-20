@@ -54,9 +54,10 @@ function renderPanel(tab: EntitiesTab, canManage = true) {
 
 beforeEach(() => {
   currentParams = new URLSearchParams();
-  vi.mocked(coreApi).mockImplementation(async (path) => {
+  vi.mocked(coreApi).mockImplementation(async (path, init) => {
     if (path.includes("entity_type=ORGANIZATION&limit=500")) return { items: [entity({ id: "org-1", entity_type: "ORGANIZATION", display_name: "Acme Corp", variants: [] })], total: 1 } as never;
     if (path.startsWith("/v1/matters/matter-1/entities?")) return { items: [entity()], total: 1 } as never;
+    if (path === "/v1/matters/matter-1/entities" && init?.method === "POST") return entity({ display_name: null, email: "unknown@example.com" }) as never;
     if (path.endsWith("/confirm") || path.endsWith("/reject")) return entity({ status: "CONFIRMED" }) as never;
     throw new Error(`Unexpected request ${path}`);
   });
@@ -107,6 +108,22 @@ describe("EntitiesPanel", () => {
     expect(await screen.findByText(/removed as owner or participant from 3 facts/)).toBeInTheDocument();
     await user.click(screen.getByRole("button", { name: "Reject" }));
     await waitFor(() => expect(vi.mocked(coreApi).mock.calls.some(([path]) => path === "/v1/matters/matter-1/entities/entity-1/reject")).toBe(true));
+  });
+
+  it("creates an email-only entity without inventing a display name", async () => {
+    const user = userEvent.setup();
+    renderPanel("directory");
+    await screen.findByRole("link", { name: "Jane Smith" });
+    await user.click(screen.getByRole("button", { name: "New entity" }));
+    await user.type(screen.getByLabelText("Email address"), "unknown@example.com");
+    await user.click(screen.getByRole("button", { name: "Add" }));
+    await waitFor(() => {
+      const call = vi.mocked(coreApi).mock.calls.find(([path, init]) => path === "/v1/matters/matter-1/entities" && init?.method === "POST");
+      expect(JSON.parse(String(call?.[1]?.body))).toMatchObject({
+        display_name: null,
+        email: "unknown@example.com",
+      });
+    });
   });
 
   it("offers no management actions to viewers", async () => {

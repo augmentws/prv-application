@@ -30,7 +30,7 @@ import type {
   MatterRead,
 } from "@/generated/models";
 import { ApiError, coreApi } from "@/lib/api-client";
-import { entityDetailHref, entityFactsHref, factDetailHref, formatFactDate } from "@/lib/facts";
+import { entityDetailHref, entityFactsHref, entityLabel, factDetailHref, formatFactDate } from "@/lib/facts";
 import { matterHref } from "@/lib/matter-routes";
 
 const ENTITY_FACT_PREVIEW = 20;
@@ -132,7 +132,7 @@ export function EntityDetail({ clientId, matterId, entityId }: { clientId: strin
               <EntityTypeLabel type={current.entity_type} />
               {current.created_by_workflow_run_id ? <span className="inline-flex items-center gap-1 text-xs font-medium text-agent"><Bot className="size-3.5" aria-hidden="true" />Proposed by an agent</span> : null}
             </div>
-            <CardTitle className="text-lg">{current.display_name}</CardTitle>
+            <CardTitle className="text-lg">{entityLabel(current)}</CardTitle>
           </div>
           {canManage ? (
             <div className="flex flex-wrap gap-2" aria-label="Entity actions">
@@ -186,7 +186,7 @@ export function EntityDetail({ clientId, matterId, entityId }: { clientId: strin
                   variant={variant}
                   canManage={canManage}
                   busy={action.isPending}
-                  onSplit={() => action.mutate({ path: `${variant.id}/unmerge`, body: { lock_version: variant.lock_version }, success: `${variant.email ?? variant.display_name} split off as its own entity` })}
+                  onSplit={() => action.mutate({ path: `${variant.id}/unmerge`, body: { lock_version: variant.lock_version }, success: `${variant.email ?? entityLabel(variant)} split off as its own entity` })}
                 />
               ))}
             </ul>
@@ -231,7 +231,7 @@ export function EntityDetail({ clientId, matterId, entityId }: { clientId: strin
         entity={current}
         busy={action.isPending}
         onClose={() => setMergeOpen(false)}
-        onMerge={(target) => action.mutate({ path: `${current.id}/merge`, body: { ...lock, target_entity_id: target.id }, success: `Merged into ${target.display_name}`, navigate: true })}
+        onMerge={(target) => action.mutate({ path: `${current.id}/merge`, body: { ...lock, target_entity_id: target.id }, success: `Merged into ${entityLabel(target)}`, navigate: true })}
       />
     </div>
   );
@@ -241,11 +241,11 @@ function VariantRow({ variant, canManage, busy, onSplit }: { variant: MatterEnti
   return (
     <li className="flex flex-wrap items-center justify-between gap-2 px-3 py-2 text-sm">
       <span>
-        <span className="font-medium">{variant.display_name}</span>
-        {variant.email ? <span className="ml-2 text-muted-foreground">{variant.email}</span> : null}
+        <span className="font-medium">{entityLabel(variant)}</span>
+        {variant.email && variant.display_name ? <span className="ml-2 text-muted-foreground">{variant.email}</span> : null}
       </span>
       {canManage ? (
-        <Button type="button" variant="ghost" size="sm" disabled={busy} onClick={onSplit} aria-label={`Split off ${variant.email ?? variant.display_name}`}>
+        <Button type="button" variant="ghost" size="sm" disabled={busy} onClick={onSplit} aria-label={`Split off ${variant.email ?? entityLabel(variant)}`}>
           <Split aria-hidden="true" />Split off
         </Button>
       ) : null}
@@ -289,7 +289,7 @@ function EntityEditForm({ entity, organizations, custodians, saving, onCancel, o
   onSave: (payload: MatterEntityUpdate) => void;
 }) {
   const person = entity.entity_type === "PERSON";
-  const [name, setName] = useState(entity.display_name);
+  const [name, setName] = useState(entity.display_name ?? "");
   const [title, setTitle] = useState(entity.title ?? "");
   const [organizationId, setOrganizationId] = useState(entity.organization_id ?? "");
   const [custodianId, setCustodianId] = useState(entity.custodian_id ?? "");
@@ -298,7 +298,7 @@ function EntityEditForm({ entity, organizations, custodians, saving, onCancel, o
   function submit(event: FormEvent) {
     event.preventDefault();
     const payload: MatterEntityUpdate = { lock_version: entity.lock_version };
-    if (name.trim() !== entity.display_name) payload.display_name = name.trim();
+    if ((name.trim() || null) !== entity.display_name) payload.display_name = name.trim() || null;
     if (person && (title.trim() || null) !== (entity.title ?? null)) payload.title = title.trim() || null;
     if (person && (organizationId || null) !== (entity.organization_id ?? null)) payload.organization_id = organizationId || null;
     if ((custodianId || null) !== (entity.custodian_id ?? null)) payload.custodian_id = custodianId || null;
@@ -315,7 +315,7 @@ function EntityEditForm({ entity, organizations, custodians, saving, onCancel, o
       <div className="grid gap-3 sm:grid-cols-2">
         <div className="space-y-2">
           <Label htmlFor="entity-edit-name">Name</Label>
-          <Input id="entity-edit-name" required value={name} onChange={(event) => setName(event.target.value)} />
+          <Input id="entity-edit-name" value={name} onChange={(event) => setName(event.target.value)} />
         </div>
         {person ? (
           <div className="space-y-2">
@@ -330,7 +330,7 @@ function EntityEditForm({ entity, organizations, custodians, saving, onCancel, o
               <SelectTrigger id="entity-edit-organization"><SelectValue /></SelectTrigger>
               <SelectContent>
                 <SelectItem value="NONE">None</SelectItem>
-                {organizations.map((item) => <SelectItem key={item.id} value={item.id}>{item.display_name}</SelectItem>)}
+                {organizations.map((item) => <SelectItem key={item.id} value={item.id}>{entityLabel(item)}</SelectItem>)}
               </SelectContent>
             </Select>
           </div>
@@ -352,7 +352,7 @@ function EntityEditForm({ entity, organizations, custodians, saving, onCancel, o
       </div>
       <div className="flex justify-end gap-2">
         <Button type="button" variant="ghost" onClick={onCancel}>Cancel</Button>
-        <Button type="submit" disabled={saving || !name.trim()}>Save changes</Button>
+        <Button type="submit" disabled={saving || (!name.trim() && !entity.email)}>Save changes</Button>
       </div>
     </form>
   );
@@ -384,7 +384,7 @@ function MergeEntityDialog({ open, matterId, entity, busy, onClose, onMerge }: {
     <Dialog open={open} onOpenChange={(next) => { if (!next) onClose(); }}>
       <DialogContent className="max-w-2xl">
         <DialogHeader>
-          <DialogTitle>Merge {entity.display_name} into another {entity.entity_type === "PERSON" ? "person" : "organization"}</DialogTitle>
+          <DialogTitle>Merge {entityLabel(entity)} into another {entity.entity_type === "PERSON" ? "person" : "organization"}</DialogTitle>
           <DialogDescription>Its names, email addresses and facts move to the one you keep. You can split names and addresses off again afterwards.</DialogDescription>
         </DialogHeader>
         <form className="flex gap-2" onSubmit={(event) => { event.preventDefault(); setSubmitted(query.trim()); }}>
@@ -395,7 +395,7 @@ function MergeEntityDialog({ open, matterId, entity, busy, onClose, onMerge }: {
           {results.isPending ? <TableLoading /> : results.error ? <QueryError message={results.error.message} /> : candidates.length ? candidates.map((candidate) => (
             <div key={candidate.id} className="flex items-center justify-between gap-3 rounded-lg border p-3 text-sm">
               <div className="min-w-0">
-                <p className="font-medium">{candidate.display_name}</p>
+                <p className="font-medium">{entityLabel(candidate)}</p>
                 <p className="text-xs text-muted-foreground">{[candidate.email, candidate.title].filter(Boolean).join(" · ") || "No email address"} · {candidate.fact_count} {candidate.fact_count === 1 ? "fact" : "facts"}</p>
               </div>
               <Button size="sm" disabled={busy} onClick={() => onMerge(candidate)}>Keep this one</Button>

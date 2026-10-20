@@ -56,6 +56,12 @@ def _clean_name(value: str) -> str:
     return name
 
 
+def entity_display_label(entity: MatterEntity) -> str:
+    """Return the stable human-readable label for a named or email-only entity."""
+
+    return entity.display_name or entity.email or f"Unnamed {entity.entity_type.lower()}"
+
+
 def _record(
     db: Session,
     entity: MatterEntity,
@@ -158,7 +164,7 @@ def create_entity(
     *,
     matter: Matter,
     entity_type: EntityType,
-    display_name: str,
+    display_name: str | None,
     email: str | None = None,
     title: str | None = None,
     organization_id: uuid.UUID | None = None,
@@ -171,7 +177,9 @@ def create_entity(
 ) -> MatterEntity:
     if entity_type != "PERSON" and (title is not None or organization_id is not None):
         raise MatterEntityError("Only people have a title or an organization")
-    name = _clean_name(display_name)
+    if display_name is None and email is None:
+        raise MatterEntityError("An entity requires a display name or an email address")
+    name = _clean_name(display_name) if display_name is not None else None
     normalized_email = normalize_entity_email(email) if email else None
     if normalized_email is not None:
         _require_email_available(db, matter_id=matter.id, normalized_email=normalized_email)
@@ -180,7 +188,7 @@ def create_entity(
         parent_id=None,
         entity_type=entity_type,
         display_name=name,
-        normalized_name=normalize_entity_name(name),
+        normalized_name=normalize_entity_name(name) if name is not None else None,
         email=email.strip() if email else None,
         normalized_email=normalized_email,
         title=" ".join(title.split()) or None if title else None,
@@ -231,11 +239,11 @@ def add_variant(
         raise MatterEntityConflict("Rejected entities cannot receive variants")
     if not display_name and not email:
         raise MatterEntityError("A variant needs a name, an email address, or both")
-    name = _clean_name(display_name) if display_name else canonical.display_name
+    name = _clean_name(display_name) if display_name else None
     normalized_email = normalize_entity_email(email) if email else None
     if normalized_email is not None:
         _require_email_available(db, matter_id=canonical.matter_id, normalized_email=normalized_email)
-    elif normalize_entity_name(name) in {
+    elif name is not None and normalize_entity_name(name) in {
         row.normalized_name
         for row in db.scalars(
             select(MatterEntity).where(
@@ -249,7 +257,7 @@ def add_variant(
         parent_id=canonical.id,
         entity_type=canonical.entity_type,
         display_name=name,
-        normalized_name=normalize_entity_name(name),
+        normalized_name=normalize_entity_name(name) if name is not None else None,
         email=email.strip() if email else None,
         normalized_email=normalized_email,
         status=None,
@@ -288,10 +296,13 @@ def update_entity(
     before: dict[str, Any] = {}
     after: dict[str, Any] = {}
     if "display_name" in changes:
-        name = _clean_name(changes["display_name"])
+        requested_name = changes["display_name"]
+        name = _clean_name(requested_name) if requested_name is not None else None
+        if name is None and entity.email is None:
+            raise MatterEntityError("An entity requires a display name or an email address")
         before["display_name"], after["display_name"] = entity.display_name, name
         entity.display_name = name
-        entity.normalized_name = normalize_entity_name(name)
+        entity.normalized_name = normalize_entity_name(name) if name is not None else None
     if "title" in changes:
         if entity.entity_type != "PERSON" and changes["title"]:
             raise MatterEntityError("Only people have a title")
@@ -363,7 +374,7 @@ def reject_entity(
         matter_id=entity.matter_id,
         entity_ids=entity_group_ids(db, entity),
         actor_user_id=actor_user_id,
-        reason=f"Entity {entity.display_name} was rejected",
+        reason=f"Entity {entity_display_label(entity)} was rejected",
     )
     _record(
         db,
@@ -397,7 +408,11 @@ def merge_entities(
     if target.status == "REJECTED":
         raise MatterEntityConflict("Entities cannot be merged into a rejected entity")
     _check_version(source, source_lock_version)
+    reassigned_organization_member_ids: list[uuid.UUID] = []
     if source.entity_type == "ORGANIZATION":
+        reassigned_organization_member_ids = list(
+            db.scalars(select(MatterEntity.id).where(MatterEntity.organization_id == source.id))
+        )
         db.execute(
             update(MatterEntity).where(MatterEntity.organization_id == source.id).values(organization_id=target.id)
         )
@@ -409,6 +424,7 @@ def merge_entities(
         "organization_id": str(source.organization_id) if source.organization_id else None,
         "custodian_id": str(source.custodian_id) if source.custodian_id else None,
         "moved_variant_ids": [str(value) for value in moved_variant_ids],
+        "reassigned_organization_member_ids": [str(value) for value in reassigned_organization_member_ids],
     }
     source.parent_id = target.id
     source.status = None
@@ -449,15 +465,53 @@ def unmerge_entity(
         raise MatterEntityError("Only a variant can be split off")
     _check_version(variant, lock_version)
     parent = get_entity(db, matter_id=variant.matter_id, entity_id=variant.parent_id, for_update=True)
+    merge_event = db.scalar(
+        select(MatterEntityEvent)
+        .where(MatterEntityEvent.entity_id == variant.id, MatterEntityEvent.event_type == "MERGED")
+        .order_by(MatterEntityEvent.created_at.desc(), MatterEntityEvent.id.desc())
+        .limit(1)
+    )
+    merge_payload = merge_event.payload if merge_event is not None else {}
+    prior = merge_payload.get("prior")
     variant.parent_id = None
-    variant.status = "CONFIRMED"
+    if isinstance(prior, dict):
+        variant.status = prior.get("status") or "CONFIRMED"
+        variant.title = prior.get("title")
+        organization_id = prior.get("organization_id")
+        if organization_id:
+            try:
+                variant.organization_id = _validated_organization(
+                    db, matter_id=variant.matter_id, organization_id=uuid.UUID(organization_id)
+                )
+            except (MatterEntityError, ValueError):
+                variant.organization_id = None
+        else:
+            variant.organization_id = None
+        custodian_id = prior.get("custodian_id")
+        variant.custodian_id = uuid.UUID(custodian_id) if custodian_id else None
+        moved_variant_ids = [uuid.UUID(value) for value in prior.get("moved_variant_ids", [])]
+        if moved_variant_ids:
+            db.execute(
+                update(MatterEntity)
+                .where(MatterEntity.id.in_(moved_variant_ids), MatterEntity.parent_id == parent.id)
+                .values(parent_id=variant.id)
+            )
+        member_ids = [uuid.UUID(value) for value in prior.get("reassigned_organization_member_ids", [])]
+        if variant.entity_type == "ORGANIZATION" and member_ids:
+            db.execute(
+                update(MatterEntity)
+                .where(MatterEntity.id.in_(member_ids), MatterEntity.organization_id == parent.id)
+                .values(organization_id=variant.id)
+            )
+    else:
+        variant.status = "CONFIRMED"
     _bump(variant)
     _bump(parent)
     _record(
         db,
         variant,
         "UNMERGED",
-        {"former_parent_id": str(parent.id)},
+        {"former_parent_id": str(parent.id), "restored_merge_state": isinstance(prior, dict)},
         actor_type="HUMAN",
         actor_user_id=actor_user_id,
     )

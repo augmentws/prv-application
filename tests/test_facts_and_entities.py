@@ -135,7 +135,23 @@ def test_entities_have_variants_unique_emails_and_reversible_merges(client: Test
     variant_id = jane["variants"][0]["id"]
     assert client.get(f"{matter_url}/{variant_id}", headers=auth(ctx["token"])).json()["id"] == jane["id"]
 
-    duplicate_jane = _entity(client, ctx, entity_type="PERSON", display_name="Jane S.", status="PROPOSED")
+    duplicate_jane = _entity(
+        client,
+        ctx,
+        entity_type="PERSON",
+        display_name="Jane S.",
+        title="Deputy Counsel",
+        organization_id=acme["id"],
+        status="PROPOSED",
+    )
+    source_variant_response = client.post(
+        f"{matter_url}/{duplicate_jane['id']}/variants",
+        headers=auth(ctx["token"]),
+        json={"lock_version": duplicate_jane["lock_version"], "display_name": "J.S."},
+    )
+    assert source_variant_response.status_code == 201, source_variant_response.text
+    duplicate_jane = source_variant_response.json()
+    source_variant_id = duplicate_jane["variants"][0]["id"]
     stale = client.post(
         f"{matter_url}/{duplicate_jane['id']}/merge",
         headers=auth(ctx["token"]),
@@ -148,7 +164,11 @@ def test_entities_have_variants_unique_emails_and_reversible_merges(client: Test
         json={"lock_version": duplicate_jane["lock_version"], "target_entity_id": jane["id"]},
     )
     assert merged.status_code == 200, merged.text
-    assert {variant["id"] for variant in merged.json()["variants"]} == {variant_id, duplicate_jane["id"]}
+    assert {variant["id"] for variant in merged.json()["variants"]} == {
+        variant_id,
+        duplicate_jane["id"],
+        source_variant_id,
+    }
     assert client.get(matter_url, headers=auth(ctx["token"]), params={"entity_type": "PERSON"}).json()["total"] == 1
 
     reloaded = client.get(f"{matter_url}/{jane['id']}", headers=auth(ctx["token"])).json()
@@ -160,7 +180,10 @@ def test_entities_have_variants_unique_emails_and_reversible_merges(client: Test
     )
     assert split.status_code == 200, split.text
     assert split.json()["id"] == duplicate_jane["id"]
-    assert split.json()["status"] == "CONFIRMED"
+    assert split.json()["status"] == "PROPOSED"
+    assert split.json()["title"] == "Deputy Counsel"
+    assert split.json()["organization_id"] == acme["id"]
+    assert [item["id"] for item in split.json()["variants"]] == [source_variant_id]
 
     person_into_org = client.post(
         f"{matter_url}/{duplicate_jane['id']}/merge",
@@ -168,6 +191,31 @@ def test_entities_have_variants_unique_emails_and_reversible_merges(client: Test
         json={"lock_version": split.json()["lock_version"], "target_entity_id": acme["id"]},
     )
     assert person_into_org.status_code == 422
+
+    source_org = _entity(client, ctx, entity_type="ORGANIZATION", display_name="Acme West", status="PROPOSED")
+    member = _entity(
+        client,
+        ctx,
+        entity_type="PERSON",
+        display_name="West Employee",
+        organization_id=source_org["id"],
+    )
+    merged_org = client.post(
+        f"{matter_url}/{source_org['id']}/merge",
+        headers=auth(ctx["token"]),
+        json={"lock_version": source_org["lock_version"], "target_entity_id": acme["id"]},
+    )
+    assert merged_org.status_code == 200, merged_org.text
+    assert client.get(f"{matter_url}/{member['id']}", headers=auth(ctx["token"])).json()["organization_id"] == acme["id"]
+    source_variant = next(item for item in merged_org.json()["variants"] if item["id"] == source_org["id"])
+    restored_org = client.post(
+        f"{matter_url}/{source_org['id']}/unmerge",
+        headers=auth(ctx["token"]),
+        json={"lock_version": source_variant["lock_version"]},
+    )
+    assert restored_org.status_code == 200, restored_org.text
+    assert restored_org.json()["status"] == "PROPOSED"
+    assert client.get(f"{matter_url}/{member['id']}", headers=auth(ctx["token"])).json()["organization_id"] == source_org["id"]
 
     with TestingSessionLocal() as db:
         events = list(
@@ -178,6 +226,47 @@ def test_entities_have_variants_unique_emails_and_reversible_merges(client: Test
             )
         )
     assert {"CREATED", "MERGED", "UNMERGED"} <= set(events)
+
+
+def test_email_only_entities_are_valid_and_use_email_as_their_label(client: TestClient, root_token: str) -> None:
+    ctx = _matter_with_task(client, root_token)
+    entities_url = f"/v1/matters/{ctx['matter_id']}/entities"
+
+    missing_identity = client.post(
+        entities_url,
+        headers=auth(ctx["token"]),
+        json={"entity_type": "PERSON"},
+    )
+    assert missing_identity.status_code == 422
+
+    email_only = _entity(client, ctx, entity_type="PERSON", email="Unknown@Example.com")
+    assert email_only["display_name"] is None
+    assert email_only["email"] == "Unknown@Example.com"
+
+    found = client.get(entities_url, headers=auth(ctx["token"]), params={"q": "unknown@example"})
+    assert found.status_code == 200, found.text
+    assert [item["id"] for item in found.json()["items"]] == [email_only["id"]]
+
+    fact = _create_fact(client, ctx, owner_entity_id=email_only["id"])
+    assert fact.status_code == 201, fact.text
+    assert fact.json()["owner"]["canonical_display_name"] == "Unknown@Example.com"
+
+    named = _entity(client, ctx, entity_type="PERSON", display_name="Known Person", email="known@example.com")
+    cleared = client.patch(
+        f"{entities_url}/{named['id']}",
+        headers=auth(ctx["token"]),
+        json={"lock_version": named["lock_version"], "display_name": None},
+    )
+    assert cleared.status_code == 200, cleared.text
+    assert cleared.json()["display_name"] is None
+
+    name_only = _entity(client, ctx, entity_type="PERSON", display_name="Name Only")
+    invalid_clear = client.patch(
+        f"{entities_url}/{name_only['id']}",
+        headers=auth(ctx["token"]),
+        json={"lock_version": name_only["lock_version"], "display_name": None},
+    )
+    assert invalid_clear.status_code == 422
 
 
 def test_fact_evidence_must_be_verbatim_in_one_paragraph(client: TestClient, root_token: str) -> None:
@@ -470,6 +559,25 @@ def test_fact_and_entity_permissions_follow_system_roles(client: TestClient, roo
     operator = user_with_role("fact-operator@example.com", "ANALYSIS_OPERATOR")
     facts_url = f"/v1/matters/{ctx['matter_id']}/facts"
     entities_url = f"/v1/matters/{ctx['matter_id']}/entities"
+    tasks_url = f"/v1/matters/{ctx['matter_id']}/analysis-tasks"
+
+    for token in (reviewer, reader, operator):
+        assert client.get(tasks_url, headers=auth(token)).status_code == 200
+        denied_manage = client.post(
+            f"{tasks_url}/{ctx['task_id']}/versions",
+            headers=auth(token),
+            json={"definition_markdown": "# Revised facts", "based_on_version": 1},
+        )
+        assert denied_manage.status_code == 403
+        assert "analysis_task.manage" in denied_manage.json()["error"]["message"]
+
+    assert client.get(
+        f"{tasks_url}/{ctx['task_id']}/fact-runs", headers=auth(operator)
+    ).status_code == 200
+    for token in (reviewer, reader):
+        denied_run = client.get(f"{tasks_url}/{ctx['task_id']}/fact-runs", headers=auth(token))
+        assert denied_run.status_code == 403
+        assert "analysis_task.run" in denied_run.json()["error"]["message"]
 
     created = _create_fact(client, ctx, token=reviewer)
     assert created.status_code == 201, created.text

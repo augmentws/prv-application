@@ -11,6 +11,10 @@ export const FACT_SORT_LABELS: Record<FactSort, string> = {
   EVIDENCE_COUNT_DESC: "Most evidence",
 };
 
+export function entityLabel(entity: { display_name?: string | null; email?: string | null }) {
+  return entity.display_name || entity.email || "Unnamed entity";
+}
+
 /** Facets offered in the Facts list, in display order, with the filter field each one sets. */
 export const FACT_FACETS = [
   { key: "status", label: "Status", field: "statuses" },

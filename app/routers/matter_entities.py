@@ -140,7 +140,9 @@ def list_entities(
     total = db.scalar(select(func.count()).select_from(statement.subquery())) or 0
     entities = list(
         db.scalars(
-            statement.order_by(MatterEntity.normalized_name, MatterEntity.id).limit(limit).offset(offset)
+            statement.order_by(
+                func.coalesce(MatterEntity.normalized_name, MatterEntity.normalized_email), MatterEntity.id
+            ).limit(limit).offset(offset)
         )
     )
     counts = _fact_counts(db, [entity.id for entity in entities])

@@ -37,6 +37,7 @@ from app.audit import record_audit
 from app.config import Settings
 from app.fact_queries import FACT_DATE_ORDER, FactFilters, fact_filter_statement
 from app.fact_specifications import FactSpecificationError, parse_fact_development_specification
+from app.matter_entities import entity_display_label
 from app.models import (
     DocumentMetadataCurrent,
     Matter,
@@ -217,7 +218,7 @@ class _ExportReader:
             return None, None
         row = self.entities[entity_id]
         canonical = self.entities.get(row.parent_id, row) if row.parent_id else row
-        return canonical.display_name, canonical.entity_type
+        return entity_display_label(canonical), canonical.entity_type
 
     def _load_issue_names(self, task_ids: Iterable[uuid.UUID]) -> None:
         for task_id in set(task_ids) - self.loaded_tasks:

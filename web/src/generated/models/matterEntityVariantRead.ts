@@ -8,7 +8,7 @@
 
 export interface MatterEntityVariantRead {
   id: string;
-  display_name: string;
+  display_name: string | null;
   email: string | null;
   lock_version: number;
   created_at: string;
