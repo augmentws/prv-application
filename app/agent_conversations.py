@@ -18,6 +18,7 @@ from app.models import (
     MatterDefinition,
     ReviewBatch,
 )
+from app.notifications import NotificationSource, resolve_source_notifications
 from app.schemas import MatterSearchRequest
 from app.workflows.dispatcher import enqueue_agent_run
 
@@ -210,6 +211,11 @@ def decide_action(
     )
     db.add(decision)
     action_request.status = "APPROVED" if decision_value == "APPROVE" else "REJECTED"
+    resolve_source_notifications(
+        db,
+        source=NotificationSource("agent_action_request", action_request.id),
+        resolution_code=action_request.status,
+    )
     db.flush()
     conversation = db.get(AgentConversation, action_request.conversation_id)
     if conversation is None:

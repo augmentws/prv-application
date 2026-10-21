@@ -34,6 +34,7 @@ from app.routers import (
     matters,
     metadata,
     metadata_groups,
+    notifications,
     provider_usage,
     review_batches,
     saved_searches,
@@ -99,6 +100,7 @@ app.include_router(job_executions.router)
 app.include_router(job_outcomes.router)
 app.include_router(metadata.router)
 app.include_router(metadata_groups.router)
+app.include_router(notifications.router)
 app.include_router(provider_usage.router)
 app.include_router(provider_usage.matter_router)
 app.include_router(matter_templates.router)

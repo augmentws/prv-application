@@ -634,3 +634,59 @@ The feature is complete when:
 7. Retrying or rebuilding search never changes authoritative membership.
 8. New documents and later task versions never silently alter a ready set.
 9. Tests demonstrate backward compatibility, deterministic planning, concurrent safety, and durable recovery.
+
+## 18. Review Program integration extension
+
+Review Workflow Templates declare `AD_HOC_BATCH`, `PARTITIONED_SET`, or `WHOLE_MATTER` for every stage that executes
+an Analysis Task. A Review Program coordinator must pass the declared mode through the normal task-version scope
+validation; it cannot select a mode implicitly or downgrade a stage to ad hoc execution.
+
+The First Pass Review template uses `PARTITIONED_SET` for initial discovery Q&A, supplemental and improvement Q&A,
+classifier-positive Q&A coverage, and no-code QC Q&A. Matter Definition assessment and comparison-derived difference
+or disagreement review remain ordinary `AD_HOC_BATCH` Review Batches because they are diagnostic or human-review
+populations rather than automated task campaigns. Whole-collection classifier scoring uses `WHOLE_MATTER`.
+
+### 18.1 Immutable input-manifest population
+
+Add `INPUT_MANIFEST` to `population_source_type` so a task-specific set can consume an arbitrary derived population
+without first creating an ordinary staging Review Batch. This is required for classifier-positive coverage,
+stratified QC samples, and other program-generated document sets that cannot be represented exactly by one supported
+search request.
+
+The create and preview requests supply an accessible Artifact-owned Analysis Input Manifest reference. The frozen
+selection definition records:
+
+- artifact and manifest IDs;
+- manifest type and schema version;
+- owning matter and originating program, stage, and report references when present;
+- ordered document count and population hash;
+- source-content references and their integrity hashes;
+- selection, sampling, or comparison provenance;
+- creator and creation timestamp; and
+- authorization scope.
+
+The planner verifies tenant and matter ownership, artifact integrity, schema compatibility, document accessibility,
+unique membership, declared count, and hash before allocation. It then applies the existing deterministic allocation
+and keep-together rules. The manifest remains immutable; retrying the set must reproduce the same managed child
+membership.
+
+### 18.2 Program-facing behavior
+
+- The program links to the Batch Set as the work item and treats its children as implementation detail until the
+  user opens allocation or failure information.
+- Every child retains the program, stage, set, task-version, ordinal, population-hash, and membership-hash
+  provenance already required by managed execution.
+- A program-created Analysis Task run against an ordinary batch is rejected unless the pinned template stage
+  explicitly permits `AD_HOC_BATCH`.
+- Creating a difference-review batch does not make it a task-specific set. If an Analysis Task must later process
+  that population, create a new `PARTITIONED_SET` from the immutable difference manifest.
+
+### 18.3 Extension tests
+
+- Preview and creation reject a missing, inaccessible, cross-matter, mutable, malformed, or hash-mismatched manifest.
+- Stable manifest and allocation inputs reproduce identical child membership and hashes.
+- Every manifest document occurs in exactly one managed child.
+- First-pass discovery, supplemental, coverage, and QC task runs reject ad hoc batches.
+- First-pass assessment and difference-review batches remain ordinary overlapping batches.
+- A future Review Workflow Template can declare a different valid per-stage policy without changing the Batch Set
+  domain model.

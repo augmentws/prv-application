@@ -9,6 +9,7 @@ from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
 from app.audit import record_audit
+from app.authorization import ResourceRef
 from app.models import (
     AnalysisInputManifest,
     AnalysisTaskBatchSet,
@@ -25,6 +26,7 @@ from app.models import (
     ReviewBatchRunPromotion,
     WorkflowRun,
 )
+from app.notifications import NotificationSource, UserAudience, publish_notification
 
 CLASSIFICATION_ANALYSIS_TASK_JOB_TYPE = "CLASSIFICATION_ANALYSIS_TASK"
 ANALYSIS_TASK_BATCH_RUN_JOB_TYPE = "ANALYSIS_TASK_BATCH_RUN"
@@ -51,6 +53,22 @@ EXECUTION_STATUSES = {
     "RUNNING",
     "WAITING",
     *EXECUTION_TERMINAL_STATUSES,
+}
+
+JOB_NOTIFICATION_LABELS = {
+    ANALYSIS_TASK_BATCH_SET_JOB_TYPE: "Analysis task batch set",
+    ANALYSIS_TASK_BATCH_SET_RUN_JOB_TYPE: "Analysis task batch set run",
+    ANALYSIS_TASK_BATCH_RUN_JOB_TYPE: "Analysis task batch run",
+    CLASSIFICATION_ANALYSIS_TASK_JOB_TYPE: "Classification analysis",
+    MATTER_EMBEDDING_JOB_TYPE: "Document embedding",
+    MATTER_DOCUMENT_IMPORT_JOB_TYPE: "Document import",
+    REVIEW_BATCH_MATERIALIZATION_JOB_TYPE: "Review batch",
+    CLASSIFICATION_TRAINING_JOB_TYPE: "Classification training",
+    CLASSIFICATION_SCORING_RUN_JOB_TYPE: "Classification scoring",
+    CLASSIFICATION_PROJECTION_JOB_TYPE: "Classification projection",
+    REVIEW_BATCH_CODING_PROMOTION_JOB_TYPE: "Coding promotion",
+    MATTER_SEARCH_EXPORT_JOB_TYPE: "Search export",
+    FACT_DEVELOPMENT_ANALYSIS_TASK_JOB_TYPE: "Fact development",
 }
 
 _ALLOWED_TRANSITIONS: dict[str, set[str]] = {
@@ -882,7 +900,7 @@ def transition_job_execution(
     failure_retriable: bool | None = None,
     heartbeat: bool = True,
 ) -> WorkflowRun:
-    adapter, job, _, _ = load_job_and_scope(
+    adapter, job, scope, _ = load_job_and_scope(
         db,
         job_type=job_type,
         job_id=job_id,
@@ -896,6 +914,7 @@ def transition_job_execution(
     )
     if execution is None:
         raise JobExecutionNotFound("Job execution was not found")
+    previous_status = execution.status
     if status is not None:
         if status not in EXECUTION_STATUSES:
             raise JobExecutionConflict(f"Unsupported execution status: {status}")
@@ -930,6 +949,27 @@ def transition_job_execution(
     if execution.status in EXECUTION_TERMINAL_STATUSES:
         execution.completed_at = execution.completed_at or now
     adapter.project(job, execution)
+    if (
+        execution.status != previous_status
+        and execution.status in {"COMPLETED", "COMPLETED_WITH_ERRORS", "FAILED"}
+        and scope.matter_id is not None
+        and scope.client_id is not None
+    ):
+        notification_status = "failed" if execution.status == "FAILED" else "completed"
+        publish_notification(
+            db,
+            type_key=f"job.{notification_status}",
+            scope=ResourceRef.matter(scope.matter_id),
+            source=NotificationSource("workflow_run", execution.id),
+            audiences=(UserAudience(execution.initiated_by_user_id),),
+            template_data={
+                "job_label": JOB_NOTIFICATION_LABELS.get(adapter.job_type, "Processing job"),
+            },
+            route_params={"client_id": scope.client_id, "matter_id": scope.matter_id},
+            idempotency_key=f"workflow-run:{execution.id}:{notification_status}",
+            created_by_kind="WORKFLOW",
+            occurred_at=execution.completed_at,
+        )
     return execution
 
 
