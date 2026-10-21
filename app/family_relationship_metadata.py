@@ -46,7 +46,16 @@ def _validate_existing_definition(
         "facetable": expected.facetable,
         "reviewable": expected.reviewable,
     }
-    if actual != required:
+    legacy_profile_definition = {
+        **required,
+        "facetable": False,
+    }
+    is_upgradeable_v6_definition = (
+        actual == legacy_profile_definition
+        and definition.template_key == DEFAULT_MATTER_METADATA_PROFILE.key
+        and definition.template_version == 6
+    )
+    if actual != required and not is_upgradeable_v6_definition:
         raise FamilyRelationshipUpdateConflict(
             f"The {definition.key} key already exists with an incompatible definition; "
             "rename that field before installing the system family relationship fields"
@@ -105,6 +114,8 @@ def ensure_family_relationship_metadata(
         else:
             _validate_existing_definition(definition, template)
             definition.status = "ACTIVE"
+            definition.facetable = template.facetable
+            definition.template_version = DEFAULT_MATTER_METADATA_PROFILE.version
         definitions.append(definition)
 
     group = db.scalar(
@@ -135,6 +146,8 @@ def ensure_family_relationship_metadata(
         db.flush()
     else:
         group.status = "ACTIVE"
+        if group.template_key == DEFAULT_MATTER_METADATA_PROFILE.key:
+            group.template_version = DEFAULT_MATTER_METADATA_PROFILE.version
 
     existing_definitions = list(
         db.scalars(

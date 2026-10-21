@@ -56,7 +56,7 @@ def enum_option(key: str, label: str, description: str | None = None) -> dict[st
 
 DEFAULT_MATTER_METADATA_PROFILE = MetadataProfile(
     key="edrm-core",
-    version=6,
+    version=7,
     definitions=(
         MetadataDefinitionTemplate(
             "control_number", "Control number", "Unique control identifier supplied with or assigned to the document.", "TEXT", "IMPORTED"
@@ -76,6 +76,7 @@ DEFAULT_MATTER_METADATA_PROFILE = MetadataProfile(
             "Canonical document identifier of this document's direct parent.",
             "TEXT",
             "SYSTEM",
+            facetable=True,
             reviewable=False,
         ),
         MetadataDefinitionTemplate(
@@ -85,6 +86,7 @@ DEFAULT_MATTER_METADATA_PROFILE = MetadataProfile(
             "TEXT",
             "SYSTEM",
             cardinality="MULTIPLE",
+            facetable=True,
             reviewable=False,
         ),
         MetadataDefinitionTemplate(

@@ -64,6 +64,8 @@ Responsiveness options are **Responsive**, **Not responsive**, and **Needs revie
 
 **Family ID** groups the complete document family. **Parent ID** and **Child ID** describe only direct edges: a child has at most one Parent ID, while a parent may have multiple Child IDs. These values use the same source control-number precedence as Control number, falling back to the collection source-item ID. Internal collection-item UUIDs remain the authoritative relationship keys and are not shown as Parent ID or Child ID.
 
+Parent ID and Child ID are available as exact-value filters in Search & Review and batch review. Existing matters receive the filterable definitions and indexed relationship values when an authorized user requests a full search-index rebuild.
+
 Relationships are established during collection ingestion. Sharing a Family ID alone does not identify a parent, so Priv-View does not guess parent/child edges for family-only source data.
 
 ### File date and source dates
