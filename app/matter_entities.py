@@ -8,12 +8,15 @@ change goes through this module, appends a ``matter_entity_event`` and updates t
 
 from __future__ import annotations
 
+import hashlib
 import re
+import unicodedata
 import uuid
 from collections.abc import Iterable
+from email.utils import getaddresses
 from typing import Any, Literal
 
-from sqlalchemy import select, update
+from sqlalchemy import select, text, update
 from sqlalchemy.orm import Session
 
 from app.models import Custodian, Matter, MatterEntity, MatterEntityEvent, utcnow
@@ -21,6 +24,8 @@ from app.models import Custodian, Matter, MatterEntity, MatterEntityEvent, utcno
 EntityType = Literal["PERSON", "ORGANIZATION"]
 ActorType = Literal["HUMAN", "AGENT", "SYSTEM"]
 EMAIL_PATTERN = re.compile(r"^[^@\s]+@[^@\s]+\.[^@\s]+$")
+EMAIL_QUOTE_NOISE = "\"'\u2018\u2019\u201c\u201d"
+EMAIL_BOUNDARY_NOISE = f" \t\r\n<>{EMAIL_QUOTE_NOISE}"
 
 
 class MatterEntityError(ValueError):
@@ -47,6 +52,57 @@ def normalize_entity_email(value: str) -> str:
     if not EMAIL_PATTERN.match(email):
         raise MatterEntityError(f"Invalid email address: {value}")
     return email
+
+
+def extract_metadata_emails(value: str) -> list[str]:
+    """Extract canonical addresses from a potentially dirty imported email-header value.
+
+    Artifact metadata normally contains one address per value, but older imports can retain display-name syntax,
+    multiple recipients, angle brackets, or straight/smart quotes around an address. Only boundary noise is removed;
+    valid internal characters such as the apostrophe in ``o'connor@example.com`` are preserved.
+    """
+
+    raw = unicodedata.normalize("NFKC", value).strip()
+    if not raw:
+        return []
+    parsed = [address for _, address in getaddresses([raw]) if address]
+    if not parsed and ";" in raw:
+        # Some legacy recipient lists use semicolons where RFC headers require commas. Python's parser rejects the
+        # whole value on newer runtimes, so retry that import-specific representation with comma separators.
+        parsed = [address for _, address in getaddresses([raw.replace(";", ",")]) if address]
+    candidates = parsed or [raw]
+    normalized: list[str] = []
+    for candidate in candidates:
+        cleaned = candidate.strip(EMAIL_BOUNDARY_NOISE).rstrip(".,;:").strip(EMAIL_BOUNDARY_NOISE)
+        if "@" in cleaned:
+            local, domain = cleaned.rsplit("@", 1)
+            cleaned = f"{local.strip(EMAIL_QUOTE_NOISE)}@{domain.strip(EMAIL_QUOTE_NOISE)}"
+        if not cleaned:
+            continue
+        try:
+            email = normalize_entity_email(cleaned)
+        except MatterEntityError:
+            continue
+        if email not in normalized:
+            normalized.append(email)
+    return normalized
+
+
+def clean_metadata_email(value: str) -> str | None:
+    """Return one cleaned imported address, or ``None`` when the value is empty, invalid, or contains many."""
+
+    emails = extract_metadata_emails(value)
+    return emails[0] if len(emails) == 1 else None
+
+
+def lock_entity_email(db: Session, *, matter_id: uuid.UUID, normalized_email: str) -> None:
+    """Serialize creation of one matter/email identity across concurrent workflow runs."""
+
+    if db.get_bind().dialect.name != "postgresql":
+        return
+    digest = hashlib.sha256(f"matter-entity:{matter_id}:email:{normalized_email}".encode()).digest()
+    lock_key = int.from_bytes(digest[:8], "big") & ((1 << 63) - 1)
+    db.execute(text("SELECT pg_advisory_xact_lock(:lock_key)"), {"lock_key": lock_key})
 
 
 def _clean_name(value: str) -> str:
@@ -174,6 +230,7 @@ def create_entity(
     actor_type: ActorType = "HUMAN",
     actor_user_id: uuid.UUID | None = None,
     workflow_run_id: uuid.UUID | None = None,
+    event_context: dict[str, Any] | None = None,
 ) -> MatterEntity:
     if entity_type != "PERSON" and (title is not None or organization_id is not None):
         raise MatterEntityError("Only people have a title or an organization")
@@ -213,9 +270,50 @@ def create_entity(
             "organization_id": str(entity.organization_id) if entity.organization_id else None,
             "custodian_id": str(entity.custodian_id) if entity.custodian_id else None,
             "status": status,
+            **(event_context or {}),
         },
         actor_type=actor_type,
         actor_user_id=actor_user_id,
+        workflow_run_id=workflow_run_id,
+    )
+    return entity
+
+
+def enrich_proposed_entity(
+    db: Session,
+    *,
+    entity: MatterEntity,
+    display_name: str | None,
+    entity_type: EntityType,
+    actor_type: ActorType,
+    workflow_run_id: uuid.UUID,
+) -> MatterEntity:
+    """Enrich an email-only proposal without changing its review status."""
+
+    canonical = canonical_entity(db, entity)
+    canonical = get_entity(db, matter_id=canonical.matter_id, entity_id=canonical.id, for_update=True)
+    if canonical.status != "PROPOSED" or canonical.display_name is not None:
+        return entity
+    before: dict[str, Any] = {}
+    after: dict[str, Any] = {}
+    if canonical.entity_type != entity_type:
+        before["entity_type"], after["entity_type"] = canonical.entity_type, entity_type
+        canonical.entity_type = entity_type
+    if display_name:
+        name = _clean_name(display_name)
+        before["display_name"], after["display_name"] = None, name
+        canonical.display_name = name
+        canonical.normalized_name = normalize_entity_name(name)
+    if not after:
+        return entity
+    _bump(canonical)
+    _record(
+        db,
+        canonical,
+        "ENRICHED",
+        {"before": before, "after": after},
+        actor_type=actor_type,
+        actor_user_id=None,
         workflow_run_id=workflow_run_id,
     )
     return entity

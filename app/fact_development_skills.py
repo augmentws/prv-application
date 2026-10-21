@@ -114,14 +114,16 @@ Return a list of operations:
 Dates: use date_precision DAY, MONTH, QUARTER, YEAR or RANGE with ISO dates (YYYY-MM-DD; use the first day of the
 period for MONTH, QUARTER and YEAR), or UNKNOWN with no dates. date_basis (null when undated) is STATED_IN_TEXT when the text states the
 date, DOCUMENT_DATE when you used the document's own date, and INFERRED otherwise. People and organizations: give
-the name as written and the email address when the document shows one; reuse a known entity's name when it is the
-same person. Respect max_operations. Do not invent facts, dates, people, or quotes the document does not support."""
+the name as written and the email address when the document shows one. Reuse a known entity's entity_id when it is
+the same person or organization. A name may be null when only an email address is known. Respect max_operations. Do
+not invent facts, dates, people, or quotes the document does not support."""
 
 _ENTITY_REFERENCE_SCHEMA = {
     "type": "object",
-    "required": ["name", "email", "entity_type"],
+    "required": ["entity_id", "name", "email", "entity_type"],
     "properties": {
-        "name": {"type": "string", "minLength": 1, "maxLength": 300},
+        "entity_id": {"type": ["string", "null"], "format": "uuid"},
+        "name": {"type": ["string", "null"], "minLength": 1, "maxLength": 300},
         "email": {"type": ["string", "null"], "maxLength": 320},
         "entity_type": {"type": "string", "enum": ["PERSON", "ORGANIZATION"]},
     },
@@ -285,7 +287,7 @@ def _standard_skill_specs() -> list[tuple[dict, str, str]]:
         "instructions": FACT_EXTRACTION_INSTRUCTIONS,
         "input_schema_key": "fact_extraction_input_v1",
         "input_schema": FACT_EXTRACTION_INPUT_SCHEMA,
-        "output_schema_key": "fact_extraction_output_v2",
+        "output_schema_key": "fact_extraction_output_v3",
         "output_schema": FACT_EXTRACTION_OUTPUT_SCHEMA,
         "required_capabilities": ["structured_output", "prompt_caching", "long_context"],
         "cache_policy": {"boundary_after": "stable_context", "stable_prefix": ["instructions", "specification"]},

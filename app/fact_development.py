@@ -95,7 +95,13 @@ from app.job_outcomes import (
     publish_outcome_fragment,
     register_job_outcome_adapter,
 )
-from app.matter_entities import entity_display_label
+from app.matter_entities import (
+    canonical_entity,
+    create_entity,
+    entity_display_label,
+    extract_metadata_emails,
+    lock_entity_email,
+)
 from app.model_batching import resolve_batch_target
 from app.models import (
     AnalysisInputManifest,
@@ -130,7 +136,10 @@ OUTCOME_FILENAME_PREFIX = "fact-development"
 INPUT_MANIFEST_OWNER_TYPE = "MATTER_ANALYSIS_TASK_RUN"
 INPUT_CONTRACT_KEY = "fact-development.population"
 INPUT_CONTRACT_VERSION = 1
-INPUT_RESOLVER_VERSION = "fact-development-population-resolver-v1"
+INPUT_RESOLVER_VERSION = "fact-development-population-resolver-v2"
+SUPPORTED_INPUT_RESOLVER_VERSIONS = frozenset({"fact-development-population-resolver-v1", INPUT_RESOLVER_VERSION})
+ENTITY_SEED_NORMALIZER_VERSION = "email-metadata-v1"
+ENTITY_SEED_PAGE_SIZE = 1_000
 REPORT_SAMPLE_LIMIT = 50
 RECALL_TEXT_CHARACTERS = 4_000
 MAX_RECALLED_FACTS = 100
@@ -460,6 +469,7 @@ def create_fact_development_run(
         "chunk_window": settings.fact_development_chunk_window,
         "duplicate_threshold": settings.fact_duplicate_threshold,
         "merge_suggestion_threshold": settings.fact_merge_suggestion_threshold,
+        "entity_seed_normalizer_version": ENTITY_SEED_NORMALIZER_VERSION,
         "skill_definition_version_id": str(skill_version.id),
         "resolved_model": resolved_model,
         "use_batch_api": use_batch_api,
@@ -711,7 +721,7 @@ def _manifest_reader(db: Session, run: MatterAnalysisTaskRun) -> AnalysisInputMa
     if (
         contract.get("key") != INPUT_CONTRACT_KEY
         or contract.get("version") != INPUT_CONTRACT_VERSION
-        or manifest.resolver_version != INPUT_RESOLVER_VERSION
+        or manifest.resolver_version not in SUPPORTED_INPUT_RESOLVER_VERSIONS
     ):
         raise FactDevelopmentRunError(
             "This worker does not support the run's input contract version",
@@ -794,6 +804,112 @@ def _cancel_requested(db: Session, run_id: uuid.UUID) -> bool:
     return execution_cancel_requested(db, job_type=FACT_DEVELOPMENT_ANALYSIS_TASK_JOB_TYPE, job_id=run_id)
 
 
+def _seed_batch_entities(db: Session, run: MatterAnalysisTaskRun) -> dict[str, Any]:
+    """Create missing email-only proposals from this run's frozen review-batch manifest."""
+
+    normalizer_version = run.configuration_snapshot.get(
+        "entity_seed_normalizer_version", ENTITY_SEED_NORMALIZER_VERSION
+    )
+    if normalizer_version != ENTITY_SEED_NORMALIZER_VERSION:
+        raise FactDevelopmentRunError(
+            f"This worker does not support entity email normalizer {normalizer_version}",
+            code="ENTITY_SEED_NORMALIZER_UNSUPPORTED",
+        )
+    prior = dict((run.report or {}).get("entity_seeding") or {})
+    if prior.get("status") in {"COMPLETED", "SKIPPED"}:
+        return prior
+    if run.scope_type != "REVIEW_BATCH":
+        result = {
+            "status": "SKIPPED",
+            "reason": "scope_not_review_batch",
+            "normalizer_version": normalizer_version,
+        }
+        run.report = {**(run.report or {}), "entity_seeding": result}
+        return result
+    reader = _manifest_reader(db, run)
+    matter = db.get(Matter, run.matter_id)
+    workflow = current_job_execution(db, job_type=FACT_DEVELOPMENT_ANALYSIS_TASK_JOB_TYPE, job_id=run.id)
+    if matter is None or workflow is None or run.analysis_input_manifest_id is None:
+        raise FactDevelopmentRunError("The entity-seeding run context is unavailable")
+
+    unique_emails: set[str] = set()
+    header_values = 0
+    parsed_addresses = 0
+    invalid_values = 0
+    documents_with_metadata = 0
+    fields = ("email_from", "email_to", "email_cc", "email_bcc")
+    for start in range(0, reader.item_count, ENTITY_SEED_PAGE_SIZE):
+        rows = reader.rows(start, min(ENTITY_SEED_PAGE_SIZE, reader.item_count - start))
+        for row in rows:
+            metadata = (row.get("resolved_inputs") or {}).get("metadata")
+            if not isinstance(metadata, dict):
+                continue
+            documents_with_metadata += 1
+            for field in fields:
+                raw_values = metadata.get(field)
+                values = raw_values if isinstance(raw_values, list) else [raw_values]
+                for value in values:
+                    if not isinstance(value, str) or not value.strip():
+                        continue
+                    header_values += 1
+                    emails = extract_metadata_emails(value)
+                    if not emails:
+                        invalid_values += 1
+                        continue
+                    parsed_addresses += len(emails)
+                    unique_emails.update(emails)
+
+    created = 0
+    reused = 0
+    rejected_skipped = 0
+    for email in sorted(unique_emails):
+        lock_entity_email(db, matter_id=matter.id, normalized_email=email)
+        existing = db.scalar(
+            select(MatterEntity).where(
+                MatterEntity.matter_id == matter.id,
+                MatterEntity.normalized_email == email,
+            )
+        )
+        if existing is not None:
+            if canonical_entity(db, existing).status == "REJECTED":
+                rejected_skipped += 1
+            else:
+                reused += 1
+            continue
+        create_entity(
+            db,
+            matter=matter,
+            entity_type="PERSON",
+            display_name=None,
+            email=email,
+            status="PROPOSED",
+            actor_type="SYSTEM",
+            workflow_run_id=workflow.id,
+            event_context={
+                "source": "EMAIL_METADATA_SEED",
+                "analysis_input_manifest_id": str(run.analysis_input_manifest_id),
+                "normalizer_version": normalizer_version,
+            },
+        )
+        created += 1
+
+    result = {
+        "status": "COMPLETED",
+        "normalizer_version": normalizer_version,
+        "documents_scanned": reader.item_count,
+        "documents_with_email_metadata": documents_with_metadata,
+        "header_values_scanned": header_values,
+        "parsed_addresses": parsed_addresses,
+        "unique_emails": len(unique_emails),
+        "entities_created": created,
+        "entities_reused": reused,
+        "rejected_entities_skipped": rejected_skipped,
+        "invalid_values_skipped": invalid_values,
+    }
+    run.report = {**(run.report or {}), "entity_seeding": result}
+    return result
+
+
 def prepare_fact_development_run(db: Session, run_id: uuid.UUID) -> list[str]:
     """Freeze the population into the run's input manifest and plan chunks; return chunk IDs still to process."""
 
@@ -832,6 +948,8 @@ def prepare_fact_development_run(db: Session, run_id: uuid.UUID) -> list[str]:
         run = _lock_run(db, run_id)
         if _cancel_requested(db, run.id):
             return []
+    _refresh_progress(db, run, stage="SEEDING_ENTITIES")
+    _seed_batch_entities(db, run)
     chunks = _chunks(db, run.id)
     if not chunks:
         chunks = _plan_chunks(db, run)
@@ -1071,6 +1189,9 @@ def _resolve_population(
     for position, (document, _) in enumerate(ordered, start=1):
         snapshot = snapshots.get(document.collection_item_id)
         issue_keys = membership.get(document.id, [])
+        available_inputs = (
+            {"metadata": _document_metadata(snapshot, custodians.get(document.id, []))} if snapshot is not None else {}
+        )
         extensions = {
             "family_id": str(snapshot.family_id) if snapshot is not None and snapshot.family_id else None,
             "file_date": snapshot.file_date.isoformat() if snapshot is not None and snapshot.file_date else None,
@@ -1083,7 +1204,12 @@ def _resolve_population(
             "extensions": extensions,
         }
         if not issue_keys:
-            row = AnalysisInputDocument(**base, input_status="EXCLUDED", failure_code="fact.no_matching_issue")
+            row = AnalysisInputDocument(
+                **base,
+                input_status="EXCLUDED",
+                failure_code="fact.no_matching_issue",
+                resolved_inputs=available_inputs,
+            )
         elif snapshot is None:
             row = AnalysisInputDocument(
                 **base,
@@ -1096,7 +1222,7 @@ def _resolve_population(
                 **base,
                 input_status="MISSING",
                 failure_code="fact.no_text_source",
-                resolved_inputs={"issue_keys": issue_keys},
+                resolved_inputs={"issue_keys": issue_keys, **available_inputs},
             )
         else:
             fingerprint = extraction_fingerprint(
@@ -1326,11 +1452,15 @@ def _record_fingerprint(chunk: MatterAnalysisTaskRunChunk, fingerprint: str) -> 
 
 
 def _known_entities(db: Session, context: _RunContext, metadata: dict[str, Any]) -> list[dict[str, Any]]:
-    addresses = {
-        value.strip().lower()
-        for value in [metadata.get("email_from"), *metadata["email_to"], *metadata["email_cc"], *metadata["email_bcc"]]
-        if isinstance(value, str) and value.strip()
-    }
+    addresses: set[str] = set()
+    for value in [
+        metadata.get("email_from"),
+        *metadata.get("email_to", []),
+        *metadata.get("email_cc", []),
+        *metadata.get("email_bcc", []),
+    ]:
+        if isinstance(value, str):
+            addresses.update(extract_metadata_emails(value))
     if not addresses:
         return []
     rows = list(
@@ -1353,7 +1483,10 @@ def _known_entities(db: Session, context: _RunContext, metadata: dict[str, Any])
             continue
         known.append(
             {
-                "name": entity_display_label(canonical),
+                "entity_id": str(row.id),
+                "canonical_entity_id": str(canonical.id),
+                "name": canonical.display_name,
+                "display_label": entity_display_label(canonical),
                 "email": row.email,
                 "entity_type": canonical.entity_type,
                 "status": canonical.status,
@@ -1538,6 +1671,7 @@ class PreparedDocument:
     fingerprint: str
     text: DocumentText
     recalled: list[dict[str, Any]]
+    known_entity_ids: frozenset[uuid.UUID]
     recall_unavailable: bool
     max_operations: int
     started_at: datetime
@@ -1627,12 +1761,14 @@ def prepare_document(
             recalled = []
             recall_unavailable = True
     max_operations = context.specification.limits.max_operations_per_document
+    known_entities = _known_entities(db, context, metadata)
     return PreparedDocument(
         document_id=document_id,
         issues=issues,
         fingerprint=fingerprint,
         text=text,
         recalled=recalled,
+        known_entity_ids=frozenset(uuid.UUID(item["entity_id"]) for item in known_entities),
         recall_unavailable=recall_unavailable,
         max_operations=max_operations,
         started_at=started_at,
@@ -1645,7 +1781,7 @@ def prepare_document(
                 "text": render_model_document(text.paragraph_map),
             },
             "matched_issues": issues,
-            "known_entities": _known_entities(db, context, metadata),
+            "known_entities": known_entities,
             "recalled_facts": recalled,
             "max_operations": max_operations,
         },
@@ -1744,6 +1880,7 @@ def _apply_document(
             document=text,
             matched_issues=tuple(issues),
             recalled_fact_ids=frozenset(uuid.UUID(item["fact_id"]) for item in recalled),
+            known_entity_ids=prepared.known_entity_ids,
             actor=Actor(actor_type="AGENT", workflow_run_id=context.workflow.id),
         ),
         extraction,

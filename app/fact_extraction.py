@@ -15,7 +15,7 @@ from dataclasses import dataclass, field
 from datetime import date
 from typing import Any, Literal
 
-from pydantic import BaseModel, ConfigDict, Field, ValidationError
+from pydantic import BaseModel, ConfigDict, Field, ValidationError, model_validator
 from sqlalchemy import select, text
 from sqlalchemy.exc import SQLAlchemyError
 from sqlalchemy.orm import Session
@@ -38,8 +38,10 @@ from app.matter_entities import (
     MatterEntityError,
     add_variant,
     canonical_entity,
+    clean_metadata_email,
     create_entity,
-    normalize_entity_email,
+    enrich_proposed_entity,
+    lock_entity_email,
     normalize_entity_name,
 )
 from app.models import Matter, MatterEntity, MatterFact, MatterFactIssue
@@ -51,9 +53,16 @@ DATE_BASES = frozenset({"STATED_IN_TEXT", "DOCUMENT_DATE", "INFERRED"})
 class ExtractionEntityRef(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
-    name: str = Field(min_length=1, max_length=300)
+    entity_id: uuid.UUID | None = None
+    name: str | None = Field(default=None, min_length=1, max_length=300)
     email: str | None = Field(default=None, max_length=320)
     entity_type: Literal["PERSON", "ORGANIZATION"]
+
+    @model_validator(mode="after")
+    def validate_identity(self) -> ExtractionEntityRef:
+        if self.entity_id is None and not self.name and not self.email:
+            raise ValueError("An entity reference requires an entity ID, name, or email address")
+        return self
 
 
 class ExtractionParticipant(BaseModel):
@@ -125,6 +134,7 @@ class ExtractionContext:
     document: DocumentText
     matched_issues: tuple[str, ...]
     recalled_fact_ids: frozenset[uuid.UUID]
+    known_entity_ids: frozenset[uuid.UUID]
     actor: Actor
 
 
@@ -241,20 +251,69 @@ class EntityResolver:
 
     def resolve(self, reference: ExtractionEntityRef) -> uuid.UUID | None:
         matter_id = self.context.matter.id
-        email = None
-        if reference.email:
-            try:
-                email = normalize_entity_email(reference.email)
-            except MatterEntityError:
-                email = None
+        email = clean_metadata_email(reference.email) if reference.email else None
+        if reference.email and email is None:
+            return None
+        if reference.entity_id is not None:
+            if reference.entity_id not in self.context.known_entity_ids:
+                return None
+            by_id = self.db.scalar(
+                select(MatterEntity).where(
+                    MatterEntity.id == reference.entity_id,
+                    MatterEntity.matter_id == matter_id,
+                )
+            )
+            if by_id is not None:
+                usable = self._usable(by_id)
+                if usable is not None:
+                    canonical = canonical_entity(self.db, usable)
+                    if canonical.entity_type != reference.entity_type and not (
+                        canonical.status == "PROPOSED" and canonical.display_name is None
+                    ):
+                        return None
+                    if email is not None and usable.normalized_email != email:
+                        return None
+                    enrich_proposed_entity(
+                        self.db,
+                        entity=usable,
+                        display_name=reference.name,
+                        entity_type=reference.entity_type,
+                        actor_type="AGENT",
+                        workflow_run_id=self.context.actor.workflow_run_id,
+                    )
+                    return usable.id
         if email is not None:
-            _lock_entity_name(self.db, matter_id, f"email:{email}")
+            lock_entity_email(self.db, matter_id=matter_id, normalized_email=email)
             by_email = self.db.scalar(
                 select(MatterEntity).where(MatterEntity.matter_id == matter_id, MatterEntity.normalized_email == email)
             )
             if by_email is not None:
                 usable = self._usable(by_email)
+                if usable is not None:
+                    enrich_proposed_entity(
+                        self.db,
+                        entity=usable,
+                        display_name=reference.name,
+                        entity_type=reference.entity_type,
+                        actor_type="AGENT",
+                        workflow_run_id=self.context.actor.workflow_run_id,
+                    )
                 return usable.id if usable is not None else None
+        if not reference.name:
+            if email is None:
+                return None
+            entity = create_entity(
+                self.db,
+                matter=self.context.matter,
+                entity_type=reference.entity_type,
+                display_name=None,
+                email=email,
+                status="PROPOSED",
+                actor_type="AGENT",
+                workflow_run_id=self.context.actor.workflow_run_id,
+            )
+            self.result.proposed_entity_ids.append(entity.id)
+            return entity.id
         try:
             name = normalize_entity_name(reference.name)
         except MatterEntityError:
