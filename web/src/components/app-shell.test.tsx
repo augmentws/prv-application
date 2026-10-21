@@ -17,8 +17,13 @@ vi.mock("next/navigation", () => ({
   useRouter: () => ({ replace: route.replace, refresh: route.refresh }),
 }));
 
-const api = vi.hoisted(() => ({ logout: vi.fn(async () => undefined) }));
-vi.mock("@/lib/api-client", () => ({ logout: api.logout }));
+const api = vi.hoisted(() => ({
+  logout: vi.fn(async () => undefined),
+  coreApi: vi.fn(async (path: string) => path.endsWith("/counts")
+    ? { unread: 0, action_required: 0 }
+    : { items: [], next_cursor: null }),
+}));
+vi.mock("@/lib/api-client", () => ({ logout: api.logout, coreApi: api.coreApi }));
 
 const workspace = vi.hoisted(() => ({ isSuperuser: false, tenantFromRoute: false }));
 

@@ -171,6 +171,7 @@ import type {
   ListJobOutcomeItemsV1MattersMatterIdJobOutcomesJobTypeJobIdItemsGetParams,
   ListMatterAccessUsersV1MattersMatterIdAccessUsersGetParams,
   ListMatterDocumentsV1MattersMatterIdDocumentsGetParams,
+  ListNotificationsV1NotificationsGetParams,
   ListReviewBatchDocumentsV1MattersMatterIdReviewBatchesBatchIdDocumentsGetParams,
   ListSearchExportArtifactsV1MattersMatterIdSearchExportsArtifactsGetParams,
   ListSearchExportsV1MattersMatterIdSearchExportsGetParams,
@@ -267,6 +268,10 @@ import type {
   MetadataGroupRead,
   MetadataGroupVisibilityUpdate,
   MetadataMutationRead,
+  NotificationBulkRead,
+  NotificationCounts,
+  NotificationMutationResult,
+  NotificationPage,
   PermissionRead,
   PreviewClassificationModelScoringPredictionsV1MattersMatterIdClassificationModelsClassificationModelIdScoringRunsScoringRunIdPredictionsGetParams,
   QuestionAnsweringWholeMatterRunCreate,
@@ -9832,6 +9837,270 @@ const res = await fetch(getSetMetadataGroupVisibilityV1MattersMatterIdMetadataGr
 
   const data: setMetadataGroupVisibilityV1MattersMatterIdMetadataGroupsGroupIdVisibilityPutResponse['data'] = body ? JSON.parse(body) : {}
   return { data, status: res.status, headers: res.headers } as setMetadataGroupVisibilityV1MattersMatterIdMetadataGroupsGroupIdVisibilityPutResponse
+}
+
+
+
+export type listNotificationsV1NotificationsGetResponse200 = {
+  data: NotificationPage
+  status: 200
+}
+
+export type listNotificationsV1NotificationsGetResponse422 = {
+  data: HTTPValidationError
+  status: 422
+}
+
+export type listNotificationsV1NotificationsGetResponseSuccess = (listNotificationsV1NotificationsGetResponse200) & {
+  headers: Headers;
+};
+export type listNotificationsV1NotificationsGetResponseError = (listNotificationsV1NotificationsGetResponse422) & {
+  headers: Headers;
+};
+
+export type listNotificationsV1NotificationsGetResponse = (listNotificationsV1NotificationsGetResponseSuccess | listNotificationsV1NotificationsGetResponseError)
+
+export const getListNotificationsV1NotificationsGetUrl = (params?: ListNotificationsV1NotificationsGetParams,) => {
+  const normalizedParams = new URLSearchParams();
+
+  Object.entries(params || {}).forEach(([key, value]) => {
+
+    if (value !== undefined) {
+      normalizedParams.append(key, value === null ? 'null' : String(value))
+    }
+  });
+
+  const stringifiedParams = normalizedParams.toString();
+
+  return stringifiedParams.length > 0 ? `/api/core/v1/notifications?${stringifiedParams}` : `/api/core/v1/notifications`
+}
+
+/**
+ * @summary List Notifications
+ */
+export const listNotificationsV1NotificationsGet = async (params?: ListNotificationsV1NotificationsGetParams, options?: RequestInit): Promise<listNotificationsV1NotificationsGetResponse> => {
+
+  const res = await fetch(getListNotificationsV1NotificationsGetUrl(params),
+  {
+    ...options,
+    method: 'GET'
+
+
+  }
+)
+
+
+  const body = [204, 205, 304].includes(res.status) ? null : await res.text();
+
+  const data: listNotificationsV1NotificationsGetResponse['data'] = body ? JSON.parse(body) : {}
+  return { data, status: res.status, headers: res.headers } as listNotificationsV1NotificationsGetResponse
+}
+
+
+
+export type notificationCountsV1NotificationsCountsGetResponse200 = {
+  data: NotificationCounts
+  status: 200
+}
+
+export type notificationCountsV1NotificationsCountsGetResponseSuccess = (notificationCountsV1NotificationsCountsGetResponse200) & {
+  headers: Headers;
+};
+;
+
+export type notificationCountsV1NotificationsCountsGetResponse = (notificationCountsV1NotificationsCountsGetResponseSuccess)
+
+export const getNotificationCountsV1NotificationsCountsGetUrl = () => {
+
+
+
+
+  return `/api/core/v1/notifications/counts`
+}
+
+/**
+ * @summary Notification Counts
+ */
+export const notificationCountsV1NotificationsCountsGet = async ( options?: RequestInit): Promise<notificationCountsV1NotificationsCountsGetResponse> => {
+
+  const res = await fetch(getNotificationCountsV1NotificationsCountsGetUrl(),
+  {
+    ...options,
+    method: 'GET'
+
+
+  }
+)
+
+
+  const body = [204, 205, 304].includes(res.status) ? null : await res.text();
+
+  const data: notificationCountsV1NotificationsCountsGetResponse['data'] = body ? JSON.parse(body) : {}
+  return { data, status: res.status, headers: res.headers } as notificationCountsV1NotificationsCountsGetResponse
+}
+
+
+
+export type markNotificationReadV1NotificationsNotificationIdReadPostResponse200 = {
+  data: NotificationMutationResult
+  status: 200
+}
+
+export type markNotificationReadV1NotificationsNotificationIdReadPostResponse422 = {
+  data: HTTPValidationError
+  status: 422
+}
+
+export type markNotificationReadV1NotificationsNotificationIdReadPostResponseSuccess = (markNotificationReadV1NotificationsNotificationIdReadPostResponse200) & {
+  headers: Headers;
+};
+export type markNotificationReadV1NotificationsNotificationIdReadPostResponseError = (markNotificationReadV1NotificationsNotificationIdReadPostResponse422) & {
+  headers: Headers;
+};
+
+export type markNotificationReadV1NotificationsNotificationIdReadPostResponse = (markNotificationReadV1NotificationsNotificationIdReadPostResponseSuccess | markNotificationReadV1NotificationsNotificationIdReadPostResponseError)
+
+export const getMarkNotificationReadV1NotificationsNotificationIdReadPostUrl = (notificationId: string,) => {
+
+
+
+
+  return `/api/core/v1/notifications/${notificationId}/read`
+}
+
+/**
+ * @summary Mark Notification Read
+ */
+export const markNotificationReadV1NotificationsNotificationIdReadPost = async (notificationId: string, options?: RequestInit): Promise<markNotificationReadV1NotificationsNotificationIdReadPostResponse> => {
+
+  const res = await fetch(getMarkNotificationReadV1NotificationsNotificationIdReadPostUrl(notificationId),
+  {
+    ...options,
+    method: 'POST'
+
+
+  }
+)
+
+
+  const body = [204, 205, 304].includes(res.status) ? null : await res.text();
+
+  const data: markNotificationReadV1NotificationsNotificationIdReadPostResponse['data'] = body ? JSON.parse(body) : {}
+  return { data, status: res.status, headers: res.headers } as markNotificationReadV1NotificationsNotificationIdReadPostResponse
+}
+
+
+
+export type dismissNotificationV1NotificationsNotificationIdDismissPostResponse200 = {
+  data: NotificationMutationResult
+  status: 200
+}
+
+export type dismissNotificationV1NotificationsNotificationIdDismissPostResponse422 = {
+  data: HTTPValidationError
+  status: 422
+}
+
+export type dismissNotificationV1NotificationsNotificationIdDismissPostResponseSuccess = (dismissNotificationV1NotificationsNotificationIdDismissPostResponse200) & {
+  headers: Headers;
+};
+export type dismissNotificationV1NotificationsNotificationIdDismissPostResponseError = (dismissNotificationV1NotificationsNotificationIdDismissPostResponse422) & {
+  headers: Headers;
+};
+
+export type dismissNotificationV1NotificationsNotificationIdDismissPostResponse = (dismissNotificationV1NotificationsNotificationIdDismissPostResponseSuccess | dismissNotificationV1NotificationsNotificationIdDismissPostResponseError)
+
+export const getDismissNotificationV1NotificationsNotificationIdDismissPostUrl = (notificationId: string,) => {
+
+
+
+
+  return `/api/core/v1/notifications/${notificationId}/dismiss`
+}
+
+/**
+ * @summary Dismiss Notification
+ */
+export const dismissNotificationV1NotificationsNotificationIdDismissPost = async (notificationId: string, options?: RequestInit): Promise<dismissNotificationV1NotificationsNotificationIdDismissPostResponse> => {
+
+  const res = await fetch(getDismissNotificationV1NotificationsNotificationIdDismissPostUrl(notificationId),
+  {
+    ...options,
+    method: 'POST'
+
+
+  }
+)
+
+
+  const body = [204, 205, 304].includes(res.status) ? null : await res.text();
+
+  const data: dismissNotificationV1NotificationsNotificationIdDismissPostResponse['data'] = body ? JSON.parse(body) : {}
+  return { data, status: res.status, headers: res.headers } as dismissNotificationV1NotificationsNotificationIdDismissPostResponse
+}
+
+
+
+export type markNotificationsReadV1NotificationsMarkReadPostResponse200 = {
+  data: NotificationMutationResult
+  status: 200
+}
+
+export type markNotificationsReadV1NotificationsMarkReadPostResponse422 = {
+  data: HTTPValidationError
+  status: 422
+}
+
+export type markNotificationsReadV1NotificationsMarkReadPostResponseSuccess = (markNotificationsReadV1NotificationsMarkReadPostResponse200) & {
+  headers: Headers;
+};
+export type markNotificationsReadV1NotificationsMarkReadPostResponseError = (markNotificationsReadV1NotificationsMarkReadPostResponse422) & {
+  headers: Headers;
+};
+
+export type markNotificationsReadV1NotificationsMarkReadPostResponse = (markNotificationsReadV1NotificationsMarkReadPostResponseSuccess | markNotificationsReadV1NotificationsMarkReadPostResponseError)
+
+export const getMarkNotificationsReadV1NotificationsMarkReadPostUrl = () => {
+
+
+
+
+  return `/api/core/v1/notifications/mark-read`
+}
+
+/**
+ * @summary Mark Notifications Read
+ */
+export const markNotificationsReadV1NotificationsMarkReadPost = async (notificationBulkRead: NotificationBulkRead, options?: RequestInit): Promise<markNotificationsReadV1NotificationsMarkReadPostResponse> => {
+
+    const getHeaders = (h?: NonNullable<RequestInit['headers']>): Record<string, string | readonly string[]> => {
+    if (!h) return {};
+    if (h instanceof Headers) return Object.fromEntries(h.entries());
+    if (Symbol.iterator in h) {
+      return Object.fromEntries(
+        Array.from(h as Iterable<Iterable<string>>, (entry) => Array.from(entry) as [string, string]),
+      );
+    }
+    const headers: Record<string, string | readonly string[]> = {};
+    for (const [name, value] of Object.entries<string | readonly string[] | undefined>(h)) {
+      if (value !== undefined) headers[name] = value;
+    }
+    return headers;
+  };
+const res = await fetch(getMarkNotificationsReadV1NotificationsMarkReadPostUrl(),
+  {
+    ...options,
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json', ...getHeaders(options?.headers) },
+    body: JSON.stringify(notificationBulkRead)
+  }
+)
+
+
+  const body = [204, 205, 304].includes(res.status) ? null : await res.text();
+
+  const data: markNotificationsReadV1NotificationsMarkReadPostResponse['data'] = body ? JSON.parse(body) : {}
+  return { data, status: res.status, headers: res.headers } as markNotificationsReadV1NotificationsMarkReadPostResponse
 }
 
 

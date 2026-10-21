@@ -420,6 +420,152 @@ class AuthorizationGrant(TimestampMixin, Base):
     row_version: Mapped[int] = mapped_column(Integer, default=1)
 
 
+class Notification(Base):
+    __tablename__ = "notification"
+    __table_args__ = (
+        UniqueConstraint("tenant_id", "type_key", "idempotency_key", name="uq_notification_idempotency"),
+        CheckConstraint(
+            "(scope_type = 'TENANT' AND tenant_scope_id IS NOT NULL AND client_id IS NULL "
+            "AND matter_id IS NULL AND collection_id IS NULL) OR "
+            "(scope_type = 'CLIENT' AND tenant_scope_id IS NULL AND client_id IS NOT NULL "
+            "AND matter_id IS NULL AND collection_id IS NULL) OR "
+            "(scope_type = 'MATTER' AND tenant_scope_id IS NULL AND client_id IS NULL "
+            "AND matter_id IS NOT NULL AND collection_id IS NULL) OR "
+            "(scope_type = 'COLLECTION' AND tenant_scope_id IS NULL AND client_id IS NOT NULL "
+            "AND matter_id IS NULL AND collection_id IS NOT NULL)",
+            name="ck_notification_scope",
+        ),
+        CheckConstraint("schema_version > 0", name="ck_notification_schema_version"),
+        CheckConstraint(
+            "severity IN ('INFO', 'SUCCESS', 'WARNING', 'ERROR')",
+            name="ck_notification_severity",
+        ),
+        CheckConstraint(
+            "kind IN ('INFORMATIONAL', 'ACTION_REQUIRED')",
+            name="ck_notification_kind",
+        ),
+        CheckConstraint(
+            "created_by_kind IN ('USER', 'SERVICE', 'WORKFLOW', 'SYSTEM')",
+            name="ck_notification_created_by_kind",
+        ),
+        Index("ix_notification_matter_created", "matter_id", "created_at"),
+        Index("ix_notification_client_created", "client_id", "created_at"),
+        Index("ix_notification_source", "source_type", "source_id"),
+    )
+
+    id: Mapped[uuid.UUID] = mapped_column(Uuid, primary_key=True, default=uuid.uuid4)
+    tenant_id: Mapped[uuid.UUID] = mapped_column(
+        Uuid, ForeignKey("tenant.id", ondelete="CASCADE"), index=True
+    )
+    scope_type: Mapped[str] = mapped_column(String(20))
+    tenant_scope_id: Mapped[uuid.UUID | None] = mapped_column(
+        Uuid, ForeignKey("tenant.id", ondelete="CASCADE"), nullable=True
+    )
+    client_id: Mapped[uuid.UUID | None] = mapped_column(
+        Uuid, ForeignKey("client.id", ondelete="CASCADE"), nullable=True, index=True
+    )
+    matter_id: Mapped[uuid.UUID | None] = mapped_column(
+        Uuid, ForeignKey("matter.id", ondelete="CASCADE"), nullable=True, index=True
+    )
+    collection_id: Mapped[uuid.UUID | None] = mapped_column(Uuid, nullable=True, index=True)
+    type_key: Mapped[str] = mapped_column(String(120), index=True)
+    schema_version: Mapped[int] = mapped_column(Integer, default=1)
+    category: Mapped[str] = mapped_column(String(50), index=True)
+    severity: Mapped[str] = mapped_column(String(20), index=True)
+    kind: Mapped[str] = mapped_column(String(30), index=True)
+    title: Mapped[str] = mapped_column(String(200))
+    summary: Mapped[str] = mapped_column(String(1000))
+    template_data: Mapped[dict[str, Any]] = mapped_column(JSON_DOCUMENT, default=dict)
+    source_type: Mapped[str] = mapped_column(String(100))
+    source_id: Mapped[uuid.UUID] = mapped_column(Uuid)
+    primary_route_name: Mapped[str] = mapped_column(String(80))
+    primary_route_params: Mapped[dict[str, Any]] = mapped_column(JSON_DOCUMENT, default=dict)
+    created_by_kind: Mapped[str] = mapped_column(String(20), default="SYSTEM")
+    created_by_user_id: Mapped[uuid.UUID | None] = mapped_column(
+        Uuid, ForeignKey("app_user.id", ondelete="SET NULL"), nullable=True
+    )
+    idempotency_key: Mapped[str] = mapped_column(String(500))
+    occurred_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+    expires_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    resolved_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True, index=True)
+    resolution_code: Mapped[str | None] = mapped_column(String(50), nullable=True)
+
+
+class NotificationAudience(Base):
+    __tablename__ = "notification_audience"
+    __table_args__ = (
+        CheckConstraint(
+            "(audience_kind = 'USER' AND user_id IS NOT NULL AND access_group_id IS NULL "
+            "AND role_id IS NULL AND permission_key IS NULL) OR "
+            "(audience_kind = 'ACCESS_GROUP' AND user_id IS NULL AND access_group_id IS NOT NULL "
+            "AND role_id IS NULL AND permission_key IS NULL) OR "
+            "(audience_kind = 'ROLE' AND user_id IS NULL AND access_group_id IS NULL "
+            "AND role_id IS NOT NULL AND permission_key IS NULL) OR "
+            "(audience_kind = 'PERMISSION' AND user_id IS NULL AND access_group_id IS NULL "
+            "AND role_id IS NULL AND permission_key IS NOT NULL)",
+            name="ck_notification_audience_selector",
+        ),
+        CheckConstraint(
+            "scope_type IN ('TENANT', 'CLIENT', 'COLLECTION', 'MATTER')",
+            name="ck_notification_audience_scope_type",
+        ),
+        Index("ix_notification_audience_notification", "notification_id"),
+    )
+
+    id: Mapped[uuid.UUID] = mapped_column(Uuid, primary_key=True, default=uuid.uuid4)
+    notification_id: Mapped[uuid.UUID] = mapped_column(
+        Uuid, ForeignKey("notification.id", ondelete="CASCADE")
+    )
+    audience_kind: Mapped[str] = mapped_column(String(30))
+    user_id: Mapped[uuid.UUID | None] = mapped_column(
+        Uuid, ForeignKey("app_user.id", ondelete="RESTRICT"), nullable=True
+    )
+    access_group_id: Mapped[uuid.UUID | None] = mapped_column(
+        Uuid, ForeignKey("access_group.id", ondelete="RESTRICT"), nullable=True
+    )
+    role_id: Mapped[uuid.UUID | None] = mapped_column(
+        Uuid, ForeignKey("role.id", ondelete="RESTRICT"), nullable=True
+    )
+    permission_key: Mapped[str | None] = mapped_column(String(120), nullable=True)
+    scope_type: Mapped[str] = mapped_column(String(20))
+    scope_id: Mapped[uuid.UUID] = mapped_column(Uuid)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+
+
+class NotificationRecipient(Base):
+    __tablename__ = "notification_recipient"
+    __table_args__ = (
+        UniqueConstraint("notification_id", "user_id", name="uq_notification_recipient"),
+        Index("ix_notification_recipient_user_created", "user_id", "created_at"),
+        Index("ix_notification_recipient_user_read", "user_id", "read_at"),
+    )
+
+    id: Mapped[uuid.UUID] = mapped_column(Uuid, primary_key=True, default=uuid.uuid4)
+    notification_id: Mapped[uuid.UUID] = mapped_column(
+        Uuid, ForeignKey("notification.id", ondelete="CASCADE"), index=True
+    )
+    user_id: Mapped[uuid.UUID] = mapped_column(
+        Uuid, ForeignKey("app_user.id", ondelete="CASCADE"), index=True
+    )
+    seen_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    read_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    dismissed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+
+
+class NotificationRecipientAudience(Base):
+    __tablename__ = "notification_recipient_audience"
+
+    recipient_id: Mapped[uuid.UUID] = mapped_column(
+        Uuid, ForeignKey("notification_recipient.id", ondelete="CASCADE"), primary_key=True
+    )
+    audience_id: Mapped[uuid.UUID] = mapped_column(
+        Uuid, ForeignKey("notification_audience.id", ondelete="CASCADE"), primary_key=True
+    )
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+
+
 class ExternalProviderUsage(Base):
     """Immutable token-usage ledger for billable external provider calls."""
 

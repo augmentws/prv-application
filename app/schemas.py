@@ -180,6 +180,53 @@ class AuditRecordPage(BaseModel):
     next_cursor: str | None
 
 
+class NotificationRead(BaseModel):
+    id: uuid.UUID
+    tenant_id: uuid.UUID
+    scope_type: Literal["TENANT", "CLIENT", "COLLECTION", "MATTER"]
+    client_id: uuid.UUID | None
+    client_name: str | None
+    matter_id: uuid.UUID | None
+    matter_name: str | None
+    type_key: str
+    category: str
+    severity: Literal["INFO", "SUCCESS", "WARNING", "ERROR"]
+    kind: Literal["INFORMATIONAL", "ACTION_REQUIRED"]
+    title: str
+    summary: str
+    source_type: str
+    source_id: uuid.UUID
+    primary_route_name: str
+    primary_route_params: dict[str, Any]
+    occurred_at: datetime
+    created_at: datetime
+    resolved_at: datetime | None
+    resolution_code: str | None
+    seen_at: datetime | None
+    read_at: datetime | None
+    dismissed_at: datetime | None
+
+
+class NotificationPage(BaseModel):
+    items: list[NotificationRead]
+    next_cursor: str | None
+
+
+class NotificationCounts(BaseModel):
+    unread: int
+    action_required: int
+
+
+class NotificationBulkRead(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    notification_ids: list[uuid.UUID] = Field(min_length=1, max_length=100)
+
+
+class NotificationMutationResult(BaseModel):
+    updated: int
+
+
 class PermissionRead(ORMModel):
     id: uuid.UUID
     key: str

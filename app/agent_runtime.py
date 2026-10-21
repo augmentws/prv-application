@@ -73,6 +73,7 @@ from app.models import (
     User,
     utcnow,
 )
+from app.notifications import NotificationSource, PermissionAudience, publish_notification
 from app.schemas import (
     AssertionPolicy,
     Cardinality,
@@ -1521,6 +1522,24 @@ def persist_agent_run_outcome(run_id: uuid.UUID, outcome: AgentRunOutcome) -> No
             conversation.status = "ACTIVE"
         db.flush()
         for action_request in action_requests:
+            publish_notification(
+                db,
+                type_key="agent_action.requested",
+                scope=ResourceRef.matter(conversation.matter_id),
+                source=NotificationSource("agent_action_request", action_request.id),
+                audiences=(PermissionAudience("matter.configure"),),
+                template_data={},
+                route_params={
+                    "client_id": conversation.client_id,
+                    "matter_id": conversation.matter_id,
+                    "conversation_id": conversation.id,
+                    "workflow_type": conversation.workflow_type,
+                    "review_batch_id": conversation.review_batch_id,
+                },
+                idempotency_key=f"agent-action-request:{action_request.id}:requested",
+                created_by_kind="WORKFLOW",
+                occurred_at=action_request.requested_at,
+            )
             publish_agent_event(
                 db,
                 conversation,

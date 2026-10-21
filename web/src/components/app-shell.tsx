@@ -4,6 +4,7 @@ import * as DropdownMenu from "@radix-ui/react-dropdown-menu";
 import { useQueryClient } from "@tanstack/react-query";
 import {
   Building2,
+  Bell,
   Bot,
   BookOpenText,
   ChevronDown,
@@ -25,6 +26,7 @@ import { useState, type ReactNode } from "react";
 import { BrandMark } from "@/components/brand-mark";
 import { CollectionSidebarNav } from "@/components/collection/collection-sidebar-nav";
 import { MatterSidebarNav } from "@/components/matter/matter-sidebar-nav";
+import { NotificationBell } from "@/components/notification-bell";
 import { ThemeToggle } from "@/components/theme-toggle";
 import { Button } from "@/components/ui/button";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
@@ -36,6 +38,7 @@ import { parseResourcePath } from "@/lib/workspace-path";
 const primaryLinks = [
   { href: "/app", label: "Overview", icon: LayoutDashboard, exact: true },
   { href: "/app/clients", label: "Clients", icon: FolderKanban },
+  { href: "/app/notifications", label: "Notifications", icon: Bell },
   { href: "/docs", label: "Documentation", icon: BookOpenText },
 ];
 
@@ -202,6 +205,7 @@ function Shell({ children }: { children: ReactNode }) {
             <p className="truncate text-sm font-semibold">{tenant.name}</p>
             <p className="truncate text-xs text-muted-foreground">Secure workspace</p>
           </div>
+          <NotificationBell />
           <ThemeToggle />
           <AccountMenu displayName={user.display_name} email={user.email} onSignOut={() => void signOut()} />
         </header>
