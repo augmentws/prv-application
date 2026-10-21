@@ -145,7 +145,7 @@ FACT_DEVELOPMENT_SPEC = WorkflowSpec(
         WorkflowRoleSpec(
             key="fact_extraction",
             input_schema_key="fact_extraction_input_v1",
-            output_schema_key="fact_extraction_output_v2",
+            output_schema_key="fact_extraction_output_v3",
             allowed_capabilities=frozenset({"structured_output", "prompt_caching", "long_context"}),
             allowed_tool_keys=frozenset(),
         ),
