@@ -14249,6 +14249,808 @@
         }
       }
     },
+    "/v1/review-workflow-templates": {
+      "get": {
+        "tags": [
+          "review programs"
+        ],
+        "summary": "List Review Workflow Templates",
+        "operationId": "list_review_workflow_templates_v1_review_workflow_templates_get",
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "items": {
+                    "$ref": "#/components/schemas/ReviewWorkflowTemplateRead"
+                  },
+                  "type": "array",
+                  "title": "Response List Review Workflow Templates V1 Review Workflow Templates Get"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ]
+      }
+    },
+    "/v1/matters/{matter_id}/review-programs": {
+      "get": {
+        "tags": [
+          "review programs"
+        ],
+        "summary": "List Review Programs",
+        "operationId": "list_review_programs_v1_matters__matter_id__review_programs_get",
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "matter_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid",
+              "title": "Matter Id"
+            }
+          },
+          {
+            "name": "include_archived",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "boolean",
+              "default": false,
+              "title": "Include Archived"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "array",
+                  "items": {
+                    "$ref": "#/components/schemas/ReviewProgramRead"
+                  },
+                  "title": "Response List Review Programs V1 Matters  Matter Id  Review Programs Get"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      },
+      "post": {
+        "tags": [
+          "review programs"
+        ],
+        "summary": "Create Program",
+        "operationId": "create_program_v1_matters__matter_id__review_programs_post",
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "matter_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid",
+              "title": "Matter Id"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ReviewProgramCreate"
+              }
+            }
+          }
+        },
+        "responses": {
+          "201": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ReviewProgramRead"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v1/matters/{matter_id}/review-programs/{program_id}": {
+      "get": {
+        "tags": [
+          "review programs"
+        ],
+        "summary": "Read Review Program",
+        "operationId": "read_review_program_v1_matters__matter_id__review_programs__program_id__get",
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "matter_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid",
+              "title": "Matter Id"
+            }
+          },
+          {
+            "name": "program_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid",
+              "title": "Program Id"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ReviewProgramRead"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v1/matters/{matter_id}/review-programs/{program_id}/runs": {
+      "get": {
+        "tags": [
+          "review programs"
+        ],
+        "summary": "List Review Program Runs",
+        "operationId": "list_review_program_runs_v1_matters__matter_id__review_programs__program_id__runs_get",
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "matter_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid",
+              "title": "Matter Id"
+            }
+          },
+          {
+            "name": "program_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid",
+              "title": "Program Id"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "array",
+                  "items": {
+                    "$ref": "#/components/schemas/ReviewProgramRunRead"
+                  },
+                  "title": "Response List Review Program Runs V1 Matters  Matter Id  Review Programs  Program Id  Runs Get"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      },
+      "post": {
+        "tags": [
+          "review programs"
+        ],
+        "summary": "Start Program Run",
+        "operationId": "start_program_run_v1_matters__matter_id__review_programs__program_id__runs_post",
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "matter_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid",
+              "title": "Matter Id"
+            }
+          },
+          {
+            "name": "program_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid",
+              "title": "Program Id"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ReviewProgramRunStart"
+              }
+            }
+          }
+        },
+        "responses": {
+          "201": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ReviewProgramRunRead"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v1/matters/{matter_id}/review-programs/{program_id}/runs/{run_id}": {
+      "get": {
+        "tags": [
+          "review programs"
+        ],
+        "summary": "Read Program Run",
+        "operationId": "read_program_run_v1_matters__matter_id__review_programs__program_id__runs__run_id__get",
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "matter_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid",
+              "title": "Matter Id"
+            }
+          },
+          {
+            "name": "program_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid",
+              "title": "Program Id"
+            }
+          },
+          {
+            "name": "run_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid",
+              "title": "Run Id"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ReviewProgramRunRead"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v1/matters/{matter_id}/review-programs/{program_id}/runs/{run_id}/actions/{action_id}/resolve": {
+      "post": {
+        "tags": [
+          "review programs"
+        ],
+        "summary": "Resolve Program Action",
+        "operationId": "resolve_program_action_v1_matters__matter_id__review_programs__program_id__runs__run_id__actions__action_id__resolve_post",
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "matter_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid",
+              "title": "Matter Id"
+            }
+          },
+          {
+            "name": "program_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid",
+              "title": "Program Id"
+            }
+          },
+          {
+            "name": "run_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid",
+              "title": "Run Id"
+            }
+          },
+          {
+            "name": "action_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid",
+              "title": "Action Id"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ReviewProgramActionResolve"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ReviewProgramRunRead"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v1/matters/{matter_id}/review-programs/{program_id}/runs/{run_id}/actions/{action_id}/definition-setup": {
+      "post": {
+        "tags": [
+          "review programs"
+        ],
+        "summary": "Setup Program Definition",
+        "operationId": "setup_program_definition_v1_matters__matter_id__review_programs__program_id__runs__run_id__actions__action_id__definition_setup_post",
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "matter_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid",
+              "title": "Matter Id"
+            }
+          },
+          {
+            "name": "program_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid",
+              "title": "Program Id"
+            }
+          },
+          {
+            "name": "run_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid",
+              "title": "Run Id"
+            }
+          },
+          {
+            "name": "action_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid",
+              "title": "Action Id"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ReviewProgramDefinitionSetup"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ReviewProgramRunRead"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v1/matters/{matter_id}/review-programs/{program_id}/runs/{run_id}/cancel": {
+      "post": {
+        "tags": [
+          "review programs"
+        ],
+        "summary": "Cancel Program Run",
+        "operationId": "cancel_program_run_v1_matters__matter_id__review_programs__program_id__runs__run_id__cancel_post",
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "matter_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid",
+              "title": "Matter Id"
+            }
+          },
+          {
+            "name": "program_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid",
+              "title": "Program Id"
+            }
+          },
+          {
+            "name": "run_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid",
+              "title": "Run Id"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ReviewProgramRunCommand"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ReviewProgramRunRead"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v1/matters/{matter_id}/review-programs/{program_id}/runs/{run_id}/retry": {
+      "post": {
+        "tags": [
+          "review programs"
+        ],
+        "summary": "Retry Program Run",
+        "operationId": "retry_program_run_v1_matters__matter_id__review_programs__program_id__runs__run_id__retry_post",
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "matter_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid",
+              "title": "Matter Id"
+            }
+          },
+          {
+            "name": "program_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid",
+              "title": "Program Id"
+            }
+          },
+          {
+            "name": "run_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid",
+              "title": "Run Id"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ReviewProgramRunCommand"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ReviewProgramRunRead"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v1/matters/{matter_id}/review-programs/{program_id}/runs/{run_id}/reconcile": {
+      "post": {
+        "tags": [
+          "review programs"
+        ],
+        "summary": "Reconcile Program Run",
+        "operationId": "reconcile_program_run_v1_matters__matter_id__review_programs__program_id__runs__run_id__reconcile_post",
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "matter_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid",
+              "title": "Matter Id"
+            }
+          },
+          {
+            "name": "program_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid",
+              "title": "Program Id"
+            }
+          },
+          {
+            "name": "run_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid",
+              "title": "Run Id"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ReviewProgramRunRead"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/v1/matters/{matter_id}/search-export-fields": {
       "get": {
         "tags": [
@@ -36424,6 +37226,37 @@
             "type": "string",
             "title": "Dbos Workflow Id"
           },
+          "notification_policy": {
+            "type": "string",
+            "enum": [
+              "DEFAULT",
+              "PARENT_MANAGED"
+            ],
+            "title": "Notification Policy"
+          },
+          "notification_parent_type": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Notification Parent Type"
+          },
+          "notification_parent_id": {
+            "anyOf": [
+              {
+                "type": "string",
+                "format": "uuid"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Notification Parent Id"
+          },
           "status": {
             "type": "string",
             "enum": [
@@ -36605,6 +37438,9 @@
           "retry_of_workflow_run_id",
           "workflow_key",
           "dbos_workflow_id",
+          "notification_policy",
+          "notification_parent_type",
+          "notification_parent_id",
           "status",
           "current_stage",
           "stage_label",
@@ -51273,6 +52109,1307 @@
           "created_at"
         ],
         "title": "ReviewDecisionResultRead"
+      },
+      "ReviewProgramActionChoiceRead": {
+        "properties": {
+          "key": {
+            "type": "string",
+            "title": "Key"
+          },
+          "label": {
+            "type": "string",
+            "title": "Label"
+          },
+          "consequence": {
+            "type": "string",
+            "title": "Consequence"
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "key",
+          "label",
+          "consequence"
+        ],
+        "title": "ReviewProgramActionChoiceRead"
+      },
+      "ReviewProgramActionRead": {
+        "properties": {
+          "id": {
+            "type": "string",
+            "format": "uuid",
+            "title": "Id"
+          },
+          "run_id": {
+            "type": "string",
+            "format": "uuid",
+            "title": "Run Id"
+          },
+          "stage_attempt_id": {
+            "anyOf": [
+              {
+                "type": "string",
+                "format": "uuid"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Stage Attempt Id"
+          },
+          "stage_key": {
+            "type": "string",
+            "title": "Stage Key"
+          },
+          "action_type": {
+            "type": "string",
+            "title": "Action Type"
+          },
+          "title": {
+            "type": "string",
+            "title": "Title"
+          },
+          "explanation": {
+            "type": "string",
+            "title": "Explanation"
+          },
+          "decision_context": {
+            "additionalProperties": true,
+            "type": "object",
+            "title": "Decision Context"
+          },
+          "preview_hash": {
+            "type": "string",
+            "title": "Preview Hash"
+          },
+          "allowed_choices": {
+            "items": {
+              "$ref": "#/components/schemas/ReviewProgramActionChoiceRead"
+            },
+            "type": "array",
+            "title": "Allowed Choices"
+          },
+          "status": {
+            "type": "string",
+            "enum": [
+              "OPEN",
+              "RESOLVED",
+              "SUPERSEDED",
+              "CANCELED"
+            ],
+            "title": "Status"
+          },
+          "resolution_payload": {
+            "anyOf": [
+              {
+                "additionalProperties": true,
+                "type": "object"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Resolution Payload"
+          },
+          "resolution_reason": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Resolution Reason"
+          },
+          "resolved_by_user_id": {
+            "anyOf": [
+              {
+                "type": "string",
+                "format": "uuid"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Resolved By User Id"
+          },
+          "authorization_context": {
+            "additionalProperties": true,
+            "type": "object",
+            "title": "Authorization Context"
+          },
+          "resolved_at": {
+            "anyOf": [
+              {
+                "type": "string",
+                "format": "date-time"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Resolved At"
+          },
+          "created_at": {
+            "type": "string",
+            "format": "date-time",
+            "title": "Created At"
+          },
+          "updated_at": {
+            "type": "string",
+            "format": "date-time",
+            "title": "Updated At"
+          }
+        },
+        "type": "object",
+        "required": [
+          "id",
+          "run_id",
+          "stage_attempt_id",
+          "stage_key",
+          "action_type",
+          "title",
+          "explanation",
+          "decision_context",
+          "preview_hash",
+          "allowed_choices",
+          "status",
+          "resolution_payload",
+          "resolution_reason",
+          "resolved_by_user_id",
+          "authorization_context",
+          "resolved_at",
+          "created_at",
+          "updated_at"
+        ],
+        "title": "ReviewProgramActionRead"
+      },
+      "ReviewProgramActionResolve": {
+        "properties": {
+          "preview_hash": {
+            "type": "string",
+            "maxLength": 64,
+            "minLength": 64,
+            "title": "Preview Hash"
+          },
+          "choice_key": {
+            "type": "string",
+            "maxLength": 100,
+            "minLength": 1,
+            "title": "Choice Key"
+          },
+          "reason": {
+            "anyOf": [
+              {
+                "type": "string",
+                "maxLength": 4000
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Reason"
+          },
+          "input": {
+            "additionalProperties": true,
+            "type": "object",
+            "title": "Input"
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "preview_hash",
+          "choice_key"
+        ],
+        "title": "ReviewProgramActionResolve"
+      },
+      "ReviewProgramCreate": {
+        "properties": {
+          "template_key": {
+            "type": "string",
+            "maxLength": 100,
+            "minLength": 1,
+            "title": "Template Key",
+            "default": "FIRST_PASS_REVIEW"
+          },
+          "key": {
+            "type": "string",
+            "pattern": "^[a-z][a-z0-9_-]{1,98}[a-z0-9]$",
+            "title": "Key"
+          },
+          "name": {
+            "type": "string",
+            "maxLength": 200,
+            "minLength": 1,
+            "title": "Name"
+          },
+          "description": {
+            "anyOf": [
+              {
+                "type": "string",
+                "maxLength": 4000
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Description"
+          },
+          "owner_user_id": {
+            "anyOf": [
+              {
+                "type": "string",
+                "format": "uuid"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Owner User Id"
+          },
+          "matter_definition_id": {
+            "anyOf": [
+              {
+                "type": "string",
+                "format": "uuid"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Matter Definition Id"
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "key",
+          "name"
+        ],
+        "title": "ReviewProgramCreate"
+      },
+      "ReviewProgramDefinitionSetup": {
+        "properties": {
+          "preview_hash": {
+            "type": "string",
+            "maxLength": 64,
+            "minLength": 64,
+            "title": "Preview Hash"
+          },
+          "mode": {
+            "type": "string",
+            "enum": [
+              "CREATE",
+              "CLONE",
+              "ADOPT"
+            ],
+            "title": "Mode"
+          },
+          "existing_definition_id": {
+            "anyOf": [
+              {
+                "type": "string",
+                "format": "uuid"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Existing Definition Id"
+          },
+          "source_revision": {
+            "anyOf": [
+              {
+                "type": "integer",
+                "minimum": 1.0
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Source Revision"
+          },
+          "definition_key": {
+            "anyOf": [
+              {
+                "type": "string",
+                "maxLength": 100,
+                "minLength": 1,
+                "pattern": "^[a-z][a-z0-9_-]*$"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Definition Key"
+          },
+          "name": {
+            "anyOf": [
+              {
+                "type": "string",
+                "maxLength": 200,
+                "minLength": 1
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Name"
+          },
+          "description": {
+            "anyOf": [
+              {
+                "type": "string",
+                "maxLength": 10000
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Description"
+          },
+          "content_markdown": {
+            "anyOf": [
+              {
+                "type": "string",
+                "maxLength": 2000000,
+                "minLength": 1
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Content Markdown"
+          },
+          "assessment_target_document_count": {
+            "type": "integer",
+            "maximum": 10000000.0,
+            "minimum": 1.0,
+            "title": "Assessment Target Document Count",
+            "default": 500
+          },
+          "assessment_control_sample_size": {
+            "type": "integer",
+            "maximum": 1000000.0,
+            "minimum": 0.0,
+            "title": "Assessment Control Sample Size",
+            "default": 0
+          },
+          "assessment_use_batching": {
+            "type": "boolean",
+            "title": "Assessment Use Batching",
+            "default": true
+          },
+          "acknowledge_large_run_warning": {
+            "type": "boolean",
+            "title": "Acknowledge Large Run Warning",
+            "default": false
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "preview_hash",
+          "mode"
+        ],
+        "title": "ReviewProgramDefinitionSetup"
+      },
+      "ReviewProgramEventRead": {
+        "properties": {
+          "id": {
+            "type": "string",
+            "format": "uuid",
+            "title": "Id"
+          },
+          "event_type": {
+            "type": "string",
+            "title": "Event Type"
+          },
+          "schema_version": {
+            "type": "integer",
+            "title": "Schema Version"
+          },
+          "source_type": {
+            "type": "string",
+            "title": "Source Type"
+          },
+          "source_id": {
+            "type": "string",
+            "format": "uuid",
+            "title": "Source Id"
+          },
+          "stage_attempt_id": {
+            "anyOf": [
+              {
+                "type": "string",
+                "format": "uuid"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Stage Attempt Id"
+          },
+          "payload": {
+            "additionalProperties": true,
+            "type": "object",
+            "title": "Payload"
+          },
+          "idempotency_key": {
+            "type": "string",
+            "title": "Idempotency Key"
+          },
+          "status": {
+            "type": "string",
+            "enum": [
+              "PENDING",
+              "PROCESSING",
+              "PROCESSED",
+              "FAILED"
+            ],
+            "title": "Status"
+          },
+          "processing_attempt": {
+            "type": "integer",
+            "title": "Processing Attempt"
+          },
+          "failure_code": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Failure Code"
+          },
+          "failure_summary": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Failure Summary"
+          },
+          "occurred_at": {
+            "type": "string",
+            "format": "date-time",
+            "title": "Occurred At"
+          },
+          "created_at": {
+            "type": "string",
+            "format": "date-time",
+            "title": "Created At"
+          },
+          "processed_at": {
+            "anyOf": [
+              {
+                "type": "string",
+                "format": "date-time"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Processed At"
+          }
+        },
+        "type": "object",
+        "required": [
+          "id",
+          "event_type",
+          "schema_version",
+          "source_type",
+          "source_id",
+          "stage_attempt_id",
+          "payload",
+          "idempotency_key",
+          "status",
+          "processing_attempt",
+          "failure_code",
+          "failure_summary",
+          "occurred_at",
+          "created_at",
+          "processed_at"
+        ],
+        "title": "ReviewProgramEventRead"
+      },
+      "ReviewProgramRead": {
+        "properties": {
+          "id": {
+            "type": "string",
+            "format": "uuid",
+            "title": "Id"
+          },
+          "tenant_id": {
+            "type": "string",
+            "format": "uuid",
+            "title": "Tenant Id"
+          },
+          "matter_id": {
+            "type": "string",
+            "format": "uuid",
+            "title": "Matter Id"
+          },
+          "template_key": {
+            "type": "string",
+            "title": "Template Key"
+          },
+          "template_version": {
+            "type": "integer",
+            "title": "Template Version"
+          },
+          "template_content_hash": {
+            "type": "string",
+            "title": "Template Content Hash"
+          },
+          "key": {
+            "type": "string",
+            "title": "Key"
+          },
+          "name": {
+            "type": "string",
+            "title": "Name"
+          },
+          "description": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Description"
+          },
+          "status": {
+            "type": "string",
+            "enum": [
+              "DRAFT",
+              "ACTIVE",
+              "SUSPENDED",
+              "ARCHIVED"
+            ],
+            "title": "Status"
+          },
+          "matter_definition_id": {
+            "anyOf": [
+              {
+                "type": "string",
+                "format": "uuid"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Matter Definition Id"
+          },
+          "target_metadata_definition_id": {
+            "anyOf": [
+              {
+                "type": "string",
+                "format": "uuid"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Target Metadata Definition Id"
+          },
+          "current_version_id": {
+            "anyOf": [
+              {
+                "type": "string",
+                "format": "uuid"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Current Version Id"
+          },
+          "current_run_id": {
+            "anyOf": [
+              {
+                "type": "string",
+                "format": "uuid"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Current Run Id"
+          },
+          "owner_user_id": {
+            "type": "string",
+            "format": "uuid",
+            "title": "Owner User Id"
+          },
+          "created_by_user_id": {
+            "type": "string",
+            "format": "uuid",
+            "title": "Created By User Id"
+          },
+          "row_version": {
+            "type": "integer",
+            "title": "Row Version"
+          },
+          "created_at": {
+            "type": "string",
+            "format": "date-time",
+            "title": "Created At"
+          },
+          "updated_at": {
+            "type": "string",
+            "format": "date-time",
+            "title": "Updated At"
+          },
+          "current_version": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/ReviewProgramVersionRead"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          }
+        },
+        "type": "object",
+        "required": [
+          "id",
+          "tenant_id",
+          "matter_id",
+          "template_key",
+          "template_version",
+          "template_content_hash",
+          "key",
+          "name",
+          "description",
+          "status",
+          "matter_definition_id",
+          "target_metadata_definition_id",
+          "current_version_id",
+          "current_run_id",
+          "owner_user_id",
+          "created_by_user_id",
+          "row_version",
+          "created_at",
+          "updated_at"
+        ],
+        "title": "ReviewProgramRead"
+      },
+      "ReviewProgramRunCommand": {
+        "properties": {
+          "idempotency_key": {
+            "type": "string",
+            "maxLength": 500,
+            "minLength": 1,
+            "title": "Idempotency Key"
+          },
+          "reason": {
+            "anyOf": [
+              {
+                "type": "string",
+                "maxLength": 4000
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Reason"
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "idempotency_key"
+        ],
+        "title": "ReviewProgramRunCommand"
+      },
+      "ReviewProgramRunRead": {
+        "properties": {
+          "id": {
+            "type": "string",
+            "format": "uuid",
+            "title": "Id"
+          },
+          "tenant_id": {
+            "type": "string",
+            "format": "uuid",
+            "title": "Tenant Id"
+          },
+          "matter_id": {
+            "type": "string",
+            "format": "uuid",
+            "title": "Matter Id"
+          },
+          "program_id": {
+            "type": "string",
+            "format": "uuid",
+            "title": "Program Id"
+          },
+          "starting_program_version_id": {
+            "type": "string",
+            "format": "uuid",
+            "title": "Starting Program Version Id"
+          },
+          "current_program_version_id": {
+            "type": "string",
+            "format": "uuid",
+            "title": "Current Program Version Id"
+          },
+          "status": {
+            "type": "string",
+            "enum": [
+              "QUEUED",
+              "RUNNING",
+              "WAITING_FOR_USER",
+              "COMPLETED",
+              "COMPLETED_WITH_ERRORS",
+              "FAILED",
+              "CANCELED"
+            ],
+            "title": "Status"
+          },
+          "current_stage": {
+            "type": "string",
+            "title": "Current Stage"
+          },
+          "current_stage_ordinal": {
+            "type": "integer",
+            "title": "Current Stage Ordinal"
+          },
+          "current_discovery_round": {
+            "type": "integer",
+            "title": "Current Discovery Round"
+          },
+          "current_training_round": {
+            "type": "integer",
+            "title": "Current Training Round"
+          },
+          "pending_action_id": {
+            "anyOf": [
+              {
+                "type": "string",
+                "format": "uuid"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Pending Action Id"
+          },
+          "progress_summary": {
+            "additionalProperties": true,
+            "type": "object",
+            "title": "Progress Summary"
+          },
+          "frozen_configuration_hash": {
+            "type": "string",
+            "title": "Frozen Configuration Hash"
+          },
+          "failure_code": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Failure Code"
+          },
+          "failure_summary": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Failure Summary"
+          },
+          "failure_retriable": {
+            "type": "boolean",
+            "title": "Failure Retriable"
+          },
+          "initiated_by_user_id": {
+            "type": "string",
+            "format": "uuid",
+            "title": "Initiated By User Id"
+          },
+          "started_at": {
+            "anyOf": [
+              {
+                "type": "string",
+                "format": "date-time"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Started At"
+          },
+          "completed_at": {
+            "anyOf": [
+              {
+                "type": "string",
+                "format": "date-time"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Completed At"
+          },
+          "canceled_at": {
+            "anyOf": [
+              {
+                "type": "string",
+                "format": "date-time"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Canceled At"
+          },
+          "created_at": {
+            "type": "string",
+            "format": "date-time",
+            "title": "Created At"
+          },
+          "updated_at": {
+            "type": "string",
+            "format": "date-time",
+            "title": "Updated At"
+          },
+          "stage_attempts": {
+            "items": {
+              "$ref": "#/components/schemas/ReviewProgramStageAttemptRead"
+            },
+            "type": "array",
+            "title": "Stage Attempts"
+          },
+          "actions": {
+            "items": {
+              "$ref": "#/components/schemas/ReviewProgramActionRead"
+            },
+            "type": "array",
+            "title": "Actions"
+          },
+          "events": {
+            "items": {
+              "$ref": "#/components/schemas/ReviewProgramEventRead"
+            },
+            "type": "array",
+            "title": "Events"
+          }
+        },
+        "type": "object",
+        "required": [
+          "id",
+          "tenant_id",
+          "matter_id",
+          "program_id",
+          "starting_program_version_id",
+          "current_program_version_id",
+          "status",
+          "current_stage",
+          "current_stage_ordinal",
+          "current_discovery_round",
+          "current_training_round",
+          "pending_action_id",
+          "progress_summary",
+          "frozen_configuration_hash",
+          "failure_code",
+          "failure_summary",
+          "failure_retriable",
+          "initiated_by_user_id",
+          "started_at",
+          "completed_at",
+          "canceled_at",
+          "created_at",
+          "updated_at"
+        ],
+        "title": "ReviewProgramRunRead"
+      },
+      "ReviewProgramRunStart": {
+        "properties": {
+          "idempotency_key": {
+            "type": "string",
+            "maxLength": 500,
+            "minLength": 1,
+            "title": "Idempotency Key"
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "idempotency_key"
+        ],
+        "title": "ReviewProgramRunStart"
+      },
+      "ReviewProgramStageAttemptRead": {
+        "properties": {
+          "id": {
+            "type": "string",
+            "format": "uuid",
+            "title": "Id"
+          },
+          "run_id": {
+            "type": "string",
+            "format": "uuid",
+            "title": "Run Id"
+          },
+          "stage_key": {
+            "type": "string",
+            "title": "Stage Key"
+          },
+          "stage_ordinal": {
+            "type": "integer",
+            "title": "Stage Ordinal"
+          },
+          "attempt": {
+            "type": "integer",
+            "title": "Attempt"
+          },
+          "status": {
+            "type": "string",
+            "enum": [
+              "QUEUED",
+              "RUNNING",
+              "WAITING",
+              "COMPLETED",
+              "FAILED",
+              "CANCELED"
+            ],
+            "title": "Status"
+          },
+          "idempotency_key": {
+            "type": "string",
+            "title": "Idempotency Key"
+          },
+          "input_snapshot": {
+            "additionalProperties": true,
+            "type": "object",
+            "title": "Input Snapshot"
+          },
+          "policy_hashes": {
+            "additionalProperties": true,
+            "type": "object",
+            "title": "Policy Hashes"
+          },
+          "result_summary": {
+            "additionalProperties": true,
+            "type": "object",
+            "title": "Result Summary"
+          },
+          "error_code": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Error Code"
+          },
+          "error_summary": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Error Summary"
+          },
+          "started_at": {
+            "anyOf": [
+              {
+                "type": "string",
+                "format": "date-time"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Started At"
+          },
+          "completed_at": {
+            "anyOf": [
+              {
+                "type": "string",
+                "format": "date-time"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Completed At"
+          },
+          "created_at": {
+            "type": "string",
+            "format": "date-time",
+            "title": "Created At"
+          },
+          "updated_at": {
+            "type": "string",
+            "format": "date-time",
+            "title": "Updated At"
+          }
+        },
+        "type": "object",
+        "required": [
+          "id",
+          "run_id",
+          "stage_key",
+          "stage_ordinal",
+          "attempt",
+          "status",
+          "idempotency_key",
+          "input_snapshot",
+          "policy_hashes",
+          "result_summary",
+          "error_code",
+          "error_summary",
+          "started_at",
+          "completed_at",
+          "created_at",
+          "updated_at"
+        ],
+        "title": "ReviewProgramStageAttemptRead"
+      },
+      "ReviewProgramVersionRead": {
+        "properties": {
+          "id": {
+            "type": "string",
+            "format": "uuid",
+            "title": "Id"
+          },
+          "program_id": {
+            "type": "string",
+            "format": "uuid",
+            "title": "Program Id"
+          },
+          "version": {
+            "type": "integer",
+            "title": "Version"
+          },
+          "predecessor_version_id": {
+            "anyOf": [
+              {
+                "type": "string",
+                "format": "uuid"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Predecessor Version Id"
+          },
+          "template_key": {
+            "type": "string",
+            "title": "Template Key"
+          },
+          "template_version": {
+            "type": "integer",
+            "title": "Template Version"
+          },
+          "template_content_hash": {
+            "type": "string",
+            "title": "Template Content Hash"
+          },
+          "configuration_stage": {
+            "type": "string",
+            "title": "Configuration Stage"
+          },
+          "configuration_snapshot": {
+            "additionalProperties": true,
+            "type": "object",
+            "title": "Configuration Snapshot"
+          },
+          "source_hashes": {
+            "additionalProperties": true,
+            "type": "object",
+            "title": "Source Hashes"
+          },
+          "content_hash": {
+            "type": "string",
+            "title": "Content Hash"
+          },
+          "created_by_user_id": {
+            "type": "string",
+            "format": "uuid",
+            "title": "Created By User Id"
+          },
+          "created_at": {
+            "type": "string",
+            "format": "date-time",
+            "title": "Created At"
+          },
+          "published_at": {
+            "type": "string",
+            "format": "date-time",
+            "title": "Published At"
+          }
+        },
+        "type": "object",
+        "required": [
+          "id",
+          "program_id",
+          "version",
+          "predecessor_version_id",
+          "template_key",
+          "template_version",
+          "template_content_hash",
+          "configuration_stage",
+          "configuration_snapshot",
+          "source_hashes",
+          "content_hash",
+          "created_by_user_id",
+          "created_at",
+          "published_at"
+        ],
+        "title": "ReviewProgramVersionRead"
+      },
+      "ReviewWorkflowPhaseRead": {
+        "properties": {
+          "key": {
+            "type": "string",
+            "title": "Key"
+          },
+          "name": {
+            "type": "string",
+            "title": "Name"
+          },
+          "ordinal": {
+            "type": "integer",
+            "title": "Ordinal"
+          }
+        },
+        "type": "object",
+        "required": [
+          "key",
+          "name",
+          "ordinal"
+        ],
+        "title": "ReviewWorkflowPhaseRead"
+      },
+      "ReviewWorkflowStageRead": {
+        "properties": {
+          "key": {
+            "type": "string",
+            "title": "Key"
+          },
+          "name": {
+            "type": "string",
+            "title": "Name"
+          },
+          "phase_key": {
+            "type": "string",
+            "title": "Phase Key"
+          },
+          "ordinal": {
+            "type": "integer",
+            "title": "Ordinal"
+          },
+          "batching_policy": {
+            "type": "string",
+            "enum": [
+              "NONE",
+              "AD_HOC_BATCH",
+              "PARTITIONED_SET",
+              "WHOLE_MATTER"
+            ],
+            "title": "Batching Policy"
+          },
+          "requires_human_gate": {
+            "type": "boolean",
+            "title": "Requires Human Gate"
+          }
+        },
+        "type": "object",
+        "required": [
+          "key",
+          "name",
+          "phase_key",
+          "ordinal",
+          "batching_policy",
+          "requires_human_gate"
+        ],
+        "title": "ReviewWorkflowStageRead"
+      },
+      "ReviewWorkflowTemplateRead": {
+        "properties": {
+          "key": {
+            "type": "string",
+            "title": "Key"
+          },
+          "version": {
+            "type": "integer",
+            "title": "Version"
+          },
+          "schema_version": {
+            "type": "integer",
+            "title": "Schema Version"
+          },
+          "content_hash": {
+            "type": "string",
+            "title": "Content Hash"
+          },
+          "name": {
+            "type": "string",
+            "title": "Name"
+          },
+          "description": {
+            "type": "string",
+            "title": "Description"
+          },
+          "workflow_type": {
+            "type": "string",
+            "title": "Workflow Type"
+          },
+          "phases": {
+            "items": {
+              "$ref": "#/components/schemas/ReviewWorkflowPhaseRead"
+            },
+            "type": "array",
+            "title": "Phases"
+          },
+          "stages": {
+            "items": {
+              "$ref": "#/components/schemas/ReviewWorkflowStageRead"
+            },
+            "type": "array",
+            "title": "Stages"
+          }
+        },
+        "type": "object",
+        "required": [
+          "key",
+          "version",
+          "schema_version",
+          "content_hash",
+          "name",
+          "description",
+          "workflow_type",
+          "phases",
+          "stages"
+        ],
+        "title": "ReviewWorkflowTemplateRead"
       },
       "RoleCreate": {
         "properties": {

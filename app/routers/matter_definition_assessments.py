@@ -508,6 +508,9 @@ def cancel_assessment(
         target_id=assessment.id,
         details={"matter_id": str(matter.id), **_guidance_audit_details(db, assessment)},
     )
+    from app.review_programs import project_review_program_assessment_terminal
+
+    project_review_program_assessment_terminal(db, assessment=assessment)
     db.commit()
     cancel_provider_batches(db, assessment.id)
     if workflow is not None:

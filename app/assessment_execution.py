@@ -1605,6 +1605,9 @@ def complete_assessment(db: Session, assessment_id: uuid.UUID) -> None:
             "status": final_status,
         },
     )
+    from app.review_programs import project_review_program_assessment_terminal
+
+    project_review_program_assessment_terminal(db, assessment=assessment)
     db.commit()
 
 
@@ -1644,4 +1647,7 @@ def fail_assessment(db: Session, assessment_id: uuid.UUID, message: str) -> None
                 latest_failure.error_message if latest_failure and latest_failure.error_message else message
             )[:4000]
             step.completed_at = assessment.completed_at
+    from app.review_programs import project_review_program_assessment_terminal
+
+    project_review_program_assessment_terminal(db, assessment=assessment)
     db.commit()

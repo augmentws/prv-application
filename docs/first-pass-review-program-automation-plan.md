@@ -1456,6 +1456,8 @@ Exit criteria:
 
 ### Phase 1 Coordinator foundation
 
+Implementation status: complete on `feature/review-program-foundation`.
+
 Deliverables:
 
 - Add the workflow-template registry and publish the first system-owned First Pass Review template version.
@@ -1472,6 +1474,8 @@ Exit criteria:
   duplicate event cannot advance it twice or create duplicate inbox items.
 
 ### Phase 2 Matter Definition automation
+
+Implementation status: complete on `feature/review-program-foundation`.
 
 Deliverables:
 

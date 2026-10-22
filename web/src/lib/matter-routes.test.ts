@@ -8,6 +8,7 @@ describe("matterHref", () => {
   it("builds section paths with optional parameters", () => {
     expect(matterHref("client-1", "matter-1")).toBe(base);
     expect(matterHref("client-1", "matter-1", "facts-timeline")).toBe(`${base}/facts/timeline`);
+    expect(matterHref("client-1", "matter-1", "review-programs")).toBe(`${base}/review-programs`);
     expect(matterHref("client-1", "matter-1", "jobs", { job_type: "SEARCH_EXPORTS" })).toBe(`${base}/jobs?job_type=SEARCH_EXPORTS`);
     expect(matterHref("client-1", "matter-1", "batches", new URLSearchParams())).toBe(`${base}/batches`);
   });
@@ -60,6 +61,7 @@ describe("matterSectionFromPath", () => {
     [`${base}/entities/proposed`, "entities-proposed"],
     [`${base}/entities/entity-1`, "entities"],
     [`${base}/classification-models/model-1`, "classification"],
+    [`${base}/review-programs`, "review-programs"],
     [`${base}/topic-jobs/job-1`, "jobs"],
     [`${base}/search-index`, "search-index"],
   ])("maps %s to %s", (pathname, section) => {

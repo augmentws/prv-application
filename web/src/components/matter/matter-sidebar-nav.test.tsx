@@ -60,6 +60,13 @@ describe("MatterSidebarNav", () => {
     expect(screen.queryByRole("group", { name: "Findings" })).not.toBeInTheDocument();
   });
 
+  it("shows Review Programs only with its view permission", async () => {
+    mockApi(["review_program.view"]);
+    renderNav();
+
+    expect(await screen.findByRole("link", { name: "Review programs" })).toHaveAttribute("href", `${base}/review-programs`);
+  });
+
   it.each([
     [`${base}/facts/fact-1`, "Facts"],
     [`${base}/facts/timeline`, "Facts"],

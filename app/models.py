@@ -1695,6 +1695,300 @@ class ReviewBatchNote(Base):
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
 
 
+class ReviewProgram(TimestampMixin, Base):
+    __tablename__ = "review_program"
+    __table_args__ = (
+        UniqueConstraint("matter_id", "key", name="uq_review_program_matter_key"),
+        CheckConstraint(
+            "status IN ('DRAFT', 'ACTIVE', 'SUSPENDED', 'ARCHIVED')",
+            name="ck_review_program_status",
+        ),
+        CheckConstraint("row_version > 0", name="ck_review_program_row_version"),
+        Index("ix_review_program_matter_status", "matter_id", "status"),
+    )
+
+    id: Mapped[uuid.UUID] = mapped_column(Uuid, primary_key=True, default=uuid.uuid4)
+    tenant_id: Mapped[uuid.UUID] = mapped_column(Uuid, ForeignKey("tenant.id", ondelete="RESTRICT"), index=True)
+    matter_id: Mapped[uuid.UUID] = mapped_column(Uuid, ForeignKey("matter.id", ondelete="CASCADE"), index=True)
+    template_key: Mapped[str] = mapped_column(String(100), index=True)
+    template_version: Mapped[int] = mapped_column(Integer)
+    template_content_hash: Mapped[str] = mapped_column(String(64))
+    key: Mapped[str] = mapped_column(String(100))
+    name: Mapped[str] = mapped_column(String(200))
+    description: Mapped[str | None] = mapped_column(Text, nullable=True)
+    status: Mapped[str] = mapped_column(String(20), default="DRAFT", index=True)
+    matter_definition_id: Mapped[uuid.UUID | None] = mapped_column(
+        Uuid, ForeignKey("matter_definition.id", ondelete="RESTRICT"), nullable=True, index=True
+    )
+    target_metadata_definition_id: Mapped[uuid.UUID | None] = mapped_column(
+        Uuid, ForeignKey("metadata_definition.id", ondelete="RESTRICT"), nullable=True, index=True
+    )
+    current_version_id: Mapped[uuid.UUID | None] = mapped_column(
+        Uuid,
+        ForeignKey(
+            "review_program_version.id",
+            ondelete="SET NULL",
+            use_alter=True,
+            name="fk_review_program_current_version",
+        ),
+        nullable=True,
+        index=True,
+    )
+    current_run_id: Mapped[uuid.UUID | None] = mapped_column(
+        Uuid,
+        ForeignKey(
+            "review_program_run.id",
+            ondelete="SET NULL",
+            use_alter=True,
+            name="fk_review_program_current_run",
+        ),
+        nullable=True,
+        index=True,
+    )
+    owner_user_id: Mapped[uuid.UUID] = mapped_column(
+        Uuid, ForeignKey("app_user.id", ondelete="RESTRICT"), index=True
+    )
+    created_by_user_id: Mapped[uuid.UUID] = mapped_column(
+        Uuid, ForeignKey("app_user.id", ondelete="RESTRICT"), index=True
+    )
+    row_version: Mapped[int] = mapped_column(Integer, default=1)
+
+
+class ReviewProgramVersion(Base):
+    __tablename__ = "review_program_version"
+    __table_args__ = (
+        UniqueConstraint("program_id", "version", name="uq_review_program_version"),
+        CheckConstraint("version > 0", name="ck_review_program_version_positive"),
+        CheckConstraint("template_version > 0", name="ck_review_program_template_version_positive"),
+        Index("ix_review_program_version_program_created", "program_id", "created_at"),
+    )
+
+    id: Mapped[uuid.UUID] = mapped_column(Uuid, primary_key=True, default=uuid.uuid4)
+    program_id: Mapped[uuid.UUID] = mapped_column(
+        Uuid, ForeignKey("review_program.id", ondelete="CASCADE"), index=True
+    )
+    version: Mapped[int] = mapped_column(Integer)
+    predecessor_version_id: Mapped[uuid.UUID | None] = mapped_column(
+        Uuid, ForeignKey("review_program_version.id", ondelete="RESTRICT"), nullable=True, index=True
+    )
+    template_key: Mapped[str] = mapped_column(String(100))
+    template_version: Mapped[int] = mapped_column(Integer)
+    template_content_hash: Mapped[str] = mapped_column(String(64))
+    configuration_stage: Mapped[str] = mapped_column(String(100))
+    configuration_snapshot: Mapped[dict[str, Any]] = mapped_column(JSON_DOCUMENT, default=dict)
+    source_hashes: Mapped[dict[str, Any]] = mapped_column(JSON_DOCUMENT, default=dict)
+    content_hash: Mapped[str] = mapped_column(String(64))
+    created_by_user_id: Mapped[uuid.UUID] = mapped_column(
+        Uuid, ForeignKey("app_user.id", ondelete="RESTRICT"), index=True
+    )
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+    published_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+
+
+class ReviewProgramRun(TimestampMixin, Base):
+    __tablename__ = "review_program_run"
+    __table_args__ = (
+        CheckConstraint(
+            "status IN ('QUEUED', 'RUNNING', 'WAITING_FOR_USER', 'COMPLETED', "
+            "'COMPLETED_WITH_ERRORS', 'FAILED', 'CANCELED')",
+            name="ck_review_program_run_status",
+        ),
+        CheckConstraint("current_stage_ordinal > 0", name="ck_review_program_run_stage_ordinal"),
+        CheckConstraint(
+            "current_discovery_round >= 0 AND current_training_round >= 0",
+            name="ck_review_program_run_rounds",
+        ),
+        Index("ix_review_program_run_program_created", "program_id", "created_at"),
+        Index(
+            "uq_review_program_one_nonterminal_run",
+            "program_id",
+            unique=True,
+            postgresql_where=text("status IN ('QUEUED', 'RUNNING', 'WAITING_FOR_USER')"),
+            sqlite_where=text("status IN ('QUEUED', 'RUNNING', 'WAITING_FOR_USER')"),
+        ),
+    )
+
+    id: Mapped[uuid.UUID] = mapped_column(Uuid, primary_key=True, default=uuid.uuid4)
+    tenant_id: Mapped[uuid.UUID] = mapped_column(Uuid, ForeignKey("tenant.id", ondelete="RESTRICT"), index=True)
+    matter_id: Mapped[uuid.UUID] = mapped_column(Uuid, ForeignKey("matter.id", ondelete="CASCADE"), index=True)
+    program_id: Mapped[uuid.UUID] = mapped_column(
+        Uuid, ForeignKey("review_program.id", ondelete="CASCADE"), index=True
+    )
+    starting_program_version_id: Mapped[uuid.UUID] = mapped_column(
+        Uuid, ForeignKey("review_program_version.id", ondelete="RESTRICT"), index=True
+    )
+    current_program_version_id: Mapped[uuid.UUID] = mapped_column(
+        Uuid, ForeignKey("review_program_version.id", ondelete="RESTRICT"), index=True
+    )
+    status: Mapped[str] = mapped_column(String(30), default="QUEUED", index=True)
+    current_stage: Mapped[str] = mapped_column(String(100))
+    current_stage_ordinal: Mapped[int] = mapped_column(Integer)
+    current_discovery_round: Mapped[int] = mapped_column(Integer, default=0)
+    current_training_round: Mapped[int] = mapped_column(Integer, default=0)
+    pending_action_id: Mapped[uuid.UUID | None] = mapped_column(
+        Uuid,
+        ForeignKey(
+            "review_program_action.id",
+            ondelete="SET NULL",
+            use_alter=True,
+            name="fk_review_program_run_pending_action",
+        ),
+        nullable=True,
+        index=True,
+    )
+    progress_summary: Mapped[dict[str, Any]] = mapped_column(JSON_DOCUMENT, default=dict)
+    frozen_configuration_hash: Mapped[str] = mapped_column(String(64))
+    failure_code: Mapped[str | None] = mapped_column(String(100), nullable=True)
+    failure_summary: Mapped[str | None] = mapped_column(Text, nullable=True)
+    failure_retriable: Mapped[bool] = mapped_column(Boolean, default=False)
+    initiated_by_user_id: Mapped[uuid.UUID] = mapped_column(
+        Uuid, ForeignKey("app_user.id", ondelete="RESTRICT"), index=True
+    )
+    started_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    completed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    canceled_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+
+
+class ReviewProgramStageAttempt(TimestampMixin, Base):
+    __tablename__ = "review_program_stage_attempt"
+    __table_args__ = (
+        UniqueConstraint("run_id", "stage_key", "attempt", name="uq_review_program_stage_attempt"),
+        UniqueConstraint("run_id", "idempotency_key", name="uq_review_program_stage_idempotency"),
+        CheckConstraint("stage_ordinal > 0 AND attempt > 0", name="ck_review_program_stage_positive"),
+        CheckConstraint(
+            "status IN ('QUEUED', 'RUNNING', 'WAITING', 'COMPLETED', 'FAILED', 'CANCELED')",
+            name="ck_review_program_stage_status",
+        ),
+        Index("ix_review_program_stage_run_status", "run_id", "status"),
+    )
+
+    id: Mapped[uuid.UUID] = mapped_column(Uuid, primary_key=True, default=uuid.uuid4)
+    run_id: Mapped[uuid.UUID] = mapped_column(
+        Uuid, ForeignKey("review_program_run.id", ondelete="CASCADE"), index=True
+    )
+    stage_key: Mapped[str] = mapped_column(String(100))
+    stage_ordinal: Mapped[int] = mapped_column(Integer)
+    attempt: Mapped[int] = mapped_column(Integer, default=1)
+    status: Mapped[str] = mapped_column(String(20), default="QUEUED", index=True)
+    idempotency_key: Mapped[str] = mapped_column(String(500))
+    input_snapshot: Mapped[dict[str, Any]] = mapped_column(JSON_DOCUMENT, default=dict)
+    policy_hashes: Mapped[dict[str, Any]] = mapped_column(JSON_DOCUMENT, default=dict)
+    result_summary: Mapped[dict[str, Any]] = mapped_column(JSON_DOCUMENT, default=dict)
+    error_code: Mapped[str | None] = mapped_column(String(100), nullable=True)
+    error_summary: Mapped[str | None] = mapped_column(Text, nullable=True)
+    started_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    completed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+
+
+class ReviewProgramChild(TimestampMixin, Base):
+    __tablename__ = "review_program_child"
+    __table_args__ = (
+        UniqueConstraint("run_id", "derivation_key", name="uq_review_program_child_derivation"),
+        UniqueConstraint("run_id", "child_type", "child_id", name="uq_review_program_child_source"),
+        Index("ix_review_program_child_stage", "stage_attempt_id", "status"),
+    )
+
+    id: Mapped[uuid.UUID] = mapped_column(Uuid, primary_key=True, default=uuid.uuid4)
+    run_id: Mapped[uuid.UUID] = mapped_column(
+        Uuid, ForeignKey("review_program_run.id", ondelete="CASCADE"), index=True
+    )
+    stage_attempt_id: Mapped[uuid.UUID] = mapped_column(
+        Uuid, ForeignKey("review_program_stage_attempt.id", ondelete="CASCADE"), index=True
+    )
+    purpose: Mapped[str] = mapped_column(String(100))
+    child_type: Mapped[str] = mapped_column(String(100))
+    child_id: Mapped[uuid.UUID] = mapped_column(Uuid, index=True)
+    status: Mapped[str] = mapped_column(String(40), index=True)
+    derivation_key: Mapped[str] = mapped_column(String(500))
+    context: Mapped[dict[str, Any]] = mapped_column(JSON_DOCUMENT, default=dict)
+
+
+class ReviewProgramAction(TimestampMixin, Base):
+    __tablename__ = "review_program_action"
+    __table_args__ = (
+        CheckConstraint(
+            "status IN ('OPEN', 'RESOLVED', 'SUPERSEDED', 'CANCELED')",
+            name="ck_review_program_action_status",
+        ),
+        Index("ix_review_program_action_run_status", "run_id", "status"),
+        Index(
+            "uq_review_program_one_open_action",
+            "run_id",
+            unique=True,
+            postgresql_where=text("status = 'OPEN'"),
+            sqlite_where=text("status = 'OPEN'"),
+        ),
+    )
+
+    id: Mapped[uuid.UUID] = mapped_column(Uuid, primary_key=True, default=uuid.uuid4)
+    run_id: Mapped[uuid.UUID] = mapped_column(
+        Uuid, ForeignKey("review_program_run.id", ondelete="CASCADE"), index=True
+    )
+    stage_attempt_id: Mapped[uuid.UUID | None] = mapped_column(
+        Uuid, ForeignKey("review_program_stage_attempt.id", ondelete="SET NULL"), nullable=True, index=True
+    )
+    stage_key: Mapped[str] = mapped_column(String(100))
+    action_type: Mapped[str] = mapped_column(String(100))
+    title: Mapped[str] = mapped_column(String(200))
+    explanation: Mapped[str] = mapped_column(Text)
+    decision_context: Mapped[dict[str, Any]] = mapped_column(JSON_DOCUMENT, default=dict)
+    preview_hash: Mapped[str] = mapped_column(String(64))
+    allowed_choices: Mapped[list[dict[str, Any]]] = mapped_column(JSON_DOCUMENT, default=list)
+    status: Mapped[str] = mapped_column(String(20), default="OPEN", index=True)
+    resolution_payload: Mapped[dict[str, Any] | None] = mapped_column(JSON_DOCUMENT, nullable=True)
+    resolution_reason: Mapped[str | None] = mapped_column(Text, nullable=True)
+    resolved_by_user_id: Mapped[uuid.UUID | None] = mapped_column(
+        Uuid, ForeignKey("app_user.id", ondelete="SET NULL"), nullable=True, index=True
+    )
+    authorization_context: Mapped[dict[str, Any]] = mapped_column(JSON_DOCUMENT, default=dict)
+    resolved_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+
+
+class ReviewProgramEvent(Base):
+    __tablename__ = "review_program_event"
+    __table_args__ = (
+        UniqueConstraint("program_id", "idempotency_key", name="uq_review_program_event_idempotency"),
+        CheckConstraint("schema_version > 0", name="ck_review_program_event_schema_version"),
+        CheckConstraint("processing_attempt >= 0", name="ck_review_program_event_processing_attempt"),
+        CheckConstraint(
+            "status IN ('PENDING', 'PROCESSING', 'PROCESSED', 'FAILED')",
+            name="ck_review_program_event_status",
+        ),
+        Index("ix_review_program_event_run_status", "run_id", "status", "created_at"),
+        Index("ix_review_program_event_source", "source_type", "source_id"),
+    )
+
+    id: Mapped[uuid.UUID] = mapped_column(Uuid, primary_key=True, default=uuid.uuid4)
+    tenant_id: Mapped[uuid.UUID] = mapped_column(Uuid, ForeignKey("tenant.id", ondelete="RESTRICT"), index=True)
+    matter_id: Mapped[uuid.UUID] = mapped_column(Uuid, ForeignKey("matter.id", ondelete="CASCADE"), index=True)
+    program_id: Mapped[uuid.UUID] = mapped_column(
+        Uuid, ForeignKey("review_program.id", ondelete="CASCADE"), index=True
+    )
+    program_version_id: Mapped[uuid.UUID] = mapped_column(
+        Uuid, ForeignKey("review_program_version.id", ondelete="RESTRICT"), index=True
+    )
+    run_id: Mapped[uuid.UUID] = mapped_column(
+        Uuid, ForeignKey("review_program_run.id", ondelete="CASCADE"), index=True
+    )
+    stage_attempt_id: Mapped[uuid.UUID | None] = mapped_column(
+        Uuid, ForeignKey("review_program_stage_attempt.id", ondelete="SET NULL"), nullable=True, index=True
+    )
+    event_type: Mapped[str] = mapped_column(String(120), index=True)
+    schema_version: Mapped[int] = mapped_column(Integer, default=1)
+    source_type: Mapped[str] = mapped_column(String(100))
+    source_id: Mapped[uuid.UUID] = mapped_column(Uuid)
+    payload: Mapped[dict[str, Any]] = mapped_column(JSON_DOCUMENT, default=dict)
+    idempotency_key: Mapped[str] = mapped_column(String(500))
+    status: Mapped[str] = mapped_column(String(20), default="PENDING", index=True)
+    processing_attempt: Mapped[int] = mapped_column(Integer, default=0)
+    failure_code: Mapped[str | None] = mapped_column(String(100), nullable=True)
+    failure_summary: Mapped[str | None] = mapped_column(Text, nullable=True)
+    next_retry_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    occurred_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+    processed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+
+
 class WorkflowRun(TimestampMixin, Base):
     __tablename__ = "workflow_run"
     __table_args__ = (
@@ -1706,6 +2000,13 @@ class WorkflowRun(TimestampMixin, Base):
         CheckConstraint(
             "progress_completed >= 0 AND (progress_total IS NULL OR progress_total >= 0)",
             name="ck_workflow_run_progress_nonnegative",
+        ),
+        CheckConstraint(
+            "(notification_policy = 'DEFAULT' AND notification_parent_type IS NULL "
+            "AND notification_parent_id IS NULL) OR "
+            "(notification_policy = 'PARENT_MANAGED' AND notification_parent_type IS NOT NULL "
+            "AND notification_parent_id IS NOT NULL)",
+            name="ck_workflow_run_notification_policy",
         ),
         UniqueConstraint(
             "job_type",
@@ -1740,6 +2041,9 @@ class WorkflowRun(TimestampMixin, Base):
     code_version: Mapped[str] = mapped_column(String(100))
     dbos_workflow_id: Mapped[str] = mapped_column(String(255), unique=True)
     idempotency_key: Mapped[str | None] = mapped_column(String(500), nullable=True)
+    notification_policy: Mapped[str] = mapped_column(String(30), default="DEFAULT")
+    notification_parent_type: Mapped[str | None] = mapped_column(String(100), nullable=True)
+    notification_parent_id: Mapped[uuid.UUID | None] = mapped_column(Uuid, nullable=True, index=True)
     status: Mapped[str] = mapped_column(String(30), default="QUEUED", index=True)
     current_stage: Mapped[str | None] = mapped_column(String(100), nullable=True)
     progress_completed: Mapped[int] = mapped_column(BigInteger, default=0)
