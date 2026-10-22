@@ -9,6 +9,18 @@ from sqlalchemy import func, select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
+from app.analysis_task_compilation import queue_analysis_task_compilation
+from app.analysis_task_execution_profiles import (
+    AnalysisTaskExecutionProfileError,
+    create_execution_profile,
+    execution_profiles_for_version,
+    validate_dual_execution_profiles,
+)
+from app.analysis_tasks import (
+    MatterAnalysisTaskError,
+    create_analysis_task,
+    publish_analysis_task_version,
+)
 from app.audit import record_audit
 from app.authorization import ResourceRef, user_can
 from app.config import get_settings
@@ -21,8 +33,11 @@ from app.matter_definitions import (
     get_guidance,
 )
 from app.models import (
+    AnalysisTaskExecutionProfile,
     Client,
     Matter,
+    MatterAnalysisTask,
+    MatterAnalysisTaskVersion,
     MatterDefinition,
     MatterDefinitionAssessmentQuery,
     MatterDefinitionAssessmentQuestion,
@@ -177,6 +192,8 @@ def _publish_run_notification(
 def _action_contract(
     template: ReviewWorkflowTemplateSpec,
     stage: ReviewWorkflowStageSpec,
+    *,
+    qa_setup_state: str | None = None,
 ) -> tuple[str, str, list[dict[str, Any]]]:
     stop = {
         "key": "STOP",
@@ -247,6 +264,43 @@ def _action_contract(
                     "key": "REASSESS",
                     "label": "Run another assessment",
                     "consequence": "Return to definition assessment using the current published revision.",
+                },
+                stop,
+            ],
+        )
+    if stage.key == "QA_TASK_SETUP":
+        if qa_setup_state == "READY_FOR_PUBLICATION":
+            return (
+                "Review and publish the generated Q&A task",
+                (
+                    "The generated Decision Specification passed deterministic validation. Review its mappings, "
+                    "warnings, omissions, and two pinned execution profiles before publishing it."
+                ),
+                [
+                    {
+                        "key": "PUBLISH",
+                        "label": "Publish Q&A task",
+                        "consequence": "Freeze the task and both execution profiles for discovery Q&A.",
+                    },
+                    {
+                        "key": "RECOMPILE",
+                        "label": "Generate another draft",
+                        "consequence": "Run the compiler again against the same accepted definition and fields.",
+                    },
+                    stop,
+                ],
+            )
+        return (
+            "Generate the first-pass Q&A task",
+            (
+                "Choose the issue and responsiveness fields the Q&A task may write. The coordinator will generate "
+                "one task from the accepted Matter Definition and pin both existing model paths."
+            ),
+            [
+                {
+                    "key": "GENERATE",
+                    "label": "Generate Q&A task",
+                    "consequence": "Create the draft task, pin two execution profiles, and compile its specification.",
                 },
                 stop,
             ],
@@ -327,6 +381,60 @@ def _definition_stage_context(
     return context
 
 
+def _qa_stage_context(db: Session, *, run: ReviewProgramRun) -> dict[str, Any]:
+    setup = (run.progress_summary or {}).get("qa_task_setup") or {}
+    task_id = setup.get("task_id")
+    task_version_id = setup.get("task_version_id")
+    workflow_id = setup.get("compiler_workflow_run_id")
+    task = db.get(MatterAnalysisTask, uuid.UUID(task_id)) if task_id else None
+    task_version = (
+        db.get(MatterAnalysisTaskVersion, uuid.UUID(task_version_id)) if task_version_id else None
+    )
+    workflow = db.get(WorkflowRun, uuid.UUID(workflow_id)) if workflow_id else None
+    profiles = (
+        execution_profiles_for_version(db, task_version.id) if task_version is not None else []
+    )
+    return {
+        "qa_task_setup_state": run.progress_summary.get("qa_task_setup_state"),
+        "qa_task": {
+            "id": str(task.id) if task is not None else None,
+            "name": task.name if task is not None else None,
+            "task_version_id": str(task_version.id) if task_version is not None else None,
+            "version": task_version.version if task_version is not None else None,
+            "status": task_version.status if task_version is not None else None,
+            "compilation_status": task_version.compilation_status if task_version is not None else None,
+            "definition_content_hash": (
+                task_version.definition_content_hash if task_version is not None else None
+            ),
+            "specification_content_hash": (
+                task_version.specification_content_hash if task_version is not None else None
+            ),
+            "destination_metadata_definition_ids": (
+                task_version.destination_metadata_definition_ids if task_version is not None else []
+            ),
+            "validation_report": task_version.validation_report if task_version is not None else {},
+        },
+        "compiler": {
+            "workflow_run_id": str(workflow.id) if workflow is not None else None,
+            "status": workflow.status if workflow is not None else None,
+            "progress": workflow.progress if workflow is not None else {},
+            "error_message": workflow.error_message if workflow is not None else None,
+        },
+        "execution_profiles": [
+            {
+                "id": str(profile.id),
+                "key": profile.key,
+                "name": profile.name,
+                "decision_provider": profile.decision_provider,
+                "resolved_model": profile.resolved_model,
+                "provider_adapter_version": profile.provider_adapter_version,
+                "content_hash": profile.content_hash,
+            }
+            for profile in profiles
+        ],
+    }
+
+
 def _create_action_for_stage(
     db: Session,
     *,
@@ -336,7 +444,12 @@ def _create_action_for_stage(
     stage: ReviewWorkflowStageSpec,
     template: ReviewWorkflowTemplateSpec,
 ) -> ReviewProgramAction:
-    title, explanation, choices = _action_contract(template, stage)
+    qa_setup_state = str(run.progress_summary.get("qa_task_setup_state") or "")
+    title, explanation, choices = _action_contract(
+        template,
+        stage,
+        qa_setup_state=qa_setup_state,
+    )
     decision_context = {
         "schema_version": 1,
         "program_version_id": str(run.current_program_version_id),
@@ -346,6 +459,8 @@ def _create_action_for_stage(
         **(
             _definition_stage_context(db, program=program, run=run)
             if stage.key in {"MATTER_DEFINITION", "DEFINITION_REFINEMENT", "DEFINITION_ACCEPTANCE"}
+            else _qa_stage_context(db, run=run)
+            if stage.key == "QA_TASK_SETUP"
             else {}
         ),
     }
@@ -357,6 +472,9 @@ def _create_action_for_stage(
             "MATTER_DEFINITION": "MATTER_DEFINITION_SETUP",
             "DEFINITION_REFINEMENT": "MATTER_DEFINITION_REFINEMENT",
             "DEFINITION_ACCEPTANCE": "MATTER_DEFINITION_ACCEPTANCE",
+            "QA_TASK_SETUP": (
+                "QA_TASK_PUBLICATION" if qa_setup_state == "READY_FOR_PUBLICATION" else "QA_TASK_SETUP"
+            ),
         }.get(stage.key, "STAGE_GATE"),
         title=title,
         explanation=explanation,
@@ -940,6 +1058,195 @@ def setup_review_program_definition(
     return run
 
 
+def setup_review_program_qa_task(
+    db: Session,
+    *,
+    program: ReviewProgram,
+    run: ReviewProgramRun,
+    action_id: uuid.UUID,
+    actor: User,
+    preview_hash: str,
+    task_key: str,
+    name: str,
+    description: str | None,
+    destination_metadata_definition_ids: list[uuid.UUID],
+) -> ReviewProgramRun:
+    action = db.scalar(
+        select(ReviewProgramAction)
+        .where(ReviewProgramAction.id == action_id, ReviewProgramAction.run_id == run.id)
+        .with_for_update()
+    )
+    if action is None or action.action_type != "QA_TASK_SETUP":
+        raise ReviewProgramError("Q&A task setup action not found")
+    if action.status == "RESOLVED":
+        resolution = action.resolution_payload or {}
+        if resolution.get("choice_key") != "GENERATE":
+            raise ReviewProgramError("Q&A task setup was already resolved differently")
+        return run
+    if run.current_stage != "QA_TASK_SETUP" or run.status != "WAITING_FOR_USER":
+        raise ReviewProgramError("Review Program is not waiting for Q&A task setup")
+    if action.preview_hash != preview_hash:
+        raise ReviewProgramError("Q&A task setup preview is stale")
+    configuration = current_review_program_version(db, program).configuration_snapshot
+    accepted = configuration.get("accepted_matter_definition") or {}
+    revision_id = accepted.get("revision_id")
+    content_hash = accepted.get("content_hash")
+    revision = db.get(MatterDefinitionRevision, uuid.UUID(str(revision_id))) if revision_id else None
+    if (
+        revision is None
+        or str(revision.matter_definition_id) != str(program.matter_definition_id)
+        or hashlib.sha256(revision.content_markdown.encode()).hexdigest() != content_hash
+    ):
+        raise ReviewProgramError("Accepted Matter Definition provenance is unavailable or stale")
+    matter = db.get(Matter, program.matter_id)
+    if matter is None:
+        raise ReviewProgramError("Review Program matter is unavailable")
+    try:
+        task, task_version = create_analysis_task(
+            db,
+            matter=matter,
+            actor_user_id=actor.id,
+            key=task_key,
+            name=name,
+            description=description,
+            task_type="QUESTION_ANSWERING",
+            decision_provider="JEV",
+            definition_markdown=revision.content_markdown,
+            destination_metadata_definition_ids=destination_metadata_definition_ids,
+            scope_policy={"allowed_modes": ["PARTITIONED_SET"], "default_mode": "PARTITIONED_SET"},
+        )
+        task_version.source_provenance = {
+            **task_version.source_provenance,
+            "origin": "REVIEW_PROGRAM",
+            "review_program_id": str(program.id),
+            "review_program_run_id": str(run.id),
+            "review_program_version_id": str(run.current_program_version_id),
+            "accepted_matter_definition": accepted,
+        }
+        profiles = [
+            create_execution_profile(
+                db,
+                matter=matter,
+                task=task,
+                task_version=task_version,
+                key="jev",
+                name="Jev review model",
+                decision_provider="JEV",
+                actor_user_id=actor.id,
+            ),
+            create_execution_profile(
+                db,
+                matter=matter,
+                task=task,
+                task_version=task_version,
+                key="openai_decisions",
+                name="OpenAI decisions model",
+                decision_provider="OPENAI_DECISIONS",
+                actor_user_id=actor.id,
+            ),
+        ]
+        task_version, workflow = queue_analysis_task_compilation(
+            db,
+            matter=matter,
+            task=task,
+            version_number=task_version.version,
+            initiated_by_user_id=actor.id,
+            notification_parent_type="REVIEW_PROGRAM_RUN",
+            notification_parent_id=run.id,
+        )
+    except (MatterAnalysisTaskError, AnalysisTaskExecutionProfileError) as exc:
+        raise ReviewProgramError(str(exc)) from exc
+    attempt = _current_stage_attempt(db, run, for_update=True)
+    link_review_program_child(
+        db,
+        program=program,
+        run=run,
+        stage_attempt=attempt,
+        purpose="QA_TASK",
+        child_type="MATTER_ANALYSIS_TASK",
+        child_id=task.id,
+        derivation_key=f"qa-task:{attempt.id}",
+        batching_policy="NONE",
+        context={"task_version_id": str(task_version.id), "version": task_version.version},
+    )
+    link_review_program_child(
+        db,
+        program=program,
+        run=run,
+        stage_attempt=attempt,
+        purpose="QA_TASK_COMPILATION",
+        child_type="ANALYSIS_TASK_COMPILATION",
+        child_id=workflow.id,
+        derivation_key=f"qa-task-compilation:{workflow.id}",
+        batching_policy="NONE",
+        context={"task_id": str(task.id), "task_version_id": str(task_version.id)},
+    )
+    version = _create_review_program_version(
+        db,
+        program=program,
+        run=run,
+        actor_user_id=actor.id,
+        configuration_stage="QA_TASK_SETUP",
+        configuration_updates={
+            "qa_task_draft": {
+                "task_id": str(task.id),
+                "task_version_id": str(task_version.id),
+                "version": task_version.version,
+                "destination_metadata_definition_ids": task_version.destination_metadata_definition_ids,
+                "execution_profile_ids": [str(profile.id) for profile in profiles],
+                "compiler_workflow_run_id": str(workflow.id),
+            }
+        },
+        source_hash_updates={
+            "qa_task_definition_content_hash": task_version.definition_content_hash,
+            "qa_execution_profile_hashes": [profile.content_hash for profile in profiles],
+        },
+    )
+    run.progress_summary = {
+        **run.progress_summary,
+        "qa_task_setup_state": "COMPILING",
+        "qa_task_setup": {
+            "task_id": str(task.id),
+            "task_version_id": str(task_version.id),
+            "execution_profile_ids": [str(profile.id) for profile in profiles],
+            "compiler_workflow_run_id": str(workflow.id),
+        },
+    }
+    resolve_review_program_action(
+        db,
+        program=program,
+        run=run,
+        action_id=action.id,
+        actor=actor,
+        preview_hash=preview_hash,
+        choice_key="GENERATE",
+        reason="Q&A task generation started",
+        input_payload={
+            "task_id": str(task.id),
+            "task_version_id": str(task_version.id),
+            "execution_profile_ids": [str(profile.id) for profile in profiles],
+            "compiler_workflow_run_id": str(workflow.id),
+            "program_version_id": str(version.id),
+        },
+    )
+    record_audit(
+        db,
+        tenant_id=program.tenant_id,
+        actor_user_id=actor.id,
+        action="review_program.qa_task_generation_started",
+        target_type="review_program",
+        target_id=program.id,
+        details={
+            "run_id": str(run.id),
+            "task_id": str(task.id),
+            "task_version_id": str(task_version.id),
+            "execution_profile_ids": [str(profile.id) for profile in profiles],
+            "compiler_workflow_run_id": str(workflow.id),
+        },
+    )
+    return run
+
+
 def publish_review_program_event(
     db: Session,
     *,
@@ -1302,6 +1609,160 @@ def _accept_matter_definition(
     _advance_after_stage(db, program=program, run=run, attempt=attempt)
 
 
+def _qa_task_records(
+    db: Session,
+    run: ReviewProgramRun,
+) -> tuple[MatterAnalysisTask, MatterAnalysisTaskVersion, list[AnalysisTaskExecutionProfile]]:
+    setup = (run.progress_summary or {}).get("qa_task_setup") or {}
+    try:
+        task_id = uuid.UUID(str(setup["task_id"]))
+        task_version_id = uuid.UUID(str(setup["task_version_id"]))
+        profile_ids = [uuid.UUID(str(value)) for value in setup["execution_profile_ids"]]
+    except (KeyError, TypeError, ValueError) as exc:
+        raise ReviewProgramError("Q&A task setup provenance is incomplete") from exc
+    task = db.get(MatterAnalysisTask, task_id)
+    task_version = db.get(MatterAnalysisTaskVersion, task_version_id)
+    if task is None or task_version is None or task_version.matter_analysis_task_id != task.id:
+        raise ReviewProgramError("Q&A task setup records are unavailable")
+    try:
+        profiles = validate_dual_execution_profiles(
+            db,
+            task_version=task_version,
+            profile_ids=profile_ids,
+        )
+    except AnalysisTaskExecutionProfileError as exc:
+        raise ReviewProgramError(str(exc)) from exc
+    if {profile.decision_provider for profile in profiles} != {"JEV", "OPENAI_DECISIONS"}:
+        raise ReviewProgramError("Q&A task must pin one Jev and one OpenAI decisions profile")
+    return task, task_version, profiles
+
+
+def _publish_review_program_qa_task(
+    db: Session,
+    *,
+    program: ReviewProgram,
+    run: ReviewProgramRun,
+    attempt: ReviewProgramStageAttempt,
+    action: ReviewProgramAction,
+) -> None:
+    task, task_version, profiles = _qa_task_records(db, run)
+    if task_version.compilation_status != "READY" or task_version.decision_specification is None:
+        raise ReviewProgramError("Q&A task Decision Specification is not ready for publication")
+    validation = task_version.validation_report or {}
+    if validation.get("errors"):
+        raise ReviewProgramError("Q&A task has unresolved validation errors")
+    try:
+        task, task_version = publish_analysis_task_version(
+            db,
+            task_id=task.id,
+            version_number=task_version.version,
+            actor_user_id=action.resolved_by_user_id or run.initiated_by_user_id,
+        )
+    except MatterAnalysisTaskError as exc:
+        raise ReviewProgramError(str(exc)) from exc
+    accepted_task = {
+        "schema_version": 1,
+        "task_id": str(task.id),
+        "task_version_id": str(task_version.id),
+        "version": task_version.version,
+        "definition_content_hash": task_version.definition_content_hash,
+        "specification_content_hash": task_version.specification_content_hash,
+        "destination_metadata_definition_ids": task_version.destination_metadata_definition_ids,
+        "scope_policy": task_version.scope_policy,
+        "input_contract": task_version.input_contract,
+        "output_contract": task_version.output_contract,
+        "evidence_policy": task_version.evidence_policy,
+        "routing_policy": task_version.routing_policy,
+        "validation_report": validation,
+        "execution_profiles": [
+            {
+                "id": str(profile.id),
+                "key": profile.key,
+                "decision_provider": profile.decision_provider,
+                "model_key": profile.model_key,
+                "resolved_model": profile.resolved_model,
+                "model_policy": profile.model_policy,
+                "required_capabilities": profile.required_capabilities,
+                "skill_definition_version_id": str(profile.skill_definition_version_id),
+                "provider_adapter_version": profile.provider_adapter_version,
+                "content_hash": profile.content_hash,
+            }
+            for profile in profiles
+        ],
+        "published_by_user_id": str(action.resolved_by_user_id),
+        "published_at": action.resolved_at.isoformat() if action.resolved_at else None,
+    }
+    version = _create_review_program_version(
+        db,
+        program=program,
+        run=run,
+        actor_user_id=action.resolved_by_user_id or run.initiated_by_user_id,
+        configuration_stage="DISCOVERY_QA",
+        configuration_updates={"accepted_qa_task": accepted_task},
+        source_hash_updates={
+            "qa_task_specification_content_hash": task_version.specification_content_hash,
+            "qa_execution_profile_hashes": [profile.content_hash for profile in profiles],
+        },
+    )
+    _complete_action_attempt(
+        attempt,
+        action,
+        result={"accepted_qa_task": accepted_task, "program_version_id": str(version.id)},
+    )
+    run.progress_summary = {
+        **run.progress_summary,
+        "qa_task_setup_state": "PUBLISHED",
+        "accepted_qa_task": accepted_task,
+    }
+    _advance_after_stage(db, program=program, run=run, attempt=attempt)
+
+
+def _recompile_review_program_qa_task(
+    db: Session,
+    *,
+    program: ReviewProgram,
+    run: ReviewProgramRun,
+    attempt: ReviewProgramStageAttempt,
+) -> None:
+    task, task_version, _ = _qa_task_records(db, run)
+    matter = db.get(Matter, program.matter_id)
+    if matter is None:
+        raise ReviewProgramError("Review Program matter is unavailable")
+    try:
+        _, workflow = queue_analysis_task_compilation(
+            db,
+            matter=matter,
+            task=task,
+            version_number=task_version.version,
+            initiated_by_user_id=run.initiated_by_user_id,
+            notification_parent_type="REVIEW_PROGRAM_RUN",
+            notification_parent_id=run.id,
+        )
+    except MatterAnalysisTaskError as exc:
+        raise ReviewProgramError(str(exc)) from exc
+    link_review_program_child(
+        db,
+        program=program,
+        run=run,
+        stage_attempt=attempt,
+        purpose="QA_TASK_COMPILATION",
+        child_type="ANALYSIS_TASK_COMPILATION",
+        child_id=workflow.id,
+        derivation_key=f"qa-task-compilation:{workflow.id}",
+        batching_policy="NONE",
+        context={"task_id": str(task.id), "task_version_id": str(task_version.id)},
+    )
+    setup = dict(run.progress_summary.get("qa_task_setup") or {})
+    setup["compiler_workflow_run_id"] = str(workflow.id)
+    run.progress_summary = {
+        **run.progress_summary,
+        "qa_task_setup_state": "COMPILING",
+        "qa_task_setup": setup,
+    }
+    attempt.status = "RUNNING"
+    run.status = "RUNNING"
+
+
 def process_review_program_event(
     db: Session,
     *,
@@ -1406,6 +1867,24 @@ def process_review_program_event(
                 program=program,
                 run=run,
                 stage_key="DEFINITION_ASSESSMENT",
+            )
+        elif action.stage_key == "QA_TASK_SETUP" and choice == "GENERATE":
+            attempt.status = "RUNNING"
+            run.status = "RUNNING"
+        elif action.stage_key == "QA_TASK_SETUP" and choice == "PUBLISH":
+            _publish_review_program_qa_task(
+                db,
+                program=program,
+                run=run,
+                attempt=attempt,
+                action=action,
+            )
+        elif action.stage_key == "QA_TASK_SETUP" and choice == "RECOMPILE":
+            _recompile_review_program_qa_task(
+                db,
+                program=program,
+                run=run,
+                attempt=attempt,
             )
         elif choice == "CONTINUE":
             _complete_action_attempt(attempt, action)
@@ -1566,6 +2045,87 @@ def project_review_program_assessment_terminal(
     return process_review_program_event(db, event=event)
 
 
+def project_review_program_qa_compilation_terminal(
+    db: Session,
+    *,
+    workflow: WorkflowRun,
+) -> ReviewProgramAction | ReviewProgramEvent | None:
+    if (
+        workflow.notification_policy != "PARENT_MANAGED"
+        or workflow.notification_parent_type != "REVIEW_PROGRAM_RUN"
+        or workflow.notification_parent_id is None
+    ):
+        return None
+    child = db.scalar(
+        select(ReviewProgramChild).where(
+            ReviewProgramChild.run_id == workflow.notification_parent_id,
+            ReviewProgramChild.child_type == "ANALYSIS_TASK_COMPILATION",
+            ReviewProgramChild.child_id == workflow.id,
+        )
+    )
+    if child is None:
+        return None
+    child.status = workflow.status
+    child.context = {
+        **child.context,
+        "workflow_status": workflow.status,
+        "progress": workflow.progress or {},
+        "error_message": workflow.error_message,
+    }
+    run = db.get(ReviewProgramRun, child.run_id)
+    attempt = db.get(ReviewProgramStageAttempt, child.stage_attempt_id)
+    program = db.get(ReviewProgram, run.program_id) if run is not None else None
+    if run is None or attempt is None or program is None:
+        raise ReviewProgramError("Review Program Q&A compilation link is incomplete")
+    if (
+        run.status in TERMINAL_RUN_STATUSES
+        or run.current_stage != "QA_TASK_SETUP"
+        or attempt.id != _current_stage_attempt(db, run).id
+    ):
+        return None
+    setup = run.progress_summary.get("qa_task_setup") or {}
+    if setup.get("compiler_workflow_run_id") != str(workflow.id):
+        return None
+    if workflow.status == "COMPLETED":
+        _, task_version, _ = _qa_task_records(db, run)
+        if task_version.compilation_status != "READY" or task_version.decision_specification is None:
+            raise ReviewProgramError("Completed compiler did not produce a ready Decision Specification")
+        existing = db.scalar(
+            select(ReviewProgramAction).where(
+                ReviewProgramAction.run_id == run.id,
+                ReviewProgramAction.stage_attempt_id == attempt.id,
+                ReviewProgramAction.action_type == "QA_TASK_PUBLICATION",
+                ReviewProgramAction.status == "OPEN",
+            )
+        )
+        if existing is not None:
+            return existing
+        run.progress_summary = {
+            **run.progress_summary,
+            "qa_task_setup_state": "READY_FOR_PUBLICATION",
+        }
+        return _create_action_for_stage(
+            db,
+            program=program,
+            run=run,
+            attempt=attempt,
+            stage=_stage_for_run(program, run),
+            template=_template_for_program(program),
+        )
+    if workflow.status in {"FAILED", "CANCELED"}:
+        run.status = "RUNNING"
+        attempt.status = "RUNNING"
+        return fail_review_program_stage(
+            db,
+            program=program,
+            run=run,
+            error_code=f"QA_TASK_COMPILATION_{workflow.status}",
+            error_summary=workflow.error_message or f"Q&A task compilation {workflow.status.lower()}",
+            retriable=True,
+        )
+    return None
+
+
 def resolve_review_program_action(
     db: Session,
     *,
@@ -1603,6 +2163,12 @@ def resolve_review_program_action(
         and not input_payload.get("matter_definition_id")
     ):
         raise ReviewProgramError("Use the Matter Definition setup command for this choice")
+    if (
+        action.action_type == "QA_TASK_SETUP"
+        and choice_key != "STOP"
+        and not input_payload.get("task_id")
+    ):
+        raise ReviewProgramError("Use the Q&A task setup command for this choice")
     now = utcnow()
     action.status = "RESOLVED"
     action.resolution_payload = {"choice_key": choice_key, "input": input_payload}

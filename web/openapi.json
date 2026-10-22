@@ -5312,6 +5312,152 @@
         }
       }
     },
+    "/v1/matters/{matter_id}/analysis-tasks/{task_id}/versions/{version_number}/execution-profiles": {
+      "get": {
+        "tags": [
+          "matter analysis tasks"
+        ],
+        "summary": "List Analysis Task Execution Profiles",
+        "operationId": "list_analysis_task_execution_profiles_v1_matters__matter_id__analysis_tasks__task_id__versions__version_number__execution_profiles_get",
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "matter_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid",
+              "title": "Matter Id"
+            }
+          },
+          {
+            "name": "task_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid",
+              "title": "Task Id"
+            }
+          },
+          {
+            "name": "version_number",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "integer",
+              "title": "Version Number"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "array",
+                  "items": {
+                    "$ref": "#/components/schemas/AnalysisTaskExecutionProfileRead"
+                  },
+                  "title": "Response List Analysis Task Execution Profiles V1 Matters  Matter Id  Analysis Tasks  Task Id  Versions  Version Number  Execution Profiles Get"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      },
+      "post": {
+        "tags": [
+          "matter analysis tasks"
+        ],
+        "summary": "Create Analysis Task Execution Profile",
+        "operationId": "create_analysis_task_execution_profile_v1_matters__matter_id__analysis_tasks__task_id__versions__version_number__execution_profiles_post",
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "matter_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid",
+              "title": "Matter Id"
+            }
+          },
+          {
+            "name": "task_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid",
+              "title": "Task Id"
+            }
+          },
+          {
+            "name": "version_number",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "integer",
+              "title": "Version Number"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/AnalysisTaskExecutionProfileCreate"
+              }
+            }
+          }
+        },
+        "responses": {
+          "201": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AnalysisTaskExecutionProfileRead"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/v1/matters/{matter_id}/analysis-tasks/{task_id}/question-answering-runs": {
       "post": {
         "tags": [
@@ -14805,6 +14951,94 @@
         },
         "responses": {
           "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ReviewProgramRunRead"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v1/matters/{matter_id}/review-programs/{program_id}/runs/{run_id}/actions/{action_id}/qa-setup": {
+      "post": {
+        "tags": [
+          "review programs"
+        ],
+        "summary": "Setup Program Qa Task",
+        "operationId": "setup_program_qa_task_v1_matters__matter_id__review_programs__program_id__runs__run_id__actions__action_id__qa_setup_post",
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "matter_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid",
+              "title": "Matter Id"
+            }
+          },
+          {
+            "name": "program_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid",
+              "title": "Program Id"
+            }
+          },
+          {
+            "name": "run_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid",
+              "title": "Run Id"
+            }
+          },
+          {
+            "name": "action_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid",
+              "title": "Action Id"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ReviewProgramQASetup"
+              }
+            }
+          }
+        },
+        "responses": {
+          "202": {
             "description": "Successful Response",
             "content": {
               "application/json": {
@@ -27318,6 +27552,18 @@
             "type": "boolean",
             "title": "Use Batch Api",
             "default": false
+          },
+          "execution_profile_id": {
+            "anyOf": [
+              {
+                "type": "string",
+                "format": "uuid"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Execution Profile Id"
           }
         },
         "additionalProperties": false,
@@ -27358,6 +27604,18 @@
             "type": "string",
             "format": "uuid",
             "title": "Matter Analysis Task Version Id"
+          },
+          "execution_profile_id": {
+            "anyOf": [
+              {
+                "type": "string",
+                "format": "uuid"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Execution Profile Id"
           },
           "task_type": {
             "type": "string",
@@ -27482,6 +27740,7 @@
           "analysis_task_batch_set_id",
           "matter_analysis_task_id",
           "matter_analysis_task_version_id",
+          "execution_profile_id",
           "task_type",
           "status",
           "configuration_snapshot",
@@ -27499,6 +27758,128 @@
           "execution"
         ],
         "title": "AnalysisTaskBatchSetRunRead"
+      },
+      "AnalysisTaskExecutionProfileCreate": {
+        "properties": {
+          "key": {
+            "type": "string",
+            "pattern": "^[a-z][a-z0-9_]{0,99}$",
+            "title": "Key"
+          },
+          "name": {
+            "type": "string",
+            "maxLength": 200,
+            "minLength": 1,
+            "title": "Name"
+          },
+          "decision_provider": {
+            "type": "string",
+            "enum": [
+              "JEV",
+              "OPENAI_DECISIONS"
+            ],
+            "title": "Decision Provider"
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "key",
+          "name",
+          "decision_provider"
+        ],
+        "title": "AnalysisTaskExecutionProfileCreate"
+      },
+      "AnalysisTaskExecutionProfileRead": {
+        "properties": {
+          "id": {
+            "type": "string",
+            "format": "uuid",
+            "title": "Id"
+          },
+          "matter_analysis_task_version_id": {
+            "type": "string",
+            "format": "uuid",
+            "title": "Matter Analysis Task Version Id"
+          },
+          "key": {
+            "type": "string",
+            "title": "Key"
+          },
+          "name": {
+            "type": "string",
+            "title": "Name"
+          },
+          "decision_provider": {
+            "type": "string",
+            "enum": [
+              "JEV",
+              "OPENAI_DECISIONS"
+            ],
+            "title": "Decision Provider"
+          },
+          "model_key": {
+            "type": "string",
+            "title": "Model Key"
+          },
+          "resolved_model": {
+            "type": "string",
+            "title": "Resolved Model"
+          },
+          "model_policy": {
+            "additionalProperties": true,
+            "type": "object",
+            "title": "Model Policy"
+          },
+          "required_capabilities": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array",
+            "title": "Required Capabilities"
+          },
+          "skill_definition_version_id": {
+            "type": "string",
+            "format": "uuid",
+            "title": "Skill Definition Version Id"
+          },
+          "provider_adapter_version": {
+            "type": "string",
+            "title": "Provider Adapter Version"
+          },
+          "content_hash": {
+            "type": "string",
+            "title": "Content Hash"
+          },
+          "created_by_user_id": {
+            "type": "string",
+            "format": "uuid",
+            "title": "Created By User Id"
+          },
+          "created_at": {
+            "type": "string",
+            "format": "date-time",
+            "title": "Created At"
+          }
+        },
+        "type": "object",
+        "required": [
+          "id",
+          "matter_analysis_task_version_id",
+          "key",
+          "name",
+          "decision_provider",
+          "model_key",
+          "resolved_model",
+          "model_policy",
+          "required_capabilities",
+          "skill_definition_version_id",
+          "provider_adapter_version",
+          "content_hash",
+          "created_by_user_id",
+          "created_at"
+        ],
+        "title": "AnalysisTaskExecutionProfileRead"
       },
       "AnalysisTaskScopePolicy": {
         "properties": {
@@ -52640,6 +53021,58 @@
           "processed_at"
         ],
         "title": "ReviewProgramEventRead"
+      },
+      "ReviewProgramQASetup": {
+        "properties": {
+          "preview_hash": {
+            "type": "string",
+            "maxLength": 64,
+            "minLength": 64,
+            "title": "Preview Hash"
+          },
+          "task_key": {
+            "type": "string",
+            "pattern": "^[a-z][a-z0-9_]{0,99}$",
+            "title": "Task Key"
+          },
+          "name": {
+            "type": "string",
+            "maxLength": 200,
+            "minLength": 1,
+            "title": "Name"
+          },
+          "description": {
+            "anyOf": [
+              {
+                "type": "string",
+                "maxLength": 10000
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Description"
+          },
+          "destination_metadata_definition_ids": {
+            "items": {
+              "type": "string",
+              "format": "uuid"
+            },
+            "type": "array",
+            "maxItems": 100,
+            "minItems": 1,
+            "title": "Destination Metadata Definition Ids"
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "preview_hash",
+          "task_key",
+          "name",
+          "destination_metadata_definition_ids"
+        ],
+        "title": "ReviewProgramQASetup"
       },
       "ReviewProgramRead": {
         "properties": {

@@ -4729,6 +4729,56 @@ class MatterAnalysisTaskVersion(Base):
     published_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
 
 
+class AnalysisTaskExecutionProfile(Base):
+    __tablename__ = "analysis_task_execution_profile"
+    __table_args__ = (
+        UniqueConstraint(
+            "matter_analysis_task_version_id",
+            "key",
+            name="uq_analysis_task_execution_profile_key",
+        ),
+        UniqueConstraint(
+            "matter_analysis_task_version_id",
+            "content_hash",
+            name="uq_analysis_task_execution_profile_content",
+        ),
+        CheckConstraint(
+            "decision_provider IN ('JEV', 'OPENAI_DECISIONS')",
+            name="ck_analysis_task_execution_profile_provider",
+        ),
+        Index(
+            "ix_analysis_task_execution_profile_version",
+            "matter_analysis_task_version_id",
+        ),
+    )
+
+    id: Mapped[uuid.UUID] = mapped_column(Uuid, primary_key=True, default=uuid.uuid4)
+    matter_analysis_task_version_id: Mapped[uuid.UUID] = mapped_column(
+        Uuid,
+        ForeignKey("matter_analysis_task_version.id", ondelete="CASCADE"),
+    )
+    key: Mapped[str] = mapped_column(String(100))
+    name: Mapped[str] = mapped_column(String(200))
+    decision_provider: Mapped[str] = mapped_column(String(30))
+    model_key: Mapped[str] = mapped_column(String(500))
+    resolved_model: Mapped[str] = mapped_column(String(500))
+    model_policy: Mapped[dict[str, Any]] = mapped_column(JSON_DOCUMENT, default=dict)
+    required_capabilities: Mapped[list[str]] = mapped_column(JSON_DOCUMENT, default=list)
+    skill_definition_version_id: Mapped[uuid.UUID] = mapped_column(
+        Uuid,
+        ForeignKey("skill_definition_version.id", ondelete="RESTRICT"),
+        index=True,
+    )
+    provider_adapter_version: Mapped[str] = mapped_column(String(100))
+    content_hash: Mapped[str] = mapped_column(String(64), index=True)
+    created_by_user_id: Mapped[uuid.UUID] = mapped_column(
+        Uuid,
+        ForeignKey("app_user.id", ondelete="RESTRICT"),
+        index=True,
+    )
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+
+
 class MatterAnalysisTaskRun(TimestampMixin, Base):
     __tablename__ = "matter_analysis_task_run"
     __table_args__ = (
@@ -4894,6 +4944,12 @@ class AnalysisTaskBatchSetRun(TimestampMixin, Base):
     )
     matter_analysis_task_version_id: Mapped[uuid.UUID] = mapped_column(
         Uuid, ForeignKey("matter_analysis_task_version.id", ondelete="RESTRICT")
+    )
+    execution_profile_id: Mapped[uuid.UUID | None] = mapped_column(
+        Uuid,
+        ForeignKey("analysis_task_execution_profile.id", ondelete="RESTRICT"),
+        nullable=True,
+        index=True,
     )
     task_type: Mapped[str] = mapped_column(String(30))
     status: Mapped[str] = mapped_column(String(30), default="QUEUED")

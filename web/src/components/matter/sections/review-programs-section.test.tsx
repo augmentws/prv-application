@@ -112,6 +112,102 @@ describe("ReviewProgramsSection", () => {
     }));
   });
 
+  it("selects coding fields and starts generated Q&A task setup", async () => {
+    vi.mocked(coreApi).mockImplementation(async (path, options) => {
+      if (path === "/v1/review-workflow-templates") return [{
+        key: "FIRST_PASS_REVIEW",
+        version: 1,
+        schema_version: 1,
+        content_hash: "a".repeat(64),
+        name: "First Pass Review",
+        description: "Guided review",
+        workflow_type: "FIRST_PASS_REVIEW",
+        phases: [],
+        stages: [{ key: "QA_TASK_SETUP", name: "Q&A task setup", phase_key: "DISCOVERY_QA", ordinal: 5, batching_policy: "NONE", requires_human_gate: true }],
+      }] as never;
+      if (path === "/v1/matters/matter-1/metadata-definitions") return [{
+        id: "field-1",
+        key: "responsive",
+        display_name: "Responsive",
+        description: null,
+        type: "BOOLEAN",
+        cardinality: "SINGLE",
+        allowed_values: null,
+        value_source: "ASSERTED",
+        assertion_policy: "IMMEDIATE",
+        resolution_policy: "EXPLICIT_ONLY",
+        searchable: true,
+        facetable: true,
+        normalize_to_lowercase: false,
+        reviewable: true,
+        ai_assignable: true,
+        status: "ACTIVE",
+      }] as never;
+      if (path === "/v1/matters/matter-1/review-programs") return [{
+        id: "program-1",
+        tenant_id: "tenant-1",
+        matter_id: "matter-1",
+        template_key: "FIRST_PASS_REVIEW",
+        template_version: 1,
+        template_content_hash: "a".repeat(64),
+        key: "standard-first-pass",
+        name: "Standard first pass",
+        description: "Responsive review",
+        status: "ACTIVE",
+        current_run_id: "run-1",
+        current_version: { version: 2 },
+        created_at: "2026-10-21T00:00:00Z",
+      }] as never;
+      if (path === "/v1/matters/matter-1/review-programs/program-1/runs" && !options) return [{
+        id: "run-1",
+        program_id: "program-1",
+        status: "WAITING_FOR_USER",
+        current_stage: "QA_TASK_SETUP",
+        current_stage_ordinal: 5,
+        created_at: "2026-10-21T00:00:00Z",
+        failure_retriable: false,
+        failure_summary: null,
+        stage_attempts: [{ stage_key: "QA_TASK_SETUP", status: "WAITING" }],
+        actions: [{
+          id: "action-1",
+          action_type: "QA_TASK_SETUP",
+          stage_key: "QA_TASK_SETUP",
+          status: "OPEN",
+          title: "Generate the first-pass Q&A task",
+          explanation: "Choose fields and generate the task.",
+          preview_hash: "b".repeat(64),
+          allowed_choices: [
+            { key: "GENERATE", label: "Generate Q&A task", consequence: "Generate it." },
+            { key: "STOP", label: "Stop program", consequence: "End this run." },
+          ],
+        }],
+      }] as never;
+      if (path.endsWith("/actions/action-1/qa-setup") && options?.method === "POST") return {
+        id: "run-1",
+        program_id: "program-1",
+        status: "RUNNING",
+      } as never;
+      throw new Error(`Unexpected API request: ${path}`);
+    });
+    renderSection();
+
+    await userEvent.click(await screen.findByRole("checkbox", { name: /Responsive/ }));
+    await userEvent.click(screen.getByRole("button", { name: "Generate Q&A task" }));
+
+    await waitFor(() => expect(coreApi).toHaveBeenCalledWith(
+      "/v1/matters/matter-1/review-programs/program-1/runs/run-1/actions/action-1/qa-setup",
+      expect.objectContaining({ method: "POST" }),
+    ));
+    const call = vi.mocked(coreApi).mock.calls.find(([path]) => path.endsWith("/qa-setup"));
+    expect(JSON.parse(String(call?.[1]?.body))).toEqual({
+      preview_hash: "b".repeat(64),
+      task_key: "first_pass_qa",
+      name: "First-pass Q&A",
+      description: "Generated from the accepted Matter Definition.",
+      destination_metadata_definition_ids: ["field-1"],
+    });
+  });
+
   it("shows the current gate and resolves it through the coordinator endpoint", async () => {
     vi.mocked(coreApi).mockImplementation(async (path, options) => {
       if (path === "/v1/review-workflow-templates") return [{

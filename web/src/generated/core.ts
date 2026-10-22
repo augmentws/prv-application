@@ -38,6 +38,8 @@ import type {
   AnalysisTaskBatchSetRead,
   AnalysisTaskBatchSetRunCreate,
   AnalysisTaskBatchSetRunRead,
+  AnalysisTaskExecutionProfileCreate,
+  AnalysisTaskExecutionProfileRead,
   ArtifactLineageRead,
   ArtifactRead,
   AuditRecordPage,
@@ -318,6 +320,7 @@ import type {
   ReviewProgramActionResolve,
   ReviewProgramCreate,
   ReviewProgramDefinitionSetup,
+  ReviewProgramQASetup,
   ReviewProgramRead,
   ReviewProgramRunCommand,
   ReviewProgramRunRead,
@@ -5506,6 +5509,129 @@ const res = await fetch(getCreateAnalysisTaskVersionV1MattersMatterIdAnalysisTas
 
   const data: createAnalysisTaskVersionV1MattersMatterIdAnalysisTasksTaskIdVersionsPostResponse['data'] = body ? JSON.parse(body) : {}
   return { data, status: res.status, headers: res.headers } as createAnalysisTaskVersionV1MattersMatterIdAnalysisTasksTaskIdVersionsPostResponse
+}
+
+
+
+export type listAnalysisTaskExecutionProfilesV1MattersMatterIdAnalysisTasksTaskIdVersionsVersionNumberExecutionProfilesGetResponse200 = {
+  data: AnalysisTaskExecutionProfileRead[]
+  status: 200
+}
+
+export type listAnalysisTaskExecutionProfilesV1MattersMatterIdAnalysisTasksTaskIdVersionsVersionNumberExecutionProfilesGetResponse422 = {
+  data: HTTPValidationError
+  status: 422
+}
+
+export type listAnalysisTaskExecutionProfilesV1MattersMatterIdAnalysisTasksTaskIdVersionsVersionNumberExecutionProfilesGetResponseSuccess = (listAnalysisTaskExecutionProfilesV1MattersMatterIdAnalysisTasksTaskIdVersionsVersionNumberExecutionProfilesGetResponse200) & {
+  headers: Headers;
+};
+export type listAnalysisTaskExecutionProfilesV1MattersMatterIdAnalysisTasksTaskIdVersionsVersionNumberExecutionProfilesGetResponseError = (listAnalysisTaskExecutionProfilesV1MattersMatterIdAnalysisTasksTaskIdVersionsVersionNumberExecutionProfilesGetResponse422) & {
+  headers: Headers;
+};
+
+export type listAnalysisTaskExecutionProfilesV1MattersMatterIdAnalysisTasksTaskIdVersionsVersionNumberExecutionProfilesGetResponse = (listAnalysisTaskExecutionProfilesV1MattersMatterIdAnalysisTasksTaskIdVersionsVersionNumberExecutionProfilesGetResponseSuccess | listAnalysisTaskExecutionProfilesV1MattersMatterIdAnalysisTasksTaskIdVersionsVersionNumberExecutionProfilesGetResponseError)
+
+export const getListAnalysisTaskExecutionProfilesV1MattersMatterIdAnalysisTasksTaskIdVersionsVersionNumberExecutionProfilesGetUrl = (matterId: string,
+    taskId: string,
+    versionNumber: number,) => {
+
+
+
+
+  return `/api/core/v1/matters/${matterId}/analysis-tasks/${taskId}/versions/${versionNumber}/execution-profiles`
+}
+
+/**
+ * @summary List Analysis Task Execution Profiles
+ */
+export const listAnalysisTaskExecutionProfilesV1MattersMatterIdAnalysisTasksTaskIdVersionsVersionNumberExecutionProfilesGet = async (matterId: string,
+    taskId: string,
+    versionNumber: number, options?: RequestInit): Promise<listAnalysisTaskExecutionProfilesV1MattersMatterIdAnalysisTasksTaskIdVersionsVersionNumberExecutionProfilesGetResponse> => {
+
+  const res = await fetch(getListAnalysisTaskExecutionProfilesV1MattersMatterIdAnalysisTasksTaskIdVersionsVersionNumberExecutionProfilesGetUrl(matterId,taskId,versionNumber),
+  {
+    ...options,
+    method: 'GET'
+
+
+  }
+)
+
+
+  const body = [204, 205, 304].includes(res.status) ? null : await res.text();
+
+  const data: listAnalysisTaskExecutionProfilesV1MattersMatterIdAnalysisTasksTaskIdVersionsVersionNumberExecutionProfilesGetResponse['data'] = body ? JSON.parse(body) : {}
+  return { data, status: res.status, headers: res.headers } as listAnalysisTaskExecutionProfilesV1MattersMatterIdAnalysisTasksTaskIdVersionsVersionNumberExecutionProfilesGetResponse
+}
+
+
+
+export type createAnalysisTaskExecutionProfileV1MattersMatterIdAnalysisTasksTaskIdVersionsVersionNumberExecutionProfilesPostResponse201 = {
+  data: AnalysisTaskExecutionProfileRead
+  status: 201
+}
+
+export type createAnalysisTaskExecutionProfileV1MattersMatterIdAnalysisTasksTaskIdVersionsVersionNumberExecutionProfilesPostResponse422 = {
+  data: HTTPValidationError
+  status: 422
+}
+
+export type createAnalysisTaskExecutionProfileV1MattersMatterIdAnalysisTasksTaskIdVersionsVersionNumberExecutionProfilesPostResponseSuccess = (createAnalysisTaskExecutionProfileV1MattersMatterIdAnalysisTasksTaskIdVersionsVersionNumberExecutionProfilesPostResponse201) & {
+  headers: Headers;
+};
+export type createAnalysisTaskExecutionProfileV1MattersMatterIdAnalysisTasksTaskIdVersionsVersionNumberExecutionProfilesPostResponseError = (createAnalysisTaskExecutionProfileV1MattersMatterIdAnalysisTasksTaskIdVersionsVersionNumberExecutionProfilesPostResponse422) & {
+  headers: Headers;
+};
+
+export type createAnalysisTaskExecutionProfileV1MattersMatterIdAnalysisTasksTaskIdVersionsVersionNumberExecutionProfilesPostResponse = (createAnalysisTaskExecutionProfileV1MattersMatterIdAnalysisTasksTaskIdVersionsVersionNumberExecutionProfilesPostResponseSuccess | createAnalysisTaskExecutionProfileV1MattersMatterIdAnalysisTasksTaskIdVersionsVersionNumberExecutionProfilesPostResponseError)
+
+export const getCreateAnalysisTaskExecutionProfileV1MattersMatterIdAnalysisTasksTaskIdVersionsVersionNumberExecutionProfilesPostUrl = (matterId: string,
+    taskId: string,
+    versionNumber: number,) => {
+
+
+
+
+  return `/api/core/v1/matters/${matterId}/analysis-tasks/${taskId}/versions/${versionNumber}/execution-profiles`
+}
+
+/**
+ * @summary Create Analysis Task Execution Profile
+ */
+export const createAnalysisTaskExecutionProfileV1MattersMatterIdAnalysisTasksTaskIdVersionsVersionNumberExecutionProfilesPost = async (matterId: string,
+    taskId: string,
+    versionNumber: number,
+    analysisTaskExecutionProfileCreate: AnalysisTaskExecutionProfileCreate, options?: RequestInit): Promise<createAnalysisTaskExecutionProfileV1MattersMatterIdAnalysisTasksTaskIdVersionsVersionNumberExecutionProfilesPostResponse> => {
+
+    const getHeaders = (h?: NonNullable<RequestInit['headers']>): Record<string, string | readonly string[]> => {
+    if (!h) return {};
+    if (h instanceof Headers) return Object.fromEntries(h.entries());
+    if (Symbol.iterator in h) {
+      return Object.fromEntries(
+        Array.from(h as Iterable<Iterable<string>>, (entry) => Array.from(entry) as [string, string]),
+      );
+    }
+    const headers: Record<string, string | readonly string[]> = {};
+    for (const [name, value] of Object.entries<string | readonly string[] | undefined>(h)) {
+      if (value !== undefined) headers[name] = value;
+    }
+    return headers;
+  };
+const res = await fetch(getCreateAnalysisTaskExecutionProfileV1MattersMatterIdAnalysisTasksTaskIdVersionsVersionNumberExecutionProfilesPostUrl(matterId,taskId,versionNumber),
+  {
+    ...options,
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json', ...getHeaders(options?.headers) },
+    body: JSON.stringify(analysisTaskExecutionProfileCreate)
+  }
+)
+
+
+  const body = [204, 205, 304].includes(res.status) ? null : await res.text();
+
+  const data: createAnalysisTaskExecutionProfileV1MattersMatterIdAnalysisTasksTaskIdVersionsVersionNumberExecutionProfilesPostResponse['data'] = body ? JSON.parse(body) : {}
+  return { data, status: res.status, headers: res.headers } as createAnalysisTaskExecutionProfileV1MattersMatterIdAnalysisTasksTaskIdVersionsVersionNumberExecutionProfilesPostResponse
 }
 
 
@@ -13952,6 +14078,77 @@ const res = await fetch(getSetupProgramDefinitionV1MattersMatterIdReviewPrograms
 
   const data: setupProgramDefinitionV1MattersMatterIdReviewProgramsProgramIdRunsRunIdActionsActionIdDefinitionSetupPostResponse['data'] = body ? JSON.parse(body) : {}
   return { data, status: res.status, headers: res.headers } as setupProgramDefinitionV1MattersMatterIdReviewProgramsProgramIdRunsRunIdActionsActionIdDefinitionSetupPostResponse
+}
+
+
+
+export type setupProgramQaTaskV1MattersMatterIdReviewProgramsProgramIdRunsRunIdActionsActionIdQaSetupPostResponse202 = {
+  data: ReviewProgramRunRead
+  status: 202
+}
+
+export type setupProgramQaTaskV1MattersMatterIdReviewProgramsProgramIdRunsRunIdActionsActionIdQaSetupPostResponse422 = {
+  data: HTTPValidationError
+  status: 422
+}
+
+export type setupProgramQaTaskV1MattersMatterIdReviewProgramsProgramIdRunsRunIdActionsActionIdQaSetupPostResponseSuccess = (setupProgramQaTaskV1MattersMatterIdReviewProgramsProgramIdRunsRunIdActionsActionIdQaSetupPostResponse202) & {
+  headers: Headers;
+};
+export type setupProgramQaTaskV1MattersMatterIdReviewProgramsProgramIdRunsRunIdActionsActionIdQaSetupPostResponseError = (setupProgramQaTaskV1MattersMatterIdReviewProgramsProgramIdRunsRunIdActionsActionIdQaSetupPostResponse422) & {
+  headers: Headers;
+};
+
+export type setupProgramQaTaskV1MattersMatterIdReviewProgramsProgramIdRunsRunIdActionsActionIdQaSetupPostResponse = (setupProgramQaTaskV1MattersMatterIdReviewProgramsProgramIdRunsRunIdActionsActionIdQaSetupPostResponseSuccess | setupProgramQaTaskV1MattersMatterIdReviewProgramsProgramIdRunsRunIdActionsActionIdQaSetupPostResponseError)
+
+export const getSetupProgramQaTaskV1MattersMatterIdReviewProgramsProgramIdRunsRunIdActionsActionIdQaSetupPostUrl = (matterId: string,
+    programId: string,
+    runId: string,
+    actionId: string,) => {
+
+
+
+
+  return `/api/core/v1/matters/${matterId}/review-programs/${programId}/runs/${runId}/actions/${actionId}/qa-setup`
+}
+
+/**
+ * @summary Setup Program Qa Task
+ */
+export const setupProgramQaTaskV1MattersMatterIdReviewProgramsProgramIdRunsRunIdActionsActionIdQaSetupPost = async (matterId: string,
+    programId: string,
+    runId: string,
+    actionId: string,
+    reviewProgramQASetup: ReviewProgramQASetup, options?: RequestInit): Promise<setupProgramQaTaskV1MattersMatterIdReviewProgramsProgramIdRunsRunIdActionsActionIdQaSetupPostResponse> => {
+
+    const getHeaders = (h?: NonNullable<RequestInit['headers']>): Record<string, string | readonly string[]> => {
+    if (!h) return {};
+    if (h instanceof Headers) return Object.fromEntries(h.entries());
+    if (Symbol.iterator in h) {
+      return Object.fromEntries(
+        Array.from(h as Iterable<Iterable<string>>, (entry) => Array.from(entry) as [string, string]),
+      );
+    }
+    const headers: Record<string, string | readonly string[]> = {};
+    for (const [name, value] of Object.entries<string | readonly string[] | undefined>(h)) {
+      if (value !== undefined) headers[name] = value;
+    }
+    return headers;
+  };
+const res = await fetch(getSetupProgramQaTaskV1MattersMatterIdReviewProgramsProgramIdRunsRunIdActionsActionIdQaSetupPostUrl(matterId,programId,runId,actionId),
+  {
+    ...options,
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json', ...getHeaders(options?.headers) },
+    body: JSON.stringify(reviewProgramQASetup)
+  }
+)
+
+
+  const body = [204, 205, 304].includes(res.status) ? null : await res.text();
+
+  const data: setupProgramQaTaskV1MattersMatterIdReviewProgramsProgramIdRunsRunIdActionsActionIdQaSetupPostResponse['data'] = body ? JSON.parse(body) : {}
+  return { data, status: res.status, headers: res.headers } as setupProgramQaTaskV1MattersMatterIdReviewProgramsProgramIdRunsRunIdActionsActionIdQaSetupPostResponse
 }
 
 

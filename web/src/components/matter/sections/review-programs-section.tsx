@@ -18,7 +18,7 @@ import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Textarea } from "@/components/ui/textarea";
-import type { MatterDefinitionRead, ReviewProgramActionRead, ReviewProgramCreate, ReviewProgramRead, ReviewProgramRunRead, ReviewWorkflowStageRead, ReviewWorkflowTemplateRead } from "@/generated/models";
+import type { MatterDefinitionRead, MetadataDefinitionRead, ReviewProgramActionRead, ReviewProgramCreate, ReviewProgramRead, ReviewProgramRunRead, ReviewWorkflowStageRead, ReviewWorkflowTemplateRead } from "@/generated/models";
 import { coreApi } from "@/lib/api-client";
 import { formatDate } from "@/lib/format";
 import { cn } from "@/lib/utils";
@@ -106,6 +106,14 @@ export function ReviewProgramsSection() {
     onSuccess: async (run) => { await refresh(run.program_id); toast.success("The Matter Definition assessment has started."); },
     onError: mutationError("The Matter Definition could not be configured."),
   });
+  const setupQA = useMutation({
+    mutationFn: ({ programId, runId, actionId, payload }: { programId: string; runId: string; actionId: string; payload: QASetupPayload }) => coreApi<ReviewProgramRunRead>(`/v1/matters/${matterId}/review-programs/${programId}/runs/${runId}/actions/${actionId}/qa-setup`, {
+      method: "POST",
+      body: JSON.stringify(payload),
+    }),
+    onSuccess: async (run) => { await refresh(run.program_id); toast.success("The Q&A task is being generated."); },
+    onError: mutationError("The Q&A task could not be generated."),
+  });
 
   if (programs.isPending || templates.isPending) return <TableLoading />;
   if (programs.error || templates.error) return <QueryError message={programs.error?.message ?? templates.error?.message} />;
@@ -132,17 +140,18 @@ export function ReviewProgramsSection() {
         canManage={canManage}
         loading={runs.isPending}
         error={runs.error}
-        busy={startRun.isPending || command.isPending || resolveAction.isPending || setupDefinition.isPending}
+        busy={startRun.isPending || command.isPending || resolveAction.isPending || setupDefinition.isPending || setupQA.isPending}
         onStart={() => startRun.mutate(selectedProgram.id)}
         onCommand={(verb) => currentRun && command.mutate({ programId: selectedProgram.id, runId: currentRun.id, verb })}
         onResolve={(action, choiceKey) => currentRun && resolveAction.mutate({ programId: selectedProgram.id, runId: currentRun.id, action, choiceKey })}
         onSetupDefinition={(action, payload) => currentRun && setupDefinition.mutate({ programId: selectedProgram.id, runId: currentRun.id, actionId: action.id, payload })}
+        onSetupQA={(action, payload) => currentRun && setupQA.mutate({ programId: selectedProgram.id, runId: currentRun.id, actionId: action.id, payload })}
       /> : null}
     </div>}
   </div>;
 }
 
-function ProgramWorkspace({ clientId, matterId, program, run, stages, canManage, loading, error, busy, onStart, onCommand, onResolve, onSetupDefinition }: {
+function ProgramWorkspace({ clientId, matterId, program, run, stages, canManage, loading, error, busy, onStart, onCommand, onResolve, onSetupDefinition, onSetupQA }: {
   clientId: string;
   matterId: string;
   program: ReviewProgramRead;
@@ -156,6 +165,7 @@ function ProgramWorkspace({ clientId, matterId, program, run, stages, canManage,
   onCommand: (verb: "cancel" | "retry" | "reconcile") => void;
   onResolve: (action: ReviewProgramActionRead, choiceKey: string) => void;
   onSetupDefinition: (action: ReviewProgramActionRead, payload: DefinitionSetupPayload) => void;
+  onSetupQA: (action: ReviewProgramActionRead, payload: QASetupPayload) => void;
 }) {
   const openAction = run?.actions?.find((action) => action.status === "OPEN") ?? null;
   const attemptsByStage = useMemo(() => new Map(run?.stage_attempts?.map((attempt) => [attempt.stage_key, attempt]) ?? []), [run?.stage_attempts]);
@@ -173,7 +183,7 @@ function ProgramWorkspace({ clientId, matterId, program, run, stages, canManage,
       </CardHeader>
       {run ? <CardContent><div className="flex flex-wrap items-center gap-2"><StatusBadge status={run.status} /><Badge variant="outline">{friendly(run.current_stage)}</Badge><span className="text-xs text-muted-foreground">Started {formatDate(run.created_at)}</span></div>{run.failure_summary ? <p className="mt-3 rounded-lg border border-destructive/30 bg-destructive/5 p-3 text-sm text-destructive">{run.failure_summary}</p> : null}</CardContent> : <CardContent><p className="text-sm text-muted-foreground">This program is configured but has not been started.</p></CardContent>}
     </Card>
-    {openAction?.action_type === "MATTER_DEFINITION_SETUP" ? <DefinitionSetupCard matterId={matterId} action={openAction} canManage={canManage} busy={busy} onSubmit={(payload) => onSetupDefinition(openAction, payload)} onStop={() => onResolve(openAction, "STOP")} /> : openAction ? <Card className="border-accent/60 bg-accent/5"><CardHeader><CardTitle>{openAction.title}</CardTitle><CardDescription>{openAction.explanation}</CardDescription></CardHeader><CardContent><DefinitionAssessmentSummary action={openAction} />{openAction.stage_key === "DEFINITION_REFINEMENT" || openAction.stage_key === "DEFINITION_ACCEPTANCE" ? <Button asChild size="sm" variant="outline" className="mb-3"><Link href={`/app/clients/${clientId}/matters/${matterId}/definition`}><BookOpen />Open Matter Definition</Link></Button> : null}<div className="flex flex-wrap gap-2">{openAction.allowed_choices.map((choice, index) => {
+    {openAction?.action_type === "MATTER_DEFINITION_SETUP" ? <DefinitionSetupCard matterId={matterId} action={openAction} canManage={canManage} busy={busy} onSubmit={(payload) => onSetupDefinition(openAction, payload)} onStop={() => onResolve(openAction, "STOP")} /> : openAction?.action_type === "QA_TASK_SETUP" ? <QASetupCard matterId={matterId} action={openAction} canManage={canManage} busy={busy} onSubmit={(payload) => onSetupQA(openAction, payload)} onStop={() => onResolve(openAction, "STOP")} /> : openAction ? <Card className="border-accent/60 bg-accent/5"><CardHeader><CardTitle>{openAction.title}</CardTitle><CardDescription>{openAction.explanation}</CardDescription></CardHeader><CardContent><DefinitionAssessmentSummary action={openAction} /><QAPublicationSummary action={openAction} />{openAction.stage_key === "DEFINITION_REFINEMENT" || openAction.stage_key === "DEFINITION_ACCEPTANCE" ? <Button asChild size="sm" variant="outline" className="mb-3"><Link href={`/app/clients/${clientId}/matters/${matterId}/definition`}><BookOpen />Open Matter Definition</Link></Button> : null}<div className="flex flex-wrap gap-2">{openAction.allowed_choices.map((choice, index) => {
       return <Button key={`${choice.key}-${index}`} size="sm" variant={choice.key === "STOP" ? "destructive" : "default"} disabled={!canManage || busy} onClick={() => onResolve(openAction, choice.key)} title={choice.consequence}>{choice.label}</Button>;
     })}</div></CardContent></Card> : null}
     {run ? <Card><CardHeader><CardTitle>Program stages</CardTitle><CardDescription>The coordinator records every stage attempt and waits only at explicit human gates.</CardDescription></CardHeader><CardContent><ol className="grid gap-2 sm:grid-cols-2">{stages.map((stage) => {
@@ -193,6 +203,61 @@ function DefinitionAssessmentSummary({ action }: { action: ReviewProgramActionRe
     ? values.question_counts as Record<string, unknown>
     : {};
   return <div className="mb-3 grid gap-2 rounded-lg border bg-background/70 p-3 text-sm sm:grid-cols-2 lg:grid-cols-4"><div><p className="text-xs text-muted-foreground">Assessment</p><p className="font-medium">{friendly(String(values.status ?? "unknown"))}</p></div><div><p className="text-xs text-muted-foreground">Documents</p><p className="font-medium">{Number(values.summarized_count ?? 0)} summarized · {Number(values.failed_count ?? 0)} failed</p></div><div><p className="text-xs text-muted-foreground">Open questions</p><p className="font-medium">{Number(questions.open ?? 0)} open · {Number(questions.open_blocking ?? 0)} blocking</p></div><div><p className="text-xs text-muted-foreground">Refinement</p><p className="font-medium">{friendly(String(values.guidance_refinement_status ?? "not ready"))}</p></div></div>;
+}
+
+function QAPublicationSummary({ action }: { action: ReviewProgramActionRead }) {
+  if (action.action_type !== "QA_TASK_PUBLICATION") return null;
+  const task = action.decision_context?.qa_task;
+  const compiler = action.decision_context?.compiler;
+  const profiles = action.decision_context?.execution_profiles;
+  const taskValues = task && typeof task === "object" && !Array.isArray(task) ? task as Record<string, unknown> : {};
+  const compilerValues = compiler && typeof compiler === "object" && !Array.isArray(compiler) ? compiler as Record<string, unknown> : {};
+  const progress = compilerValues.progress && typeof compilerValues.progress === "object" && !Array.isArray(compilerValues.progress) ? compilerValues.progress as Record<string, unknown> : {};
+  const profileValues = Array.isArray(profiles) ? profiles.filter((profile): profile is Record<string, unknown> => Boolean(profile && typeof profile === "object" && !Array.isArray(profile))) : [];
+  return <div className="mb-4 space-y-3 rounded-lg border bg-background/70 p-3 text-sm"><div className="grid gap-2 sm:grid-cols-3"><div><p className="text-xs text-muted-foreground">Task</p><p className="font-medium">{String(taskValues.name ?? "Generated Q&A task")}</p></div><div><p className="text-xs text-muted-foreground">Questions</p><p className="font-medium">{Number(progress.question_count ?? 0)} questions · {Number(progress.recommendation_count ?? 0)} recommendations</p></div><div><p className="text-xs text-muted-foreground">Validation</p><p className="font-medium">{Number(progress.warning_count ?? 0)} warnings · {Number(progress.omission_count ?? 0)} omissions</p></div></div><div><p className="mb-1 text-xs text-muted-foreground">Pinned execution profiles</p><div className="flex flex-wrap gap-2">{profileValues.map((profile) => <Badge key={String(profile.id)} variant="outline">{String(profile.name)} · {String(profile.resolved_model)}</Badge>)}</div></div></div>;
+}
+
+interface QASetupPayload {
+  preview_hash: string;
+  task_key: string;
+  name: string;
+  description?: string;
+  destination_metadata_definition_ids: string[];
+}
+
+function QASetupCard({ matterId, action, canManage, busy, onSubmit, onStop }: {
+  matterId: string;
+  action: ReviewProgramActionRead;
+  canManage: boolean;
+  busy: boolean;
+  onSubmit: (payload: QASetupPayload) => void;
+  onStop: () => void;
+}) {
+  const [name, setName] = useState("First-pass Q&A");
+  const [key, setKey] = useState("first_pass_qa");
+  const [keyEdited, setKeyEdited] = useState(false);
+  const [description, setDescription] = useState("Generated from the accepted Matter Definition.");
+  const [selected, setSelected] = useState<string[]>([]);
+  const definitions = useQuery({
+    queryKey: ["metadata-definitions", matterId],
+    queryFn: () => coreApi<MetadataDefinitionRead[]>(`/v1/matters/${matterId}/metadata-definitions`),
+  });
+  const assignable = definitions.data?.filter((definition) => definition.status === "ACTIVE" && definition.value_source === "ASSERTED" && definition.ai_assignable) ?? [];
+  function submit(event: FormEvent) {
+    event.preventDefault();
+    if (!name.trim() || !key || !selected.length) return;
+    onSubmit({
+      preview_hash: action.preview_hash,
+      task_key: key,
+      name: name.trim(),
+      description: description.trim() || undefined,
+      destination_metadata_definition_ids: selected,
+    });
+  }
+  function toggle(id: string, checked: boolean) {
+    setSelected((current) => checked ? [...current, id] : current.filter((value) => value !== id));
+  }
+  return <Card className="border-accent/60 bg-accent/5"><CardHeader><CardTitle>{action.title}</CardTitle><CardDescription>{action.explanation}</CardDescription></CardHeader><CardContent><form className="space-y-4" onSubmit={submit}><div className="grid gap-4 sm:grid-cols-2"><div className="space-y-2"><Label htmlFor="qa-task-name">Task name</Label><Input id="qa-task-name" value={name} onChange={(event) => { setName(event.target.value); if (!keyEdited) setKey(slug(event.target.value).replaceAll("-", "_")); }} required maxLength={200} /></div><div className="space-y-2"><Label htmlFor="qa-task-key">Task key</Label><Input id="qa-task-key" value={key} onChange={(event) => { setKeyEdited(true); setKey(slug(event.target.value).replaceAll("-", "_")); }} required pattern="[a-z][a-z0-9_]*" maxLength={100} /></div></div><div className="space-y-2"><Label htmlFor="qa-task-description">Description</Label><Textarea id="qa-task-description" value={description} onChange={(event) => setDescription(event.target.value)} maxLength={10000} /></div><fieldset className="space-y-2"><legend className="text-sm font-medium">Coding fields</legend><p className="text-xs text-muted-foreground">Select the issue and responsiveness fields this task may write. The compiler must map only these fields.</p>{definitions.isPending ? <p className="text-sm text-muted-foreground">Loading coding fields…</p> : definitions.error ? <p className="text-sm text-destructive">{definitions.error.message}</p> : assignable.length ? <div className="grid gap-2 sm:grid-cols-2">{assignable.map((definition) => <label key={definition.id} className="flex items-start gap-2 rounded-lg border bg-background p-3 text-sm"><input className="mt-1" type="checkbox" checked={selected.includes(definition.id)} onChange={(event) => toggle(definition.id, event.target.checked)} disabled={!canManage || busy} /><span><span className="block font-medium">{definition.display_name}</span><span className="text-xs text-muted-foreground">{definition.key} · {friendly(definition.type)}</span></span></label>)}</div> : <p className="rounded-lg border p-3 text-sm text-muted-foreground">No active, asserted, AI-assignable coding fields are available. Configure fields in Matter metadata first.</p>}</fieldset><div className="flex flex-wrap gap-2"><Button type="submit" disabled={!canManage || busy || definitions.isPending || !name.trim() || !key || !selected.length}>{busy ? "Generating…" : "Generate Q&A task"}</Button><Button type="button" variant="destructive" disabled={!canManage || busy} onClick={onStop}>Stop program</Button></div></form></CardContent></Card>;
 }
 
 type DefinitionSetupMode = "CREATE" | "CLONE" | "ADOPT";

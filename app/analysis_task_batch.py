@@ -28,6 +28,7 @@ from app.job_executions import (
 )
 from app.models import (
     AnalysisTaskBatchSet,
+    AnalysisTaskExecutionProfile,
     Matter,
     MatterAnalysisTask,
     MatterAnalysisTaskVersion,
@@ -65,6 +66,7 @@ def queue_analysis_task_batch(
     task: MatterAnalysisTask,
     task_version: MatterAnalysisTaskVersion,
     initiated_by_user_id: uuid.UUID,
+    execution_profile: AnalysisTaskExecutionProfile | None = None,
     dispatch: bool = True,
 ) -> tuple[WorkflowRun, ReviewBatchRun]:
     if batch.matter_id != matter.id or batch.status != "READY":
@@ -85,7 +87,15 @@ def queue_analysis_task_batch(
     allowed_version_statuses = {"PUBLISHED", "RETIRED"} if batch_set is not None else {"PUBLISHED"}
     if task_version.status not in allowed_version_statuses or task_version.compilation_status != "READY":
         raise MatterAnalysisTaskConflict("Batch evaluation requires a ready, published task version")
-    if task_version.decision_provider == "OPENAI_DECISIONS" and not get_settings().openai_api_key:
+    if (
+        execution_profile is not None
+        and execution_profile.matter_analysis_task_version_id != task_version.id
+    ):
+        raise MatterAnalysisTaskConflict("Execution profile does not belong to this task version")
+    decision_provider = (
+        execution_profile.decision_provider if execution_profile is not None else task_version.decision_provider
+    )
+    if decision_provider == "OPENAI_DECISIONS" and not get_settings().openai_api_key:
         raise MatterAnalysisTaskConflict(
             "OpenAI Decisions is not configured. Set OPENAI_API_KEY before starting this analysis run."
         )
@@ -106,15 +116,39 @@ def queue_analysis_task_batch(
             ReviewBatchRun.status.in_(("QUEUED", "RUNNING")),
         )
     )
-    if any(run.configuration_snapshot.get("task_version_id") == str(task_version.id) for run in active_runs):
+    profile_id = str(execution_profile.id) if execution_profile is not None else None
+    if any(
+        run.configuration_snapshot.get("task_version_id") == str(task_version.id)
+        and run.configuration_snapshot.get("execution_profile_id") == profile_id
+        for run in active_runs
+    ):
         raise MatterAnalysisTaskConflict("This task version is already running against the batch")
 
-    resolved, binding_workflow_key = _resolve_decision_binding(db, matter.client.tenant_id)
+    resolved, binding_workflow_key = resolve_decision_binding(db, matter.client.tenant_id)
     bindings = binding_snapshot(resolved)
     role_binding = bindings["decision_evaluation"]
     role_binding["binding_workflow_key"] = binding_workflow_key
-    engine_key = decision_provider_engine_key(task_version.decision_provider)
-    model_key = task_version.decision_model or str(role_binding["model_key"])
+    engine_key = decision_provider_engine_key(decision_provider)
+    model_key = (
+        execution_profile.resolved_model
+        if execution_profile is not None
+        else task_version.decision_model or str(role_binding["model_key"])
+    )
+    profile_snapshot = (
+        {
+            "id": str(execution_profile.id),
+            "key": execution_profile.key,
+            "content_hash": execution_profile.content_hash,
+            "model_key": execution_profile.model_key,
+            "resolved_model": execution_profile.resolved_model,
+            "model_policy": execution_profile.model_policy,
+            "required_capabilities": execution_profile.required_capabilities,
+            "skill_definition_version_id": str(execution_profile.skill_definition_version_id),
+            "provider_adapter_version": execution_profile.provider_adapter_version,
+        }
+        if execution_profile is not None
+        else None
+    )
     destination_ids = [uuid.UUID(value) for value in (task_version.destination_metadata_definition_ids or [])]
     destination_definitions = {
         definition.id: definition
@@ -164,12 +198,17 @@ def queue_analysis_task_batch(
             "analysis_task_batch_set_id": str(batch_set.id) if batch_set else None,
             "batch_set_ordinal": batch.batch_set_ordinal,
             "document_count": len(documents),
+            "execution_profile_id": profile_id,
+            "execution_profile_content_hash": (
+                execution_profile.content_hash if execution_profile is not None else None
+            ),
         },
         binding_snapshot=bindings,
         configuration_snapshot={
             "engine_key": engine_key,
             "model_key": model_key,
-            "decision_provider": task_version.decision_provider,
+            "decision_provider": decision_provider,
+            "execution_profile": profile_snapshot,
             "result_policy": "ISOLATED",
         },
         progress={"stage": "QUEUED", "total": len(documents), "completed": 0, "failed": 0},
@@ -210,7 +249,9 @@ def queue_analysis_task_batch(
             "batch_set_ordinal": batch.batch_set_ordinal,
             "engine_key": engine_key,
             "model_key": model_key,
-            "decision_provider": task_version.decision_provider,
+            "decision_provider": decision_provider,
+            "execution_profile_id": profile_id,
+            "execution_profile": profile_snapshot,
             "destination_fields": destination_fields,
         },
         initiated_by_user_id=initiated_by_user_id,
@@ -367,7 +408,7 @@ def queue_analysis_task_matter(
     except AnalysisInputManifestError as exc:
         raise MatterAnalysisTaskConflict(str(exc)) from exc
 
-    resolved, binding_workflow_key = _resolve_decision_binding(db, matter.client.tenant_id)
+    resolved, binding_workflow_key = resolve_decision_binding(db, matter.client.tenant_id)
     bindings = binding_snapshot(resolved)
     role_binding = bindings["decision_evaluation"]
     role_binding["binding_workflow_key"] = binding_workflow_key
@@ -485,7 +526,7 @@ def queue_analysis_task_matter(
     return workflow, review_run, True
 
 
-def _resolve_decision_binding(db: Session, tenant_id: uuid.UUID):
+def resolve_decision_binding(db: Session, tenant_id: uuid.UUID):
     try:
         return (
             resolve_workflow_skill_bindings(

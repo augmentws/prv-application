@@ -23,6 +23,7 @@ from app.review_programs import (
     review_program_assessment_cancellation_targets,
     review_program_run_details,
     setup_review_program_definition,
+    setup_review_program_qa_task,
     start_review_program_run,
 )
 from app.review_workflow_templates import (
@@ -36,6 +37,7 @@ from app.schemas import (
     ReviewProgramCreate,
     ReviewProgramDefinitionSetup,
     ReviewProgramEventRead,
+    ReviewProgramQASetup,
     ReviewProgramRead,
     ReviewProgramRunCommand,
     ReviewProgramRunRead,
@@ -313,6 +315,50 @@ def setup_program_definition(
         raise HTTPException(
             status_code=status.HTTP_409_CONFLICT,
             detail="Matter Definition setup conflicts with an existing record",
+        ) from exc
+    db.refresh(run)
+    return _run_read(db, run)
+
+
+@router.post(
+    "/{program_id}/runs/{run_id}/actions/{action_id}/qa-setup",
+    response_model=ReviewProgramRunRead,
+    status_code=status.HTTP_202_ACCEPTED,
+)
+def setup_program_qa_task(
+    matter_id: uuid.UUID,
+    program_id: uuid.UUID,
+    run_id: uuid.UUID,
+    action_id: uuid.UUID,
+    payload: ReviewProgramQASetup,
+    principal: Principal = Depends(get_principal),
+    db: Session = Depends(get_db),
+) -> ReviewProgramRunRead:
+    _matter_with_permission(db, principal, matter_id, "review_program.manage")
+    try:
+        program = get_review_program(db, matter_id=matter_id, program_id=program_id, for_update=True)
+        run = get_review_program_run(db, program=program, run_id=run_id, for_update=True)
+        setup_review_program_qa_task(
+            db,
+            program=program,
+            run=run,
+            action_id=action_id,
+            actor=principal.user,
+            preview_hash=payload.preview_hash,
+            task_key=payload.task_key,
+            name=payload.name,
+            description=payload.description,
+            destination_metadata_definition_ids=payload.destination_metadata_definition_ids,
+        )
+        db.commit()
+    except ReviewProgramError as exc:
+        db.rollback()
+        raise _http_error(exc) from exc
+    except IntegrityError as exc:
+        db.rollback()
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail="Q&A task setup conflicts with an existing record",
         ) from exc
     db.refresh(run)
     return _run_read(db, run)

@@ -22,6 +22,7 @@ from app.models import (
     AnalysisTaskBatchSet,
     AnalysisTaskBatchSetRun,
     AnalysisTaskBatchSetRunChild,
+    AnalysisTaskExecutionProfile,
     Matter,
     MatterAnalysisTask,
     MatterAnalysisTaskRun,
@@ -91,6 +92,7 @@ def create_batch_set_run(
     configuration: dict,
     idempotency_key: str,
     actor_user_id: uuid.UUID,
+    execution_profile: AnalysisTaskExecutionProfile | None = None,
 ) -> tuple[AnalysisTaskBatchSetRun, bool]:
     existing = db.scalar(
         select(AnalysisTaskBatchSetRun).where(
@@ -108,6 +110,11 @@ def create_batch_set_run(
         or batch_set.matter_analysis_task_version_id != task_version.id
     ):
         raise AnalysisTaskBatchSetRunError("Batch Set task provenance is inconsistent")
+    if (
+        execution_profile is not None
+        and execution_profile.matter_analysis_task_version_id != task_version.id
+    ):
+        raise AnalysisTaskBatchSetRunError("Execution profile does not belong to the Batch Set task version")
     children = list(
         db.scalars(
             select(ReviewBatch)
@@ -125,8 +132,15 @@ def create_batch_set_run(
         analysis_task_batch_set_id=batch_set.id,
         matter_analysis_task_id=task.id,
         matter_analysis_task_version_id=task_version.id,
+        execution_profile_id=execution_profile.id if execution_profile is not None else None,
         task_type=task.task_type,
-        configuration_snapshot=configuration,
+        configuration_snapshot={
+            **configuration,
+            "execution_profile_id": str(execution_profile.id) if execution_profile is not None else None,
+            "execution_profile_content_hash": (
+                execution_profile.content_hash if execution_profile is not None else None
+            ),
+        },
         idempotency_key=idempotency_key,
         workflow_id=f"analysis-task-batch-set-run:{run_id}",
         child_count=len(children),
@@ -179,6 +193,11 @@ def launch_child(db: Session, child_id: uuid.UUID) -> LaunchedChild:
     matter = db.get(Matter, parent.matter_id)
     task = db.get(MatterAnalysisTask, parent.matter_analysis_task_id)
     task_version = db.get(MatterAnalysisTaskVersion, parent.matter_analysis_task_version_id)
+    execution_profile = (
+        db.get(AnalysisTaskExecutionProfile, parent.execution_profile_id)
+        if parent.execution_profile_id is not None
+        else None
+    )
     if matter is None or task is None or task_version is None:
         raise AnalysisTaskBatchSetRunError("Batch Set run task provenance is incomplete")
     config = parent.configuration_snapshot
@@ -190,6 +209,7 @@ def launch_child(db: Session, child_id: uuid.UUID) -> LaunchedChild:
             task=task,
             task_version=task_version,
             initiated_by_user_id=parent.created_by_user_id,
+            execution_profile=execution_profile,
             dispatch=False,
         )
         run_type = "QUESTION_ANSWERING"

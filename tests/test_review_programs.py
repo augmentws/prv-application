@@ -5,11 +5,14 @@ from conftest import TestingSessionLocal, create_client_tenant
 from fastapi.testclient import TestClient
 from sqlalchemy import func, select
 
+from app.analysis_task_skills import ensure_standard_analysis_task_skills
 from app.models import (
     AuditRecord,
+    MatterAnalysisTaskVersion,
     MatterDefinitionAssessmentQuery,
     MatterDefinitionAssessmentQuestion,
     MatterDefinitionAssessmentRun,
+    MetadataDefinition,
     Notification,
     ReviewProgram,
     ReviewProgramChild,
@@ -27,6 +30,7 @@ from app.review_programs import (
     ReviewProgramError,
     link_review_program_child,
     project_review_program_assessment_terminal,
+    project_review_program_qa_compilation_terminal,
 )
 from app.review_workflow_templates import FIRST_PASS_REVIEW, get_review_workflow_template
 from app.standard_skills import ensure_standard_assessment_skills
@@ -83,6 +87,7 @@ def enable_definition_assessments(matter_id: str, root_admin) -> None:
         root = db.scalar(select(Tenant).where(Tenant.id == root_admin.tenant_id))
         assert root is not None
         ensure_standard_assessment_skills(db, root, db.merge(root_admin))
+        ensure_standard_analysis_task_skills(db, root, db.merge(root_admin))
         db.add(
             SearchIndexGeneration(
                 matter_id=uuid.UUID(matter_id),
@@ -455,10 +460,61 @@ def test_synthetic_run_advances_waits_resumes_retries_reconciles_and_cancels(
     assert len(frozen["assessment_ids"]) == 3
 
     qa_action = next(action for action in accepted.json()["actions"] if action["status"] == "OPEN")
-    resumed = client.post(
-        f"{runs_url}/{run_id}/actions/{qa_action['id']}/resolve",
+    with TestingSessionLocal() as db:
+        destination = MetadataDefinition(
+            matter_id=uuid.UUID(matter["id"]),
+            key="responsive",
+            display_name="Responsive",
+            type="BOOLEAN",
+            cardinality="SINGLE",
+            value_source="ASSERTED",
+            assertion_policy="IMMEDIATE",
+            resolution_policy="EXPLICIT_ONLY",
+            searchable=True,
+            facetable=True,
+            normalize_to_lowercase=False,
+            reviewable=True,
+            ai_assignable=True,
+            status="ACTIVE",
+        )
+        db.add(destination)
+        db.commit()
+        destination_id = destination.id
+    generated = client.post(
+        f"{runs_url}/{run_id}/actions/{qa_action['id']}/qa-setup",
         headers=auth(token),
-        json={"preview_hash": qa_action["preview_hash"], "choice_key": "CONTINUE"},
+        json={
+            "preview_hash": qa_action["preview_hash"],
+            "task_key": "coordinator_qa",
+            "name": "Coordinator Q&A",
+            "destination_metadata_definition_ids": [str(destination_id)],
+        },
+    )
+    assert generated.status_code == 202, generated.text
+    assert generated.json()["progress_summary"]["qa_task_setup_state"] == "COMPILING"
+    setup = generated.json()["progress_summary"]["qa_task_setup"]
+    with TestingSessionLocal() as db:
+        task_version = db.get(MatterAnalysisTaskVersion, uuid.UUID(setup["task_version_id"]))
+        workflow = db.get(WorkflowRun, uuid.UUID(setup["compiler_workflow_run_id"]))
+        assert task_version is not None and workflow is not None
+        task_version.compilation_status = "READY"
+        task_version.decision_specification = {}
+        task_version.specification_content_hash = "b" * 64
+        task_version.validation_report = {"status": "VALID", "errors": [], "warnings": []}
+        workflow.status = "COMPLETED"
+        workflow.completed_at = utcnow()
+        project_review_program_qa_compilation_terminal(db, workflow=workflow)
+        db.commit()
+    publication_state = client.get(f"{runs_url}/{run_id}", headers=auth(token))
+    assert publication_state.status_code == 200, publication_state.text
+    publication_action = next(
+        action for action in publication_state.json()["actions"] if action["status"] == "OPEN"
+    )
+    assert publication_action["action_type"] == "QA_TASK_PUBLICATION"
+    resumed = client.post(
+        f"{runs_url}/{run_id}/actions/{publication_action['id']}/resolve",
+        headers=auth(token),
+        json={"preview_hash": publication_action["preview_hash"], "choice_key": "PUBLISH"},
     )
     assert resumed.status_code == 200, resumed.text
     assert resumed.json()["status"] == "RUNNING"

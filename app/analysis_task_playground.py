@@ -570,7 +570,9 @@ def execute_analysis_task_document(
     )
     engine_key = str(workflow.configuration_snapshot.get("engine_key") or "jev")
     model_key = str(workflow.configuration_snapshot.get("model_key") or skill_version.model_key)
-    model_settings = {**skill_version.model_policy, "engine_key": engine_key}
+    execution_profile = workflow.configuration_snapshot.get("execution_profile") or {}
+    profile_model_policy = execution_profile.get("model_policy") or {}
+    model_settings = {**skill_version.model_policy, **profile_model_policy, "engine_key": engine_key}
     request = DecisionRequest(
         state=state,
         questions=specification.questions,
@@ -586,6 +588,7 @@ def execute_analysis_task_document(
                 "source_content_hash": source_content_hash,
                 "state_hash": json_content_hash(state),
                 "model_key": model_key,
+                "execution_profile_content_hash": execution_profile.get("content_hash"),
             }
         ),
     )

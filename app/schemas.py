@@ -2897,6 +2897,39 @@ class MatterAnalysisTaskVersionRead(ORMModel):
     published_at: datetime | None
 
 
+class AnalysisTaskExecutionProfileCreate(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    key: MetadataKey
+    name: str = Field(min_length=1, max_length=200)
+    decision_provider: Literal["JEV", "OPENAI_DECISIONS"]
+
+    @field_validator("name")
+    @classmethod
+    def normalize_execution_profile_name(cls, value: str) -> str:
+        normalized = " ".join(value.split())
+        if not normalized:
+            raise ValueError("Execution profile name is required")
+        return normalized
+
+
+class AnalysisTaskExecutionProfileRead(ORMModel):
+    id: uuid.UUID
+    matter_analysis_task_version_id: uuid.UUID
+    key: str
+    name: str
+    decision_provider: Literal["JEV", "OPENAI_DECISIONS"]
+    model_key: str
+    resolved_model: str
+    model_policy: dict[str, Any]
+    required_capabilities: list[str]
+    skill_definition_version_id: uuid.UUID
+    provider_adapter_version: str
+    content_hash: str
+    created_by_user_id: uuid.UUID
+    created_at: datetime
+
+
 class MatterAnalysisTaskRead(ORMModel):
     id: uuid.UUID
     matter_id: uuid.UUID
@@ -3026,6 +3059,7 @@ class AnalysisTaskBatchSetRunCreate(BaseModel):
     embedding_job_id: uuid.UUID | None = None
     coding_source: Literal["MATTER_METADATA"] = "MATTER_METADATA"
     use_batch_api: bool = False
+    execution_profile_id: uuid.UUID | None = None
 
     @field_validator("idempotency_key")
     @classmethod
@@ -3055,6 +3089,7 @@ class AnalysisTaskBatchSetRunRead(ORMModel):
     analysis_task_batch_set_id: uuid.UUID
     matter_analysis_task_id: uuid.UUID
     matter_analysis_task_version_id: uuid.UUID
+    execution_profile_id: uuid.UUID | None
     task_type: MatterAnalysisTaskType
     status: AnalysisTaskBatchSetRunStatus
     configuration_snapshot: dict[str, Any]
@@ -4994,6 +5029,31 @@ class ReviewProgramDefinitionSetup(BaseModel):
         if self.mode == "CLONE" and not (self.definition_key and self.name):
             raise ValueError("CLONE requires definition_key and name")
         return self
+
+
+class ReviewProgramQASetup(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    preview_hash: str = Field(min_length=64, max_length=64)
+    task_key: MetadataKey
+    name: str = Field(min_length=1, max_length=200)
+    description: str | None = Field(default=None, max_length=10_000)
+    destination_metadata_definition_ids: list[uuid.UUID] = Field(min_length=1, max_length=100)
+
+    @field_validator("destination_metadata_definition_ids")
+    @classmethod
+    def validate_unique_qa_destinations(cls, value: list[uuid.UUID]) -> list[uuid.UUID]:
+        if len(value) != len(set(value)):
+            raise ValueError("Destination metadata fields must be unique")
+        return value
+
+    @field_validator("name")
+    @classmethod
+    def normalize_qa_task_name(cls, value: str) -> str:
+        normalized = " ".join(value.split())
+        if not normalized:
+            raise ValueError("Q&A task name is required")
+        return normalized
 
 
 class ReviewProgramStageAttemptRead(ORMModel):

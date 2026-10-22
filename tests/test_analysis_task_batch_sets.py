@@ -114,6 +114,43 @@ def test_batch_set_run_creates_one_parent_with_ordered_child_references(
     assert db.scalar(select(func.count()).select_from(AnalysisTaskBatchSetRun)) == 1
 
 
+def test_batch_set_run_freezes_selected_execution_profile(
+    client: TestClient,
+    root_token: str,
+    root_admin,
+    db: Session,
+) -> None:
+    root_tenant = db.get(Tenant, root_admin.tenant_id)
+    assert root_tenant is not None
+    ensure_standard_analysis_task_skills(db, root_tenant, root_admin)
+    db.commit()
+    _, token, matter_id = create_tenant_context(client, root_token)
+    task = _published_partitioned_task(client, token, matter_id)
+    profile_response = client.post(
+        f"/v1/matters/{matter_id}/analysis-tasks/{task['id']}/versions/1/execution-profiles",
+        headers=auth(token),
+        json={"key": "jev", "name": "Jev review model", "decision_provider": "JEV"},
+    )
+    assert profile_response.status_code == 201, profile_response.text
+    profile = profile_response.json()
+    user_id = uuid.UUID(client.get("/v1/auth/me", headers=auth(token)).json()["id"])
+    add_documents(matter_id, user_id, count=2)
+    batch_set = _ready_batch_set(client, token, matter_id, task["id"])
+    path = f"/v1/matters/{matter_id}/analysis-tasks/{task['id']}/batch-sets/{batch_set['id']}/runs"
+
+    response = client.post(
+        path,
+        headers=auth(token),
+        json={"idempotency_key": "profile-run", "execution_profile_id": profile["id"]},
+    )
+
+    assert response.status_code == 202, response.text
+    run = response.json()
+    assert run["execution_profile_id"] == profile["id"]
+    assert run["configuration_snapshot"]["execution_profile_id"] == profile["id"]
+    assert run["configuration_snapshot"]["execution_profile_content_hash"] == profile["content_hash"]
+
+
 def test_batch_set_run_partial_completion_retries_only_failed_children(
     client: TestClient,
     root_token: str,
