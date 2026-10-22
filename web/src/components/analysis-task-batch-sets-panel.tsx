@@ -42,6 +42,7 @@ const SOURCE_LABELS: Record<PopulationSource, string> = {
   SOURCE_BATCH: "Existing review batch",
   SEARCH_QUERY: "Search query",
   SAVED_SEARCH: "Saved search",
+  INPUT_MANIFEST: "Frozen input manifest",
 };
 
 const ACTIVE_STATUSES = new Set(["QUEUED", "BUILDING"]);
@@ -397,7 +398,7 @@ function CreateBatchSetDialog({ matterId, task, onCreated }: { matterId: string;
         <DialogHeader><DialogTitle>Create a partitioned batch set</DialogTitle><DialogDescription>Preview the exact population and allocation before creating immutable child review batches.</DialogDescription></DialogHeader>
         <div className="grid gap-4 sm:grid-cols-2">
           <Field label="Name" htmlFor="batch-set-name"><Input id="batch-set-name" value={name} onChange={(event) => setName(event.target.value)} placeholder="Privilege review wave 1" /></Field>
-          <Field label="Population source" htmlFor="batch-set-source"><Select value={source} onValueChange={(value) => { setSource(value as PopulationSource); invalidatePreview(); }}><SelectTrigger id="batch-set-source"><SelectValue /></SelectTrigger><SelectContent>{Object.entries(SOURCE_LABELS).map(([value, label]) => <SelectItem key={value} value={value}>{label}</SelectItem>)}</SelectContent></Select></Field>
+          <Field label="Population source" htmlFor="batch-set-source"><Select value={source} onValueChange={(value) => { setSource(value as PopulationSource); invalidatePreview(); }}><SelectTrigger id="batch-set-source"><SelectValue /></SelectTrigger><SelectContent>{Object.entries(SOURCE_LABELS).filter(([value]) => value !== "INPUT_MANIFEST").map(([value, label]) => <SelectItem key={value} value={value}>{label}</SelectItem>)}</SelectContent></Select></Field>
           <Field label="Target documents per batch" htmlFor="batch-set-size"><Input id="batch-set-size" type="number" min={1} value={targetSize} onChange={(event) => { setTargetSize(event.target.value); invalidatePreview(); }} /></Field>
           <div className="flex items-end pb-2"><label className="flex items-center gap-2 text-sm"><input type="checkbox" checked={keepFamilies} onChange={(event) => { setKeepFamilies(event.target.checked); invalidatePreview(); }} />Keep document families together</label></div>
         </div>

@@ -9,6 +9,7 @@ from datetime import datetime
 from sqlalchemy import delete, select, update
 from sqlalchemy.orm import Session
 
+from app.analysis_input_manifests import AnalysisInputManifestError, AnalysisInputManifestReader
 from app.artifact_gateway import get_collection_item_grouping_snapshots
 from app.config import Settings, get_settings
 from app.job_executions import (
@@ -22,6 +23,7 @@ from app.job_executions import (
     transition_job_execution,
 )
 from app.models import (
+    AnalysisInputManifest,
     AnalysisTaskBatchSet,
     Matter,
     MatterAnalysisTask,
@@ -90,9 +92,26 @@ def _source_batch(
         if source_batch is None or source_batch.status != "READY":
             raise AnalysisTaskBatchSetError("A ready source Review Batch is required")
         return source_batch
-    if population_source_type not in {"ALL_MATTER", "SEARCH_QUERY", "SAVED_SEARCH"}:
+    if population_source_type not in {"ALL_MATTER", "SEARCH_QUERY", "SAVED_SEARCH", "INPUT_MANIFEST"}:
         raise AnalysisTaskBatchSetError("Unsupported batch-set population source")
     return None
+
+
+def _input_manifest(
+    db: Session,
+    *,
+    matter_id: uuid.UUID,
+    population_source_type: str,
+    input_manifest_id: uuid.UUID | None,
+) -> AnalysisInputManifest | None:
+    if population_source_type != "INPUT_MANIFEST":
+        if input_manifest_id is not None:
+            raise AnalysisTaskBatchSetError("Input manifest applies only to INPUT_MANIFEST populations")
+        return None
+    manifest = db.get(AnalysisInputManifest, input_manifest_id) if input_manifest_id is not None else None
+    if manifest is None or manifest.matter_id != matter_id or manifest.manifest_status != "FINALIZED":
+        raise AnalysisTaskBatchSetError("A finalized input manifest in this matter is required")
+    return manifest
 
 
 def _search_generation(
@@ -132,6 +151,8 @@ def _execution_for_batch_set(
     matter: Matter,
     initiated_by_user_id: uuid.UUID,
     retry_of: WorkflowRun | None = None,
+    notification_parent_type: str | None = None,
+    notification_parent_id: uuid.UUID | None = None,
 ) -> WorkflowRun:
     attempt_number = retry_of.attempt_number + 1 if retry_of is not None else 1
     workflow_id = (
@@ -158,6 +179,7 @@ def _execution_for_batch_set(
             "source_review_batch_id": (
                 str(batch_set.source_review_batch_id) if batch_set.source_review_batch_id else None
             ),
+            "input_manifest_id": str(batch_set.input_manifest_id) if batch_set.input_manifest_id else None,
             "search_index_generation_id": (
                 str(batch_set.search_index_generation_id)
                 if batch_set.search_index_generation_id
@@ -170,6 +192,9 @@ def _execution_for_batch_set(
             "allocation_algorithm_version": batch_set.allocation_algorithm_version,
         },
         retry_of=retry_of,
+        notification_policy="PARENT_MANAGED" if notification_parent_id is not None else "DEFAULT",
+        notification_parent_type=notification_parent_type,
+        notification_parent_id=notification_parent_id,
     )
 
 
@@ -183,6 +208,7 @@ def create_batch_set(
     description: str | None,
     population_source_type: str,
     source_review_batch_id: uuid.UUID | None,
+    input_manifest_id: uuid.UUID | None,
     search: MatterSearchRequest | None,
     saved_search_id: uuid.UUID | None,
     saved_search_name: str | None,
@@ -191,13 +217,25 @@ def create_batch_set(
     keep_together: list[str],
     random_seed: str | None,
     actor_user_id: uuid.UUID,
+    notification_parent_type: str | None = None,
+    notification_parent_id: uuid.UUID | None = None,
 ) -> AnalysisTaskBatchSet:
+    if (notification_parent_type is None) != (notification_parent_id is None):
+        raise AnalysisTaskBatchSetError(
+            "Batch Set notification parent type and id must be supplied together"
+        )
     _validate_task_version(matter=matter, task=task, task_version=task_version)
     source_batch = _source_batch(
         db,
         matter_id=matter.id,
         population_source_type=population_source_type,
         source_review_batch_id=source_review_batch_id,
+    )
+    input_manifest = _input_manifest(
+        db,
+        matter_id=matter.id,
+        population_source_type=population_source_type,
+        input_manifest_id=input_manifest_id,
     )
     generation = _search_generation(
         db,
@@ -227,6 +265,18 @@ def create_batch_set(
             "type": population_source_type,
             "source_review_batch_id": str(source_batch.id) if source_batch else None,
             "source_document_count": source_batch.document_count if source_batch else None,
+            "input_manifest": (
+                {
+                    "id": str(input_manifest.id),
+                    "artifact_id": str(input_manifest.artifact_id),
+                    "artifact_content_hash": input_manifest.artifact_content_hash,
+                    "input_contract_hash": input_manifest.input_contract_hash,
+                    "item_count": input_manifest.item_count,
+                    "derivation_key": input_manifest.derivation_key,
+                }
+                if input_manifest is not None
+                else None
+            ),
             "saved_search_id": str(saved_search_id) if saved_search_id else None,
             "saved_search_name": saved_search_name,
             "saved_search_updated_at": saved_search_updated_at.isoformat() if saved_search_updated_at else None,
@@ -249,6 +299,7 @@ def create_batch_set(
             "population_snapshot_at": utcnow().isoformat(),
         },
         source_review_batch_id=source_batch.id if source_batch else None,
+        input_manifest_id=input_manifest.id if input_manifest else None,
         search_index_generation_id=generation.id if generation else None,
         target_batch_size=target_batch_size,
         allocation_policy={
@@ -269,18 +320,22 @@ def create_batch_set(
         batch_set=batch_set,
         matter=matter,
         initiated_by_user_id=actor_user_id,
+        notification_parent_type=notification_parent_type,
+        notification_parent_id=notification_parent_id,
     )
     batch_set.current_workflow_run_id = execution.id
     return batch_set
 
 
-def _search_document_ids(
+def search_document_ids(
     db: Session,
     *,
     matter: Matter,
     generation: SearchIndexGeneration,
     search_definition: dict[str, object],
     settings: Settings,
+    limit: int | None = None,
+    relevance_order: bool = False,
 ) -> list[uuid.UUID]:
     request = MatterSearchRequest.model_validate(search_definition)
     definitions = list(
@@ -294,7 +349,11 @@ def _search_document_ids(
     )
     body.pop("highlight", None)
     body["_source"] = ["document_id"]
-    body["sort"] = [{"document_id": "asc"}]
+    body["sort"] = (
+        [{"_score": "desc"}, {"document_id": "asc"}]
+        if relevance_order
+        else [{"document_id": "asc"}]
+    )
     body.pop("from", None)
     client = OpenSearchClient(settings)
     document_ids: list[uuid.UUID] = []
@@ -307,6 +366,8 @@ def _search_document_ids(
             for hit in hits:
                 value = (hit.get("_source") or {}).get("document_id") or hit.get("_id")
                 document_ids.append(uuid.UUID(str(value)))
+                if limit is not None and len(document_ids) >= limit:
+                    return document_ids
             if len(hits) < body["size"]:
                 break
             body["search_after"] = hits[-1]["sort"]
@@ -321,10 +382,12 @@ def _population_documents(
     matter: Matter,
     population_source_type: str,
     source_review_batch_id: uuid.UUID | None,
+    input_manifest_id: uuid.UUID | None,
     selection_definition: dict[str, object],
     search_index_generation_id: uuid.UUID | None,
     population_snapshot_at: datetime,
     settings: Settings,
+    actor_user_id: uuid.UUID,
 ) -> list[MatterDocument]:
     if population_source_type == "SOURCE_BATCH":
         return list(
@@ -350,7 +413,7 @@ def _population_documents(
         )
         if generation is None or not isinstance(selection_definition.get("search"), dict):
             raise AnalysisTaskBatchSetError("Search-backed population provenance is incomplete")
-        document_ids = _search_document_ids(
+        document_ids = search_document_ids(
             db,
             matter=matter,
             generation=generation,
@@ -371,6 +434,45 @@ def _population_documents(
                 "The pinned search generation contains documents outside the authoritative matter population"
             )
         return [documents_by_id[document_id] for document_id in document_ids]
+    if population_source_type == "INPUT_MANIFEST":
+        manifest = _input_manifest(
+            db,
+            matter_id=matter.id,
+            population_source_type=population_source_type,
+            input_manifest_id=input_manifest_id,
+        )
+        if manifest is None:
+            raise AnalysisTaskBatchSetError("Input-manifest population provenance is incomplete")
+        try:
+            rows = AnalysisInputManifestReader(manifest, actor_user_id=actor_user_id).rows(
+                0,
+                manifest.item_count,
+            )
+            ready_ids = [
+                uuid.UUID(str(row["matter_document_id"]))
+                for row in rows
+                if row.get("input_status") == "READY"
+            ]
+        except (AnalysisInputManifestError, KeyError, TypeError, ValueError) as exc:
+            raise AnalysisTaskBatchSetError(f"Input manifest population is invalid: {exc}") from exc
+        if len(ready_ids) != manifest.item_count:
+            raise AnalysisTaskBatchSetError(
+                "Batch Set input manifests must contain only ready population rows"
+            )
+        documents_by_id = {
+            document.id: document
+            for document in db.scalars(
+                select(MatterDocument).where(
+                    MatterDocument.matter_id == matter.id,
+                    MatterDocument.id.in_(ready_ids),
+                )
+            )
+        }
+        if len(documents_by_id) != len(ready_ids):
+            raise AnalysisTaskBatchSetError(
+                "The input manifest contains documents outside the authoritative matter population"
+            )
+        return [documents_by_id[document_id] for document_id in ready_ids]
     return list(
         db.scalars(
             select(MatterDocument)
@@ -453,6 +555,7 @@ def plan_batch_set(
     matter: Matter,
     population_source_type: str,
     source_review_batch_id: uuid.UUID | None,
+    input_manifest_id: uuid.UUID | None,
     selection_definition: dict[str, object] | None,
     search_index_generation_id: uuid.UUID | None,
     target_batch_size: int,
@@ -467,15 +570,23 @@ def plan_batch_set(
         population_source_type=population_source_type,
         source_review_batch_id=source_review_batch_id,
     )
+    _input_manifest(
+        db,
+        matter_id=matter.id,
+        population_source_type=population_source_type,
+        input_manifest_id=input_manifest_id,
+    )
     documents = _population_documents(
         db,
         matter=matter,
         population_source_type=population_source_type,
         source_review_batch_id=source_review_batch_id,
+        input_manifest_id=input_manifest_id,
         selection_definition=selection_definition or {},
         search_index_generation_id=search_index_generation_id,
         population_snapshot_at=population_snapshot_at or utcnow(),
         settings=settings or get_settings(),
+        actor_user_id=actor_user_id,
     )
     if not documents:
         raise AnalysisTaskBatchSetError("The selected population has no documents")
@@ -508,6 +619,7 @@ def preview_batch_set(
     task_version: MatterAnalysisTaskVersion,
     population_source_type: str,
     source_review_batch_id: uuid.UUID | None,
+    input_manifest_id: uuid.UUID | None,
     search: MatterSearchRequest | None,
     target_batch_size: int,
     keep_together: list[str],
@@ -525,6 +637,7 @@ def preview_batch_set(
         matter=matter,
         population_source_type=population_source_type,
         source_review_batch_id=source_review_batch_id,
+        input_manifest_id=input_manifest_id,
         selection_definition={
             "search": (
                 search.model_copy(update={"offset": 0, "facets": []}).model_dump(mode="json", by_alias=True)
@@ -607,6 +720,7 @@ def materialize_batch_set(
             matter=matter,
             population_source_type=batch_set.population_source_type,
             source_review_batch_id=batch_set.source_review_batch_id,
+            input_manifest_id=batch_set.input_manifest_id,
             selection_definition=batch_set.selection_definition,
             search_index_generation_id=batch_set.search_index_generation_id,
             target_batch_size=batch_set.target_batch_size,
@@ -764,7 +878,7 @@ def materialize_batch_set(
             failed.error_message = str(exc)[:4000]
             failed.completed_at = utcnow()
             _mark_children(db, batch_set_id, status="FAILED", error_message=failed.error_message)
-            transition_job_execution(
+            workflow = transition_job_execution(
                 db,
                 job_type=ANALYSIS_TASK_BATCH_SET_JOB_TYPE,
                 job_id=failed.id,
@@ -774,6 +888,14 @@ def materialize_batch_set(
                 failure_summary=failed.error_message,
                 failure_retriable=True,
             )
+            if workflow.notification_policy == "PARENT_MANAGED":
+                from app.review_programs import project_review_program_discovery_batch_set_terminal
+
+                project_review_program_discovery_batch_set_terminal(
+                    db,
+                    batch_set=failed,
+                    workflow=workflow,
+                )
             db.commit()
         raise
 
@@ -818,7 +940,7 @@ def complete_batch_set_materialization(
         )
     batch_set.warning_details = warnings
     batch_set.completed_at = utcnow()
-    transition_job_execution(
+    workflow = transition_job_execution(
         db,
         job_type=ANALYSIS_TASK_BATCH_SET_JOB_TYPE,
         job_id=batch_set.id,
@@ -827,6 +949,14 @@ def complete_batch_set_materialization(
         progress_completed=batch_set.population_count,
         progress_total=batch_set.population_count,
     )
+    if workflow.notification_policy == "PARENT_MANAGED":
+        from app.review_programs import project_review_program_discovery_batch_set_terminal
+
+        project_review_program_discovery_batch_set_terminal(
+            db,
+            batch_set=batch_set,
+            workflow=workflow,
+        )
     return batch_set
 
 

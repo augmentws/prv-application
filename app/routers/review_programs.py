@@ -12,6 +12,7 @@ from app.dependencies import Principal, get_principal
 from app.models import Matter, ReviewProgram, ReviewProgramRun
 from app.review_programs import (
     ReviewProgramError,
+    cancel_review_program_discovery_children,
     cancel_review_program_run,
     create_review_program,
     current_review_program_version,
@@ -23,6 +24,7 @@ from app.review_programs import (
     review_program_assessment_cancellation_targets,
     review_program_run_details,
     setup_review_program_definition,
+    setup_review_program_discovery,
     setup_review_program_qa_task,
     start_review_program_run,
 )
@@ -36,6 +38,7 @@ from app.schemas import (
     ReviewProgramActionResolve,
     ReviewProgramCreate,
     ReviewProgramDefinitionSetup,
+    ReviewProgramDiscoverySetup,
     ReviewProgramEventRead,
     ReviewProgramQASetup,
     ReviewProgramRead,
@@ -46,7 +49,12 @@ from app.schemas import (
     ReviewProgramVersionRead,
     ReviewWorkflowTemplateRead,
 )
-from app.workflows.dispatcher import cancel_definition_assessment
+from app.workflows.dispatcher import (
+    cancel_analysis_task_batch,
+    cancel_analysis_task_batch_set_run_workflow,
+    cancel_analysis_task_batch_set_workflow,
+    cancel_definition_assessment,
+)
 
 template_router = APIRouter(prefix="/v1/review-workflow-templates", tags=["review programs"])
 router = APIRouter(prefix="/v1/matters/{matter_id}/review-programs", tags=["review programs"])
@@ -364,6 +372,50 @@ def setup_program_qa_task(
     return _run_read(db, run)
 
 
+@router.post(
+    "/{program_id}/runs/{run_id}/actions/{action_id}/discovery-setup",
+    response_model=ReviewProgramRunRead,
+    status_code=status.HTTP_202_ACCEPTED,
+)
+def setup_program_discovery(
+    matter_id: uuid.UUID,
+    program_id: uuid.UUID,
+    run_id: uuid.UUID,
+    action_id: uuid.UUID,
+    payload: ReviewProgramDiscoverySetup,
+    principal: Principal = Depends(get_principal),
+    db: Session = Depends(get_db),
+) -> ReviewProgramRunRead:
+    _matter_with_permission(db, principal, matter_id, "review_program.manage")
+    try:
+        program = get_review_program(db, matter_id=matter_id, program_id=program_id, for_update=True)
+        run = get_review_program_run(db, program=program, run_id=run_id, for_update=True)
+        setup_review_program_discovery(
+            db,
+            program=program,
+            run=run,
+            action_id=action_id,
+            actor=principal.user,
+            preview_hash=payload.preview_hash,
+            target_document_count=payload.target_document_count,
+            control_sample_size=payload.control_sample_size,
+            target_batch_size=payload.target_batch_size,
+            keep_families_together=payload.keep_families_together,
+        )
+        db.commit()
+    except ReviewProgramError as exc:
+        db.rollback()
+        raise _http_error(exc) from exc
+    except IntegrityError as exc:
+        db.rollback()
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail="Discovery Q&A setup conflicts with an existing record",
+        ) from exc
+    db.refresh(run)
+    return _run_read(db, run)
+
+
 @router.post("/{program_id}/runs/{run_id}/cancel", response_model=ReviewProgramRunRead)
 def cancel_program_run(
     matter_id: uuid.UUID,
@@ -381,6 +433,15 @@ def cancel_program_run(
             (assessment.id, workflow.dbos_workflow_id if workflow is not None else None)
             for assessment, workflow in review_program_assessment_cancellation_targets(db, run)
         ]
+        (
+            discovery_batch_set_workflows,
+            discovery_batch_run_workflows,
+            discovery_child_workflows,
+        ) = cancel_review_program_discovery_children(
+            db,
+            run=run,
+            actor_user_id=principal.user.id,
+        )
         cancel_review_program_run(
             db,
             program=program,
@@ -397,6 +458,12 @@ def cancel_program_run(
         cancel_provider_batches(db, assessment_id)
         if dbos_workflow_id:
             cancel_definition_assessment(dbos_workflow_id)
+    for workflow_id in discovery_batch_set_workflows:
+        cancel_analysis_task_batch_set_workflow(workflow_id)
+    for workflow_id in discovery_batch_run_workflows:
+        cancel_analysis_task_batch_set_run_workflow(workflow_id)
+    for workflow_id in discovery_child_workflows:
+        cancel_analysis_task_batch(workflow_id)
     db.refresh(run)
     return _run_read(db, run)
 

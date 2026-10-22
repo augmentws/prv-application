@@ -858,6 +858,7 @@ export * from './reviewProgramActionResolveInput';
 export * from './reviewProgramCreate';
 export * from './reviewProgramDefinitionSetup';
 export * from './reviewProgramDefinitionSetupMode';
+export * from './reviewProgramDiscoverySetup';
 export * from './reviewProgramEventRead';
 export * from './reviewProgramEventReadPayload';
 export * from './reviewProgramEventReadStatus';

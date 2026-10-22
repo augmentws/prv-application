@@ -13,6 +13,7 @@ from app.analysis_task_skills import ensure_standard_analysis_task_skills
 from app.artifact_gateway import CollectionItemGroupingSnapshot
 from app.job_executions import ANALYSIS_TASK_BATCH_SET_RUN_JOB_TYPE, transition_job_execution
 from app.models import (
+    AnalysisInputManifest,
     AnalysisTaskBatchSet,
     AnalysisTaskBatchSetRun,
     Matter,
@@ -112,6 +113,97 @@ def test_batch_set_run_creates_one_parent_with_ordered_child_references(
     assert duplicate.status_code == 202, duplicate.text
     assert duplicate.json()["id"] == run["id"]
     assert db.scalar(select(func.count()).select_from(AnalysisTaskBatchSetRun)) == 1
+
+
+def test_input_manifest_population_preserves_frozen_order(
+    client: TestClient,
+    root_token: str,
+    db: Session,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _, token, matter_id = create_tenant_context(client, root_token)
+    task_payload = _published_partitioned_task(client, token, matter_id)
+    user_id = uuid.UUID(client.get("/v1/auth/me", headers=auth(token)).json()["id"])
+    document_ids = [uuid.UUID(value) for value in add_documents(matter_id, user_id, count=3)]
+    matter = db.get(Matter, uuid.UUID(matter_id))
+    task = db.get(MatterAnalysisTask, uuid.UUID(task_payload["id"]))
+    task_version = db.get(MatterAnalysisTaskVersion, uuid.UUID(task_payload["version"]["id"]))
+    assert matter is not None and task is not None and task_version is not None
+    frozen_order = [document_ids[2], document_ids[0], document_ids[1]]
+    manifest = AnalysisInputManifest(
+        tenant_id=matter.client.tenant_id,
+        client_id=matter.client_id,
+        matter_id=matter.id,
+        owner_type="TEST_BATCH_SET",
+        owner_id=uuid.uuid4(),
+        scope_type="TEST",
+        scope_id=uuid.uuid4(),
+        manifest_schema="analysis-input-manifest",
+        manifest_schema_version=1,
+        resolver_version="test-v1",
+        input_contract={"key": "test", "version": 1},
+        input_contract_hash="a" * 64,
+        derivation_key="b" * 64,
+        artifact_id=uuid.uuid4(),
+        artifact_content_hash="c" * 64,
+        artifact_byte_length=100,
+        item_count=len(frozen_order),
+        manifest_status="FINALIZED",
+        producer_kind="TEST",
+        producer_run_id=uuid.uuid4(),
+        created_by_user_id=user_id,
+        finalized_at=datetime.now(timezone.utc),
+    )
+    db.add(manifest)
+    db.flush()
+
+    class FakeReader:
+        def __init__(self, _manifest, *, actor_user_id):
+            assert actor_user_id == user_id
+
+        def rows(self, start, count):
+            assert (start, count) == (0, len(frozen_order))
+            return [
+                {"matter_document_id": str(document_id), "input_status": "READY"}
+                for document_id in frozen_order
+            ]
+
+    monkeypatch.setattr(batch_sets, "AnalysisInputManifestReader", FakeReader)
+    batch_set = batch_sets.create_batch_set(
+        db,
+        matter=matter,
+        task=task,
+        task_version=task_version,
+        name="Frozen manifest population",
+        description=None,
+        population_source_type="INPUT_MANIFEST",
+        source_review_batch_id=None,
+        input_manifest_id=manifest.id,
+        search=None,
+        saved_search_id=None,
+        saved_search_name=None,
+        saved_search_updated_at=None,
+        target_batch_size=2,
+        keep_together=[],
+        random_seed=None,
+        actor_user_id=user_id,
+    )
+    db.commit()
+    settings = batch_sets.get_settings().model_copy(update={"search_enabled": False})
+    batch_sets.materialize_batch_set(db, batch_set.id, settings)
+    batch_sets.complete_batch_set_materialization(db, batch_set.id)
+    db.commit()
+
+    memberships = list(
+        db.execute(
+            select(ReviewBatch.batch_set_ordinal, ReviewBatchDocument.matter_document_id)
+            .join(ReviewBatchDocument, ReviewBatchDocument.review_batch_id == ReviewBatch.id)
+            .where(ReviewBatch.analysis_task_batch_set_id == batch_set.id)
+            .order_by(ReviewBatch.batch_set_ordinal, ReviewBatchDocument.sequence_number)
+        )
+    )
+    assert [row.matter_document_id for row in memberships] == frozen_order
+    assert [row.batch_set_ordinal for row in memberships] == [1, 1, 2]
 
 
 def test_batch_set_run_freezes_selected_execution_profile(
@@ -420,6 +512,7 @@ def test_queued_batch_set_can_be_canceled(
         description=None,
         population_source_type="ALL_MATTER",
         source_review_batch_id=None,
+        input_manifest_id=None,
         search=None,
         saved_search_id=None,
         saved_search_name=None,
@@ -649,6 +742,7 @@ def test_child_search_projection_failure_completes_set_with_warning(
         description=None,
         population_source_type="ALL_MATTER",
         source_review_batch_id=None,
+        input_manifest_id=None,
         search=None,
         saved_search_id=None,
         saved_search_name=None,

@@ -114,6 +114,14 @@ export function ReviewProgramsSection() {
     onSuccess: async (run) => { await refresh(run.program_id); toast.success("The Q&A task is being generated."); },
     onError: mutationError("The Q&A task could not be generated."),
   });
+  const setupDiscovery = useMutation({
+    mutationFn: ({ programId, runId, actionId, payload }: { programId: string; runId: string; actionId: string; payload: DiscoverySetupPayload }) => coreApi<ReviewProgramRunRead>(`/v1/matters/${matterId}/review-programs/${programId}/runs/${runId}/actions/${actionId}/discovery-setup`, {
+      method: "POST",
+      body: JSON.stringify(payload),
+    }),
+    onSuccess: async (run) => { await refresh(run.program_id); toast.success("Discovery Q&A has started."); },
+    onError: mutationError("Discovery Q&A could not be started."),
+  });
 
   if (programs.isPending || templates.isPending) return <TableLoading />;
   if (programs.error || templates.error) return <QueryError message={programs.error?.message ?? templates.error?.message} />;
@@ -140,18 +148,19 @@ export function ReviewProgramsSection() {
         canManage={canManage}
         loading={runs.isPending}
         error={runs.error}
-        busy={startRun.isPending || command.isPending || resolveAction.isPending || setupDefinition.isPending || setupQA.isPending}
+        busy={startRun.isPending || command.isPending || resolveAction.isPending || setupDefinition.isPending || setupQA.isPending || setupDiscovery.isPending}
         onStart={() => startRun.mutate(selectedProgram.id)}
         onCommand={(verb) => currentRun && command.mutate({ programId: selectedProgram.id, runId: currentRun.id, verb })}
         onResolve={(action, choiceKey) => currentRun && resolveAction.mutate({ programId: selectedProgram.id, runId: currentRun.id, action, choiceKey })}
         onSetupDefinition={(action, payload) => currentRun && setupDefinition.mutate({ programId: selectedProgram.id, runId: currentRun.id, actionId: action.id, payload })}
         onSetupQA={(action, payload) => currentRun && setupQA.mutate({ programId: selectedProgram.id, runId: currentRun.id, actionId: action.id, payload })}
+        onSetupDiscovery={(action, payload) => currentRun && setupDiscovery.mutate({ programId: selectedProgram.id, runId: currentRun.id, actionId: action.id, payload })}
       /> : null}
     </div>}
   </div>;
 }
 
-function ProgramWorkspace({ clientId, matterId, program, run, stages, canManage, loading, error, busy, onStart, onCommand, onResolve, onSetupDefinition, onSetupQA }: {
+function ProgramWorkspace({ clientId, matterId, program, run, stages, canManage, loading, error, busy, onStart, onCommand, onResolve, onSetupDefinition, onSetupQA, onSetupDiscovery }: {
   clientId: string;
   matterId: string;
   program: ReviewProgramRead;
@@ -166,6 +175,7 @@ function ProgramWorkspace({ clientId, matterId, program, run, stages, canManage,
   onResolve: (action: ReviewProgramActionRead, choiceKey: string) => void;
   onSetupDefinition: (action: ReviewProgramActionRead, payload: DefinitionSetupPayload) => void;
   onSetupQA: (action: ReviewProgramActionRead, payload: QASetupPayload) => void;
+  onSetupDiscovery: (action: ReviewProgramActionRead, payload: DiscoverySetupPayload) => void;
 }) {
   const openAction = run?.actions?.find((action) => action.status === "OPEN") ?? null;
   const attemptsByStage = useMemo(() => new Map(run?.stage_attempts?.map((attempt) => [attempt.stage_key, attempt]) ?? []), [run?.stage_attempts]);
@@ -183,7 +193,7 @@ function ProgramWorkspace({ clientId, matterId, program, run, stages, canManage,
       </CardHeader>
       {run ? <CardContent><div className="flex flex-wrap items-center gap-2"><StatusBadge status={run.status} /><Badge variant="outline">{friendly(run.current_stage)}</Badge><span className="text-xs text-muted-foreground">Started {formatDate(run.created_at)}</span></div>{run.failure_summary ? <p className="mt-3 rounded-lg border border-destructive/30 bg-destructive/5 p-3 text-sm text-destructive">{run.failure_summary}</p> : null}</CardContent> : <CardContent><p className="text-sm text-muted-foreground">This program is configured but has not been started.</p></CardContent>}
     </Card>
-    {openAction?.action_type === "MATTER_DEFINITION_SETUP" ? <DefinitionSetupCard matterId={matterId} action={openAction} canManage={canManage} busy={busy} onSubmit={(payload) => onSetupDefinition(openAction, payload)} onStop={() => onResolve(openAction, "STOP")} /> : openAction?.action_type === "QA_TASK_SETUP" ? <QASetupCard matterId={matterId} action={openAction} canManage={canManage} busy={busy} onSubmit={(payload) => onSetupQA(openAction, payload)} onStop={() => onResolve(openAction, "STOP")} /> : openAction ? <Card className="border-accent/60 bg-accent/5"><CardHeader><CardTitle>{openAction.title}</CardTitle><CardDescription>{openAction.explanation}</CardDescription></CardHeader><CardContent><DefinitionAssessmentSummary action={openAction} /><QAPublicationSummary action={openAction} />{openAction.stage_key === "DEFINITION_REFINEMENT" || openAction.stage_key === "DEFINITION_ACCEPTANCE" ? <Button asChild size="sm" variant="outline" className="mb-3"><Link href={`/app/clients/${clientId}/matters/${matterId}/definition`}><BookOpen />Open Matter Definition</Link></Button> : null}<div className="flex flex-wrap gap-2">{openAction.allowed_choices.map((choice, index) => {
+    {openAction?.action_type === "MATTER_DEFINITION_SETUP" ? <DefinitionSetupCard matterId={matterId} action={openAction} canManage={canManage} busy={busy} onSubmit={(payload) => onSetupDefinition(openAction, payload)} onStop={() => onResolve(openAction, "STOP")} /> : openAction?.action_type === "QA_TASK_SETUP" ? <QASetupCard matterId={matterId} action={openAction} canManage={canManage} busy={busy} onSubmit={(payload) => onSetupQA(openAction, payload)} onStop={() => onResolve(openAction, "STOP")} /> : openAction?.action_type === "DISCOVERY_QA_SETUP" ? <DiscoverySetupCard action={openAction} canManage={canManage} busy={busy} onSubmit={(payload) => onSetupDiscovery(openAction, payload)} onStop={() => onResolve(openAction, "STOP")} /> : openAction ? <Card className="border-accent/60 bg-accent/5"><CardHeader><CardTitle>{openAction.title}</CardTitle><CardDescription>{openAction.explanation}</CardDescription></CardHeader><CardContent><DefinitionAssessmentSummary action={openAction} /><QAPublicationSummary action={openAction} /><IssueSupportSummary action={openAction} />{openAction.stage_key === "DEFINITION_REFINEMENT" || openAction.stage_key === "DEFINITION_ACCEPTANCE" ? <Button asChild size="sm" variant="outline" className="mb-3"><Link href={`/app/clients/${clientId}/matters/${matterId}/definition`}><BookOpen />Open Matter Definition</Link></Button> : null}<div className="flex flex-wrap gap-2">{openAction.allowed_choices.map((choice, index) => {
       return <Button key={`${choice.key}-${index}`} size="sm" variant={choice.key === "STOP" ? "destructive" : "default"} disabled={!canManage || busy} onClick={() => onResolve(openAction, choice.key)} title={choice.consequence}>{choice.label}</Button>;
     })}</div></CardContent></Card> : null}
     {run ? <Card><CardHeader><CardTitle>Program stages</CardTitle><CardDescription>The coordinator records every stage attempt and waits only at explicit human gates.</CardDescription></CardHeader><CardContent><ol className="grid gap-2 sm:grid-cols-2">{stages.map((stage) => {
@@ -215,6 +225,52 @@ function QAPublicationSummary({ action }: { action: ReviewProgramActionRead }) {
   const progress = compilerValues.progress && typeof compilerValues.progress === "object" && !Array.isArray(compilerValues.progress) ? compilerValues.progress as Record<string, unknown> : {};
   const profileValues = Array.isArray(profiles) ? profiles.filter((profile): profile is Record<string, unknown> => Boolean(profile && typeof profile === "object" && !Array.isArray(profile))) : [];
   return <div className="mb-4 space-y-3 rounded-lg border bg-background/70 p-3 text-sm"><div className="grid gap-2 sm:grid-cols-3"><div><p className="text-xs text-muted-foreground">Task</p><p className="font-medium">{String(taskValues.name ?? "Generated Q&A task")}</p></div><div><p className="text-xs text-muted-foreground">Questions</p><p className="font-medium">{Number(progress.question_count ?? 0)} questions · {Number(progress.recommendation_count ?? 0)} recommendations</p></div><div><p className="text-xs text-muted-foreground">Validation</p><p className="font-medium">{Number(progress.warning_count ?? 0)} warnings · {Number(progress.omission_count ?? 0)} omissions</p></div></div><div><p className="mb-1 text-xs text-muted-foreground">Pinned execution profiles</p><div className="flex flex-wrap gap-2">{profileValues.map((profile) => <Badge key={String(profile.id)} variant="outline">{String(profile.name)} · {String(profile.resolved_model)}</Badge>)}</div></div></div>;
+}
+
+function IssueSupportSummary({ action }: { action: ReviewProgramActionRead }) {
+  if (action.stage_key !== "ISSUE_SUPPORT_DECISION") return null;
+  const raw = action.decision_context?.discovery_analysis;
+  const analysis = raw && typeof raw === "object" && !Array.isArray(raw) ? raw as Record<string, unknown> : {};
+  const overallRaw = analysis.overall;
+  const overall = overallRaw && typeof overallRaw === "object" && !Array.isArray(overallRaw) ? overallRaw as Record<string, unknown> : {};
+  const lowSupport = Array.isArray(analysis.low_support) ? analysis.low_support : [];
+  return <div className="mb-4 space-y-3 rounded-lg border bg-background/70 p-3 text-sm"><div className="grid gap-2 sm:grid-cols-4"><div><p className="text-xs text-muted-foreground">Support</p><p className="font-medium">{friendly(String(analysis.support_status ?? "unknown"))}</p></div><div><p className="text-xs text-muted-foreground">Exact</p><p className="font-medium">{Number(overall.exact_count ?? 0)}</p></div><div><p className="text-xs text-muted-foreground">Differences</p><p className="font-medium">{Number(overall.partial_count ?? 0) + Number(overall.disagreement_count ?? 0)}</p></div><div><p className="text-xs text-muted-foreground">Low-support categories</p><p className="font-medium">{lowSupport.length}</p></div></div>{lowSupport.length ? <p className="text-xs text-muted-foreground">Low-support categories remain visible in the frozen analysis and require an explicit decision before classifier training.</p> : null}</div>;
+}
+
+interface DiscoverySetupPayload {
+  preview_hash: string;
+  target_document_count: number;
+  control_sample_size: number;
+  target_batch_size: number;
+  keep_families_together: boolean;
+}
+
+function DiscoverySetupCard({ action, canManage, busy, onSubmit, onStop }: {
+  action: ReviewProgramActionRead;
+  canManage: boolean;
+  busy: boolean;
+  onSubmit: (payload: DiscoverySetupPayload) => void;
+  onStop: () => void;
+}) {
+  const defaultsRaw = action.decision_context?.defaults;
+  const defaults = defaultsRaw && typeof defaultsRaw === "object" && !Array.isArray(defaultsRaw) ? defaultsRaw as Record<string, unknown> : {};
+  const planRaw = action.decision_context?.retrieval_plan;
+  const plan = planRaw && typeof planRaw === "object" && !Array.isArray(planRaw) ? planRaw as Record<string, unknown> : {};
+  const searchRaw = action.decision_context?.search_index_generation;
+  const search = searchRaw && typeof searchRaw === "object" && !Array.isArray(searchRaw) ? searchRaw as Record<string, unknown> : {};
+  const [targetCount, setTargetCount] = useState(String(defaults.target_document_count ?? 500));
+  const [controlCount, setControlCount] = useState(String(defaults.control_sample_size ?? 50));
+  const [batchSize, setBatchSize] = useState(String(defaults.target_batch_size ?? 100));
+  const [keepFamilies, setKeepFamilies] = useState(Boolean(defaults.keep_families_together ?? true));
+  function submit(event: FormEvent) {
+    event.preventDefault();
+    const target = Number(targetCount);
+    const control = Number(controlCount);
+    const size = Number(batchSize);
+    if (![target, control, size].every(Number.isInteger) || target < 1 || control < 0 || control > target || size < 1) return;
+    onSubmit({ preview_hash: action.preview_hash, target_document_count: target, control_sample_size: control, target_batch_size: size, keep_families_together: keepFamilies });
+  }
+  return <Card className="border-accent/60 bg-accent/5"><CardHeader><CardTitle>{action.title}</CardTitle><CardDescription>{action.explanation}</CardDescription></CardHeader><CardContent><form className="space-y-4" onSubmit={submit}><div className="grid gap-2 rounded-lg border bg-background/70 p-3 text-sm sm:grid-cols-3"><div><p className="text-xs text-muted-foreground">Retrieval queries</p><p className="font-medium">{Number(plan.query_count ?? 0)}</p></div><div><p className="text-xs text-muted-foreground">Pinned index</p><p className="font-medium">Generation {String(search.generation ?? "unavailable")}</p></div><div><p className="text-xs text-muted-foreground">Plan source</p><p className="font-medium">Accepted assessment</p></div></div><div className="grid gap-4 sm:grid-cols-3"><div className="space-y-2"><Label htmlFor="discovery-target">Document target</Label><Input id="discovery-target" type="number" min={1} max={100000} value={targetCount} onChange={(event) => setTargetCount(event.target.value)} /></div><div className="space-y-2"><Label htmlFor="discovery-control">Broad control</Label><Input id="discovery-control" type="number" min={0} max={25000} value={controlCount} onChange={(event) => setControlCount(event.target.value)} /></div><div className="space-y-2"><Label htmlFor="discovery-batch-size">Documents per batch</Label><Input id="discovery-batch-size" type="number" min={1} max={10000} value={batchSize} onChange={(event) => setBatchSize(event.target.value)} /></div></div><label className="flex items-center gap-2 text-sm"><input type="checkbox" checked={keepFamilies} onChange={(event) => setKeepFamilies(event.target.checked)} disabled={!canManage || busy} />Keep document families together</label><p className="text-xs text-muted-foreground">The same immutable population and managed child batches will be used for both pinned model profiles. Results remain isolated from matter metadata.</p><div className="flex flex-wrap gap-2"><Button type="submit" disabled={!canManage || busy}>{busy ? "Starting…" : "Start discovery Q&A"}</Button><Button type="button" variant="destructive" disabled={!canManage || busy} onClick={onStop}>Stop program</Button></div></form></CardContent></Card>;
 }
 
 interface QASetupPayload {

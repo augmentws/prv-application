@@ -68,7 +68,13 @@ def queue_analysis_task_batch(
     initiated_by_user_id: uuid.UUID,
     execution_profile: AnalysisTaskExecutionProfile | None = None,
     dispatch: bool = True,
+    notification_parent_type: str | None = None,
+    notification_parent_id: uuid.UUID | None = None,
 ) -> tuple[WorkflowRun, ReviewBatchRun]:
+    if (notification_parent_type is None) != (notification_parent_id is None):
+        raise MatterAnalysisTaskConflict(
+            "Analysis task notification parent type and id must be supplied together"
+        )
     if batch.matter_id != matter.id or batch.status != "READY":
         raise MatterAnalysisTaskConflict("A ready review batch is required")
     if task.matter_id != matter.id or task_version.matter_analysis_task_id != task.id:
@@ -213,6 +219,9 @@ def queue_analysis_task_batch(
         },
         progress={"stage": "QUEUED", "total": len(documents), "completed": 0, "failed": 0},
         initiated_by_user_id=initiated_by_user_id,
+        notification_policy="PARENT_MANAGED" if notification_parent_id is not None else "DEFAULT",
+        notification_parent_type=notification_parent_type,
+        notification_parent_id=notification_parent_id,
     )
     db.add(workflow)
     db.flush()

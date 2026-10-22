@@ -1,6 +1,6 @@
 """Add immutable Analysis Task execution profiles.
 
-Revision ID: 0112_analysis_task_execution_profiles
+Revision ID: 0112_task_execution_profiles
 Revises: 0111_review_program_foundation
 """
 
@@ -10,7 +10,7 @@ import sqlalchemy as sa
 
 from alembic import op
 
-revision: str = "0112_analysis_task_execution_profiles"
+revision: str = "0112_task_execution_profiles"
 down_revision: str = "0111_review_program_foundation"
 branch_labels: str | Sequence[str] | None = None
 depends_on: str | Sequence[str] | None = None

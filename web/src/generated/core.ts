@@ -320,6 +320,7 @@ import type {
   ReviewProgramActionResolve,
   ReviewProgramCreate,
   ReviewProgramDefinitionSetup,
+  ReviewProgramDiscoverySetup,
   ReviewProgramQASetup,
   ReviewProgramRead,
   ReviewProgramRunCommand,
@@ -14149,6 +14150,77 @@ const res = await fetch(getSetupProgramQaTaskV1MattersMatterIdReviewProgramsProg
 
   const data: setupProgramQaTaskV1MattersMatterIdReviewProgramsProgramIdRunsRunIdActionsActionIdQaSetupPostResponse['data'] = body ? JSON.parse(body) : {}
   return { data, status: res.status, headers: res.headers } as setupProgramQaTaskV1MattersMatterIdReviewProgramsProgramIdRunsRunIdActionsActionIdQaSetupPostResponse
+}
+
+
+
+export type setupProgramDiscoveryV1MattersMatterIdReviewProgramsProgramIdRunsRunIdActionsActionIdDiscoverySetupPostResponse202 = {
+  data: ReviewProgramRunRead
+  status: 202
+}
+
+export type setupProgramDiscoveryV1MattersMatterIdReviewProgramsProgramIdRunsRunIdActionsActionIdDiscoverySetupPostResponse422 = {
+  data: HTTPValidationError
+  status: 422
+}
+
+export type setupProgramDiscoveryV1MattersMatterIdReviewProgramsProgramIdRunsRunIdActionsActionIdDiscoverySetupPostResponseSuccess = (setupProgramDiscoveryV1MattersMatterIdReviewProgramsProgramIdRunsRunIdActionsActionIdDiscoverySetupPostResponse202) & {
+  headers: Headers;
+};
+export type setupProgramDiscoveryV1MattersMatterIdReviewProgramsProgramIdRunsRunIdActionsActionIdDiscoverySetupPostResponseError = (setupProgramDiscoveryV1MattersMatterIdReviewProgramsProgramIdRunsRunIdActionsActionIdDiscoverySetupPostResponse422) & {
+  headers: Headers;
+};
+
+export type setupProgramDiscoveryV1MattersMatterIdReviewProgramsProgramIdRunsRunIdActionsActionIdDiscoverySetupPostResponse = (setupProgramDiscoveryV1MattersMatterIdReviewProgramsProgramIdRunsRunIdActionsActionIdDiscoverySetupPostResponseSuccess | setupProgramDiscoveryV1MattersMatterIdReviewProgramsProgramIdRunsRunIdActionsActionIdDiscoverySetupPostResponseError)
+
+export const getSetupProgramDiscoveryV1MattersMatterIdReviewProgramsProgramIdRunsRunIdActionsActionIdDiscoverySetupPostUrl = (matterId: string,
+    programId: string,
+    runId: string,
+    actionId: string,) => {
+
+
+
+
+  return `/api/core/v1/matters/${matterId}/review-programs/${programId}/runs/${runId}/actions/${actionId}/discovery-setup`
+}
+
+/**
+ * @summary Setup Program Discovery
+ */
+export const setupProgramDiscoveryV1MattersMatterIdReviewProgramsProgramIdRunsRunIdActionsActionIdDiscoverySetupPost = async (matterId: string,
+    programId: string,
+    runId: string,
+    actionId: string,
+    reviewProgramDiscoverySetup: ReviewProgramDiscoverySetup, options?: RequestInit): Promise<setupProgramDiscoveryV1MattersMatterIdReviewProgramsProgramIdRunsRunIdActionsActionIdDiscoverySetupPostResponse> => {
+
+    const getHeaders = (h?: NonNullable<RequestInit['headers']>): Record<string, string | readonly string[]> => {
+    if (!h) return {};
+    if (h instanceof Headers) return Object.fromEntries(h.entries());
+    if (Symbol.iterator in h) {
+      return Object.fromEntries(
+        Array.from(h as Iterable<Iterable<string>>, (entry) => Array.from(entry) as [string, string]),
+      );
+    }
+    const headers: Record<string, string | readonly string[]> = {};
+    for (const [name, value] of Object.entries<string | readonly string[] | undefined>(h)) {
+      if (value !== undefined) headers[name] = value;
+    }
+    return headers;
+  };
+const res = await fetch(getSetupProgramDiscoveryV1MattersMatterIdReviewProgramsProgramIdRunsRunIdActionsActionIdDiscoverySetupPostUrl(matterId,programId,runId,actionId),
+  {
+    ...options,
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json', ...getHeaders(options?.headers) },
+    body: JSON.stringify(reviewProgramDiscoverySetup)
+  }
+)
+
+
+  const body = [204, 205, 304].includes(res.status) ? null : await res.text();
+
+  const data: setupProgramDiscoveryV1MattersMatterIdReviewProgramsProgramIdRunsRunIdActionsActionIdDiscoverySetupPostResponse['data'] = body ? JSON.parse(body) : {}
+  return { data, status: res.status, headers: res.headers } as setupProgramDiscoveryV1MattersMatterIdReviewProgramsProgramIdRunsRunIdActionsActionIdDiscoverySetupPostResponse
 }
 
 

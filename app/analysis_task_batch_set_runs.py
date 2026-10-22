@@ -56,6 +56,8 @@ def _execution(
     matter: Matter,
     actor_user_id: uuid.UUID,
     retry_of: WorkflowRun | None = None,
+    notification_parent_type: str | None = None,
+    notification_parent_id: uuid.UUID | None = None,
 ) -> WorkflowRun:
     return create_job_execution(
         db,
@@ -79,6 +81,9 @@ def _execution(
         },
         configuration_snapshot=run.configuration_snapshot,
         retry_of=retry_of,
+        notification_policy="PARENT_MANAGED" if notification_parent_id is not None else "DEFAULT",
+        notification_parent_type=notification_parent_type,
+        notification_parent_id=notification_parent_id,
     )
 
 
@@ -93,7 +98,13 @@ def create_batch_set_run(
     idempotency_key: str,
     actor_user_id: uuid.UUID,
     execution_profile: AnalysisTaskExecutionProfile | None = None,
+    notification_parent_type: str | None = None,
+    notification_parent_id: uuid.UUID | None = None,
 ) -> tuple[AnalysisTaskBatchSetRun, bool]:
+    if (notification_parent_type is None) != (notification_parent_id is None):
+        raise AnalysisTaskBatchSetRunError(
+            "Batch Set run notification parent type and id must be supplied together"
+        )
     existing = db.scalar(
         select(AnalysisTaskBatchSetRun).where(
             AnalysisTaskBatchSetRun.analysis_task_batch_set_id == batch_set.id,
@@ -157,7 +168,14 @@ def create_batch_set_run(
         for index, child in enumerate(children, start=1)
     )
     db.flush()
-    _execution(db, run=run, matter=matter, actor_user_id=actor_user_id)
+    _execution(
+        db,
+        run=run,
+        matter=matter,
+        actor_user_id=actor_user_id,
+        notification_parent_type=notification_parent_type,
+        notification_parent_id=notification_parent_id,
+    )
     return run, True
 
 
@@ -202,6 +220,7 @@ def launch_child(db: Session, child_id: uuid.UUID) -> LaunchedChild:
         raise AnalysisTaskBatchSetRunError("Batch Set run task provenance is incomplete")
     config = parent.configuration_snapshot
     if parent.task_type == "QUESTION_ANSWERING":
+        parent_execution = parent.current_workflow_run
         workflow, domain_run = queue_analysis_task_batch(
             db,
             matter=matter,
@@ -211,6 +230,12 @@ def launch_child(db: Session, child_id: uuid.UUID) -> LaunchedChild:
             initiated_by_user_id=parent.created_by_user_id,
             execution_profile=execution_profile,
             dispatch=False,
+            notification_parent_type=(
+                parent_execution.notification_parent_type if parent_execution is not None else None
+            ),
+            notification_parent_id=(
+                parent_execution.notification_parent_id if parent_execution is not None else None
+            ),
         )
         run_type = "QUESTION_ANSWERING"
         workflow_record_id = workflow.id
@@ -332,7 +357,7 @@ def complete_batch_set_run(db: Session, run_id: uuid.UUID) -> AnalysisTaskBatchS
     run.completed_child_count = sum(child.status in {"COMPLETED", "COMPLETED_WITH_ERRORS"} for child in children)
     run.failed_child_count = sum(child.status in {"FAILED", "CANCELED"} for child in children)
     has_errors = run.failed_child_count > 0 or any(child.status == "COMPLETED_WITH_ERRORS" for child in children)
-    transition_job_execution(
+    workflow = transition_job_execution(
         db,
         job_type=ANALYSIS_TASK_BATCH_SET_RUN_JOB_TYPE,
         job_id=run.id,
@@ -341,6 +366,14 @@ def complete_batch_set_run(db: Session, run_id: uuid.UUID) -> AnalysisTaskBatchS
         progress_completed=len(children),
         progress_total=len(children),
     )
+    if workflow.notification_policy == "PARENT_MANAGED":
+        from app.review_programs import project_review_program_discovery_qa_run_terminal
+
+        project_review_program_discovery_qa_run_terminal(
+            db,
+            batch_run=run,
+            workflow=workflow,
+        )
     return run
 
 
@@ -418,4 +451,12 @@ def retry_batch_set_run(db: Session, run: AnalysisTaskBatchSetRun, *, actor_user
     if matter is None:
         raise JobExecutionConflict("Batch Set run matter was not found")
     run.workflow_id = f"analysis-task-batch-set-run:{run.id}:attempt:{current.attempt_number + 1}"
-    return _execution(db, run=run, matter=matter, actor_user_id=actor_user_id, retry_of=current)
+    return _execution(
+        db,
+        run=run,
+        matter=matter,
+        actor_user_id=actor_user_id,
+        retry_of=current,
+        notification_parent_type=current.notification_parent_type,
+        notification_parent_id=current.notification_parent_id,
+    )

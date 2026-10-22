@@ -83,7 +83,7 @@ FIRST_PASS_REVIEW = ReviewWorkflowTemplateSpec(
         ),
         ReviewWorkflowStageSpec("QA_TASK_SETUP", "Q&A task setup", "TRAINING_SET", 5, "NONE", True),
         ReviewWorkflowStageSpec(
-            "DISCOVERY_QA", "Discovery Q&A", "TRAINING_SET", 6, "PARTITIONED_SET"
+            "DISCOVERY_QA", "Discovery Q&A", "TRAINING_SET", 6, "PARTITIONED_SET", True
         ),
         ReviewWorkflowStageSpec("DISCOVERY_ANALYSIS", "Discovery analysis", "TRAINING_SET", 7, "NONE"),
         ReviewWorkflowStageSpec(

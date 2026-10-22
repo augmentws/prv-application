@@ -14,4 +14,5 @@ export const AnalysisTaskBatchSetCreatePopulationSourceType = {
   SOURCE_BATCH: 'SOURCE_BATCH',
   SEARCH_QUERY: 'SEARCH_QUERY',
   SAVED_SEARCH: 'SAVED_SEARCH',
+  INPUT_MANIFEST: 'INPUT_MANIFEST',
 } as const;

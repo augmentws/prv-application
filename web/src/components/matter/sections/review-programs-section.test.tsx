@@ -208,6 +208,120 @@ describe("ReviewProgramsSection", () => {
     });
   });
 
+  it("previews and starts a frozen dual-profile discovery run", async () => {
+    vi.mocked(coreApi).mockImplementation(async (path, options) => {
+      if (path === "/v1/review-workflow-templates") return [{
+        key: "FIRST_PASS_REVIEW", version: 1, schema_version: 1, content_hash: "a".repeat(64),
+        name: "First Pass Review", description: "Guided review", workflow_type: "FIRST_PASS_REVIEW", phases: [],
+        stages: [{ key: "DISCOVERY_QA", name: "Discovery Q&A", phase_key: "TRAINING_SET", ordinal: 6, batching_policy: "PARTITIONED_SET", requires_human_gate: true }],
+      }] as never;
+      if (path === "/v1/matters/matter-1/review-programs") return [{
+        id: "program-1", tenant_id: "tenant-1", matter_id: "matter-1", template_key: "FIRST_PASS_REVIEW",
+        template_version: 1, template_content_hash: "a".repeat(64), key: "standard-first-pass", name: "Standard first pass",
+        description: "Responsive review", status: "ACTIVE", current_run_id: "run-1", current_version: { version: 3 }, created_at: "2026-10-21T00:00:00Z",
+      }] as never;
+      if (path === "/v1/matters/matter-1/review-programs/program-1/runs" && !options) return [{
+        id: "run-1", program_id: "program-1", status: "WAITING_FOR_USER", current_stage: "DISCOVERY_QA",
+        current_stage_ordinal: 6, created_at: "2026-10-21T00:00:00Z", failure_retriable: false, failure_summary: null,
+        stage_attempts: [{ stage_key: "DISCOVERY_QA", status: "WAITING" }],
+        actions: [{
+          id: "action-1", action_type: "DISCOVERY_QA_SETUP", stage_key: "DISCOVERY_QA", status: "OPEN",
+          title: "Start discovery Q&A", explanation: "Freeze one population and run both profiles.", preview_hash: "b".repeat(64),
+          decision_context: {
+            retrieval_plan: { query_count: 4 }, search_index_generation: { generation: 7 },
+            defaults: { target_document_count: 500, control_sample_size: 50, target_batch_size: 100, keep_families_together: true },
+          },
+          allowed_choices: [{ key: "START", label: "Start discovery Q&A", consequence: "Start it." }, { key: "STOP", label: "Stop program", consequence: "End this run." }],
+        }],
+      }] as never;
+      if (path.endsWith("/actions/action-1/discovery-setup") && options?.method === "POST") return {
+        id: "run-1", program_id: "program-1", status: "RUNNING",
+      } as never;
+      throw new Error(`Unexpected API request: ${path}`);
+    });
+    renderSection();
+
+    expect(await screen.findByText("4")).toBeInTheDocument();
+    expect(screen.getByText("Generation 7")).toBeInTheDocument();
+    await userEvent.clear(screen.getByLabelText("Document target"));
+    await userEvent.type(screen.getByLabelText("Document target"), "800");
+    await userEvent.click(screen.getByRole("button", { name: "Start discovery Q&A" }));
+
+    await waitFor(() => expect(coreApi).toHaveBeenCalledWith(
+      "/v1/matters/matter-1/review-programs/program-1/runs/run-1/actions/action-1/discovery-setup",
+      expect.objectContaining({ method: "POST" }),
+    ));
+    const call = vi.mocked(coreApi).mock.calls.find(([path]) => path.endsWith("/discovery-setup"));
+    expect(JSON.parse(String(call?.[1]?.body))).toEqual({
+      preview_hash: "b".repeat(64),
+      target_document_count: 800,
+      control_sample_size: 50,
+      target_batch_size: 100,
+      keep_families_together: true,
+    });
+  });
+
+  it("shows discovery alignment and starts a supplemental retrieval round", async () => {
+    vi.mocked(coreApi).mockImplementation(async (path, options) => {
+      if (path === "/v1/review-workflow-templates") return [{
+        key: "FIRST_PASS_REVIEW", version: 1, schema_version: 1, content_hash: "a".repeat(64),
+        name: "First Pass Review", description: "Guided review", workflow_type: "FIRST_PASS_REVIEW", phases: [],
+        stages: [{ key: "ISSUE_SUPPORT_DECISION", name: "Issue support decision", phase_key: "TRAINING_SET", ordinal: 8, batching_policy: "NONE", requires_human_gate: true }],
+      }] as never;
+      if (path === "/v1/matters/matter-1/review-programs") return [{
+        id: "program-1", tenant_id: "tenant-1", matter_id: "matter-1", template_key: "FIRST_PASS_REVIEW",
+        template_version: 1, template_content_hash: "a".repeat(64), key: "standard-first-pass", name: "Standard first pass",
+        description: "Responsive review", status: "ACTIVE", current_run_id: "run-1", current_version: { version: 4 }, created_at: "2026-10-21T00:00:00Z",
+      }] as never;
+      if (path === "/v1/matters/matter-1/review-programs/program-1/runs" && !options) return [{
+        id: "run-1", program_id: "program-1", status: "WAITING_FOR_USER", current_stage: "ISSUE_SUPPORT_DECISION",
+        current_stage_ordinal: 8, created_at: "2026-10-21T00:00:00Z", failure_retriable: false, failure_summary: null,
+        stage_attempts: [{ stage_key: "ISSUE_SUPPORT_DECISION", status: "WAITING" }],
+        actions: [{
+          id: "action-1", action_type: "ISSUE_SUPPORT_DECISION", stage_key: "ISSUE_SUPPORT_DECISION", status: "OPEN",
+          title: "Resolve low-support coding categories", explanation: "Review alignment before classifier training.", preview_hash: "b".repeat(64),
+          decision_context: {
+            discovery_analysis: {
+              support_status: "INSUFFICIENT",
+              overall: { exact_count: 31, partial_count: 2, disagreement_count: 3, incomplete_count: 1 },
+              low_support: [
+                { field_key: "responsive", value_key: "true", positive_count: 4, negative_count: 32 },
+                { field_key: "issue", value_key: "coverage", positive_count: 3, negative_count: 33 },
+              ],
+            },
+          },
+          allowed_choices: [
+            { key: "SUPPLEMENT", label: "Review more documents", consequence: "Run another discovery round." },
+            { key: "IGNORE_LOW_SUPPORT", label: "Accept limitations", consequence: "Proceed with limitations." },
+            { key: "REFINE_DEFINITION", label: "Refine Matter Definition", consequence: "Return to definition refinement." },
+            { key: "STOP", label: "Stop program", consequence: "End this run." },
+          ],
+        }],
+      }] as never;
+      if (path.endsWith("/actions/action-1/resolve") && options?.method === "POST") return {
+        id: "run-1", program_id: "program-1", status: "WAITING_FOR_USER", current_stage: "DISCOVERY_QA",
+      } as never;
+      throw new Error(`Unexpected API request: ${path}`);
+    });
+    renderSection();
+
+    expect(await screen.findByText("Insufficient")).toBeInTheDocument();
+    expect(screen.getByText("31")).toBeInTheDocument();
+    expect(screen.getByText("5")).toBeInTheDocument();
+    expect(screen.getByText("Low-support categories remain visible in the frozen analysis and require an explicit decision before classifier training.")).toBeInTheDocument();
+    await userEvent.click(screen.getByRole("button", { name: "Review more documents" }));
+
+    await waitFor(() => expect(coreApi).toHaveBeenCalledWith(
+      "/v1/matters/matter-1/review-programs/program-1/runs/run-1/actions/action-1/resolve",
+      expect.objectContaining({ method: "POST" }),
+    ));
+    const call = vi.mocked(coreApi).mock.calls.find(([path]) => path.endsWith("/actions/action-1/resolve"));
+    expect(JSON.parse(String(call?.[1]?.body))).toEqual({
+      preview_hash: "b".repeat(64),
+      choice_key: "SUPPLEMENT",
+    });
+  });
+
   it("shows the current gate and resolves it through the coordinator endpoint", async () => {
     vi.mocked(coreApi).mockImplementation(async (path, options) => {
       if (path === "/v1/review-workflow-templates") return [{

@@ -1460,7 +1460,8 @@ class AnalysisTaskBatchSet(TimestampMixin, Base):
     __tablename__ = "analysis_task_batch_set"
     __table_args__ = (
         CheckConstraint(
-            "population_source_type IN ('ALL_MATTER', 'SOURCE_BATCH', 'SEARCH_QUERY', 'SAVED_SEARCH')",
+            "population_source_type IN "
+            "('ALL_MATTER', 'SOURCE_BATCH', 'SEARCH_QUERY', 'SAVED_SEARCH', 'INPUT_MANIFEST')",
             name="ck_analysis_task_batch_set_source_type",
         ),
         CheckConstraint(
@@ -1490,6 +1491,9 @@ class AnalysisTaskBatchSet(TimestampMixin, Base):
     selection_definition: Mapped[dict[str, Any]] = mapped_column(JSON_DOCUMENT, default=dict)
     source_review_batch_id: Mapped[uuid.UUID | None] = mapped_column(
         Uuid, ForeignKey("review_batch.id", ondelete="RESTRICT", use_alter=True), nullable=True, index=True
+    )
+    input_manifest_id: Mapped[uuid.UUID | None] = mapped_column(
+        Uuid, ForeignKey("analysis_input_manifest.id", ondelete="RESTRICT"), nullable=True, index=True
     )
     search_index_generation_id: Mapped[uuid.UUID | None] = mapped_column(
         Uuid,

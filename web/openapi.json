@@ -15061,6 +15061,94 @@
         }
       }
     },
+    "/v1/matters/{matter_id}/review-programs/{program_id}/runs/{run_id}/actions/{action_id}/discovery-setup": {
+      "post": {
+        "tags": [
+          "review programs"
+        ],
+        "summary": "Setup Program Discovery",
+        "operationId": "setup_program_discovery_v1_matters__matter_id__review_programs__program_id__runs__run_id__actions__action_id__discovery_setup_post",
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "matter_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid",
+              "title": "Matter Id"
+            }
+          },
+          {
+            "name": "program_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid",
+              "title": "Program Id"
+            }
+          },
+          {
+            "name": "run_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid",
+              "title": "Run Id"
+            }
+          },
+          {
+            "name": "action_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid",
+              "title": "Action Id"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ReviewProgramDiscoverySetup"
+              }
+            }
+          }
+        },
+        "responses": {
+          "202": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ReviewProgramRunRead"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/v1/matters/{matter_id}/review-programs/{program_id}/runs/{run_id}/cancel": {
       "post": {
         "tags": [
@@ -26974,7 +27062,8 @@
               "ALL_MATTER",
               "SOURCE_BATCH",
               "SEARCH_QUERY",
-              "SAVED_SEARCH"
+              "SAVED_SEARCH",
+              "INPUT_MANIFEST"
             ],
             "title": "Population Source Type"
           },
@@ -26989,6 +27078,18 @@
               }
             ],
             "title": "Source Review Batch Id"
+          },
+          "input_manifest_id": {
+            "anyOf": [
+              {
+                "type": "string",
+                "format": "uuid"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Input Manifest Id"
           },
           "search": {
             "anyOf": [
@@ -27076,7 +27177,8 @@
               "ALL_MATTER",
               "SOURCE_BATCH",
               "SEARCH_QUERY",
-              "SAVED_SEARCH"
+              "SAVED_SEARCH",
+              "INPUT_MANIFEST"
             ],
             "title": "Population Source Type"
           },
@@ -27091,6 +27193,18 @@
               }
             ],
             "title": "Source Review Batch Id"
+          },
+          "input_manifest_id": {
+            "anyOf": [
+              {
+                "type": "string",
+                "format": "uuid"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Input Manifest Id"
           },
           "search": {
             "anyOf": [
@@ -27233,7 +27347,8 @@
               "ALL_MATTER",
               "SOURCE_BATCH",
               "SEARCH_QUERY",
-              "SAVED_SEARCH"
+              "SAVED_SEARCH",
+              "INPUT_MANIFEST"
             ],
             "title": "Population Source Type"
           },
@@ -27253,6 +27368,18 @@
               }
             ],
             "title": "Source Review Batch Id"
+          },
+          "input_manifest_id": {
+            "anyOf": [
+              {
+                "type": "string",
+                "format": "uuid"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Input Manifest Id"
           },
           "search_index_generation_id": {
             "anyOf": [
@@ -27384,6 +27511,7 @@
           "population_source_type",
           "selection_definition",
           "source_review_batch_id",
+          "input_manifest_id",
           "search_index_generation_id",
           "target_batch_size",
           "allocation_policy",
@@ -52897,6 +53025,48 @@
           "mode"
         ],
         "title": "ReviewProgramDefinitionSetup"
+      },
+      "ReviewProgramDiscoverySetup": {
+        "properties": {
+          "preview_hash": {
+            "type": "string",
+            "maxLength": 64,
+            "minLength": 64,
+            "title": "Preview Hash"
+          },
+          "target_document_count": {
+            "type": "integer",
+            "maximum": 100000.0,
+            "minimum": 1.0,
+            "title": "Target Document Count",
+            "default": 500
+          },
+          "control_sample_size": {
+            "type": "integer",
+            "maximum": 25000.0,
+            "minimum": 0.0,
+            "title": "Control Sample Size",
+            "default": 50
+          },
+          "target_batch_size": {
+            "type": "integer",
+            "maximum": 10000.0,
+            "minimum": 1.0,
+            "title": "Target Batch Size",
+            "default": 100
+          },
+          "keep_families_together": {
+            "type": "boolean",
+            "title": "Keep Families Together",
+            "default": true
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "preview_hash"
+        ],
+        "title": "ReviewProgramDiscoverySetup"
       },
       "ReviewProgramEventRead": {
         "properties": {

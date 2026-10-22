@@ -2948,7 +2948,9 @@ class MatterAnalysisTaskRead(ORMModel):
     published_version_details: MatterAnalysisTaskVersionRead | None = None
 
 
-AnalysisTaskBatchSetSourceType = Literal["ALL_MATTER", "SOURCE_BATCH", "SEARCH_QUERY", "SAVED_SEARCH"]
+AnalysisTaskBatchSetSourceType = Literal[
+    "ALL_MATTER", "SOURCE_BATCH", "SEARCH_QUERY", "SAVED_SEARCH", "INPUT_MANIFEST"
+]
 AnalysisTaskBatchSetStatus = Literal["QUEUED", "BUILDING", "READY", "FAILED", "CANCELED", "ARCHIVED"]
 
 
@@ -2957,6 +2959,7 @@ class AnalysisTaskBatchSetPlanRequest(BaseModel):
 
     population_source_type: AnalysisTaskBatchSetSourceType
     source_review_batch_id: uuid.UUID | None = None
+    input_manifest_id: uuid.UUID | None = None
     search: MatterSearchRequest | None = None
     saved_search_id: uuid.UUID | None = None
     target_batch_size: int = Field(ge=1, le=10_000_000)
@@ -2968,6 +2971,10 @@ class AnalysisTaskBatchSetPlanRequest(BaseModel):
             raise ValueError("SOURCE_BATCH requires source_review_batch_id")
         if self.population_source_type != "SOURCE_BATCH" and self.source_review_batch_id is not None:
             raise ValueError("source_review_batch_id is only valid for SOURCE_BATCH")
+        if self.population_source_type == "INPUT_MANIFEST" and self.input_manifest_id is None:
+            raise ValueError("INPUT_MANIFEST requires input_manifest_id")
+        if self.population_source_type != "INPUT_MANIFEST" and self.input_manifest_id is not None:
+            raise ValueError("input_manifest_id is only valid for INPUT_MANIFEST")
         if self.population_source_type == "SEARCH_QUERY":
             if self.search is None:
                 raise ValueError("SEARCH_QUERY requires search")
@@ -3024,6 +3031,7 @@ class AnalysisTaskBatchSetRead(ORMModel):
     population_source_type: AnalysisTaskBatchSetSourceType
     selection_definition: dict[str, Any]
     source_review_batch_id: uuid.UUID | None
+    input_manifest_id: uuid.UUID | None
     search_index_generation_id: uuid.UUID | None
     target_batch_size: int
     allocation_policy: dict[str, Any]
@@ -5054,6 +5062,22 @@ class ReviewProgramQASetup(BaseModel):
         if not normalized:
             raise ValueError("Q&A task name is required")
         return normalized
+
+
+class ReviewProgramDiscoverySetup(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    preview_hash: str = Field(min_length=64, max_length=64)
+    target_document_count: int = Field(default=500, ge=1, le=100_000)
+    control_sample_size: int = Field(default=50, ge=0, le=25_000)
+    target_batch_size: int = Field(default=100, ge=1, le=10_000)
+    keep_families_together: bool = True
+
+    @model_validator(mode="after")
+    def validate_discovery_setup(self) -> "ReviewProgramDiscoverySetup":
+        if self.control_sample_size > self.target_document_count:
+            raise ValueError("Control sample size cannot exceed the discovery target")
+        return self
 
 
 class ReviewProgramStageAttemptRead(ORMModel):

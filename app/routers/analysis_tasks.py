@@ -672,6 +672,7 @@ def preview_analysis_task_batch_set(
             task_version=task_version,
             population_source_type=payload.population_source_type,
             source_review_batch_id=payload.source_review_batch_id,
+            input_manifest_id=payload.input_manifest_id,
             search=search,
             target_batch_size=payload.target_batch_size,
             keep_together=list(payload.keep_together),
@@ -745,6 +746,7 @@ def create_analysis_task_batch_set(
             description=payload.description,
             population_source_type=payload.population_source_type,
             source_review_batch_id=payload.source_review_batch_id,
+            input_manifest_id=payload.input_manifest_id,
             search=search,
             saved_search_id=saved_search.id if saved_search else None,
             saved_search_name=saved_search.name if saved_search else None,
@@ -771,6 +773,7 @@ def create_analysis_task_batch_set(
             "source_review_batch_id": (
                 str(batch_set.source_review_batch_id) if batch_set.source_review_batch_id else None
             ),
+            "input_manifest_id": str(batch_set.input_manifest_id) if batch_set.input_manifest_id else None,
             "saved_search_id": batch_set.selection_definition.get("saved_search_id"),
             "search_index_generation_id": (
                 str(batch_set.search_index_generation_id)

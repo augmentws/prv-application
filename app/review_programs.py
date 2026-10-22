@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import hashlib
 import uuid
+from collections import Counter
 from datetime import datetime
 from typing import Any
 
@@ -9,6 +10,24 @@ from sqlalchemy import func, select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
+from app.analysis_input_manifests import (
+    AnalysisInputContract,
+    AnalysisInputDocument,
+    AnalysisInputExtensionField,
+    prepare_analysis_input_manifest,
+    publish_analysis_input_manifest,
+)
+from app.analysis_task_batch_set_runs import (
+    AnalysisTaskBatchSetRunError,
+    cancel_batch_set_run,
+    create_batch_set_run,
+)
+from app.analysis_task_batch_sets import (
+    AnalysisTaskBatchSetError,
+    cancel_batch_set,
+    create_batch_set,
+    search_document_ids,
+)
 from app.analysis_task_compilation import queue_analysis_task_compilation
 from app.analysis_task_execution_profiles import (
     AnalysisTaskExecutionProfileError,
@@ -33,6 +52,9 @@ from app.matter_definitions import (
     get_guidance,
 )
 from app.models import (
+    AnalysisTaskBatchSet,
+    AnalysisTaskBatchSetRun,
+    AnalysisTaskBatchSetRunChild,
     AnalysisTaskExecutionProfile,
     Client,
     Matter,
@@ -43,6 +65,10 @@ from app.models import (
     MatterDefinitionAssessmentQuestion,
     MatterDefinitionAssessmentRun,
     MatterDefinitionRevision,
+    MatterDocument,
+    MetadataDefinition,
+    ReviewBatchDocument,
+    ReviewBatchRun,
     ReviewProgram,
     ReviewProgramAction,
     ReviewProgramChild,
@@ -50,6 +76,7 @@ from app.models import (
     ReviewProgramRun,
     ReviewProgramStageAttempt,
     ReviewProgramVersion,
+    SearchIndexGeneration,
     User,
     WorkflowRun,
     utcnow,
@@ -61,11 +88,17 @@ from app.notifications import (
     publish_notification,
     resolve_source_notifications,
 )
+from app.review_batch_comparisons import iter_comparison_documents
 from app.review_workflow_templates import (
     BatchingPolicy,
     ReviewWorkflowStageSpec,
     ReviewWorkflowTemplateSpec,
     get_review_workflow_template,
+)
+from app.schemas import ReviewBatchComparisonSourceOptionRead
+from app.workflows.dispatcher import (
+    enqueue_analysis_task_batch_set,
+    enqueue_analysis_task_batch_set_run,
 )
 
 
@@ -194,6 +227,7 @@ def _action_contract(
     stage: ReviewWorkflowStageSpec,
     *,
     qa_setup_state: str | None = None,
+    support_state: str | None = None,
 ) -> tuple[str, str, list[dict[str, Any]]]:
     stop = {
         "key": "STOP",
@@ -301,6 +335,69 @@ def _action_contract(
                     "key": "GENERATE",
                     "label": "Generate Q&A task",
                     "consequence": "Create the draft task, pin two execution profiles, and compile its specification.",
+                },
+                stop,
+            ],
+        )
+    if stage.key == "DISCOVERY_QA":
+        return (
+            "Start discovery Q&A",
+            (
+                "Freeze a training-oriented population from the accepted retrieval plan, split it into "
+                "task-specific batches, and run both pinned Q&A profiles over exactly the same documents."
+            ),
+            [
+                {
+                    "key": "START",
+                    "label": "Start discovery Q&A",
+                    "consequence": (
+                        "Create one immutable population and launch both model profiles without promoting "
+                        "their values to matter metadata."
+                    ),
+                },
+                stop,
+            ],
+        )
+    if stage.key == "ISSUE_SUPPORT_DECISION":
+        if support_state == "INSUFFICIENT":
+            return (
+                "Resolve low-support coding categories",
+                (
+                    "One or more coding categories lack the minimum positive or negative examples. Run another "
+                    "discovery round or explicitly continue with those limitations."
+                ),
+                [
+                    {
+                        "key": "SUPPLEMENT",
+                        "label": "Review more documents",
+                        "consequence": "Return to Discovery Q&A and freeze a new population excluding prior rounds.",
+                    },
+                    {
+                        "key": "IGNORE_LOW_SUPPORT",
+                        "label": "Accept limitations",
+                        "consequence": "Record the low-support categories and proceed to label resolution.",
+                    },
+                    {
+                        "key": "REFINE_DEFINITION",
+                        "label": "Refine Matter Definition",
+                        "consequence": (
+                            "Return to definition refinement, reassess the revised guidance, and regenerate Q&A."
+                        ),
+                    },
+                    stop,
+                ],
+            )
+        return (
+            "Review model alignment and issue support",
+            (
+                "Review per-field agreement, disagreement, incomplete results, and low-support categories before "
+                "moving into training-label resolution."
+            ),
+            [
+                {
+                    "key": "CONTINUE",
+                    "label": "Accept current support",
+                    "consequence": "Proceed to difference review using the frozen discovery results.",
                 },
                 stop,
             ],
@@ -435,6 +532,93 @@ def _qa_stage_context(db: Session, *, run: ReviewProgramRun) -> dict[str, Any]:
     }
 
 
+def _accepted_discovery_queries(
+    db: Session,
+    *,
+    run: ReviewProgramRun,
+) -> tuple[MatterDefinitionAssessmentRun, list[MatterDefinitionAssessmentQuery]]:
+    accepted = (run.progress_summary or {}).get("accepted_matter_definition") or {}
+    assessment_ids = accepted.get("assessment_ids") or []
+    if not assessment_ids:
+        raise ReviewProgramError("Accepted Matter Definition assessment provenance is unavailable")
+    try:
+        assessment_id = uuid.UUID(str(assessment_ids[-1]))
+    except (TypeError, ValueError) as exc:
+        raise ReviewProgramError("Accepted assessment provenance is invalid") from exc
+    assessment = db.get(MatterDefinitionAssessmentRun, assessment_id)
+    if assessment is None or assessment.status not in {"COMPLETED", "COMPLETED_WITH_ERRORS"}:
+        raise ReviewProgramError("Accepted Matter Definition assessment is unavailable")
+    queries = list(
+        db.scalars(
+            select(MatterDefinitionAssessmentQuery)
+            .where(MatterDefinitionAssessmentQuery.assessment_run_id == assessment.id)
+            .order_by(MatterDefinitionAssessmentQuery.ordinal)
+        )
+    )
+    if not queries:
+        raise ReviewProgramError("Accepted assessment has no retrieval queries")
+    return assessment, queries
+
+
+def _discovery_stage_context(
+    db: Session,
+    *,
+    program: ReviewProgram,
+    run: ReviewProgramRun,
+) -> dict[str, Any]:
+    assessment, queries = _accepted_discovery_queries(db, run=run)
+    generation = db.scalar(
+        select(SearchIndexGeneration).where(
+            SearchIndexGeneration.matter_id == program.matter_id,
+            SearchIndexGeneration.status == "ACTIVE",
+        )
+    )
+    accepted_task = (run.progress_summary or {}).get("accepted_qa_task") or {}
+    return {
+        "retrieval_plan": {
+            "source": "ACCEPTED_ASSESSMENT_PLAN",
+            "policy_version": "review-program-discovery-retrieval-v1",
+            "assessment_id": str(assessment.id),
+            "query_count": len(queries),
+            "queries": [
+                {
+                    "ordinal": query.ordinal,
+                    "criterion_key": query.criterion_key,
+                    "criterion_label": query.criterion_label,
+                    "rationale": query.rationale,
+                    "quota": query.quota,
+                    "search_mode": query.search_request.get("search_mode"),
+                }
+                for query in queries
+            ],
+            "diagnostic_batch_ids": (
+                (run.progress_summary or {}).get("accepted_matter_definition") or {}
+            ).get("diagnostic_batch_ids", []),
+        },
+        "search_index_generation": (
+            {
+                "id": str(generation.id),
+                "generation": generation.generation,
+                "document_count": generation.document_count,
+                "schema_hash": generation.schema_hash,
+            }
+            if generation is not None
+            else None
+        ),
+        "qa_task": {
+            "task_id": accepted_task.get("task_id"),
+            "task_version_id": accepted_task.get("task_version_id"),
+            "execution_profiles": accepted_task.get("execution_profiles", []),
+        },
+        "defaults": {
+            "target_document_count": 500,
+            "control_sample_size": 50,
+            "target_batch_size": 100,
+            "keep_families_together": True,
+        },
+    }
+
+
 def _create_action_for_stage(
     db: Session,
     *,
@@ -445,10 +629,14 @@ def _create_action_for_stage(
     template: ReviewWorkflowTemplateSpec,
 ) -> ReviewProgramAction:
     qa_setup_state = str(run.progress_summary.get("qa_task_setup_state") or "")
+    support_state = str(
+        ((run.progress_summary or {}).get("discovery_analysis") or {}).get("support_status") or ""
+    )
     title, explanation, choices = _action_contract(
         template,
         stage,
         qa_setup_state=qa_setup_state,
+        support_state=support_state,
     )
     decision_context = {
         "schema_version": 1,
@@ -461,6 +649,10 @@ def _create_action_for_stage(
             if stage.key in {"MATTER_DEFINITION", "DEFINITION_REFINEMENT", "DEFINITION_ACCEPTANCE"}
             else _qa_stage_context(db, run=run)
             if stage.key == "QA_TASK_SETUP"
+            else _discovery_stage_context(db, program=program, run=run)
+            if stage.key == "DISCOVERY_QA"
+            else {"discovery_analysis": (run.progress_summary or {}).get("discovery_analysis", {})}
+            if stage.key == "ISSUE_SUPPORT_DECISION"
             else {}
         ),
     }
@@ -475,6 +667,7 @@ def _create_action_for_stage(
             "QA_TASK_SETUP": (
                 "QA_TASK_PUBLICATION" if qa_setup_state == "READY_FOR_PUBLICATION" else "QA_TASK_SETUP"
             ),
+            "DISCOVERY_QA": "DISCOVERY_QA_SETUP",
         }.get(stage.key, "STAGE_GATE"),
         title=title,
         explanation=explanation,
@@ -1637,6 +1830,350 @@ def _qa_task_records(
     return task, task_version, profiles
 
 
+def setup_review_program_discovery(
+    db: Session,
+    *,
+    program: ReviewProgram,
+    run: ReviewProgramRun,
+    action_id: uuid.UUID,
+    actor: User,
+    preview_hash: str,
+    target_document_count: int,
+    control_sample_size: int,
+    target_batch_size: int,
+    keep_families_together: bool,
+) -> ReviewProgramRun:
+    action = db.scalar(
+        select(ReviewProgramAction)
+        .where(ReviewProgramAction.id == action_id, ReviewProgramAction.run_id == run.id)
+        .with_for_update()
+    )
+    if action is None or action.action_type != "DISCOVERY_QA_SETUP":
+        raise ReviewProgramError("Discovery Q&A setup action not found")
+    if action.status == "RESOLVED":
+        if (action.resolution_payload or {}).get("choice_key") != "START":
+            raise ReviewProgramError("Discovery Q&A setup was already resolved differently")
+        return run
+    if run.current_stage != "DISCOVERY_QA" or run.status != "WAITING_FOR_USER":
+        raise ReviewProgramError("Review Program is not waiting for Discovery Q&A setup")
+    if action.preview_hash != preview_hash:
+        raise ReviewProgramError("Discovery Q&A setup preview is stale")
+    if control_sample_size > target_document_count:
+        raise ReviewProgramError("Control sample size cannot exceed the discovery target")
+
+    matter = db.get(Matter, program.matter_id)
+    if matter is None:
+        raise ReviewProgramError("Review Program matter is unavailable")
+    generation = db.scalar(
+        select(SearchIndexGeneration).where(
+            SearchIndexGeneration.matter_id == matter.id,
+            SearchIndexGeneration.status == "ACTIVE",
+        )
+    )
+    if generation is None:
+        raise ReviewProgramError("The matter search index must be ready before Discovery Q&A")
+    assessment, queries = _accepted_discovery_queries(db, run=run)
+    task, task_version, profiles = _qa_task_records(db, run)
+    if task_version.status != "PUBLISHED" or len(profiles) != 2:
+        raise ReviewProgramError("Discovery Q&A requires one published task and two pinned profiles")
+
+    accepted_definition = (run.progress_summary or {}).get("accepted_matter_definition") or {}
+    try:
+        diagnostic_batch_ids = [
+            uuid.UUID(str(value)) for value in accepted_definition.get("diagnostic_batch_ids", [])
+        ]
+    except (TypeError, ValueError) as exc:
+        raise ReviewProgramError("Diagnostic batch provenance is invalid") from exc
+    excluded_document_ids = (
+        set(
+            db.scalars(
+                select(ReviewBatchDocument.matter_document_id).where(
+                    ReviewBatchDocument.review_batch_id.in_(diagnostic_batch_ids)
+                )
+            )
+        )
+        if diagnostic_batch_ids
+        else set()
+    )
+    diagnostic_excluded_count = len(excluded_document_ids)
+    prior_batch_set_ids = list(
+        db.scalars(
+            select(ReviewProgramChild.child_id).where(
+                ReviewProgramChild.run_id == run.id,
+                ReviewProgramChild.child_type == "ANALYSIS_TASK_BATCH_SET",
+            )
+        )
+    )
+    if prior_batch_set_ids:
+        excluded_document_ids.update(
+            db.scalars(
+                select(ReviewBatchDocument.matter_document_id).where(
+                    ReviewBatchDocument.analysis_task_batch_set_id.in_(prior_batch_set_ids)
+                )
+            )
+        )
+
+    targeted_limit = target_document_count - control_sample_size
+    selected_ids: list[uuid.UUID] = []
+    selected_set: set[uuid.UUID] = set()
+    selection_reasons: dict[uuid.UUID, list[str]] = {}
+    query_yields: list[dict[str, Any]] = []
+    for query in queries:
+        remaining = targeted_limit - len(selected_ids)
+        if remaining <= 0:
+            break
+        requested = min(query.quota, remaining)
+        hits = search_document_ids(
+            db,
+            matter=matter,
+            generation=generation,
+            search_definition=query.search_request,
+            settings=get_settings(),
+            limit=max(requested + len(excluded_document_ids) + len(selected_set), requested),
+            relevance_order=True,
+        )
+        accepted_hits: list[uuid.UUID] = []
+        for document_id in hits:
+            if document_id in excluded_document_ids:
+                continue
+            reasons = selection_reasons.setdefault(document_id, [])
+            if query.criterion_key not in reasons:
+                reasons.append(query.criterion_key)
+            if document_id not in selected_set and len(accepted_hits) < requested:
+                selected_ids.append(document_id)
+                selected_set.add(document_id)
+                accepted_hits.append(document_id)
+        query_yields.append(
+            {
+                "ordinal": query.ordinal,
+                "criterion_key": query.criterion_key,
+                "quota": query.quota,
+                "requested": requested,
+                "search_hit_count": len(hits),
+                "selected_count": len(accepted_hits),
+            }
+        )
+
+    control_ids: list[uuid.UUID] = []
+    if control_sample_size:
+        excluded_for_control = excluded_document_ids | selected_set
+        control_candidates = db.scalars(
+            select(MatterDocument.id)
+            .where(MatterDocument.matter_id == matter.id)
+            .order_by(MatterDocument.created_at, MatterDocument.id)
+        ).yield_per(1_000)
+        for document_id in control_candidates:
+            if document_id in excluded_for_control:
+                continue
+            control_ids.append(document_id)
+            if len(control_ids) >= control_sample_size:
+                break
+        for document_id in control_ids:
+            selected_ids.append(document_id)
+            selected_set.add(document_id)
+            selection_reasons[document_id] = ["CONTROL"]
+    if not selected_ids:
+        raise ReviewProgramError("The discovery retrieval plan selected no documents")
+
+    documents_by_id = {
+        document.id: document
+        for document in db.scalars(
+            select(MatterDocument).where(
+                MatterDocument.matter_id == matter.id,
+                MatterDocument.id.in_(selected_ids),
+            )
+        )
+    }
+    if len(documents_by_id) != len(selected_ids):
+        raise ReviewProgramError("Discovery retrieval returned documents outside the matter")
+    round_number = run.current_discovery_round + 1
+    contract = AnalysisInputContract(
+        key="review-program.discovery-population",
+        version=1,
+        resolver_version="review-program-discovery-retrieval-v1",
+        extension_fields=[
+            AnalysisInputExtensionField(name="retrieval_lane", type="STRING", nullable=False),
+            AnalysisInputExtensionField(name="selection_reasons", type="STRING", nullable=False),
+        ],
+        options={
+            "review_program_id": str(program.id),
+            "review_program_run_id": str(run.id),
+            "round": round_number,
+            "assessment_id": str(assessment.id),
+            "search_index_generation_id": str(generation.id),
+            "policy_version": "review-program-discovery-retrieval-v1",
+        },
+    )
+    attempt = _current_stage_attempt(db, run, for_update=True)
+    prepared = prepare_analysis_input_manifest(
+        [
+            AnalysisInputDocument(
+                matter_document_id=document_id,
+                collection_item_id=documents_by_id[document_id].collection_item_id,
+                source_collection_id=documents_by_id[document_id].source_collection_id,
+                scope_ordinal=ordinal,
+                extensions={
+                    "retrieval_lane": (
+                        "CONTROL" if selection_reasons[document_id] == ["CONTROL"] else "TARGETED"
+                    ),
+                    "selection_reasons": ",".join(selection_reasons[document_id]),
+                },
+            )
+            for ordinal, document_id in enumerate(selected_ids, start=1)
+        ],
+        contract=contract,
+        scope_type="REVIEW_PROGRAM_STAGE",
+        scope_id=attempt.id,
+    )
+    manifest, _ = publish_analysis_input_manifest(
+        db,
+        prepared=prepared,
+        tenant_id=program.tenant_id,
+        client_id=matter.client_id,
+        matter_id=matter.id,
+        owner_type="REVIEW_PROGRAM_DISCOVERY",
+        owner_id=attempt.id,
+        producer_kind="REVIEW_PROGRAM_DISCOVERY",
+        producer_run_id=run.id,
+        actor_user_id=actor.id,
+    )
+    try:
+        batch_set = create_batch_set(
+            db,
+            matter=matter,
+            task=task,
+            task_version=task_version,
+            name=f"{program.name} · discovery round {round_number}"[:200],
+            description="Frozen training-oriented discovery population for dual-model Q&A.",
+            population_source_type="INPUT_MANIFEST",
+            source_review_batch_id=None,
+            input_manifest_id=manifest.id,
+            search=None,
+            saved_search_id=None,
+            saved_search_name=None,
+            saved_search_updated_at=None,
+            target_batch_size=target_batch_size,
+            keep_together=["FAMILY"] if keep_families_together else [],
+            random_seed=str(run.id),
+            actor_user_id=actor.id,
+            notification_parent_type="REVIEW_PROGRAM_RUN",
+            notification_parent_id=run.id,
+        )
+    except AnalysisTaskBatchSetError as exc:
+        raise ReviewProgramError(str(exc)) from exc
+    batch_set.selection_definition = {
+        **batch_set.selection_definition,
+        "review_program": {
+            "program_id": str(program.id),
+            "run_id": str(run.id),
+            "stage_attempt_id": str(attempt.id),
+            "discovery_round": round_number,
+            "assessment_id": str(assessment.id),
+            "accepted_definition_content_hash": accepted_definition.get("content_hash"),
+            "task_version_id": str(task_version.id),
+            "profile_ids": [str(profile.id) for profile in profiles],
+            "retrieval_policy_version": "review-program-discovery-retrieval-v1",
+            "query_yields": query_yields,
+            "control_selected_count": len(control_ids),
+            "excluded_diagnostic_document_count": diagnostic_excluded_count,
+            "excluded_prior_program_document_count": len(excluded_document_ids)
+            - diagnostic_excluded_count,
+            "prior_discovery_batch_set_ids": [str(value) for value in prior_batch_set_ids],
+        },
+    }
+    link_review_program_child(
+        db,
+        program=program,
+        run=run,
+        stage_attempt=attempt,
+        purpose="DISCOVERY_POPULATION",
+        child_type="ANALYSIS_TASK_BATCH_SET",
+        child_id=batch_set.id,
+        derivation_key=f"discovery-batch-set:{attempt.id}",
+        batching_policy="PARTITIONED_SET",
+        context={
+            "input_manifest_id": str(manifest.id),
+            "population_count": len(selected_ids),
+            "targeted_count": len(selected_ids) - len(control_ids),
+            "control_count": len(control_ids),
+            "round": round_number,
+        },
+    )
+    discovery_snapshot = {
+        "schema_version": 1,
+        "round": round_number,
+        "assessment_id": str(assessment.id),
+        "search_index_generation_id": str(generation.id),
+        "input_manifest_id": str(manifest.id),
+        "input_manifest_content_hash": manifest.artifact_content_hash,
+        "batch_set_id": str(batch_set.id),
+        "task_id": str(task.id),
+        "task_version_id": str(task_version.id),
+        "execution_profile_ids": [str(profile.id) for profile in profiles],
+        "target_document_count": target_document_count,
+        "selected_document_count": len(selected_ids),
+        "targeted_document_count": len(selected_ids) - len(control_ids),
+        "control_document_count": len(control_ids),
+        "target_batch_size": target_batch_size,
+        "keep_families_together": keep_families_together,
+        "query_yields": query_yields,
+    }
+    version = _create_review_program_version(
+        db,
+        program=program,
+        run=run,
+        actor_user_id=actor.id,
+        configuration_stage="DISCOVERY_QA",
+        configuration_updates={"discovery_qa": discovery_snapshot},
+        source_hash_updates={
+            "discovery_input_manifest_content_hash": manifest.artifact_content_hash,
+            "discovery_search_index_schema_hash": generation.schema_hash,
+        },
+    )
+    run.current_discovery_round = round_number
+    run.progress_summary = {
+        **run.progress_summary,
+        "discovery_qa_state": "MATERIALIZING_BATCH_SET",
+        "discovery_qa": {
+            **discovery_snapshot,
+            "program_version_id": str(version.id),
+            "batch_set_run_ids": [],
+        },
+    }
+    resolve_review_program_action(
+        db,
+        program=program,
+        run=run,
+        action_id=action.id,
+        actor=actor,
+        preview_hash=preview_hash,
+        choice_key="START",
+        reason="Discovery Q&A population accepted",
+        input_payload={
+            "input_manifest_id": str(manifest.id),
+            "batch_set_id": str(batch_set.id),
+            "population_count": len(selected_ids),
+        },
+    )
+    enqueue_analysis_task_batch_set(db, batch_set.workflow_id, str(batch_set.id))
+    record_audit(
+        db,
+        tenant_id=program.tenant_id,
+        actor_user_id=actor.id,
+        action="review_program.discovery_qa_started",
+        target_type="review_program_run",
+        target_id=run.id,
+        details={
+            "program_id": str(program.id),
+            "batch_set_id": str(batch_set.id),
+            "input_manifest_id": str(manifest.id),
+            "population_count": len(selected_ids),
+            "profile_ids": [str(profile.id) for profile in profiles],
+        },
+    )
+    return run
+
+
 def _publish_review_program_qa_task(
     db: Session,
     *,
@@ -1886,6 +2423,57 @@ def process_review_program_event(
                 run=run,
                 attempt=attempt,
             )
+        elif action.stage_key == "DISCOVERY_QA" and choice == "START":
+            attempt.status = "RUNNING"
+            run.status = "RUNNING"
+        elif action.stage_key == "ISSUE_SUPPORT_DECISION" and choice == "SUPPLEMENT":
+            _complete_action_attempt(
+                attempt,
+                action,
+                result={"decision": "SUPPLEMENT", "discovery_round": run.current_discovery_round},
+            )
+            _activate_stage_by_key(
+                db,
+                program=program,
+                run=run,
+                stage_key="DISCOVERY_QA",
+            )
+        elif action.stage_key == "ISSUE_SUPPORT_DECISION" and choice == "IGNORE_LOW_SUPPORT":
+            analysis = (run.progress_summary or {}).get("discovery_analysis") or {}
+            version = _create_review_program_version(
+                db,
+                program=program,
+                run=run,
+                actor_user_id=action.resolved_by_user_id or run.initiated_by_user_id,
+                configuration_stage="ISSUE_SUPPORT_DECISION",
+                configuration_updates={
+                    "accepted_low_support": {
+                        "discovery_round": run.current_discovery_round,
+                        "categories": analysis.get("low_support", []),
+                        "accepted_by_user_id": str(action.resolved_by_user_id),
+                        "accepted_at": action.resolved_at.isoformat() if action.resolved_at else None,
+                    }
+                },
+                source_hash_updates={},
+            )
+            _complete_action_attempt(
+                attempt,
+                action,
+                result={"decision": "IGNORE_LOW_SUPPORT", "program_version_id": str(version.id)},
+            )
+            _advance_after_stage(db, program=program, run=run, attempt=attempt)
+        elif action.stage_key == "ISSUE_SUPPORT_DECISION" and choice == "REFINE_DEFINITION":
+            _complete_action_attempt(
+                attempt,
+                action,
+                result={"decision": "REFINE_DEFINITION", "discovery_round": run.current_discovery_round},
+            )
+            _activate_stage_by_key(
+                db,
+                program=program,
+                run=run,
+                stage_key="DEFINITION_REFINEMENT",
+            )
         elif choice == "CONTINUE":
             _complete_action_attempt(attempt, action)
             _advance_after_stage(db, program=program, run=run, attempt=attempt)
@@ -2126,6 +2714,518 @@ def project_review_program_qa_compilation_terminal(
     return None
 
 
+def project_review_program_discovery_batch_set_terminal(
+    db: Session,
+    *,
+    batch_set: AnalysisTaskBatchSet,
+    workflow: WorkflowRun,
+) -> ReviewProgramEvent | None:
+    if (
+        workflow.notification_policy != "PARENT_MANAGED"
+        or workflow.notification_parent_type != "REVIEW_PROGRAM_RUN"
+        or workflow.notification_parent_id is None
+    ):
+        return None
+    child = db.scalar(
+        select(ReviewProgramChild).where(
+            ReviewProgramChild.run_id == workflow.notification_parent_id,
+            ReviewProgramChild.child_type == "ANALYSIS_TASK_BATCH_SET",
+            ReviewProgramChild.child_id == batch_set.id,
+        )
+    )
+    if child is None:
+        return None
+    child.status = batch_set.status
+    child.context = {
+        **child.context,
+        "workflow_status": workflow.status,
+        "population_count": batch_set.population_count,
+        "batch_count": batch_set.batch_count,
+        "population_hash": batch_set.population_hash,
+        "warnings": batch_set.warning_details,
+        "error_message": batch_set.error_message,
+    }
+    run = db.get(ReviewProgramRun, child.run_id)
+    attempt = db.get(ReviewProgramStageAttempt, child.stage_attempt_id)
+    program = db.get(ReviewProgram, run.program_id) if run is not None else None
+    if run is None or attempt is None or program is None:
+        raise ReviewProgramError("Review Program discovery Batch Set link is incomplete")
+    if (
+        run.status in TERMINAL_RUN_STATUSES
+        or run.current_stage != "DISCOVERY_QA"
+        or attempt.id != _current_stage_attempt(db, run).id
+    ):
+        return None
+    if workflow.status in {"FAILED", "CANCELED"}:
+        run.status = "RUNNING"
+        attempt.status = "RUNNING"
+        return fail_review_program_stage(
+            db,
+            program=program,
+            run=run,
+            error_code=f"DISCOVERY_BATCH_SET_{workflow.status}",
+            error_summary=batch_set.error_message or f"Discovery Batch Set {workflow.status.lower()}",
+            retriable=True,
+        )
+    if workflow.status not in {"COMPLETED", "COMPLETED_WITH_ERRORS"}:
+        return None
+
+    task, task_version, profiles = _qa_task_records(db, run)
+    matter = db.get(Matter, program.matter_id)
+    if matter is None:
+        raise ReviewProgramError("Review Program matter is unavailable")
+    launched_runs: list[AnalysisTaskBatchSetRun] = []
+    try:
+        for profile in profiles:
+            batch_run, _ = create_batch_set_run(
+                db,
+                matter=matter,
+                batch_set=batch_set,
+                task=task,
+                task_version=task_version,
+                configuration={"max_concurrency": 2, "result_policy": "ISOLATED"},
+                idempotency_key=f"review-program:{run.id}:discovery:{attempt.attempt}:profile:{profile.id}",
+                actor_user_id=run.initiated_by_user_id,
+                execution_profile=profile,
+                notification_parent_type="REVIEW_PROGRAM_RUN",
+                notification_parent_id=run.id,
+            )
+            launched_runs.append(batch_run)
+            link_review_program_child(
+                db,
+                program=program,
+                run=run,
+                stage_attempt=attempt,
+                purpose="DISCOVERY_QA_PROFILE",
+                child_type="ANALYSIS_TASK_BATCH_SET_RUN",
+                child_id=batch_run.id,
+                derivation_key=f"discovery-profile-run:{attempt.id}:{profile.id}",
+                batching_policy="PARTITIONED_SET",
+                context={
+                    "batch_set_id": str(batch_set.id),
+                    "execution_profile_id": str(profile.id),
+                    "execution_profile_key": profile.key,
+                    "execution_profile_content_hash": profile.content_hash,
+                },
+            )
+    except AnalysisTaskBatchSetRunError as exc:
+        run.status = "RUNNING"
+        attempt.status = "RUNNING"
+        return fail_review_program_stage(
+            db,
+            program=program,
+            run=run,
+            error_code="DISCOVERY_QA_LAUNCH_FAILED",
+            error_summary=str(exc),
+            retriable=True,
+        )
+    discovery = dict((run.progress_summary or {}).get("discovery_qa") or {})
+    discovery["batch_set_run_ids"] = [str(item.id) for item in launched_runs]
+    discovery["batch_set_population_hash"] = batch_set.population_hash
+    discovery["batch_count"] = batch_set.batch_count
+    run.progress_summary = {
+        **run.progress_summary,
+        "discovery_qa_state": "RUNNING_PROFILES",
+        "discovery_qa": discovery,
+    }
+    for batch_run in launched_runs:
+        enqueue_analysis_task_batch_set_run(db, batch_run.workflow_id, str(batch_run.id))
+    return None
+
+
+def _discovery_alignment_snapshot(
+    db: Session,
+    *,
+    program: ReviewProgram,
+    run: ReviewProgramRun,
+    profile_runs: list[AnalysisTaskBatchSetRun],
+) -> dict[str, Any]:
+    runs_by_batch_set: dict[uuid.UUID, list[AnalysisTaskBatchSetRun]] = {}
+    for profile_run in profile_runs:
+        runs_by_batch_set.setdefault(profile_run.analysis_task_batch_set_id, []).append(profile_run)
+    if not runs_by_batch_set or any(len(items) != 2 for items in runs_by_batch_set.values()):
+        raise ReviewProgramError("Discovery alignment requires exactly two profile runs per frozen population")
+    accepted_task = (run.progress_summary or {}).get("accepted_qa_task") or {}
+    definition_ids = [
+        uuid.UUID(str(value)) for value in accepted_task.get("destination_metadata_definition_ids", [])
+    ]
+    definitions = {
+        definition.id: definition
+        for definition in db.scalars(
+            select(MetadataDefinition).where(
+                MetadataDefinition.matter_id == program.matter_id,
+                MetadataDefinition.id.in_(definition_ids),
+            )
+        )
+    }
+    paired_children: list[
+        tuple[
+            AnalysisTaskBatchSetRun,
+            AnalysisTaskBatchSetRun,
+            dict[uuid.UUID, AnalysisTaskBatchSetRunChild],
+            dict[uuid.UUID, AnalysisTaskBatchSetRunChild],
+            list[uuid.UUID],
+        ]
+    ] = []
+    execution_metrics: dict[uuid.UUID | None, Counter] = {}
+    for batch_set_id in sorted(runs_by_batch_set, key=str):
+        left_parent, right_parent = sorted(
+            runs_by_batch_set[batch_set_id],
+            key=lambda item: str(item.execution_profile_id),
+        )
+        children_by_parent = []
+        for profile_run in (left_parent, right_parent):
+            children = list(
+                db.scalars(
+                    select(AnalysisTaskBatchSetRunChild).where(
+                        AnalysisTaskBatchSetRunChild.batch_set_run_id == profile_run.id
+                    )
+                )
+            )
+            children_by_parent.append({child.review_batch_id: child for child in children})
+            metrics = execution_metrics.setdefault(profile_run.execution_profile_id, Counter())
+            for child in children:
+                review_run = db.get(ReviewBatchRun, child.child_run_id)
+                workflow = (
+                    db.get(WorkflowRun, review_run.current_workflow_run_id)
+                    if review_run is not None and review_run.current_workflow_run_id is not None
+                    else None
+                )
+                if workflow is None:
+                    continue
+                metrics["request_count"] += workflow.request_count
+                metrics["input_tokens"] += workflow.input_tokens
+                metrics["cached_input_tokens"] += workflow.cached_input_tokens
+                metrics["output_tokens"] += workflow.output_tokens
+                if workflow.started_at is not None and workflow.completed_at is not None:
+                    metrics["elapsed_seconds"] += int(
+                        (workflow.completed_at - workflow.started_at).total_seconds()
+                    )
+        batch_ids = sorted(
+            set(children_by_parent[0]).intersection(children_by_parent[1]),
+            key=str,
+        )
+        paired_children.append(
+            (left_parent, right_parent, children_by_parent[0], children_by_parent[1], batch_ids)
+        )
+    field_snapshots: list[dict[str, Any]] = []
+    overall = Counter()
+    minimum_positive_support = 25
+    minimum_negative_support = 25
+    for definition_id in definition_ids:
+        definition = definitions.get(definition_id)
+        if definition is None:
+            continue
+        counts = Counter()
+        class_counts: dict[str, Counter] = {}
+        for left_parent, right_parent, left_children, right_children, batch_ids in paired_children:
+            for batch_id in batch_ids:
+                left_child = left_children[batch_id]
+                right_child = right_children[batch_id]
+                left_run = db.get(ReviewBatchRun, left_child.child_run_id)
+                right_run = db.get(ReviewBatchRun, right_child.child_run_id)
+                if left_run is None or right_run is None:
+                    raise ReviewProgramError("Discovery Q&A child-run provenance is incomplete")
+                options = [
+                    ReviewBatchComparisonSourceOptionRead(
+                        id=source.id,
+                        source_type="RUN",
+                        run_type=source.run_type,
+                        purpose=source.purpose,
+                        status=source.status,
+                        label=str(
+                            (parent.configuration_snapshot or {}).get(
+                                "execution_profile_id", f"Profile {index + 1}"
+                            )
+                        ),
+                        detail=(source.configuration_snapshot or {}).get("model_key"),
+                        metadata_definition_ids=definition_ids,
+                        created_at=source.created_at,
+                    )
+                    for index, (parent, source) in enumerate(
+                        ((left_parent, left_run), (right_parent, right_run))
+                    )
+                ]
+                for document in iter_comparison_documents(
+                    db,
+                    batch_id=batch_id,
+                    definition_id=definition_id,
+                    source_options=options,
+                ):
+                    counts[document.agreement_status] += 1
+                    overall[document.agreement_status] += 1
+                    left_values = set(document.sources[left_run.id].value_keys)
+                    right_values = set(document.sources[right_run.id].value_keys)
+                    for value_key in left_values | right_values:
+                        value_counts = class_counts.setdefault(value_key, Counter())
+                        value_counts["left"] += value_key in left_values
+                        value_counts["right"] += value_key in right_values
+                        value_counts["intersection"] += value_key in left_values and value_key in right_values
+                        value_counts["union"] += 1
+                        value_counts["disagreement"] += (value_key in left_values) != (
+                            value_key in right_values
+                        )
+        declared_keys = [
+            str(value.get("key"))
+            for value in definition.allowed_values or []
+            if value.get("key") is not None
+        ]
+        if definition.type == "BOOLEAN":
+            declared_keys = ["true", "false"]
+        observed_keys = sorted(set(class_counts).union(declared_keys))
+        if not observed_keys:
+            observed_keys = ["__NO_DECLARED_CLASS__"]
+        evaluated_count = counts["EXACT"] + counts["PARTIAL"] + counts["DISAGREEMENT"]
+        classes = [
+            {
+                "value_key": value_key,
+                "left_selected_count": class_counts.get(value_key, Counter())["left"],
+                "right_selected_count": class_counts.get(value_key, Counter())["right"],
+                "intersection_count": class_counts.get(value_key, Counter())["intersection"],
+                "union_count": class_counts.get(value_key, Counter())["union"],
+                "negative_count": max(
+                    0,
+                    evaluated_count - class_counts.get(value_key, Counter())["union"],
+                ),
+                "disagreement_count": class_counts.get(value_key, Counter())["disagreement"],
+                "support_status": (
+                    "SUFFICIENT"
+                    if (
+                        class_counts.get(value_key, Counter())["union"] >= minimum_positive_support
+                        and evaluated_count - class_counts.get(value_key, Counter())["union"]
+                        >= minimum_negative_support
+                    )
+                    else "LOW_SUPPORT"
+                ),
+            }
+            for value_key in observed_keys
+        ]
+        field_snapshots.append(
+            {
+                "metadata_definition_id": str(definition.id),
+                "key": definition.key,
+                "display_name": definition.display_name,
+                "exact_count": counts["EXACT"],
+                "partial_count": counts["PARTIAL"],
+                "disagreement_count": counts["DISAGREEMENT"],
+                "incomplete_count": counts["INCOMPLETE"],
+                "classes": classes,
+            }
+        )
+    low_support = [
+        {
+            "field_key": field["key"],
+            "value_key": value["value_key"],
+            "positive_count": value["union_count"],
+            "negative_count": value["negative_count"],
+        }
+        for field in field_snapshots
+        for value in field["classes"]
+        if value["support_status"] == "LOW_SUPPORT"
+    ]
+    return {
+        "schema_version": 1,
+        "policy": {
+            "version": "review-program-issue-support-v1",
+            "minimum_positive_support": minimum_positive_support,
+            "minimum_negative_support": minimum_negative_support,
+        },
+        "profile_run_ids": [str(item.id) for item in profile_runs],
+        "execution_profiles": [
+            {
+                "execution_profile_id": str(profile_id),
+                "request_count": metrics["request_count"],
+                "input_tokens": metrics["input_tokens"],
+                "cached_input_tokens": metrics["cached_input_tokens"],
+                "output_tokens": metrics["output_tokens"],
+                "elapsed_seconds": metrics["elapsed_seconds"],
+            }
+            for profile_id, metrics in sorted(execution_metrics.items(), key=lambda item: str(item[0]))
+        ],
+        "batch_count": sum(len(item[4]) for item in paired_children),
+        "overall": {
+            "exact_count": overall["EXACT"],
+            "partial_count": overall["PARTIAL"],
+            "disagreement_count": overall["DISAGREEMENT"],
+            "incomplete_count": overall["INCOMPLETE"],
+        },
+        "fields": field_snapshots,
+        "low_support": low_support,
+        "support_status": "SUFFICIENT" if not low_support else "INSUFFICIENT",
+    }
+
+
+def project_review_program_discovery_qa_run_terminal(
+    db: Session,
+    *,
+    batch_run: AnalysisTaskBatchSetRun,
+    workflow: WorkflowRun,
+) -> ReviewProgramEvent | None:
+    if (
+        workflow.notification_policy != "PARENT_MANAGED"
+        or workflow.notification_parent_type != "REVIEW_PROGRAM_RUN"
+        or workflow.notification_parent_id is None
+    ):
+        return None
+    child = db.scalar(
+        select(ReviewProgramChild).where(
+            ReviewProgramChild.run_id == workflow.notification_parent_id,
+            ReviewProgramChild.child_type == "ANALYSIS_TASK_BATCH_SET_RUN",
+            ReviewProgramChild.child_id == batch_run.id,
+        )
+    )
+    if child is None:
+        return None
+    child.status = batch_run.status
+    child.context = {
+        **child.context,
+        "workflow_status": workflow.status,
+        "completed_child_count": batch_run.completed_child_count,
+        "failed_child_count": batch_run.failed_child_count,
+    }
+    run = db.get(ReviewProgramRun, child.run_id)
+    attempt = db.get(ReviewProgramStageAttempt, child.stage_attempt_id)
+    program = db.get(ReviewProgram, run.program_id) if run is not None else None
+    if run is None or attempt is None or program is None:
+        raise ReviewProgramError("Review Program discovery Q&A link is incomplete")
+    recovering_failed_profile = (
+        run.status == "FAILED"
+        and run.failure_code == "DISCOVERY_QA_PROFILE_FAILED"
+        and run.current_stage == "DISCOVERY_QA"
+        and attempt.id == _current_stage_attempt(db, run).id
+    )
+    if (
+        (run.status in TERMINAL_RUN_STATUSES and not recovering_failed_profile)
+        or run.current_stage != "DISCOVERY_QA"
+        or attempt.id != _current_stage_attempt(db, run).id
+    ):
+        return None
+    profile_children = list(
+        db.scalars(
+            select(ReviewProgramChild)
+            .where(
+                ReviewProgramChild.run_id == run.id,
+                ReviewProgramChild.stage_attempt_id == attempt.id,
+                ReviewProgramChild.purpose == "DISCOVERY_QA_PROFILE",
+                ReviewProgramChild.child_type == "ANALYSIS_TASK_BATCH_SET_RUN",
+            )
+            .order_by(ReviewProgramChild.created_at, ReviewProgramChild.id)
+        )
+    )
+    profile_runs = [db.get(AnalysisTaskBatchSetRun, item.child_id) for item in profile_children]
+    if len(profile_runs) != 2 or any(item is None for item in profile_runs):
+        return None
+    resolved_runs = [item for item in profile_runs if item is not None]
+    terminal = {"COMPLETED", "COMPLETED_WITH_ERRORS", "FAILED", "CANCELED"}
+    if any(item.status not in terminal for item in resolved_runs):
+        return None
+    has_failed_profile = any(
+        item.status in {"FAILED", "CANCELED"} or item.failed_child_count > 0
+        for item in resolved_runs
+    )
+    if has_failed_profile:
+        if recovering_failed_profile:
+            return None
+        run.status = "RUNNING"
+        attempt.status = "RUNNING"
+        return fail_review_program_stage(
+            db,
+            program=program,
+            run=run,
+            error_code="DISCOVERY_QA_PROFILE_FAILED",
+            error_summary="One or more Discovery Q&A profile runs failed",
+            retriable=True,
+        )
+
+    if recovering_failed_profile:
+        run.status = "RUNNING"
+        run.failure_code = None
+        run.failure_summary = None
+        run.failure_retriable = False
+        run.completed_at = None
+        attempt.status = "RUNNING"
+        attempt.error_code = None
+        attempt.error_summary = None
+        attempt.completed_at = None
+        resolve_source_notifications(
+            db,
+            source=NotificationSource("review_program_run", run.id),
+            resolution_code="RECOVERED",
+        )
+
+    discovery = dict((run.progress_summary or {}).get("discovery_qa") or {})
+    discovery["profile_runs"] = [
+        {
+            "id": str(item.id),
+            "execution_profile_id": str(item.execution_profile_id),
+            "status": item.status,
+            "completed_child_count": item.completed_child_count,
+            "failed_child_count": item.failed_child_count,
+        }
+        for item in resolved_runs
+    ]
+    run.progress_summary = {
+        **run.progress_summary,
+        "discovery_qa_state": "COMPLETED",
+        "discovery_qa": discovery,
+    }
+    complete_review_program_stage(
+        db,
+        program=program,
+        run=run,
+        result_summary={"discovery_qa": discovery},
+        idempotency_key=f"discovery-qa-terminal:{attempt.id}",
+    )
+    if run.current_stage != "DISCOVERY_ANALYSIS" or run.status != "RUNNING":
+        return None
+    all_profile_child_ids = list(
+        db.scalars(
+            select(ReviewProgramChild.child_id).where(
+                ReviewProgramChild.run_id == run.id,
+                ReviewProgramChild.purpose == "DISCOVERY_QA_PROFILE",
+                ReviewProgramChild.child_type == "ANALYSIS_TASK_BATCH_SET_RUN",
+            )
+        )
+    )
+    accumulated_profile_runs = list(
+        db.scalars(
+            select(AnalysisTaskBatchSetRun)
+            .where(
+                AnalysisTaskBatchSetRun.id.in_(all_profile_child_ids),
+                AnalysisTaskBatchSetRun.status.in_({"COMPLETED", "COMPLETED_WITH_ERRORS"}),
+            )
+            .order_by(AnalysisTaskBatchSetRun.created_at, AnalysisTaskBatchSetRun.id)
+        )
+    )
+    alignment = _discovery_alignment_snapshot(
+        db,
+        program=program,
+        run=run,
+        profile_runs=accumulated_profile_runs,
+    )
+    version = _create_review_program_version(
+        db,
+        program=program,
+        run=run,
+        actor_user_id=run.initiated_by_user_id,
+        configuration_stage="ISSUE_SUPPORT_DECISION",
+        configuration_updates={"discovery_analysis": alignment},
+        source_hash_updates={"discovery_analysis_hash": canonical_hash(alignment)},
+    )
+    run.progress_summary = {
+        **run.progress_summary,
+        "discovery_analysis": alignment,
+        "discovery_analysis_program_version_id": str(version.id),
+    }
+    return complete_review_program_stage(
+        db,
+        program=program,
+        run=run,
+        result_summary=alignment,
+        idempotency_key=f"discovery-analysis-terminal:{run.id}:{run.current_discovery_round}",
+    )
+
+
 def resolve_review_program_action(
     db: Session,
     *,
@@ -2169,6 +3269,12 @@ def resolve_review_program_action(
         and not input_payload.get("task_id")
     ):
         raise ReviewProgramError("Use the Q&A task setup command for this choice")
+    if (
+        action.action_type == "DISCOVERY_QA_SETUP"
+        and choice_key != "STOP"
+        and not input_payload.get("batch_set_id")
+    ):
+        raise ReviewProgramError("Use the Discovery Q&A setup command for this choice")
     now = utcnow()
     action.status = "RESOLVED"
     action.resolution_payload = {"choice_key": choice_key, "input": input_payload}
@@ -2283,6 +3389,45 @@ def review_program_assessment_cancellation_targets(
         )
     )
     return [(assessment, db.get(WorkflowRun, assessment.workflow_run_id)) for assessment in assessments]
+
+
+def cancel_review_program_discovery_children(
+    db: Session,
+    *,
+    run: ReviewProgramRun,
+    actor_user_id: uuid.UUID,
+) -> tuple[list[str], list[str], list[str]]:
+    batch_set_workflow_ids: list[str] = []
+    batch_run_workflow_ids: list[str] = []
+    child_workflow_ids: list[str] = []
+    children = list(db.scalars(select(ReviewProgramChild).where(ReviewProgramChild.run_id == run.id)))
+    for child in children:
+        if child.child_type == "ANALYSIS_TASK_BATCH_SET_RUN":
+            batch_run = db.get(AnalysisTaskBatchSetRun, child.child_id)
+            if batch_run is None or batch_run.status not in {"QUEUED", "RUNNING"}:
+                continue
+            execution, canceled, child_ids = cancel_batch_set_run(
+                db,
+                batch_run,
+                actor_user_id=actor_user_id,
+            )
+            if canceled:
+                child.status = "CANCELED"
+                batch_run_workflow_ids.append(execution.dbos_workflow_id)
+                child_workflow_ids.extend(child_ids)
+        elif child.child_type == "ANALYSIS_TASK_BATCH_SET":
+            batch_set = db.get(AnalysisTaskBatchSet, child.child_id)
+            if batch_set is None or batch_set.status not in {"QUEUED", "BUILDING"}:
+                continue
+            execution, canceled = cancel_batch_set(
+                db,
+                batch_set,
+                actor_user_id=actor_user_id,
+            )
+            if canceled:
+                child.status = "CANCELED"
+                batch_set_workflow_ids.append(execution.dbos_workflow_id)
+    return batch_set_workflow_ids, batch_run_workflow_ids, child_workflow_ids
 
 
 def cancel_review_program_run(
