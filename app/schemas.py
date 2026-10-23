@@ -5080,6 +5080,45 @@ class ReviewProgramDiscoverySetup(BaseModel):
         return self
 
 
+class ReviewProgramClassifierImprovementQuery(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    metadata_definition_id: uuid.UUID
+    class_key: str = Field(min_length=1, max_length=500)
+    query: str = Field(min_length=1, max_length=2000)
+    quota: int = Field(default=50, ge=1, le=25_000)
+
+    @field_validator("class_key", "query")
+    @classmethod
+    def normalize_improvement_text(cls, value: str) -> str:
+        normalized = " ".join(value.split())
+        if not normalized:
+            raise ValueError("Classifier improvement text is required")
+        return normalized
+
+
+class ReviewProgramClassifierImprovementSetup(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    preview_hash: str = Field(min_length=64, max_length=64)
+    queries: list[ReviewProgramClassifierImprovementQuery] = Field(min_length=1, max_length=100)
+    control_sample_size: int = Field(default=25, ge=0, le=25_000)
+    target_batch_size: int = Field(default=100, ge=1, le=10_000)
+    keep_families_together: bool = True
+
+    @model_validator(mode="after")
+    def validate_improvement_setup(self) -> "ReviewProgramClassifierImprovementSetup":
+        targets = [
+            (query.metadata_definition_id, query.class_key)
+            for query in self.queries
+        ]
+        if len(targets) != len(set(targets)):
+            raise ValueError("Classifier improvement targets must be unique")
+        if sum(query.quota for query in self.queries) + self.control_sample_size > 100_000:
+            raise ValueError("Classifier improvement population cannot exceed 100,000 documents")
+        return self
+
+
 class ReviewProgramStageAttemptRead(ORMModel):
     id: uuid.UUID
     run_id: uuid.UUID

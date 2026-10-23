@@ -24,6 +24,7 @@ from app.review_programs import (
     review_program_action_decision_context,
     review_program_assessment_cancellation_targets,
     review_program_run_details,
+    setup_review_program_classifier_improvement,
     setup_review_program_definition,
     setup_review_program_discovery,
     setup_review_program_qa_task,
@@ -37,6 +38,7 @@ from app.review_workflow_templates import (
 from app.schemas import (
     ReviewProgramActionRead,
     ReviewProgramActionResolve,
+    ReviewProgramClassifierImprovementSetup,
     ReviewProgramCreate,
     ReviewProgramDefinitionSetup,
     ReviewProgramDiscoverySetup,
@@ -462,6 +464,50 @@ def setup_program_discovery(
         raise HTTPException(
             status_code=status.HTTP_409_CONFLICT,
             detail="Discovery Q&A setup conflicts with an existing record",
+        ) from exc
+    db.refresh(run)
+    return _run_read(db, run)
+
+
+@router.post(
+    "/{program_id}/runs/{run_id}/actions/{action_id}/classifier-improvement-setup",
+    response_model=ReviewProgramRunRead,
+    status_code=status.HTTP_202_ACCEPTED,
+)
+def setup_program_classifier_improvement(
+    matter_id: uuid.UUID,
+    program_id: uuid.UUID,
+    run_id: uuid.UUID,
+    action_id: uuid.UUID,
+    payload: ReviewProgramClassifierImprovementSetup,
+    principal: Principal = Depends(get_principal),
+    db: Session = Depends(get_db),
+) -> ReviewProgramRunRead:
+    _matter_with_permission(db, principal, matter_id, "review_program.manage")
+    try:
+        program = get_review_program(db, matter_id=matter_id, program_id=program_id, for_update=True)
+        run = get_review_program_run(db, program=program, run_id=run_id, for_update=True)
+        setup_review_program_classifier_improvement(
+            db,
+            program=program,
+            run=run,
+            action_id=action_id,
+            actor=principal.user,
+            preview_hash=payload.preview_hash,
+            queries=[query.model_dump(mode="json") for query in payload.queries],
+            control_sample_size=payload.control_sample_size,
+            target_batch_size=payload.target_batch_size,
+            keep_families_together=payload.keep_families_together,
+        )
+        db.commit()
+    except ReviewProgramError as exc:
+        db.rollback()
+        raise _http_error(exc) from exc
+    except IntegrityError as exc:
+        db.rollback()
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail="Classifier improvement setup conflicts with an existing record",
         ) from exc
     db.refresh(run)
     return _run_read(db, run)

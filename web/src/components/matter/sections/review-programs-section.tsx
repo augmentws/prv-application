@@ -122,6 +122,14 @@ export function ReviewProgramsSection() {
     onSuccess: async (run) => { await refresh(run.program_id); toast.success("Discovery Q&A has started."); },
     onError: mutationError("Discovery Q&A could not be started."),
   });
+  const setupClassifierImprovement = useMutation({
+    mutationFn: ({ programId, runId, actionId, payload }: { programId: string; runId: string; actionId: string; payload: ClassifierImprovementSetupPayload }) => coreApi<ReviewProgramRunRead>(`/v1/matters/${matterId}/review-programs/${programId}/runs/${runId}/actions/${actionId}/classifier-improvement-setup`, {
+      method: "POST",
+      body: JSON.stringify(payload),
+    }),
+    onSuccess: async (run) => { await refresh(run.program_id); toast.success("Targeted classifier review has started."); },
+    onError: mutationError("Targeted classifier review could not be started."),
+  });
 
   if (programs.isPending || templates.isPending) return <TableLoading />;
   if (programs.error || templates.error) return <QueryError message={programs.error?.message ?? templates.error?.message} />;
@@ -148,19 +156,20 @@ export function ReviewProgramsSection() {
         canManage={canManage}
         loading={runs.isPending}
         error={runs.error}
-        busy={startRun.isPending || command.isPending || resolveAction.isPending || setupDefinition.isPending || setupQA.isPending || setupDiscovery.isPending}
+        busy={startRun.isPending || command.isPending || resolveAction.isPending || setupDefinition.isPending || setupQA.isPending || setupDiscovery.isPending || setupClassifierImprovement.isPending}
         onStart={() => startRun.mutate(selectedProgram.id)}
         onCommand={(verb) => currentRun && command.mutate({ programId: selectedProgram.id, runId: currentRun.id, verb })}
         onResolve={(action, choiceKey) => currentRun && resolveAction.mutate({ programId: selectedProgram.id, runId: currentRun.id, action, choiceKey })}
         onSetupDefinition={(action, payload) => currentRun && setupDefinition.mutate({ programId: selectedProgram.id, runId: currentRun.id, actionId: action.id, payload })}
         onSetupQA={(action, payload) => currentRun && setupQA.mutate({ programId: selectedProgram.id, runId: currentRun.id, actionId: action.id, payload })}
         onSetupDiscovery={(action, payload) => currentRun && setupDiscovery.mutate({ programId: selectedProgram.id, runId: currentRun.id, actionId: action.id, payload })}
+        onSetupClassifierImprovement={(action, payload) => currentRun && setupClassifierImprovement.mutate({ programId: selectedProgram.id, runId: currentRun.id, actionId: action.id, payload })}
       /> : null}
     </div>}
   </div>;
 }
 
-function ProgramWorkspace({ clientId, matterId, program, run, stages, canManage, loading, error, busy, onStart, onCommand, onResolve, onSetupDefinition, onSetupQA, onSetupDiscovery }: {
+function ProgramWorkspace({ clientId, matterId, program, run, stages, canManage, loading, error, busy, onStart, onCommand, onResolve, onSetupDefinition, onSetupQA, onSetupDiscovery, onSetupClassifierImprovement }: {
   clientId: string;
   matterId: string;
   program: ReviewProgramRead;
@@ -176,6 +185,7 @@ function ProgramWorkspace({ clientId, matterId, program, run, stages, canManage,
   onSetupDefinition: (action: ReviewProgramActionRead, payload: DefinitionSetupPayload) => void;
   onSetupQA: (action: ReviewProgramActionRead, payload: QASetupPayload) => void;
   onSetupDiscovery: (action: ReviewProgramActionRead, payload: DiscoverySetupPayload) => void;
+  onSetupClassifierImprovement: (action: ReviewProgramActionRead, payload: ClassifierImprovementSetupPayload) => void;
 }) {
   const openAction = run?.actions?.find((action) => action.status === "OPEN") ?? null;
   const attemptsByStage = useMemo(() => new Map(run?.stage_attempts?.map((attempt) => [attempt.stage_key, attempt]) ?? []), [run?.stage_attempts]);
@@ -193,7 +203,7 @@ function ProgramWorkspace({ clientId, matterId, program, run, stages, canManage,
       </CardHeader>
       {run ? <CardContent><div className="flex flex-wrap items-center gap-2"><StatusBadge status={run.status} /><Badge variant="outline">{friendly(run.current_stage)}</Badge><span className="text-xs text-muted-foreground">Started {formatDate(run.created_at)}</span></div>{run.failure_summary ? <p className="mt-3 rounded-lg border border-destructive/30 bg-destructive/5 p-3 text-sm text-destructive">{run.failure_summary}</p> : null}</CardContent> : <CardContent><p className="text-sm text-muted-foreground">This program is configured but has not been started.</p></CardContent>}
     </Card>
-    {openAction?.action_type === "MATTER_DEFINITION_SETUP" ? <DefinitionSetupCard matterId={matterId} action={openAction} canManage={canManage} busy={busy} onSubmit={(payload) => onSetupDefinition(openAction, payload)} onStop={() => onResolve(openAction, "STOP")} /> : openAction?.action_type === "QA_TASK_SETUP" ? <QASetupCard matterId={matterId} action={openAction} canManage={canManage} busy={busy} onSubmit={(payload) => onSetupQA(openAction, payload)} onStop={() => onResolve(openAction, "STOP")} /> : openAction?.action_type === "DISCOVERY_QA_SETUP" ? <DiscoverySetupCard action={openAction} canManage={canManage} busy={busy} onSubmit={(payload) => onSetupDiscovery(openAction, payload)} onStop={() => onResolve(openAction, "STOP")} /> : openAction ? <Card className="border-accent/60 bg-accent/5"><CardHeader><CardTitle>{openAction.title}</CardTitle><CardDescription>{openAction.explanation}</CardDescription></CardHeader><CardContent><DefinitionAssessmentSummary action={openAction} /><QAPublicationSummary action={openAction} /><IssueSupportSummary action={openAction} /><TrainingLabelSummary action={openAction} matterId={matterId} /><ClassifierReviewSummary action={openAction} />{openAction.stage_key === "DEFINITION_REFINEMENT" || openAction.stage_key === "DEFINITION_ACCEPTANCE" ? <Button asChild size="sm" variant="outline" className="mb-3"><Link href={`/app/clients/${clientId}/matters/${matterId}/definition`}><BookOpen />Open Matter Definition</Link></Button> : null}<div className="flex flex-wrap gap-2">{openAction.allowed_choices.map((choice, index) => {
+    {openAction?.action_type === "MATTER_DEFINITION_SETUP" ? <DefinitionSetupCard matterId={matterId} action={openAction} canManage={canManage} busy={busy} onSubmit={(payload) => onSetupDefinition(openAction, payload)} onStop={() => onResolve(openAction, "STOP")} /> : openAction?.action_type === "QA_TASK_SETUP" ? <QASetupCard matterId={matterId} action={openAction} canManage={canManage} busy={busy} onSubmit={(payload) => onSetupQA(openAction, payload)} onStop={() => onResolve(openAction, "STOP")} /> : openAction?.action_type === "DISCOVERY_QA_SETUP" ? <DiscoverySetupCard action={openAction} canManage={canManage} busy={busy} onSubmit={(payload) => onSetupDiscovery(openAction, payload)} onStop={() => onResolve(openAction, "STOP")} /> : openAction?.action_type === "CLASSIFIER_IMPROVEMENT_SETUP" ? <ClassifierImprovementSetupCard action={openAction} canManage={canManage} busy={busy} onSubmit={(payload) => onSetupClassifierImprovement(openAction, payload)} onStop={() => onResolve(openAction, "STOP")} /> : openAction ? <Card className="border-accent/60 bg-accent/5"><CardHeader><CardTitle>{openAction.title}</CardTitle><CardDescription>{openAction.explanation}</CardDescription></CardHeader><CardContent><DefinitionAssessmentSummary action={openAction} /><QAPublicationSummary action={openAction} /><IssueSupportSummary action={openAction} /><TrainingLabelSummary action={openAction} matterId={matterId} /><ClassifierReviewSummary action={openAction} />{openAction.stage_key === "DEFINITION_REFINEMENT" || openAction.stage_key === "DEFINITION_ACCEPTANCE" ? <Button asChild size="sm" variant="outline" className="mb-3"><Link href={`/app/clients/${clientId}/matters/${matterId}/definition`}><BookOpen />Open Matter Definition</Link></Button> : null}<div className="flex flex-wrap gap-2">{openAction.allowed_choices.map((choice, index) => {
       return <Button key={`${choice.key}-${index}`} size="sm" variant={choice.key === "STOP" ? "destructive" : "default"} disabled={!canManage || busy} onClick={() => onResolve(openAction, choice.key)} title={choice.consequence}>{choice.label}</Button>;
     })}</div></CardContent></Card> : null}
     {run ? <Card><CardHeader><CardTitle>Program stages</CardTitle><CardDescription>The coordinator records every stage attempt and waits only at explicit human gates.</CardDescription></CardHeader><CardContent><ol className="grid gap-2 sm:grid-cols-2">{stages.map((stage) => {
@@ -310,6 +320,64 @@ function DiscoverySetupCard({ action, canManage, busy, onSubmit, onStop }: {
     onSubmit({ preview_hash: action.preview_hash, target_document_count: target, control_sample_size: control, target_batch_size: size, keep_families_together: keepFamilies });
   }
   return <Card className="border-accent/60 bg-accent/5"><CardHeader><CardTitle>{action.title}</CardTitle><CardDescription>{action.explanation}</CardDescription></CardHeader><CardContent><form className="space-y-4" onSubmit={submit}><div className="grid gap-2 rounded-lg border bg-background/70 p-3 text-sm sm:grid-cols-3"><div><p className="text-xs text-muted-foreground">Retrieval queries</p><p className="font-medium">{Number(plan.query_count ?? 0)}</p></div><div><p className="text-xs text-muted-foreground">Pinned index</p><p className="font-medium">Generation {String(search.generation ?? "unavailable")}</p></div><div><p className="text-xs text-muted-foreground">Plan source</p><p className="font-medium">Accepted assessment</p></div></div><div className="grid gap-4 sm:grid-cols-3"><div className="space-y-2"><Label htmlFor="discovery-target">Document target</Label><Input id="discovery-target" type="number" min={1} max={100000} value={targetCount} onChange={(event) => setTargetCount(event.target.value)} /></div><div className="space-y-2"><Label htmlFor="discovery-control">Broad control</Label><Input id="discovery-control" type="number" min={0} max={25000} value={controlCount} onChange={(event) => setControlCount(event.target.value)} /></div><div className="space-y-2"><Label htmlFor="discovery-batch-size">Documents per batch</Label><Input id="discovery-batch-size" type="number" min={1} max={10000} value={batchSize} onChange={(event) => setBatchSize(event.target.value)} /></div></div><label className="flex items-center gap-2 text-sm"><input type="checkbox" checked={keepFamilies} onChange={(event) => setKeepFamilies(event.target.checked)} disabled={!canManage || busy} />Keep document families together</label><p className="text-xs text-muted-foreground">The same immutable population and managed child batches will be used for both pinned model profiles. Results remain isolated from matter metadata.</p><div className="flex flex-wrap gap-2"><Button type="submit" disabled={!canManage || busy}>{busy ? "Starting…" : "Start discovery Q&A"}</Button><Button type="button" variant="destructive" disabled={!canManage || busy} onClick={onStop}>Stop program</Button></div></form></CardContent></Card>;
+}
+
+interface ClassifierImprovementQueryPayload {
+  metadata_definition_id: string;
+  class_key: string;
+  query: string;
+  quota: number;
+}
+
+interface ClassifierImprovementSetupPayload {
+  preview_hash: string;
+  queries: ClassifierImprovementQueryPayload[];
+  control_sample_size: number;
+  target_batch_size: number;
+  keep_families_together: boolean;
+}
+
+function ClassifierImprovementSetupCard({ action, canManage, busy, onSubmit, onStop }: {
+  action: ReviewProgramActionRead;
+  canManage: boolean;
+  busy: boolean;
+  onSubmit: (payload: ClassifierImprovementSetupPayload) => void;
+  onStop: () => void;
+}) {
+  const planRaw = action.decision_context?.retrieval_plan;
+  const plan = planRaw && typeof planRaw === "object" && !Array.isArray(planRaw) ? planRaw as Record<string, unknown> : {};
+  const initialTargets = Array.isArray(plan.targets)
+    ? plan.targets.filter((item): item is Record<string, unknown> => Boolean(item && typeof item === "object" && !Array.isArray(item)))
+    : [];
+  const defaultsRaw = action.decision_context?.defaults;
+  const defaults = defaultsRaw && typeof defaultsRaw === "object" && !Array.isArray(defaultsRaw) ? defaultsRaw as Record<string, unknown> : {};
+  const [queries, setQueries] = useState<ClassifierImprovementQueryPayload[]>(() => initialTargets.map((target) => ({
+    metadata_definition_id: String(target.metadata_definition_id ?? ""),
+    class_key: String(target.class_key ?? ""),
+    query: String(target.suggested_query ?? ""),
+    quota: Number(target.suggested_quota ?? 50),
+  })));
+  const [controlCount, setControlCount] = useState(String(defaults.control_sample_size ?? 25));
+  const [batchSize, setBatchSize] = useState(String(defaults.target_batch_size ?? 100));
+  const [keepFamilies, setKeepFamilies] = useState(Boolean(defaults.keep_families_together ?? true));
+  function updateQuery(index: number, patch: Partial<ClassifierImprovementQueryPayload>) {
+    setQueries((current) => current.map((query, queryIndex) => queryIndex === index ? { ...query, ...patch } : query));
+  }
+  function submit(event: FormEvent) {
+    event.preventDefault();
+    const control = Number(controlCount);
+    const size = Number(batchSize);
+    if (!queries.length || !Number.isInteger(control) || control < 0 || !Number.isInteger(size) || size < 1) return;
+    if (queries.some((query) => !query.query.trim() || !Number.isInteger(query.quota) || query.quota < 1)) return;
+    onSubmit({
+      preview_hash: action.preview_hash,
+      queries: queries.map((query) => ({ ...query, query: query.query.trim() })),
+      control_sample_size: control,
+      target_batch_size: size,
+      keep_families_together: keepFamilies,
+    });
+  }
+  return <Card className="border-accent/60 bg-accent/5"><CardHeader><CardTitle>{action.title}</CardTitle><CardDescription>{action.explanation}</CardDescription></CardHeader><CardContent><form className="space-y-4" onSubmit={submit}><div className="space-y-3"><p className="text-sm font-medium">Weak-category retrieval plan</p>{initialTargets.map((target, index) => <div key={`${String(target.metadata_definition_id)}:${String(target.class_key)}`} className="grid gap-3 rounded-lg border bg-background/70 p-3 sm:grid-cols-[minmax(0,1fr)_8rem]"><div className="space-y-2"><Label htmlFor={`improvement-query-${index}`}>{String(target.field_name ?? target.field_key ?? "Coding field")} · {String(target.class_label ?? target.class_key)}</Label><Input id={`improvement-query-${index}`} value={queries[index]?.query ?? ""} onChange={(event) => updateQuery(index, { query: event.target.value })} maxLength={2000} required /></div><div className="space-y-2"><Label htmlFor={`improvement-quota-${index}`}>Target</Label><Input id={`improvement-quota-${index}`} type="number" min={1} max={25000} value={queries[index]?.quota ?? 50} onChange={(event) => updateQuery(index, { quota: Number(event.target.value) })} required /></div><p className="text-xs text-muted-foreground sm:col-span-2">{Array.isArray(target.quality_reasons) ? target.quality_reasons.map((reason) => friendly(String(reason))).join(" · ") : "Weak category"}</p></div>)}</div><div className="grid gap-4 sm:grid-cols-2"><div className="space-y-2"><Label htmlFor="improvement-control">Broad control</Label><Input id="improvement-control" type="number" min={0} max={25000} value={controlCount} onChange={(event) => setControlCount(event.target.value)} /></div><div className="space-y-2"><Label htmlFor="improvement-batch-size">Documents per batch</Label><Input id="improvement-batch-size" type="number" min={1} max={10000} value={batchSize} onChange={(event) => setBatchSize(event.target.value)} /></div></div><label className="flex items-center gap-2 text-sm"><input type="checkbox" checked={keepFamilies} onChange={(event) => setKeepFamilies(event.target.checked)} disabled={!canManage || busy} />Keep document families together</label><p className="text-xs text-muted-foreground">Previously reviewed program documents are excluded. The new frozen population will run through both pinned Q&A profiles, then return to support and label review before classifier retraining.</p><div className="flex flex-wrap gap-2"><Button type="submit" disabled={!canManage || busy || !queries.length}>{busy ? "Starting…" : "Start targeted review"}</Button><Button type="button" variant="destructive" disabled={!canManage || busy} onClick={onStop}>Stop program</Button></div></form></CardContent></Card>;
 }
 
 interface QASetupPayload {

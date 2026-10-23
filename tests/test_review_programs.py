@@ -1271,11 +1271,178 @@ def test_synthetic_run_advances_waits_resumes_retries_reconciles_and_cancels(
             model_version_id=model_version_id,
         ),
     )
-    accepted_classifiers = client.post(
+    improvement_gate = client.post(
         f"{runs_url}/{run_id}/actions/{review_action['id']}/resolve",
         headers=auth(token),
         json={
             "preview_hash": review_action["preview_hash"],
+            "choice_key": "IMPROVE_CLASSIFIERS",
+        },
+    )
+    assert improvement_gate.status_code == 200, improvement_gate.text
+    assert improvement_gate.json()["current_stage"] == "CLASSIFIER_IMPROVEMENT"
+    improvement_action = next(
+        action for action in improvement_gate.json()["actions"] if action["status"] == "OPEN"
+    )
+    assert improvement_action["action_type"] == "CLASSIFIER_IMPROVEMENT_SETUP"
+    targets = improvement_action["decision_context"]["retrieval_plan"]["targets"]
+    assert len(targets) == 1
+    assert targets[0]["metadata_definition_id"] == str(destination_id)
+    assert targets[0]["class_key"] == "true"
+
+    improvement_documents = [
+        uuid.UUID(value) for value in add_documents(matter["id"], user_id, count=2)
+    ]
+    search_hits.extend(improvement_documents)
+    improvement_started = client.post(
+        f"{runs_url}/{run_id}/actions/{improvement_action['id']}/classifier-improvement-setup",
+        headers=auth(token),
+        json={
+            "preview_hash": improvement_action["preview_hash"],
+            "queries": [
+                {
+                    "metadata_definition_id": targets[0]["metadata_definition_id"],
+                    "class_key": targets[0]["class_key"],
+                    "query": "edited targeted responsive search",
+                    "quota": 2,
+                }
+            ],
+            "control_sample_size": 0,
+            "target_batch_size": 2,
+            "keep_families_together": False,
+        },
+    )
+    assert improvement_started.status_code == 202, improvement_started.text
+    assert improvement_started.json()["progress_summary"]["classifier_improvement_state"] == (
+        "MATERIALIZING_BATCH_SET"
+    )
+    assert published_populations[-1] == improvement_documents
+
+    with TestingSessionLocal() as db:
+        improvement_child = db.scalar(
+            select(ReviewProgramChild).where(
+                ReviewProgramChild.run_id == uuid.UUID(run_id),
+                ReviewProgramChild.purpose == "CLASSIFIER_IMPROVEMENT_POPULATION",
+            )
+        )
+        assert improvement_child is not None
+        improvement_set = db.get(batch_sets.AnalysisTaskBatchSet, improvement_child.child_id)
+        assert improvement_set is not None
+        provenance = improvement_set.selection_definition["review_program"]
+        assert provenance["queries"][0]["query"] == "edited targeted responsive search"
+        assert provenance["excluded_prior_program_document_count"] == 5
+        batch_sets.materialize_batch_set(
+            db,
+            improvement_set.id,
+            batch_sets.get_settings().model_copy(update={"search_enabled": False}),
+        )
+        batch_sets.complete_batch_set_materialization(db, improvement_set.id)
+        db.commit()
+
+    with TestingSessionLocal() as db:
+        improvement_profile_runs = list(
+            db.scalars(
+                select(AnalysisTaskBatchSetRun)
+                .where(AnalysisTaskBatchSetRun.analysis_task_batch_set_id == improvement_set.id)
+                .order_by(AnalysisTaskBatchSetRun.execution_profile_id)
+            )
+        )
+        assert len(improvement_profile_runs) == 2
+        for profile_run in improvement_profile_runs:
+            complete_discovery_profile_run(
+                db,
+                profile_run=profile_run,
+                destination_id=destination_id,
+                value=True,
+            )
+        db.commit()
+
+    improved_support = client.get(f"{runs_url}/{run_id}", headers=auth(token))
+    assert improved_support.status_code == 200, improved_support.text
+    assert improved_support.json()["current_stage"] == "ISSUE_SUPPORT_DECISION"
+    assert len(
+        improved_support.json()["progress_summary"]["discovery_analysis"]["profile_run_ids"]
+    ) == 6
+    improved_support_action = next(
+        action for action in improved_support.json()["actions"] if action["status"] == "OPEN"
+    )
+    improved_labels = client.post(
+        f"{runs_url}/{run_id}/actions/{improved_support_action['id']}/resolve",
+        headers=auth(token),
+        json={
+            "preview_hash": improved_support_action["preview_hash"],
+            "choice_key": "IGNORE_LOW_SUPPORT",
+        },
+    )
+    assert improved_labels.status_code == 200, improved_labels.text
+    improved_label_action = next(
+        action for action in improved_labels.json()["actions"] if action["status"] == "OPEN"
+    )
+    selected_labels = client.post(
+        f"{runs_url}/{run_id}/actions/{improved_label_action['id']}/resolve",
+        headers=auth(token),
+        json={
+            "preview_hash": improved_label_action["preview_hash"],
+            "choice_key": "USE_EXACT_AGREEMENT",
+        },
+    )
+    assert selected_labels.status_code == 200, selected_labels.text
+    second_finalization_action = next(
+        action for action in selected_labels.json()["actions"] if action["status"] == "OPEN"
+    )
+    second_finalized = client.post(
+        f"{runs_url}/{run_id}/actions/{second_finalization_action['id']}/resolve",
+        headers=auth(token),
+        json={
+            "preview_hash": second_finalization_action["preview_hash"],
+            "choice_key": "FINALIZE",
+        },
+    )
+    assert second_finalized.status_code == 200, second_finalized.text
+    second_training = second_finalized.json()["progress_summary"]["classifier_training"]
+    assert second_training["models"][0]["classification_model_id"] == (
+        classifier_training["models"][0]["classification_model_id"]
+    )
+    assert second_training["models"][0]["configuration_id"] != (
+        classifier_training["models"][0]["configuration_id"]
+    )
+
+    with TestingSessionLocal() as db:
+        second_training_job = db.get(
+            ClassificationTrainingJob,
+            uuid.UUID(second_training["models"][0]["current_training_job_id"]),
+        )
+        assert second_training_job is not None
+        transition_job_execution(
+            db,
+            job_type="CLASSIFICATION_TRAINING_JOB",
+            job_id=second_training_job.id,
+            status="RUNNING",
+        )
+        second_workflow = transition_job_execution(
+            db,
+            job_type="CLASSIFICATION_TRAINING_JOB",
+            job_id=second_training_job.id,
+            status="COMPLETED",
+            progress_completed=second_training_job.progress_total,
+        )
+        project_review_program_classifier_training_terminal(
+            db,
+            training_job=second_training_job,
+            workflow=second_workflow,
+        )
+        db.commit()
+
+    second_classifier_review = client.get(f"{runs_url}/{run_id}", headers=auth(token))
+    assert second_classifier_review.status_code == 200, second_classifier_review.text
+    second_review_action = next(
+        action for action in second_classifier_review.json()["actions"] if action["status"] == "OPEN"
+    )
+    accepted_classifiers = client.post(
+        f"{runs_url}/{run_id}/actions/{second_review_action['id']}/resolve",
+        headers=auth(token),
+        json={
+            "preview_hash": second_review_action["preview_hash"],
             "choice_key": "ACCEPT_CLASSIFIERS",
         },
     )
@@ -1316,7 +1483,7 @@ def test_synthetic_run_advances_waits_resumes_retries_reconciles_and_cancels(
                 .order_by(ReviewProgramChild.created_at, ReviewProgramChild.id)
             )
         )
-        assert len(discovery_children) == 2
+        assert len(discovery_children) == 3
         profile_run_ids = list(
             db.scalars(
                 select(ReviewProgramChild.child_id).where(
@@ -1328,7 +1495,7 @@ def test_synthetic_run_advances_waits_resumes_retries_reconciles_and_cancels(
         profile_runs = list(
             db.scalars(select(AnalysisTaskBatchSetRun).where(AnalysisTaskBatchSetRun.id.in_(profile_run_ids)))
         )
-        assert len(profile_runs) == 4
+        assert len(profile_runs) == 6
         assert {item.status for item in profile_runs} == {"COMPLETED"}
         difference_batch = db.get(ReviewBatch, difference_batch_id)
         assert difference_batch is not None

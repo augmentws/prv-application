@@ -559,4 +559,70 @@ describe("ReviewProgramsSection", () => {
       choice_key: "IMPROVE_CLASSIFIERS",
     });
   });
+
+  it("edits and starts a task-specific classifier improvement plan", async () => {
+    vi.mocked(coreApi).mockImplementation(async (path, options) => {
+      if (path === "/v1/review-workflow-templates") return [{
+        key: "FIRST_PASS_REVIEW", version: 1, schema_version: 1, content_hash: "a".repeat(64),
+        name: "First Pass Review", description: "Guided review", workflow_type: "FIRST_PASS_REVIEW", phases: [],
+        stages: [{ key: "CLASSIFIER_IMPROVEMENT", name: "Classifier improvement", phase_key: "CLASSIFIER", ordinal: 13, batching_policy: "PARTITIONED_SET", requires_human_gate: true }],
+      }] as never;
+      if (path === "/v1/matters/matter-1/review-programs") return [{
+        id: "program-1", tenant_id: "tenant-1", matter_id: "matter-1", template_key: "FIRST_PASS_REVIEW",
+        template_version: 1, template_content_hash: "a".repeat(64), key: "standard-first-pass", name: "Standard first pass",
+        description: "Responsive review", status: "ACTIVE", current_run_id: "run-1", current_version: { version: 9 }, created_at: "2026-10-21T00:00:00Z",
+      }] as never;
+      if (path === "/v1/matters/matter-1/review-programs/program-1/runs" && !options) return [{
+        id: "run-1", program_id: "program-1", status: "WAITING_FOR_USER", current_stage: "CLASSIFIER_IMPROVEMENT",
+        current_stage_ordinal: 13, created_at: "2026-10-21T00:00:00Z", failure_retriable: false, failure_summary: null,
+        stage_attempts: [{ stage_key: "CLASSIFIER_IMPROVEMENT", status: "WAITING" }],
+        actions: [{
+          id: "action-1", action_type: "CLASSIFIER_IMPROVEMENT_SETUP", stage_key: "CLASSIFIER_IMPROVEMENT", status: "OPEN",
+          title: "Target weak classifier categories", explanation: "Edit the searches before review.", preview_hash: "c".repeat(64),
+          decision_context: {
+            retrieval_plan: { targets: [{
+              metadata_definition_id: "definition-1", field_name: "Responsive", class_key: "true", class_label: "Responsive",
+              quality_reasons: ["LOW_F1"], suggested_query: "Responsive true", suggested_quota: 50,
+            }] },
+            defaults: { control_sample_size: 25, target_batch_size: 100, keep_families_together: true },
+          },
+          allowed_choices: [{ key: "START", label: "Start targeted review" }, { key: "STOP", label: "Stop program" }],
+        }],
+      }] as never;
+      if (path.endsWith("/actions/action-1/classifier-improvement-setup") && options?.method === "POST") return {
+        id: "run-1", program_id: "program-1", status: "RUNNING", current_stage: "CLASSIFIER_IMPROVEMENT",
+      } as never;
+      throw new Error(`Unexpected API request: ${path}`);
+    });
+    renderSection();
+
+    const query = await screen.findByLabelText("Responsive · Responsive");
+    await userEvent.clear(query);
+    await userEvent.type(query, "edited responsive search");
+    const quota = screen.getByLabelText("Target");
+    await userEvent.clear(quota);
+    await userEvent.type(quota, "75");
+    const control = screen.getByLabelText("Broad control");
+    await userEvent.clear(control);
+    await userEvent.type(control, "10");
+    await userEvent.click(screen.getByRole("button", { name: "Start targeted review" }));
+
+    await waitFor(() => expect(coreApi).toHaveBeenCalledWith(
+      "/v1/matters/matter-1/review-programs/program-1/runs/run-1/actions/action-1/classifier-improvement-setup",
+      expect.objectContaining({ method: "POST" }),
+    ));
+    const call = vi.mocked(coreApi).mock.calls.find(([path]) => path.endsWith("/classifier-improvement-setup"));
+    expect(JSON.parse(String(call?.[1]?.body))).toEqual({
+      preview_hash: "c".repeat(64),
+      queries: [{
+        metadata_definition_id: "definition-1",
+        class_key: "true",
+        query: "edited responsive search",
+        quota: 75,
+      }],
+      control_sample_size: 10,
+      target_batch_size: 100,
+      keep_families_together: true,
+    });
+  });
 });
