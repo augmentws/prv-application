@@ -731,4 +731,44 @@ describe("ReviewProgramsSection", () => {
       choice_key: "RUN_COVERAGE",
     });
   });
+
+  it("shows the final alignment report at the no-code QC gate", async () => {
+    vi.mocked(coreApi).mockImplementation(async (path) => {
+      if (path === "/v1/review-workflow-templates") return [{
+        key: "FIRST_PASS_REVIEW", version: 1, schema_version: 1, content_hash: "a".repeat(64),
+        name: "First Pass Review", description: "Guided review", workflow_type: "FIRST_PASS_REVIEW", phases: [],
+        stages: [{ key: "NO_CODE_QC", name: "No-code QC", phase_key: "QC_COMPLETION", ordinal: 17, batching_policy: "PARTITIONED_SET", requires_human_gate: true }],
+      }] as never;
+      if (path === "/v1/matters/matter-1/review-programs") return [{
+        id: "program-1", tenant_id: "tenant-1", matter_id: "matter-1", template_key: "FIRST_PASS_REVIEW",
+        template_version: 1, template_content_hash: "a".repeat(64), key: "standard-first-pass", name: "Standard first pass",
+        description: "Responsive review", status: "ACTIVE", current_run_id: "run-1", current_version: { version: 12 }, created_at: "2026-10-21T00:00:00Z",
+      }] as never;
+      if (path === "/v1/matters/matter-1/review-programs/program-1/runs") return [{
+        id: "run-1", program_id: "program-1", status: "WAITING_FOR_USER", current_stage: "NO_CODE_QC",
+        current_stage_ordinal: 17, created_at: "2026-10-21T00:00:00Z", failure_retriable: false, failure_summary: null,
+        stage_attempts: [{ stage_key: "NO_CODE_QC", status: "WAITING" }],
+        actions: [{
+          id: "action-1", action_type: "STAGE_GATE", stage_key: "NO_CODE_QC", status: "OPEN",
+          title: "Review No-code QC", explanation: "Review final alignment before QC.", preview_hash: "f".repeat(64),
+          decision_context: {
+            final_alignment: {
+              population_document_count: 180,
+              alignment_counts: { EXACT_ALL: 120, PARTIAL: 12, DISAGREEMENT: 8 },
+              source_coverage_counts: { CURRENT: 170, STALE_OR_PARTIAL: 4, MISSING_QA: 5, SOURCE_UNAVAILABLE: 1 },
+              issues: [{ issue_key: "responsive:true" }, { issue_key: "privilege:true" }],
+            },
+          },
+          allowed_choices: [{ key: "CONTINUE", label: "Continue to Completion" }, { key: "STOP", label: "Stop program" }],
+        }],
+      }] as never;
+      throw new Error(`Unexpected API request: ${path}`);
+    });
+    renderSection();
+
+    expect(await screen.findByText("Aligned population")).toBeInTheDocument();
+    expect(screen.getByText("All-source exact")).toBeInTheDocument();
+    expect(screen.getByText("Disputed or partial")).toBeInTheDocument();
+    expect(screen.getByText(/170 documents have current-source results/)).toBeInTheDocument();
+  });
 });

@@ -82,6 +82,7 @@ from app.classification_training_jobs import (
     create_training_job,
 )
 from app.config import get_settings
+from app.document_metadata import event_value
 from app.embeddings.configuration import canonical_hash
 from app.job_executions import (
     CLASSIFICATION_SCORING_RUN_JOB_TYPE,
@@ -1014,6 +1015,12 @@ def _classifier_positive_coverage_stage_context(*, run: ReviewProgramRun) -> dic
     }
 
 
+def _final_alignment_stage_context(*, run: ReviewProgramRun) -> dict[str, Any]:
+    return {
+        "final_alignment": dict((run.progress_summary or {}).get("final_alignment") or {}),
+    }
+
+
 def _create_action_for_stage(
     db: Session,
     *,
@@ -1058,6 +1065,8 @@ def _create_action_for_stage(
             if stage.key == "WHOLE_COLLECTION_SCORING"
             else _classifier_positive_coverage_stage_context(run=run)
             if stage.key == "CLASSIFIER_POSITIVE_COVERAGE"
+            else _final_alignment_stage_context(run=run)
+            if stage.key == "NO_CODE_QC"
             else {}
         ),
     }
@@ -1155,6 +1164,8 @@ def _create_stage_attempt(
             _launch_definition_assessment(db, program=program, run=run, attempt=attempt)
         elif stage.key == "CLASSIFIER_TRAINING":
             _launch_classifier_training(db, program=program, run=run, attempt=attempt)
+        elif stage.key == "FINAL_ALIGNMENT":
+            _launch_final_alignment_report(db, program=program, run=run, attempt=attempt)
     return attempt
 
 
@@ -2445,7 +2456,7 @@ def setup_review_program_discovery(
         matter_id=matter.id,
         owner_type="REVIEW_PROGRAM_DISCOVERY",
         owner_id=attempt.id,
-        producer_kind="REVIEW_PROGRAM_DISCOVERY",
+        producer_kind="CORE",
         producer_run_id=run.id,
         actor_user_id=actor.id,
     )
@@ -2793,7 +2804,7 @@ def setup_review_program_classifier_improvement(
         matter_id=matter.id,
         owner_type="REVIEW_PROGRAM_CLASSIFIER_IMPROVEMENT",
         owner_id=attempt.id,
-        producer_kind="REVIEW_PROGRAM_CLASSIFIER_IMPROVEMENT",
+        producer_kind="CORE",
         producer_run_id=run.id,
         actor_user_id=actor.id,
     )
@@ -4863,7 +4874,7 @@ def _program_qa_results_by_profile(
             .where(
                 AnalysisTaskBatchSetRun.id.in_(linked_run_ids),
                 AnalysisTaskBatchSetRun.matter_analysis_task_version_id == task_version_id,
-                AnalysisTaskBatchSetRun.execution_profile_id.in_(profile_ids),
+                AnalysisTaskBatchSetRun.execution_profile_id.in_(list(profile_ids)),
             )
             .order_by(AnalysisTaskBatchSetRun.created_at, AnalysisTaskBatchSetRun.id)
         )
@@ -5069,7 +5080,7 @@ def _prepare_classifier_positive_coverage(
         matter_id=matter.id,
         owner_type="REVIEW_PROGRAM_CLASSIFIER_POSITIVE_COVERAGE",
         owner_id=attempt.id,
-        producer_kind="REVIEW_PROGRAM_CLASSIFIER_POSITIVE_COVERAGE",
+        producer_kind="CORE",
         producer_run_id=run.id,
         actor_user_id=actor_user_id,
         lineage=[
@@ -5248,6 +5259,577 @@ def _launch_classifier_positive_coverage(
         _advance_after_stage(db, program=program, run=run, attempt=attempt)
         return
     enqueue_analysis_task_batch_set(db, batch_set.workflow_id, str(batch_set.id))
+
+
+def _alignment_value_key(value: Any) -> str:
+    if isinstance(value, bool):
+        return "true" if value else "false"
+    if value is None:
+        return "null"
+    if isinstance(value, (str, int, float)):
+        return str(value)
+    return json.dumps(value, sort_keys=True, separators=(",", ":"), default=str)
+
+
+def _decision_result_issue_keys(result: ReviewDecisionResult) -> set[str]:
+    selected: set[str] = set()
+    for recommendation in (result.recommendations or {}).values():
+        if not isinstance(recommendation, dict) or recommendation.get("matched") is not True:
+            continue
+        field_key = recommendation.get("metadata_definition_key")
+        if not isinstance(field_key, str) or not field_key or "value" not in recommendation:
+            continue
+        selected.add(f"{field_key}:{_alignment_value_key(recommendation.get('value'))}")
+    return selected
+
+
+def _alignment_status(
+    classifier_issues: set[str],
+    left_issues: set[str] | None,
+    right_issues: set[str] | None,
+) -> str:
+    if left_issues is None or right_issues is None:
+        return "INCOMPLETE"
+    if classifier_issues == left_issues == right_issues:
+        return "EXACT_ALL"
+    if left_issues == right_issues:
+        return "QA_PAIR_EXACT"
+    source_sets = (classifier_issues, left_issues, right_issues)
+    if any(source_sets[index].intersection(source_sets[other]) for index in range(3) for other in range(index + 1, 3)):
+        return "PARTIAL"
+    return "DISAGREEMENT"
+
+
+def _program_reviewed_document_ids(db: Session, *, run: ReviewProgramRun) -> set[uuid.UUID]:
+    batch_set_ids = list(
+        db.scalars(
+            select(ReviewProgramChild.child_id).where(
+                ReviewProgramChild.run_id == run.id,
+                ReviewProgramChild.child_type == "ANALYSIS_TASK_BATCH_SET",
+            )
+        )
+    )
+    if not batch_set_ids:
+        return set()
+    return set(
+        db.scalars(
+            select(ReviewBatchDocument.matter_document_id).where(
+                ReviewBatchDocument.analysis_task_batch_set_id.in_(batch_set_ids)
+            )
+        )
+    )
+
+
+def _human_adjudicated_issue_keys(
+    db: Session,
+    *,
+    run: ReviewProgramRun,
+    definitions: dict[uuid.UUID, MetadataDefinition],
+) -> tuple[dict[uuid.UUID, set[str]], list[dict[str, Any]]]:
+    resolution = dict((run.progress_summary or {}).get("training_label_resolution") or {})
+    by_document: dict[uuid.UUID, set[str]] = {}
+    sources: list[dict[str, Any]] = []
+    for raw_source in resolution.get("adjudication_sources", []):
+        if not isinstance(raw_source, dict):
+            continue
+        try:
+            coding_id = uuid.UUID(str(raw_source["reviewer_coding_id"]))
+            revision = int(raw_source["reviewer_coding_revision"])
+            definition_id = uuid.UUID(str(raw_source["metadata_definition_id"]))
+        except (KeyError, TypeError, ValueError) as exc:
+            raise ReviewProgramError("Human adjudication provenance is invalid") from exc
+        definition = definitions.get(definition_id)
+        if definition is None:
+            raise ReviewProgramError("Human adjudication field is unavailable")
+        resolved = resolve_reviewer_coding_as_of(
+            db,
+            reviewer_coding_id=coding_id,
+            revision=revision,
+            metadata_definition_ids=[definition_id],
+        )
+        document_ids = {item.matter_document_id for item in resolved.documents}
+        for document_id in document_ids:
+            by_document.setdefault(document_id, set())
+        for value in resolved.values:
+            selected = event_value(value)
+            if selected is not None:
+                by_document.setdefault(value.matter_document_id, set()).add(
+                    f"{definition.key}:{_alignment_value_key(selected)}"
+                )
+        sources.append(
+            {
+                "reviewer_coding_id": str(coding_id),
+                "reviewer_coding_revision": revision,
+                "metadata_definition_id": str(definition_id),
+                "document_count": len(document_ids),
+            }
+        )
+    return by_document, sources
+
+
+def _classifier_alignment_predictions(
+    db: Session,
+    *,
+    program: ReviewProgram,
+    run: ReviewProgramRun,
+    matter: Matter,
+    actor_user_id: uuid.UUID,
+) -> tuple[dict[uuid.UUID, dict[str, Any]], list[ClassificationScoringRun], set[str]]:
+    scoring = dict((run.progress_summary or {}).get("whole_collection_scoring") or {})
+    model_states = [item for item in scoring.get("models", []) if isinstance(item, dict)]
+    predictions: dict[uuid.UUID, dict[str, Any]] = {}
+    scoring_runs: list[ClassificationScoringRun] = []
+    issue_universe: set[str] = set()
+    for model_state in model_states:
+        try:
+            scoring_run = db.get(ClassificationScoringRun, uuid.UUID(str(model_state["scoring_run_id"])))
+        except (KeyError, TypeError, ValueError) as exc:
+            raise ReviewProgramError("Classifier scoring provenance is invalid") from exc
+        if scoring_run is None or scoring_run.matter_id != program.matter_id:
+            raise ReviewProgramError("Classifier scoring output is unavailable")
+        version = db.get(ClassificationModelVersion, scoring_run.model_version_id)
+        configuration = (
+            db.get(ClassificationModelConfiguration, version.configuration_id) if version is not None else None
+        )
+        if configuration is None:
+            raise ReviewProgramError("Classifier scoring configuration is unavailable")
+        field_key = model_state.get("field_key")
+        if not isinstance(field_key, str) or not field_key:
+            raise ReviewProgramError("Classifier target-field provenance is unavailable")
+        if configuration.classification_strategy == "BINARY":
+            positive_key = (configuration.binary_mapping or {}).get("positive_class_key")
+            if not isinstance(positive_key, str) or not positive_key:
+                raise ReviewProgramError("Binary classifier positive-class provenance is unavailable")
+            issue_universe.add(f"{field_key}:{positive_key}")
+        else:
+            issue_universe.update(f"{field_key}:{class_key}" for class_key in version.trained_class_keys)
+        preview = prediction_preview(
+            scoring_run,
+            matter=matter,
+            actor_user_id=actor_user_id,
+            offset=0,
+            limit=scoring_run.population_document_count,
+        )
+        probability_ordinals = {
+            class_key: ordinal for ordinal, class_key in enumerate(preview.ordered_class_keys)
+        }
+        for row in preview.items:
+            prediction = predictions.setdefault(
+                row.matter_document_id,
+                {"issues": set(), "maximum_probability": None, "statuses": [], "abstained": False},
+            )
+            prediction["statuses"].append(row.result_status)
+            prediction["abstained"] = bool(prediction["abstained"] or row.abstained)
+            if row.result_status != "SUCCESS" or row.abstained:
+                continue
+            positive_keys = _classifier_positive_class_keys(configuration, list(row.predicted_class_keys))
+            prediction["issues"].update(f"{field_key}:{class_key}" for class_key in positive_keys)
+            selected_probabilities = [
+                float(row.probabilities[probability_ordinals[class_key]])
+                for class_key in positive_keys
+                if class_key in probability_ordinals
+                and probability_ordinals[class_key] < len(row.probabilities)
+            ]
+            if selected_probabilities:
+                maximum_probability = max(selected_probabilities)
+                current = prediction["maximum_probability"]
+                prediction["maximum_probability"] = (
+                    maximum_probability if current is None else max(float(current), maximum_probability)
+                )
+        scoring_runs.append(scoring_run)
+    return predictions, scoring_runs, issue_universe
+
+
+def _launch_final_alignment_report(
+    db: Session,
+    *,
+    program: ReviewProgram,
+    run: ReviewProgramRun,
+    attempt: ReviewProgramStageAttempt,
+) -> None:
+    try:
+        with db.begin_nested():
+            _build_final_alignment_report(
+                db,
+                program=program,
+                run=run,
+                attempt=attempt,
+            )
+    except (
+        AnalysisInputManifestError,
+        ReviewProgramError,
+        httpx.HTTPError,
+        PermissionError,
+        ValueError,
+    ) as exc:
+        fail_review_program_stage(
+            db,
+            program=program,
+            run=run,
+            error_code="FINAL_ALIGNMENT_FAILED",
+            error_summary=str(exc),
+            retriable=True,
+        )
+
+
+def _build_final_alignment_report(
+    db: Session,
+    *,
+    program: ReviewProgram,
+    run: ReviewProgramRun,
+    attempt: ReviewProgramStageAttempt,
+) -> None:
+    matter = db.get(Matter, program.matter_id)
+    if matter is None:
+        raise ReviewProgramError("Review Program matter is unavailable")
+    _, task_version, profiles = _qa_task_records(db, run)
+    profile_ids = {profile.id for profile in profiles}
+    results_by_document = _program_qa_results_by_profile(
+        db,
+        run=run,
+        task_version_id=task_version.id,
+        profile_ids=profile_ids,
+    )
+    classifier_predictions, scoring_runs, issue_universe = _classifier_alignment_predictions(
+        db,
+        program=program,
+        run=run,
+        matter=matter,
+        actor_user_id=run.initiated_by_user_id,
+    )
+    definition_ids = [uuid.UUID(str(value)) for value in task_version.destination_metadata_definition_ids or []]
+    definitions = {
+        item.id: item
+        for item in db.scalars(
+            select(MetadataDefinition).where(
+                MetadataDefinition.matter_id == matter.id,
+                MetadataDefinition.id.in_(definition_ids),
+            )
+        )
+    }
+    human_by_document, adjudication_sources = _human_adjudicated_issue_keys(
+        db,
+        run=run,
+        definitions=definitions,
+    )
+    classifier_positive_ids = {
+        document_id for document_id, prediction in classifier_predictions.items() if prediction["issues"]
+    }
+    population_ids = (
+        classifier_positive_ids
+        | set(results_by_document)
+        | _program_reviewed_document_ids(db, run=run)
+        | set(human_by_document)
+    )
+    documents_by_id = {
+        item.id: item
+        for item in db.scalars(
+            select(MatterDocument).where(
+                MatterDocument.matter_id == matter.id,
+                MatterDocument.id.in_(list(population_ids)),
+            )
+        )
+    }
+    if len(documents_by_id) != len(population_ids):
+        raise ReviewProgramError("Final alignment population contains documents outside the matter")
+    try:
+        source_snapshots = get_collection_item_analysis_input_snapshots(
+            item_ids=[item.collection_item_id for item in documents_by_id.values()],
+            actor_user_id=run.initiated_by_user_id,
+            tenant_id=program.tenant_id,
+            client_id=matter.client_id,
+        )
+    except (httpx.HTTPError, PermissionError, ValueError) as exc:
+        raise ReviewProgramError(f"Final alignment source content is unavailable: {exc}") from exc
+
+    training_labels = dict((run.progress_summary or {}).get("training_labels") or {})
+    training_run_ids = {uuid.UUID(str(value)) for value in training_labels.get("label_run_ids", [])}
+    alignment_counts = Counter()
+    source_counts = Counter()
+    authority_counts = Counter()
+    human_alignment_counts = Counter()
+    confidence_counts = Counter()
+    family_ids: set[uuid.UUID] = set()
+    family_document_count = 0
+    record_type_counts: dict[str, Counter] = {}
+    issue_counts: dict[str, Counter] = {issue_key: Counter() for issue_key in issue_universe}
+    manifest_documents: list[AnalysisInputDocument] = []
+    for document_id in sorted(population_ids, key=str):
+        document = documents_by_id[document_id]
+        source_snapshot = source_snapshots.get(document.collection_item_id)
+        source = source_snapshot.text_source if source_snapshot is not None else None
+        source_hash = source.content_hash if source is not None else None
+        prediction = classifier_predictions.get(document_id) or {
+            "issues": set(),
+            "maximum_probability": None,
+            "statuses": [],
+            "abstained": False,
+        }
+        classifier_issues = set(prediction["issues"])
+        document_results = results_by_document.get(document_id, {})
+        current_results = {
+            profile_id: result
+            for profile_id, result in document_results.items()
+            if source_hash is not None and result.source_content_hash == source_hash
+        }
+        profile_issue_sets = [
+            _decision_result_issue_keys(current_results[profile.id])
+            if profile.id in current_results
+            else None
+            for profile in profiles
+        ]
+        left_issues, right_issues = profile_issue_sets
+        left_issues = left_issues.intersection(issue_universe) if left_issues is not None else None
+        right_issues = right_issues.intersection(issue_universe) if right_issues is not None else None
+        human_adjudicated = document_id in human_by_document
+        human_issues = human_by_document.get(document_id, set()).intersection(issue_universe)
+        status = _alignment_status(classifier_issues, left_issues, right_issues)
+        alignment_counts[status] += 1
+        record_type = source_snapshot.record_type if source_snapshot is not None else "UNAVAILABLE"
+        record_type_counts.setdefault(record_type, Counter())[status] += 1
+        family_id = source_snapshot.family_id if source_snapshot is not None else None
+        if family_id is not None:
+            family_ids.add(family_id)
+            family_document_count += 1
+        if source_hash is None:
+            source_status = "SOURCE_UNAVAILABLE"
+        elif len(current_results) == len(profiles):
+            source_status = "CURRENT"
+        elif document_results:
+            source_status = "STALE_OR_PARTIAL"
+        else:
+            source_status = "MISSING_QA"
+        source_counts[source_status] += 1
+        result_run_ids = {result.review_batch_run_id for result in document_results.values()}
+        training_overlap = bool(result_run_ids.intersection(training_run_ids))
+        authority = "ADJUDICATED" if human_adjudicated else "SILVER" if training_overlap else "UNLABELED"
+        authority_counts[authority] += 1
+        if human_adjudicated:
+            compared_sources = []
+            if document_id in classifier_predictions:
+                compared_sources.append(classifier_issues)
+            if left_issues is not None:
+                compared_sources.append(left_issues)
+            if right_issues is not None:
+                compared_sources.append(right_issues)
+            human_alignment_counts[
+                "EXACT" if compared_sources and all(source == human_issues for source in compared_sources) else "CONFLICT"
+            ] += 1
+        confidence_band = _coverage_confidence_band(prediction.get("maximum_probability"))
+        confidence_counts[confidence_band] += 1
+        for issue_key in classifier_issues | (left_issues or set()) | (right_issues or set()) | human_issues:
+            counts = issue_counts.setdefault(issue_key, Counter())
+            counts["classifier"] += issue_key in classifier_issues
+            counts["profile_a"] += left_issues is not None and issue_key in left_issues
+            counts["profile_b"] += right_issues is not None and issue_key in right_issues
+            counts["qa_pair"] += (
+                left_issues is not None
+                and right_issues is not None
+                and issue_key in left_issues
+                and issue_key in right_issues
+            )
+            counts["all_three"] += (
+                issue_key in classifier_issues
+                and left_issues is not None
+                and right_issues is not None
+                and issue_key in left_issues
+                and issue_key in right_issues
+            )
+            counts["classifier_only"] += (
+                issue_key in classifier_issues
+                and (left_issues is None or issue_key not in left_issues)
+                and (right_issues is None or issue_key not in right_issues)
+            )
+            counts["profile_a_only"] += (
+                left_issues is not None
+                and issue_key in left_issues
+                and issue_key not in classifier_issues
+                and (right_issues is None or issue_key not in right_issues)
+            )
+            counts["profile_b_only"] += (
+                right_issues is not None
+                and issue_key in right_issues
+                and issue_key not in classifier_issues
+                and (left_issues is None or issue_key not in left_issues)
+            )
+            counts["human"] += issue_key in human_issues
+            if human_adjudicated:
+                compared_values = []
+                if document_id in classifier_predictions:
+                    compared_values.append(issue_key in classifier_issues)
+                if left_issues is not None:
+                    compared_values.append(issue_key in left_issues)
+                if right_issues is not None:
+                    compared_values.append(issue_key in right_issues)
+                counts["human_conflict"] += bool(compared_values) and any(
+                    value != (issue_key in human_issues) for value in compared_values
+                )
+        manifest_documents.append(
+            AnalysisInputDocument(
+                matter_document_id=document_id,
+                collection_item_id=document.collection_item_id,
+                source_collection_id=document.source_collection_id,
+                scope_ordinal=len(manifest_documents) + 1,
+                source_artifact_id=source.artifact_id if source is not None else None,
+                source_content_hash=source_hash,
+                resolved_inputs=(
+                    {
+                        "text_source": {
+                            "role": source.role,
+                            "media_type": source.media_type,
+                            "original_filename": source.original_filename,
+                            "byte_length": source.byte_length,
+                            "record_type": source_snapshot.record_type,
+                        }
+                    }
+                    if source is not None and source_snapshot is not None
+                    else {}
+                ),
+                extensions={
+                    "classifier_issue_keys": json.dumps(sorted(classifier_issues), separators=(",", ":")),
+                    "profile_a_issue_keys": json.dumps(sorted(left_issues or set()), separators=(",", ":")),
+                    "profile_b_issue_keys": json.dumps(sorted(right_issues or set()), separators=(",", ":")),
+                    "human_issue_keys": json.dumps(sorted(human_issues), separators=(",", ":")),
+                    "alignment_status": status,
+                    "source_status": source_status,
+                    "confidence_band": confidence_band,
+                    "training_overlap": training_overlap,
+                    "label_authority": authority,
+                    "family_id": str(family_id) if family_id is not None else None,
+                    "record_type": record_type,
+                },
+            )
+        )
+    contract = AnalysisInputContract(
+        key="review-program.final-alignment",
+        version=1,
+        resolver_version="review-program-final-alignment-v1",
+        extension_fields=[
+            AnalysisInputExtensionField(name="classifier_issue_keys", type="STRING", nullable=False),
+            AnalysisInputExtensionField(name="profile_a_issue_keys", type="STRING", nullable=False),
+            AnalysisInputExtensionField(name="profile_b_issue_keys", type="STRING", nullable=False),
+            AnalysisInputExtensionField(name="human_issue_keys", type="STRING", nullable=False),
+            AnalysisInputExtensionField(name="alignment_status", type="STRING", nullable=False),
+            AnalysisInputExtensionField(name="source_status", type="STRING", nullable=False),
+            AnalysisInputExtensionField(name="confidence_band", type="STRING", nullable=False),
+            AnalysisInputExtensionField(name="training_overlap", type="BOOLEAN", nullable=False),
+            AnalysisInputExtensionField(name="label_authority", type="STRING", nullable=False),
+            AnalysisInputExtensionField(name="family_id", type="STRING", nullable=True),
+            AnalysisInputExtensionField(name="record_type", type="STRING", nullable=False),
+        ],
+        options={
+            "review_program_id": str(program.id),
+            "review_program_run_id": str(run.id),
+            "stage_attempt_id": str(attempt.id),
+            "task_version_id": str(task_version.id),
+            "profile_ids": [str(profile.id) for profile in profiles],
+            "policy_version": "review-program-final-alignment-v1",
+        },
+    )
+    prepared = prepare_analysis_input_manifest(
+        manifest_documents,
+        contract=contract,
+        scope_type="REVIEW_PROGRAM_STAGE",
+        scope_id=attempt.id,
+    )
+    coverage_manifest_id = ((run.progress_summary or {}).get("classifier_positive_coverage") or {}).get(
+        "input_manifest_id"
+    )
+    coverage_manifest = (
+        db.get(AnalysisInputManifest, uuid.UUID(str(coverage_manifest_id))) if coverage_manifest_id else None
+    )
+    lineage_ids = [
+        item.prediction_artifact_id for item in scoring_runs if item.prediction_artifact_id is not None
+    ]
+    if coverage_manifest is not None and coverage_manifest.artifact_id is not None:
+        lineage_ids.append(coverage_manifest.artifact_id)
+    manifest, _ = publish_analysis_input_manifest(
+        db,
+        prepared=prepared,
+        tenant_id=program.tenant_id,
+        client_id=matter.client_id,
+        matter_id=matter.id,
+        owner_type="REVIEW_PROGRAM_FINAL_ALIGNMENT",
+        owner_id=attempt.id,
+        producer_kind="CORE",
+        producer_run_id=run.id,
+        actor_user_id=run.initiated_by_user_id,
+        lineage=[
+            WorkflowArtifactLineageInput(source_kind="WORKFLOW_ARTIFACT", source_artifact_id=artifact_id)
+            for artifact_id in dict.fromkeys(lineage_ids)
+        ],
+    )
+    scoring_summary = dict((run.progress_summary or {}).get("whole_collection_scoring") or {})
+    report = {
+        "schema_version": 1,
+        "state": "COMPLETED",
+        "policy_version": "review-program-final-alignment-v1",
+        "population_document_count": len(population_ids),
+        "classifier_positive_document_count": len(classifier_positive_ids),
+        "classifier_scoring_counts": dict(scoring_summary.get("aggregate_model_document_counts") or {}),
+        "alignment_counts": dict(sorted(alignment_counts.items())),
+        "source_coverage_counts": dict(sorted(source_counts.items())),
+        "label_authority_counts": dict(sorted(authority_counts.items())),
+        "human_alignment_counts": dict(sorted(human_alignment_counts.items())),
+        "confidence_band_counts": dict(sorted(confidence_counts.items())),
+        "family_summary": {
+            "family_count": len(family_ids),
+            "family_document_count": family_document_count,
+            "ungrouped_document_count": len(population_ids) - family_document_count,
+        },
+        "record_type_alignment": [
+            {"record_type": record_type, **dict(sorted(counts.items()))}
+            for record_type, counts in sorted(record_type_counts.items())
+        ],
+        "issues": [
+            {
+                "issue_key": issue_key,
+                "classifier": counts["classifier"],
+                "profile_a": counts["profile_a"],
+                "profile_b": counts["profile_b"],
+                "qa_pair": counts["qa_pair"],
+                "all_three": counts["all_three"],
+                "classifier_only": counts["classifier_only"],
+                "profile_a_only": counts["profile_a_only"],
+                "profile_b_only": counts["profile_b_only"],
+                "human": counts["human"],
+                "human_conflict": counts["human_conflict"],
+            }
+            for issue_key, counts in sorted(issue_counts.items())
+        ],
+        "adjudication_sources": adjudication_sources,
+        "task_version_id": str(task_version.id),
+        "profile_ids": [str(profile.id) for profile in profiles],
+        "scoring_run_ids": [str(item.id) for item in scoring_runs],
+        "manifest_id": str(manifest.id),
+        "manifest_content_hash": manifest.artifact_content_hash,
+        "limitations": [
+            "Agreement is consistency evidence, not an accuracy estimate.",
+            "Record type is reported as a built-in cohort; no additional custom cohort policy was configured.",
+        ],
+    }
+    version = _create_review_program_version(
+        db,
+        program=program,
+        run=run,
+        actor_user_id=run.initiated_by_user_id,
+        configuration_stage="NO_CODE_QC",
+        configuration_updates={"final_alignment": report},
+        source_hash_updates={"final_alignment_content_hash": canonical_hash(report)},
+    )
+    report["program_version_id"] = str(version.id)
+    run.progress_summary = {
+        **run.progress_summary,
+        "final_alignment_state": "COMPLETED",
+        "final_alignment": report,
+    }
+    complete_review_program_stage(
+        db,
+        program=program,
+        run=run,
+        result_summary=report,
+        idempotency_key=f"final-alignment-terminal:{attempt.id}",
+    )
 
 
 def _classifier_training_embedding_job(

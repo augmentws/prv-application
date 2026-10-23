@@ -56,6 +56,7 @@ from app.rbac_manifest import SYSTEM_ROLE_BY_KEY
 from app.review_programs import (
     ReviewProgramError,
     _activate_stage_by_key,
+    _alignment_status,
     _classifier_positive_class_keys,
     cancel_review_program_discovery_children,
     link_review_program_child,
@@ -497,6 +498,17 @@ def test_classifier_positive_class_keys_respects_binary_positive_mapping() -> No
     )
     with pytest.raises(ReviewProgramError, match="positive-class provenance"):
         _classifier_positive_class_keys(missing_mapping, ["responsive"])
+
+
+def test_final_alignment_status_distinguishes_agreement_and_missing_coverage() -> None:
+    responsive = {"responsive:true"}
+    privilege = {"privilege:true"}
+
+    assert _alignment_status(responsive, responsive, responsive) == "EXACT_ALL"
+    assert _alignment_status(set(), responsive, responsive) == "QA_PAIR_EXACT"
+    assert _alignment_status(responsive, responsive, privilege) == "PARTIAL"
+    assert _alignment_status(responsive, privilege, set()) == "DISAGREEMENT"
+    assert _alignment_status(responsive, responsive, None) == "INCOMPLETE"
 
 
 def test_synthetic_run_advances_waits_resumes_retries_reconciles_and_cancels(
