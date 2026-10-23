@@ -732,12 +732,12 @@ describe("ReviewProgramsSection", () => {
     });
   });
 
-  it("shows the final alignment report at the no-code QC gate", async () => {
+  it("shows the final alignment report at the negative-population QC gate", async () => {
     vi.mocked(coreApi).mockImplementation(async (path) => {
       if (path === "/v1/review-workflow-templates") return [{
         key: "FIRST_PASS_REVIEW", version: 1, schema_version: 1, content_hash: "a".repeat(64),
         name: "First Pass Review", description: "Guided review", workflow_type: "FIRST_PASS_REVIEW", phases: [],
-        stages: [{ key: "NO_CODE_QC", name: "No-code QC", phase_key: "QC_COMPLETION", ordinal: 17, batching_policy: "PARTITIONED_SET", requires_human_gate: true }],
+        stages: [{ key: "NO_CODE_QC", name: "Negative-population QC", phase_key: "QC_COMPLETION", ordinal: 17, batching_policy: "PARTITIONED_SET", requires_human_gate: true }],
       }] as never;
       if (path === "/v1/matters/matter-1/review-programs") return [{
         id: "program-1", tenant_id: "tenant-1", matter_id: "matter-1", template_key: "FIRST_PASS_REVIEW",
@@ -750,7 +750,7 @@ describe("ReviewProgramsSection", () => {
         stage_attempts: [{ stage_key: "NO_CODE_QC", status: "WAITING" }],
         actions: [{
           id: "action-1", action_type: "STAGE_GATE", stage_key: "NO_CODE_QC", status: "OPEN",
-          title: "Review No-code QC", explanation: "Review final alignment before QC.", preview_hash: "f".repeat(64),
+          title: "Review Negative-population QC", explanation: "Review final alignment before QC.", preview_hash: "f".repeat(64),
           decision_context: {
             final_alignment: {
               population_document_count: 180,

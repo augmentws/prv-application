@@ -39,7 +39,7 @@ First pass is complete only when:
 - a classifier version is accepted and scored across a frozen whole-collection population;
 - classifier-positive documents have the configured Q&A coverage;
 - final Q&A and classifier alignment has been reported;
-- a no-code QC task-specific batch set has been reviewed by both Q&A models;
+- a negative-population QC task-specific batch set has been reviewed by both Q&A models;
 - QC findings have been accepted or remediated; and
 - the program has a frozen completion report linking every source batch, run, model, decision, and unresolved item.
 
@@ -68,7 +68,7 @@ Matter Definition draft
     -> comparison with existing Q&A coding
     -> dual-Q&A coverage of classifier-positive documents without Q&A results
     -> final source-alignment report
-    -> no-code QC task-specific batch set
+    -> negative-population QC task-specific batch set
     -> blind dual-Q&A QC run and linked report
         -> remediation loop if required
     -> first-pass completion report
@@ -135,7 +135,7 @@ The principal gaps are:
 - a user-facing retraining loop and comparable model-version summaries;
 - creation of Q&A batch sets from classifier-positive documents that lack Q&A coverage;
 - a final three-source Q&A and classifier comparison report;
-- a statistically interpretable no-code QC sampler and linked report; and
+- a statistically interpretable negative-population QC sampler and linked report; and
 - a frozen first-pass completion record.
 
 ### 4.3 Automation ownership
@@ -247,7 +247,7 @@ An immutable published configuration containing:
 - whole-collection scoring and prediction-resolution policy;
 - Q&A coverage policy for classifier positives;
 - final comparison policy;
-- no-code QC sampling, reporting, and stopping policy;
+- negative-population QC sampling, reporting, and stopping policy;
 - required human gates; and
 - source and configuration hashes.
 
@@ -376,7 +376,7 @@ contains:
 - all Q&A runs and model profiles;
 - the accepted training label policy and artifact;
 - classifier version, evaluation, approval, activation, and scoring provenance;
-- final comparison and no-code QC results;
+- final comparison and negative-population QC results;
 - ignored issues and unresolved documents;
 - every user gate and decision; and
 - completion actor, reason, and timestamp.
@@ -509,7 +509,7 @@ The First Pass Review template uses:
 | Classifier training | No Review Batch execution | Consume the immutable resolved-label artifact and dataset snapshot. |
 | Whole-collection classifier scoring | `WHOLE_MATTER` | Use the whole-matter input manifest rather than creating an `ALL_MATTER` Review Batch solely for execution. |
 | Q&A coverage of classifier positives | `PARTITIONED_SET` | Create a task-specific set from the frozen classifier-positive coverage manifest. |
-| No-code QC Q&A | `PARTITIONED_SET` | Create a task-specific set from the frozen, stratified QC selection manifest. |
+| Negative-population QC Q&A | `PARTITIONED_SET` | Create a task-specific set from the frozen, stratified QC selection manifest. |
 
 No other workflow-created Review Batch may be run as `AD_HOC_BATCH`. A template for a future review program must
 declare its own stage policy, but it uses the same three platform modes and validation contract.
@@ -1051,7 +1051,7 @@ The report includes:
 The program may offer manual review of final disagreements, but it does not silently choose classifier or Q&A values.
 A final coding publication policy is a separate explicit workflow.
 
-## 19. Phase 12 No-code QC batch set and report
+## 19. Phase 12 Negative-population QC batch set and report
 
 ### 19.1 Define the no-code population
 
@@ -1446,7 +1446,7 @@ Deliverables:
 - Define union, exact-agreement, and adjudication semantics.
 - Define classifier readiness and weak-category policies.
 - Create fixtures covering rare issues, model disagreement, failures, family duplicates, weak categories,
-  classifier-only positives, and no-code QC discoveries.
+  classifier-only positives, and negative-population QC discoveries.
 
 Exit criteria:
 
@@ -1555,7 +1555,7 @@ Exit criteria:
 
 - Every required classifier-positive document is Q&A-covered or explicitly accepted as unresolved.
 
-### Phase 8 Final alignment and no-code QC
+### Phase 8 Final alignment and negative-population QC
 
 Deliverables:
 
@@ -1598,7 +1598,7 @@ Track:
 - whole-collection feature and scoring coverage;
 - classifier-positive Q&A coverage by profile and issue;
 - final three-source agreement and disagreement;
-- no-code QC random and targeted yield;
+- negative-population QC random and targeted yield;
 - unresolved and mandatory-review counts;
 - tokens, cached tokens, requests, latency, and estimated cost by stage and model;
 - retries, cancellations, stale actions, and reconciliation repairs;
@@ -1632,7 +1632,7 @@ Track:
 | Classifier positives become authoritative automatically | Keep scoring isolated and require separate resolution or publication. |
 | Q&A coverage becomes prohibitively expensive | Preview document and usage counts before launch and partition through batch sets. |
 | Final comparison is called accuracy without a reference | Use agreement language unless a genuinely adjudicated source is selected. |
-| No-code QC yields biased corpus estimates | Separate probability-based random audit from targeted strata and use design weights. |
+| Negative-population QC yields biased corpus estimates | Separate probability-based random audit from targeted strata and use design weights. |
 | QC discoveries rewrite history | Preserve prior runs and create new immutable remediation rounds. |
 | External configuration changes invalidate previews | Bind decisions to hashes and row versions and reject stale actions. |
 
@@ -1665,7 +1665,7 @@ The MVP is complete when:
 - classifier-positive documents lacking Q&A coverage can be materialized into batch sets and run through both Q&A
   profiles;
 - the program produces a final multi-source alignment report without mislabeling agreement as accuracy;
-- a no-code QC task-specific batch set uses separately identified random and targeted strata;
+- a negative-population QC task-specific batch set uses separately identified random and targeted strata;
 - both Q&A profiles run blindly across the QC set's managed children and produce an evidence-linked QC report;
 - QC acceptance or remediation is a durable user decision;
 - completion produces an immutable provenance-complete report; and

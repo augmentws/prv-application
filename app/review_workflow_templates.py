@@ -112,7 +112,9 @@ FIRST_PASS_REVIEW = ReviewWorkflowTemplateSpec(
             True,
         ),
         ReviewWorkflowStageSpec("FINAL_ALIGNMENT", "Final coding alignment", "COLLECTION_REVIEW", 16, "NONE"),
-        ReviewWorkflowStageSpec("NO_CODE_QC", "No-code QC", "QC_COMPLETION", 17, "PARTITIONED_SET", True),
+        ReviewWorkflowStageSpec(
+            "NO_CODE_QC", "Negative-population QC", "QC_COMPLETION", 17, "PARTITIONED_SET", True
+        ),
         ReviewWorkflowStageSpec("COMPLETION", "Completion", "QC_COMPLETION", 18, "NONE", True),
     ),
 )
