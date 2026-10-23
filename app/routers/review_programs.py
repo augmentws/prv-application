@@ -27,6 +27,7 @@ from app.review_programs import (
     setup_review_program_classifier_improvement,
     setup_review_program_definition,
     setup_review_program_discovery,
+    setup_review_program_negative_population_qc,
     setup_review_program_qa_task,
     start_review_program_run,
 )
@@ -43,6 +44,7 @@ from app.schemas import (
     ReviewProgramDefinitionSetup,
     ReviewProgramDiscoverySetup,
     ReviewProgramEventRead,
+    ReviewProgramNegativePopulationQCSetup,
     ReviewProgramQASetup,
     ReviewProgramRead,
     ReviewProgramRunCommand,
@@ -513,6 +515,52 @@ def setup_program_classifier_improvement(
         raise HTTPException(
             status_code=status.HTTP_409_CONFLICT,
             detail="Classifier improvement setup conflicts with an existing record",
+        ) from exc
+    db.refresh(run)
+    return _run_read(db, run)
+
+
+@router.post(
+    "/{program_id}/runs/{run_id}/actions/{action_id}/negative-population-qc-setup",
+    response_model=ReviewProgramRunRead,
+    status_code=status.HTTP_202_ACCEPTED,
+)
+def setup_program_negative_population_qc(
+    matter_id: uuid.UUID,
+    program_id: uuid.UUID,
+    run_id: uuid.UUID,
+    action_id: uuid.UUID,
+    payload: ReviewProgramNegativePopulationQCSetup,
+    principal: Principal = Depends(get_principal),
+    db: Session = Depends(get_db),
+) -> ReviewProgramRunRead:
+    _matter_with_permission(db, principal, matter_id, "review_program.manage")
+    try:
+        program = get_review_program(db, matter_id=matter_id, program_id=program_id, for_update=True)
+        run = get_review_program_run(db, program=program, run_id=run_id, for_update=True)
+        setup_review_program_negative_population_qc(
+            db,
+            program=program,
+            run=run,
+            action_id=action_id,
+            actor=principal.user,
+            preview_hash=payload.preview_hash,
+            random_sample_size=payload.random_sample_size,
+            near_threshold_sample_size=payload.near_threshold_sample_size,
+            cohort_control_sample_size=payload.cohort_control_sample_size,
+            mandatory_review_limit=payload.mandatory_review_limit,
+            target_batch_size=payload.target_batch_size,
+            keep_families_together=payload.keep_families_together,
+        )
+        db.commit()
+    except ReviewProgramError as exc:
+        db.rollback()
+        raise _http_error(exc) from exc
+    except IntegrityError as exc:
+        db.rollback()
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail="Negative-population QC setup conflicts with an existing record",
         ) from exc
     db.refresh(run)
     return _run_read(db, run)

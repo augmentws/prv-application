@@ -5119,6 +5119,32 @@ class ReviewProgramClassifierImprovementSetup(BaseModel):
         return self
 
 
+class ReviewProgramNegativePopulationQCSetup(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    preview_hash: str = Field(min_length=64, max_length=64)
+    random_sample_size: int = Field(default=200, ge=0, le=25_000)
+    near_threshold_sample_size: int = Field(default=100, ge=0, le=25_000)
+    cohort_control_sample_size: int = Field(default=50, ge=0, le=25_000)
+    mandatory_review_limit: int = Field(default=100, ge=0, le=25_000)
+    target_batch_size: int = Field(default=100, ge=1, le=10_000)
+    keep_families_together: bool = True
+
+    @model_validator(mode="after")
+    def validate_negative_population_qc_setup(self) -> "ReviewProgramNegativePopulationQCSetup":
+        total = (
+            self.random_sample_size
+            + self.near_threshold_sample_size
+            + self.cohort_control_sample_size
+            + self.mandatory_review_limit
+        )
+        if total < 1:
+            raise ValueError("Negative-population QC requires at least one selected document")
+        if total > 100_000:
+            raise ValueError("Negative-population QC cannot select more than 100,000 documents")
+        return self
+
+
 class ReviewProgramStageAttemptRead(ORMModel):
     id: uuid.UUID
     run_id: uuid.UUID

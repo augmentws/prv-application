@@ -732,8 +732,8 @@ describe("ReviewProgramsSection", () => {
     });
   });
 
-  it("shows the final alignment report at the negative-population QC gate", async () => {
-    vi.mocked(coreApi).mockImplementation(async (path) => {
+  it("configures the negative-population QC sampling plan", async () => {
+    vi.mocked(coreApi).mockImplementation(async (path, options) => {
       if (path === "/v1/review-workflow-templates") return [{
         key: "FIRST_PASS_REVIEW", version: 1, schema_version: 1, content_hash: "a".repeat(64),
         name: "First Pass Review", description: "Guided review", workflow_type: "FIRST_PASS_REVIEW", phases: [],
@@ -749,9 +749,10 @@ describe("ReviewProgramsSection", () => {
         current_stage_ordinal: 17, created_at: "2026-10-21T00:00:00Z", failure_retriable: false, failure_summary: null,
         stage_attempts: [{ stage_key: "NO_CODE_QC", status: "WAITING" }],
         actions: [{
-          id: "action-1", action_type: "STAGE_GATE", stage_key: "NO_CODE_QC", status: "OPEN",
-          title: "Review Negative-population QC", explanation: "Review final alignment before QC.", preview_hash: "f".repeat(64),
+          id: "action-1", action_type: "NEGATIVE_POPULATION_QC_SETUP", stage_key: "NO_CODE_QC", status: "OPEN",
+          title: "Configure Negative-population QC", explanation: "Configure blind QC sampling.", preview_hash: "f".repeat(64),
           decision_context: {
+            defaults: { random_sample_size: 200, near_threshold_sample_size: 100, cohort_control_sample_size: 50, mandatory_review_limit: 100, target_batch_size: 100, keep_families_together: true },
             final_alignment: {
               population_document_count: 180,
               alignment_counts: { EXACT_ALL: 120, PARTIAL: 12, DISAGREEMENT: 8 },
@@ -759,9 +760,12 @@ describe("ReviewProgramsSection", () => {
               issues: [{ issue_key: "responsive:true" }, { issue_key: "privilege:true" }],
             },
           },
-          allowed_choices: [{ key: "CONTINUE", label: "Continue to Completion" }, { key: "STOP", label: "Stop program" }],
+          allowed_choices: [{ key: "START_QC", label: "Start Negative-population QC" }, { key: "STOP", label: "Stop program" }],
         }],
       }] as never;
+      if (path.endsWith("/actions/action-1/negative-population-qc-setup") && options?.method === "POST") return {
+        id: "run-1", program_id: "program-1", status: "RUNNING", current_stage: "NO_CODE_QC",
+      } as never;
       throw new Error(`Unexpected API request: ${path}`);
     });
     renderSection();
@@ -770,5 +774,73 @@ describe("ReviewProgramsSection", () => {
     expect(screen.getByText("All-source exact")).toBeInTheDocument();
     expect(screen.getByText("Disputed or partial")).toBeInTheDocument();
     expect(screen.getByText(/170 documents have current-source results/)).toBeInTheDocument();
+    const randomAudit = screen.getByLabelText("Random audit");
+    await userEvent.clear(randomAudit);
+    await userEvent.type(randomAudit, "250");
+    await userEvent.click(screen.getByRole("button", { name: "Start Negative-population QC" }));
+
+    await waitFor(() => expect(coreApi).toHaveBeenCalledWith(
+      "/v1/matters/matter-1/review-programs/program-1/runs/run-1/actions/action-1/negative-population-qc-setup",
+      expect.objectContaining({ method: "POST" }),
+    ));
+    const call = vi.mocked(coreApi).mock.calls.find(([path]) => path.endsWith("/negative-population-qc-setup"));
+    expect(JSON.parse(String(call?.[1]?.body))).toEqual({
+      preview_hash: "f".repeat(64),
+      random_sample_size: 250,
+      near_threshold_sample_size: 100,
+      cohort_control_sample_size: 50,
+      mandatory_review_limit: 100,
+      target_batch_size: 100,
+      keep_families_together: true,
+    });
+  });
+
+  it("presents and accepts the negative-population QC report", async () => {
+    vi.mocked(coreApi).mockImplementation(async (path, options) => {
+      if (path === "/v1/review-workflow-templates") return [{
+        key: "FIRST_PASS_REVIEW", version: 1, schema_version: 1, content_hash: "a".repeat(64),
+        name: "First Pass Review", description: "Guided review", workflow_type: "FIRST_PASS_REVIEW", phases: [],
+        stages: [{ key: "NO_CODE_QC", name: "Negative-population QC", phase_key: "QC_COMPLETION", ordinal: 17, batching_policy: "PARTITIONED_SET", requires_human_gate: true }],
+      }] as never;
+      if (path === "/v1/matters/matter-1/review-programs") return [{
+        id: "program-1", tenant_id: "tenant-1", matter_id: "matter-1", template_key: "FIRST_PASS_REVIEW",
+        template_version: 1, template_content_hash: "a".repeat(64), key: "standard-first-pass", name: "Standard first pass",
+        description: "Responsive review", status: "ACTIVE", current_run_id: "run-1", current_version: { version: 13 }, created_at: "2026-10-21T00:00:00Z",
+      }] as never;
+      if (path === "/v1/matters/matter-1/review-programs/program-1/runs") return [{
+        id: "run-1", program_id: "program-1", status: "WAITING_FOR_USER", current_stage: "NO_CODE_QC",
+        current_stage_ordinal: 17, created_at: "2026-10-21T00:00:00Z", failure_retriable: false, failure_summary: null,
+        stage_attempts: [{ stage_key: "NO_CODE_QC", status: "WAITING" }],
+        actions: [{
+          id: "action-2", action_type: "NEGATIVE_POPULATION_QC_REPORT", stage_key: "NO_CODE_QC", status: "OPEN",
+          title: "Review Negative-population QC findings", explanation: "Review the blind audit.", preview_hash: "9".repeat(64),
+          decision_context: { negative_population_qc: { report: {
+            selected_document_count: 350, positive_document_count: 14, unresolved_document_count: 2,
+            mandatory_unreviewable_count: 3, random_audit_estimate: { observed_positive_rate: 0.04 },
+          } } },
+          allowed_choices: [{ key: "ACCEPT_QC", label: "Accept QC results" }, { key: "STOP", label: "Stop program" }],
+        }],
+      }] as never;
+      if (path.endsWith("/actions/action-2/resolve") && options?.method === "POST") return {
+        id: "run-1", program_id: "program-1", status: "RUNNING", current_stage: "COMPLETION",
+      } as never;
+      throw new Error(`Unexpected API request: ${path}`);
+    });
+    renderSection();
+
+    expect(await screen.findByText("350")).toBeInTheDocument();
+    expect(screen.getByText("4.0%")).toBeInTheDocument();
+    expect(screen.getByText("Manual resolution")).toBeInTheDocument();
+    await userEvent.click(screen.getByRole("button", { name: "Accept QC results" }));
+
+    await waitFor(() => expect(coreApi).toHaveBeenCalledWith(
+      "/v1/matters/matter-1/review-programs/program-1/runs/run-1/actions/action-2/resolve",
+      expect.objectContaining({ method: "POST" }),
+    ));
+    const call = vi.mocked(coreApi).mock.calls.find(([path]) => path.endsWith("/actions/action-2/resolve"));
+    expect(JSON.parse(String(call?.[1]?.body))).toEqual({
+      preview_hash: "9".repeat(64),
+      choice_key: "ACCEPT_QC",
+    });
   });
 });

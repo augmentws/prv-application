@@ -130,6 +130,14 @@ export function ReviewProgramsSection() {
     onSuccess: async (run) => { await refresh(run.program_id); toast.success("Targeted classifier review has started."); },
     onError: mutationError("Targeted classifier review could not be started."),
   });
+  const setupNegativePopulationQC = useMutation({
+    mutationFn: ({ programId, runId, actionId, payload }: { programId: string; runId: string; actionId: string; payload: NegativePopulationQCSetupPayload }) => coreApi<ReviewProgramRunRead>(`/v1/matters/${matterId}/review-programs/${programId}/runs/${runId}/actions/${actionId}/negative-population-qc-setup`, {
+      method: "POST",
+      body: JSON.stringify(payload),
+    }),
+    onSuccess: async (run) => { await refresh(run.program_id); toast.success("Negative-population QC has started."); },
+    onError: mutationError("Negative-population QC could not be started."),
+  });
 
   if (programs.isPending || templates.isPending) return <TableLoading />;
   if (programs.error || templates.error) return <QueryError message={programs.error?.message ?? templates.error?.message} />;
@@ -156,7 +164,7 @@ export function ReviewProgramsSection() {
         canManage={canManage}
         loading={runs.isPending}
         error={runs.error}
-        busy={startRun.isPending || command.isPending || resolveAction.isPending || setupDefinition.isPending || setupQA.isPending || setupDiscovery.isPending || setupClassifierImprovement.isPending}
+        busy={startRun.isPending || command.isPending || resolveAction.isPending || setupDefinition.isPending || setupQA.isPending || setupDiscovery.isPending || setupClassifierImprovement.isPending || setupNegativePopulationQC.isPending}
         onStart={() => startRun.mutate(selectedProgram.id)}
         onCommand={(verb) => currentRun && command.mutate({ programId: selectedProgram.id, runId: currentRun.id, verb })}
         onResolve={(action, choiceKey) => currentRun && resolveAction.mutate({ programId: selectedProgram.id, runId: currentRun.id, action, choiceKey })}
@@ -164,12 +172,13 @@ export function ReviewProgramsSection() {
         onSetupQA={(action, payload) => currentRun && setupQA.mutate({ programId: selectedProgram.id, runId: currentRun.id, actionId: action.id, payload })}
         onSetupDiscovery={(action, payload) => currentRun && setupDiscovery.mutate({ programId: selectedProgram.id, runId: currentRun.id, actionId: action.id, payload })}
         onSetupClassifierImprovement={(action, payload) => currentRun && setupClassifierImprovement.mutate({ programId: selectedProgram.id, runId: currentRun.id, actionId: action.id, payload })}
+        onSetupNegativePopulationQC={(action, payload) => currentRun && setupNegativePopulationQC.mutate({ programId: selectedProgram.id, runId: currentRun.id, actionId: action.id, payload })}
       /> : null}
     </div>}
   </div>;
 }
 
-function ProgramWorkspace({ clientId, matterId, program, run, stages, canManage, loading, error, busy, onStart, onCommand, onResolve, onSetupDefinition, onSetupQA, onSetupDiscovery, onSetupClassifierImprovement }: {
+function ProgramWorkspace({ clientId, matterId, program, run, stages, canManage, loading, error, busy, onStart, onCommand, onResolve, onSetupDefinition, onSetupQA, onSetupDiscovery, onSetupClassifierImprovement, onSetupNegativePopulationQC }: {
   clientId: string;
   matterId: string;
   program: ReviewProgramRead;
@@ -186,6 +195,7 @@ function ProgramWorkspace({ clientId, matterId, program, run, stages, canManage,
   onSetupQA: (action: ReviewProgramActionRead, payload: QASetupPayload) => void;
   onSetupDiscovery: (action: ReviewProgramActionRead, payload: DiscoverySetupPayload) => void;
   onSetupClassifierImprovement: (action: ReviewProgramActionRead, payload: ClassifierImprovementSetupPayload) => void;
+  onSetupNegativePopulationQC: (action: ReviewProgramActionRead, payload: NegativePopulationQCSetupPayload) => void;
 }) {
   const openAction = run?.actions?.find((action) => action.status === "OPEN") ?? null;
   const attemptsByStage = useMemo(() => new Map(run?.stage_attempts?.map((attempt) => [attempt.stage_key, attempt]) ?? []), [run?.stage_attempts]);
@@ -203,7 +213,7 @@ function ProgramWorkspace({ clientId, matterId, program, run, stages, canManage,
       </CardHeader>
       {run ? <CardContent><div className="flex flex-wrap items-center gap-2"><StatusBadge status={run.status} /><Badge variant="outline">{friendly(run.current_stage)}</Badge><span className="text-xs text-muted-foreground">Started {formatDate(run.created_at)}</span></div>{run.failure_summary ? <p className="mt-3 rounded-lg border border-destructive/30 bg-destructive/5 p-3 text-sm text-destructive">{run.failure_summary}</p> : null}</CardContent> : <CardContent><p className="text-sm text-muted-foreground">This program is configured but has not been started.</p></CardContent>}
     </Card>
-    {openAction?.action_type === "MATTER_DEFINITION_SETUP" ? <DefinitionSetupCard matterId={matterId} action={openAction} canManage={canManage} busy={busy} onSubmit={(payload) => onSetupDefinition(openAction, payload)} onStop={() => onResolve(openAction, "STOP")} /> : openAction?.action_type === "QA_TASK_SETUP" ? <QASetupCard matterId={matterId} action={openAction} canManage={canManage} busy={busy} onSubmit={(payload) => onSetupQA(openAction, payload)} onStop={() => onResolve(openAction, "STOP")} /> : openAction?.action_type === "DISCOVERY_QA_SETUP" ? <DiscoverySetupCard action={openAction} canManage={canManage} busy={busy} onSubmit={(payload) => onSetupDiscovery(openAction, payload)} onStop={() => onResolve(openAction, "STOP")} /> : openAction?.action_type === "CLASSIFIER_IMPROVEMENT_SETUP" ? <ClassifierImprovementSetupCard action={openAction} canManage={canManage} busy={busy} onSubmit={(payload) => onSetupClassifierImprovement(openAction, payload)} onStop={() => onResolve(openAction, "STOP")} /> : openAction ? <Card className="border-accent/60 bg-accent/5"><CardHeader><CardTitle>{openAction.title}</CardTitle><CardDescription>{openAction.explanation}</CardDescription></CardHeader><CardContent><DefinitionAssessmentSummary action={openAction} /><QAPublicationSummary action={openAction} /><IssueSupportSummary action={openAction} /><TrainingLabelSummary action={openAction} matterId={matterId} /><ClassifierReviewSummary action={openAction} /><WholeCollectionScoringSummary action={openAction} /><ClassifierPositiveCoverageSummary action={openAction} /><FinalAlignmentSummary action={openAction} />{openAction.stage_key === "DEFINITION_REFINEMENT" || openAction.stage_key === "DEFINITION_ACCEPTANCE" ? <Button asChild size="sm" variant="outline" className="mb-3"><Link href={`/app/clients/${clientId}/matters/${matterId}/definition`}><BookOpen />Open Matter Definition</Link></Button> : null}<div className="flex flex-wrap gap-2">{openAction.allowed_choices.map((choice, index) => {
+    {openAction?.action_type === "MATTER_DEFINITION_SETUP" ? <DefinitionSetupCard matterId={matterId} action={openAction} canManage={canManage} busy={busy} onSubmit={(payload) => onSetupDefinition(openAction, payload)} onStop={() => onResolve(openAction, "STOP")} /> : openAction?.action_type === "QA_TASK_SETUP" ? <QASetupCard matterId={matterId} action={openAction} canManage={canManage} busy={busy} onSubmit={(payload) => onSetupQA(openAction, payload)} onStop={() => onResolve(openAction, "STOP")} /> : openAction?.action_type === "DISCOVERY_QA_SETUP" ? <DiscoverySetupCard action={openAction} canManage={canManage} busy={busy} onSubmit={(payload) => onSetupDiscovery(openAction, payload)} onStop={() => onResolve(openAction, "STOP")} /> : openAction?.action_type === "CLASSIFIER_IMPROVEMENT_SETUP" ? <ClassifierImprovementSetupCard action={openAction} canManage={canManage} busy={busy} onSubmit={(payload) => onSetupClassifierImprovement(openAction, payload)} onStop={() => onResolve(openAction, "STOP")} /> : openAction?.action_type === "NEGATIVE_POPULATION_QC_SETUP" ? <NegativePopulationQCSetupCard action={openAction} canManage={canManage} busy={busy} onSubmit={(payload) => onSetupNegativePopulationQC(openAction, payload)} onStop={() => onResolve(openAction, "STOP")} /> : openAction ? <Card className="border-accent/60 bg-accent/5"><CardHeader><CardTitle>{openAction.title}</CardTitle><CardDescription>{openAction.explanation}</CardDescription></CardHeader><CardContent><DefinitionAssessmentSummary action={openAction} /><QAPublicationSummary action={openAction} /><IssueSupportSummary action={openAction} /><TrainingLabelSummary action={openAction} matterId={matterId} /><ClassifierReviewSummary action={openAction} /><WholeCollectionScoringSummary action={openAction} /><ClassifierPositiveCoverageSummary action={openAction} /><FinalAlignmentSummary action={openAction} /><NegativePopulationQCReport action={openAction} />{openAction.stage_key === "DEFINITION_REFINEMENT" || openAction.stage_key === "DEFINITION_ACCEPTANCE" ? <Button asChild size="sm" variant="outline" className="mb-3"><Link href={`/app/clients/${clientId}/matters/${matterId}/definition`}><BookOpen />Open Matter Definition</Link></Button> : null}<div className="flex flex-wrap gap-2">{openAction.allowed_choices.map((choice, index) => {
       return <Button key={`${choice.key}-${index}`} size="sm" variant={choice.key === "STOP" ? "destructive" : "default"} disabled={!canManage || busy} onClick={() => onResolve(openAction, choice.key)} title={choice.consequence}>{choice.label}</Button>;
     })}</div></CardContent></Card> : null}
     {run ? <Card><CardHeader><CardTitle>Program stages</CardTitle><CardDescription>The coordinator records every stage attempt and waits only at explicit human gates.</CardDescription></CardHeader><CardContent><ol className="grid gap-2 sm:grid-cols-2">{stages.map((stage) => {
@@ -327,6 +337,60 @@ function FinalAlignmentSummary({ action }: { action: ReviewProgramActionRead }) 
     <div className="grid gap-2 sm:grid-cols-4"><div><p className="text-xs text-muted-foreground">Aligned population</p><p className="font-medium">{Number(report.population_document_count ?? 0)}</p></div><div><p className="text-xs text-muted-foreground">All-source exact</p><p className="font-medium">{Number(alignment.EXACT_ALL ?? 0)}</p></div><div><p className="text-xs text-muted-foreground">Disputed or partial</p><p className="font-medium">{Number(alignment.PARTIAL ?? 0) + Number(alignment.DISAGREEMENT ?? 0)}</p></div><div><p className="text-xs text-muted-foreground">Issue assignments</p><p className="font-medium">{issues.length}</p></div></div>
     <p className="text-xs text-muted-foreground">{Number(source.CURRENT ?? 0)} documents have current-source results from both Q&A profiles; {Number(source.STALE_OR_PARTIAL ?? 0) + Number(source.MISSING_QA ?? 0) + Number(source.SOURCE_UNAVAILABLE ?? 0)} are stale, partial, missing, or source-unavailable. Agreement is consistency evidence, not accuracy.</p>
   </div>;
+}
+
+interface NegativePopulationQCSetupPayload {
+  preview_hash: string;
+  random_sample_size: number;
+  near_threshold_sample_size: number;
+  cohort_control_sample_size: number;
+  mandatory_review_limit: number;
+  target_batch_size: number;
+  keep_families_together: boolean;
+}
+
+function NegativePopulationQCSetupCard({ action, canManage, busy, onSubmit, onStop }: {
+  action: ReviewProgramActionRead;
+  canManage: boolean;
+  busy: boolean;
+  onSubmit: (payload: NegativePopulationQCSetupPayload) => void;
+  onStop: () => void;
+}) {
+  const defaultsRaw = action.decision_context?.defaults;
+  const defaults = defaultsRaw && typeof defaultsRaw === "object" && !Array.isArray(defaultsRaw) ? defaultsRaw as Record<string, unknown> : {};
+  const [randomSample, setRandomSample] = useState(String(defaults.random_sample_size ?? 200));
+  const [nearThreshold, setNearThreshold] = useState(String(defaults.near_threshold_sample_size ?? 100));
+  const [cohortControl, setCohortControl] = useState(String(defaults.cohort_control_sample_size ?? 50));
+  const [mandatoryLimit, setMandatoryLimit] = useState(String(defaults.mandatory_review_limit ?? 100));
+  const [batchSize, setBatchSize] = useState(String(defaults.target_batch_size ?? 100));
+  const [keepFamilies, setKeepFamilies] = useState(Boolean(defaults.keep_families_together ?? true));
+  function submit(event: FormEvent) {
+    event.preventDefault();
+    const values = [randomSample, nearThreshold, cohortControl, mandatoryLimit, batchSize].map(Number);
+    if (!values.every(Number.isInteger) || values.slice(0, 4).some((value) => value < 0) || values[4] < 1 || values.slice(0, 4).reduce((sum, value) => sum + value, 0) < 1) return;
+    onSubmit({
+      preview_hash: action.preview_hash,
+      random_sample_size: values[0],
+      near_threshold_sample_size: values[1],
+      cohort_control_sample_size: values[2],
+      mandatory_review_limit: values[3],
+      target_batch_size: values[4],
+      keep_families_together: keepFamilies,
+    });
+  }
+  return <Card className="border-accent/60 bg-accent/5"><CardHeader><CardTitle>{action.title}</CardTitle><CardDescription>{action.explanation}</CardDescription></CardHeader><CardContent><form className="space-y-4" onSubmit={submit}><FinalAlignmentSummary action={action} /><div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-5"><div className="space-y-2"><Label htmlFor="qc-random">Random audit</Label><Input id="qc-random" type="number" min={0} max={25000} value={randomSample} onChange={(event) => setRandomSample(event.target.value)} /></div><div className="space-y-2"><Label htmlFor="qc-threshold">Near threshold</Label><Input id="qc-threshold" type="number" min={0} max={25000} value={nearThreshold} onChange={(event) => setNearThreshold(event.target.value)} /></div><div className="space-y-2"><Label htmlFor="qc-cohort">Cohort controls</Label><Input id="qc-cohort" type="number" min={0} max={25000} value={cohortControl} onChange={(event) => setCohortControl(event.target.value)} /></div><div className="space-y-2"><Label htmlFor="qc-mandatory">Mandatory review cap</Label><Input id="qc-mandatory" type="number" min={0} max={25000} value={mandatoryLimit} onChange={(event) => setMandatoryLimit(event.target.value)} /></div><div className="space-y-2"><Label htmlFor="qc-batch-size">Documents per batch</Label><Input id="qc-batch-size" type="number" min={1} max={10000} value={batchSize} onChange={(event) => setBatchSize(event.target.value)} /></div></div><label className="flex items-center gap-2 text-sm"><input type="checkbox" checked={keepFamilies} onChange={(event) => setKeepFamilies(event.target.checked)} disabled={!canManage || busy} />Keep document families together</label><div className="rounded-lg border bg-background/70 p-3 text-xs text-muted-foreground"><p>The random audit is the only lane used for a collection-level miss-rate estimate. Near-threshold and cohort controls report discovery yield only. Failed, abstained, and stale documents with usable source content enter the mandatory-review lane; source-unavailable documents remain separately counted for manual resolution.</p></div><div className="flex flex-wrap gap-2"><Button type="submit" disabled={!canManage || busy}>{busy ? "Starting…" : "Start Negative-population QC"}</Button><Button type="button" variant="destructive" disabled={!canManage || busy} onClick={onStop}>Stop program</Button></div></form></CardContent></Card>;
+}
+
+function NegativePopulationQCReport({ action }: { action: ReviewProgramActionRead }) {
+  if (action.action_type !== "NEGATIVE_POPULATION_QC_REPORT") return null;
+  const qcRaw = action.decision_context?.negative_population_qc;
+  const qc = qcRaw && typeof qcRaw === "object" && !Array.isArray(qcRaw) ? qcRaw as Record<string, unknown> : {};
+  const reportRaw = qc.report;
+  const report = reportRaw && typeof reportRaw === "object" && !Array.isArray(reportRaw) ? reportRaw as Record<string, unknown> : {};
+  const estimateRaw = report.random_audit_estimate;
+  const estimate = estimateRaw && typeof estimateRaw === "object" && !Array.isArray(estimateRaw) ? estimateRaw as Record<string, unknown> : {};
+  const rate = typeof estimate.observed_positive_rate === "number" ? `${(estimate.observed_positive_rate * 100).toFixed(1)}%` : "Unavailable";
+  return <div className="mb-4 space-y-3 rounded-lg border bg-background/70 p-3 text-sm"><div className="grid gap-2 sm:grid-cols-5"><div><p className="text-xs text-muted-foreground">QC documents</p><p className="font-medium">{Number(report.selected_document_count ?? 0)}</p></div><div><p className="text-xs text-muted-foreground">New positives</p><p className="font-medium">{Number(report.positive_document_count ?? 0)}</p></div><div><p className="text-xs text-muted-foreground">Random-audit rate</p><p className="font-medium">{rate}</p></div><div><p className="text-xs text-muted-foreground">Unresolved runs</p><p className="font-medium">{Number(report.unresolved_document_count ?? 0)}</p></div><div><p className="text-xs text-muted-foreground">Manual resolution</p><p className="font-medium">{Number(report.mandatory_unreviewable_count ?? 0)}</p></div></div><p className="text-xs text-muted-foreground">Only the random-audit lane supports a population estimate. Targeted-lane yield identifies risk but is not a collection-wide error rate.</p></div>;
 }
 
 interface DiscoverySetupPayload {

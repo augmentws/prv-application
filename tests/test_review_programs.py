@@ -54,10 +54,13 @@ from app.models import (
 )
 from app.rbac_manifest import SYSTEM_ROLE_BY_KEY
 from app.review_programs import (
+    _QA_COVERAGE_PROFILE_PURPOSES,
     ReviewProgramError,
+    _action_contract,
     _activate_stage_by_key,
     _alignment_status,
     _classifier_positive_class_keys,
+    _wilson_interval,
     cancel_review_program_discovery_children,
     link_review_program_child,
     project_review_program_assessment_terminal,
@@ -509,6 +512,32 @@ def test_final_alignment_status_distinguishes_agreement_and_missing_coverage() -
     assert _alignment_status(responsive, responsive, privilege) == "PARTIAL"
     assert _alignment_status(responsive, privilege, set()) == "DISAGREEMENT"
     assert _alignment_status(responsive, responsive, None) == "INCOMPLETE"
+
+
+def test_negative_population_qc_gate_and_random_audit_interval() -> None:
+    assert "NEGATIVE_POPULATION_QC_QA_PROFILE" in _QA_COVERAGE_PROFILE_PURPOSES
+    stage = next(item for item in FIRST_PASS_REVIEW.stages if item.key == "NO_CODE_QC")
+    title, explanation, choices = _action_contract(
+        FIRST_PASS_REVIEW,
+        stage,
+        negative_qc_state="",
+    )
+    assert title == "Configure Negative-population QC"
+    assert "random-audit" in explanation
+    assert [choice["key"] for choice in choices] == ["START_QC", "STOP"]
+
+    report_title, _, report_choices = _action_contract(
+        FIRST_PASS_REVIEW,
+        stage,
+        negative_qc_state="REPORT_READY",
+    )
+    assert report_title == "Review Negative-population QC findings"
+    assert [choice["key"] for choice in report_choices] == ["ACCEPT_QC", "STOP"]
+
+    interval = _wilson_interval(5, 100)
+    assert interval is not None
+    assert interval[0] < 0.05 < interval[1]
+    assert _wilson_interval(0, 0) is None
 
 
 def test_synthetic_run_advances_waits_resumes_retries_reconciles_and_cancels(
