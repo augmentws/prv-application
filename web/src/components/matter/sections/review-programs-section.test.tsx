@@ -500,4 +500,63 @@ describe("ReviewProgramsSection", () => {
     const call = vi.mocked(coreApi).mock.calls.find(([path]) => path.endsWith("/actions/action-1/resolve"));
     expect(JSON.parse(String(call?.[1]?.body))).toEqual({ preview_hash: "b".repeat(64), choice_key: "CONTINUE" });
   });
+
+  it("summarizes classifier quality and routes weak categories to improvement", async () => {
+    vi.mocked(coreApi).mockImplementation(async (path, options) => {
+      if (path === "/v1/review-workflow-templates") return [{
+        key: "FIRST_PASS_REVIEW", version: 1, schema_version: 1, content_hash: "a".repeat(64),
+        name: "First Pass Review", description: "Guided review", workflow_type: "FIRST_PASS_REVIEW", phases: [],
+        stages: [{ key: "CLASSIFIER_REVIEW", name: "Classifier review", phase_key: "CLASSIFIER", ordinal: 12, batching_policy: "NONE", requires_human_gate: true }],
+      }] as never;
+      if (path === "/v1/matters/matter-1/review-programs") return [{
+        id: "program-1", tenant_id: "tenant-1", matter_id: "matter-1", template_key: "FIRST_PASS_REVIEW",
+        template_version: 1, template_content_hash: "a".repeat(64), key: "standard-first-pass", name: "Standard first pass",
+        description: "Responsive review", status: "ACTIVE", current_run_id: "run-1", current_version: { version: 8 }, created_at: "2026-10-21T00:00:00Z",
+      }] as never;
+      if (path === "/v1/matters/matter-1/review-programs/program-1/runs" && !options) return [{
+        id: "run-1", program_id: "program-1", status: "WAITING_FOR_USER", current_stage: "CLASSIFIER_REVIEW",
+        current_stage_ordinal: 12, created_at: "2026-10-21T00:00:00Z", failure_retriable: false, failure_summary: null,
+        stage_attempts: [{ stage_key: "CLASSIFIER_REVIEW", status: "WAITING" }],
+        actions: [{
+          id: "action-1", action_type: "CLASSIFIER_REVIEW", stage_key: "CLASSIFIER_REVIEW", status: "OPEN",
+          title: "Review the trained classifiers", explanation: "Review quality before collection scoring.", preview_hash: "b".repeat(64),
+          decision_context: {
+            classifier_results: {
+              overall_quality: "WEAK", model_count: 1, weak_model_count: 1, weak_category_count: 1,
+              models: [{
+                classification_model_id: "model-1", field_name: "Responsive", quality: "WEAK",
+                training_eligible_count: 42, metrics: { primary_pr_auc: 0.612, macro_f1: 0.554 },
+                weak_categories: [{ class_key: "true", reasons: ["LOW_F1"] }],
+              }],
+            },
+          },
+          allowed_choices: [
+            { key: "ACCEPT_CLASSIFIERS", label: "Accept classifiers", consequence: "Continue." },
+            { key: "IMPROVE_CLASSIFIERS", label: "Improve weak categories", consequence: "Review more data." },
+            { key: "STOP", label: "Stop program", consequence: "End this run." },
+          ],
+        }],
+      }] as never;
+      if (path.endsWith("/actions/action-1/resolve") && options?.method === "POST") return {
+        id: "run-1", program_id: "program-1", status: "WAITING_FOR_USER", current_stage: "CLASSIFIER_IMPROVEMENT",
+      } as never;
+      throw new Error(`Unexpected API request: ${path}`);
+    });
+    renderSection();
+
+    expect(await screen.findByText("Overall quality")).toBeInTheDocument();
+    expect(screen.getAllByText("Weak")).toHaveLength(2);
+    expect(screen.getByText(/42 training documents · PR AUC 0.61 · Macro F1 0.55/)).toBeInTheDocument();
+    await userEvent.click(screen.getByRole("button", { name: "Improve weak categories" }));
+
+    await waitFor(() => expect(coreApi).toHaveBeenCalledWith(
+      "/v1/matters/matter-1/review-programs/program-1/runs/run-1/actions/action-1/resolve",
+      expect.objectContaining({ method: "POST" }),
+    ));
+    const call = vi.mocked(coreApi).mock.calls.find(([path]) => path.endsWith("/actions/action-1/resolve"));
+    expect(JSON.parse(String(call?.[1]?.body))).toEqual({
+      preview_hash: "b".repeat(64),
+      choice_key: "IMPROVE_CLASSIFIERS",
+    });
+  });
 });

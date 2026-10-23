@@ -54,6 +54,7 @@ from app.workflows.dispatcher import (
     cancel_analysis_task_batch,
     cancel_analysis_task_batch_set_run_workflow,
     cancel_analysis_task_batch_set_workflow,
+    cancel_classification_training_job,
     cancel_definition_assessment,
     cancel_review_batch,
 )
@@ -275,6 +276,7 @@ def resolve_program_action(
     discovery_batch_run_workflows: list[str] = []
     discovery_child_workflows: list[str] = []
     difference_batch_workflows: list[str] = []
+    classification_training_workflows: list[str] = []
     try:
         program = get_review_program(db, matter_id=matter_id, program_id=program_id, for_update=True)
         run = get_review_program_run(db, program=program, run_id=run_id, for_update=True)
@@ -288,6 +290,7 @@ def resolve_program_action(
                 discovery_batch_run_workflows,
                 discovery_child_workflows,
                 difference_batch_workflows,
+                classification_training_workflows,
             ) = cancel_review_program_discovery_children(
                 db,
                 run=run,
@@ -320,6 +323,8 @@ def resolve_program_action(
         cancel_analysis_task_batch(workflow_id)
     for workflow_id in difference_batch_workflows:
         cancel_review_batch(workflow_id)
+    for workflow_id in classification_training_workflows:
+        cancel_classification_training_job(workflow_id)
     db.refresh(run)
     return _run_read(db, run)
 
@@ -484,6 +489,7 @@ def cancel_program_run(
             discovery_batch_run_workflows,
             discovery_child_workflows,
             difference_batch_workflows,
+            classification_training_workflows,
         ) = cancel_review_program_discovery_children(
             db,
             run=run,
@@ -513,6 +519,8 @@ def cancel_program_run(
         cancel_analysis_task_batch(workflow_id)
     for workflow_id in difference_batch_workflows:
         cancel_review_batch(workflow_id)
+    for workflow_id in classification_training_workflows:
+        cancel_classification_training_job(workflow_id)
     db.refresh(run)
     return _run_read(db, run)
 

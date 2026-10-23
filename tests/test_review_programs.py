@@ -1,5 +1,6 @@
 import io
 import uuid
+from types import SimpleNamespace
 
 import pyarrow.parquet as pq
 import pytest
@@ -21,10 +22,13 @@ from app.models import (
     AnalysisTaskBatchSetRun,
     AnalysisTaskBatchSetRunChild,
     AuditRecord,
+    ClassificationModelConfiguration,
+    ClassificationTrainingJob,
     MatterAnalysisTaskVersion,
     MatterDefinitionAssessmentQuery,
     MatterDefinitionAssessmentQuestion,
     MatterDefinitionAssessmentRun,
+    MatterEmbeddingJob,
     MetadataDefinition,
     Notification,
     ReviewBatch,
@@ -50,6 +54,7 @@ from app.review_programs import (
     cancel_review_program_discovery_children,
     link_review_program_child,
     project_review_program_assessment_terminal,
+    project_review_program_classifier_training_terminal,
     project_review_program_qa_compilation_terminal,
 )
 from app.review_workflow_templates import FIRST_PASS_REVIEW, get_review_workflow_template
@@ -1111,6 +1116,38 @@ def test_synthetic_run_advances_waits_resumes_retries_reconciles_and_cancels(
         "adjudication_sources"
     ][0]["reviewer_coding_revision"] == 2
 
+    with TestingSessionLocal() as db:
+        db.add(
+            MatterEmbeddingJob(
+                matter_id=uuid.UUID(matter["id"]),
+                status="COMPLETED",
+                workflow_id=f"review-program-embedding:{uuid.uuid4()}",
+                configuration_hash="e" * 64,
+                configuration={
+                    "schema_version": 1,
+                    "embedding": {
+                        "model": "test/review-program-embedding",
+                        "model_revision": "1",
+                        "dimensions": 32,
+                    },
+                },
+                embedding_model="test/review-program-embedding",
+                embedding_model_revision="1",
+                embedding_dimensions=32,
+                embedding_normalized=True,
+                total_count=5,
+                batch_count=1,
+                processed_count=5,
+                embedded_count=5,
+                skipped_count=0,
+                failed_count=0,
+                chunk_count=5,
+                created_by_user_id=user_id,
+                completed_at=utcnow(),
+            )
+        )
+        db.commit()
+
     finalized = client.post(
         f"{runs_url}/{run_id}/actions/{finalization_action['id']}/resolve",
         headers=auth(token),
@@ -1126,6 +1163,125 @@ def test_synthetic_run_advances_waits_resumes_retries_reconciles_and_cancels(
     assert training_labels["state"] == "FROZEN"
     assert training_labels["policy"] == "ADJUDICATED_DISAGREEMENTS"
     assert len(training_labels["content_hash"]) == 64
+    assert len(training_labels["label_run_ids"]) == 6
+    classifier_training = finalized.json()["progress_summary"]["classifier_training"]
+    assert classifier_training["state"] == "RUNNING"
+    assert len(classifier_training["models"]) == 1
+
+    with TestingSessionLocal() as db:
+        training_job = db.get(
+            ClassificationTrainingJob,
+            uuid.UUID(classifier_training["models"][0]["current_training_job_id"]),
+        )
+        assert training_job is not None
+        workflow = db.get(WorkflowRun, training_job.current_workflow_run_id)
+        assert workflow is not None
+        assert workflow.notification_policy == "PARENT_MANAGED"
+        assert workflow.notification_parent_type == "REVIEW_PROGRAM_RUN"
+        assert workflow.notification_parent_id == uuid.UUID(run_id)
+        configuration = db.get(
+            ClassificationModelConfiguration,
+            training_job.configuration_id,
+        )
+        assert configuration is not None
+        sources = configuration.label_policy["allowed_sources"]
+        assert len(sources) == 7
+        assert sum(source["kind"] == "ACCEPTED_JEV" for source in sources) == 6
+        assert sum(source["kind"] == "ADJUDICATED_REVIEW" for source in sources) == 1
+        run_model = db.get(ReviewProgramRun, uuid.UUID(run_id))
+        assert run_model is not None
+        cancellation_targets = cancel_review_program_discovery_children(
+            db,
+            run=run_model,
+            actor_user_id=user_id,
+        )
+        assert cancellation_targets[4] == [workflow.dbos_workflow_id]
+        db.rollback()
+
+    quality = {
+        "schema_version": 1,
+        "state": "COMPLETED",
+        "quality_policy_version": "review-program-classifier-quality-v1",
+        "quality_thresholds": {"primary_pr_auc": 0.7, "macro_f1": 0.6},
+        "model_count": 1,
+        "weak_model_count": 1,
+        "weak_category_count": 1,
+        "overall_quality": "WEAK",
+        "models": [
+            {
+                **classifier_training["models"][0],
+                "model_version_id": str(uuid.uuid4()),
+                "quality": "WEAK",
+                "metrics": {"primary_pr_auc": 0.61, "macro_f1": 0.55},
+                "training_eligible_count": 5,
+                "weak_categories": [
+                    {"class_key": "true", "reasons": ["LOW_F1"], "f1": 0.5}
+                ],
+            }
+        ],
+    }
+    monkeypatch.setattr(
+        "app.review_programs._classifier_quality_snapshot",
+        lambda *args, **kwargs: quality,
+    )
+    with TestingSessionLocal() as db:
+        training_job = db.get(
+            ClassificationTrainingJob,
+            uuid.UUID(classifier_training["models"][0]["current_training_job_id"]),
+        )
+        assert training_job is not None
+        transition_job_execution(
+            db,
+            job_type="CLASSIFICATION_TRAINING_JOB",
+            job_id=training_job.id,
+            status="RUNNING",
+        )
+        workflow = transition_job_execution(
+            db,
+            job_type="CLASSIFICATION_TRAINING_JOB",
+            job_id=training_job.id,
+            status="COMPLETED",
+            progress_completed=training_job.progress_total,
+        )
+        project_review_program_classifier_training_terminal(
+            db,
+            training_job=training_job,
+            workflow=workflow,
+        )
+        db.commit()
+
+    classifier_review = client.get(f"{runs_url}/{run_id}", headers=auth(token))
+    assert classifier_review.status_code == 200, classifier_review.text
+    assert classifier_review.json()["current_stage"] == "CLASSIFIER_REVIEW"
+    assert classifier_review.json()["status"] == "WAITING_FOR_USER"
+    review_action = next(
+        action for action in classifier_review.json()["actions"] if action["status"] == "OPEN"
+    )
+    assert review_action["decision_context"]["classifier_results"]["overall_quality"] == "WEAK"
+    assert {choice["key"] for choice in review_action["allowed_choices"]} == {
+        "ACCEPT_CLASSIFIERS",
+        "IMPROVE_CLASSIFIERS",
+        "STOP",
+    }
+    monkeypatch.setattr(
+        "app.review_programs.decide_candidate",
+        lambda db, *, classification_model_id, model_version_id, **kwargs: SimpleNamespace(
+            id=uuid.uuid4(),
+            classification_model_id=classification_model_id,
+            model_version_id=model_version_id,
+        ),
+    )
+    accepted_classifiers = client.post(
+        f"{runs_url}/{run_id}/actions/{review_action['id']}/resolve",
+        headers=auth(token),
+        json={
+            "preview_hash": review_action["preview_hash"],
+            "choice_key": "ACCEPT_CLASSIFIERS",
+        },
+    )
+    assert accepted_classifiers.status_code == 200, accepted_classifiers.text
+    assert accepted_classifiers.json()["current_stage"] == "WHOLE_COLLECTION_SCORING"
+    assert len(accepted_classifiers.json()["progress_summary"]["accepted_classifiers"]["approvals"]) == 1
 
     canceled = client.post(
         f"{runs_url}/{run_id}/cancel",
@@ -1140,6 +1296,14 @@ def test_synthetic_run_advances_waits_resumes_retries_reconciles_and_cancels(
         json={"idempotency_key": "cancel-proof", "reason": "Synthetic proof complete"},
     )
     assert repeated_cancel.status_code == 200, repeated_cancel.text
+
+    with TestingSessionLocal() as db:
+        training_job = db.get(
+            ClassificationTrainingJob,
+            uuid.UUID(classifier_training["models"][0]["current_training_job_id"]),
+        )
+        assert training_job is not None
+        assert training_job.status == "COMPLETED"
 
     with TestingSessionLocal() as db:
         discovery_children = list(

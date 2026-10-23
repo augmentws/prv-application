@@ -193,7 +193,7 @@ function ProgramWorkspace({ clientId, matterId, program, run, stages, canManage,
       </CardHeader>
       {run ? <CardContent><div className="flex flex-wrap items-center gap-2"><StatusBadge status={run.status} /><Badge variant="outline">{friendly(run.current_stage)}</Badge><span className="text-xs text-muted-foreground">Started {formatDate(run.created_at)}</span></div>{run.failure_summary ? <p className="mt-3 rounded-lg border border-destructive/30 bg-destructive/5 p-3 text-sm text-destructive">{run.failure_summary}</p> : null}</CardContent> : <CardContent><p className="text-sm text-muted-foreground">This program is configured but has not been started.</p></CardContent>}
     </Card>
-    {openAction?.action_type === "MATTER_DEFINITION_SETUP" ? <DefinitionSetupCard matterId={matterId} action={openAction} canManage={canManage} busy={busy} onSubmit={(payload) => onSetupDefinition(openAction, payload)} onStop={() => onResolve(openAction, "STOP")} /> : openAction?.action_type === "QA_TASK_SETUP" ? <QASetupCard matterId={matterId} action={openAction} canManage={canManage} busy={busy} onSubmit={(payload) => onSetupQA(openAction, payload)} onStop={() => onResolve(openAction, "STOP")} /> : openAction?.action_type === "DISCOVERY_QA_SETUP" ? <DiscoverySetupCard action={openAction} canManage={canManage} busy={busy} onSubmit={(payload) => onSetupDiscovery(openAction, payload)} onStop={() => onResolve(openAction, "STOP")} /> : openAction ? <Card className="border-accent/60 bg-accent/5"><CardHeader><CardTitle>{openAction.title}</CardTitle><CardDescription>{openAction.explanation}</CardDescription></CardHeader><CardContent><DefinitionAssessmentSummary action={openAction} /><QAPublicationSummary action={openAction} /><IssueSupportSummary action={openAction} /><TrainingLabelSummary action={openAction} matterId={matterId} />{openAction.stage_key === "DEFINITION_REFINEMENT" || openAction.stage_key === "DEFINITION_ACCEPTANCE" ? <Button asChild size="sm" variant="outline" className="mb-3"><Link href={`/app/clients/${clientId}/matters/${matterId}/definition`}><BookOpen />Open Matter Definition</Link></Button> : null}<div className="flex flex-wrap gap-2">{openAction.allowed_choices.map((choice, index) => {
+    {openAction?.action_type === "MATTER_DEFINITION_SETUP" ? <DefinitionSetupCard matterId={matterId} action={openAction} canManage={canManage} busy={busy} onSubmit={(payload) => onSetupDefinition(openAction, payload)} onStop={() => onResolve(openAction, "STOP")} /> : openAction?.action_type === "QA_TASK_SETUP" ? <QASetupCard matterId={matterId} action={openAction} canManage={canManage} busy={busy} onSubmit={(payload) => onSetupQA(openAction, payload)} onStop={() => onResolve(openAction, "STOP")} /> : openAction?.action_type === "DISCOVERY_QA_SETUP" ? <DiscoverySetupCard action={openAction} canManage={canManage} busy={busy} onSubmit={(payload) => onSetupDiscovery(openAction, payload)} onStop={() => onResolve(openAction, "STOP")} /> : openAction ? <Card className="border-accent/60 bg-accent/5"><CardHeader><CardTitle>{openAction.title}</CardTitle><CardDescription>{openAction.explanation}</CardDescription></CardHeader><CardContent><DefinitionAssessmentSummary action={openAction} /><QAPublicationSummary action={openAction} /><IssueSupportSummary action={openAction} /><TrainingLabelSummary action={openAction} matterId={matterId} /><ClassifierReviewSummary action={openAction} />{openAction.stage_key === "DEFINITION_REFINEMENT" || openAction.stage_key === "DEFINITION_ACCEPTANCE" ? <Button asChild size="sm" variant="outline" className="mb-3"><Link href={`/app/clients/${clientId}/matters/${matterId}/definition`}><BookOpen />Open Matter Definition</Link></Button> : null}<div className="flex flex-wrap gap-2">{openAction.allowed_choices.map((choice, index) => {
       return <Button key={`${choice.key}-${index}`} size="sm" variant={choice.key === "STOP" ? "destructive" : "default"} disabled={!canManage || busy} onClick={() => onResolve(openAction, choice.key)} title={choice.consequence}>{choice.label}</Button>;
     })}</div></CardContent></Card> : null}
     {run ? <Card><CardHeader><CardTitle>Program stages</CardTitle><CardDescription>The coordinator records every stage attempt and waits only at explicit human gates.</CardDescription></CardHeader><CardContent><ol className="grid gap-2 sm:grid-cols-2">{stages.map((stage) => {
@@ -254,6 +254,25 @@ function TrainingLabelSummary({ action, matterId }: { action: ReviewProgramActio
   return <div className="mb-4 space-y-3 rounded-lg border bg-background/70 p-3 text-sm">
     <div className="grid gap-2 sm:grid-cols-4"><div><p className="text-xs text-muted-foreground">Label policy</p><p className="font-medium">{policy}</p></div><div><p className="text-xs text-muted-foreground">Pinned model runs</p><p className="font-medium">{profileRuns.length || analyzedProfileRuns.length}</p></div><div><p className="text-xs text-muted-foreground">Exact agreements</p><p className="font-medium">{Number(overall.exact_count ?? 0)}</p></div><div><p className="text-xs text-muted-foreground">Model differences</p><p className="font-medium">{Number(overall.partial_count ?? 0) + Number(overall.disagreement_count ?? 0)}</p></div></div>
     {batches.length ? <div className="space-y-2"><p className="text-xs font-medium text-muted-foreground">Ad hoc difference batches</p>{batches.map((batch) => <div key={String(batch.id)} className="flex flex-wrap items-center justify-between gap-2 rounded-md border bg-background p-2"><div><p className="font-medium">{String(batch.name ?? "Difference review")}</p><p className="text-xs text-muted-foreground">{Number(batch.completed_document_count ?? 0)} of {Number(batch.document_count ?? 0)} completed · {friendly(String(batch.status ?? "queued"))}</p></div><Button asChild size="sm" variant="outline"><Link href={`/review/matters/${matterId}?batch=${String(batch.id)}`}>Open review batch</Link></Button></div>)}</div> : null}
+  </div>;
+}
+
+function ClassifierReviewSummary({ action }: { action: ReviewProgramActionRead }) {
+  if (action.stage_key !== "CLASSIFIER_REVIEW") return null;
+  const raw = action.decision_context?.classifier_results;
+  const results = raw && typeof raw === "object" && !Array.isArray(raw) ? raw as Record<string, unknown> : {};
+  const models = Array.isArray(results.models)
+    ? results.models.filter((model): model is Record<string, unknown> => Boolean(model && typeof model === "object" && !Array.isArray(model)))
+    : [];
+  return <div className="mb-4 space-y-3 rounded-lg border bg-background/70 p-3 text-sm">
+    <div className="grid gap-2 sm:grid-cols-4"><div><p className="text-xs text-muted-foreground">Overall quality</p><p className="font-medium">{friendly(String(results.overall_quality ?? "unknown"))}</p></div><div><p className="text-xs text-muted-foreground">Classifiers</p><p className="font-medium">{Number(results.model_count ?? models.length)}</p></div><div><p className="text-xs text-muted-foreground">Weak classifiers</p><p className="font-medium">{Number(results.weak_model_count ?? 0)}</p></div><div><p className="text-xs text-muted-foreground">Weak categories</p><p className="font-medium">{Number(results.weak_category_count ?? 0)}</p></div></div>
+    <div className="space-y-2">{models.map((model) => {
+      const metricsRaw = model.metrics;
+      const metrics = metricsRaw && typeof metricsRaw === "object" && !Array.isArray(metricsRaw) ? metricsRaw as Record<string, unknown> : {};
+      const weak = Array.isArray(model.weak_categories) ? model.weak_categories : [];
+      return <div key={String(model.classification_model_id)} className="rounded-md border bg-background p-3"><div className="flex flex-wrap items-center justify-between gap-2"><p className="font-medium">{String(model.field_name ?? model.field_key ?? "Classifier")}</p><Badge variant="outline" className={model.quality === "WEAK" ? "border-destructive/40 text-destructive" : undefined}>{friendly(String(model.quality ?? "unknown"))}</Badge></div><p className="mt-1 text-xs text-muted-foreground">{Number(model.training_eligible_count ?? 0)} training documents · PR AUC {formatMetric(metrics.primary_pr_auc)} · Macro F1 {formatMetric(metrics.macro_f1)} · {weak.length} weak or excluded categories</p></div>;
+    })}</div>
+    <p className="text-xs text-muted-foreground">These are group-aware cross-fit development estimates. Weak flags guide additional review; they are not a substitute for formal validation.</p>
   </div>;
 }
 
@@ -425,6 +444,10 @@ function mutationError(fallback: string) {
 
 function friendly(value: string) {
   return value.toLowerCase().replaceAll("_", " ").replace(/\b\w/g, (letter) => letter.toUpperCase());
+}
+
+function formatMetric(value: unknown) {
+  return typeof value === "number" && Number.isFinite(value) ? value.toFixed(2) : "—";
 }
 
 function slug(value: string) {

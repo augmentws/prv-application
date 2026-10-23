@@ -166,7 +166,11 @@ class LabelSourceSpecification(StrictModel):
 
 class LabelPolicy(StrictModel):
     contract_version: Literal[1] = 1
-    allowed_sources: list[LabelSourceSpecification] = Field(min_length=1, max_length=20)
+    # Review Programs can partition one frozen discovery population into many
+    # batches and execute two model profiles over every partition. Each child
+    # run remains an independently pinned source, so the contract must not
+    # impose a small UI-oriented source limit.
+    allowed_sources: list[LabelSourceSpecification] = Field(min_length=1, max_length=1000)
     missing_label_action: MissingLabelAction = MissingLabelAction.EXCLUDE
     source_conflict_action: LabelConflictAction = LabelConflictAction.REQUIRE_ADJUDICATION
     target_value_conflict_action: LabelConflictAction = LabelConflictAction.EXCLUDE

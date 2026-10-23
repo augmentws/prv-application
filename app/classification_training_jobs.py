@@ -167,7 +167,14 @@ def create_training_job(
     classification_model_id: uuid.UUID,
     payload: ClassificationTrainingJobCreate,
     actor_user_id: uuid.UUID,
+    notification_parent_type: str | None = None,
+    notification_parent_id: uuid.UUID | None = None,
 ) -> tuple[ClassificationTrainingJob, bool]:
+    if (notification_parent_type is None) != (notification_parent_id is None):
+        raise ClassificationTrainingJobConflictError(
+            "Training-job notification parent type and ID must be provided together",
+            code="CLASSIFICATION_TRAINING_NOTIFICATION_PARENT_INVALID",
+        )
     model, configuration, _ = _validate_inputs(
         db,
         matter=matter,
@@ -243,6 +250,13 @@ def create_training_job(
         configuration_snapshot={
             "validation_specification": job.validation_specification,
         },
+        notification_policy=(
+            "PARENT_MANAGED"
+            if notification_parent_type is not None and notification_parent_id is not None
+            else "DEFAULT"
+        ),
+        notification_parent_type=notification_parent_type,
+        notification_parent_id=notification_parent_id,
     )
     record_audit(
         db,
@@ -542,7 +556,7 @@ def complete_training_job(job_id: uuid.UUID) -> None:
         run = db.get(ClassificationTrainingRun, job.training_run_id) if job.training_run_id else None
         if run is None or run.status not in {"COMPLETED", "COMPLETED_WITH_ERRORS"}:
             raise ClassificationTrainingJobConflictError("Training run did not complete successfully")
-        transition_job_execution(
+        workflow = transition_job_execution(
             db,
             job_type=CLASSIFICATION_TRAINING_JOB_TYPE,
             job_id=job.id,
@@ -564,6 +578,13 @@ def complete_training_job(job_id: uuid.UUID) -> None:
             target_type="classification_training_job",
             target_id=job.id,
             details={"training_run_id": str(run.id)},
+        )
+        from app.review_programs import project_review_program_classifier_training_terminal
+
+        project_review_program_classifier_training_terminal(
+            db,
+            training_job=job,
+            workflow=workflow,
         )
         db.commit()
 
@@ -605,7 +626,7 @@ def fail_training_job(
             job_id=job.id,
         )
         if execution is not None and execution.status not in {"COMPLETED", "FAILED", "CANCELED"}:
-            transition_job_execution(
+            workflow = transition_job_execution(
                 db,
                 job_type=CLASSIFICATION_TRAINING_JOB_TYPE,
                 job_id=job.id,
@@ -614,6 +635,13 @@ def fail_training_job(
                 failure_code=code,
                 failure_summary=message,
                 failure_retriable=retriable,
+            )
+            from app.review_programs import project_review_program_classifier_training_terminal
+
+            project_review_program_classifier_training_terminal(
+                db,
+                training_job=job,
+                workflow=workflow,
             )
         else:
             job.status = "FAILED"

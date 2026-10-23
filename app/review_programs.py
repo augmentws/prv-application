@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import hashlib
+import io
 import uuid
 from collections import Counter
 from datetime import datetime
@@ -40,11 +41,28 @@ from app.analysis_tasks import (
     create_analysis_task,
     publish_analysis_task_version,
 )
+from app.artifact_gateway import copy_workflow_artifact_content
 from app.audit import record_audit
 from app.authorization import ResourceRef, user_can
+from app.classification_features import embedding_job_output_is_usable
+from app.classification_lifecycle import ClassificationLifecycleError, decide_candidate
+from app.classification_models import (
+    ClassificationModelCommandError,
+    active_value_keys,
+    create_classification_model,
+    create_classification_model_configuration,
+)
+from app.classification_training_jobs import (
+    ClassificationTrainingJobError,
+    create_training_job,
+)
 from app.config import get_settings
 from app.embeddings.configuration import canonical_hash
-from app.job_executions import REVIEW_BATCH_MATERIALIZATION_JOB_TYPE, cancel_job_execution
+from app.job_executions import (
+    CLASSIFICATION_TRAINING_JOB_TYPE,
+    REVIEW_BATCH_MATERIALIZATION_JOB_TYPE,
+    cancel_job_execution,
+)
 from app.matter_definition_assessments import AssessmentError, start_assessment
 from app.matter_definitions import (
     MatterDefinitionError,
@@ -57,6 +75,12 @@ from app.models import (
     AnalysisTaskBatchSetRun,
     AnalysisTaskBatchSetRunChild,
     AnalysisTaskExecutionProfile,
+    ClassificationDatasetSnapshot,
+    ClassificationModel,
+    ClassificationModelConfiguration,
+    ClassificationModelVersion,
+    ClassificationTrainingJob,
+    ClassificationTrainingRun,
     Client,
     Matter,
     MatterAnalysisTask,
@@ -67,6 +91,7 @@ from app.models import (
     MatterDefinitionAssessmentRun,
     MatterDefinitionRevision,
     MatterDocument,
+    MatterEmbeddingJob,
     MetadataDefinition,
     ReviewBatch,
     ReviewBatchCodingField,
@@ -103,11 +128,22 @@ from app.review_workflow_templates import (
     get_review_workflow_template,
 )
 from app.reviewer_coding import resolve_reviewer_coding_as_of
-from app.schemas import ReviewBatchComparisonSourceOptionRead
+from app.schemas import (
+    ClassificationModelConfigurationCreate,
+    ClassificationModelCreate,
+    ClassificationTrainingJobCreate,
+    ReviewBatchComparisonSourceOptionRead,
+)
 from app.workflows.dispatcher import (
     enqueue_analysis_task_batch_set,
     enqueue_analysis_task_batch_set_run,
+    enqueue_classification_training_job,
     enqueue_review_batch,
+)
+from classification_service.schemas import (
+    ClassificationEvaluationReport,
+    ClassificationStrategy,
+    FeatureNormalization,
 )
 
 
@@ -479,6 +515,32 @@ def _action_contract(
                 stop,
             ],
         )
+    if stage.key == "CLASSIFIER_REVIEW":
+        return (
+            "Review the trained classifiers",
+            (
+                "Review cross-fit development metrics, class support, excluded categories, and quality warnings "
+                "for every coding field. Accepting approves these candidate versions for the next scoring gate; "
+                "requesting improvement keeps whole-collection scoring blocked."
+            ),
+            [
+                {
+                    "key": "ACCEPT_CLASSIFIERS",
+                    "label": "Accept classifiers",
+                    "consequence": (
+                        "Approve the candidate model versions and proceed to whole-collection scoring setup."
+                    ),
+                },
+                {
+                    "key": "IMPROVE_CLASSIFIERS",
+                    "label": "Improve weak categories",
+                    "consequence": (
+                        "Proceed to targeted classifier improvement using task-specific review batches."
+                    ),
+                },
+                stop,
+            ],
+        )
     next_stage = template.stages[stage.ordinal] if stage.ordinal < len(template.stages) else None
     next_name = next_stage.name if next_stage is not None else "completion"
     return (
@@ -752,6 +814,13 @@ def _training_label_stage_context(db: Session, *, run: ReviewProgramRun) -> dict
     }
 
 
+def _classifier_review_stage_context(*, run: ReviewProgramRun) -> dict[str, Any]:
+    return {
+        "classifier_results": (run.progress_summary or {}).get("classifier_results", {}),
+        "training_labels": (run.progress_summary or {}).get("training_labels", {}),
+    }
+
+
 def _create_action_for_stage(
     db: Session,
     *,
@@ -792,6 +861,8 @@ def _create_action_for_stage(
             if stage.key == "ISSUE_SUPPORT_DECISION"
             else _training_label_stage_context(db, run=run)
             if stage.key in {"DISAGREEMENT_REVIEW", "TRAINING_LABEL_FINALIZATION"}
+            else _classifier_review_stage_context(run=run)
+            if stage.key == "CLASSIFIER_REVIEW"
             else {}
         ),
     }
@@ -813,6 +884,7 @@ def _create_action_for_stage(
                 else "TRAINING_LABEL_POLICY"
             ),
             "TRAINING_LABEL_FINALIZATION": "TRAINING_LABEL_FINALIZATION",
+            "CLASSIFIER_REVIEW": "CLASSIFIER_REVIEW",
         }.get(stage.key, "STAGE_GATE"),
         title=title,
         explanation=explanation,
@@ -885,6 +957,8 @@ def _create_stage_attempt(
         run.pending_action_id = None
         if stage.key == "DEFINITION_ASSESSMENT":
             _launch_definition_assessment(db, program=program, run=run, attempt=attempt)
+        elif stage.key == "CLASSIFIER_TRAINING":
+            _launch_classifier_training(db, program=program, run=run, attempt=attempt)
     return attempt
 
 
@@ -2661,6 +2735,21 @@ def process_review_program_event(
                 attempt=attempt,
                 action=action,
             )
+        elif action.stage_key == "CLASSIFIER_REVIEW" and choice == "ACCEPT_CLASSIFIERS":
+            _accept_trained_classifiers(
+                db,
+                program=program,
+                run=run,
+                attempt=attempt,
+                action=action,
+            )
+        elif action.stage_key == "CLASSIFIER_REVIEW" and choice == "IMPROVE_CLASSIFIERS":
+            _complete_action_attempt(
+                attempt,
+                action,
+                result={"decision": "IMPROVE_CLASSIFIERS"},
+            )
+            _advance_after_stage(db, program=program, run=run, attempt=attempt)
         elif choice == "CONTINUE":
             _complete_action_attempt(attempt, action)
             _advance_after_stage(db, program=program, run=run, attempt=attempt)
@@ -3273,6 +3362,49 @@ def _completed_discovery_profile_runs(
     return profile_runs
 
 
+def _completed_discovery_label_runs(
+    db: Session,
+    *,
+    profile_runs: list[AnalysisTaskBatchSetRun],
+) -> list[ReviewBatchRun]:
+    """Resolve the immutable child runs that actually contain Q&A label values."""
+
+    if not profile_runs:
+        raise ReviewProgramError("Discovery Q&A profile provenance is unavailable")
+    child_run_ids = list(
+        db.scalars(
+            select(AnalysisTaskBatchSetRunChild.child_run_id)
+            .where(
+                AnalysisTaskBatchSetRunChild.batch_set_run_id.in_(
+                    [profile_run.id for profile_run in profile_runs]
+                ),
+                AnalysisTaskBatchSetRunChild.child_run_id.is_not(None),
+            )
+            .order_by(
+                AnalysisTaskBatchSetRunChild.batch_set_run_id,
+                AnalysisTaskBatchSetRunChild.ordinal,
+            )
+        )
+    )
+    ordered_ids = list(dict.fromkeys(child_run_id for child_run_id in child_run_ids if child_run_id))
+    label_runs_by_id = {
+        label_run.id: label_run
+        for label_run in db.scalars(
+            select(ReviewBatchRun).where(ReviewBatchRun.id.in_(ordered_ids))
+        )
+    }
+    if not ordered_ids or len(label_runs_by_id) != len(ordered_ids):
+        raise ReviewProgramError("Discovery Q&A child-run provenance is incomplete")
+    label_runs = [label_runs_by_id[label_run_id] for label_run_id in ordered_ids]
+    if any(
+        label_run.status not in {"COMPLETED", "COMPLETED_WITH_ERRORS"}
+        or label_run.run_type not in {"AGENT", "WORKFLOW"}
+        for label_run in label_runs
+    ):
+        raise ReviewProgramError("Every Discovery Q&A label run must be complete before training")
+    return label_runs
+
+
 def _create_disagreement_review_batches(
     db: Session,
     *,
@@ -3693,9 +3825,13 @@ def _finalize_training_labels(
     resolution = dict((run.progress_summary or {}).get("training_label_resolution") or {})
     if resolution.get("state") != "POLICY_SELECTED":
         raise ReviewProgramError("Training-label policy has not been selected")
+    profile_runs = _completed_discovery_profile_runs(db, run=run)
+    label_runs = _completed_discovery_label_runs(db, profile_runs=profile_runs)
     snapshot = {
         **resolution,
         "state": "FROZEN",
+        "profile_run_ids": [str(profile_run.id) for profile_run in profile_runs],
+        "label_run_ids": [str(label_run.id) for label_run in label_runs],
         "frozen_by_user_id": str(action.resolved_by_user_id),
         "frozen_at": action.resolved_at.isoformat() if action.resolved_at else None,
         "discovery_analysis_hash": canonical_hash(
@@ -3723,6 +3859,668 @@ def _finalize_training_labels(
         result={"training_labels": snapshot, "program_version_id": str(version.id)},
     )
     _advance_after_stage(db, program=program, run=run, attempt=attempt)
+
+
+def _accept_trained_classifiers(
+    db: Session,
+    *,
+    program: ReviewProgram,
+    run: ReviewProgramRun,
+    attempt: ReviewProgramStageAttempt,
+    action: ReviewProgramAction,
+) -> None:
+    classifier_results = dict((run.progress_summary or {}).get("classifier_results") or {})
+    models = classifier_results.get("models") or []
+    if classifier_results.get("state") != "COMPLETED" or not models:
+        raise ReviewProgramError("Classifier training results are unavailable")
+    actor_user_id = action.resolved_by_user_id or run.initiated_by_user_id
+    approvals: list[dict[str, str]] = []
+    try:
+        for item in models:
+            decision = decide_candidate(
+                db,
+                matter_id=program.matter_id,
+                classification_model_id=uuid.UUID(str(item["classification_model_id"])),
+                model_version_id=uuid.UUID(str(item["model_version_id"])),
+                decision_type="APPROVAL",
+                reason=f"Accepted through First Pass Review program {program.name}",
+                actor_user_id=actor_user_id,
+            )
+            approvals.append(
+                {
+                    "classification_model_id": str(decision.classification_model_id),
+                    "model_version_id": str(decision.model_version_id),
+                    "decision_id": str(decision.id),
+                }
+            )
+    except (ClassificationLifecycleError, KeyError, TypeError, ValueError) as exc:
+        raise ReviewProgramError(str(exc)) from exc
+    accepted = {
+        "schema_version": 1,
+        "classifier_results_hash": canonical_hash(classifier_results),
+        "accepted_by_user_id": str(actor_user_id),
+        "accepted_at": action.resolved_at.isoformat() if action.resolved_at else None,
+        "approvals": approvals,
+    }
+    version = _create_review_program_version(
+        db,
+        program=program,
+        run=run,
+        actor_user_id=actor_user_id,
+        configuration_stage="WHOLE_COLLECTION_SCORING",
+        configuration_updates={"accepted_classifiers": accepted},
+        source_hash_updates={"accepted_classifiers_hash": canonical_hash(accepted)},
+    )
+    _complete_action_attempt(
+        attempt,
+        action,
+        result={"accepted_classifiers": accepted, "program_version_id": str(version.id)},
+    )
+    completed = list(run.progress_summary.get("completed_stages", []))
+    if "CLASSIFIER_REVIEW" not in completed:
+        completed.append("CLASSIFIER_REVIEW")
+    run.progress_summary = {
+        **run.progress_summary,
+        "completed_stages": completed,
+        "last_completed_stage": "CLASSIFIER_REVIEW",
+        "accepted_classifiers": accepted,
+    }
+    _activate_stage_by_key(
+        db,
+        program=program,
+        run=run,
+        stage_key="WHOLE_COLLECTION_SCORING",
+    )
+
+
+def _classifier_training_embedding_job(
+    db: Session,
+    *,
+    matter_id: uuid.UUID,
+) -> MatterEmbeddingJob:
+    jobs = list(
+        db.scalars(
+            select(MatterEmbeddingJob)
+            .where(MatterEmbeddingJob.matter_id == matter_id)
+            .order_by(MatterEmbeddingJob.created_at.desc(), MatterEmbeddingJob.id.desc())
+        )
+    )
+    job = next((item for item in jobs if embedding_job_output_is_usable(item)), None)
+    if job is None:
+        raise ReviewProgramError(
+            "Classifier training requires a completed reusable matter embedding job"
+        )
+    return job
+
+
+def _classifier_label_policy(
+    *,
+    training_labels: dict[str, Any],
+    metadata_definition_id: uuid.UUID,
+) -> dict[str, Any]:
+    try:
+        label_run_ids = [
+            uuid.UUID(str(value)) for value in training_labels.get("label_run_ids", [])
+        ]
+    except (TypeError, ValueError) as exc:
+        raise ReviewProgramError("Frozen classifier label-run provenance is invalid") from exc
+    if not label_run_ids:
+        raise ReviewProgramError("Frozen classifier label-run provenance is unavailable")
+    allowed_sources: list[dict[str, Any]] = [
+        {
+            "kind": "ACCEPTED_JEV",
+            "authority": "SILVER",
+            "source_weight": 1.0,
+            "source_reference_id": str(label_run_id),
+        }
+        for label_run_id in label_run_ids
+    ]
+    for source in training_labels.get("adjudication_sources", []):
+        if str(source.get("metadata_definition_id")) != str(metadata_definition_id):
+            continue
+        allowed_sources.append(
+            {
+                "kind": "ADJUDICATED_REVIEW",
+                "authority": "ADJUDICATED",
+                "source_weight": 1.0,
+                "source_reference_id": str(source["reviewer_coding_id"]),
+                "source_revision": int(source["reviewer_coding_revision"]),
+            }
+        )
+    return {
+        "allowed_sources": allowed_sources,
+        "missing_label_action": "EXCLUDE",
+        "source_conflict_action": "EXCLUDE",
+        "target_value_conflict_action": "EXCLUDE",
+    }
+
+
+def _classifier_configuration_payload(
+    *,
+    definition: MetadataDefinition,
+    embedding_job: MatterEmbeddingJob,
+    training_labels: dict[str, Any],
+) -> ClassificationModelConfigurationCreate:
+    class_keys = active_value_keys(definition)
+    if definition.type == "BOOLEAN":
+        strategy = ClassificationStrategy.BINARY
+        ordered_class_keys = ["false", "true"]
+        binary_mapping: dict[str, Any] | None = {
+            "negative_class_key": "false",
+            "positive_class_key": "true",
+            "negative_value_keys": ["false"],
+            "positive_value_keys": ["true"],
+        }
+        prediction_policy: dict[str, Any] = {"binary_positive_threshold": 0.5}
+    elif definition.cardinality == "SINGLE":
+        strategy = ClassificationStrategy.MULTICLASS
+        ordered_class_keys = class_keys if definition.type == "ENUM" else []
+        binary_mapping = None
+        prediction_policy = {"multiclass_minimum_confidence": 0.5}
+    else:
+        strategy = ClassificationStrategy.ONE_VS_REST
+        ordered_class_keys = class_keys if definition.type == "ENUM" else []
+        binary_mapping = None
+        prediction_policy = {
+            "one_vs_rest_thresholds": (
+                {class_key: 0.5 for class_key in ordered_class_keys}
+                if ordered_class_keys
+                else None
+            )
+        }
+    if definition.type == "ENUM" and len(ordered_class_keys) < 2:
+        raise ReviewProgramError(
+            f"Classifier field {definition.display_name} must have at least two active values"
+        )
+    return ClassificationModelConfigurationCreate.model_validate(
+        {
+            "classification_strategy": strategy.value,
+            "ordered_class_keys": ordered_class_keys,
+            "binary_mapping": binary_mapping,
+            "label_policy": _classifier_label_policy(
+                training_labels=training_labels,
+                metadata_definition_id=definition.id,
+            ),
+            "feature_contract": {
+                "dimensions": embedding_job.embedding_dimensions,
+                "data_type": "FLOAT32",
+                "normalization": (
+                    FeatureNormalization.L2.value
+                    if embedding_job.embedding_normalized
+                    else FeatureNormalization.NONE.value
+                ),
+                "pooling": "MEAN",
+                "embedding_model": embedding_job.embedding_model,
+                "embedding_model_revision": embedding_job.embedding_model_revision,
+                "text_source_policy": "active_text",
+            },
+            "prediction_resolution_policy": prediction_policy,
+            "trainer_specification": {
+                "kind": "sklearn_logistic_regression",
+                "parameters": {
+                    "regularization": "l2",
+                    "c_values": [0.1, 1.0, 10.0],
+                    "maximum_iterations": 1000,
+                },
+            },
+        }
+    )
+
+
+def _launch_classifier_training(
+    db: Session,
+    *,
+    program: ReviewProgram,
+    run: ReviewProgramRun,
+    attempt: ReviewProgramStageAttempt,
+) -> None:
+    training_labels = dict((run.progress_summary or {}).get("training_labels") or {})
+    if training_labels.get("state") != "FROZEN" or not training_labels.get("content_hash"):
+        raise ReviewProgramError("Classifier training labels have not been frozen")
+    accepted_task = dict((run.progress_summary or {}).get("accepted_qa_task") or {})
+    try:
+        definition_ids = list(
+            dict.fromkeys(
+                uuid.UUID(str(value))
+                for value in accepted_task.get("destination_metadata_definition_ids", [])
+            )
+        )
+    except (TypeError, ValueError) as exc:
+        raise ReviewProgramError("Q&A destination-field provenance is invalid") from exc
+    if not definition_ids:
+        raise ReviewProgramError("Q&A destination-field provenance is unavailable")
+    definitions_by_id = {
+        definition.id: definition
+        for definition in db.scalars(
+            select(MetadataDefinition).where(
+                MetadataDefinition.matter_id == program.matter_id,
+                MetadataDefinition.id.in_(definition_ids),
+            )
+        )
+    }
+    if set(definitions_by_id) != set(definition_ids):
+        raise ReviewProgramError("One or more classifier target fields are unavailable")
+    matter = db.get(Matter, program.matter_id)
+    if matter is None:
+        raise ReviewProgramError("Review Program matter is unavailable")
+    embedding_job = _classifier_training_embedding_job(db, matter_id=matter.id)
+    previous = dict((run.progress_summary or {}).get("classifier_training") or {})
+    prior_models = {
+        str(item.get("metadata_definition_id")): item
+        for item in previous.get("models", [])
+        if isinstance(item, dict) and item.get("metadata_definition_id")
+    }
+    model_states: list[dict[str, Any]] = []
+    launched_jobs: list[ClassificationTrainingJob] = []
+    try:
+        for definition_id in definition_ids:
+            definition = definitions_by_id[definition_id]
+            prior = prior_models.get(str(definition.id)) or {}
+            model = (
+                db.get(ClassificationModel, uuid.UUID(str(prior["classification_model_id"])))
+                if prior.get("classification_model_id")
+                else None
+            )
+            configuration = (
+                db.get(
+                    ClassificationModelConfiguration,
+                    uuid.UUID(str(prior["configuration_id"])),
+                )
+                if prior.get("configuration_id")
+                else None
+            )
+            if (
+                model is None
+                or model.matter_id != matter.id
+                or model.target_metadata_definition_id != definition.id
+                or configuration is None
+                or configuration.classification_model_id != model.id
+            ):
+                model = create_classification_model(
+                    db,
+                    matter=matter,
+                    actor_user_id=run.initiated_by_user_id,
+                    payload=ClassificationModelCreate(
+                        target_metadata_definition_id=definition.id,
+                        name=f"{program.name} — {definition.display_name}"[:200],
+                        description=(
+                            "Classifier managed by First Pass Review program "
+                            f"{program.name}."
+                        ),
+                    ),
+                )
+                configuration = create_classification_model_configuration(
+                    db,
+                    matter=matter,
+                    classification_model_id=model.id,
+                    actor_user_id=run.initiated_by_user_id,
+                    payload=_classifier_configuration_payload(
+                        definition=definition,
+                        embedding_job=embedding_job,
+                        training_labels=training_labels,
+                    ),
+                )
+            job, created = create_training_job(
+                db,
+                matter=matter,
+                classification_model_id=model.id,
+                payload=ClassificationTrainingJobCreate.model_validate(
+                    {
+                        "configuration_id": configuration.id,
+                        "training_scope": {
+                            "scope_type": "MATTER",
+                            "scope_id": matter.id,
+                        },
+                        "embedding_job_id": embedding_job.id,
+                        "validation_policy": {
+                            "fold_count": 5,
+                            "minimum_labeled_count": 20,
+                            "minimum_labeled_count_per_class": 5,
+                        },
+                        "random_seed": 42,
+                        "idempotency_key": (
+                            f"review-program:{run.id}:classifier:{definition.id}:"
+                            f"attempt:{attempt.attempt}"
+                        ),
+                    }
+                ),
+                actor_user_id=run.initiated_by_user_id,
+                notification_parent_type="REVIEW_PROGRAM_RUN",
+                notification_parent_id=run.id,
+            )
+            link_review_program_child(
+                db,
+                program=program,
+                run=run,
+                stage_attempt=attempt,
+                purpose="CLASSIFIER_TRAINING",
+                child_type="CLASSIFICATION_TRAINING_JOB",
+                child_id=job.id,
+                derivation_key=f"classifier-training:{attempt.id}:{definition.id}",
+                batching_policy="NONE",
+                context={
+                    "metadata_definition_id": str(definition.id),
+                    "classification_model_id": str(model.id),
+                    "configuration_id": str(configuration.id),
+                    "embedding_job_id": str(embedding_job.id),
+                    "training_labels_content_hash": training_labels["content_hash"],
+                },
+            )
+            prior_job_ids = [str(value) for value in prior.get("training_job_ids", [])]
+            if str(job.id) not in prior_job_ids:
+                prior_job_ids.append(str(job.id))
+            model_states.append(
+                {
+                    "metadata_definition_id": str(definition.id),
+                    "field_key": definition.key,
+                    "field_name": definition.display_name,
+                    "classification_model_id": str(model.id),
+                    "configuration_id": str(configuration.id),
+                    "current_training_job_id": str(job.id),
+                    "training_job_ids": prior_job_ids,
+                }
+            )
+            if created:
+                launched_jobs.append(job)
+    except (ClassificationModelCommandError, ClassificationTrainingJobError, ValueError) as exc:
+        raise ReviewProgramError(str(exc)) from exc
+
+    training_state = {
+        "schema_version": 1,
+        "state": "RUNNING",
+        "embedding_job_id": str(embedding_job.id),
+        "training_labels_content_hash": training_labels["content_hash"],
+        "stage_attempt_id": str(attempt.id),
+        "models": model_states,
+    }
+    _create_review_program_version(
+        db,
+        program=program,
+        run=run,
+        actor_user_id=run.initiated_by_user_id,
+        configuration_stage="CLASSIFIER_TRAINING",
+        configuration_updates={"classifier_training": training_state},
+        source_hash_updates={
+            "classifier_training_labels_content_hash": training_labels["content_hash"],
+            "classifier_embedding_configuration_hash": embedding_job.configuration_hash,
+        },
+    )
+    run.progress_summary = {**run.progress_summary, "classifier_training": training_state}
+    for job in launched_jobs:
+        enqueue_classification_training_job(db, job.workflow_id, str(job.id))
+
+
+def _classifier_evaluation_report(
+    *,
+    program: ReviewProgram,
+    run: ReviewProgramRun,
+    version: ClassificationModelVersion,
+    matter: Matter,
+) -> ClassificationEvaluationReport | None:
+    destination = io.BytesIO()
+    try:
+        copy_workflow_artifact_content(
+            artifact_id=version.evaluation_artifact_id,
+            destination=destination,
+            actor_user_id=run.initiated_by_user_id,
+            tenant_id=program.tenant_id,
+            client_id=matter.client_id,
+        )
+        payload = destination.getvalue()
+        if hashlib.sha256(payload).hexdigest() != version.evaluation_content_hash:
+            return None
+        report = ClassificationEvaluationReport.model_validate_json(payload)
+    except (OSError, PermissionError, ValueError):
+        return None
+    if (
+        report.training_run_id != version.training_run_id
+        or report.classification_model_id != version.classification_model_id
+        or report.configuration_id != version.configuration_id
+    ):
+        return None
+    return report
+
+
+def _classifier_quality_snapshot(
+    db: Session,
+    *,
+    program: ReviewProgram,
+    run: ReviewProgramRun,
+    jobs: list[ClassificationTrainingJob],
+) -> dict[str, Any]:
+    matter = db.get(Matter, program.matter_id)
+    if matter is None:
+        raise ReviewProgramError("Review Program matter is unavailable")
+    models: list[dict[str, Any]] = []
+    weak_category_count = 0
+    weak_model_count = 0
+    for job in jobs:
+        training_run = (
+            db.get(ClassificationTrainingRun, job.training_run_id)
+            if job.training_run_id is not None
+            else None
+        )
+        version = (
+            db.scalar(
+                select(ClassificationModelVersion).where(
+                    ClassificationModelVersion.training_run_id == training_run.id
+                )
+            )
+            if training_run is not None
+            else None
+        )
+        snapshot = (
+            db.get(ClassificationDatasetSnapshot, job.dataset_snapshot_id)
+            if job.dataset_snapshot_id is not None
+            else None
+        )
+        model = db.get(ClassificationModel, job.classification_model_id)
+        if version is None or snapshot is None or model is None:
+            raise ReviewProgramError("Completed classifier training output is incomplete")
+        if training_run is None:
+            raise ReviewProgramError("Completed classifier training run is unavailable")
+        report = _classifier_evaluation_report(
+            program=program,
+            run=run,
+            version=version,
+            matter=matter,
+        )
+        weak_categories: list[dict[str, Any]] = []
+        if report is not None:
+            for class_key in report.ordered_class_keys:
+                metrics = report.per_class_metrics.get(class_key, {})
+                reasons: list[str] = []
+                positive_support = metrics.get("positive_support")
+                pr_auc = metrics.get("pr_auc")
+                f1 = metrics.get("f1")
+                if isinstance(positive_support, (int, float)) and positive_support < 10:
+                    reasons.append("LOW_VALIDATION_SUPPORT")
+                if isinstance(pr_auc, (int, float)) and pr_auc < 0.7:
+                    reasons.append("LOW_PR_AUC")
+                if isinstance(f1, (int, float)) and f1 < 0.6:
+                    reasons.append("LOW_F1")
+                if reasons:
+                    weak_categories.append(
+                        {
+                            "class_key": class_key,
+                            "reasons": reasons,
+                            "positive_support": positive_support,
+                            "pr_auc": pr_auc,
+                            "f1": f1,
+                        }
+                    )
+        for excluded in snapshot.excluded_classes or []:
+            weak_categories.append(
+                {
+                    "class_key": excluded.get("class_key"),
+                    "reasons": [excluded.get("reason_code") or "EXCLUDED_FROM_TRAINING"],
+                    "positive_support": excluded.get("feature_ready_positive_count"),
+                    "pr_auc": None,
+                    "f1": None,
+                }
+            )
+        aggregate_reasons: list[str] = []
+        primary_pr_auc = version.metric_summary.get("primary_pr_auc")
+        macro_f1 = version.metric_summary.get("macro_f1")
+        if isinstance(primary_pr_auc, (int, float)) and primary_pr_auc < 0.7:
+            aggregate_reasons.append("LOW_PRIMARY_PR_AUC")
+        if isinstance(macro_f1, (int, float)) and macro_f1 < 0.6:
+            aggregate_reasons.append("LOW_MACRO_F1")
+        if report is None:
+            aggregate_reasons.append("DETAILED_EVALUATION_UNAVAILABLE")
+        if version.warnings:
+            aggregate_reasons.append("TRAINING_WARNINGS")
+        quality = "WEAK" if aggregate_reasons or weak_categories else "ACCEPTABLE"
+        weak_category_count += len(weak_categories)
+        weak_model_count += quality == "WEAK"
+        target = version.target_field_snapshot
+        models.append(
+            {
+                "metadata_definition_id": str(model.target_metadata_definition_id),
+                "field_key": target.get("stable_key"),
+                "field_name": target.get("display_name"),
+                "classification_model_id": str(model.id),
+                "configuration_id": str(job.configuration_id),
+                "training_job_id": str(job.id),
+                "training_run_id": str(training_run.id),
+                "model_version_id": str(version.id),
+                "model_version_number": version.version_number,
+                "quality": quality,
+                "quality_reasons": aggregate_reasons,
+                "metrics": version.metric_summary,
+                "labeled_document_count": snapshot.labeled_count,
+                "training_eligible_count": snapshot.training_eligible_count,
+                "class_support": snapshot.class_support,
+                "trained_class_keys": version.trained_class_keys,
+                "excluded_classes": snapshot.excluded_classes,
+                "weak_categories": weak_categories,
+                "warnings": version.warnings,
+            }
+        )
+    return {
+        "schema_version": 1,
+        "state": "COMPLETED",
+        "quality_policy_version": "review-program-classifier-quality-v1",
+        "quality_thresholds": {
+            "primary_pr_auc": 0.7,
+            "macro_f1": 0.6,
+            "class_pr_auc": 0.7,
+            "class_f1": 0.6,
+            "class_positive_support": 10,
+        },
+        "model_count": len(models),
+        "weak_model_count": weak_model_count,
+        "weak_category_count": weak_category_count,
+        "overall_quality": "WEAK" if weak_model_count else "ACCEPTABLE",
+        "models": models,
+    }
+
+
+def project_review_program_classifier_training_terminal(
+    db: Session,
+    *,
+    training_job: ClassificationTrainingJob,
+    workflow: WorkflowRun,
+) -> ReviewProgramEvent | None:
+    if (
+        workflow.notification_policy != "PARENT_MANAGED"
+        or workflow.notification_parent_type != "REVIEW_PROGRAM_RUN"
+        or workflow.notification_parent_id is None
+    ):
+        return None
+    child = db.scalar(
+        select(ReviewProgramChild).where(
+            ReviewProgramChild.run_id == workflow.notification_parent_id,
+            ReviewProgramChild.child_type == "CLASSIFICATION_TRAINING_JOB",
+            ReviewProgramChild.child_id == training_job.id,
+        )
+    )
+    if child is None:
+        return None
+    child.status = training_job.status
+    child.context = {
+        **child.context,
+        "workflow_status": workflow.status,
+        "dataset_snapshot_id": (
+            str(training_job.dataset_snapshot_id) if training_job.dataset_snapshot_id else None
+        ),
+        "training_run_id": (
+            str(training_job.training_run_id) if training_job.training_run_id else None
+        ),
+        "failure_code": training_job.failure_code,
+        "failure_summary": training_job.failure_summary,
+    }
+    run = db.get(ReviewProgramRun, child.run_id)
+    attempt = db.get(ReviewProgramStageAttempt, child.stage_attempt_id)
+    program = db.get(ReviewProgram, run.program_id) if run is not None else None
+    if run is None or attempt is None or program is None:
+        raise ReviewProgramError("Review Program classifier-training link is incomplete")
+    if (
+        run.status in TERMINAL_RUN_STATUSES
+        or run.current_stage != "CLASSIFIER_TRAINING"
+        or attempt.id != _current_stage_attempt(db, run).id
+    ):
+        return None
+    children = list(
+        db.scalars(
+            select(ReviewProgramChild)
+            .where(
+                ReviewProgramChild.stage_attempt_id == attempt.id,
+                ReviewProgramChild.child_type == "CLASSIFICATION_TRAINING_JOB",
+            )
+            .order_by(ReviewProgramChild.created_at, ReviewProgramChild.id)
+        )
+    )
+    jobs = [db.get(ClassificationTrainingJob, item.child_id) for item in children]
+    if not jobs or any(item is None for item in jobs):
+        return None
+    resolved_jobs = [item for item in jobs if item is not None]
+    terminal = {"COMPLETED", "FAILED", "CANCELED"}
+    if any(item.status not in terminal for item in resolved_jobs):
+        return None
+    failed_jobs = [item for item in resolved_jobs if item.status != "COMPLETED"]
+    if failed_jobs:
+        return fail_review_program_stage(
+            db,
+            program=program,
+            run=run,
+            error_code="CLASSIFIER_TRAINING_FAILED",
+            error_summary="; ".join(
+                item.failure_summary or f"Classifier training job {item.id} {item.status.lower()}"
+                for item in failed_jobs
+            )[:4000],
+            retriable=any(item.failure_retriable for item in failed_jobs),
+        )
+    quality = _classifier_quality_snapshot(
+        db,
+        program=program,
+        run=run,
+        jobs=resolved_jobs,
+    )
+    _create_review_program_version(
+        db,
+        program=program,
+        run=run,
+        actor_user_id=run.initiated_by_user_id,
+        configuration_stage="CLASSIFIER_REVIEW",
+        configuration_updates={"classifier_results": quality},
+        source_hash_updates={"classifier_results_hash": canonical_hash(quality)},
+    )
+    run.progress_summary = {
+        **run.progress_summary,
+        "classifier_training": {
+            **dict((run.progress_summary or {}).get("classifier_training") or {}),
+            "state": "COMPLETED",
+        },
+        "classifier_results": quality,
+    }
+    return complete_review_program_stage(
+        db,
+        program=program,
+        run=run,
+        result_summary=quality,
+        idempotency_key=f"classifier-training-terminal:{attempt.id}",
+    )
 
 
 def project_review_program_discovery_qa_run_terminal(
@@ -4066,11 +4864,12 @@ def cancel_review_program_discovery_children(
     *,
     run: ReviewProgramRun,
     actor_user_id: uuid.UUID,
-) -> tuple[list[str], list[str], list[str], list[str]]:
+) -> tuple[list[str], list[str], list[str], list[str], list[str]]:
     batch_set_workflow_ids: list[str] = []
     batch_run_workflow_ids: list[str] = []
     child_workflow_ids: list[str] = []
     review_batch_workflow_ids: list[str] = []
+    classification_training_workflow_ids: list[str] = []
     children = list(db.scalars(select(ReviewProgramChild).where(ReviewProgramChild.run_id == run.id)))
     for child in children:
         if child.child_type == "ANALYSIS_TASK_BATCH_SET_RUN":
@@ -4111,11 +4910,32 @@ def cancel_review_program_discovery_children(
             if canceled:
                 child.status = "CANCELED"
                 review_batch_workflow_ids.append(execution.dbos_workflow_id)
+        elif child.child_type == "CLASSIFICATION_TRAINING_JOB":
+            training_job = db.get(ClassificationTrainingJob, child.child_id)
+            if training_job is None or training_job.status not in {
+                "QUEUED",
+                "SNAPSHOTTING",
+                "PREPARING_FEATURES",
+                "LAUNCHING",
+                "TRAINING",
+                "FINALIZING",
+            }:
+                continue
+            execution, canceled = cancel_job_execution(
+                db,
+                job_type=CLASSIFICATION_TRAINING_JOB_TYPE,
+                job_id=training_job.id,
+                actor_user_id=actor_user_id,
+            )
+            if canceled:
+                child.status = "CANCELED"
+                classification_training_workflow_ids.append(execution.dbos_workflow_id)
     return (
         batch_set_workflow_ids,
         batch_run_workflow_ids,
         child_workflow_ids,
         review_batch_workflow_ids,
+        classification_training_workflow_ids,
     )
 
 
