@@ -677,4 +677,58 @@ describe("ReviewProgramsSection", () => {
       choice_key: "START_SCORING",
     });
   });
+
+  it("previews classifier-positive coverage and starts both Q&A reviewers", async () => {
+    vi.mocked(coreApi).mockImplementation(async (path, options) => {
+      if (path === "/v1/review-workflow-templates") return [{
+        key: "FIRST_PASS_REVIEW", version: 1, schema_version: 1, content_hash: "a".repeat(64),
+        name: "First Pass Review", description: "Guided review", workflow_type: "FIRST_PASS_REVIEW", phases: [],
+        stages: [{ key: "CLASSIFIER_POSITIVE_COVERAGE", name: "Classifier-positive Q&A coverage", phase_key: "COLLECTION_REVIEW", ordinal: 15, batching_policy: "PARTITIONED_SET", requires_human_gate: true }],
+      }] as never;
+      if (path === "/v1/matters/matter-1/review-programs") return [{
+        id: "program-1", tenant_id: "tenant-1", matter_id: "matter-1", template_key: "FIRST_PASS_REVIEW",
+        template_version: 1, template_content_hash: "a".repeat(64), key: "standard-first-pass", name: "Standard first pass",
+        description: "Responsive review", status: "ACTIVE", current_run_id: "run-1", current_version: { version: 11 }, created_at: "2026-10-21T00:00:00Z",
+      }] as never;
+      if (path === "/v1/matters/matter-1/review-programs/program-1/runs" && !options) return [{
+        id: "run-1", program_id: "program-1", status: "WAITING_FOR_USER", current_stage: "CLASSIFIER_POSITIVE_COVERAGE",
+        current_stage_ordinal: 15, created_at: "2026-10-21T00:00:00Z", failure_retriable: false, failure_summary: null,
+        stage_attempts: [{ stage_key: "CLASSIFIER_POSITIVE_COVERAGE", status: "WAITING" }],
+        actions: [{
+          id: "action-1", action_type: "CLASSIFIER_POSITIVE_COVERAGE", stage_key: "CLASSIFIER_POSITIVE_COVERAGE", status: "OPEN",
+          title: "Verify classifier-positive documents with both Q&A reviewers", explanation: "Freeze the uncovered classifier-positive population.", preview_hash: "e".repeat(64),
+          decision_context: {
+            whole_collection_scoring: {
+              state: "COMPLETED", model_count: 1, collection_document_count: 240,
+              aggregate_model_document_counts: { scored_document_count: 230 },
+              models: [{ classification_model_id: "model-1", field_name: "Responsive", status: "COMPLETED", scored_document_count: 230, abstained_document_count: 4, excluded_document_count: 6 }],
+            },
+            coverage_plan: { required_profile_count: 2, maximum_candidate_model_document_count: 230, batching_policy: "PARTITIONED_SET" },
+          },
+          allowed_choices: [{ key: "RUN_COVERAGE", label: "Run dual-Q&A coverage" }, { key: "STOP", label: "Stop program" }],
+        }],
+      }] as never;
+      if (path.endsWith("/actions/action-1/resolve") && options?.method === "POST") return {
+        id: "run-1", program_id: "program-1", status: "RUNNING", current_stage: "CLASSIFIER_POSITIVE_COVERAGE",
+      } as never;
+      throw new Error(`Unexpected API request: ${path}`);
+    });
+    renderSection();
+
+    expect(await screen.findByText("Required reviewers")).toBeInTheDocument();
+    expect(screen.getByText("Candidate ceiling")).toBeInTheDocument();
+    expect(screen.getByText("Task-specific set")).toBeInTheDocument();
+    expect(screen.getByText(/Existing documents reviewed by both pinned profiles are excluded/)).toBeInTheDocument();
+    await userEvent.click(screen.getByRole("button", { name: "Run dual-Q&A coverage" }));
+
+    await waitFor(() => expect(coreApi).toHaveBeenCalledWith(
+      "/v1/matters/matter-1/review-programs/program-1/runs/run-1/actions/action-1/resolve",
+      expect.objectContaining({ method: "POST" }),
+    ));
+    const call = vi.mocked(coreApi).mock.calls.find(([path]) => path.endsWith("/actions/action-1/resolve"));
+    expect(JSON.parse(String(call?.[1]?.body))).toEqual({
+      preview_hash: "e".repeat(64),
+      choice_key: "RUN_COVERAGE",
+    });
+  });
 });

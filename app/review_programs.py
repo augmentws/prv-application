@@ -2,11 +2,13 @@ from __future__ import annotations
 
 import hashlib
 import io
+import json
 import uuid
 from collections import Counter
 from datetime import datetime
 from typing import Any
 
+import httpx
 from sqlalchemy import func, select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
@@ -15,6 +17,8 @@ from app.analysis_input_manifests import (
     AnalysisInputContract,
     AnalysisInputDocument,
     AnalysisInputExtensionField,
+    AnalysisInputManifestError,
+    AnalysisInputManifestReader,
     prepare_analysis_input_manifest,
     publish_analysis_input_manifest,
 )
@@ -41,7 +45,10 @@ from app.analysis_tasks import (
     create_analysis_task,
     publish_analysis_task_version,
 )
-from app.artifact_gateway import copy_workflow_artifact_content
+from app.artifact_gateway import (
+    copy_workflow_artifact_content,
+    get_collection_item_analysis_input_snapshots,
+)
 from app.audit import record_audit
 from app.authorization import ResourceRef, user_can
 from app.classification_datasets import (
@@ -66,6 +73,7 @@ from app.classification_models import (
 from app.classification_scoring import (
     ClassificationScoringError,
     create_scoring_run,
+    prediction_preview,
     prepare_scoring,
     retry_scoring_run,
 )
@@ -90,6 +98,7 @@ from app.matter_definitions import (
     get_guidance,
 )
 from app.models import (
+    AnalysisInputManifest,
     AnalysisTaskBatchSet,
     AnalysisTaskBatchSetRun,
     AnalysisTaskBatchSetRunChild,
@@ -120,6 +129,7 @@ from app.models import (
     ReviewBatchReviewerCoding,
     ReviewBatchReviewerDocument,
     ReviewBatchRun,
+    ReviewDecisionResult,
     ReviewProgram,
     ReviewProgramAction,
     ReviewProgramChild,
@@ -162,6 +172,7 @@ from app.workflows.dispatcher import (
     enqueue_classification_training_job,
     enqueue_review_batch,
 )
+from artifact_service.schemas import WorkflowArtifactLineageInput
 from classification_service.schemas import (
     ClassificationEvaluationReport,
     ClassificationStrategy,
@@ -257,10 +268,7 @@ def _notification_route(db: Session, program: ReviewProgram, run: ReviewProgramR
 
 
 def _run_audiences(program: ReviewProgram, run: ReviewProgramRun) -> tuple[UserAudience, ...]:
-    return tuple(
-        UserAudience(user_id)
-        for user_id in dict.fromkeys((program.owner_user_id, run.initiated_by_user_id))
-    )
+    return tuple(UserAudience(user_id) for user_id in dict.fromkeys((program.owner_user_id, run.initiated_by_user_id)))
 
 
 def _notification_program_name(program: ReviewProgram) -> str:
@@ -507,9 +515,7 @@ def _action_contract(
                 {
                     "key": "USE_EXACT_AGREEMENT",
                     "label": "Use exact model agreements",
-                    "consequence": (
-                        "Use only documents where both models assigned the same complete coding set."
-                    ),
+                    "consequence": ("Use only documents where both models assigned the same complete coding set."),
                 },
                 {
                     "key": "REVIEW_DISAGREEMENTS",
@@ -556,9 +562,7 @@ def _action_contract(
                 {
                     "key": "IMPROVE_CLASSIFIERS",
                     "label": "Improve weak categories",
-                    "consequence": (
-                        "Proceed to targeted classifier improvement using task-specific review batches."
-                    ),
+                    "consequence": ("Proceed to targeted classifier improvement using task-specific review batches."),
                 },
                 stop,
             ],
@@ -595,8 +599,25 @@ def _action_contract(
                 {
                     "key": "START_SCORING",
                     "label": "Score the collection",
+                    "consequence": ("Run every accepted classifier over its frozen whole-matter feature population."),
+                },
+                stop,
+            ],
+        )
+    if stage.key == "CLASSIFIER_POSITIVE_COVERAGE":
+        return (
+            "Verify classifier-positive documents with both Q&A reviewers",
+            (
+                "Build a frozen manifest of classifier-positive documents that do not already have successful, "
+                "current-content results from both pinned Q&A profiles, then run the existing task-specific "
+                "batch workflow over that population. Classifier predictions are not included in the Q&A prompt."
+            ),
+            [
+                {
+                    "key": "RUN_COVERAGE",
+                    "label": "Run dual-Q&A coverage",
                     "consequence": (
-                        "Run every accepted classifier over its frozen whole-matter feature population."
+                        "Freeze the uncovered classifier-positive population and run both pinned Q&A profiles."
                     ),
                 },
                 stop,
@@ -684,13 +705,9 @@ def _qa_stage_context(db: Session, *, run: ReviewProgramRun) -> dict[str, Any]:
     task_version_id = setup.get("task_version_id")
     workflow_id = setup.get("compiler_workflow_run_id")
     task = db.get(MatterAnalysisTask, uuid.UUID(task_id)) if task_id else None
-    task_version = (
-        db.get(MatterAnalysisTaskVersion, uuid.UUID(task_version_id)) if task_version_id else None
-    )
+    task_version = db.get(MatterAnalysisTaskVersion, uuid.UUID(task_version_id)) if task_version_id else None
     workflow = db.get(WorkflowRun, uuid.UUID(workflow_id)) if workflow_id else None
-    profiles = (
-        execution_profiles_for_version(db, task_version.id) if task_version is not None else []
-    )
+    profiles = execution_profiles_for_version(db, task_version.id) if task_version is not None else []
     return {
         "qa_task_setup_state": run.progress_summary.get("qa_task_setup_state"),
         "qa_task": {
@@ -700,9 +717,7 @@ def _qa_stage_context(db: Session, *, run: ReviewProgramRun) -> dict[str, Any]:
             "version": task_version.version if task_version is not None else None,
             "status": task_version.status if task_version is not None else None,
             "compilation_status": task_version.compilation_status if task_version is not None else None,
-            "definition_content_hash": (
-                task_version.definition_content_hash if task_version is not None else None
-            ),
+            "definition_content_hash": (task_version.definition_content_hash if task_version is not None else None),
             "specification_content_hash": (
                 task_version.specification_content_hash if task_version is not None else None
             ),
@@ -791,9 +806,9 @@ def _discovery_stage_context(
                 }
                 for query in queries
             ],
-            "diagnostic_batch_ids": (
-                (run.progress_summary or {}).get("accepted_matter_definition") or {}
-            ).get("diagnostic_batch_ids", []),
+            "diagnostic_batch_ids": ((run.progress_summary or {}).get("accepted_matter_definition") or {}).get(
+                "diagnostic_batch_ids", []
+            ),
         },
         "search_index_generation": (
             {
@@ -826,10 +841,7 @@ def _training_label_stage_context(db: Session, *, run: ReviewProgramRun) -> dict
         batch_ids = [uuid.UUID(str(value)) for value in raw_batch_ids]
     except (TypeError, ValueError) as exc:
         raise ReviewProgramError("Difference-batch provenance is invalid") from exc
-    batches = {
-        batch.id: batch
-        for batch in db.scalars(select(ReviewBatch).where(ReviewBatch.id.in_(batch_ids)))
-    }
+    batches = {batch.id: batch for batch in db.scalars(select(ReviewBatch).where(ReviewBatch.id.in_(batch_ids)))}
     batch_reads = []
     for batch_id in batch_ids:
         batch = batches.get(batch_id)
@@ -897,9 +909,7 @@ def _classifier_improvement_stage_context(
             continue
     definitions = {
         item.id: item
-        for item in db.scalars(
-            select(MetadataDefinition).where(MetadataDefinition.id.in_(definition_ids))
-        )
+        for item in db.scalars(select(MetadataDefinition).where(MetadataDefinition.id.in_(definition_ids)))
     }
     targets: list[dict[str, Any]] = []
     for model in raw_models:
@@ -917,14 +927,8 @@ def _classifier_improvement_stage_context(
             for value in definition.allowed_values or []
             if value.get("key") is not None
         }
-        weak_categories = [
-            item for item in model.get("weak_categories", []) if isinstance(item, dict)
-        ]
-        class_keys = [
-            str(item.get("class_key"))
-            for item in weak_categories
-            if item.get("class_key") is not None
-        ]
+        weak_categories = [item for item in model.get("weak_categories", []) if isinstance(item, dict)]
+        class_keys = [str(item.get("class_key")) for item in weak_categories if item.get("class_key") is not None]
         if not class_keys:
             class_keys = [str(value) for value in model.get("trained_class_keys", [])]
         if not class_keys and definition.type == "BOOLEAN":
@@ -973,17 +977,14 @@ def _whole_collection_scoring_stage_context(*, run: ReviewProgramRun) -> dict[st
     models = [
         {
             "classification_model_id": item.get("classification_model_id"),
-            "model_version_id": accepted_version_by_model.get(
-                str(item.get("classification_model_id"))
-            ),
+            "model_version_id": accepted_version_by_model.get(str(item.get("classification_model_id"))),
             "field_key": item.get("field_key"),
             "field_name": item.get("field_name"),
             "training_eligible_count": item.get("training_eligible_count"),
             "quality": item.get("quality"),
         }
         for item in classifier_results.get("models", [])
-        if isinstance(item, dict)
-        and str(item.get("classification_model_id")) in accepted_version_by_model
+        if isinstance(item, dict) and str(item.get("classification_model_id")) in accepted_version_by_model
     ]
     return {
         "accepted_classifiers": accepted,
@@ -991,6 +992,24 @@ def _whole_collection_scoring_stage_context(*, run: ReviewProgramRun) -> dict[st
             "scope_type": "MATTER",
             "model_count": len(models),
             "models": models,
+        },
+    }
+
+
+def _classifier_positive_coverage_stage_context(*, run: ReviewProgramRun) -> dict[str, Any]:
+    scoring = dict((run.progress_summary or {}).get("whole_collection_scoring") or {})
+    setup = dict((run.progress_summary or {}).get("qa_task_setup") or {})
+    profile_ids = [str(value) for value in setup.get("execution_profile_ids", [])]
+    aggregate = dict(scoring.get("aggregate_model_document_counts") or {})
+    return {
+        "whole_collection_scoring": scoring,
+        "coverage_plan": {
+            "scope_type": "CLASSIFIER_POSITIVE_UNCOVERED",
+            "required_profile_count": len(profile_ids),
+            "required_profile_ids": profile_ids,
+            "maximum_candidate_model_document_count": int(aggregate.get("scored_document_count") or 0),
+            "batching_policy": "PARTITIONED_SET",
+            "result_policy": "ISOLATED",
         },
     }
 
@@ -1005,12 +1024,8 @@ def _create_action_for_stage(
     template: ReviewWorkflowTemplateSpec,
 ) -> ReviewProgramAction:
     qa_setup_state = str(run.progress_summary.get("qa_task_setup_state") or "")
-    support_state = str(
-        ((run.progress_summary or {}).get("discovery_analysis") or {}).get("support_status") or ""
-    )
-    training_label_state = str(
-        ((run.progress_summary or {}).get("training_label_resolution") or {}).get("state") or ""
-    )
+    support_state = str(((run.progress_summary or {}).get("discovery_analysis") or {}).get("support_status") or "")
+    training_label_state = str(((run.progress_summary or {}).get("training_label_resolution") or {}).get("state") or "")
     title, explanation, choices = _action_contract(
         template,
         stage,
@@ -1041,11 +1056,7 @@ def _create_action_for_stage(
             if stage.key == "CLASSIFIER_IMPROVEMENT"
             else _whole_collection_scoring_stage_context(run=run)
             if stage.key == "WHOLE_COLLECTION_SCORING"
-            else {
-                "whole_collection_scoring": (
-                    (run.progress_summary or {}).get("whole_collection_scoring") or {}
-                )
-            }
+            else _classifier_positive_coverage_stage_context(run=run)
             if stage.key == "CLASSIFIER_POSITIVE_COVERAGE"
             else {}
         ),
@@ -1058,9 +1069,7 @@ def _create_action_for_stage(
             "MATTER_DEFINITION": "MATTER_DEFINITION_SETUP",
             "DEFINITION_REFINEMENT": "MATTER_DEFINITION_REFINEMENT",
             "DEFINITION_ACCEPTANCE": "MATTER_DEFINITION_ACCEPTANCE",
-            "QA_TASK_SETUP": (
-                "QA_TASK_PUBLICATION" if qa_setup_state == "READY_FOR_PUBLICATION" else "QA_TASK_SETUP"
-            ),
+            "QA_TASK_SETUP": ("QA_TASK_PUBLICATION" if qa_setup_state == "READY_FOR_PUBLICATION" else "QA_TASK_SETUP"),
             "DISCOVERY_QA": "DISCOVERY_QA_SETUP",
             "DISAGREEMENT_REVIEW": (
                 "DISAGREEMENT_REVIEW_COMPLETION"
@@ -1071,6 +1080,7 @@ def _create_action_for_stage(
             "CLASSIFIER_REVIEW": "CLASSIFIER_REVIEW",
             "CLASSIFIER_IMPROVEMENT": "CLASSIFIER_IMPROVEMENT_SETUP",
             "WHOLE_COLLECTION_SCORING": "WHOLE_COLLECTION_SCORING",
+            "CLASSIFIER_POSITIVE_COVERAGE": "CLASSIFIER_POSITIVE_COVERAGE",
         }.get(stage.key, "STAGE_GATE"),
         title=title,
         explanation=explanation,
@@ -1196,9 +1206,10 @@ def _create_review_program_version(
     current = current_review_program_version(db, program)
     configuration = {**current.configuration_snapshot, **configuration_updates}
     source_hashes = {**current.source_hashes, **source_hash_updates}
-    next_version = (db.scalar(select(func.max(ReviewProgramVersion.version)).where(
-        ReviewProgramVersion.program_id == program.id
-    )) or 0) + 1
+    next_version = (
+        db.scalar(select(func.max(ReviewProgramVersion.version)).where(ReviewProgramVersion.program_id == program.id))
+        or 0
+    ) + 1
     version = ReviewProgramVersion(
         program_id=program.id,
         version=next_version,
@@ -1246,9 +1257,7 @@ def _launch_definition_assessment(
         round_number = int(run.progress_summary.get("definition_assessment_round", 0)) + 1
         maximum_rounds = int(policy.get("maximum_assessment_rounds", 3))
         if round_number > maximum_rounds:
-            raise ReviewProgramError(
-                f"Matter Definition assessment limit of {maximum_rounds} rounds has been reached"
-            )
+            raise ReviewProgramError(f"Matter Definition assessment limit of {maximum_rounds} rounds has been reached")
         assessment = start_assessment(
             db,
             matter=matter,
@@ -1330,6 +1339,12 @@ def _starting_configuration(
             "assessment_use_batching": True,
             "acknowledge_large_run_warning": False,
             "maximum_assessment_rounds": 3,
+        },
+        "classifier_positive_coverage_policy": {
+            "target_batch_size": 100,
+            "keep_families_together": True,
+            "required_result_status": "COMPLETED",
+            "require_current_source_content": True,
         },
     }
     return configuration, {"template_content_hash": template.content_hash}
@@ -2041,18 +2056,14 @@ def _transition_definition_refinement(
     questions = _assessment_questions(db, assessment)
     blocking = [question for question in questions if question.blocking and question.status == "OPEN"]
     if blocking:
-        raise ReviewProgramError(
-            f"Resolve {len(blocking)} blocking assessment question(s) before continuing"
-        )
+        raise ReviewProgramError(f"Resolve {len(blocking)} blocking assessment question(s) before continuing")
     answered = [question for question in questions if question.status == "ANSWERED"]
     if answered and assessment.guidance_refinement_status in {"NOT_READY", "QUEUED", "RUNNING"}:
         raise ReviewProgramError(
             "Resolve the remaining assessment questions and wait for the definition refinement draft"
         )
     if assessment.guidance_refinement_status == "FAILED":
-        raise ReviewProgramError(
-            assessment.guidance_refinement_error_message or "Matter Definition refinement failed"
-        )
+        raise ReviewProgramError(assessment.guidance_refinement_error_message or "Matter Definition refinement failed")
     if program.matter_definition_id is None:
         raise ReviewProgramError("Review Program Matter Definition is unavailable")
     definition = get_guidance(
@@ -2284,9 +2295,7 @@ def setup_review_program_discovery(
 
     accepted_definition = (run.progress_summary or {}).get("accepted_matter_definition") or {}
     try:
-        diagnostic_batch_ids = [
-            uuid.UUID(str(value)) for value in accepted_definition.get("diagnostic_batch_ids", [])
-        ]
+        diagnostic_batch_ids = [uuid.UUID(str(value)) for value in accepted_definition.get("diagnostic_batch_ids", [])]
     except (TypeError, ValueError) as exc:
         raise ReviewProgramError("Diagnostic batch provenance is invalid") from exc
     excluded_document_ids = (
@@ -2418,9 +2427,7 @@ def setup_review_program_discovery(
                 source_collection_id=documents_by_id[document_id].source_collection_id,
                 scope_ordinal=ordinal,
                 extensions={
-                    "retrieval_lane": (
-                        "CONTROL" if selection_reasons[document_id] == ["CONTROL"] else "TARGETED"
-                    ),
+                    "retrieval_lane": ("CONTROL" if selection_reasons[document_id] == ["CONTROL"] else "TARGETED"),
                     "selection_reasons": ",".join(selection_reasons[document_id]),
                 },
             )
@@ -2481,8 +2488,7 @@ def setup_review_program_discovery(
             "query_yields": query_yields,
             "control_selected_count": len(control_ids),
             "excluded_diagnostic_document_count": diagnostic_excluded_count,
-            "excluded_prior_program_document_count": len(excluded_document_ids)
-            - diagnostic_excluded_count,
+            "excluded_prior_program_document_count": len(excluded_document_ids) - diagnostic_excluded_count,
             "prior_discovery_batch_set_ids": [str(value) for value in prior_batch_set_ids],
         },
     }
@@ -2613,10 +2619,7 @@ def setup_review_program_classifier_improvement(
         for item in (((action.decision_context or {}).get("retrieval_plan") or {}).get("targets") or [])
         if isinstance(item, dict)
     }
-    submitted_targets = [
-        (str(item.get("metadata_definition_id")), str(item.get("class_key")))
-        for item in queries
-    ]
+    submitted_targets = [(str(item.get("metadata_definition_id")), str(item.get("class_key"))) for item in queries]
     if not submitted_targets or len(submitted_targets) != len(set(submitted_targets)):
         raise ReviewProgramError("Classifier improvement targets must be present and unique")
     if any(target not in allowed_targets for target in submitted_targets):
@@ -2648,9 +2651,7 @@ def setup_review_program_classifier_improvement(
     excluded_document_ids: set[uuid.UUID] = set()
     accepted_definition = (run.progress_summary or {}).get("accepted_matter_definition") or {}
     try:
-        diagnostic_batch_ids = [
-            uuid.UUID(str(value)) for value in accepted_definition.get("diagnostic_batch_ids", [])
-        ]
+        diagnostic_batch_ids = [uuid.UUID(str(value)) for value in accepted_definition.get("diagnostic_batch_ids", [])]
     except (TypeError, ValueError) as exc:
         raise ReviewProgramError("Diagnostic batch provenance is invalid") from exc
     if diagnostic_batch_ids:
@@ -2774,9 +2775,7 @@ def setup_review_program_classifier_improvement(
                 source_collection_id=documents_by_id[document_id].source_collection_id,
                 scope_ordinal=ordinal,
                 extensions={
-                    "retrieval_lane": (
-                        "CONTROL" if selection_reasons[document_id] == ["CONTROL"] else "TARGETED"
-                    ),
+                    "retrieval_lane": ("CONTROL" if selection_reasons[document_id] == ["CONTROL"] else "TARGETED"),
                     "selection_reasons": ",".join(selection_reasons[document_id]),
                 },
             )
@@ -3297,6 +3296,14 @@ def process_review_program_event(
                 attempt=attempt,
                 action=action,
             )
+        elif action.stage_key == "CLASSIFIER_POSITIVE_COVERAGE" and choice == "RUN_COVERAGE":
+            _launch_classifier_positive_coverage(
+                db,
+                program=program,
+                run=run,
+                attempt=attempt,
+                action=action,
+            )
         elif choice == "CONTINUE":
             _complete_action_attempt(attempt, action)
             _advance_after_stage(db, program=program, run=run, attempt=attempt)
@@ -3571,6 +3578,12 @@ def project_review_program_discovery_batch_set_terminal(
             "classifier-improvement",
             "classifier_improvement",
         ),
+        "CLASSIFIER_POSITIVE_COVERAGE_POPULATION": (
+            "CLASSIFIER_POSITIVE_COVERAGE",
+            "CLASSIFIER_POSITIVE_COVERAGE_QA_PROFILE",
+            "classifier-positive-coverage",
+            "classifier_positive_coverage",
+        ),
     }.get(child.purpose)
     if population_stage is None:
         return None
@@ -3604,7 +3617,8 @@ def project_review_program_discovery_batch_set_terminal(
             program=program,
             run=run,
             error_code=f"{stage_key}_BATCH_SET_{workflow.status}",
-            error_summary=batch_set.error_message or f"{stage_key.replace('_', ' ').title()} Batch Set {workflow.status.lower()}",
+            error_summary=batch_set.error_message
+            or f"{stage_key.replace('_', ' ').title()} Batch Set {workflow.status.lower()}",
             retriable=True,
         )
     if workflow.status not in {"COMPLETED", "COMPLETED_WITH_ERRORS"}:
@@ -3624,10 +3638,7 @@ def project_review_program_discovery_batch_set_terminal(
                 task=task,
                 task_version=task_version,
                 configuration={"max_concurrency": 2, "result_policy": "ISOLATED"},
-                idempotency_key=(
-                    f"review-program:{run.id}:{idempotency_scope}:"
-                    f"{attempt.attempt}:profile:{profile.id}"
-                ),
+                idempotency_key=(f"review-program:{run.id}:{idempotency_scope}:{attempt.attempt}:profile:{profile.id}"),
                 actor_user_id=run.initiated_by_user_id,
                 execution_profile=profile,
                 notification_parent_type="REVIEW_PROGRAM_RUN",
@@ -3689,9 +3700,7 @@ def _discovery_alignment_snapshot(
     if not runs_by_batch_set or any(len(items) != 2 for items in runs_by_batch_set.values()):
         raise ReviewProgramError("Discovery alignment requires exactly two profile runs per frozen population")
     accepted_task = (run.progress_summary or {}).get("accepted_qa_task") or {}
-    definition_ids = [
-        uuid.UUID(str(value)) for value in accepted_task.get("destination_metadata_definition_ids", [])
-    ]
+    definition_ids = [uuid.UUID(str(value)) for value in accepted_task.get("destination_metadata_definition_ids", [])]
     definitions = {
         definition.id: definition
         for definition in db.scalars(
@@ -3741,16 +3750,12 @@ def _discovery_alignment_snapshot(
                 metrics["cached_input_tokens"] += workflow.cached_input_tokens
                 metrics["output_tokens"] += workflow.output_tokens
                 if workflow.started_at is not None and workflow.completed_at is not None:
-                    metrics["elapsed_seconds"] += int(
-                        (workflow.completed_at - workflow.started_at).total_seconds()
-                    )
+                    metrics["elapsed_seconds"] += int((workflow.completed_at - workflow.started_at).total_seconds())
         batch_ids = sorted(
             set(children_by_parent[0]).intersection(children_by_parent[1]),
             key=str,
         )
-        paired_children.append(
-            (left_parent, right_parent, children_by_parent[0], children_by_parent[1], batch_ids)
-        )
+        paired_children.append((left_parent, right_parent, children_by_parent[0], children_by_parent[1], batch_ids))
     field_snapshots: list[dict[str, Any]] = []
     overall = Counter()
     minimum_positive_support = 25
@@ -3777,17 +3782,13 @@ def _discovery_alignment_snapshot(
                         purpose=source.purpose,
                         status=source.status,
                         label=str(
-                            (parent.configuration_snapshot or {}).get(
-                                "execution_profile_id", f"Profile {index + 1}"
-                            )
+                            (parent.configuration_snapshot or {}).get("execution_profile_id", f"Profile {index + 1}")
                         ),
                         detail=(source.configuration_snapshot or {}).get("model_key"),
                         metadata_definition_ids=definition_ids,
                         created_at=source.created_at,
                     )
-                    for index, (parent, source) in enumerate(
-                        ((left_parent, left_run), (right_parent, right_run))
-                    )
+                    for index, (parent, source) in enumerate(((left_parent, left_run), (right_parent, right_run)))
                 ]
                 for document in iter_comparison_documents(
                     db,
@@ -3805,13 +3806,9 @@ def _discovery_alignment_snapshot(
                         value_counts["right"] += value_key in right_values
                         value_counts["intersection"] += value_key in left_values and value_key in right_values
                         value_counts["union"] += 1
-                        value_counts["disagreement"] += (value_key in left_values) != (
-                            value_key in right_values
-                        )
+                        value_counts["disagreement"] += (value_key in left_values) != (value_key in right_values)
         declared_keys = [
-            str(value.get("key"))
-            for value in definition.allowed_values or []
-            if value.get("key") is not None
+            str(value.get("key")) for value in definition.allowed_values or [] if value.get("key") is not None
         ]
         if definition.type == "BOOLEAN":
             declared_keys = ["true", "false"]
@@ -3908,9 +3905,7 @@ def _completed_discovery_profile_runs(
             db.scalars(
                 select(ReviewProgramChild.child_id).where(
                     ReviewProgramChild.run_id == run.id,
-                    ReviewProgramChild.purpose.in_(
-                        {"DISCOVERY_QA_PROFILE", "CLASSIFIER_IMPROVEMENT_QA_PROFILE"}
-                    ),
+                    ReviewProgramChild.purpose.in_({"DISCOVERY_QA_PROFILE", "CLASSIFIER_IMPROVEMENT_QA_PROFILE"}),
                     ReviewProgramChild.child_type == "ANALYSIS_TASK_BATCH_SET_RUN",
                 )
             )
@@ -3945,9 +3940,7 @@ def _completed_discovery_label_runs(
         db.scalars(
             select(AnalysisTaskBatchSetRunChild.child_run_id)
             .where(
-                AnalysisTaskBatchSetRunChild.batch_set_run_id.in_(
-                    [profile_run.id for profile_run in profile_runs]
-                ),
+                AnalysisTaskBatchSetRunChild.batch_set_run_id.in_([profile_run.id for profile_run in profile_runs]),
                 AnalysisTaskBatchSetRunChild.child_run_id.is_not(None),
             )
             .order_by(
@@ -3959,9 +3952,7 @@ def _completed_discovery_label_runs(
     ordered_ids = list(dict.fromkeys(child_run_id for child_run_id in child_run_ids if child_run_id))
     label_runs_by_id = {
         label_run.id: label_run
-        for label_run in db.scalars(
-            select(ReviewBatchRun).where(ReviewBatchRun.id.in_(ordered_ids))
-        )
+        for label_run in db.scalars(select(ReviewBatchRun).where(ReviewBatchRun.id.in_(ordered_ids)))
     }
     if not ordered_ids or len(label_runs_by_id) != len(ordered_ids):
         raise ReviewProgramError("Discovery Q&A child-run provenance is incomplete")
@@ -3991,8 +3982,7 @@ def _create_disagreement_review_batches(
     try:
         definition_ids = list(
             dict.fromkeys(
-                uuid.UUID(str(value))
-                for value in accepted_task.get("destination_metadata_definition_ids", [])
+                uuid.UUID(str(value)) for value in accepted_task.get("destination_metadata_definition_ids", [])
             )
         )
     except (TypeError, ValueError) as exc:
@@ -4052,8 +4042,7 @@ def _create_disagreement_review_batches(
                 for profile, source in ((left_profile, left_run), (right_profile, right_run))
             ]
             source_snapshots = [
-                {**source.model_dump(mode="json"), "reviewer_revision": None}
-                for source in source_options
+                {**source.model_dump(mode="json"), "reviewer_revision": None} for source in source_options
             ]
             for definition_id in definition_ids:
                 definition = definitions.get(definition_id)
@@ -4072,12 +4061,8 @@ def _create_disagreement_review_batches(
                 batch = ReviewBatch(
                     id=batch_id,
                     matter_id=program.matter_id,
-                    name=(
-                        f"{program.name} · {definition.display_name} differences · {len(created) + 1}"
-                    )[:200],
-                    description=(
-                        "Ad hoc human review of differences between the two pinned Discovery Q&A profiles."
-                    ),
+                    name=(f"{program.name} · {definition.display_name} differences · {len(created) + 1}")[:200],
+                    description=("Ad hoc human review of differences between the two pinned Discovery Q&A profiles."),
                     selection_type="COMPARISON_RESULT",
                     selection_definition={
                         "type": "COMPARISON_RESULT",
@@ -4144,9 +4129,7 @@ def _create_disagreement_review_batches(
                     purpose="DISCOVERY_DISAGREEMENT_REVIEW",
                     child_type="REVIEW_BATCH",
                     child_id=batch.id,
-                    derivation_key=(
-                        f"disagreement-review:{attempt.id}:{source_batch.id}:{definition.id}"
-                    ),
+                    derivation_key=(f"disagreement-review:{attempt.id}:{source_batch.id}:{definition.id}"),
                     batching_policy="AD_HOC_BATCH",
                     context={
                         "source_batch_id": str(source_batch.id),
@@ -4321,9 +4304,7 @@ def _confirm_disagreement_review(
         try:
             definition_id = uuid.UUID(str(batch.selection_definition["metadata_definition_id"]))
         except (KeyError, TypeError, ValueError) as exc:
-            raise ReviewProgramError(
-                f"Difference batch {batch.name} has invalid coding-field provenance"
-            ) from exc
+            raise ReviewProgramError(f"Difference batch {batch.name} has invalid coding-field provenance") from exc
         resolved = resolve_reviewer_coding_as_of(
             db,
             reviewer_coding_id=coding.id,
@@ -4331,23 +4312,17 @@ def _confirm_disagreement_review(
             document_ids=document_ids,
             metadata_definition_ids=[definition_id],
         )
-        completed_document_ids = {
-            item.matter_document_id for item in resolved.documents if item.status == "COMPLETED"
-        }
+        completed_document_ids = {item.matter_document_id for item in resolved.documents if item.status == "COMPLETED"}
         if len(completed_document_ids) != batch.document_count:
             raise ReviewProgramError(
                 f"Difference batch {batch.name} has "
                 f"{batch.document_count - len(completed_document_ids)} unresolved documents"
             )
         coded_document_ids = {
-            item.matter_document_id
-            for item in resolved.fields
-            if item.metadata_definition_id == definition_id
+            item.matter_document_id for item in resolved.fields if item.metadata_definition_id == definition_id
         }
         if coded_document_ids != set(document_ids):
-            raise ReviewProgramError(
-                f"Difference batch {batch.name} has incomplete field coding"
-            )
+            raise ReviewProgramError(f"Difference batch {batch.name} has incomplete field coding")
         adjudication_sources.append(
             {
                 "review_batch_id": str(batch.id),
@@ -4404,9 +4379,7 @@ def _finalize_training_labels(
         "label_run_ids": [str(label_run.id) for label_run in label_runs],
         "frozen_by_user_id": str(action.resolved_by_user_id),
         "frozen_at": action.resolved_at.isoformat() if action.resolved_at else None,
-        "discovery_analysis_hash": canonical_hash(
-            (run.progress_summary or {}).get("discovery_analysis") or {}
-        ),
+        "discovery_analysis_hash": canonical_hash((run.progress_summary or {}).get("discovery_analysis") or {}),
     }
     snapshot["content_hash"] = canonical_hash(snapshot)
     version = _create_review_program_version(
@@ -4541,8 +4514,7 @@ def _prepare_whole_collection_scoring_snapshot(
         )
     if not (
         snapshot.status == "READY_FOR_SCORING"
-        and (snapshot.feature_specification or {}).get("embedding_job_id")
-        == str(embedding_job.id)
+        and (snapshot.feature_specification or {}).get("embedding_job_id") == str(embedding_job.id)
     ):
         snapshot.status = "BUILDING"
         prepared_features = prepare_scoring_features(
@@ -4601,9 +4573,7 @@ def _launch_whole_collection_scoring(
                 uuid.UUID(str(result_model["training_job_id"])),
             )
             embedding_job = (
-                db.get(MatterEmbeddingJob, training_job.embedding_job_id)
-                if training_job is not None
-                else None
+                db.get(MatterEmbeddingJob, training_job.embedding_job_id) if training_job is not None else None
             )
             if (
                 model is None
@@ -4635,8 +4605,7 @@ def _launch_whole_collection_scoring(
                 db,
                 prepared=prepared,
                 idempotency_key=(
-                    f"review-program:{run.id}:whole-collection:"
-                    f"attempt:{attempt.attempt}:model:{model.id}"
+                    f"review-program:{run.id}:whole-collection:attempt:{attempt.attempt}:model:{model.id}"
                 ),
                 actor_user_id=actor_user_id,
                 notification_parent_type="REVIEW_PROGRAM_RUN",
@@ -4653,10 +4622,7 @@ def _launch_whole_collection_scoring(
                 "COMPLETED",
                 "COMPLETED_WITH_ERRORS",
             }:
-                if (
-                    workflow.notification_policy != "PARENT_MANAGED"
-                    or workflow.notification_parent_id != run.id
-                ):
+                if workflow.notification_policy != "PARENT_MANAGED" or workflow.notification_parent_id != run.id:
                     raise ReviewProgramError(
                         "An identical classifier scoring run is already active outside this Review Program"
                     )
@@ -4698,9 +4664,7 @@ def _launch_whole_collection_scoring(
             else:
                 existing_child.stage_attempt_id = attempt.id
                 existing_child.status = "LINKED"
-                existing_child.derivation_key = (
-                    f"whole-collection-scoring:{attempt.id}:{model.id}"
-                )
+                existing_child.derivation_key = f"whole-collection-scoring:{attempt.id}:{model.id}"
                 existing_child.context = child_context
             scoring_states.append(
                 {
@@ -4743,9 +4707,7 @@ def _launch_whole_collection_scoring(
         actor_user_id=actor_user_id,
         configuration_stage="WHOLE_COLLECTION_SCORING",
         configuration_updates={"whole_collection_scoring": scoring_snapshot},
-        source_hash_updates={
-            "whole_collection_scoring_plan_hash": canonical_hash(scoring_snapshot["models"])
-        },
+        source_hash_updates={"whole_collection_scoring_plan_hash": canonical_hash(scoring_snapshot["models"])},
     )
     attempt.status = "RUNNING"
     attempt.result_summary = {
@@ -4769,6 +4731,525 @@ def _launch_whole_collection_scoring(
         )
 
 
+_QA_COVERAGE_PROFILE_PURPOSES = {
+    "DISCOVERY_QA_PROFILE",
+    "CLASSIFIER_IMPROVEMENT_QA_PROFILE",
+    "CLASSIFIER_POSITIVE_COVERAGE_QA_PROFILE",
+}
+
+
+def _classifier_positive_class_keys(
+    configuration: ClassificationModelConfiguration,
+    predicted_class_keys: list[str],
+) -> list[str]:
+    selected = list(dict.fromkeys(predicted_class_keys))
+    if configuration.classification_strategy != "BINARY":
+        return selected
+    positive_key = (configuration.binary_mapping or {}).get("positive_class_key")
+    if not isinstance(positive_key, str) or not positive_key:
+        raise ReviewProgramError("Binary classifier positive-class provenance is unavailable")
+    return [positive_key] if positive_key in selected else []
+
+
+def _classifier_positive_documents(
+    db: Session,
+    *,
+    program: ReviewProgram,
+    run: ReviewProgramRun,
+    matter: Matter,
+    actor_user_id: uuid.UUID,
+) -> tuple[dict[uuid.UUID, dict[str, Any]], list[ClassificationScoringRun]]:
+    scoring = dict((run.progress_summary or {}).get("whole_collection_scoring") or {})
+    models = [item for item in scoring.get("models", []) if isinstance(item, dict)]
+    if scoring.get("state") not in {"COMPLETED", "COMPLETED_WITH_ERRORS"} or not models:
+        raise ReviewProgramError("Whole-collection classifier results are unavailable")
+    positives: dict[uuid.UUID, dict[str, Any]] = {}
+    scoring_runs: list[ClassificationScoringRun] = []
+    for model_state in models:
+        try:
+            scoring_run_id = uuid.UUID(str(model_state["scoring_run_id"]))
+        except (KeyError, TypeError, ValueError) as exc:
+            raise ReviewProgramError("Classifier scoring provenance is invalid") from exc
+        scoring_run = db.get(ClassificationScoringRun, scoring_run_id)
+        if (
+            scoring_run is None
+            or scoring_run.matter_id != program.matter_id
+            or scoring_run.status not in {"COMPLETED", "COMPLETED_WITH_ERRORS"}
+        ):
+            raise ReviewProgramError("Classifier scoring output is unavailable")
+        version = db.get(ClassificationModelVersion, scoring_run.model_version_id)
+        configuration = (
+            db.get(ClassificationModelConfiguration, version.configuration_id) if version is not None else None
+        )
+        if configuration is None:
+            raise ReviewProgramError("Classifier scoring configuration is unavailable")
+        preview = prediction_preview(
+            scoring_run,
+            matter=matter,
+            actor_user_id=actor_user_id,
+            offset=0,
+            limit=scoring_run.population_document_count,
+        )
+        probability_ordinals = {class_key: ordinal for ordinal, class_key in enumerate(preview.ordered_class_keys)}
+        for row in preview.items:
+            if row.result_status != "SUCCESS" or row.abstained:
+                continue
+            positive_keys = _classifier_positive_class_keys(
+                configuration,
+                list(row.predicted_class_keys),
+            )
+            if not positive_keys:
+                continue
+            selected_probabilities = [
+                float(row.probabilities[probability_ordinals[class_key]])
+                for class_key in positive_keys
+                if class_key in probability_ordinals and probability_ordinals[class_key] < len(row.probabilities)
+            ]
+            document = positives.setdefault(
+                row.matter_document_id,
+                {"issues": [], "maximum_probability": None},
+            )
+            document["issues"].extend(
+                {
+                    "classification_model_id": str(scoring_run.classification_model_id),
+                    "model_version_id": str(scoring_run.model_version_id),
+                    "scoring_run_id": str(scoring_run.id),
+                    "field_key": model_state.get("field_key"),
+                    "field_name": model_state.get("field_name"),
+                    "class_key": class_key,
+                }
+                for class_key in positive_keys
+            )
+            if selected_probabilities:
+                maximum_probability = max(selected_probabilities)
+                current = document["maximum_probability"]
+                document["maximum_probability"] = (
+                    maximum_probability if current is None else max(float(current), maximum_probability)
+                )
+        scoring_runs.append(scoring_run)
+    for document in positives.values():
+        document["issues"] = sorted(
+            document["issues"],
+            key=lambda item: (
+                str(item.get("field_key") or ""),
+                str(item.get("class_key") or ""),
+                str(item.get("scoring_run_id") or ""),
+            ),
+        )
+    return positives, scoring_runs
+
+
+def _program_qa_results_by_profile(
+    db: Session,
+    *,
+    run: ReviewProgramRun,
+    task_version_id: uuid.UUID,
+    profile_ids: set[uuid.UUID],
+) -> dict[uuid.UUID, dict[uuid.UUID, ReviewDecisionResult]]:
+    linked_run_ids = list(
+        db.scalars(
+            select(ReviewProgramChild.child_id).where(
+                ReviewProgramChild.run_id == run.id,
+                ReviewProgramChild.purpose.in_(_QA_COVERAGE_PROFILE_PURPOSES),
+                ReviewProgramChild.child_type == "ANALYSIS_TASK_BATCH_SET_RUN",
+            )
+        )
+    )
+    if not linked_run_ids:
+        return {}
+    profile_runs = list(
+        db.scalars(
+            select(AnalysisTaskBatchSetRun)
+            .where(
+                AnalysisTaskBatchSetRun.id.in_(linked_run_ids),
+                AnalysisTaskBatchSetRun.matter_analysis_task_version_id == task_version_id,
+                AnalysisTaskBatchSetRun.execution_profile_id.in_(profile_ids),
+            )
+            .order_by(AnalysisTaskBatchSetRun.created_at, AnalysisTaskBatchSetRun.id)
+        )
+    )
+    by_document: dict[uuid.UUID, dict[uuid.UUID, ReviewDecisionResult]] = {}
+    for profile_run in profile_runs:
+        if profile_run.execution_profile_id is None:
+            continue
+        label_run_ids = list(
+            db.scalars(
+                select(AnalysisTaskBatchSetRunChild.child_run_id).where(
+                    AnalysisTaskBatchSetRunChild.batch_set_run_id == profile_run.id,
+                    AnalysisTaskBatchSetRunChild.child_run_id.is_not(None),
+                )
+            )
+        )
+        if not label_run_ids:
+            continue
+        results = db.scalars(
+            select(ReviewDecisionResult)
+            .where(
+                ReviewDecisionResult.review_batch_run_id.in_(label_run_ids),
+                ReviewDecisionResult.matter_analysis_task_version_id == task_version_id,
+                ReviewDecisionResult.status == "COMPLETED",
+            )
+            .order_by(ReviewDecisionResult.created_at, ReviewDecisionResult.id)
+        )
+        for result in results:
+            by_document.setdefault(result.matter_document_id, {})[profile_run.execution_profile_id] = result
+    return by_document
+
+
+def _coverage_confidence_band(value: float | None) -> str:
+    if value is None:
+        return "UNAVAILABLE"
+    if value >= 0.9:
+        return "HIGH"
+    if value >= 0.7:
+        return "MEDIUM"
+    return "LOW"
+
+
+def _prepare_classifier_positive_coverage(
+    db: Session,
+    *,
+    program: ReviewProgram,
+    run: ReviewProgramRun,
+    attempt: ReviewProgramStageAttempt,
+    actor_user_id: uuid.UUID,
+) -> tuple[AnalysisInputManifest, dict[str, Any]]:
+    matter = db.get(Matter, program.matter_id)
+    if matter is None:
+        raise ReviewProgramError("Review Program matter is unavailable")
+    _, task_version, profiles = _qa_task_records(db, run)
+    positives, scoring_runs = _classifier_positive_documents(
+        db,
+        program=program,
+        run=run,
+        matter=matter,
+        actor_user_id=actor_user_id,
+    )
+    documents_by_id = {
+        document.id: document
+        for document in db.scalars(
+            select(MatterDocument).where(
+                MatterDocument.matter_id == matter.id,
+                MatterDocument.id.in_(list(positives)),
+            )
+        )
+    }
+    if len(documents_by_id) != len(positives):
+        raise ReviewProgramError("Classifier-positive documents are outside the matter")
+    try:
+        source_snapshots = get_collection_item_analysis_input_snapshots(
+            item_ids=[document.collection_item_id for document in documents_by_id.values()],
+            actor_user_id=actor_user_id,
+            tenant_id=program.tenant_id,
+            client_id=matter.client_id,
+        )
+    except (httpx.HTTPError, PermissionError, ValueError) as exc:
+        raise ReviewProgramError(f"Classifier-positive source content is unavailable: {exc}") from exc
+    profile_ids = {profile.id for profile in profiles}
+    results_by_document = _program_qa_results_by_profile(
+        db,
+        run=run,
+        task_version_id=task_version.id,
+        profile_ids=profile_ids,
+    )
+    issue_counts: dict[tuple[str, str], Counter] = {}
+    confidence_counts = Counter()
+    missing_profile_counts = Counter()
+    uncovered_documents: list[AnalysisInputDocument] = []
+    already_covered_count = 0
+    stale_source_count = 0
+    source_unavailable_count = 0
+    for document_id in sorted(positives, key=str):
+        prediction = positives[document_id]
+        matter_document = documents_by_id[document_id]
+        source_snapshot = source_snapshots.get(matter_document.collection_item_id)
+        source = source_snapshot.text_source if source_snapshot is not None else None
+        expected_source_hash = source.content_hash if source is not None else None
+        profile_results = results_by_document.get(document_id, {})
+        current_profile_ids = {
+            profile_id
+            for profile_id, result in profile_results.items()
+            if expected_source_hash is not None and result.source_content_hash == expected_source_hash
+        }
+        missing_profile_ids = profile_ids - current_profile_ids
+        has_stale_result = bool(profile_results) and bool(missing_profile_ids)
+        if not missing_profile_ids:
+            already_covered_count += 1
+        else:
+            if expected_source_hash is None:
+                source_unavailable_count += 1
+                coverage_status = "SOURCE_UNAVAILABLE"
+            elif has_stale_result:
+                stale_source_count += 1
+                coverage_status = "STALE_OR_PARTIAL_QA"
+            else:
+                coverage_status = "MISSING_QA"
+            for profile in profiles:
+                if profile.id in missing_profile_ids:
+                    missing_profile_counts[profile.key] += 1
+            maximum_probability = prediction.get("maximum_probability")
+            uncovered_documents.append(
+                AnalysisInputDocument(
+                    matter_document_id=document_id,
+                    collection_item_id=matter_document.collection_item_id,
+                    source_collection_id=matter_document.source_collection_id,
+                    scope_ordinal=len(uncovered_documents) + 1,
+                    source_artifact_id=source.artifact_id if source is not None else None,
+                    source_content_hash=expected_source_hash,
+                    resolved_inputs=(
+                        {
+                            "text_source": {
+                                "role": source.role,
+                                "media_type": source.media_type,
+                                "original_filename": source.original_filename,
+                                "byte_length": source.byte_length,
+                                "record_type": source_snapshot.record_type,
+                            }
+                        }
+                        if source is not None and source_snapshot is not None
+                        else {}
+                    ),
+                    extensions={
+                        "classifier_issue_keys": json.dumps(
+                            [f"{item.get('field_key')}:{item.get('class_key')}" for item in prediction["issues"]],
+                            separators=(",", ":"),
+                            sort_keys=True,
+                        ),
+                        "scoring_run_ids": json.dumps(
+                            sorted({item["scoring_run_id"] for item in prediction["issues"]}),
+                            separators=(",", ":"),
+                        ),
+                        "missing_profile_keys": json.dumps(
+                            sorted(profile.key for profile in profiles if profile.id in missing_profile_ids),
+                            separators=(",", ":"),
+                        ),
+                        "coverage_status": coverage_status,
+                        "maximum_probability": maximum_probability,
+                    },
+                )
+            )
+        confidence_counts[_coverage_confidence_band(prediction.get("maximum_probability"))] += 1
+        for issue in prediction["issues"]:
+            key = (str(issue.get("field_key") or ""), str(issue.get("class_key") or ""))
+            counts = issue_counts.setdefault(key, Counter())
+            counts["positive"] += 1
+            counts["uncovered"] += bool(missing_profile_ids)
+    contract = AnalysisInputContract(
+        key="review-program.classifier-positive-coverage",
+        version=1,
+        resolver_version="review-program-classifier-positive-coverage-v1",
+        extension_fields=[
+            AnalysisInputExtensionField(name="classifier_issue_keys", type="STRING", nullable=False),
+            AnalysisInputExtensionField(name="scoring_run_ids", type="STRING", nullable=False),
+            AnalysisInputExtensionField(name="missing_profile_keys", type="STRING", nullable=False),
+            AnalysisInputExtensionField(name="coverage_status", type="STRING", nullable=False),
+            AnalysisInputExtensionField(name="maximum_probability", type="FLOAT64", nullable=True),
+        ],
+        options={
+            "review_program_id": str(program.id),
+            "review_program_run_id": str(run.id),
+            "stage_attempt_id": str(attempt.id),
+            "task_version_id": str(task_version.id),
+            "required_profile_ids": [str(profile.id) for profile in profiles],
+            "scoring_run_ids": [str(item.id) for item in scoring_runs],
+            "policy_version": "review-program-classifier-positive-coverage-v1",
+        },
+    )
+    prepared = prepare_analysis_input_manifest(
+        uncovered_documents,
+        contract=contract,
+        scope_type="REVIEW_PROGRAM_STAGE",
+        scope_id=attempt.id,
+    )
+    manifest, _ = publish_analysis_input_manifest(
+        db,
+        prepared=prepared,
+        tenant_id=program.tenant_id,
+        client_id=matter.client_id,
+        matter_id=matter.id,
+        owner_type="REVIEW_PROGRAM_CLASSIFIER_POSITIVE_COVERAGE",
+        owner_id=attempt.id,
+        producer_kind="REVIEW_PROGRAM_CLASSIFIER_POSITIVE_COVERAGE",
+        producer_run_id=run.id,
+        actor_user_id=actor_user_id,
+        lineage=[
+            WorkflowArtifactLineageInput(
+                source_kind="WORKFLOW_ARTIFACT",
+                source_artifact_id=item.prediction_artifact_id,
+            )
+            for item in scoring_runs
+            if item.prediction_artifact_id is not None
+        ],
+    )
+    summary = {
+        "schema_version": 1,
+        "state": "READY_TO_RUN" if uncovered_documents else "COMPLETED",
+        "policy_version": "review-program-classifier-positive-coverage-v1",
+        "task_version_id": str(task_version.id),
+        "required_profiles": [
+            {
+                "id": str(profile.id),
+                "key": profile.key,
+                "name": profile.name,
+                "decision_provider": profile.decision_provider,
+                "content_hash": profile.content_hash,
+            }
+            for profile in profiles
+        ],
+        "scoring_run_ids": [str(item.id) for item in scoring_runs],
+        "positive_document_count": len(positives),
+        "already_covered_document_count": already_covered_count,
+        "uncovered_document_count": len(uncovered_documents),
+        "stale_or_partial_document_count": stale_source_count,
+        "source_unavailable_document_count": source_unavailable_count,
+        "estimated_qa_request_count": len(uncovered_documents) * len(profiles),
+        "input_manifest_id": str(manifest.id),
+        "input_manifest_content_hash": manifest.artifact_content_hash,
+        "by_issue": [
+            {
+                "field_key": field_key,
+                "class_key": class_key,
+                "positive_document_count": counts["positive"],
+                "uncovered_document_count": counts["uncovered"],
+            }
+            for (field_key, class_key), counts in sorted(issue_counts.items())
+        ],
+        "by_confidence_band": dict(sorted(confidence_counts.items())),
+        "missing_by_profile": dict(sorted(missing_profile_counts.items())),
+    }
+    return manifest, summary
+
+
+def _launch_classifier_positive_coverage(
+    db: Session,
+    *,
+    program: ReviewProgram,
+    run: ReviewProgramRun,
+    attempt: ReviewProgramStageAttempt,
+    action: ReviewProgramAction,
+) -> None:
+    actor_user_id = action.resolved_by_user_id or run.initiated_by_user_id
+    attempt.status = "RUNNING"
+    run.status = "RUNNING"
+    manifest, coverage = _prepare_classifier_positive_coverage(
+        db,
+        program=program,
+        run=run,
+        attempt=attempt,
+        actor_user_id=actor_user_id,
+    )
+    matter = db.get(Matter, program.matter_id)
+    task, task_version, profiles = _qa_task_records(db, run)
+    if matter is None:
+        raise ReviewProgramError("Review Program matter is unavailable")
+    policy = dict(
+        current_review_program_version(db, program).configuration_snapshot.get("classifier_positive_coverage_policy")
+        or {}
+    )
+    batch_set = None
+    if coverage["uncovered_document_count"]:
+        try:
+            batch_set = create_batch_set(
+                db,
+                matter=matter,
+                task=task,
+                task_version=task_version,
+                name=f"{program.name} · classifier-positive Q&A coverage"[:200],
+                description=("Frozen classifier-positive population lacking current results from both Q&A profiles."),
+                population_source_type="INPUT_MANIFEST",
+                source_review_batch_id=None,
+                input_manifest_id=manifest.id,
+                search=None,
+                saved_search_id=None,
+                saved_search_name=None,
+                saved_search_updated_at=None,
+                target_batch_size=int(policy.get("target_batch_size", 100)),
+                keep_together=(["FAMILY"] if bool(policy.get("keep_families_together", True)) else []),
+                random_seed=str(run.id),
+                actor_user_id=actor_user_id,
+                notification_parent_type="REVIEW_PROGRAM_RUN",
+                notification_parent_id=run.id,
+            )
+        except AnalysisTaskBatchSetError as exc:
+            raise ReviewProgramError(str(exc)) from exc
+        batch_set.selection_definition = {
+            **batch_set.selection_definition,
+            "review_program": {
+                "program_id": str(program.id),
+                "run_id": str(run.id),
+                "stage_attempt_id": str(attempt.id),
+                "task_version_id": str(task_version.id),
+                "profile_ids": [str(profile.id) for profile in profiles],
+                "coverage_policy_version": coverage["policy_version"],
+                "scoring_run_ids": coverage["scoring_run_ids"],
+            },
+        }
+        link_review_program_child(
+            db,
+            program=program,
+            run=run,
+            stage_attempt=attempt,
+            purpose="CLASSIFIER_POSITIVE_COVERAGE_POPULATION",
+            child_type="ANALYSIS_TASK_BATCH_SET",
+            child_id=batch_set.id,
+            derivation_key=f"classifier-positive-coverage-batch-set:{attempt.id}",
+            batching_policy="PARTITIONED_SET",
+            context={
+                "input_manifest_id": str(manifest.id),
+                "population_count": coverage["uncovered_document_count"],
+                "positive_document_count": coverage["positive_document_count"],
+                "already_covered_document_count": coverage["already_covered_document_count"],
+            },
+        )
+        coverage["batch_set_id"] = str(batch_set.id)
+        coverage["target_batch_size"] = batch_set.target_batch_size
+        coverage["keep_families_together"] = bool(policy.get("keep_families_together", True))
+        coverage["batch_set_run_ids"] = []
+        coverage["state"] = "MATERIALIZING_BATCH_SET"
+    version = _create_review_program_version(
+        db,
+        program=program,
+        run=run,
+        actor_user_id=actor_user_id,
+        configuration_stage="CLASSIFIER_POSITIVE_COVERAGE",
+        configuration_updates={"classifier_positive_coverage": coverage},
+        source_hash_updates={
+            "classifier_positive_coverage_manifest_hash": manifest.artifact_content_hash,
+            "classifier_positive_coverage_policy_hash": canonical_hash(
+                {
+                    "policy_version": coverage["policy_version"],
+                    "required_profiles": coverage["required_profiles"],
+                }
+            ),
+        },
+    )
+    coverage["program_version_id"] = str(version.id)
+    run.progress_summary = {
+        **run.progress_summary,
+        "classifier_positive_coverage_state": coverage["state"],
+        "classifier_positive_coverage": coverage,
+    }
+    attempt.result_summary = {
+        **attempt.result_summary,
+        "gate_choice": "RUN_COVERAGE",
+        "action_id": str(action.id),
+        "program_version_id": str(version.id),
+        "input_manifest_id": str(manifest.id),
+    }
+    if batch_set is None:
+        _complete_action_attempt(
+            attempt,
+            action,
+            result={
+                "classifier_positive_coverage": coverage,
+                "program_version_id": str(version.id),
+            },
+        )
+        _advance_after_stage(db, program=program, run=run, attempt=attempt)
+        return
+    enqueue_analysis_task_batch_set(db, batch_set.workflow_id, str(batch_set.id))
+
+
 def _classifier_training_embedding_job(
     db: Session,
     *,
@@ -4783,9 +5264,7 @@ def _classifier_training_embedding_job(
     )
     job = next((item for item in jobs if embedding_job_output_is_usable(item)), None)
     if job is None:
-        raise ReviewProgramError(
-            "Classifier training requires a completed reusable matter embedding job"
-        )
+        raise ReviewProgramError("Classifier training requires a completed reusable matter embedding job")
     return job
 
 
@@ -4795,9 +5274,7 @@ def _classifier_label_policy(
     metadata_definition_id: uuid.UUID,
 ) -> dict[str, Any]:
     try:
-        label_run_ids = [
-            uuid.UUID(str(value)) for value in training_labels.get("label_run_ids", [])
-        ]
+        label_run_ids = [uuid.UUID(str(value)) for value in training_labels.get("label_run_ids", [])]
     except (TypeError, ValueError) as exc:
         raise ReviewProgramError("Frozen classifier label-run provenance is invalid") from exc
     if not label_run_ids:
@@ -4859,15 +5336,11 @@ def _classifier_configuration_payload(
         binary_mapping = None
         prediction_policy = {
             "one_vs_rest_thresholds": (
-                {class_key: 0.5 for class_key in ordered_class_keys}
-                if ordered_class_keys
-                else None
+                {class_key: 0.5 for class_key in ordered_class_keys} if ordered_class_keys else None
             )
         }
     if definition.type == "ENUM" and len(ordered_class_keys) < 2:
-        raise ReviewProgramError(
-            f"Classifier field {definition.display_name} must have at least two active values"
-        )
+        raise ReviewProgramError(f"Classifier field {definition.display_name} must have at least two active values")
     return ClassificationModelConfigurationCreate.model_validate(
         {
             "classification_strategy": strategy.value,
@@ -4917,8 +5390,7 @@ def _launch_classifier_training(
     try:
         definition_ids = list(
             dict.fromkeys(
-                uuid.UUID(str(value))
-                for value in accepted_task.get("destination_metadata_definition_ids", [])
+                uuid.UUID(str(value)) for value in accepted_task.get("destination_metadata_definition_ids", [])
             )
         )
     except (TypeError, ValueError) as exc:
@@ -4965,11 +5437,7 @@ def _launch_classifier_training(
                 if prior.get("configuration_id")
                 else None
             )
-            if (
-                model is None
-                or model.matter_id != matter.id
-                or model.target_metadata_definition_id != definition.id
-            ):
+            if model is None or model.matter_id != matter.id or model.target_metadata_definition_id != definition.id:
                 model = create_classification_model(
                     db,
                     matter=matter,
@@ -4977,21 +5445,12 @@ def _launch_classifier_training(
                     payload=ClassificationModelCreate(
                         target_metadata_definition_id=definition.id,
                         name=f"{program.name} — {definition.display_name}"[:200],
-                        description=(
-                            "Classifier managed by First Pass Review program "
-                            f"{program.name}."
-                        ),
+                        description=(f"Classifier managed by First Pass Review program {program.name}."),
                     ),
                 )
                 configuration = None
-            same_label_snapshot = (
-                previous.get("training_labels_content_hash") == training_labels["content_hash"]
-            )
-            if (
-                not same_label_snapshot
-                or configuration is None
-                or configuration.classification_model_id != model.id
-            ):
+            same_label_snapshot = previous.get("training_labels_content_hash") == training_labels["content_hash"]
+            if not same_label_snapshot or configuration is None or configuration.classification_model_id != model.id:
                 configuration = create_classification_model_configuration(
                     db,
                     matter=matter,
@@ -5022,8 +5481,7 @@ def _launch_classifier_training(
                         },
                         "random_seed": 42,
                         "idempotency_key": (
-                            f"review-program:{run.id}:classifier:{definition.id}:"
-                            f"attempt:{attempt.attempt}"
+                            f"review-program:{run.id}:classifier:{definition.id}:attempt:{attempt.attempt}"
                         ),
                     }
                 ),
@@ -5139,15 +5597,11 @@ def _classifier_quality_snapshot(
     weak_model_count = 0
     for job in jobs:
         training_run = (
-            db.get(ClassificationTrainingRun, job.training_run_id)
-            if job.training_run_id is not None
-            else None
+            db.get(ClassificationTrainingRun, job.training_run_id) if job.training_run_id is not None else None
         )
         version = (
             db.scalar(
-                select(ClassificationModelVersion).where(
-                    ClassificationModelVersion.training_run_id == training_run.id
-                )
+                select(ClassificationModelVersion).where(ClassificationModelVersion.training_run_id == training_run.id)
             )
             if training_run is not None
             else None
@@ -5284,12 +5738,8 @@ def project_review_program_classifier_training_terminal(
     child.context = {
         **child.context,
         "workflow_status": workflow.status,
-        "dataset_snapshot_id": (
-            str(training_job.dataset_snapshot_id) if training_job.dataset_snapshot_id else None
-        ),
-        "training_run_id": (
-            str(training_job.training_run_id) if training_job.training_run_id else None
-        ),
+        "dataset_snapshot_id": (str(training_job.dataset_snapshot_id) if training_job.dataset_snapshot_id else None),
+        "training_run_id": (str(training_job.training_run_id) if training_job.training_run_id else None),
         "failure_code": training_job.failure_code,
         "failure_summary": training_job.failure_summary,
     }
@@ -5400,9 +5850,7 @@ def project_review_program_classifier_scoring_terminal(
         "excluded_document_count": scoring_run.excluded_document_count,
         "failed_document_count": scoring_run.failed_document_count,
         "prediction_artifact_id": (
-            str(scoring_run.prediction_artifact_id)
-            if scoring_run.prediction_artifact_id is not None
-            else None
+            str(scoring_run.prediction_artifact_id) if scoring_run.prediction_artifact_id is not None else None
         ),
         "prediction_content_hash": scoring_run.prediction_content_hash,
         "failure_code": scoring_run.failure_code,
@@ -5452,10 +5900,7 @@ def project_review_program_classifier_scoring_terminal(
         )
     existing_models = {
         str(item.get("scoring_run_id")): item
-        for item in (
-            ((run.progress_summary or {}).get("whole_collection_scoring") or {}).get("models")
-            or []
-        )
+        for item in (((run.progress_summary or {}).get("whole_collection_scoring") or {}).get("models") or [])
         if isinstance(item, dict)
     }
     models = [
@@ -5496,9 +5941,7 @@ def project_review_program_classifier_scoring_terminal(
         "model_count": len(models),
         "collection_document_count": int(
             db.scalar(
-                select(func.count())
-                .select_from(MatterDocument)
-                .where(MatterDocument.matter_id == program.matter_id)
+                select(func.count()).select_from(MatterDocument).where(MatterDocument.matter_id == program.matter_id)
             )
             or 0
         ),
@@ -5525,6 +5968,114 @@ def project_review_program_classifier_scoring_terminal(
         run=run,
         result_summary=summary,
         idempotency_key=f"whole-collection-scoring-terminal:{attempt.id}",
+    )
+
+
+def _finalize_classifier_positive_coverage(
+    db: Session,
+    *,
+    program: ReviewProgram,
+    run: ReviewProgramRun,
+    attempt: ReviewProgramStageAttempt,
+    progress: dict[str, Any],
+) -> ReviewProgramEvent | None:
+    try:
+        manifest_id = uuid.UUID(str(progress["input_manifest_id"]))
+    except (KeyError, TypeError, ValueError) as exc:
+        raise ReviewProgramError("Classifier-positive coverage manifest is unavailable") from exc
+    manifest = db.get(AnalysisInputManifest, manifest_id)
+    if manifest is None or manifest.matter_id != program.matter_id:
+        raise ReviewProgramError("Classifier-positive coverage manifest is unavailable")
+    _, task_version, profiles = _qa_task_records(db, run)
+    try:
+        rows = AnalysisInputManifestReader(
+            manifest,
+            actor_user_id=run.initiated_by_user_id,
+        ).rows(0, manifest.item_count)
+    except AnalysisInputManifestError as exc:
+        raise ReviewProgramError(str(exc)) from exc
+    profile_ids = {profile.id for profile in profiles}
+    results_by_document = _program_qa_results_by_profile(
+        db,
+        run=run,
+        task_version_id=task_version.id,
+        profile_ids=profile_ids,
+    )
+    missing_profile_counts = Counter()
+    unresolved_document_count = 0
+    stale_document_count = 0
+    for row in rows:
+        try:
+            document_id = uuid.UUID(str(row["matter_document_id"]))
+        except (KeyError, TypeError, ValueError) as exc:
+            raise ReviewProgramError("Classifier-positive coverage manifest is invalid") from exc
+        expected_source_hash = row.get("source_content_hash")
+        profile_results = results_by_document.get(document_id, {})
+        if expected_source_hash:
+            current_profile_ids = {
+                profile_id
+                for profile_id, result in profile_results.items()
+                if result.source_content_hash == expected_source_hash
+            }
+        else:
+            result_hashes = {
+                result.source_content_hash
+                for profile_id, result in profile_results.items()
+                if profile_id in profile_ids
+            }
+            current_profile_ids = set(profile_results).intersection(profile_ids) if len(result_hashes) == 1 else set()
+        missing_profile_ids = profile_ids - current_profile_ids
+        if missing_profile_ids:
+            unresolved_document_count += 1
+            stale_document_count += bool(profile_results)
+            for profile in profiles:
+                if profile.id in missing_profile_ids:
+                    missing_profile_counts[profile.key] += 1
+    summary = {
+        **progress,
+        "state": "COMPLETED" if not unresolved_document_count else "INCOMPLETE",
+        "covered_by_coverage_run_document_count": manifest.item_count - unresolved_document_count,
+        "remaining_uncovered_document_count": unresolved_document_count,
+        "remaining_stale_or_partial_document_count": stale_document_count,
+        "remaining_missing_by_profile": dict(sorted(missing_profile_counts.items())),
+    }
+    run.progress_summary = {
+        **run.progress_summary,
+        "classifier_positive_coverage_state": summary["state"],
+        "classifier_positive_coverage": summary,
+    }
+    if unresolved_document_count:
+        return fail_review_program_stage(
+            db,
+            program=program,
+            run=run,
+            error_code="CLASSIFIER_POSITIVE_COVERAGE_INCOMPLETE",
+            error_summary=(
+                f"{unresolved_document_count} classifier-positive document(s) still lack "
+                "current results from both Q&A profiles"
+            ),
+            retriable=True,
+        )
+    version = _create_review_program_version(
+        db,
+        program=program,
+        run=run,
+        actor_user_id=run.initiated_by_user_id,
+        configuration_stage="FINAL_ALIGNMENT",
+        configuration_updates={"classifier_positive_coverage": summary},
+        source_hash_updates={"classifier_positive_coverage_results_hash": canonical_hash(summary)},
+    )
+    run.progress_summary = {
+        **run.progress_summary,
+        "classifier_positive_coverage": summary,
+        "classifier_positive_coverage_program_version_id": str(version.id),
+    }
+    return complete_review_program_stage(
+        db,
+        program=program,
+        run=run,
+        result_summary=summary,
+        idempotency_key=f"classifier-positive-coverage-terminal:{attempt.id}",
     )
 
 
@@ -5559,6 +6110,11 @@ def project_review_program_discovery_qa_run_terminal(
             "CLASSIFIER_IMPROVEMENT",
             "CLASSIFIER_IMPROVEMENT_QA_PROFILE_FAILED",
             "classifier_improvement",
+        ),
+        "CLASSIFIER_POSITIVE_COVERAGE_QA_PROFILE": (
+            "CLASSIFIER_POSITIVE_COVERAGE",
+            "CLASSIFIER_POSITIVE_COVERAGE_QA_PROFILE_FAILED",
+            "classifier_positive_coverage",
         ),
     }.get(child.purpose)
     if profile_stage is None:
@@ -5608,8 +6164,7 @@ def project_review_program_discovery_qa_run_terminal(
     if any(item.status not in terminal for item in resolved_runs):
         return None
     has_failed_profile = any(
-        item.status in {"FAILED", "CANCELED"} or item.failed_child_count > 0
-        for item in resolved_runs
+        item.status in {"FAILED", "CANCELED"} or item.failed_child_count > 0 for item in resolved_runs
     )
     if has_failed_profile:
         if recovering_failed_profile:
@@ -5657,6 +6212,14 @@ def project_review_program_discovery_qa_run_terminal(
         f"{progress_key}_state": "COMPLETED",
         progress_key: progress,
     }
+    if stage_key == "CLASSIFIER_POSITIVE_COVERAGE":
+        return _finalize_classifier_positive_coverage(
+            db,
+            program=program,
+            run=run,
+            attempt=attempt,
+            progress=progress,
+        )
     if stage_key == "CLASSIFIER_IMPROVEMENT":
         attempt.status = "COMPLETED"
         attempt.completed_at = utcnow()
@@ -5711,9 +6274,7 @@ def project_review_program_discovery_qa_run_terminal(
         db.scalars(
             select(ReviewProgramChild.child_id).where(
                 ReviewProgramChild.run_id == run.id,
-                ReviewProgramChild.purpose.in_(
-                    {"DISCOVERY_QA_PROFILE", "CLASSIFIER_IMPROVEMENT_QA_PROFILE"}
-                ),
+                ReviewProgramChild.purpose.in_({"DISCOVERY_QA_PROFILE", "CLASSIFIER_IMPROVEMENT_QA_PROFILE"}),
                 ReviewProgramChild.child_type == "ANALYSIS_TASK_BATCH_SET_RUN",
             )
         )
@@ -5794,17 +6355,9 @@ def resolve_review_program_action(
         and not input_payload.get("matter_definition_id")
     ):
         raise ReviewProgramError("Use the Matter Definition setup command for this choice")
-    if (
-        action.action_type == "QA_TASK_SETUP"
-        and choice_key != "STOP"
-        and not input_payload.get("task_id")
-    ):
+    if action.action_type == "QA_TASK_SETUP" and choice_key != "STOP" and not input_payload.get("task_id"):
         raise ReviewProgramError("Use the Q&A task setup command for this choice")
-    if (
-        action.action_type == "DISCOVERY_QA_SETUP"
-        and choice_key != "STOP"
-        and not input_payload.get("batch_set_id")
-    ):
+    if action.action_type == "DISCOVERY_QA_SETUP" and choice_key != "STOP" and not input_payload.get("batch_set_id"):
         raise ReviewProgramError("Use the Discovery Q&A setup command for this choice")
     if (
         action.action_type == "CLASSIFIER_IMPROVEMENT_SETUP"
@@ -5919,9 +6472,7 @@ def review_program_assessment_cancellation_targets(
         db.scalars(
             select(MatterDefinitionAssessmentRun).where(
                 MatterDefinitionAssessmentRun.id.in_(assessment_ids),
-                ~MatterDefinitionAssessmentRun.status.in_(
-                    {"COMPLETED", "COMPLETED_WITH_ERRORS", "FAILED", "CANCELED"}
-                ),
+                ~MatterDefinitionAssessmentRun.status.in_({"COMPLETED", "COMPLETED_WITH_ERRORS", "FAILED", "CANCELED"}),
             )
         )
     )
@@ -6177,8 +6728,7 @@ def reconcile_review_program_run(
             if (
                 scoring_run is not None
                 and workflow is not None
-                and scoring_run.status
-                in {"COMPLETED", "COMPLETED_WITH_ERRORS", "FAILED", "CANCELED"}
+                and scoring_run.status in {"COMPLETED", "COMPLETED_WITH_ERRORS", "FAILED", "CANCELED"}
             ):
                 project_review_program_classifier_scoring_terminal(
                     db,
@@ -6244,9 +6794,7 @@ def link_review_program_child(
         raise ReviewProgramError("Review Program child stage is stale")
     expected = _stage_for_run(program, run).batching_policy
     if batching_policy != expected:
-        raise ReviewProgramError(
-            f"Review Program stage requires {expected} batching, not {batching_policy}"
-        )
+        raise ReviewProgramError(f"Review Program stage requires {expected} batching, not {batching_policy}")
     existing = db.scalar(
         select(ReviewProgramChild).where(
             ReviewProgramChild.run_id == run.id,

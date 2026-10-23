@@ -56,6 +56,7 @@ from app.rbac_manifest import SYSTEM_ROLE_BY_KEY
 from app.review_programs import (
     ReviewProgramError,
     _activate_stage_by_key,
+    _classifier_positive_class_keys,
     cancel_review_program_discovery_children,
     link_review_program_child,
     project_review_program_assessment_terminal,
@@ -236,12 +237,13 @@ def test_first_pass_template_contract_locks_batching_policy() -> None:
     assert template is FIRST_PASS_REVIEW
     assert [phase.ordinal for phase in template.phases] == [1, 2, 3, 4, 5]
     assert len(template.content_hash) == 64
-    assert {
-        stage.key for stage in template.stages if stage.batching_policy == "AD_HOC_BATCH"
-    } == {"DEFINITION_ASSESSMENT", "DISAGREEMENT_REVIEW"}
-    assert {
-        stage.key for stage in template.stages if stage.batching_policy == "WHOLE_MATTER"
-    } == {"WHOLE_COLLECTION_SCORING"}
+    assert {stage.key for stage in template.stages if stage.batching_policy == "AD_HOC_BATCH"} == {
+        "DEFINITION_ASSESSMENT",
+        "DISAGREEMENT_REVIEW",
+    }
+    assert {stage.key for stage in template.stages if stage.batching_policy == "WHOLE_MATTER"} == {
+        "WHOLE_COLLECTION_SCORING"
+    }
     discovery = next(stage for stage in template.stages if stage.key == "DISCOVERY_QA")
     assert discovery.batching_policy == "PARTITIONED_SET"
     assert discovery.requires_human_gate is True
@@ -264,9 +266,10 @@ def test_create_multiple_independent_programs_from_one_template(
     assert [template["key"] for template in templates.json()] == ["FIRST_PASS_REVIEW"]
     template = templates.json()[0]
     assert template["content_hash"] == FIRST_PASS_REVIEW.content_hash
-    assert {
-        stage["key"] for stage in template["stages"] if stage["batching_policy"] == "AD_HOC_BATCH"
-    } == {"DEFINITION_ASSESSMENT", "DISAGREEMENT_REVIEW"}
+    assert {stage["key"] for stage in template["stages"] if stage["batching_policy"] == "AD_HOC_BATCH"} == {
+        "DEFINITION_ASSESSMENT",
+        "DISAGREEMENT_REVIEW",
+    }
 
     created_programs = []
     for key, name in (("standard-first-pass", "Standard first pass"), ("privilege-first-pass", "Privilege pass")):
@@ -333,9 +336,7 @@ def test_whole_collection_scoring_completion_advances_to_coverage_gate(
         f"{tenant_slug}@example.com",
         "client-tenant-password-123",
     )
-    tenant_user_id = uuid.UUID(
-        client.get("/v1/auth/me", headers=auth(tenant_token)).json()["id"]
-    )
+    tenant_user_id = uuid.UUID(client.get("/v1/auth/me", headers=auth(tenant_token)).json()["id"])
     create_response = client.post(
         f"/v1/matters/{matter['id']}/review-programs",
         headers=auth(tenant_token),
@@ -452,16 +453,50 @@ def test_whole_collection_scoring_completion_advances_to_coverage_gate(
     scoring_summary = payload["progress_summary"]["whole_collection_scoring"]
     assert scoring_summary["state"] == "COMPLETED"
     assert scoring_summary["model_count"] == 1
-    assert scoring_summary["aggregate_model_document_counts"]["scored_document_count"] == (
-        scoring_summary["aggregate_model_document_counts"]["population_document_count"]
+    assert (
+        scoring_summary["aggregate_model_document_counts"]["scored_document_count"]
+        == (scoring_summary["aggregate_model_document_counts"]["population_document_count"])
     )
-    coverage_action = next(
-        action for action in payload["actions"] if action["status"] == "OPEN"
-    )
+    coverage_action = next(action for action in payload["actions"] if action["status"] == "OPEN")
     assert coverage_action["stage_key"] == "CLASSIFIER_POSITIVE_COVERAGE"
-    assert coverage_action["decision_context"]["whole_collection_scoring"]["state"] == (
-        "COMPLETED"
+    assert coverage_action["action_type"] == "CLASSIFIER_POSITIVE_COVERAGE"
+    assert [choice["key"] for choice in coverage_action["allowed_choices"]] == [
+        "RUN_COVERAGE",
+        "STOP",
+    ]
+    assert coverage_action["decision_context"]["whole_collection_scoring"]["state"] == ("COMPLETED")
+    coverage_plan = coverage_action["decision_context"]["coverage_plan"]
+    assert coverage_plan["scope_type"] == "CLASSIFIER_POSITIVE_UNCOVERED"
+    assert coverage_plan["batching_policy"] == "PARTITIONED_SET"
+    assert (
+        coverage_plan["maximum_candidate_model_document_count"]
+        == (scoring_summary["aggregate_model_document_counts"]["scored_document_count"])
     )
+
+
+def test_classifier_positive_class_keys_respects_binary_positive_mapping() -> None:
+    binary = SimpleNamespace(
+        classification_strategy="BINARY",
+        binary_mapping={"positive_class_key": "responsive"},
+    )
+    assert _classifier_positive_class_keys(binary, ["not-responsive"]) == []
+    assert _classifier_positive_class_keys(binary, ["responsive", "responsive"]) == ["responsive"]
+
+    one_vs_rest = SimpleNamespace(
+        classification_strategy="ONE_VS_REST",
+        binary_mapping=None,
+    )
+    assert _classifier_positive_class_keys(one_vs_rest, ["fraud", "delay", "fraud"]) == [
+        "fraud",
+        "delay",
+    ]
+
+    missing_mapping = SimpleNamespace(
+        classification_strategy="BINARY",
+        binary_mapping={},
+    )
+    with pytest.raises(ReviewProgramError, match="positive-class provenance"):
+        _classifier_positive_class_keys(missing_mapping, ["responsive"])
 
 
 def test_synthetic_run_advances_waits_resumes_retries_reconciles_and_cancels(
@@ -510,9 +545,7 @@ def test_synthetic_run_advances_waits_resumes_retries_reconciles_and_cancels(
         program = db.get(ReviewProgram, uuid.UUID(program_id))
         run = db.get(ReviewProgramRun, uuid.UUID(run_id))
         assert program is not None and run is not None
-        first_attempt = db.scalar(
-            select(ReviewProgramStageAttempt).where(ReviewProgramStageAttempt.run_id == run.id)
-        )
+        first_attempt = db.scalar(select(ReviewProgramStageAttempt).where(ReviewProgramStageAttempt.run_id == run.id))
         assert first_attempt is not None
         with pytest.raises(ReviewProgramError, match="requires NONE batching"):
             link_review_program_child(
@@ -646,9 +679,7 @@ def test_synthetic_run_advances_waits_resumes_retries_reconciles_and_cancels(
     assert reconciled_assessment.status_code == 200, reconciled_assessment.text
     assert reconciled_assessment.json()["current_stage"] == "DEFINITION_REFINEMENT"
     assert reconciled_assessment.json()["status"] == "WAITING_FOR_USER"
-    refinement_action = next(
-        action for action in reconciled_assessment.json()["actions"] if action["status"] == "OPEN"
-    )
+    refinement_action = next(action for action in reconciled_assessment.json()["actions"] if action["status"] == "OPEN")
     blocked = client.post(
         f"{runs_url}/{run_id}/actions/{refinement_action['id']}/resolve",
         headers=auth(token),
@@ -662,9 +693,8 @@ def test_synthetic_run_advances_waits_resumes_retries_reconciles_and_cancels(
     with TestingSessionLocal() as db:
         question = db.scalar(
             select(MatterDefinitionAssessmentQuestion).where(
-                MatterDefinitionAssessmentQuestion.assessment_run_id == uuid.UUID(
-                    reconciled_assessment.json()["progress_summary"]["current_assessment_id"]
-                )
+                MatterDefinitionAssessmentQuestion.assessment_run_id
+                == uuid.UUID(reconciled_assessment.json()["progress_summary"]["current_assessment_id"])
             )
         )
         assert question is not None
@@ -790,9 +820,7 @@ def test_synthetic_run_advances_waits_resumes_retries_reconciles_and_cancels(
         db.commit()
     publication_state = client.get(f"{runs_url}/{run_id}", headers=auth(token))
     assert publication_state.status_code == 200, publication_state.text
-    publication_action = next(
-        action for action in publication_state.json()["actions"] if action["status"] == "OPEN"
-    )
+    publication_action = next(action for action in publication_state.json()["actions"] if action["status"] == "OPEN")
     assert publication_action["action_type"] == "QA_TASK_PUBLICATION"
     resumed = client.post(
         f"{runs_url}/{run_id}/actions/{publication_action['id']}/resolve",
@@ -802,9 +830,7 @@ def test_synthetic_run_advances_waits_resumes_retries_reconciles_and_cancels(
     assert resumed.status_code == 200, resumed.text
     assert resumed.json()["status"] == "WAITING_FOR_USER"
     assert resumed.json()["current_stage"] == "DISCOVERY_QA"
-    discovery_action = next(
-        action for action in resumed.json()["actions"] if action["status"] == "OPEN"
-    )
+    discovery_action = next(action for action in resumed.json()["actions"] if action["status"] == "OPEN")
     assert discovery_action["action_type"] == "DISCOVERY_QA_SETUP"
     user_id = uuid.UUID(client.get("/v1/auth/me", headers=auth(token)).json()["id"])
     document_ids = [uuid.UUID(value) for value in add_documents(matter["id"], user_id, count=3)]
@@ -876,8 +902,7 @@ def test_synthetic_run_advances_waits_resumes_retries_reconciles_and_cancels(
         def rows(self, start, count):
             assert (start, count) == (0, len(self.document_ids))
             return [
-                {"matter_document_id": str(document_id), "input_status": "READY"}
-                for document_id in self.document_ids
+                {"matter_document_id": str(document_id), "input_status": "READY"} for document_id in self.document_ids
             ]
 
     monkeypatch.setattr(batch_sets, "AnalysisInputManifestReader", DiscoveryReader)
@@ -890,9 +915,7 @@ def test_synthetic_run_advances_waits_resumes_retries_reconciles_and_cancels(
         )
         assert discovery_child is not None
         assert discovery_child.context["batching_policy"] == "PARTITIONED_SET"
-        batch_set_workflow = db.scalar(
-            select(WorkflowRun).where(WorkflowRun.job_id == discovery_child.child_id)
-        )
+        batch_set_workflow = db.scalar(select(WorkflowRun).where(WorkflowRun.job_id == discovery_child.child_id))
         assert batch_set_workflow is not None
         assert batch_set_workflow.notification_policy == "PARENT_MANAGED"
         assert batch_set_workflow.notification_parent_id == uuid.UUID(run_id)
@@ -996,9 +1019,7 @@ def test_synthetic_run_advances_waits_resumes_retries_reconciles_and_cancels(
     }
     assert analysis["support_status"] == "INSUFFICIENT"
     assert {item["value_key"] for item in analysis["low_support"]} == {"true", "false"}
-    support_action = next(
-        action for action in support_state.json()["actions"] if action["status"] == "OPEN"
-    )
+    support_action = next(action for action in support_state.json()["actions"] if action["status"] == "OPEN")
     assert {choice["key"] for choice in support_action["allowed_choices"]} == {
         "SUPPLEMENT",
         "IGNORE_LOW_SUPPORT",
@@ -1006,9 +1027,7 @@ def test_synthetic_run_advances_waits_resumes_retries_reconciles_and_cancels(
         "STOP",
     }
 
-    supplemental_documents = [
-        uuid.UUID(value) for value in add_documents(matter["id"], user_id, count=2)
-    ]
+    supplemental_documents = [uuid.UUID(value) for value in add_documents(matter["id"], user_id, count=2)]
     search_hits.extend(supplemental_documents)
     supplement = client.post(
         f"{runs_url}/{run_id}/actions/{support_action['id']}/resolve",
@@ -1021,9 +1040,7 @@ def test_synthetic_run_advances_waits_resumes_retries_reconciles_and_cancels(
     assert supplement.status_code == 200, supplement.text
     assert supplement.json()["current_stage"] == "DISCOVERY_QA"
     assert supplement.json()["current_stage_ordinal"] == 6
-    second_discovery_action = next(
-        action for action in supplement.json()["actions"] if action["status"] == "OPEN"
-    )
+    second_discovery_action = next(action for action in supplement.json()["actions"] if action["status"] == "OPEN")
     second_started = client.post(
         f"{runs_url}/{run_id}/actions/{second_discovery_action['id']}/discovery-setup",
         headers=auth(token),
@@ -1111,9 +1128,7 @@ def test_synthetic_run_advances_waits_resumes_retries_reconciles_and_cancels(
     )
     assert limitations_accepted.status_code == 200, limitations_accepted.text
     assert limitations_accepted.json()["current_stage"] == "DISAGREEMENT_REVIEW"
-    label_action = next(
-        action for action in limitations_accepted.json()["actions"] if action["status"] == "OPEN"
-    )
+    label_action = next(action for action in limitations_accepted.json()["actions"] if action["status"] == "OPEN")
     assert {choice["key"] for choice in label_action["allowed_choices"]} == {
         "USE_ALL_MODEL_CODES",
         "USE_EXACT_AGREEMENT",
@@ -1134,9 +1149,7 @@ def test_synthetic_run_advances_waits_resumes_retries_reconciles_and_cancels(
     assert disagreement_review.json()["progress_summary"]["training_label_resolution"]["state"] == (
         "AWAITING_ADJUDICATION"
     )
-    completion_action = next(
-        action for action in disagreement_review.json()["actions"] if action["status"] == "OPEN"
-    )
+    completion_action = next(action for action in disagreement_review.json()["actions"] if action["status"] == "OPEN")
     assert [choice["key"] for choice in completion_action["allowed_choices"]] == [
         "CONFIRM_ADJUDICATION",
         "STOP",
@@ -1198,12 +1211,8 @@ def test_synthetic_run_advances_waits_resumes_retries_reconciles_and_cancels(
 
     live_completion = client.get(f"{runs_url}/{run_id}", headers=auth(token))
     assert live_completion.status_code == 200, live_completion.text
-    live_action = next(
-        action for action in live_completion.json()["actions"] if action["status"] == "OPEN"
-    )
-    live_batches = live_action["decision_context"]["training_label_resolution"][
-        "difference_batches"
-    ]
+    live_action = next(action for action in live_completion.json()["actions"] if action["status"] == "OPEN")
+    live_batches = live_action["decision_context"]["training_label_resolution"]["difference_batches"]
     assert live_batches == [
         {
             "id": str(difference_batch_id),
@@ -1243,9 +1252,7 @@ def test_synthetic_run_advances_waits_resumes_retries_reconciles_and_cancels(
                 coding=coding,
                 matter_document_id=document_id,
                 status="COMPLETED",
-                field_replacements=(
-                    ReviewerFieldReplacement(definition=destination, values=(True,)),
-                ),
+                field_replacements=(ReviewerFieldReplacement(definition=destination, values=(True,)),),
                 actor_user_id=user_id,
                 tenant_id=program.tenant_id,
                 matter_id=difference_batch.matter_id,
@@ -1262,15 +1269,16 @@ def test_synthetic_run_advances_waits_resumes_retries_reconciles_and_cancels(
     )
     assert adjudicated.status_code == 200, adjudicated.text
     assert adjudicated.json()["current_stage"] == "TRAINING_LABEL_FINALIZATION"
-    finalization_action = next(
-        action for action in adjudicated.json()["actions"] if action["status"] == "OPEN"
-    )
+    finalization_action = next(action for action in adjudicated.json()["actions"] if action["status"] == "OPEN")
     assert finalization_action["decision_context"]["training_label_resolution"]["policy"] == (
         "ADJUDICATED_DISAGREEMENTS"
     )
-    assert finalization_action["decision_context"]["training_label_resolution"][
-        "adjudication_sources"
-    ][0]["reviewer_coding_revision"] == 2
+    assert (
+        finalization_action["decision_context"]["training_label_resolution"]["adjudication_sources"][0][
+            "reviewer_coding_revision"
+        ]
+        == 2
+    )
 
     with TestingSessionLocal() as db:
         db.add(
@@ -1370,9 +1378,7 @@ def test_synthetic_run_advances_waits_resumes_retries_reconciles_and_cancels(
                 "quality": "WEAK",
                 "metrics": {"primary_pr_auc": 0.61, "macro_f1": 0.55},
                 "training_eligible_count": 5,
-                "weak_categories": [
-                    {"class_key": "true", "reasons": ["LOW_F1"], "f1": 0.5}
-                ],
+                "weak_categories": [{"class_key": "true", "reasons": ["LOW_F1"], "f1": 0.5}],
             }
         ],
     }
@@ -1410,9 +1416,7 @@ def test_synthetic_run_advances_waits_resumes_retries_reconciles_and_cancels(
     assert classifier_review.status_code == 200, classifier_review.text
     assert classifier_review.json()["current_stage"] == "CLASSIFIER_REVIEW"
     assert classifier_review.json()["status"] == "WAITING_FOR_USER"
-    review_action = next(
-        action for action in classifier_review.json()["actions"] if action["status"] == "OPEN"
-    )
+    review_action = next(action for action in classifier_review.json()["actions"] if action["status"] == "OPEN")
     assert review_action["decision_context"]["classifier_results"]["overall_quality"] == "WEAK"
     assert {choice["key"] for choice in review_action["allowed_choices"]} == {
         "ACCEPT_CLASSIFIERS",
@@ -1437,18 +1441,14 @@ def test_synthetic_run_advances_waits_resumes_retries_reconciles_and_cancels(
     )
     assert improvement_gate.status_code == 200, improvement_gate.text
     assert improvement_gate.json()["current_stage"] == "CLASSIFIER_IMPROVEMENT"
-    improvement_action = next(
-        action for action in improvement_gate.json()["actions"] if action["status"] == "OPEN"
-    )
+    improvement_action = next(action for action in improvement_gate.json()["actions"] if action["status"] == "OPEN")
     assert improvement_action["action_type"] == "CLASSIFIER_IMPROVEMENT_SETUP"
     targets = improvement_action["decision_context"]["retrieval_plan"]["targets"]
     assert len(targets) == 1
     assert targets[0]["metadata_definition_id"] == str(destination_id)
     assert targets[0]["class_key"] == "true"
 
-    improvement_documents = [
-        uuid.UUID(value) for value in add_documents(matter["id"], user_id, count=2)
-    ]
+    improvement_documents = [uuid.UUID(value) for value in add_documents(matter["id"], user_id, count=2)]
     search_hits.extend(improvement_documents)
     improvement_started = client.post(
         f"{runs_url}/{run_id}/actions/{improvement_action['id']}/classifier-improvement-setup",
@@ -1469,9 +1469,7 @@ def test_synthetic_run_advances_waits_resumes_retries_reconciles_and_cancels(
         },
     )
     assert improvement_started.status_code == 202, improvement_started.text
-    assert improvement_started.json()["progress_summary"]["classifier_improvement_state"] == (
-        "MATERIALIZING_BATCH_SET"
-    )
+    assert improvement_started.json()["progress_summary"]["classifier_improvement_state"] == ("MATERIALIZING_BATCH_SET")
     assert published_populations[-1] == improvement_documents
 
     with TestingSessionLocal() as db:
@@ -1516,9 +1514,7 @@ def test_synthetic_run_advances_waits_resumes_retries_reconciles_and_cancels(
     improved_support = client.get(f"{runs_url}/{run_id}", headers=auth(token))
     assert improved_support.status_code == 200, improved_support.text
     assert improved_support.json()["current_stage"] == "ISSUE_SUPPORT_DECISION"
-    assert len(
-        improved_support.json()["progress_summary"]["discovery_analysis"]["profile_run_ids"]
-    ) == 6
+    assert len(improved_support.json()["progress_summary"]["discovery_analysis"]["profile_run_ids"]) == 6
     improved_support_action = next(
         action for action in improved_support.json()["actions"] if action["status"] == "OPEN"
     )
@@ -1531,9 +1527,7 @@ def test_synthetic_run_advances_waits_resumes_retries_reconciles_and_cancels(
         },
     )
     assert improved_labels.status_code == 200, improved_labels.text
-    improved_label_action = next(
-        action for action in improved_labels.json()["actions"] if action["status"] == "OPEN"
-    )
+    improved_label_action = next(action for action in improved_labels.json()["actions"] if action["status"] == "OPEN")
     selected_labels = client.post(
         f"{runs_url}/{run_id}/actions/{improved_label_action['id']}/resolve",
         headers=auth(token),
@@ -1556,12 +1550,11 @@ def test_synthetic_run_advances_waits_resumes_retries_reconciles_and_cancels(
     )
     assert second_finalized.status_code == 200, second_finalized.text
     second_training = second_finalized.json()["progress_summary"]["classifier_training"]
-    assert second_training["models"][0]["classification_model_id"] == (
-        classifier_training["models"][0]["classification_model_id"]
+    assert (
+        second_training["models"][0]["classification_model_id"]
+        == (classifier_training["models"][0]["classification_model_id"])
     )
-    assert second_training["models"][0]["configuration_id"] != (
-        classifier_training["models"][0]["configuration_id"]
-    )
+    assert second_training["models"][0]["configuration_id"] != (classifier_training["models"][0]["configuration_id"])
 
     with TestingSessionLocal() as db:
         second_training_job = db.get(
@@ -1605,18 +1598,14 @@ def test_synthetic_run_advances_waits_resumes_retries_reconciles_and_cancels(
     assert accepted_classifiers.status_code == 200, accepted_classifiers.text
     assert accepted_classifiers.json()["current_stage"] == "WHOLE_COLLECTION_SCORING"
     assert len(accepted_classifiers.json()["progress_summary"]["accepted_classifiers"]["approvals"]) == 1
-    scoring_action = next(
-        action for action in accepted_classifiers.json()["actions"] if action["status"] == "OPEN"
-    )
+    scoring_action = next(action for action in accepted_classifiers.json()["actions"] if action["status"] == "OPEN")
     assert scoring_action["action_type"] == "WHOLE_COLLECTION_SCORING"
     assert [choice["key"] for choice in scoring_action["allowed_choices"]] == [
         "START_SCORING",
         "STOP",
     ]
     assert scoring_action["decision_context"]["scoring_plan"]["model_count"] == 1
-    assert scoring_action["decision_context"]["scoring_plan"]["models"][0]["field_name"] == (
-        "Responsive"
-    )
+    assert scoring_action["decision_context"]["scoring_plan"]["models"][0]["field_name"] == ("Responsive")
 
     canceled = client.post(
         f"{runs_url}/{run_id}/cancel",
