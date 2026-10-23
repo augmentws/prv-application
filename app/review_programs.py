@@ -44,6 +44,7 @@ from app.audit import record_audit
 from app.authorization import ResourceRef, user_can
 from app.config import get_settings
 from app.embeddings.configuration import canonical_hash
+from app.job_executions import REVIEW_BATCH_MATERIALIZATION_JOB_TYPE, cancel_job_execution
 from app.matter_definition_assessments import AssessmentError, start_assessment
 from app.matter_definitions import (
     MatterDefinitionError,
@@ -67,7 +68,12 @@ from app.models import (
     MatterDefinitionRevision,
     MatterDocument,
     MetadataDefinition,
+    ReviewBatch,
+    ReviewBatchCodingField,
+    ReviewBatchCodingGroup,
     ReviewBatchDocument,
+    ReviewBatchReviewerCoding,
+    ReviewBatchReviewerDocument,
     ReviewBatchRun,
     ReviewProgram,
     ReviewProgramAction,
@@ -88,17 +94,20 @@ from app.notifications import (
     publish_notification,
     resolve_source_notifications,
 )
-from app.review_batch_comparisons import iter_comparison_documents
+from app.review_batch_comparisons import comparison_document_ids, iter_comparison_documents
+from app.review_batches import create_review_batch_execution
 from app.review_workflow_templates import (
     BatchingPolicy,
     ReviewWorkflowStageSpec,
     ReviewWorkflowTemplateSpec,
     get_review_workflow_template,
 )
+from app.reviewer_coding import resolve_reviewer_coding_as_of
 from app.schemas import ReviewBatchComparisonSourceOptionRead
 from app.workflows.dispatcher import (
     enqueue_analysis_task_batch_set,
     enqueue_analysis_task_batch_set_run,
+    enqueue_review_batch,
 )
 
 
@@ -228,6 +237,7 @@ def _action_contract(
     *,
     qa_setup_state: str | None = None,
     support_state: str | None = None,
+    training_label_state: str | None = None,
 ) -> tuple[str, str, list[dict[str, Any]]]:
     stop = {
         "key": "STOP",
@@ -398,6 +408,73 @@ def _action_contract(
                     "key": "CONTINUE",
                     "label": "Accept current support",
                     "consequence": "Proceed to difference review using the frozen discovery results.",
+                },
+                stop,
+            ],
+        )
+    if stage.key == "DISAGREEMENT_REVIEW":
+        if training_label_state == "AWAITING_ADJUDICATION":
+            return (
+                "Complete the difference review",
+                (
+                    "Open each ad hoc difference batch and assign the correct coding. Continue only after every "
+                    "document has a completed human coding; skipped documents remain unresolved."
+                ),
+                [
+                    {
+                        "key": "CONFIRM_ADJUDICATION",
+                        "label": "Confirm difference review complete",
+                        "consequence": (
+                            "Validate every assigned difference batch and freeze the reviewer coding revisions."
+                        ),
+                    },
+                    stop,
+                ],
+            )
+        return (
+            "Choose the classifier training labels",
+            (
+                "Choose how the two Q&A results become classifier labels. Agreement measures consistency, not "
+                "correctness; each option remains pinned to the completed discovery runs."
+            ),
+            [
+                {
+                    "key": "USE_ALL_MODEL_CODES",
+                    "label": "Use all model codings",
+                    "consequence": (
+                        "Include both model outputs as equal-authority label claims; conflicting documents are "
+                        "excluded from training."
+                    ),
+                },
+                {
+                    "key": "USE_EXACT_AGREEMENT",
+                    "label": "Use exact model agreements",
+                    "consequence": (
+                        "Use only documents where both models assigned the same complete coding set."
+                    ),
+                },
+                {
+                    "key": "REVIEW_DISAGREEMENTS",
+                    "label": "Review model differences",
+                    "consequence": (
+                        "Create ad hoc difference batches and use completed human coding for disagreements."
+                    ),
+                },
+                stop,
+            ],
+        )
+    if stage.key == "TRAINING_LABEL_FINALIZATION":
+        return (
+            "Finalize the classifier training labels",
+            (
+                "Freeze the selected label policy, source runs, human adjudication revisions, exclusions, and "
+                "accepted limitations before classifier training begins."
+            ),
+            [
+                {
+                    "key": "FINALIZE",
+                    "label": "Finalize training labels",
+                    "consequence": "Create an immutable training-label provenance snapshot and begin training.",
                 },
                 stop,
             ],
@@ -619,6 +696,62 @@ def _discovery_stage_context(
     }
 
 
+def _training_label_stage_context(db: Session, *, run: ReviewProgramRun) -> dict[str, Any]:
+    resolution = dict((run.progress_summary or {}).get("training_label_resolution") or {})
+    raw_batch_ids = resolution.get("difference_batch_ids") or []
+    try:
+        batch_ids = [uuid.UUID(str(value)) for value in raw_batch_ids]
+    except (TypeError, ValueError) as exc:
+        raise ReviewProgramError("Difference-batch provenance is invalid") from exc
+    batches = {
+        batch.id: batch
+        for batch in db.scalars(select(ReviewBatch).where(ReviewBatch.id.in_(batch_ids)))
+    }
+    batch_reads = []
+    for batch_id in batch_ids:
+        batch = batches.get(batch_id)
+        if batch is None:
+            continue
+        coding = db.scalar(
+            select(ReviewBatchReviewerCoding).where(
+                ReviewBatchReviewerCoding.review_batch_id == batch.id,
+                ReviewBatchReviewerCoding.reviewer_user_id == batch.assigned_user_id,
+            )
+        )
+        completed_count = (
+            int(
+                db.scalar(
+                    select(func.count())
+                    .select_from(ReviewBatchReviewerDocument)
+                    .where(
+                        ReviewBatchReviewerDocument.reviewer_coding_id == coding.id,
+                        ReviewBatchReviewerDocument.status == "COMPLETED",
+                    )
+                )
+                or 0
+            )
+            if coding is not None
+            else 0
+        )
+        batch_reads.append(
+            {
+                "id": str(batch.id),
+                "name": batch.name,
+                "status": batch.status,
+                "document_count": batch.document_count,
+                "assigned_user_id": str(batch.assigned_user_id) if batch.assigned_user_id else None,
+                "reviewer_coding_id": str(coding.id) if coding is not None else None,
+                "reviewer_coding_revision": coding.revision if coding is not None else None,
+                "completed_document_count": completed_count,
+            }
+        )
+    resolution["difference_batches"] = batch_reads
+    return {
+        "discovery_analysis": (run.progress_summary or {}).get("discovery_analysis", {}),
+        "training_label_resolution": resolution,
+    }
+
+
 def _create_action_for_stage(
     db: Session,
     *,
@@ -632,11 +765,15 @@ def _create_action_for_stage(
     support_state = str(
         ((run.progress_summary or {}).get("discovery_analysis") or {}).get("support_status") or ""
     )
+    training_label_state = str(
+        ((run.progress_summary or {}).get("training_label_resolution") or {}).get("state") or ""
+    )
     title, explanation, choices = _action_contract(
         template,
         stage,
         qa_setup_state=qa_setup_state,
         support_state=support_state,
+        training_label_state=training_label_state,
     )
     decision_context = {
         "schema_version": 1,
@@ -653,6 +790,8 @@ def _create_action_for_stage(
             if stage.key == "DISCOVERY_QA"
             else {"discovery_analysis": (run.progress_summary or {}).get("discovery_analysis", {})}
             if stage.key == "ISSUE_SUPPORT_DECISION"
+            else _training_label_stage_context(db, run=run)
+            if stage.key in {"DISAGREEMENT_REVIEW", "TRAINING_LABEL_FINALIZATION"}
             else {}
         ),
     }
@@ -668,6 +807,12 @@ def _create_action_for_stage(
                 "QA_TASK_PUBLICATION" if qa_setup_state == "READY_FOR_PUBLICATION" else "QA_TASK_SETUP"
             ),
             "DISCOVERY_QA": "DISCOVERY_QA_SETUP",
+            "DISAGREEMENT_REVIEW": (
+                "DISAGREEMENT_REVIEW_COMPLETION"
+                if training_label_state == "AWAITING_ADJUDICATION"
+                else "TRAINING_LABEL_POLICY"
+            ),
+            "TRAINING_LABEL_FINALIZATION": "TRAINING_LABEL_FINALIZATION",
         }.get(stage.key, "STAGE_GATE"),
         title=title,
         explanation=explanation,
@@ -2474,6 +2619,48 @@ def process_review_program_event(
                 run=run,
                 stage_key="DEFINITION_REFINEMENT",
             )
+        elif action.stage_key == "DISAGREEMENT_REVIEW" and choice == "USE_ALL_MODEL_CODES":
+            _select_training_label_policy(
+                db,
+                program=program,
+                run=run,
+                attempt=attempt,
+                action=action,
+                policy="ALL_MODEL_CODES",
+            )
+        elif action.stage_key == "DISAGREEMENT_REVIEW" and choice == "USE_EXACT_AGREEMENT":
+            _select_training_label_policy(
+                db,
+                program=program,
+                run=run,
+                attempt=attempt,
+                action=action,
+                policy="EXACT_AGREEMENT",
+            )
+        elif action.stage_key == "DISAGREEMENT_REVIEW" and choice == "REVIEW_DISAGREEMENTS":
+            _start_disagreement_review(
+                db,
+                program=program,
+                run=run,
+                attempt=attempt,
+                action=action,
+            )
+        elif action.stage_key == "DISAGREEMENT_REVIEW" and choice == "CONFIRM_ADJUDICATION":
+            _confirm_disagreement_review(
+                db,
+                program=program,
+                run=run,
+                attempt=attempt,
+                action=action,
+            )
+        elif action.stage_key == "TRAINING_LABEL_FINALIZATION" and choice == "FINALIZE":
+            _finalize_training_labels(
+                db,
+                program=program,
+                run=run,
+                attempt=attempt,
+                action=action,
+            )
         elif choice == "CONTINUE":
             _complete_action_attempt(attempt, action)
             _advance_after_stage(db, program=program, run=run, attempt=attempt)
@@ -3055,6 +3242,489 @@ def _discovery_alignment_snapshot(
     }
 
 
+def _completed_discovery_profile_runs(
+    db: Session,
+    *,
+    run: ReviewProgramRun,
+) -> list[AnalysisTaskBatchSetRun]:
+    child_ids = list(
+        db.scalars(
+            select(ReviewProgramChild.child_id).where(
+                ReviewProgramChild.run_id == run.id,
+                ReviewProgramChild.purpose == "DISCOVERY_QA_PROFILE",
+                ReviewProgramChild.child_type == "ANALYSIS_TASK_BATCH_SET_RUN",
+            )
+        )
+    )
+    if not child_ids:
+        raise ReviewProgramError("Discovery Q&A profile provenance is unavailable")
+    profile_runs = list(
+        db.scalars(
+            select(AnalysisTaskBatchSetRun)
+            .where(
+                AnalysisTaskBatchSetRun.id.in_(child_ids),
+                AnalysisTaskBatchSetRun.status.in_({"COMPLETED", "COMPLETED_WITH_ERRORS"}),
+            )
+            .order_by(AnalysisTaskBatchSetRun.created_at, AnalysisTaskBatchSetRun.id)
+        )
+    )
+    if len(profile_runs) != len(child_ids):
+        raise ReviewProgramError("Every Discovery Q&A profile run must be complete before label resolution")
+    return profile_runs
+
+
+def _create_disagreement_review_batches(
+    db: Session,
+    *,
+    program: ReviewProgram,
+    run: ReviewProgramRun,
+    attempt: ReviewProgramStageAttempt,
+    actor_user_id: uuid.UUID,
+) -> list[ReviewBatch]:
+    profile_runs = _completed_discovery_profile_runs(db, run=run)
+    runs_by_batch_set: dict[uuid.UUID, list[AnalysisTaskBatchSetRun]] = {}
+    for profile_run in profile_runs:
+        runs_by_batch_set.setdefault(profile_run.analysis_task_batch_set_id, []).append(profile_run)
+    accepted_task = (run.progress_summary or {}).get("accepted_qa_task") or {}
+    try:
+        definition_ids = list(
+            dict.fromkeys(
+                uuid.UUID(str(value))
+                for value in accepted_task.get("destination_metadata_definition_ids", [])
+            )
+        )
+    except (TypeError, ValueError) as exc:
+        raise ReviewProgramError("Q&A destination-field provenance is invalid") from exc
+    if not definition_ids:
+        raise ReviewProgramError("Q&A destination-field provenance is unavailable")
+    definitions = {
+        definition.id: definition
+        for definition in db.scalars(
+            select(MetadataDefinition).where(
+                MetadataDefinition.matter_id == program.matter_id,
+                MetadataDefinition.id.in_(definition_ids),
+            )
+        )
+    }
+    created: list[ReviewBatch] = []
+    for batch_set_id, paired_runs in sorted(runs_by_batch_set.items(), key=lambda item: str(item[0])):
+        if len(paired_runs) != 2:
+            raise ReviewProgramError("Difference review requires exactly two profiles per discovery population")
+        left_parent, right_parent = sorted(paired_runs, key=lambda item: str(item.execution_profile_id))
+        left_profile = db.get(AnalysisTaskExecutionProfile, left_parent.execution_profile_id)
+        right_profile = db.get(AnalysisTaskExecutionProfile, right_parent.execution_profile_id)
+        if left_profile is None or right_profile is None:
+            raise ReviewProgramError("Discovery execution-profile provenance is unavailable")
+        child_maps = []
+        for parent in (left_parent, right_parent):
+            child_maps.append(
+                {
+                    child.review_batch_id: child
+                    for child in db.scalars(
+                        select(AnalysisTaskBatchSetRunChild).where(
+                            AnalysisTaskBatchSetRunChild.batch_set_run_id == parent.id
+                        )
+                    )
+                }
+            )
+        if not child_maps[0] or set(child_maps[0]) != set(child_maps[1]):
+            raise ReviewProgramError("Discovery profiles do not cover the same source batches")
+        for source_batch_id in sorted(set(child_maps[0]).intersection(child_maps[1]), key=str):
+            source_batch = db.get(ReviewBatch, source_batch_id)
+            left_run = db.get(ReviewBatchRun, child_maps[0][source_batch_id].child_run_id)
+            right_run = db.get(ReviewBatchRun, child_maps[1][source_batch_id].child_run_id)
+            if source_batch is None or left_run is None or right_run is None:
+                raise ReviewProgramError("Discovery child-run provenance is incomplete")
+            source_options = [
+                ReviewBatchComparisonSourceOptionRead(
+                    id=source.id,
+                    source_type="RUN",
+                    run_type=source.run_type,
+                    purpose=source.purpose,
+                    status=source.status,
+                    label=profile.name,
+                    detail=profile.resolved_model,
+                    metadata_definition_ids=definition_ids,
+                    created_at=source.created_at,
+                )
+                for profile, source in ((left_profile, left_run), (right_profile, right_run))
+            ]
+            source_snapshots = [
+                {**source.model_dump(mode="json"), "reviewer_revision": None}
+                for source in source_options
+            ]
+            for definition_id in definition_ids:
+                definition = definitions.get(definition_id)
+                if definition is None:
+                    raise ReviewProgramError("A Q&A destination field is unavailable")
+                candidate_ids = comparison_document_ids(
+                    db,
+                    batch_id=source_batch.id,
+                    definition_id=definition.id,
+                    source_options=source_options,
+                    row_filter="DISAGREEMENT",
+                )
+                if not candidate_ids:
+                    continue
+                batch_id = uuid.uuid4()
+                batch = ReviewBatch(
+                    id=batch_id,
+                    matter_id=program.matter_id,
+                    name=(
+                        f"{program.name} · {definition.display_name} differences · {len(created) + 1}"
+                    )[:200],
+                    description=(
+                        "Ad hoc human review of differences between the two pinned Discovery Q&A profiles."
+                    ),
+                    selection_type="COMPARISON_RESULT",
+                    selection_definition={
+                        "type": "COMPARISON_RESULT",
+                        "review_program_id": str(program.id),
+                        "review_program_run_id": str(run.id),
+                        "stage_attempt_id": str(attempt.id),
+                        "batching_policy": "AD_HOC_BATCH",
+                        "source_batch_id": str(source_batch.id),
+                        "source_batch_name": source_batch.name,
+                        "source_batch_set_id": str(batch_set_id),
+                        "metadata_definition_id": str(definition.id),
+                        "field_display_name": definition.display_name,
+                        "row_filter": "DISAGREEMENT",
+                        "sources": source_snapshots,
+                        "candidate_count": len(candidate_ids),
+                    },
+                    source_batch_id=source_batch.id,
+                    assigned_user_id=program.owner_user_id,
+                    assigned_by_user_id=actor_user_id,
+                    assigned_at=utcnow(),
+                    reviewer_value_visibility="OWN_VALUES",
+                    status="QUEUED",
+                    workflow_id=f"review-batch:{batch_id}",
+                    created_by_user_id=actor_user_id,
+                )
+                db.add(batch)
+                db.flush()
+                group = ReviewBatchCodingGroup(
+                    review_batch_id=batch.id,
+                    source_metadata_group_id=None,
+                    display_name="Difference review",
+                    description="Assign the final coding for the field where the Q&A profiles differ.",
+                    sort_order=0,
+                )
+                db.add(group)
+                db.flush()
+                db.add(
+                    ReviewBatchCodingField(
+                        review_batch_coding_group_id=group.id,
+                        metadata_definition_id=definition.id,
+                        sort_order=0,
+                        definition_snapshot={
+                            "key": definition.key,
+                            "display_name": definition.display_name,
+                            "description": definition.description,
+                            "type": definition.type,
+                            "cardinality": definition.cardinality,
+                            "allowed_values": definition.allowed_values,
+                        },
+                    )
+                )
+                execution = create_review_batch_execution(
+                    db,
+                    batch,
+                    initiated_by_user_id=actor_user_id,
+                    notification_parent_type="REVIEW_PROGRAM_RUN",
+                    notification_parent_id=run.id,
+                )
+                link_review_program_child(
+                    db,
+                    program=program,
+                    run=run,
+                    stage_attempt=attempt,
+                    purpose="DISCOVERY_DISAGREEMENT_REVIEW",
+                    child_type="REVIEW_BATCH",
+                    child_id=batch.id,
+                    derivation_key=(
+                        f"disagreement-review:{attempt.id}:{source_batch.id}:{definition.id}"
+                    ),
+                    batching_policy="AD_HOC_BATCH",
+                    context={
+                        "source_batch_id": str(source_batch.id),
+                        "metadata_definition_id": str(definition.id),
+                        "candidate_count": len(candidate_ids),
+                        "assigned_user_id": str(program.owner_user_id),
+                    },
+                )
+                enqueue_review_batch(db, execution.dbos_workflow_id, str(batch.id))
+                record_audit(
+                    db,
+                    tenant_id=program.tenant_id,
+                    actor_user_id=actor_user_id,
+                    action="review_program.disagreement_batch_created",
+                    target_type="review_batch",
+                    target_id=batch.id,
+                    details={
+                        "program_id": str(program.id),
+                        "run_id": str(run.id),
+                        "source_batch_id": str(source_batch.id),
+                        "metadata_definition_id": str(definition.id),
+                        "candidate_count": len(candidate_ids),
+                    },
+                )
+                created.append(batch)
+    return created
+
+
+def _select_training_label_policy(
+    db: Session,
+    *,
+    program: ReviewProgram,
+    run: ReviewProgramRun,
+    attempt: ReviewProgramStageAttempt,
+    action: ReviewProgramAction,
+    policy: str,
+) -> None:
+    profile_runs = _completed_discovery_profile_runs(db, run=run)
+    resolution = {
+        "schema_version": 1,
+        "state": "POLICY_SELECTED",
+        "policy": policy,
+        "profile_run_ids": [str(item.id) for item in profile_runs],
+        "difference_batch_ids": [],
+        "adjudication_sources": [],
+        "selected_by_user_id": str(action.resolved_by_user_id),
+        "selected_at": action.resolved_at.isoformat() if action.resolved_at else None,
+    }
+    version = _create_review_program_version(
+        db,
+        program=program,
+        run=run,
+        actor_user_id=action.resolved_by_user_id or run.initiated_by_user_id,
+        configuration_stage="TRAINING_LABEL_FINALIZATION",
+        configuration_updates={"training_label_resolution": resolution},
+        source_hash_updates={"training_label_resolution_hash": canonical_hash(resolution)},
+    )
+    run.progress_summary = {**run.progress_summary, "training_label_resolution": resolution}
+    _complete_action_attempt(
+        attempt,
+        action,
+        result={"training_label_resolution": resolution, "program_version_id": str(version.id)},
+    )
+    _advance_after_stage(db, program=program, run=run, attempt=attempt)
+
+
+def _start_disagreement_review(
+    db: Session,
+    *,
+    program: ReviewProgram,
+    run: ReviewProgramRun,
+    attempt: ReviewProgramStageAttempt,
+    action: ReviewProgramAction,
+) -> None:
+    batches = _create_disagreement_review_batches(
+        db,
+        program=program,
+        run=run,
+        attempt=attempt,
+        actor_user_id=action.resolved_by_user_id or run.initiated_by_user_id,
+    )
+    if not batches:
+        _select_training_label_policy(
+            db,
+            program=program,
+            run=run,
+            attempt=attempt,
+            action=action,
+            policy="EXACT_AGREEMENT",
+        )
+        return
+    profile_runs = _completed_discovery_profile_runs(db, run=run)
+    resolution = {
+        "schema_version": 1,
+        "state": "AWAITING_ADJUDICATION",
+        "policy": "ADJUDICATED_DISAGREEMENTS",
+        "profile_run_ids": [str(item.id) for item in profile_runs],
+        "difference_batch_ids": [str(batch.id) for batch in batches],
+        "difference_document_count": sum(
+            int(batch.selection_definition.get("candidate_count", 0)) for batch in batches
+        ),
+        "adjudication_sources": [],
+        "selected_by_user_id": str(action.resolved_by_user_id),
+        "selected_at": action.resolved_at.isoformat() if action.resolved_at else None,
+    }
+    _create_review_program_version(
+        db,
+        program=program,
+        run=run,
+        actor_user_id=action.resolved_by_user_id or run.initiated_by_user_id,
+        configuration_stage="DISAGREEMENT_REVIEW",
+        configuration_updates={"training_label_resolution": resolution},
+        source_hash_updates={"training_label_resolution_hash": canonical_hash(resolution)},
+    )
+    run.progress_summary = {**run.progress_summary, "training_label_resolution": resolution}
+    attempt.status = "RUNNING"
+    _create_action_for_stage(
+        db,
+        program=program,
+        run=run,
+        attempt=attempt,
+        stage=_stage_for_run(program, run),
+        template=_template_for_program(program),
+    )
+
+
+def _confirm_disagreement_review(
+    db: Session,
+    *,
+    program: ReviewProgram,
+    run: ReviewProgramRun,
+    attempt: ReviewProgramStageAttempt,
+    action: ReviewProgramAction,
+) -> None:
+    resolution = dict((run.progress_summary or {}).get("training_label_resolution") or {})
+    if resolution.get("state") != "AWAITING_ADJUDICATION":
+        raise ReviewProgramError("Difference review is not awaiting adjudication")
+    try:
+        batch_ids = [uuid.UUID(str(value)) for value in resolution.get("difference_batch_ids", [])]
+    except (TypeError, ValueError) as exc:
+        raise ReviewProgramError("Difference-batch provenance is invalid") from exc
+    if not batch_ids:
+        raise ReviewProgramError("Difference-batch provenance is unavailable")
+    adjudication_sources: list[dict[str, Any]] = []
+    for batch_id in batch_ids:
+        batch = db.get(ReviewBatch, batch_id)
+        if batch is None or batch.matter_id != program.matter_id:
+            raise ReviewProgramError("A difference batch is unavailable")
+        if batch.source_batch_id is None:
+            raise ReviewProgramError(f"Difference batch {batch.name} has no source batch")
+        if batch.status != "READY":
+            raise ReviewProgramError(f"Difference batch {batch.name} is not ready")
+        if batch.assigned_user_id is None:
+            raise ReviewProgramError(f"Difference batch {batch.name} has no assigned reviewer")
+        coding = db.scalar(
+            select(ReviewBatchReviewerCoding).where(
+                ReviewBatchReviewerCoding.review_batch_id == batch.id,
+                ReviewBatchReviewerCoding.reviewer_user_id == batch.assigned_user_id,
+            )
+        )
+        if coding is None:
+            raise ReviewProgramError(f"Difference batch {batch.name} has not been reviewed")
+        document_ids = list(
+            db.scalars(
+                select(ReviewBatchDocument.matter_document_id)
+                .where(ReviewBatchDocument.review_batch_id == batch.id)
+                .order_by(ReviewBatchDocument.sequence_number)
+            )
+        )
+        if len(document_ids) != batch.document_count:
+            raise ReviewProgramError(f"Difference batch {batch.name} membership is incomplete")
+        try:
+            definition_id = uuid.UUID(str(batch.selection_definition["metadata_definition_id"]))
+        except (KeyError, TypeError, ValueError) as exc:
+            raise ReviewProgramError(
+                f"Difference batch {batch.name} has invalid coding-field provenance"
+            ) from exc
+        resolved = resolve_reviewer_coding_as_of(
+            db,
+            reviewer_coding_id=coding.id,
+            revision=coding.revision,
+            document_ids=document_ids,
+            metadata_definition_ids=[definition_id],
+        )
+        completed_document_ids = {
+            item.matter_document_id for item in resolved.documents if item.status == "COMPLETED"
+        }
+        if len(completed_document_ids) != batch.document_count:
+            raise ReviewProgramError(
+                f"Difference batch {batch.name} has "
+                f"{batch.document_count - len(completed_document_ids)} unresolved documents"
+            )
+        coded_document_ids = {
+            item.matter_document_id
+            for item in resolved.fields
+            if item.metadata_definition_id == definition_id
+        }
+        if coded_document_ids != set(document_ids):
+            raise ReviewProgramError(
+                f"Difference batch {batch.name} has incomplete field coding"
+            )
+        adjudication_sources.append(
+            {
+                "review_batch_id": str(batch.id),
+                "source_batch_id": str(batch.source_batch_id),
+                "metadata_definition_id": str(definition_id),
+                "reviewer_coding_id": str(coding.id),
+                "reviewer_user_id": str(coding.reviewer_user_id),
+                "reviewer_coding_revision": coding.revision,
+                "document_count": batch.document_count,
+            }
+        )
+    resolution = {
+        **resolution,
+        "state": "POLICY_SELECTED",
+        "adjudication_sources": adjudication_sources,
+        "confirmed_by_user_id": str(action.resolved_by_user_id),
+        "confirmed_at": action.resolved_at.isoformat() if action.resolved_at else None,
+    }
+    version = _create_review_program_version(
+        db,
+        program=program,
+        run=run,
+        actor_user_id=action.resolved_by_user_id or run.initiated_by_user_id,
+        configuration_stage="TRAINING_LABEL_FINALIZATION",
+        configuration_updates={"training_label_resolution": resolution},
+        source_hash_updates={"training_label_resolution_hash": canonical_hash(resolution)},
+    )
+    run.progress_summary = {**run.progress_summary, "training_label_resolution": resolution}
+    _complete_action_attempt(
+        attempt,
+        action,
+        result={"training_label_resolution": resolution, "program_version_id": str(version.id)},
+    )
+    _advance_after_stage(db, program=program, run=run, attempt=attempt)
+
+
+def _finalize_training_labels(
+    db: Session,
+    *,
+    program: ReviewProgram,
+    run: ReviewProgramRun,
+    attempt: ReviewProgramStageAttempt,
+    action: ReviewProgramAction,
+) -> None:
+    resolution = dict((run.progress_summary or {}).get("training_label_resolution") or {})
+    if resolution.get("state") != "POLICY_SELECTED":
+        raise ReviewProgramError("Training-label policy has not been selected")
+    snapshot = {
+        **resolution,
+        "state": "FROZEN",
+        "frozen_by_user_id": str(action.resolved_by_user_id),
+        "frozen_at": action.resolved_at.isoformat() if action.resolved_at else None,
+        "discovery_analysis_hash": canonical_hash(
+            (run.progress_summary or {}).get("discovery_analysis") or {}
+        ),
+    }
+    snapshot["content_hash"] = canonical_hash(snapshot)
+    version = _create_review_program_version(
+        db,
+        program=program,
+        run=run,
+        actor_user_id=action.resolved_by_user_id or run.initiated_by_user_id,
+        configuration_stage="CLASSIFIER_TRAINING",
+        configuration_updates={"training_labels": snapshot},
+        source_hash_updates={"training_labels_content_hash": snapshot["content_hash"]},
+    )
+    run.progress_summary = {
+        **run.progress_summary,
+        "training_label_resolution": {**resolution, "state": "FROZEN"},
+        "training_labels": snapshot,
+    }
+    _complete_action_attempt(
+        attempt,
+        action,
+        result={"training_labels": snapshot, "program_version_id": str(version.id)},
+    )
+    _advance_after_stage(db, program=program, run=run, attempt=attempt)
+
+
 def project_review_program_discovery_qa_run_terminal(
     db: Session,
     *,
@@ -3396,10 +4066,11 @@ def cancel_review_program_discovery_children(
     *,
     run: ReviewProgramRun,
     actor_user_id: uuid.UUID,
-) -> tuple[list[str], list[str], list[str]]:
+) -> tuple[list[str], list[str], list[str], list[str]]:
     batch_set_workflow_ids: list[str] = []
     batch_run_workflow_ids: list[str] = []
     child_workflow_ids: list[str] = []
+    review_batch_workflow_ids: list[str] = []
     children = list(db.scalars(select(ReviewProgramChild).where(ReviewProgramChild.run_id == run.id)))
     for child in children:
         if child.child_type == "ANALYSIS_TASK_BATCH_SET_RUN":
@@ -3427,7 +4098,25 @@ def cancel_review_program_discovery_children(
             if canceled:
                 child.status = "CANCELED"
                 batch_set_workflow_ids.append(execution.dbos_workflow_id)
-    return batch_set_workflow_ids, batch_run_workflow_ids, child_workflow_ids
+        elif child.child_type == "REVIEW_BATCH":
+            batch = db.get(ReviewBatch, child.child_id)
+            if batch is None or batch.status not in {"QUEUED", "BUILDING"}:
+                continue
+            execution, canceled = cancel_job_execution(
+                db,
+                job_type=REVIEW_BATCH_MATERIALIZATION_JOB_TYPE,
+                job_id=batch.id,
+                actor_user_id=actor_user_id,
+            )
+            if canceled:
+                child.status = "CANCELED"
+                review_batch_workflow_ids.append(execution.dbos_workflow_id)
+    return (
+        batch_set_workflow_ids,
+        batch_run_workflow_ids,
+        child_workflow_ids,
+        review_batch_workflow_ids,
+    )
 
 
 def cancel_review_program_run(
@@ -3662,3 +4351,20 @@ def review_program_run_details(
         )
     )
     return attempts, actions, events
+
+
+def review_program_action_decision_context(
+    db: Session,
+    *,
+    run: ReviewProgramRun,
+    action: ReviewProgramAction,
+) -> dict[str, Any]:
+    """Return live operational detail without changing the action's frozen decision preview."""
+
+    context = dict(action.decision_context)
+    if action.status == "OPEN" and action.stage_key in {
+        "DISAGREEMENT_REVIEW",
+        "TRAINING_LABEL_FINALIZATION",
+    }:
+        context.update(_training_label_stage_context(db, run=run))
+    return context

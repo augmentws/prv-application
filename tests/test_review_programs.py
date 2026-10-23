@@ -9,8 +9,13 @@ from sqlalchemy import func, select
 
 import app.analysis_task_batch_set_runs as batch_set_runs
 import app.analysis_task_batch_sets as batch_sets
+from app import review_batches
 from app.analysis_task_skills import ensure_standard_analysis_task_skills
-from app.job_executions import ANALYSIS_TASK_BATCH_SET_RUN_JOB_TYPE, transition_job_execution
+from app.job_executions import (
+    ANALYSIS_TASK_BATCH_SET_RUN_JOB_TYPE,
+    REVIEW_BATCH_MATERIALIZATION_JOB_TYPE,
+    transition_job_execution,
+)
 from app.models import (
     AnalysisInputManifest,
     AnalysisTaskBatchSetRun,
@@ -22,7 +27,9 @@ from app.models import (
     MatterDefinitionAssessmentRun,
     MetadataDefinition,
     Notification,
+    ReviewBatch,
     ReviewBatchDocument,
+    ReviewBatchReviewerCoding,
     ReviewBatchRun,
     ReviewBatchRunDocument,
     ReviewBatchRunValue,
@@ -40,11 +47,13 @@ from app.models import (
 from app.rbac_manifest import SYSTEM_ROLE_BY_KEY
 from app.review_programs import (
     ReviewProgramError,
+    cancel_review_program_discovery_children,
     link_review_program_child,
     project_review_program_assessment_terminal,
     project_review_program_qa_compilation_terminal,
 )
 from app.review_workflow_templates import FIRST_PASS_REVIEW, get_review_workflow_template
+from app.reviewer_coding import ReviewerFieldReplacement, append_reviewer_coding_revision
 from app.standard_skills import ensure_standard_assessment_skills
 from tests.test_review_batches import add_documents
 
@@ -645,11 +654,15 @@ def test_synthetic_run_advances_waits_resumes_retries_reconciles_and_cancels(
     )
 
     published_populations: list[list[uuid.UUID]] = []
+    manifest_populations: dict[uuid.UUID, list[uuid.UUID]] = {}
 
     def publish_manifest(db, *, prepared, **kwargs):
-        published_populations.append(prepared_manifest_document_ids(prepared))
+        population = prepared_manifest_document_ids(prepared)
+        published_populations.append(population)
+        manifest_id = uuid.uuid4()
+        manifest_populations[manifest_id] = population
         manifest = AnalysisInputManifest(
-            id=uuid.uuid4(),
+            id=manifest_id,
             tenant_id=kwargs["tenant_id"],
             client_id=kwargs["client_id"],
             matter_id=kwargs["matter_id"],
@@ -695,14 +708,15 @@ def test_synthetic_run_advances_waits_resumes_retries_reconciles_and_cancels(
     assert discovery_started.json()["progress_summary"]["discovery_qa"]["selected_document_count"] == 3
 
     class DiscoveryReader:
-        def __init__(self, _manifest, *, actor_user_id):
+        def __init__(self, manifest, *, actor_user_id):
             assert actor_user_id == user_id
+            self.document_ids = manifest_populations[manifest.id]
 
         def rows(self, start, count):
-            assert (start, count) == (0, len(document_ids))
+            assert (start, count) == (0, len(self.document_ids))
             return [
                 {"matter_document_id": str(document_id), "input_status": "READY"}
-                for document_id in document_ids
+                for document_id in self.document_ids
             ]
 
     monkeypatch.setattr(batch_sets, "AnalysisInputManifestReader", DiscoveryReader)
@@ -882,6 +896,237 @@ def test_synthetic_run_advances_waits_resumes_retries_reconciles_and_cancels(
         assert provenance["excluded_prior_program_document_count"] == len(document_ids)
         assert provenance["prior_discovery_batch_set_ids"] == [str(discovery_children[0].child_id)]
 
+        batch_sets.materialize_batch_set(
+            db,
+            supplemental_set.id,
+            batch_sets.get_settings().model_copy(update={"search_enabled": False}),
+        )
+        batch_sets.complete_batch_set_materialization(db, supplemental_set.id)
+        db.commit()
+
+    with TestingSessionLocal() as db:
+        supplemental_profile_runs = list(
+            db.scalars(
+                select(AnalysisTaskBatchSetRun)
+                .where(AnalysisTaskBatchSetRun.analysis_task_batch_set_id == supplemental_set.id)
+                .order_by(AnalysisTaskBatchSetRun.execution_profile_id)
+            )
+        )
+        assert len(supplemental_profile_runs) == 2
+        complete_discovery_profile_run(
+            db,
+            profile_run=supplemental_profile_runs[0],
+            destination_id=destination_id,
+            value=True,
+        )
+        complete_discovery_profile_run(
+            db,
+            profile_run=supplemental_profile_runs[1],
+            destination_id=destination_id,
+            value=False,
+        )
+        db.commit()
+
+    second_support_state = client.get(f"{runs_url}/{run_id}", headers=auth(token))
+    assert second_support_state.status_code == 200, second_support_state.text
+    assert second_support_state.json()["current_stage"] == "ISSUE_SUPPORT_DECISION"
+    second_analysis = second_support_state.json()["progress_summary"]["discovery_analysis"]
+    assert second_analysis["overall"] == {
+        "exact_count": 3,
+        "partial_count": 0,
+        "disagreement_count": 2,
+        "incomplete_count": 0,
+    }
+    second_support_action = next(
+        action for action in second_support_state.json()["actions"] if action["status"] == "OPEN"
+    )
+    limitations_accepted = client.post(
+        f"{runs_url}/{run_id}/actions/{second_support_action['id']}/resolve",
+        headers=auth(token),
+        json={
+            "preview_hash": second_support_action["preview_hash"],
+            "choice_key": "IGNORE_LOW_SUPPORT",
+        },
+    )
+    assert limitations_accepted.status_code == 200, limitations_accepted.text
+    assert limitations_accepted.json()["current_stage"] == "DISAGREEMENT_REVIEW"
+    label_action = next(
+        action for action in limitations_accepted.json()["actions"] if action["status"] == "OPEN"
+    )
+    assert {choice["key"] for choice in label_action["allowed_choices"]} == {
+        "USE_ALL_MODEL_CODES",
+        "USE_EXACT_AGREEMENT",
+        "REVIEW_DISAGREEMENTS",
+        "STOP",
+    }
+
+    disagreement_review = client.post(
+        f"{runs_url}/{run_id}/actions/{label_action['id']}/resolve",
+        headers=auth(token),
+        json={
+            "preview_hash": label_action["preview_hash"],
+            "choice_key": "REVIEW_DISAGREEMENTS",
+        },
+    )
+    assert disagreement_review.status_code == 200, disagreement_review.text
+    assert disagreement_review.json()["current_stage"] == "DISAGREEMENT_REVIEW"
+    assert disagreement_review.json()["progress_summary"]["training_label_resolution"]["state"] == (
+        "AWAITING_ADJUDICATION"
+    )
+    completion_action = next(
+        action for action in disagreement_review.json()["actions"] if action["status"] == "OPEN"
+    )
+    assert [choice["key"] for choice in completion_action["allowed_choices"]] == [
+        "CONFIRM_ADJUDICATION",
+        "STOP",
+    ]
+    premature_confirmation = client.post(
+        f"{runs_url}/{run_id}/actions/{completion_action['id']}/resolve",
+        headers=auth(token),
+        json={
+            "preview_hash": completion_action["preview_hash"],
+            "choice_key": "CONFIRM_ADJUDICATION",
+        },
+    )
+    assert premature_confirmation.status_code == 409
+    assert "not ready" in premature_confirmation.text
+
+    with TestingSessionLocal() as db:
+        difference_children = list(
+            db.scalars(
+                select(ReviewProgramChild).where(
+                    ReviewProgramChild.run_id == uuid.UUID(run_id),
+                    ReviewProgramChild.purpose == "DISCOVERY_DISAGREEMENT_REVIEW",
+                )
+            )
+        )
+        assert len(difference_children) == 1
+        assert difference_children[0].context["batching_policy"] == "AD_HOC_BATCH"
+        difference_batch = db.get(ReviewBatch, difference_children[0].child_id)
+        assert difference_batch is not None
+        assert difference_batch.selection_type == "COMPARISON_RESULT"
+        assert difference_batch.selection_definition["candidate_count"] == 2
+        difference_workflow = db.scalar(
+            select(WorkflowRun).where(
+                WorkflowRun.job_type == REVIEW_BATCH_MATERIALIZATION_JOB_TYPE,
+                WorkflowRun.job_id == difference_batch.id,
+            )
+        )
+        assert difference_workflow is not None
+        assert difference_workflow.notification_policy == "PARENT_MANAGED"
+        assert difference_workflow.notification_parent_id == uuid.UUID(run_id)
+        difference_batch_id = difference_batch.id
+        run_model = db.get(ReviewProgramRun, uuid.UUID(run_id))
+        assert run_model is not None
+        cancellation_targets = cancel_review_program_discovery_children(
+            db,
+            run=run_model,
+            actor_user_id=user_id,
+        )
+        assert cancellation_targets[3] == [difference_workflow.dbos_workflow_id]
+        db.rollback()
+        difference_batch = db.get(ReviewBatch, difference_batch_id)
+        assert difference_batch is not None and difference_batch.status == "QUEUED"
+        review_batches.materialize_review_batch(
+            db,
+            difference_batch.id,
+            batch_sets.get_settings().model_copy(update={"search_enabled": False}),
+        )
+        review_batches.complete_review_batch_execution(db, difference_batch.id)
+        db.commit()
+
+    live_completion = client.get(f"{runs_url}/{run_id}", headers=auth(token))
+    assert live_completion.status_code == 200, live_completion.text
+    live_action = next(
+        action for action in live_completion.json()["actions"] if action["status"] == "OPEN"
+    )
+    live_batches = live_action["decision_context"]["training_label_resolution"][
+        "difference_batches"
+    ]
+    assert live_batches == [
+        {
+            "id": str(difference_batch_id),
+            "name": live_batches[0]["name"],
+            "status": "READY",
+            "document_count": 2,
+            "assigned_user_id": str(user_id),
+            "reviewer_coding_id": None,
+            "reviewer_coding_revision": None,
+            "completed_document_count": 0,
+        }
+    ]
+
+    with TestingSessionLocal() as db:
+        difference_batch = db.get(ReviewBatch, difference_batch_id)
+        assert difference_batch is not None
+        difference_document_ids = list(
+            db.scalars(
+                select(ReviewBatchDocument.matter_document_id)
+                .where(ReviewBatchDocument.review_batch_id == difference_batch.id)
+                .order_by(ReviewBatchDocument.sequence_number)
+            )
+        )
+        coding = ReviewBatchReviewerCoding(
+            review_batch_id=difference_batch.id,
+            reviewer_user_id=user_id,
+            revision=0,
+        )
+        db.add(coding)
+        db.flush()
+        destination = db.get(MetadataDefinition, destination_id)
+        program = db.get(ReviewProgram, uuid.UUID(program_id))
+        assert destination is not None and program is not None
+        for document_id in difference_document_ids:
+            append_reviewer_coding_revision(
+                db,
+                coding=coding,
+                matter_document_id=document_id,
+                status="COMPLETED",
+                field_replacements=(
+                    ReviewerFieldReplacement(definition=destination, values=(True,)),
+                ),
+                actor_user_id=user_id,
+                tenant_id=program.tenant_id,
+                matter_id=difference_batch.matter_id,
+            )
+        db.commit()
+
+    adjudicated = client.post(
+        f"{runs_url}/{run_id}/actions/{completion_action['id']}/resolve",
+        headers=auth(token),
+        json={
+            "preview_hash": completion_action["preview_hash"],
+            "choice_key": "CONFIRM_ADJUDICATION",
+        },
+    )
+    assert adjudicated.status_code == 200, adjudicated.text
+    assert adjudicated.json()["current_stage"] == "TRAINING_LABEL_FINALIZATION"
+    finalization_action = next(
+        action for action in adjudicated.json()["actions"] if action["status"] == "OPEN"
+    )
+    assert finalization_action["decision_context"]["training_label_resolution"]["policy"] == (
+        "ADJUDICATED_DISAGREEMENTS"
+    )
+    assert finalization_action["decision_context"]["training_label_resolution"][
+        "adjudication_sources"
+    ][0]["reviewer_coding_revision"] == 2
+
+    finalized = client.post(
+        f"{runs_url}/{run_id}/actions/{finalization_action['id']}/resolve",
+        headers=auth(token),
+        json={
+            "preview_hash": finalization_action["preview_hash"],
+            "choice_key": "FINALIZE",
+        },
+    )
+    assert finalized.status_code == 200, finalized.text
+    assert finalized.json()["current_stage"] == "CLASSIFIER_TRAINING"
+    assert finalized.json()["status"] == "RUNNING"
+    training_labels = finalized.json()["progress_summary"]["training_labels"]
+    assert training_labels["state"] == "FROZEN"
+    assert training_labels["policy"] == "ADJUDICATED_DISAGREEMENTS"
+    assert len(training_labels["content_hash"]) == 64
+
     canceled = client.post(
         f"{runs_url}/{run_id}/cancel",
         headers=auth(token),
@@ -908,13 +1153,6 @@ def test_synthetic_run_advances_waits_resumes_retries_reconciles_and_cancels(
             )
         )
         assert len(discovery_children) == 2
-        discovery_workflow = db.scalar(
-            select(WorkflowRun)
-            .where(WorkflowRun.job_id == discovery_children[-1].child_id)
-            .order_by(WorkflowRun.attempt_number.desc())
-        )
-        assert discovery_workflow is not None
-        assert discovery_workflow.status == "CANCELED"
         profile_run_ids = list(
             db.scalars(
                 select(ReviewProgramChild.child_id).where(
@@ -926,8 +1164,11 @@ def test_synthetic_run_advances_waits_resumes_retries_reconciles_and_cancels(
         profile_runs = list(
             db.scalars(select(AnalysisTaskBatchSetRun).where(AnalysisTaskBatchSetRun.id.in_(profile_run_ids)))
         )
-        assert len(profile_runs) == 2
+        assert len(profile_runs) == 4
         assert {item.status for item in profile_runs} == {"COMPLETED"}
+        difference_batch = db.get(ReviewBatch, difference_batch_id)
+        assert difference_batch is not None
+        assert difference_batch.status == "READY"
         assert (
             db.scalar(
                 select(func.count())

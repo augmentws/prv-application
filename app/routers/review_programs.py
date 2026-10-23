@@ -21,6 +21,7 @@ from app.review_programs import (
     reconcile_review_program_run,
     resolve_review_program_action,
     retry_review_program_run,
+    review_program_action_decision_context,
     review_program_assessment_cancellation_targets,
     review_program_run_details,
     setup_review_program_definition,
@@ -54,6 +55,7 @@ from app.workflows.dispatcher import (
     cancel_analysis_task_batch_set_run_workflow,
     cancel_analysis_task_batch_set_workflow,
     cancel_definition_assessment,
+    cancel_review_batch,
 )
 
 template_router = APIRouter(prefix="/v1/review-workflow-templates", tags=["review programs"])
@@ -78,10 +80,22 @@ def _program_read(db: Session, program: ReviewProgram) -> ReviewProgramRead:
 
 def _run_read(db: Session, run: ReviewProgramRun) -> ReviewProgramRunRead:
     attempts, actions, events = review_program_run_details(db, run)
+    action_reads = [
+        ReviewProgramActionRead.model_validate(item).model_copy(
+            update={
+                "decision_context": review_program_action_decision_context(
+                    db,
+                    run=run,
+                    action=item,
+                )
+            }
+        )
+        for item in actions
+    ]
     return ReviewProgramRunRead.model_validate(run).model_copy(
         update={
             "stage_attempts": [ReviewProgramStageAttemptRead.model_validate(item) for item in attempts],
-            "actions": [ReviewProgramActionRead.model_validate(item) for item in actions],
+            "actions": action_reads,
             "events": [ReviewProgramEventRead.model_validate(item) for item in events],
         }
     )
@@ -256,9 +270,29 @@ def resolve_program_action(
     db: Session = Depends(get_db),
 ) -> ReviewProgramRunRead:
     _matter_with_permission(db, principal, matter_id, "review_program.manage")
+    assessment_cancellations: list[tuple[uuid.UUID, str | None]] = []
+    discovery_batch_set_workflows: list[str] = []
+    discovery_batch_run_workflows: list[str] = []
+    discovery_child_workflows: list[str] = []
+    difference_batch_workflows: list[str] = []
     try:
         program = get_review_program(db, matter_id=matter_id, program_id=program_id, for_update=True)
         run = get_review_program_run(db, program=program, run_id=run_id, for_update=True)
+        if payload.choice_key == "STOP":
+            assessment_cancellations = [
+                (assessment.id, workflow.dbos_workflow_id if workflow is not None else None)
+                for assessment, workflow in review_program_assessment_cancellation_targets(db, run)
+            ]
+            (
+                discovery_batch_set_workflows,
+                discovery_batch_run_workflows,
+                discovery_child_workflows,
+                difference_batch_workflows,
+            ) = cancel_review_program_discovery_children(
+                db,
+                run=run,
+                actor_user_id=principal.user.id,
+            )
         resolve_review_program_action(
             db,
             program=program,
@@ -274,6 +308,18 @@ def resolve_program_action(
     except ReviewProgramError as exc:
         db.rollback()
         raise _http_error(exc) from exc
+    for assessment_id, dbos_workflow_id in assessment_cancellations:
+        cancel_provider_batches(db, assessment_id)
+        if dbos_workflow_id:
+            cancel_definition_assessment(dbos_workflow_id)
+    for workflow_id in discovery_batch_set_workflows:
+        cancel_analysis_task_batch_set_workflow(workflow_id)
+    for workflow_id in discovery_batch_run_workflows:
+        cancel_analysis_task_batch_set_run_workflow(workflow_id)
+    for workflow_id in discovery_child_workflows:
+        cancel_analysis_task_batch(workflow_id)
+    for workflow_id in difference_batch_workflows:
+        cancel_review_batch(workflow_id)
     db.refresh(run)
     return _run_read(db, run)
 
@@ -437,6 +483,7 @@ def cancel_program_run(
             discovery_batch_set_workflows,
             discovery_batch_run_workflows,
             discovery_child_workflows,
+            difference_batch_workflows,
         ) = cancel_review_program_discovery_children(
             db,
             run=run,
@@ -464,6 +511,8 @@ def cancel_program_run(
         cancel_analysis_task_batch_set_run_workflow(workflow_id)
     for workflow_id in discovery_child_workflows:
         cancel_analysis_task_batch(workflow_id)
+    for workflow_id in difference_batch_workflows:
+        cancel_review_batch(workflow_id)
     db.refresh(run)
     return _run_read(db, run)
 

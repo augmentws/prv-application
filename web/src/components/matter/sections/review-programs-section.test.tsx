@@ -322,6 +322,115 @@ describe("ReviewProgramsSection", () => {
     });
   });
 
+  it("presents the three classifier-label policies and starts difference review", async () => {
+    vi.mocked(coreApi).mockImplementation(async (path, options) => {
+      if (path === "/v1/review-workflow-templates") return [{
+        key: "FIRST_PASS_REVIEW", version: 1, schema_version: 1, content_hash: "a".repeat(64),
+        name: "First Pass Review", description: "Guided review", workflow_type: "FIRST_PASS_REVIEW", phases: [],
+        stages: [{ key: "DISAGREEMENT_REVIEW", name: "Difference review", phase_key: "TRAINING_SET", ordinal: 9, batching_policy: "AD_HOC_BATCH", requires_human_gate: true }],
+      }] as never;
+      if (path === "/v1/matters/matter-1/review-programs") return [{
+        id: "program-1", tenant_id: "tenant-1", matter_id: "matter-1", template_key: "FIRST_PASS_REVIEW",
+        template_version: 1, template_content_hash: "a".repeat(64), key: "standard-first-pass", name: "Standard first pass",
+        description: "Responsive review", status: "ACTIVE", current_run_id: "run-1", current_version: { version: 5 }, created_at: "2026-10-21T00:00:00Z",
+      }] as never;
+      if (path === "/v1/matters/matter-1/review-programs/program-1/runs" && !options) return [{
+        id: "run-1", program_id: "program-1", status: "WAITING_FOR_USER", current_stage: "DISAGREEMENT_REVIEW",
+        current_stage_ordinal: 9, created_at: "2026-10-21T00:00:00Z", failure_retriable: false, failure_summary: null,
+        stage_attempts: [{ stage_key: "DISAGREEMENT_REVIEW", status: "WAITING" }],
+        actions: [{
+          id: "action-1", action_type: "TRAINING_LABEL_POLICY", stage_key: "DISAGREEMENT_REVIEW", status: "OPEN",
+          title: "Choose the classifier training labels", explanation: "Choose how the two Q&A results become labels.", preview_hash: "b".repeat(64),
+          decision_context: {
+            discovery_analysis: { profile_run_ids: ["run-a", "run-b"], overall: { exact_count: 31, partial_count: 2, disagreement_count: 3 } },
+            training_label_resolution: {},
+          },
+          allowed_choices: [
+            { key: "USE_ALL_MODEL_CODES", label: "Use all model codings", consequence: "Use both sources and exclude conflicts." },
+            { key: "USE_EXACT_AGREEMENT", label: "Use exact model agreements", consequence: "Use exact matches." },
+            { key: "REVIEW_DISAGREEMENTS", label: "Review model differences", consequence: "Create review batches." },
+            { key: "STOP", label: "Stop program", consequence: "End this run." },
+          ],
+        }],
+      }] as never;
+      if (path.endsWith("/actions/action-1/resolve") && options?.method === "POST") return {
+        id: "run-1", program_id: "program-1", status: "WAITING_FOR_USER", current_stage: "DISAGREEMENT_REVIEW",
+      } as never;
+      throw new Error(`Unexpected API request: ${path}`);
+    });
+    renderSection();
+
+    expect(await screen.findByText("Not selected")).toBeInTheDocument();
+    expect(screen.getByText("Model differences").nextElementSibling).toHaveTextContent("5");
+    await userEvent.click(screen.getByRole("button", { name: "Review model differences" }));
+
+    await waitFor(() => expect(coreApi).toHaveBeenCalledWith(
+      "/v1/matters/matter-1/review-programs/program-1/runs/run-1/actions/action-1/resolve",
+      expect.objectContaining({ method: "POST" }),
+    ));
+    const call = vi.mocked(coreApi).mock.calls.find(([path]) => path.endsWith("/actions/action-1/resolve"));
+    expect(JSON.parse(String(call?.[1]?.body))).toEqual({
+      preview_hash: "b".repeat(64),
+      choice_key: "REVIEW_DISAGREEMENTS",
+    });
+  });
+
+  it("links live ad hoc difference batches and confirms adjudication", async () => {
+    vi.mocked(coreApi).mockImplementation(async (path, options) => {
+      if (path === "/v1/review-workflow-templates") return [{
+        key: "FIRST_PASS_REVIEW", version: 1, schema_version: 1, content_hash: "a".repeat(64),
+        name: "First Pass Review", description: "Guided review", workflow_type: "FIRST_PASS_REVIEW", phases: [],
+        stages: [{ key: "DISAGREEMENT_REVIEW", name: "Difference review", phase_key: "TRAINING_SET", ordinal: 9, batching_policy: "AD_HOC_BATCH", requires_human_gate: true }],
+      }] as never;
+      if (path === "/v1/matters/matter-1/review-programs") return [{
+        id: "program-1", tenant_id: "tenant-1", matter_id: "matter-1", template_key: "FIRST_PASS_REVIEW",
+        template_version: 1, template_content_hash: "a".repeat(64), key: "standard-first-pass", name: "Standard first pass",
+        description: "Responsive review", status: "ACTIVE", current_run_id: "run-1", current_version: { version: 6 }, created_at: "2026-10-21T00:00:00Z",
+      }] as never;
+      if (path === "/v1/matters/matter-1/review-programs/program-1/runs" && !options) return [{
+        id: "run-1", program_id: "program-1", status: "WAITING_FOR_USER", current_stage: "DISAGREEMENT_REVIEW",
+        current_stage_ordinal: 9, created_at: "2026-10-21T00:00:00Z", failure_retriable: false, failure_summary: null,
+        stage_attempts: [{ stage_key: "DISAGREEMENT_REVIEW", status: "WAITING" }],
+        actions: [{
+          id: "action-1", action_type: "DISAGREEMENT_REVIEW_COMPLETION", stage_key: "DISAGREEMENT_REVIEW", status: "OPEN",
+          title: "Complete the difference review", explanation: "Complete every document before continuing.", preview_hash: "b".repeat(64),
+          decision_context: {
+            discovery_analysis: { profile_run_ids: ["run-a", "run-b"], overall: { exact_count: 31, partial_count: 2, disagreement_count: 3 } },
+            training_label_resolution: {
+              policy: "ADJUDICATED_DISAGREEMENTS", profile_run_ids: ["run-a", "run-b"],
+              difference_batches: [{ id: "batch-1", name: "Responsive differences", status: "READY", document_count: 2, completed_document_count: 1 }],
+            },
+          },
+          allowed_choices: [
+            { key: "CONFIRM_ADJUDICATION", label: "Confirm difference review complete", consequence: "Freeze reviewer revisions." },
+            { key: "STOP", label: "Stop program", consequence: "End this run." },
+          ],
+        }],
+      }] as never;
+      if (path.endsWith("/actions/action-1/resolve") && options?.method === "POST") return {
+        id: "run-1", program_id: "program-1", status: "WAITING_FOR_USER", current_stage: "TRAINING_LABEL_FINALIZATION",
+      } as never;
+      throw new Error(`Unexpected API request: ${path}`);
+    });
+    renderSection();
+
+    expect(await screen.findByText("Adjudicated Disagreements")).toBeInTheDocument();
+    expect(screen.getByText("Responsive differences")).toBeInTheDocument();
+    expect(screen.getByText(/1 of 2 completed/)).toBeInTheDocument();
+    expect(screen.getByRole("link", { name: "Open review batch" })).toHaveAttribute("href", "/review/matters/matter-1?batch=batch-1");
+    await userEvent.click(screen.getByRole("button", { name: "Confirm difference review complete" }));
+
+    await waitFor(() => expect(coreApi).toHaveBeenCalledWith(
+      "/v1/matters/matter-1/review-programs/program-1/runs/run-1/actions/action-1/resolve",
+      expect.objectContaining({ method: "POST" }),
+    ));
+    const call = vi.mocked(coreApi).mock.calls.find(([path]) => path.endsWith("/actions/action-1/resolve"));
+    expect(JSON.parse(String(call?.[1]?.body))).toEqual({
+      preview_hash: "b".repeat(64),
+      choice_key: "CONFIRM_ADJUDICATION",
+    });
+  });
+
   it("shows the current gate and resolves it through the coordinator endpoint", async () => {
     vi.mocked(coreApi).mockImplementation(async (path, options) => {
       if (path === "/v1/review-workflow-templates") return [{

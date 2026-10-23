@@ -45,7 +45,11 @@ def create_review_batch_execution(
     *,
     initiated_by_user_id: uuid.UUID,
     retry_of: WorkflowRun | None = None,
+    notification_parent_type: str | None = None,
+    notification_parent_id: uuid.UUID | None = None,
 ) -> WorkflowRun:
+    if (notification_parent_type is None) != (notification_parent_id is None):
+        raise ValueError("Review batch notification parent type and id must be supplied together")
     matter = db.get(Matter, batch.matter_id)
     if matter is None:
         raise ValueError("Matter not found")
@@ -82,6 +86,9 @@ def create_review_batch_execution(
         },
         configuration_snapshot={"materialization_chunk_size": MATERIALIZATION_CHUNK_SIZE},
         retry_of=retry_of,
+        notification_policy="PARENT_MANAGED" if notification_parent_id is not None else "DEFAULT",
+        notification_parent_type=notification_parent_type,
+        notification_parent_id=notification_parent_id,
     )
     batch.workflow_id = execution.dbos_workflow_id
     return execution
@@ -114,6 +121,8 @@ def retry_review_batch_execution(
         batch,
         initiated_by_user_id=initiated_by_user_id,
         retry_of=current,
+        notification_parent_type=current.notification_parent_type,
+        notification_parent_id=current.notification_parent_id,
     )
 
 
