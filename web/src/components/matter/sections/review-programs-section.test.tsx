@@ -625,4 +625,56 @@ describe("ReviewProgramsSection", () => {
       keep_families_together: true,
     });
   });
+
+  it("summarizes accepted classifiers and starts whole-collection scoring", async () => {
+    vi.mocked(coreApi).mockImplementation(async (path, options) => {
+      if (path === "/v1/review-workflow-templates") return [{
+        key: "FIRST_PASS_REVIEW", version: 1, schema_version: 1, content_hash: "a".repeat(64),
+        name: "First Pass Review", description: "Guided review", workflow_type: "FIRST_PASS_REVIEW", phases: [],
+        stages: [{ key: "WHOLE_COLLECTION_SCORING", name: "Whole-collection scoring", phase_key: "COLLECTION_REVIEW", ordinal: 14, batching_policy: "WHOLE_MATTER", requires_human_gate: true }],
+      }] as never;
+      if (path === "/v1/matters/matter-1/review-programs") return [{
+        id: "program-1", tenant_id: "tenant-1", matter_id: "matter-1", template_key: "FIRST_PASS_REVIEW",
+        template_version: 1, template_content_hash: "a".repeat(64), key: "standard-first-pass", name: "Standard first pass",
+        description: "Responsive review", status: "ACTIVE", current_run_id: "run-1", current_version: { version: 10 }, created_at: "2026-10-21T00:00:00Z",
+      }] as never;
+      if (path === "/v1/matters/matter-1/review-programs/program-1/runs" && !options) return [{
+        id: "run-1", program_id: "program-1", status: "WAITING_FOR_USER", current_stage: "WHOLE_COLLECTION_SCORING",
+        current_stage_ordinal: 14, created_at: "2026-10-21T00:00:00Z", failure_retriable: false, failure_summary: null,
+        stage_attempts: [{ stage_key: "WHOLE_COLLECTION_SCORING", status: "WAITING" }],
+        actions: [{
+          id: "action-1", action_type: "WHOLE_COLLECTION_SCORING", stage_key: "WHOLE_COLLECTION_SCORING", status: "OPEN",
+          title: "Run the accepted classifiers across the collection", explanation: "Create frozen whole-matter scoring inputs and run every accepted classifier.", preview_hash: "d".repeat(64),
+          decision_context: {
+            scoring_plan: {
+              scope_type: "MATTER", model_count: 1,
+              models: [{ classification_model_id: "model-1", field_name: "Responsive", quality: "ACCEPTABLE" }],
+            },
+          },
+          allowed_choices: [{ key: "START_SCORING", label: "Score the collection" }, { key: "STOP", label: "Stop program" }],
+        }],
+      }] as never;
+      if (path.endsWith("/actions/action-1/resolve") && options?.method === "POST") return {
+        id: "run-1", program_id: "program-1", status: "RUNNING", current_stage: "WHOLE_COLLECTION_SCORING",
+      } as never;
+      throw new Error(`Unexpected API request: ${path}`);
+    });
+    renderSection();
+
+    expect(await screen.findByText("Whole matter")).toBeInTheDocument();
+    expect(screen.getByText("Responsive")).toBeInTheDocument();
+    expect(screen.getByText("Accepted version · Acceptable")).toBeInTheDocument();
+    expect(screen.getByText("Calculated at launch")).toBeInTheDocument();
+    await userEvent.click(screen.getByRole("button", { name: "Score the collection" }));
+
+    await waitFor(() => expect(coreApi).toHaveBeenCalledWith(
+      "/v1/matters/matter-1/review-programs/program-1/runs/run-1/actions/action-1/resolve",
+      expect.objectContaining({ method: "POST" }),
+    ));
+    const call = vi.mocked(coreApi).mock.calls.find(([path]) => path.endsWith("/actions/action-1/resolve"));
+    expect(JSON.parse(String(call?.[1]?.body))).toEqual({
+      preview_hash: "d".repeat(64),
+      choice_key: "START_SCORING",
+    });
+  });
 });

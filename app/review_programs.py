@@ -44,13 +44,30 @@ from app.analysis_tasks import (
 from app.artifact_gateway import copy_workflow_artifact_content
 from app.audit import record_audit
 from app.authorization import ResourceRef, user_can
-from app.classification_features import embedding_job_output_is_usable
+from app.classification_datasets import (
+    ClassificationDatasetError,
+    begin_dataset_snapshot,
+    materialize_dataset_snapshot,
+    prepare_dataset_snapshot,
+)
+from app.classification_features import (
+    ClassificationFeatureSplitError,
+    embedding_job_output_is_usable,
+    materialize_scoring_features,
+    prepare_scoring_features,
+)
 from app.classification_lifecycle import ClassificationLifecycleError, decide_candidate
 from app.classification_models import (
     ClassificationModelCommandError,
     active_value_keys,
     create_classification_model,
     create_classification_model_configuration,
+)
+from app.classification_scoring import (
+    ClassificationScoringError,
+    create_scoring_run,
+    prepare_scoring,
+    retry_scoring_run,
 )
 from app.classification_training_jobs import (
     ClassificationTrainingJobError,
@@ -59,9 +76,11 @@ from app.classification_training_jobs import (
 from app.config import get_settings
 from app.embeddings.configuration import canonical_hash
 from app.job_executions import (
+    CLASSIFICATION_SCORING_RUN_JOB_TYPE,
     CLASSIFICATION_TRAINING_JOB_TYPE,
     REVIEW_BATCH_MATERIALIZATION_JOB_TYPE,
     cancel_job_execution,
+    current_job_execution,
 )
 from app.matter_definition_assessments import AssessmentError, start_assessment
 from app.matter_definitions import (
@@ -79,6 +98,7 @@ from app.models import (
     ClassificationModel,
     ClassificationModelConfiguration,
     ClassificationModelVersion,
+    ClassificationScoringRun,
     ClassificationTrainingJob,
     ClassificationTrainingRun,
     Client,
@@ -129,6 +149,7 @@ from app.review_workflow_templates import (
 )
 from app.reviewer_coding import resolve_reviewer_coding_as_of
 from app.schemas import (
+    ClassificationDatasetSnapshotRequest,
     ClassificationModelConfigurationCreate,
     ClassificationModelCreate,
     ClassificationTrainingJobCreate,
@@ -137,6 +158,7 @@ from app.schemas import (
 from app.workflows.dispatcher import (
     enqueue_analysis_task_batch_set,
     enqueue_analysis_task_batch_set_run,
+    enqueue_classification_model_scoring,
     enqueue_classification_training_job,
     enqueue_review_batch,
 )
@@ -561,6 +583,25 @@ def _action_contract(
                 stop,
             ],
         )
+    if stage.key == "WHOLE_COLLECTION_SCORING":
+        return (
+            "Run the accepted classifiers across the collection",
+            (
+                "Launch one immutable, matter-wide scoring run for each accepted classifier version. "
+                "Predictions remain pinned to their model, dataset snapshot, and resolution policy for the "
+                "next Q&A coverage and alignment stages."
+            ),
+            [
+                {
+                    "key": "START_SCORING",
+                    "label": "Score the collection",
+                    "consequence": (
+                        "Run every accepted classifier over its frozen whole-matter feature population."
+                    ),
+                },
+                stop,
+            ],
+        )
     next_stage = template.stages[stage.ordinal] if stage.ordinal < len(template.stages) else None
     next_name = next_stage.name if next_stage is not None else "completion"
     return (
@@ -921,6 +962,39 @@ def _classifier_improvement_stage_context(
     }
 
 
+def _whole_collection_scoring_stage_context(*, run: ReviewProgramRun) -> dict[str, Any]:
+    classifier_results = dict((run.progress_summary or {}).get("classifier_results") or {})
+    accepted = dict((run.progress_summary or {}).get("accepted_classifiers") or {})
+    accepted_version_by_model = {
+        str(item.get("classification_model_id")): str(item.get("model_version_id"))
+        for item in accepted.get("approvals", [])
+        if isinstance(item, dict)
+    }
+    models = [
+        {
+            "classification_model_id": item.get("classification_model_id"),
+            "model_version_id": accepted_version_by_model.get(
+                str(item.get("classification_model_id"))
+            ),
+            "field_key": item.get("field_key"),
+            "field_name": item.get("field_name"),
+            "training_eligible_count": item.get("training_eligible_count"),
+            "quality": item.get("quality"),
+        }
+        for item in classifier_results.get("models", [])
+        if isinstance(item, dict)
+        and str(item.get("classification_model_id")) in accepted_version_by_model
+    ]
+    return {
+        "accepted_classifiers": accepted,
+        "scoring_plan": {
+            "scope_type": "MATTER",
+            "model_count": len(models),
+            "models": models,
+        },
+    }
+
+
 def _create_action_for_stage(
     db: Session,
     *,
@@ -965,6 +1039,14 @@ def _create_action_for_stage(
             if stage.key == "CLASSIFIER_REVIEW"
             else _classifier_improvement_stage_context(db, run=run)
             if stage.key == "CLASSIFIER_IMPROVEMENT"
+            else _whole_collection_scoring_stage_context(run=run)
+            if stage.key == "WHOLE_COLLECTION_SCORING"
+            else {
+                "whole_collection_scoring": (
+                    (run.progress_summary or {}).get("whole_collection_scoring") or {}
+                )
+            }
+            if stage.key == "CLASSIFIER_POSITIVE_COVERAGE"
             else {}
         ),
     }
@@ -988,6 +1070,7 @@ def _create_action_for_stage(
             "TRAINING_LABEL_FINALIZATION": "TRAINING_LABEL_FINALIZATION",
             "CLASSIFIER_REVIEW": "CLASSIFIER_REVIEW",
             "CLASSIFIER_IMPROVEMENT": "CLASSIFIER_IMPROVEMENT_SETUP",
+            "WHOLE_COLLECTION_SCORING": "WHOLE_COLLECTION_SCORING",
         }.get(stage.key, "STAGE_GATE"),
         title=title,
         explanation=explanation,
@@ -3206,6 +3289,14 @@ def process_review_program_event(
                 result={"decision": "IMPROVE_CLASSIFIERS"},
             )
             _advance_after_stage(db, program=program, run=run, attempt=attempt)
+        elif action.stage_key == "WHOLE_COLLECTION_SCORING" and choice == "START_SCORING":
+            _launch_whole_collection_scoring(
+                db,
+                program=program,
+                run=run,
+                attempt=attempt,
+                action=action,
+            )
         elif choice == "CONTINUE":
             _complete_action_attempt(attempt, action)
             _advance_after_stage(db, program=program, run=run, attempt=attempt)
@@ -4412,6 +4503,272 @@ def _accept_trained_classifiers(
     )
 
 
+def _prepare_whole_collection_scoring_snapshot(
+    db: Session,
+    *,
+    matter: Matter,
+    model: ClassificationModel,
+    model_version: ClassificationModelVersion,
+    embedding_job: MatterEmbeddingJob,
+    actor_user_id: uuid.UUID,
+) -> ClassificationDatasetSnapshot:
+    snapshot_request = ClassificationDatasetSnapshotRequest.model_validate(
+        {
+            "configuration_id": model_version.configuration_id,
+            "purpose": "SCORING",
+            "training_scope": {"scope_type": "MATTER", "scope_id": matter.id},
+            "embedding_job_id": embedding_job.id,
+        }
+    )
+    prepared_snapshot = prepare_dataset_snapshot(
+        db,
+        matter=matter,
+        classification_model_id=model.id,
+        actor_user_id=actor_user_id,
+        request=snapshot_request,
+    )
+    snapshot, should_materialize, _ = begin_dataset_snapshot(
+        db,
+        prepared=prepared_snapshot,
+        actor_user_id=actor_user_id,
+    )
+    if should_materialize:
+        materialize_dataset_snapshot(
+            db,
+            snapshot=snapshot,
+            prepared=prepared_snapshot,
+            actor_user_id=actor_user_id,
+        )
+    if not (
+        snapshot.status == "READY_FOR_SCORING"
+        and (snapshot.feature_specification or {}).get("embedding_job_id")
+        == str(embedding_job.id)
+    ):
+        snapshot.status = "BUILDING"
+        prepared_features = prepare_scoring_features(
+            db,
+            snapshot=snapshot,
+            embedding_job_id=embedding_job.id,
+            actor_user_id=actor_user_id,
+        )
+        materialize_scoring_features(
+            db,
+            snapshot=snapshot,
+            prepared=prepared_features,
+            actor_user_id=actor_user_id,
+        )
+    if snapshot.status != "READY_FOR_SCORING":
+        raise ReviewProgramError("Whole-collection scoring snapshot is not ready")
+    return snapshot
+
+
+def _launch_whole_collection_scoring(
+    db: Session,
+    *,
+    program: ReviewProgram,
+    run: ReviewProgramRun,
+    attempt: ReviewProgramStageAttempt,
+    action: ReviewProgramAction,
+) -> None:
+    accepted = dict((run.progress_summary or {}).get("accepted_classifiers") or {})
+    classifier_results = dict((run.progress_summary or {}).get("classifier_results") or {})
+    approvals = [item for item in accepted.get("approvals", []) if isinstance(item, dict)]
+    result_models = {
+        str(item.get("classification_model_id")): item
+        for item in classifier_results.get("models", [])
+        if isinstance(item, dict) and item.get("classification_model_id")
+    }
+    if not approvals or len(approvals) != len(result_models):
+        raise ReviewProgramError("Accepted classifier provenance is incomplete")
+    matter = db.get(Matter, program.matter_id)
+    if matter is None:
+        raise ReviewProgramError("Review Program matter is unavailable")
+    actor_user_id = action.resolved_by_user_id or run.initiated_by_user_id
+    scoring_states: list[dict[str, Any]] = []
+    created_runs: list[ClassificationScoringRun] = []
+    terminal_runs: list[tuple[ClassificationScoringRun, WorkflowRun]] = []
+    try:
+        for approval in approvals:
+            model_id = uuid.UUID(str(approval["classification_model_id"]))
+            model_version_id = uuid.UUID(str(approval["model_version_id"]))
+            result_model = result_models.get(str(model_id))
+            if result_model is None:
+                raise ReviewProgramError("Accepted classifier result is unavailable")
+            model = db.get(ClassificationModel, model_id)
+            model_version = db.get(ClassificationModelVersion, model_version_id)
+            training_job = db.get(
+                ClassificationTrainingJob,
+                uuid.UUID(str(result_model["training_job_id"])),
+            )
+            embedding_job = (
+                db.get(MatterEmbeddingJob, training_job.embedding_job_id)
+                if training_job is not None
+                else None
+            )
+            if (
+                model is None
+                or model.matter_id != matter.id
+                or model_version is None
+                or model_version.classification_model_id != model.id
+                or model_version.status != "APPROVED"
+                or training_job is None
+                or embedding_job is None
+                or not embedding_job_output_is_usable(embedding_job)
+            ):
+                raise ReviewProgramError("Accepted classifier scoring inputs are unavailable")
+            snapshot = _prepare_whole_collection_scoring_snapshot(
+                db,
+                matter=matter,
+                model=model,
+                model_version=model_version,
+                embedding_job=embedding_job,
+                actor_user_id=actor_user_id,
+            )
+            prepared = prepare_scoring(
+                db,
+                matter_id=matter.id,
+                classification_model_id=model.id,
+                dataset_snapshot_id=snapshot.id,
+                model_version_id=model_version.id,
+            )
+            scoring_run, created = create_scoring_run(
+                db,
+                prepared=prepared,
+                idempotency_key=(
+                    f"review-program:{run.id}:whole-collection:"
+                    f"attempt:{attempt.attempt}:model:{model.id}"
+                ),
+                actor_user_id=actor_user_id,
+                notification_parent_type="REVIEW_PROGRAM_RUN",
+                notification_parent_id=run.id,
+            )
+            workflow = current_job_execution(
+                db,
+                job_type=CLASSIFICATION_SCORING_RUN_JOB_TYPE,
+                job_id=scoring_run.id,
+            )
+            if workflow is None:
+                raise ReviewProgramError("Classifier scoring workflow is unavailable")
+            if not created and scoring_run.status not in {
+                "COMPLETED",
+                "COMPLETED_WITH_ERRORS",
+            }:
+                if (
+                    workflow.notification_policy != "PARENT_MANAGED"
+                    or workflow.notification_parent_id != run.id
+                ):
+                    raise ReviewProgramError(
+                        "An identical classifier scoring run is already active outside this Review Program"
+                    )
+                if scoring_run.status in {"FAILED", "CANCELED"}:
+                    workflow = retry_scoring_run(
+                        db,
+                        run=scoring_run,
+                        actor_user_id=actor_user_id,
+                    )
+                    created = True
+            child_context = {
+                "classification_model_id": str(model.id),
+                "model_version_id": str(model_version.id),
+                "dataset_snapshot_id": str(snapshot.id),
+                "dataset_snapshot_aggregate_hash": snapshot.aggregate_hash,
+                "population_document_count": snapshot.population_count,
+                "batching_policy": "WHOLE_MATTER",
+            }
+            existing_child = db.scalar(
+                select(ReviewProgramChild).where(
+                    ReviewProgramChild.run_id == run.id,
+                    ReviewProgramChild.child_type == "CLASSIFICATION_SCORING_RUN",
+                    ReviewProgramChild.child_id == scoring_run.id,
+                )
+            )
+            if existing_child is None:
+                link_review_program_child(
+                    db,
+                    program=program,
+                    run=run,
+                    stage_attempt=attempt,
+                    purpose="WHOLE_COLLECTION_SCORING",
+                    child_type="CLASSIFICATION_SCORING_RUN",
+                    child_id=scoring_run.id,
+                    derivation_key=f"whole-collection-scoring:{attempt.id}:{model.id}",
+                    batching_policy="WHOLE_MATTER",
+                    context=child_context,
+                )
+            else:
+                existing_child.stage_attempt_id = attempt.id
+                existing_child.status = "LINKED"
+                existing_child.derivation_key = (
+                    f"whole-collection-scoring:{attempt.id}:{model.id}"
+                )
+                existing_child.context = child_context
+            scoring_states.append(
+                {
+                    "classification_model_id": str(model.id),
+                    "model_version_id": str(model_version.id),
+                    "field_key": result_model.get("field_key"),
+                    "field_name": result_model.get("field_name"),
+                    "dataset_snapshot_id": str(snapshot.id),
+                    "dataset_snapshot_aggregate_hash": snapshot.aggregate_hash,
+                    "scoring_run_id": str(scoring_run.id),
+                    "population_document_count": scoring_run.population_document_count,
+                    "status": scoring_run.status,
+                }
+            )
+            if created:
+                created_runs.append(scoring_run)
+            elif scoring_run.status in {"COMPLETED", "COMPLETED_WITH_ERRORS"}:
+                terminal_runs.append((scoring_run, workflow))
+    except (
+        ClassificationDatasetError,
+        ClassificationFeatureSplitError,
+        ClassificationScoringError,
+        KeyError,
+        TypeError,
+        ValueError,
+    ) as exc:
+        raise ReviewProgramError(str(exc)) from exc
+
+    scoring_snapshot = {
+        "schema_version": 1,
+        "state": "RUNNING",
+        "scope_type": "MATTER",
+        "stage_attempt_id": str(attempt.id),
+        "models": scoring_states,
+    }
+    version = _create_review_program_version(
+        db,
+        program=program,
+        run=run,
+        actor_user_id=actor_user_id,
+        configuration_stage="WHOLE_COLLECTION_SCORING",
+        configuration_updates={"whole_collection_scoring": scoring_snapshot},
+        source_hash_updates={
+            "whole_collection_scoring_plan_hash": canonical_hash(scoring_snapshot["models"])
+        },
+    )
+    attempt.status = "RUNNING"
+    attempt.result_summary = {
+        "gate_choice": "START_SCORING",
+        "action_id": str(action.id),
+        "program_version_id": str(version.id),
+    }
+    run.status = "RUNNING"
+    run.progress_summary = {
+        **run.progress_summary,
+        "whole_collection_scoring": scoring_snapshot,
+    }
+    for scoring_run in created_runs:
+        enqueue_classification_model_scoring(db, scoring_run.workflow_id, str(scoring_run.id))
+    for scoring_run, workflow in terminal_runs:
+        project_review_program_classifier_scoring_terminal(
+            db,
+            scoring_run=scoring_run,
+            workflow=workflow,
+            review_program_run_id=run.id,
+        )
+
+
 def _classifier_training_embedding_job(
     db: Session,
     *,
@@ -5009,6 +5366,168 @@ def project_review_program_classifier_training_terminal(
     )
 
 
+def project_review_program_classifier_scoring_terminal(
+    db: Session,
+    *,
+    scoring_run: ClassificationScoringRun,
+    workflow: WorkflowRun,
+    review_program_run_id: uuid.UUID | None = None,
+) -> ReviewProgramEvent | None:
+    if review_program_run_id is None:
+        if (
+            workflow.notification_policy != "PARENT_MANAGED"
+            or workflow.notification_parent_type != "REVIEW_PROGRAM_RUN"
+            or workflow.notification_parent_id is None
+        ):
+            return None
+        review_program_run_id = workflow.notification_parent_id
+    child = db.scalar(
+        select(ReviewProgramChild).where(
+            ReviewProgramChild.run_id == review_program_run_id,
+            ReviewProgramChild.child_type == "CLASSIFICATION_SCORING_RUN",
+            ReviewProgramChild.child_id == scoring_run.id,
+        )
+    )
+    if child is None:
+        return None
+    child.status = scoring_run.status
+    child.context = {
+        **child.context,
+        "workflow_status": workflow.status,
+        "population_document_count": scoring_run.population_document_count,
+        "scored_document_count": scoring_run.scored_document_count,
+        "abstained_document_count": scoring_run.abstained_document_count,
+        "excluded_document_count": scoring_run.excluded_document_count,
+        "failed_document_count": scoring_run.failed_document_count,
+        "prediction_artifact_id": (
+            str(scoring_run.prediction_artifact_id)
+            if scoring_run.prediction_artifact_id is not None
+            else None
+        ),
+        "prediction_content_hash": scoring_run.prediction_content_hash,
+        "failure_code": scoring_run.failure_code,
+        "failure_summary": scoring_run.failure_summary,
+    }
+    run = db.get(ReviewProgramRun, child.run_id)
+    attempt = db.get(ReviewProgramStageAttempt, child.stage_attempt_id)
+    program = db.get(ReviewProgram, run.program_id) if run is not None else None
+    if run is None or attempt is None or program is None:
+        raise ReviewProgramError("Review Program classifier-scoring link is incomplete")
+    if (
+        run.status in TERMINAL_RUN_STATUSES
+        or run.current_stage != "WHOLE_COLLECTION_SCORING"
+        or attempt.id != _current_stage_attempt(db, run).id
+    ):
+        return None
+    children = list(
+        db.scalars(
+            select(ReviewProgramChild)
+            .where(
+                ReviewProgramChild.stage_attempt_id == attempt.id,
+                ReviewProgramChild.purpose == "WHOLE_COLLECTION_SCORING",
+                ReviewProgramChild.child_type == "CLASSIFICATION_SCORING_RUN",
+            )
+            .order_by(ReviewProgramChild.created_at, ReviewProgramChild.id)
+        )
+    )
+    scoring_runs = [db.get(ClassificationScoringRun, item.child_id) for item in children]
+    if not scoring_runs or any(item is None for item in scoring_runs):
+        return None
+    resolved_runs = [item for item in scoring_runs if item is not None]
+    terminal_statuses = {"COMPLETED", "COMPLETED_WITH_ERRORS", "FAILED", "CANCELED"}
+    if any(item.status not in terminal_statuses for item in resolved_runs):
+        return None
+    failed_runs = [item for item in resolved_runs if item.status in {"FAILED", "CANCELED"}]
+    if failed_runs:
+        return fail_review_program_stage(
+            db,
+            program=program,
+            run=run,
+            error_code="WHOLE_COLLECTION_SCORING_FAILED",
+            error_summary="; ".join(
+                item.failure_summary or f"Classifier scoring run {item.id} {item.status.lower()}"
+                for item in failed_runs
+            )[:4000],
+            retriable=any(item.failure_retriable for item in failed_runs),
+        )
+    existing_models = {
+        str(item.get("scoring_run_id")): item
+        for item in (
+            ((run.progress_summary or {}).get("whole_collection_scoring") or {}).get("models")
+            or []
+        )
+        if isinstance(item, dict)
+    }
+    models = [
+        {
+            **existing_models.get(str(item.id), {}),
+            "scoring_run_id": str(item.id),
+            "classification_model_id": str(item.classification_model_id),
+            "model_version_id": str(item.model_version_id),
+            "dataset_snapshot_id": str(item.dataset_snapshot_id),
+            "status": item.status,
+            "population_document_count": item.population_document_count,
+            "scored_document_count": item.scored_document_count,
+            "abstained_document_count": item.abstained_document_count,
+            "excluded_document_count": item.excluded_document_count,
+            "failed_document_count": item.failed_document_count,
+            "prediction_artifact_id": str(item.prediction_artifact_id),
+            "prediction_content_hash": item.prediction_content_hash,
+            "result_manifest_artifact_id": str(item.result_manifest_artifact_id),
+            "result_manifest_content_hash": item.result_manifest_content_hash,
+        }
+        for item in resolved_runs
+    ]
+    aggregate = {
+        "population_document_count": sum(item.population_document_count for item in resolved_runs),
+        "scored_document_count": sum(item.scored_document_count for item in resolved_runs),
+        "abstained_document_count": sum(item.abstained_document_count for item in resolved_runs),
+        "excluded_document_count": sum(item.excluded_document_count for item in resolved_runs),
+        "failed_document_count": sum(item.failed_document_count for item in resolved_runs),
+    }
+    summary = {
+        "schema_version": 1,
+        "state": (
+            "COMPLETED_WITH_ERRORS"
+            if any(item.status == "COMPLETED_WITH_ERRORS" for item in resolved_runs)
+            else "COMPLETED"
+        ),
+        "scope_type": "MATTER",
+        "model_count": len(models),
+        "collection_document_count": int(
+            db.scalar(
+                select(func.count())
+                .select_from(MatterDocument)
+                .where(MatterDocument.matter_id == program.matter_id)
+            )
+            or 0
+        ),
+        "aggregate_model_document_counts": aggregate,
+        "models": models,
+    }
+    version = _create_review_program_version(
+        db,
+        program=program,
+        run=run,
+        actor_user_id=run.initiated_by_user_id,
+        configuration_stage="CLASSIFIER_POSITIVE_COVERAGE",
+        configuration_updates={"whole_collection_scoring": summary},
+        source_hash_updates={"whole_collection_scoring_results_hash": canonical_hash(summary)},
+    )
+    run.progress_summary = {
+        **run.progress_summary,
+        "whole_collection_scoring": summary,
+        "whole_collection_scoring_program_version_id": str(version.id),
+    }
+    return complete_review_program_stage(
+        db,
+        program=program,
+        run=run,
+        result_summary=summary,
+        idempotency_key=f"whole-collection-scoring-terminal:{attempt.id}",
+    )
+
+
 def project_review_program_discovery_qa_run_terminal(
     db: Session,
     *,
@@ -5414,12 +5933,13 @@ def cancel_review_program_discovery_children(
     *,
     run: ReviewProgramRun,
     actor_user_id: uuid.UUID,
-) -> tuple[list[str], list[str], list[str], list[str], list[str]]:
+) -> tuple[list[str], list[str], list[str], list[str], list[str], list[str]]:
     batch_set_workflow_ids: list[str] = []
     batch_run_workflow_ids: list[str] = []
     child_workflow_ids: list[str] = []
     review_batch_workflow_ids: list[str] = []
     classification_training_workflow_ids: list[str] = []
+    classification_scoring_workflow_ids: list[str] = []
     children = list(db.scalars(select(ReviewProgramChild).where(ReviewProgramChild.run_id == run.id)))
     for child in children:
         if child.child_type == "ANALYSIS_TASK_BATCH_SET_RUN":
@@ -5480,12 +6000,34 @@ def cancel_review_program_discovery_children(
             if canceled:
                 child.status = "CANCELED"
                 classification_training_workflow_ids.append(execution.dbos_workflow_id)
+        elif child.child_type == "CLASSIFICATION_SCORING_RUN":
+            scoring_run = db.get(ClassificationScoringRun, child.child_id)
+            if scoring_run is None or scoring_run.status not in {
+                "QUEUED",
+                "VALIDATING",
+                "WAITING_FOR_RUNTIME",
+                "SCORING",
+                "PUBLISHING",
+                "FINALIZING",
+                "RECONCILING",
+            }:
+                continue
+            execution, canceled = cancel_job_execution(
+                db,
+                job_type=CLASSIFICATION_SCORING_RUN_JOB_TYPE,
+                job_id=scoring_run.id,
+                actor_user_id=actor_user_id,
+            )
+            if canceled:
+                child.status = "CANCELED"
+                classification_scoring_workflow_ids.append(execution.dbos_workflow_id)
     return (
         batch_set_workflow_ids,
         batch_run_workflow_ids,
         child_workflow_ids,
         review_batch_workflow_ids,
         classification_training_workflow_ids,
+        classification_scoring_workflow_ids,
     )
 
 
@@ -5611,6 +6153,39 @@ def reconcile_review_program_run(
             "CANCELED",
         }:
             project_review_program_assessment_terminal(db, assessment=assessment)
+    if run.status == "RUNNING" and run.current_stage == "WHOLE_COLLECTION_SCORING":
+        current_attempt = _current_stage_attempt(db, run, for_update=True)
+        scoring_children = list(
+            db.scalars(
+                select(ReviewProgramChild).where(
+                    ReviewProgramChild.stage_attempt_id == current_attempt.id,
+                    ReviewProgramChild.child_type == "CLASSIFICATION_SCORING_RUN",
+                )
+            )
+        )
+        for child in scoring_children:
+            scoring_run = db.get(ClassificationScoringRun, child.child_id)
+            workflow = (
+                current_job_execution(
+                    db,
+                    job_type=CLASSIFICATION_SCORING_RUN_JOB_TYPE,
+                    job_id=scoring_run.id,
+                )
+                if scoring_run is not None
+                else None
+            )
+            if (
+                scoring_run is not None
+                and workflow is not None
+                and scoring_run.status
+                in {"COMPLETED", "COMPLETED_WITH_ERRORS", "FAILED", "CANCELED"}
+            ):
+                project_review_program_classifier_scoring_terminal(
+                    db,
+                    scoring_run=scoring_run,
+                    workflow=workflow,
+                    review_program_run_id=run.id,
+                )
     if run.status in {"RUNNING", "FAILED"}:
         attempt = _current_stage_attempt(db, run, for_update=True)
         if attempt.status == "COMPLETED":

@@ -7,13 +7,16 @@ import pytest
 from conftest import TestingSessionLocal, create_client_tenant
 from fastapi.testclient import TestClient
 from sqlalchemy import func, select
+from test_classification_scoring import approved_version_fixture
 
 import app.analysis_task_batch_set_runs as batch_set_runs
 import app.analysis_task_batch_sets as batch_sets
 from app import review_batches
 from app.analysis_task_skills import ensure_standard_analysis_task_skills
+from app.classification_scoring import create_scoring_run, prepare_scoring
 from app.job_executions import (
     ANALYSIS_TASK_BATCH_SET_RUN_JOB_TYPE,
+    CLASSIFICATION_SCORING_RUN_JOB_TYPE,
     REVIEW_BATCH_MATERIALIZATION_JOB_TYPE,
     transition_job_execution,
 )
@@ -38,6 +41,7 @@ from app.models import (
     ReviewBatchRunDocument,
     ReviewBatchRunValue,
     ReviewProgram,
+    ReviewProgramAction,
     ReviewProgramChild,
     ReviewProgramEvent,
     ReviewProgramRun,
@@ -51,9 +55,11 @@ from app.models import (
 from app.rbac_manifest import SYSTEM_ROLE_BY_KEY
 from app.review_programs import (
     ReviewProgramError,
+    _activate_stage_by_key,
     cancel_review_program_discovery_children,
     link_review_program_child,
     project_review_program_assessment_terminal,
+    project_review_program_classifier_scoring_terminal,
     project_review_program_classifier_training_terminal,
     project_review_program_qa_compilation_terminal,
 )
@@ -306,6 +312,156 @@ def test_create_multiple_independent_programs_from_one_template(
         )
         assert audit is not None
         assert audit.details["matter_id"] == matter["id"]
+
+
+def test_whole_collection_scoring_completion_advances_to_coverage_gate(
+    client: TestClient,
+    root_token: str,
+    root_admin,
+) -> None:
+    matter, model, snapshot, version_id, _ = approved_version_fixture(
+        client,
+        root_token,
+        root_admin,
+    )
+    with TestingSessionLocal() as db:
+        tenant = db.get(Tenant, uuid.UUID(model["tenant_id"]))
+        assert tenant is not None
+        tenant_slug = tenant.slug
+    tenant_token = login(
+        client,
+        f"{tenant_slug}@example.com",
+        "client-tenant-password-123",
+    )
+    tenant_user_id = uuid.UUID(
+        client.get("/v1/auth/me", headers=auth(tenant_token)).json()["id"]
+    )
+    create_response = client.post(
+        f"/v1/matters/{matter['id']}/review-programs",
+        headers=auth(tenant_token),
+        json={"key": "scoring-projection", "name": "Scoring projection"},
+    )
+    assert create_response.status_code == 201, create_response.text
+    program_id = uuid.UUID(create_response.json()["id"])
+    runs_url = f"/v1/matters/{matter['id']}/review-programs/{program_id}/runs"
+    start_response = client.post(
+        runs_url,
+        headers=auth(tenant_token),
+        json={"idempotency_key": "scoring-projection"},
+    )
+    assert start_response.status_code == 201, start_response.text
+    run_id = uuid.UUID(start_response.json()["id"])
+
+    with TestingSessionLocal() as db:
+        program = db.get(ReviewProgram, program_id)
+        run = db.get(ReviewProgramRun, run_id)
+        assert program is not None and run is not None
+        initial_attempt = db.scalar(
+            select(ReviewProgramStageAttempt).where(
+                ReviewProgramStageAttempt.run_id == run.id,
+                ReviewProgramStageAttempt.stage_key == "MATTER_DEFINITION",
+            )
+        )
+        initial_action = db.scalar(
+            select(ReviewProgramAction).where(
+                ReviewProgramAction.run_id == run.id,
+                ReviewProgramAction.status == "OPEN",
+            )
+        )
+        assert initial_attempt is not None and initial_action is not None
+        initial_attempt.status = "CANCELED"
+        initial_attempt.completed_at = utcnow()
+        initial_action.status = "CANCELED"
+        initial_action.resolved_at = utcnow()
+        run.pending_action_id = None
+        attempt = _activate_stage_by_key(
+            db,
+            program=program,
+            run=run,
+            stage_key="WHOLE_COLLECTION_SCORING",
+        )
+        scoring_action = db.get(ReviewProgramAction, run.pending_action_id)
+        assert scoring_action is not None
+        scoring_action.status = "RESOLVED"
+        scoring_action.resolved_by_user_id = tenant_user_id
+        scoring_action.resolved_at = utcnow()
+        run.pending_action_id = None
+        run.status = "RUNNING"
+        attempt.status = "RUNNING"
+
+        prepared = prepare_scoring(
+            db,
+            matter_id=uuid.UUID(matter["id"]),
+            classification_model_id=uuid.UUID(model["id"]),
+            dataset_snapshot_id=snapshot.id,
+            model_version_id=version_id,
+        )
+        scoring_run, created = create_scoring_run(
+            db,
+            prepared=prepared,
+            idempotency_key="review-program-scoring-projection",
+            actor_user_id=tenant_user_id,
+            notification_parent_type="REVIEW_PROGRAM_RUN",
+            notification_parent_id=run.id,
+        )
+        assert created is True
+        link_review_program_child(
+            db,
+            program=program,
+            run=run,
+            stage_attempt=attempt,
+            purpose="WHOLE_COLLECTION_SCORING",
+            child_type="CLASSIFICATION_SCORING_RUN",
+            child_id=scoring_run.id,
+            derivation_key=f"whole-collection-scoring:{attempt.id}:{model['id']}",
+            batching_policy="WHOLE_MATTER",
+            context={"field_name": "Responsive"},
+        )
+        transition_job_execution(
+            db,
+            job_type=CLASSIFICATION_SCORING_RUN_JOB_TYPE,
+            job_id=scoring_run.id,
+            status="RUNNING",
+            current_stage="SCORING_DOCUMENTS",
+        )
+        scoring_run.prediction_artifact_id = uuid.uuid4()
+        scoring_run.prediction_content_hash = "a" * 64
+        scoring_run.result_manifest_artifact_id = uuid.uuid4()
+        scoring_run.result_manifest_content_hash = "b" * 64
+        scoring_run.scored_document_count = scoring_run.population_document_count
+        workflow = transition_job_execution(
+            db,
+            job_type=CLASSIFICATION_SCORING_RUN_JOB_TYPE,
+            job_id=scoring_run.id,
+            status="COMPLETED",
+            current_stage="COMPLETED",
+            progress_completed=scoring_run.progress_total,
+        )
+        project_review_program_classifier_scoring_terminal(
+            db,
+            scoring_run=scoring_run,
+            workflow=workflow,
+        )
+        db.commit()
+
+    read_response = client.get(f"{runs_url}/{run_id}", headers=auth(tenant_token))
+    assert read_response.status_code == 200, read_response.text
+    payload = read_response.json()
+    assert payload["current_stage"] == "CLASSIFIER_POSITIVE_COVERAGE"
+    assert payload["status"] == "WAITING_FOR_USER"
+    scoring_summary = payload["progress_summary"]["whole_collection_scoring"]
+    assert scoring_summary["state"] == "COMPLETED"
+    assert scoring_summary["model_count"] == 1
+    assert scoring_summary["aggregate_model_document_counts"]["scored_document_count"] == (
+        scoring_summary["aggregate_model_document_counts"]["population_document_count"]
+    )
+    coverage_action = next(
+        action for action in payload["actions"] if action["status"] == "OPEN"
+    )
+    assert coverage_action["stage_key"] == "CLASSIFIER_POSITIVE_COVERAGE"
+    assert coverage_action["decision_context"]["whole_collection_scoring"]["state"] == (
+        "COMPLETED"
+    )
 
 
 def test_synthetic_run_advances_waits_resumes_retries_reconciles_and_cancels(
@@ -1449,6 +1605,18 @@ def test_synthetic_run_advances_waits_resumes_retries_reconciles_and_cancels(
     assert accepted_classifiers.status_code == 200, accepted_classifiers.text
     assert accepted_classifiers.json()["current_stage"] == "WHOLE_COLLECTION_SCORING"
     assert len(accepted_classifiers.json()["progress_summary"]["accepted_classifiers"]["approvals"]) == 1
+    scoring_action = next(
+        action for action in accepted_classifiers.json()["actions"] if action["status"] == "OPEN"
+    )
+    assert scoring_action["action_type"] == "WHOLE_COLLECTION_SCORING"
+    assert [choice["key"] for choice in scoring_action["allowed_choices"]] == [
+        "START_SCORING",
+        "STOP",
+    ]
+    assert scoring_action["decision_context"]["scoring_plan"]["model_count"] == 1
+    assert scoring_action["decision_context"]["scoring_plan"]["models"][0]["field_name"] == (
+        "Responsive"
+    )
 
     canceled = client.post(
         f"{runs_url}/{run_id}/cancel",

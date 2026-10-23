@@ -304,7 +304,14 @@ def create_scoring_run(
     prepared: PreparedScoring,
     idempotency_key: str,
     actor_user_id: uuid.UUID,
+    notification_parent_type: str | None = None,
+    notification_parent_id: uuid.UUID | None = None,
 ) -> tuple[ClassificationScoringRun, bool]:
+    if (notification_parent_type is None) != (notification_parent_id is None):
+        raise ClassificationScoringConflictError(
+            "Scoring-run notification parent type and ID must be provided together",
+            code="CLASSIFICATION_SCORING_NOTIFICATION_PARENT_INVALID",
+        )
     existing = db.scalar(
         select(ClassificationScoringRun).where(
             ClassificationScoringRun.classification_model_id == prepared.model.id,
@@ -386,6 +393,13 @@ def create_scoring_run(
             "derivation_key": run.derivation_key,
         },
         configuration_snapshot={"scoring_policy": run.scoring_policy},
+        notification_policy=(
+            "PARENT_MANAGED"
+            if notification_parent_type is not None and notification_parent_id is not None
+            else "DEFAULT"
+        ),
+        notification_parent_type=notification_parent_type,
+        notification_parent_id=notification_parent_id,
     )
     record_audit(
         db,
@@ -1126,7 +1140,7 @@ def finalize_scoring_run(
         run.failure_summary = None
         run.failure_retriable = False
         run.completed_at = utcnow()
-        transition_job_execution(
+        workflow = transition_job_execution(
             active_db,
             job_type=CLASSIFICATION_SCORING_RUN_JOB_TYPE,
             job_id=run.id,
@@ -1158,6 +1172,13 @@ def finalize_scoring_run(
                 "failed_document_count": run.failed_document_count,
             },
         )
+        from app.review_programs import project_review_program_classifier_scoring_terminal
+
+        project_review_program_classifier_scoring_terminal(
+            active_db,
+            scoring_run=run,
+            workflow=workflow,
+        )
         active_db.commit()
 
 
@@ -1179,7 +1200,7 @@ def fail_scoring_run(
         run.failure_summary = message[:4000]
         run.failure_retriable = retriable
         run.completed_at = utcnow()
-        transition_job_execution(
+        workflow = transition_job_execution(
             db,
             job_type=CLASSIFICATION_SCORING_RUN_JOB_TYPE,
             job_id=run.id,
@@ -1189,6 +1210,13 @@ def fail_scoring_run(
             failure_code=run.failure_code,
             failure_summary=run.failure_summary,
             failure_retriable=retriable,
+        )
+        from app.review_programs import project_review_program_classifier_scoring_terminal
+
+        project_review_program_classifier_scoring_terminal(
+            db,
+            scoring_run=run,
+            workflow=workflow,
         )
         db.commit()
 
