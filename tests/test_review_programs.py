@@ -669,6 +669,10 @@ def test_synthetic_run_advances_waits_resumes_retries_reconciles_and_cancels(
     root_admin,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
+    monkeypatch.setattr(
+        "app.analysis_task_batch.get_settings",
+        lambda: SimpleNamespace(openai_api_key="test-openai-api-key"),
+    )
     _, _, matter, token = review_program_workspace(client, root_token)
     enable_definition_assessments(matter["id"], root_admin)
     create_response = client.post(
