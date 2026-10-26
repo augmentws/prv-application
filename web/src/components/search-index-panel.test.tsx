@@ -14,6 +14,7 @@ const activeIndex: SearchIndexGenerationRead = {
   schema_hash: "1234567890abcdef",
   status: "ACTIVE",
   document_count: 12,
+  semantic_document_count: 12,
   error_message: null,
   activated_at: "2026-09-14T12:00:00Z",
   created_at: "2026-09-14T11:00:00Z",
@@ -40,7 +41,7 @@ afterEach(cleanup);
 
 describe("SearchIndexPanel", () => {
   it("shows a ready active generation and matching document counts", () => {
-    render(<SearchIndexPanel coreDocumentCount={12} indexes={[{ ...activeIndex, physical_index_exists: true, alias_points_to_index: true, live_document_count: 12 }]} operations={[completedOperation]} onRebuild={vi.fn()} rebuilding={false} onConfirmReindex={vi.fn()} confirmingReindex={false} onRetryFailed={vi.fn()} retryingFailed={false} />);
+    render(<SearchIndexPanel coreDocumentCount={12} indexes={[{ ...activeIndex, physical_index_exists: true, alias_points_to_index: true, live_document_count: 12 }]} operations={[completedOperation]} onRebuild={vi.fn()} rebuilding={false} onConfirmReindex={vi.fn()} confirmingReindex={false} onPromoteGeneration={vi.fn()} promotingGeneration={false} onRetryFailed={vi.fn()} retryingFailed={false} />);
 
     expect(screen.getByText("Ready")).toBeInTheDocument();
     expect(screen.getByRole("cell", { name: "#2" })).toBeInTheDocument();
@@ -56,7 +57,7 @@ describe("SearchIndexPanel", () => {
       live_document_count: 0,
     } satisfies SearchIndexGenerationRead;
 
-    render(<SearchIndexPanel coreDocumentCount={12} indexes={[missing]} operations={[completedOperation]} onRebuild={vi.fn()} rebuilding={false} onConfirmReindex={vi.fn()} confirmingReindex={false} onRetryFailed={vi.fn()} retryingFailed={false} />);
+    render(<SearchIndexPanel coreDocumentCount={12} indexes={[missing]} operations={[completedOperation]} onRebuild={vi.fn()} rebuilding={false} onConfirmReindex={vi.fn()} confirmingReindex={false} onPromoteGeneration={vi.fn()} promotingGeneration={false} onRetryFailed={vi.fn()} retryingFailed={false} />);
 
     expect(screen.getAllByText("Missing")).toHaveLength(2);
     expect(screen.getByText("The active index is missing from OpenSearch")).toBeInTheDocument();
@@ -69,17 +70,34 @@ describe("SearchIndexPanel", () => {
       verification_error: "OpenSearch request failed: connection refused",
     } satisfies SearchIndexGenerationRead;
 
-    render(<SearchIndexPanel coreDocumentCount={12} indexes={[unavailable]} operations={[completedOperation]} onRebuild={vi.fn()} rebuilding={false} onConfirmReindex={vi.fn()} confirmingReindex={false} onRetryFailed={vi.fn()} retryingFailed={false} />);
+    render(<SearchIndexPanel coreDocumentCount={12} indexes={[unavailable]} operations={[completedOperation]} onRebuild={vi.fn()} rebuilding={false} onConfirmReindex={vi.fn()} confirmingReindex={false} onPromoteGeneration={vi.fn()} promotingGeneration={false} onRetryFailed={vi.fn()} retryingFailed={false} />);
 
     expect(screen.getByText("Unavailable")).toBeInTheDocument();
     expect(screen.getByText("Unverified")).toBeInTheDocument();
     expect(screen.queryByText("Ready")).not.toBeInTheDocument();
   });
 
+  it("warns without failing when an active generation has no projected embeddings", () => {
+    const keywordOnly = {
+      ...activeIndex,
+      physical_index_exists: true,
+      alias_points_to_index: true,
+      live_document_count: 12,
+      semantic_document_count: 0,
+    } satisfies SearchIndexGenerationRead;
+
+    render(<SearchIndexPanel coreDocumentCount={12} indexes={[keywordOnly]} operations={[completedOperation]} onRebuild={vi.fn()} rebuilding={false} onConfirmReindex={vi.fn()} confirmingReindex={false} onPromoteGeneration={vi.fn()} promotingGeneration={false} onRetryFailed={vi.fn()} retryingFailed={false} />);
+
+    expect(screen.getByText("Ready")).toBeInTheDocument();
+    expect(screen.getByText("Semantic search is unavailable for this generation")).toBeInTheDocument();
+    expect(screen.getByText(/Keyword search remains available/)).toBeInTheDocument();
+    expect(screen.getByText(/regenerating embeddings is not required/)).toBeInTheDocument();
+  });
+
   it("confirms before requesting a full rebuild", async () => {
     const user = userEvent.setup();
     const onRebuild = vi.fn().mockResolvedValue(undefined);
-    render(<SearchIndexPanel coreDocumentCount={12} indexes={[activeIndex]} operations={[]} onRebuild={onRebuild} rebuilding={false} onConfirmReindex={vi.fn()} confirmingReindex={false} onRetryFailed={vi.fn()} retryingFailed={false} />);
+    render(<SearchIndexPanel coreDocumentCount={12} indexes={[activeIndex]} operations={[]} onRebuild={onRebuild} rebuilding={false} onConfirmReindex={vi.fn()} confirmingReindex={false} onPromoteGeneration={vi.fn()} promotingGeneration={false} onRetryFailed={vi.fn()} retryingFailed={false} />);
 
     await user.click(screen.getByRole("button", { name: "Rebuild entire index" }));
     expect(screen.getByRole("heading", { name: "Rebuild the search index?" })).toBeInTheDocument();
@@ -100,7 +118,7 @@ describe("SearchIndexPanel", () => {
       payload: { schema_change: { action: "REINDEX_REQUIRED", reasons: ["Existing field mappings changed: metadata."] } },
       completed_at: null,
     } satisfies SearchProjectionOperationRead;
-    render(<SearchIndexPanel coreDocumentCount={12} indexes={[activeIndex]} operations={[awaiting]} onRebuild={vi.fn()} rebuilding={false} onConfirmReindex={onConfirm} confirmingReindex={false} onRetryFailed={vi.fn()} retryingFailed={false} />);
+    render(<SearchIndexPanel coreDocumentCount={12} indexes={[activeIndex]} operations={[awaiting]} onRebuild={vi.fn()} rebuilding={false} onConfirmReindex={onConfirm} confirmingReindex={false} onPromoteGeneration={vi.fn()} promotingGeneration={false} onRetryFailed={vi.fn()} retryingFailed={false} />);
 
     expect(screen.getAllByText("Action required")).toHaveLength(2);
     await user.click(screen.getByRole("button", { name: "Review and confirm" }));
@@ -119,6 +137,8 @@ describe("SearchIndexPanel", () => {
           phase: "INDEXING_DOCUMENTS",
           processed_documents: 450,
           total_documents: 1000,
+          indexed_documents: 449,
+          failed_documents: 1,
           index_name: "pvr-matter-1-documents-v000003",
           documents_per_second: 25,
           estimated_completion_at: "2026-09-14T12:01:00Z",
@@ -127,12 +147,54 @@ describe("SearchIndexPanel", () => {
       },
     } satisfies SearchProjectionOperationRead;
 
-    render(<SearchIndexPanel coreDocumentCount={1000} indexes={[activeIndex]} operations={[running]} onRebuild={vi.fn()} rebuilding={false} onConfirmReindex={vi.fn()} confirmingReindex={false} onRetryFailed={vi.fn()} retryingFailed={false} />);
+    render(<SearchIndexPanel coreDocumentCount={1000} indexes={[activeIndex]} operations={[running]} onRebuild={vi.fn()} rebuilding={false} onConfirmReindex={vi.fn()} confirmingReindex={false} onPromoteGeneration={vi.fn()} promotingGeneration={false} onRetryFailed={vi.fn()} retryingFailed={false} />);
 
     expect(screen.getByText("Indexing matter documents")).toBeInTheDocument();
     expect(screen.getByText("450 / 1,000 documents · 45%")).toBeInTheDocument();
     expect(screen.getByText("25.0 docs/sec · Estimated completion in 1 minute")).toBeInTheDocument();
+    expect(screen.getByText("1 document was skipped after projection errors; 449 indexed successfully.")).toBeInTheDocument();
     expect(screen.getByRole("progressbar", { name: "Search index rebuild progress" })).toHaveAttribute("aria-valuenow", "450");
+  });
+
+  it("requires explicit promotion for a generation completed with document errors", async () => {
+    const user = userEvent.setup();
+    const onPromoteGeneration = vi.fn().mockResolvedValue(undefined);
+    const awaitingPromotion = {
+      ...activeIndex,
+      id: "generation-3",
+      generation: 3,
+      index_name: "matter-1-v3",
+      status: "READY_WITH_ERRORS",
+      document_count: 999,
+      error_message: "Rebuild completed with 1 document projection failure; explicit promotion is required",
+      activated_at: null,
+      physical_index_exists: true,
+      alias_points_to_index: false,
+      live_document_count: 999,
+    } satisfies SearchIndexGenerationRead;
+    const completedWithErrors = {
+      ...completedOperation,
+      id: "operation-errors",
+      payload: {
+        progress: {
+          phase: "AWAITING_PROMOTION",
+          processed_documents: 1000,
+          total_documents: 1000,
+          indexed_documents: 999,
+          failed_documents: 1,
+          index_name: "matter-1-v3",
+        },
+      },
+    } satisfies SearchProjectionOperationRead;
+
+    render(<SearchIndexPanel coreDocumentCount={1000} indexes={[awaitingPromotion, activeIndex]} operations={[completedWithErrors]} onRebuild={vi.fn()} rebuilding={false} onConfirmReindex={vi.fn()} confirmingReindex={false} onPromoteGeneration={onPromoteGeneration} promotingGeneration={false} onRetryFailed={vi.fn()} retryingFailed={false} />);
+
+    expect(screen.getByText("Awaiting promotion")).toBeInTheDocument();
+    expect(screen.getByText("Generation #3 is ready with document errors")).toBeInTheDocument();
+    await user.click(screen.getByRole("button", { name: "Review and promote" }));
+    expect(screen.getByText(/1 document was skipped/i)).toBeInTheDocument();
+    await user.click(screen.getByRole("button", { name: "Promote with errors" }));
+    await waitFor(() => expect(onPromoteGeneration).toHaveBeenCalledWith("generation-3"));
   });
 
   it("confirms before requeueing failed document-update jobs", async () => {
@@ -147,7 +209,7 @@ describe("SearchIndexPanel", () => {
       error_message: "unknown encoding: windows-3839",
       completed_at: null,
     } satisfies SearchProjectionOperationRead;
-    render(<SearchIndexPanel coreDocumentCount={12} indexes={[activeIndex]} operations={[failed]} onRebuild={vi.fn()} rebuilding={false} onConfirmReindex={vi.fn()} confirmingReindex={false} onRetryFailed={onRetryFailed} retryingFailed={false} />);
+    render(<SearchIndexPanel coreDocumentCount={12} indexes={[activeIndex]} operations={[failed]} onRebuild={vi.fn()} rebuilding={false} onConfirmReindex={vi.fn()} confirmingReindex={false} onPromoteGeneration={vi.fn()} promotingGeneration={false} onRetryFailed={onRetryFailed} retryingFailed={false} />);
 
     await user.click(screen.getByRole("button", { name: "Requeue failed jobs" }));
     expect(screen.getByText(/1 failed or interrupted job covering 2 documents/i)).toBeInTheDocument();

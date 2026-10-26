@@ -14,12 +14,14 @@ import app.analysis_task_batch_sets as batch_sets
 from app import review_batches
 from app.analysis_task_skills import ensure_standard_analysis_task_skills
 from app.classification_scoring import create_scoring_run, prepare_scoring
+from app.config import get_settings
 from app.job_executions import (
     ANALYSIS_TASK_BATCH_SET_RUN_JOB_TYPE,
     CLASSIFICATION_SCORING_RUN_JOB_TYPE,
     REVIEW_BATCH_MATERIALIZATION_JOB_TYPE,
     transition_job_execution,
 )
+from app.main import app
 from app.models import (
     AnalysisInputManifest,
     AnalysisTaskBatchSetRun,
@@ -63,7 +65,6 @@ from app.review_programs import (
     _wilson_interval,
     cancel_review_program_discovery_children,
     link_review_program_child,
-    project_review_program_assessment_terminal,
     project_review_program_classifier_scoring_terminal,
     project_review_program_classifier_training_terminal,
     project_review_program_qa_compilation_terminal,
@@ -532,12 +533,131 @@ def test_negative_population_qc_gate_and_random_audit_interval() -> None:
         negative_qc_state="REPORT_READY",
     )
     assert report_title == "Review Negative-population QC findings"
-    assert [choice["key"] for choice in report_choices] == ["ACCEPT_QC", "STOP"]
+    assert [choice["key"] for choice in report_choices] == [
+        "ACCEPT_QC",
+        "REVIEW_QC_FINDINGS",
+        "RETRIEVE_AND_RETRAIN",
+        "REVISE_GUIDANCE",
+        "STOP",
+    ]
+    review_title, _, review_choices = _action_contract(
+        FIRST_PASS_REVIEW,
+        stage,
+        negative_qc_state="AWAITING_MANUAL_REVIEW",
+    )
+    assert review_title == "Complete the QC findings review"
+    assert [choice["key"] for choice in review_choices] == ["CONFIRM_QC_REVIEW", "STOP"]
+
+    completion = next(item for item in FIRST_PASS_REVIEW.stages if item.key == "COMPLETION")
+    completion_title, completion_explanation, completion_choices = _action_contract(
+        FIRST_PASS_REVIEW,
+        completion,
+    )
+    assert completion_title == "Complete first-pass review"
+    assert "does not publish" in completion_explanation
+    assert [choice["key"] for choice in completion_choices] == ["COMPLETE", "STOP"]
 
     interval = _wilson_interval(5, 100)
     assert interval is not None
     assert interval[0] < 0.05 < interval[1]
     assert _wilson_interval(0, 0) is None
+
+
+def test_completion_freezes_report_and_closes_run(
+    client: TestClient,
+    root_token: str,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _, _, matter, token = review_program_workspace(client, root_token)
+    created = client.post(
+        f"/v1/matters/{matter['id']}/review-programs",
+        headers=auth(token),
+        json={"key": "completion-proof", "name": "Completion proof"},
+    )
+    assert created.status_code == 201, created.text
+    program_id = created.json()["id"]
+    started = client.post(
+        f"/v1/matters/{matter['id']}/review-programs/{program_id}/runs",
+        headers=auth(token),
+        json={"idempotency_key": "completion-proof"},
+    )
+    assert started.status_code == 201, started.text
+    run_id = started.json()["id"]
+    with TestingSessionLocal() as db:
+        program = db.get(ReviewProgram, uuid.UUID(program_id))
+        run = db.get(ReviewProgramRun, uuid.UUID(run_id))
+        assert program is not None and run is not None
+        old_action = db.get(ReviewProgramAction, run.pending_action_id)
+        assert old_action is not None
+        old_action.status = "SUPERSEDED"
+        old_attempt = db.get(ReviewProgramStageAttempt, old_action.stage_attempt_id)
+        assert old_attempt is not None
+        old_attempt.status = "CANCELED"
+        old_attempt.completed_at = utcnow()
+        run.pending_action_id = None
+        run.progress_summary = {
+            **run.progress_summary,
+            "accepted_matter_definition": {"revision": 1},
+            "accepted_qa_task": {"task_version_id": str(uuid.uuid4())},
+            "training_labels": {"state": "FROZEN"},
+            "classifier_results": {"state": "ACCEPTED"},
+            "whole_collection_scoring": {"state": "COMPLETED", "models": []},
+            "classifier_positive_coverage": {"state": "COMPLETED"},
+            "final_alignment": {"state": "COMPLETED", "alignment_counts": {}},
+            "negative_population_qc": {
+                "state": "REPORT_READY",
+                "report": {
+                    "state": "COMPLETED",
+                    "unresolved_document_count": 2,
+                    "mandatory_unreviewable_count": 1,
+                    "limitations": ["Synthetic limitation"],
+                },
+            },
+            "negative_population_qc_state": "ACCEPTED",
+        }
+        _activate_stage_by_key(db, program=program, run=run, stage_key="COMPLETION")
+        completion_action = db.get(ReviewProgramAction, run.pending_action_id)
+        assert completion_action is not None
+        preview_hash = completion_action.preview_hash
+        action_id = completion_action.id
+        db.commit()
+
+    artifact_id = uuid.uuid4()
+    monkeypatch.setattr(
+        "app.review_programs.store_workflow_artifact",
+        lambda **kwargs: (
+            SimpleNamespace(artifact_id=artifact_id, content_hash=kwargs["content_hash"]),
+            True,
+        ),
+    )
+    completed = client.post(
+        f"/v1/matters/{matter['id']}/review-programs/{program_id}/runs/{run_id}/actions/{action_id}/resolve",
+        headers=auth(token),
+        json={
+            "preview_hash": preview_hash,
+            "choice_key": "COMPLETE",
+            "reason": "Senior attorney accepted the documented limitations.",
+        },
+    )
+    assert completed.status_code == 200, completed.text
+    assert completed.json()["status"] == "COMPLETED"
+    summary = completed.json()["progress_summary"]["completion_report"]
+    assert summary["artifact_id"] == str(artifact_id)
+    assert summary["publication_effect"] == "NONE"
+    assert summary["unresolved"] == {
+        "final_alignment_incomplete_count": 0,
+        "qc_unresolved_document_count": 2,
+        "manual_resolution_document_count": 1,
+    }
+
+    report = client.get(
+        f"/v1/matters/{matter['id']}/review-programs/{program_id}/runs/{run_id}/completion",
+        headers=auth(token),
+    )
+    assert report.status_code == 200, report.text
+    assert report.json()["artifact_id"] == str(artifact_id)
+    assert report.json()["completion_reason"] == "Senior attorney accepted the documented limitations."
+    assert report.json()["report"]["completion"]["publication_effect"] == "NONE"
 
 
 def test_synthetic_run_advances_waits_resumes_retries_reconciles_and_cancels(
@@ -656,16 +776,34 @@ def test_synthetic_run_advances_waits_resumes_retries_reconciles_and_cancels(
         assert workflow_run.notification_policy == "PARENT_MANAGED"
         assert workflow_run.notification_parent_type == "REVIEW_PROGRAM_RUN"
         assert workflow_run.notification_parent_id == uuid.UUID(run_id)
-        first_assessment.status = "FAILED"
-        first_assessment.error_message = "Synthetic assessment failure"
-        first_assessment.completed_at = utcnow()
-        project_review_program_assessment_terminal(db, assessment=first_assessment)
-        db.commit()
-
-    failed = client.get(f"{runs_url}/{run_id}", headers=auth(token))
+        monkeypatch.setattr(
+            "app.assessment_workflow_reconciliation.get_dbos_client",
+            lambda: SimpleNamespace(
+                list_workflows=lambda **_: [
+                    SimpleNamespace(
+                        workflow_id=workflow_run.dbos_workflow_id,
+                        status="ERROR",
+                        error="Synthetic durable assessment failure",
+                    )
+                ]
+            ),
+        )
+    enabled_settings = get_settings().model_copy(update={"dbos_enabled": True})
+    app.dependency_overrides[get_settings] = lambda: enabled_settings
+    try:
+        failed = client.get(f"{runs_url}/{run_id}", headers=auth(token))
+    finally:
+        app.dependency_overrides.pop(get_settings, None)
     assert failed.status_code == 200
     assert failed.json()["status"] == "FAILED"
     assert failed.json()["failure_retriable"] is True
+    with TestingSessionLocal() as db:
+        assessment = db.get(MatterDefinitionAssessmentRun, first_assessment.id)
+        workflow = db.get(WorkflowRun, workflow_run.id)
+        assert assessment is not None and workflow is not None
+        assert assessment.status == "FAILED"
+        assert workflow.status == "FAILED"
+        assert assessment.error_message == "Synthetic durable assessment failure"
     retried = client.post(
         f"{runs_url}/{run_id}/retry",
         headers=auth(token),
@@ -720,6 +858,28 @@ def test_synthetic_run_advances_waits_resumes_retries_reconciles_and_cancels(
     assert reconciled_assessment.status_code == 200, reconciled_assessment.text
     assert reconciled_assessment.json()["current_stage"] == "DEFINITION_REFINEMENT"
     assert reconciled_assessment.json()["status"] == "WAITING_FOR_USER"
+    with TestingSessionLocal() as db:
+        assessment = db.get(
+            MatterDefinitionAssessmentRun,
+            uuid.UUID(reconciled_assessment.json()["progress_summary"]["current_assessment_id"]),
+        )
+        assert assessment is not None
+        assessment.status = "QUEUED"
+        assessment.synthesis_result = None
+        db.commit()
+    live_retry = client.get(f"{runs_url}/{run_id}", headers=auth(token))
+    assert live_retry.status_code == 200, live_retry.text
+    live_action = next(action for action in live_retry.json()["actions"] if action["status"] == "OPEN")
+    assert live_action["decision_context"]["assessment"]["status"] == "QUEUED"
+    with TestingSessionLocal() as db:
+        assessment = db.get(
+            MatterDefinitionAssessmentRun,
+            uuid.UUID(reconciled_assessment.json()["progress_summary"]["current_assessment_id"]),
+        )
+        assert assessment is not None
+        assessment.status = "COMPLETED"
+        assessment.synthesis_result = {"status": "SUFFICIENT"}
+        db.commit()
     refinement_action = next(action for action in reconciled_assessment.json()["actions"] if action["status"] == "OPEN")
     blocked = client.post(
         f"{runs_url}/{run_id}/actions/{refinement_action['id']}/resolve",
@@ -768,7 +928,7 @@ def test_synthetic_run_advances_waits_resumes_retries_reconciles_and_cancels(
     )
     assert reassessed.status_code == 200, reassessed.text
     assert reassessed.json()["current_stage"] == "DEFINITION_ASSESSMENT"
-    assert reassessed.json()["progress_summary"]["definition_assessment_round"] == 3
+    assert reassessed.json()["progress_summary"]["definition_assessment_round"] == 2
     with TestingSessionLocal() as db:
         assessment = db.get(
             MatterDefinitionAssessmentRun,

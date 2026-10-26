@@ -48,6 +48,15 @@ export function SearchIndexSection() {
     },
     onError: (error) => toast.error(error instanceof Error ? error.message : "The search reindex could not be confirmed."),
   });
+  const promoteGenerationMutation = useMutation({
+    mutationFn: (generationId: string) => coreApi<SearchIndexGenerationRead>(`/v1/matters/${matterId}/search-indexes/${generationId}/promote`, { method: "POST" }),
+    onSuccess: () => {
+      void queryClient.invalidateQueries({ queryKey: ["search-indexes", matterId] });
+      void queryClient.invalidateQueries({ queryKey: ["search-operations", matterId] });
+      toast.success("The search generation was promoted and is now active.");
+    },
+    onError: (error) => toast.error(error instanceof Error ? error.message : "The search generation could not be promoted."),
+  });
   const retryFailedSearchMutation = useMutation({
     mutationFn: () => coreApi<SearchProjectionRetryResponse>(`/v1/matters/${matterId}/search-operations/retry-failed`, { method: "POST" }),
     onSuccess: (result) => {
@@ -71,6 +80,8 @@ export function SearchIndexSection() {
     rebuilding={rebuildSearchMutation.isPending}
     onConfirmReindex={(operationId) => confirmReindexMutation.mutateAsync(operationId).then(() => undefined)}
     confirmingReindex={confirmReindexMutation.isPending}
+    onPromoteGeneration={(generationId) => promoteGenerationMutation.mutateAsync(generationId).then(() => undefined)}
+    promotingGeneration={promoteGenerationMutation.isPending}
     onRetryFailed={() => retryFailedSearchMutation.mutateAsync().then(() => undefined)}
     retryingFailed={retryFailedSearchMutation.isPending}
     retryableOperationCount={retryableSearchOperations.data.requeued_operation_count}

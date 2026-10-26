@@ -1,14 +1,21 @@
 import pytest
 
+from app.document_analysis_schemas import (
+    DOCUMENT_ANALYSIS_MAP_OUTPUT_SCHEMA,
+    DOCUMENT_ANALYSIS_MODEL_OUTPUT_SCHEMA,
+    DOCUMENT_ANALYSIS_OUTPUT_SCHEMA,
+)
 from app.document_evidence import (
     CitationValidationError,
     build_document_map_plan,
     build_document_reduce_input,
     document_map_coverage,
+    preserve_document_map_signals,
     render_document_analysis_markdown,
     render_model_document,
     segment_paragraphs,
     validate_document_analysis_citations,
+    validate_document_map_citations,
 )
 from app.model_execution import validate_structured_output
 from app.standard_skills import STANDARD_ASSESSMENT_SKILLS
@@ -104,6 +111,68 @@ def test_material_analysis_sections_require_citations() -> None:
     result["responsiveness_summary"][0]["citation_ids"] = []
     with pytest.raises(CitationValidationError, match="must contain at least one paragraph ID"):
         validate_document_analysis_citations(result, paragraph_map)
+
+
+def test_map_and_final_model_schemas_leave_coverage_to_the_application() -> None:
+    paragraph_map = segment_paragraphs("First paragraph.")
+    map_result = {
+        "findings": [{"text": "A material fact.", "citation_ids": ["¶1"]}],
+        "criterion_matches": [],
+        "scope_analysis": [],
+        "countervailing_considerations": [],
+        "clarification_requests": [],
+        "limitations": [],
+    }
+
+    validate_structured_output(map_result, DOCUMENT_ANALYSIS_MAP_OUTPUT_SCHEMA)
+    validate_document_map_citations(map_result, paragraph_map)
+    assert "coverage" not in DOCUMENT_ANALYSIS_MAP_OUTPUT_SCHEMA["properties"]
+    assert "coverage" not in DOCUMENT_ANALYSIS_MODEL_OUTPUT_SCHEMA["properties"]
+    assert "coverage" in DOCUMENT_ANALYSIS_OUTPUT_SCHEMA["properties"]
+
+
+def test_map_near_misses_and_clarifications_survive_reduction() -> None:
+    near_miss = {
+        "criterion_key": "issue_5",
+        "label": "Citizens operations",
+        "match_type": "NEAR_MISS",
+        "reasoning": "The document raises an unresolved employment boundary.",
+        "citation_ids": ["¶2"],
+    }
+    clarification = {
+        "question": "Should internal employment grievances involving Citizens be responsive?",
+        "rationale": "The current boundary is ambiguous.",
+        "blocking": False,
+        "instruction_references": ["Issue 5"],
+        "citation_ids": ["¶2"],
+    }
+    reduced = {
+        **analysis_result(),
+        "criterion_matches": [],
+        "clarification_requests": [],
+    }
+    map_results = {
+        "window-1": {
+            "criterion_matches": [near_miss],
+            "clarification_requests": [clarification],
+        },
+        # An overlapping window may repeat the exact same signals.
+        "window-2": {
+            "criterion_matches": [near_miss],
+            "clarification_requests": [clarification],
+        },
+    }
+
+    merged, diagnostics = preserve_document_map_signals(reduced, map_results)
+
+    assert merged["criterion_matches"] == [near_miss]
+    assert merged["clarification_requests"] == [clarification]
+    assert diagnostics["map_near_miss_count"] == 1
+    assert diagnostics["map_clarification_count"] == 1
+    assert diagnostics["restored_near_miss_count"] == 1
+    assert diagnostics["restored_clarification_count"] == 1
+    assert "maxItems" not in DOCUMENT_ANALYSIS_OUTPUT_SCHEMA["properties"]["criterion_matches"]
+    assert "maxItems" not in DOCUMENT_ANALYSIS_OUTPUT_SCHEMA["properties"]["clarification_requests"]
 
 
 def test_long_document_map_plan_preserves_all_source_ranges_and_reports_partial_coverage() -> None:

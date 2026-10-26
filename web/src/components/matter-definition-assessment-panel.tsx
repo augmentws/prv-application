@@ -3,7 +3,7 @@
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { AlertTriangle, ExternalLink, LoaderCircle, PencilLine, Play, RotateCcw, Sparkles, Workflow } from "lucide-react";
 import Link from "next/link";
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useId, useMemo, useState } from "react";
 import { toast } from "sonner";
 
 import { QueryError } from "@/components/query-state";
@@ -46,6 +46,7 @@ function objectValue(value: unknown): Record<string, unknown> {
 export function MatterDefinitionAssessmentPanel({
   matterId,
   guidanceId,
+  initialAssessmentId = "",
   guidanceName = "Review Guidance",
   guidanceArchived = false,
   revisions,
@@ -54,6 +55,7 @@ export function MatterDefinitionAssessmentPanel({
 }: {
   matterId: string;
   guidanceId?: string;
+  initialAssessmentId?: string;
   guidanceName?: string;
   guidanceArchived?: boolean;
   revisions: MatterDefinitionRevisionRead[];
@@ -65,13 +67,14 @@ export function MatterDefinitionAssessmentPanel({
   const [renameOpen, setRenameOpen] = useState(false);
   const [renameName, setRenameName] = useState("");
   const [regenerateOpen, setRegenerateOpen] = useState(false);
-  const [selectedId, setSelectedId] = useState("");
+  const [selectedId, setSelectedId] = useState(initialAssessmentId);
   const [revision, setRevision] = useState(String(revisions[0]?.revision ?? 1));
   const [name, setName] = useState("");
   const [target, setTarget] = useState("500");
   const [controlSize, setControlSize] = useState("0");
   const [useBatching, setUseBatching] = useState(true);
   const [warningAcknowledged, setWarningAcknowledged] = useState(false);
+  const regenerateTooltipId = useId();
 
   const assessmentBase = guidanceId
     ? `/v1/matters/${matterId}/guidance/${guidanceId}/assessments`
@@ -130,7 +133,10 @@ export function MatterDefinitionAssessmentPanel({
     mutationFn: (assessmentId: string) => coreApi<MatterDefinitionAssessmentRead>(`/v1/matters/${matterId}/definition-assessments/${assessmentId}/retry`, { method: "POST" }),
     onSuccess: async (updated) => {
       queryClient.setQueryData<MatterDefinitionAssessmentRead[]>(["definition-assessments", matterId, guidanceId], (current) => current?.map((run) => run.id === updated.id ? updated : run));
-      await queryClient.invalidateQueries({ queryKey: ["definition-assessment-execution", matterId, updated.id] });
+      await Promise.all([
+        queryClient.invalidateQueries({ queryKey: ["definition-assessments", matterId, guidanceId] }),
+        queryClient.invalidateQueries({ queryKey: ["definition-assessment-execution", matterId, updated.id] }),
+      ]);
       toast.success(`${updated.name} was queued to resume.`);
     },
     onError: (error) => toast.error(error instanceof Error ? error.message : "The assessment could not be retried."),
@@ -192,6 +198,11 @@ export function MatterDefinitionAssessmentPanel({
   const statusInCoverage = Boolean(
     selected?.coverage_snapshot && ["COMPLETED", "COMPLETED_WITH_ERRORS"].includes(selected.status),
   );
+  const refinementQuestionNotice = questions.data && questions.data.length === 0
+    ? selected?.synthesis_result
+      ? <p className="rounded-md border border-success/40 bg-success/8 p-3 text-sm">Synthesis completed without generating clarification questions. No question resolution is required.</p>
+      : <p className="rounded-md border bg-muted/30 p-3 text-sm text-muted-foreground">Refinement questions will appear after assessment synthesis completes.</p>
+    : null;
 
   useEffect(() => {
     if (selected?.guidance_refinement_status !== "COMPLETED") return;
@@ -231,7 +242,7 @@ export function MatterDefinitionAssessmentPanel({
       {selected && !statusInCoverage ? <StatusBadge status={selected.status} /> : null}
       {selected?.review_batch_id ? <Button asChild size="icon" className="size-8 shrink-0" variant="outline"><Link href={`/review/matters/${matterId}?batch=${selected.review_batch_id}`} aria-label="Open assessment batch"><ExternalLink /></Link></Button> : null}
       {selected?.review_batch_id ? <Button asChild size="sm" className="shrink-0" variant="outline"><Link href={`/review/matters/${matterId}?batch=${selected.review_batch_id}&analysis=run`}><Play />Run analysis</Link></Button> : null}
-      {selected && ["COMPLETED", "COMPLETED_WITH_ERRORS"].includes(selected.status) && selected.selected_count > 0 ? <Button type="button" size="icon" className="size-8 shrink-0" variant="outline" aria-label="Regenerate assessment" onClick={() => setRegenerateOpen(true)}><RotateCcw /></Button> : null}
+      {selected && ["COMPLETED", "COMPLETED_WITH_ERRORS"].includes(selected.status) && selected.selected_count > 0 ? <span className="group relative shrink-0"><Button type="button" size="icon" className="size-8" variant="outline" aria-label="Regenerate assessment" aria-describedby={regenerateTooltipId} onClick={() => setRegenerateOpen(true)}><RotateCcw /></Button><span id={regenerateTooltipId} role="tooltip" className="pointer-events-none invisible absolute right-0 top-full z-50 mt-2 whitespace-nowrap rounded-md bg-foreground px-2 py-1 text-xs font-medium text-background opacity-0 shadow-md transition-opacity group-hover:visible group-hover:opacity-100 group-focus-within:visible group-focus-within:opacity-100">Regenerate assessment</span></span> : null}
       <Button type="button" size="sm" className="shrink-0" onClick={() => setLaunchOpen(true)} disabled={!revisions.length || guidanceArchived}><Play />New</Button>
     </>
   );
@@ -245,7 +256,7 @@ export function MatterDefinitionAssessmentPanel({
         {retrievalNeedsClarification ? <div className="rounded-lg border border-warning/40 bg-warning/8 p-3 text-sm"><p className="font-semibold">Retrieval needs clarification</p><p className="mt-1 text-xs text-muted-foreground">{selected.error_message}</p>{zeroResultTopics.length ? <p className="mt-2 text-xs"><strong>Topics with no results:</strong> {zeroResultTopics.join(", ")}</p> : null}<p className="mt-2 text-xs">Clarify the affected terminology or scope in Review Guidance, then start a new assessment.</p></div> : canRetry ? <div className={`flex flex-wrap items-center justify-between gap-3 rounded-lg border p-3 text-sm ${selected.status === "FAILED" ? "border-destructive/40 bg-destructive/5 text-destructive" : "border-warning/40 bg-warning/8"}`}><div><p className="font-semibold">{selected.status === "FAILED" ? "Assessment failed" : "Assessment completed with document errors"}</p><p className="mt-1 text-xs">{selected.status === "FAILED" ? selected.error_message || "The workflow did not provide an error message." : `${selected.failed_count} failed documents can be retried without reprocessing the ${selected.summarized_count} completed summaries.`}</p></div><Button type="button" size="sm" variant="outline" disabled={retry.isPending} onClick={() => retry.mutate(selected.id)}>{retry.isPending ? <LoaderCircle className="animate-spin" /> : <RotateCcw />}{selected.status === "FAILED" ? "Retry assessment" : "Retry failed documents"}</Button></div> : null}
         <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-5">
           <Metric label="Selected" value={selected.selected_count} />
-          <Metric label="Summarized" value={selected.summarized_count} />
+          <Metric label="Documents summarized" value={`${selected.summarized_count.toLocaleString()} / ${selected.selected_count.toLocaleString()}`} />
           <Metric label="Skipped / failed" value={`${selected.skipped_count} / ${selected.failed_count}`} />
           <Metric label="Estimated input" value={selected.estimated_input_tokens?.toLocaleString() ?? "Pending"} />
           <Metric label="Cache reads" value={`${cacheRatio}%`} />
@@ -258,7 +269,32 @@ export function MatterDefinitionAssessmentPanel({
 
         {refinement.outcome ? <section className="rounded-lg border p-4"><div className="flex flex-wrap items-center justify-between gap-2"><h3 className="font-semibold">Matter Definition refinement</h3><Badge variant="outline">{String(refinement.outcome).toLowerCase().replaceAll("_", " ")}</Badge></div><p className="mt-2 max-w-3xl text-sm leading-6 text-muted-foreground">{String(refinement.rationale ?? "")}</p></section> : null}
 
-        {questions.data?.length ? <section><h3 className="mb-2 text-xs font-bold uppercase tracking-[0.08em] text-muted-foreground">Matter Definition refinement questions</h3><div className="space-y-3">{questions.data.map((question) => <ClarificationQuestion key={question.id} question={question} disabled={updateQuestion.isPending} onUpdate={(status, answer) => updateQuestion.mutate({ id: question.id, status, answer })} />)}</div>{selected.guidance_refinement_status === "QUEUED" || selected.guidance_refinement_status === "RUNNING" ? <p className="mt-3 flex items-center gap-2 rounded-md border bg-muted/30 p-3 text-sm"><LoaderCircle className="size-4 animate-spin" />All questions are resolved. Creating a revised guidance draft…</p> : selected.guidance_refinement_status === "COMPLETED" ? <p className="mt-3 rounded-md border border-success/40 bg-success/8 p-3 text-sm font-medium">A new reviewer-guidance draft was created. Review it in the guidance editor before publishing.</p> : selected.guidance_refinement_status === "NOT_REQUIRED" ? <p className="mt-3 rounded-md border p-3 text-sm text-muted-foreground">All questions were dismissed, so no new guidance draft was created.</p> : selected.guidance_refinement_status === "FAILED" ? <p className="mt-3 rounded-md border border-destructive/40 bg-destructive/5 p-3 text-sm text-destructive">The revised guidance draft could not be created: {selected.guidance_refinement_error_message ?? "No error details were provided."}</p> : null}</section> : null}
+        {questions.data?.length ? (
+          <section>
+            <h3 className="mb-2 text-xs font-bold uppercase tracking-[0.08em] text-muted-foreground">Matter Definition refinement questions</h3>
+            <div className="space-y-3">
+              {questions.data.map((question) => (
+                <ClarificationQuestion
+                  key={question.id}
+                  question={question}
+                  matterId={matterId}
+                  reviewBatchId={selected.review_batch_id}
+                  disabled={updateQuestion.isPending}
+                  onUpdate={(status, answer) => updateQuestion.mutate({ id: question.id, status, answer })}
+                />
+              ))}
+            </div>
+            {selected.guidance_refinement_status === "QUEUED" || selected.guidance_refinement_status === "RUNNING" ? (
+              <p className="mt-3 flex items-center gap-2 rounded-md border bg-muted/30 p-3 text-sm"><LoaderCircle className="size-4 animate-spin" />All questions are resolved. Creating a revised guidance draft…</p>
+            ) : selected.guidance_refinement_status === "COMPLETED" ? (
+              <p className="mt-3 rounded-md border border-success/40 bg-success/8 p-3 text-sm font-medium">A new reviewer-guidance draft was created. Review it in the guidance editor before publishing.</p>
+            ) : selected.guidance_refinement_status === "NOT_REQUIRED" ? (
+              <p className="mt-3 rounded-md border p-3 text-sm text-muted-foreground">All questions were dismissed, so no new guidance draft was created.</p>
+            ) : selected.guidance_refinement_status === "FAILED" ? (
+              <p className="mt-3 rounded-md border border-destructive/40 bg-destructive/5 p-3 text-sm text-destructive">The revised guidance draft could not be created: {selected.guidance_refinement_error_message ?? "No error details were provided."}</p>
+            ) : null}
+          </section>
+        ) : refinementQuestionNotice}
 
         {usage ? <details className="rounded-lg border"><summary className="cursor-pointer p-3 text-sm font-semibold"><span className="inline-flex items-center gap-2"><Workflow className="size-4" />Workflow execution · {usage.request_count} model requests</span></summary><div className="border-t p-3"><div className="mb-3 grid gap-2 sm:grid-cols-4"><Metric label="Input tokens" value={usage.input_tokens.toLocaleString()} /><Metric label="Cached input" value={usage.cached_input_tokens.toLocaleString()} /><Metric label="Cache writes" value={usage.cache_write_tokens.toLocaleString()} /><Metric label="Output tokens" value={usage.output_tokens.toLocaleString()} /></div><ol className="space-y-2">{usage.steps.map((step) => <li key={step.id} className="flex items-center justify-between rounded-md bg-muted/30 px-3 py-2 text-xs"><span><strong>{step.ordinal}. {step.role_key.replaceAll("_", " ")}</strong> · {step.completed_count}/{step.total_count}</span><StatusBadge status={step.status} /></li>)}</ol>{usage.skill_runs.length ? <div className="mt-3 border-t pt-3"><p className="text-xs font-bold uppercase tracking-[0.08em] text-muted-foreground">Skill runs & artifacts</p><p className="mt-1 text-xs text-muted-foreground">{usage.skill_runs.length} runs · {usage.skill_runs.filter((run) => run.output_artifact_id).length} immutable output artifacts · {usage.skill_runs.filter((run) => run.status === "FAILED").length} failed attempts</p>{usage.skill_runs.filter((run) => run.output_artifact_id || run.error_message).length ? <div className="mt-2 max-h-40 space-y-1 overflow-auto">{usage.skill_runs.filter((run) => run.output_artifact_id || run.error_message).map((run) => <div key={run.id} className="rounded bg-muted/30 px-2 py-1.5 font-mono text-[10px]"><span>{run.scope_type.toLowerCase()}</span>{run.output_artifact_id ? <span className="block truncate text-muted-foreground" title={run.output_artifact_id}>artifact {run.output_artifact_id}</span> : null}{run.error_message ? <span className="block text-destructive">{run.error_message}</span> : null}</div>)}</div> : null}</div> : null}</div></details> : null}
       </> : null}
@@ -286,8 +322,38 @@ function Metric({ label, value }: { label: string; value: string | number }) {
   return <div className="rounded-lg border bg-card p-3"><p className="text-[11px] font-bold uppercase tracking-[0.08em] text-muted-foreground">{label}</p><p className="mt-1 text-lg font-semibold tabular-nums">{value}</p></div>;
 }
 
-function ClarificationQuestion({ question, disabled, onUpdate }: { question: MatterDefinitionAssessmentQuestionRead; disabled: boolean; onUpdate: (status: "ANSWERED" | "DISMISSED", answer?: string) => void }) {
+type QuestionEvidence = {
+  matterDocumentId: string;
+  paragraphIds: string[];
+  reason: string;
+};
+
+function parseQuestionEvidence(evidence: MatterDefinitionAssessmentQuestionRead["evidence"]): QuestionEvidence[] {
+  return evidence.flatMap((item) => {
+    const value = objectValue(item);
+    const matterDocumentId = typeof value.matter_document_id === "string" ? value.matter_document_id.trim() : "";
+    if (!matterDocumentId) return [];
+    return [{
+      matterDocumentId,
+      paragraphIds: Array.isArray(value.paragraph_ids)
+        ? value.paragraph_ids.filter((paragraphId): paragraphId is string => typeof paragraphId === "string" && paragraphId.trim().length > 0)
+        : [],
+      reason: typeof value.reason === "string" ? value.reason.trim() : "",
+    }];
+  });
+}
+
+function questionEvidenceHref(matterId: string, reviewBatchId: string, evidence: QuestionEvidence): string {
+  const parameters = new URLSearchParams({
+    batch: reviewBatchId,
+    document: evidence.matterDocumentId,
+  });
+  if (evidence.paragraphIds.length) parameters.set("paragraph", evidence.paragraphIds.join(","));
+  return `/review/matters/${matterId}?${parameters.toString()}`;
+}
+
+function ClarificationQuestion({ question, matterId, reviewBatchId, disabled, onUpdate }: { question: MatterDefinitionAssessmentQuestionRead; matterId: string; reviewBatchId?: string | null; disabled: boolean; onUpdate: (status: "ANSWERED" | "DISMISSED", answer?: string) => void }) {
   const [answer, setAnswer] = useState(question.answer ?? "");
-  const evidenceCount = useMemo(() => question.evidence.length, [question.evidence]);
-  return <div className="rounded-lg border p-3"><div className="flex flex-wrap items-start justify-between gap-2"><p className="max-w-3xl text-sm font-semibold">{question.question}</p><div className="flex gap-1"><Badge variant="outline">{question.priority.toLowerCase()}</Badge><StatusBadge status={question.status} /></div></div><p className="mt-1 text-xs leading-5 text-muted-foreground">{question.rationale}{evidenceCount ? ` · ${evidenceCount} evidence reference${evidenceCount === 1 ? "" : "s"}` : ""}</p>{question.status === "OPEN" ? <div className="mt-3 space-y-3">{question.suggested_answers.length ? <div><p className="mb-1.5 text-xs font-medium text-muted-foreground">Suggested answers</p><div className="flex flex-wrap gap-2">{question.suggested_answers.map((suggestion) => <Button key={suggestion} type="button" size="sm" variant={answer === suggestion ? "default" : "outline"} disabled={disabled} className="h-auto whitespace-normal text-left" onClick={() => setAnswer(suggestion)}>{suggestion}</Button>)}</div></div> : null}<div className="flex items-end gap-2"><Textarea className="min-h-20" placeholder="Select a suggestion or enter a custom answer…" value={answer} onChange={(event) => setAnswer(event.target.value)} /><div className="flex shrink-0 flex-col gap-2"><Button size="sm" disabled={disabled || !answer.trim()} onClick={() => onUpdate("ANSWERED", answer)}>Answer</Button><Button size="sm" variant="ghost" disabled={disabled} onClick={() => onUpdate("DISMISSED")}>Dismiss</Button></div></div></div> : question.answer ? <p className="mt-3 rounded-md bg-muted/40 p-2 text-sm">{question.answer}</p> : null}</div>;
+  const evidence = useMemo(() => parseQuestionEvidence(question.evidence), [question.evidence]);
+  return <div className="rounded-lg border p-3"><div className="flex flex-wrap items-start justify-between gap-2"><p className="max-w-3xl text-sm font-semibold">{question.question}</p><div className="flex gap-1"><Badge variant="outline">{question.priority.toLowerCase()}</Badge><StatusBadge status={question.status} /></div></div><p className="mt-1 text-xs leading-5 text-muted-foreground">{question.rationale}</p>{evidence.length ? <details className="mt-2 rounded-md border bg-muted/20"><summary className="cursor-pointer px-3 py-2 text-xs font-medium">Supporting documents ({evidence.length})</summary><ol className="space-y-2 border-t p-3">{evidence.map((item, index) => <li key={`${item.matterDocumentId}-${index}`} className="rounded-md bg-background p-2 text-xs"><div className="flex flex-wrap items-center justify-between gap-2"><span className="font-medium">Document {index + 1}{item.paragraphIds.length ? ` · ${item.paragraphIds.join(", ")}` : ""}</span>{reviewBatchId ? <Link className="inline-flex items-center gap-1 font-medium text-primary hover:underline" href={questionEvidenceHref(matterId, reviewBatchId, item)} target="_blank" rel="noopener noreferrer">Open cited document<ExternalLink className="size-3" /></Link> : null}</div>{item.reason ? <p className="mt-1 leading-5 text-muted-foreground">{item.reason}</p> : null}</li>)}</ol></details> : null}{question.status === "OPEN" ? <div className="mt-3 space-y-3">{question.suggested_answers.length ? <div><p className="mb-1.5 text-xs font-medium text-muted-foreground">Suggested answers</p><div className="flex flex-wrap gap-2">{question.suggested_answers.map((suggestion) => <Button key={suggestion} type="button" size="sm" variant={answer === suggestion ? "default" : "outline"} disabled={disabled} className="h-auto whitespace-normal text-left" onClick={() => setAnswer(suggestion)}>{suggestion}</Button>)}</div></div> : null}<div className="flex items-end gap-2"><Textarea className="min-h-20" placeholder="Select a suggestion or enter a custom answer…" value={answer} onChange={(event) => setAnswer(event.target.value)} /><div className="flex shrink-0 flex-col gap-2"><Button size="sm" disabled={disabled || !answer.trim()} onClick={() => onUpdate("ANSWERED", answer)}>Answer</Button><Button size="sm" variant="ghost" disabled={disabled} onClick={() => onUpdate("DISMISSED")}>Dismiss</Button></div></div></div> : question.answer ? <p className="mt-3 rounded-md bg-muted/40 p-2 text-sm">{question.answer}</p> : null}</div>;
 }

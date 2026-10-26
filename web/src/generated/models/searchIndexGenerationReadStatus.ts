@@ -11,6 +11,7 @@ export type SearchIndexGenerationReadStatus = typeof SearchIndexGenerationReadSt
 
 export const SearchIndexGenerationReadStatus = {
   CREATING: 'CREATING',
+  READY_WITH_ERRORS: 'READY_WITH_ERRORS',
   ACTIVE: 'ACTIVE',
   RETIRED: 'RETIRED',
   FAILED: 'FAILED',

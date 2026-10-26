@@ -69,9 +69,17 @@ interface DraftEdit {
   basedOnRevision: number | null;
 }
 
-export function MatterDefinitionPanel({ matterId }: { matterId: string }) {
+export function MatterDefinitionPanel({
+  matterId,
+  initialGuidanceId = "",
+  initialAssessmentId = "",
+}: {
+  matterId: string;
+  initialGuidanceId?: string;
+  initialAssessmentId?: string;
+}) {
   const queryClient = useQueryClient();
-  const [selectedGuidanceId, setSelectedGuidanceId] = useState("");
+  const [selectedGuidanceId, setSelectedGuidanceId] = useState(initialGuidanceId);
   const [guidanceDialog, setGuidanceDialog] = useState<"create" | "clone" | "edit" | null>(null);
   const [guidanceKey, setGuidanceKey] = useState("");
   const [guidanceName, setGuidanceName] = useState("");
@@ -82,7 +90,7 @@ export function MatterDefinitionPanel({ matterId }: { matterId: string }) {
   const [draftEdit, setDraftEdit] = useState<DraftEdit | null>(null);
   const [publishOpen, setPublishOpen] = useState(false);
   const [selectedConversationId, setSelectedConversationId] = useState<string>("");
-  const [sidePanel, setSidePanel] = useState<MatterDefinitionSidePanel>("agent");
+  const [sidePanel, setSidePanel] = useState<MatterDefinitionSidePanel>(initialAssessmentId ? "assessment" : "agent");
   const [historyOpen, setHistoryOpen] = useState(false);
   const [selectedRevisionNumber, setSelectedRevisionNumber] = useState<number | null>(null);
   const [compareOpen, setCompareOpen] = useState(false);
@@ -723,6 +731,7 @@ export function MatterDefinitionPanel({ matterId }: { matterId: string }) {
                   embedded
                   matterId={matterId}
                   guidanceId={effectiveGuidanceId}
+                  initialAssessmentId={initialAssessmentId}
                   guidanceName={definition.data?.name ?? "Review Guidance"}
                   guidanceArchived={definition.data?.status === "ARCHIVED"}
                   revisions={revisions.data ?? []}

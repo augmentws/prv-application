@@ -7,6 +7,7 @@ from sqlalchemy.orm import Session
 
 from app.assessment_guidance_refinement import queue_guidance_refinement
 from app.assessment_provider_batches import cancel_provider_batches
+from app.assessment_workflow_reconciliation import reconcile_terminal_assessment_workflows
 from app.audit import record_audit
 from app.config import Settings, get_settings
 from app.database import get_db
@@ -219,6 +220,7 @@ def list_guidance_assessments(
     guidance_id: uuid.UUID,
     principal: Principal = Depends(get_principal),
     db: Session = Depends(get_db),
+    settings: Settings = Depends(get_settings),
 ) -> list[MatterDefinitionAssessmentRead]:
     _matter(db, matter_id, principal)
     guidance_exists = db.scalar(
@@ -244,6 +246,7 @@ def list_guidance_assessments(
             .order_by(MatterDefinitionAssessmentRun.created_at.desc())
         )
     )
+    reconcile_terminal_assessment_workflows(db, assessments, settings=settings)
     return _assessment_reads(db, assessments)
 
 
@@ -407,6 +410,7 @@ def list_assessments(
     matter_id: uuid.UUID,
     principal: Principal = Depends(get_principal),
     db: Session = Depends(get_db),
+    settings: Settings = Depends(get_settings),
 ) -> list[MatterDefinitionAssessmentRead]:
     _matter(db, matter_id, principal)
     assessments = list(
@@ -416,6 +420,7 @@ def list_assessments(
             .order_by(MatterDefinitionAssessmentRun.created_at.desc())
         )
     )
+    reconcile_terminal_assessment_workflows(db, assessments, settings=settings)
     return _assessment_reads(db, assessments)
 
 
@@ -425,9 +430,11 @@ def get_assessment(
     assessment_id: uuid.UUID,
     principal: Principal = Depends(get_principal),
     db: Session = Depends(get_db),
+    settings: Settings = Depends(get_settings),
 ) -> MatterDefinitionAssessmentRead:
     _matter(db, matter_id, principal)
     assessment = _assessment(db, matter_id, assessment_id)
+    reconcile_terminal_assessment_workflows(db, [assessment], settings=settings)
     return _assessment_reads(db, [assessment])[0]
 
 
@@ -438,9 +445,11 @@ def get_assessment_execution(
     include_skill_runs: bool = True,
     principal: Principal = Depends(get_principal),
     db: Session = Depends(get_db),
+    settings: Settings = Depends(get_settings),
 ) -> WorkflowExecutionRead:
     _matter(db, matter_id, principal)
     assessment = _assessment(db, matter_id, assessment_id)
+    reconcile_terminal_assessment_workflows(db, [assessment], settings=settings)
     workflow = db.get(WorkflowRun, assessment.workflow_run_id)
     if workflow is None:
         raise HTTPException(status_code=409, detail="Assessment workflow record is unavailable")

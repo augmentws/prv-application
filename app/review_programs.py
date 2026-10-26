@@ -48,6 +48,7 @@ from app.analysis_tasks import (
 from app.artifact_gateway import (
     copy_workflow_artifact_content,
     get_collection_item_analysis_input_snapshots,
+    store_workflow_artifact,
 )
 from app.audit import record_audit
 from app.authorization import ResourceRef, user_can
@@ -134,6 +135,7 @@ from app.models import (
     ReviewProgram,
     ReviewProgramAction,
     ReviewProgramChild,
+    ReviewProgramCompletionReport,
     ReviewProgramEvent,
     ReviewProgramRun,
     ReviewProgramStageAttempt,
@@ -174,6 +176,7 @@ from app.workflows.dispatcher import (
     enqueue_review_batch,
 )
 from artifact_service.schemas import WorkflowArtifactLineageInput
+from artifact_service.workflow_artifact_types import ArtifactType
 from classification_service.schemas import (
     ClassificationEvaluationReport,
     ClassificationStrategy,
@@ -626,6 +629,22 @@ def _action_contract(
             ],
         )
     if stage.key == "NO_CODE_QC":
+        if negative_qc_state == "AWAITING_MANUAL_REVIEW":
+            return (
+                "Complete the QC findings review",
+                (
+                    "Open the assigned ad hoc batch and code every QC-positive, disputed, or unresolved document. "
+                    "The original blind QC report remains unchanged."
+                ),
+                [
+                    {
+                        "key": "CONFIRM_QC_REVIEW",
+                        "label": "Confirm QC review complete",
+                        "consequence": "Validate the human coding and return to the QC decision.",
+                    },
+                    stop,
+                ],
+            )
         if negative_qc_state == "REPORT_READY":
             return (
                 "Review Negative-population QC findings",
@@ -638,6 +657,27 @@ def _action_contract(
                         "key": "ACCEPT_QC",
                         "label": "Accept QC results",
                         "consequence": "Freeze the QC decision and proceed to the completion summary.",
+                    },
+                    {
+                        "key": "REVIEW_QC_FINDINGS",
+                        "label": "Review QC findings",
+                        "consequence": (
+                            "Create an assigned ad hoc batch for QC-positive, disputed, and unresolved documents."
+                        ),
+                    },
+                    {
+                        "key": "RETRIEVE_AND_RETRAIN",
+                        "label": "Retrieve more and retrain",
+                        "consequence": (
+                            "Preserve this QC round and reopen targeted classifier improvement before rescoring."
+                        ),
+                    },
+                    {
+                        "key": "REVISE_GUIDANCE",
+                        "label": "Revise guidance",
+                        "consequence": (
+                            "Preserve this QC round and reopen Matter Definition refinement and Q&A setup."
+                        ),
                     },
                     stop,
                 ],
@@ -654,6 +694,22 @@ def _action_contract(
                     "key": "START_QC",
                     "label": "Start Negative-population QC",
                     "consequence": "Freeze the QC population and run both Q&A profiles.",
+                },
+                stop,
+            ],
+        )
+    if stage.key == "COMPLETION":
+        return (
+            "Complete first-pass review",
+            (
+                "Review the final checklist and accepted limitations. Completing freezes a provenance report; "
+                "it does not publish Q&A or classifier values into matter metadata."
+            ),
+            [
+                {
+                    "key": "COMPLETE",
+                    "label": "Complete first-pass review",
+                    "consequence": "Create the immutable completion report and close this run.",
                 },
                 stop,
             ],
@@ -1066,6 +1122,48 @@ def _negative_population_qc_stage_context(
     }
 
 
+def _completion_stage_context(
+    db: Session,
+    *,
+    program: ReviewProgram,
+    run: ReviewProgramRun,
+) -> dict[str, Any]:
+    children = list(db.scalars(select(ReviewProgramChild).where(ReviewProgramChild.run_id == run.id)))
+    actions = list(db.scalars(select(ReviewProgramAction).where(ReviewProgramAction.run_id == run.id)))
+    progress = run.progress_summary or {}
+    qc = dict(progress.get("negative_population_qc") or {})
+    qc_report = dict(qc.get("report") or {})
+    final_alignment = dict(progress.get("final_alignment") or {})
+    return {
+        "completion_preview": {
+            "schema_version": 1,
+            "checklist": {
+                "matter_definition_accepted": bool(progress.get("accepted_matter_definition")),
+                "qa_task_published": bool(progress.get("accepted_qa_task")),
+                "training_labels_finalized": bool(progress.get("training_labels")),
+                "classifiers_accepted": bool(progress.get("classifier_results")),
+                "whole_collection_scored": bool(progress.get("whole_collection_scoring")),
+                "classifier_positives_covered": bool(progress.get("classifier_positive_coverage")),
+                "final_alignment_ready": bool(final_alignment),
+                "negative_population_qc_accepted": progress.get("negative_population_qc_state") == "ACCEPTED",
+            },
+            "child_record_count": len(children),
+            "resolved_decision_count": sum(action.status == "RESOLVED" for action in actions),
+            "unresolved_qc_document_count": int(qc_report.get("unresolved_document_count") or 0),
+            "manual_resolution_document_count": int(qc_report.get("mandatory_unreviewable_count") or 0),
+            "accepted_low_support": list(
+                (
+                    current_review_program_version(db, program).configuration_snapshot.get(
+                        "accepted_low_support", {}
+                    )
+                    or {}
+                ).get("categories", [])
+            ),
+            "publication_effect": "NONE",
+        }
+    }
+
+
 def _create_action_for_stage(
     db: Session,
     *,
@@ -1114,6 +1212,8 @@ def _create_action_for_stage(
             if stage.key == "CLASSIFIER_POSITIVE_COVERAGE"
             else _negative_population_qc_stage_context(db, program=program, run=run)
             if stage.key == "NO_CODE_QC"
+            else _completion_stage_context(db, program=program, run=run)
+            if stage.key == "COMPLETION"
             else {}
         ),
     }
@@ -1138,10 +1238,13 @@ def _create_action_for_stage(
             "WHOLE_COLLECTION_SCORING": "WHOLE_COLLECTION_SCORING",
             "CLASSIFIER_POSITIVE_COVERAGE": "CLASSIFIER_POSITIVE_COVERAGE",
             "NO_CODE_QC": (
-                "NEGATIVE_POPULATION_QC_REPORT"
+                "NEGATIVE_POPULATION_QC_FINDINGS_REVIEW"
+                if negative_qc_state == "AWAITING_MANUAL_REVIEW"
+                else "NEGATIVE_POPULATION_QC_REPORT"
                 if negative_qc_state == "REPORT_READY"
                 else "NEGATIVE_POPULATION_QC_SETUP"
             ),
+            "COMPLETION": "REVIEW_PROGRAM_COMPLETION",
         }.get(stage.key, "STAGE_GATE"),
         title=title,
         explanation=explanation,
@@ -1317,7 +1420,23 @@ def _launch_definition_assessment(
             raise ReviewProgramError("Review Program matter is unavailable")
         configuration = current_review_program_version(db, program).configuration_snapshot
         policy = configuration.get("matter_definition_policy") or {}
-        round_number = int(run.progress_summary.get("definition_assessment_round", 0)) + 1
+        completed_rounds = int(
+            db.scalar(
+                select(func.count())
+                .select_from(ReviewProgramChild)
+                .join(
+                    MatterDefinitionAssessmentRun,
+                    MatterDefinitionAssessmentRun.id == ReviewProgramChild.child_id,
+                )
+                .where(
+                    ReviewProgramChild.run_id == run.id,
+                    ReviewProgramChild.child_type == "MATTER_DEFINITION_ASSESSMENT",
+                    MatterDefinitionAssessmentRun.status.in_({"COMPLETED", "COMPLETED_WITH_ERRORS"}),
+                )
+            )
+            or 0
+        )
+        round_number = completed_rounds + 1
         maximum_rounds = int(policy.get("maximum_assessment_rounds", 3))
         if round_number > maximum_rounds:
             raise ReviewProgramError(f"Matter Definition assessment limit of {maximum_rounds} rounds has been reached")
@@ -2111,6 +2230,276 @@ def _complete_action_attempt(
         "action_id": str(action.id),
         **(result or {}),
     }
+
+
+def _completion_lineage_artifact_ids(db: Session, *, run: ReviewProgramRun) -> list[uuid.UUID]:
+    progress = run.progress_summary or {}
+    artifact_ids: list[uuid.UUID] = []
+    for section_key in ("classifier_positive_coverage", "final_alignment", "negative_population_qc"):
+        manifest_id = dict(progress.get(section_key) or {}).get("input_manifest_id")
+        if not manifest_id:
+            continue
+        try:
+            manifest = db.get(AnalysisInputManifest, uuid.UUID(str(manifest_id)))
+        except ValueError:
+            manifest = None
+        if manifest is not None and manifest.artifact_id is not None:
+            artifact_ids.append(manifest.artifact_id)
+    for model in dict(progress.get("whole_collection_scoring") or {}).get("models", []):
+        if not isinstance(model, dict):
+            continue
+        for key in ("prediction_artifact_id", "result_manifest_artifact_id"):
+            value = model.get(key)
+            if value:
+                try:
+                    artifact_ids.append(uuid.UUID(str(value)))
+                except ValueError:
+                    continue
+    return list(dict.fromkeys(artifact_ids))
+
+
+def _build_review_program_completion_report(
+    db: Session,
+    *,
+    program: ReviewProgram,
+    run: ReviewProgramRun,
+    action: ReviewProgramAction,
+) -> dict[str, Any]:
+    progress = run.progress_summary or {}
+    children = list(
+        db.scalars(
+            select(ReviewProgramChild)
+            .where(ReviewProgramChild.run_id == run.id)
+            .order_by(ReviewProgramChild.created_at, ReviewProgramChild.id)
+        )
+    )
+    attempts = list(
+        db.scalars(
+            select(ReviewProgramStageAttempt)
+            .where(ReviewProgramStageAttempt.run_id == run.id)
+            .order_by(ReviewProgramStageAttempt.stage_ordinal, ReviewProgramStageAttempt.attempt)
+        )
+    )
+    actions = list(
+        db.scalars(
+            select(ReviewProgramAction)
+            .where(ReviewProgramAction.run_id == run.id, ReviewProgramAction.status == "RESOLVED")
+            .order_by(ReviewProgramAction.created_at, ReviewProgramAction.id)
+        )
+    )
+    current_version = current_review_program_version(db, program)
+    qc = dict(progress.get("negative_population_qc") or {})
+    qc_report = dict(qc.get("report") or {})
+    final_alignment = dict(progress.get("final_alignment") or {})
+    report = {
+        "schema_version": 1,
+        "report_type": "FIRST_PASS_REVIEW_COMPLETION",
+        "program": {
+            "id": str(program.id),
+            "key": program.key,
+            "name": program.name,
+            "template_key": program.template_key,
+            "template_version": program.template_version,
+            "template_content_hash": program.template_content_hash,
+        },
+        "run": {
+            "id": str(run.id),
+            "starting_program_version_id": str(run.starting_program_version_id),
+            "completed_program_version_id": str(current_version.id),
+            "started_at": run.started_at.isoformat() if run.started_at else None,
+            "discovery_rounds": run.current_discovery_round,
+            "training_rounds": run.current_training_round,
+        },
+        "definition": progress.get("accepted_matter_definition") or {},
+        "qa_task": progress.get("accepted_qa_task") or {},
+        "discovery": {
+            "analysis": progress.get("discovery_analysis") or {},
+            "accepted_low_support": current_version.configuration_snapshot.get("accepted_low_support") or {},
+        },
+        "training_labels": progress.get("training_labels") or {},
+        "classifier": {
+            "results": progress.get("classifier_results") or {},
+            "whole_collection_scoring": progress.get("whole_collection_scoring") or {},
+        },
+        "coverage": progress.get("classifier_positive_coverage") or {},
+        "final_alignment": final_alignment,
+        "negative_population_qc": qc,
+        "negative_population_qc_acceptance": progress.get("negative_population_qc_acceptance") or {},
+        "negative_population_qc_history": progress.get("negative_population_qc_history") or [],
+        "unresolved": {
+            "final_alignment_incomplete_count": int(
+                dict(final_alignment.get("alignment_counts") or {}).get("INCOMPLETE") or 0
+            ),
+            "qc_unresolved_document_count": int(qc_report.get("unresolved_document_count") or 0),
+            "manual_resolution_document_count": int(qc_report.get("mandatory_unreviewable_count") or 0),
+        },
+        "stage_attempts": [
+            {
+                "id": str(attempt.id),
+                "stage_key": attempt.stage_key,
+                "ordinal": attempt.stage_ordinal,
+                "attempt": attempt.attempt,
+                "status": attempt.status,
+                "result_summary": attempt.result_summary,
+                "started_at": attempt.started_at.isoformat() if attempt.started_at else None,
+                "completed_at": attempt.completed_at.isoformat() if attempt.completed_at else None,
+            }
+            for attempt in attempts
+        ],
+        "decisions": [
+            {
+                "id": str(item.id),
+                "stage_key": item.stage_key,
+                "action_type": item.action_type,
+                "preview_hash": item.preview_hash,
+                "choice_key": dict(item.resolution_payload or {}).get("choice_key"),
+                "reason": item.resolution_reason,
+                "resolved_by_user_id": str(item.resolved_by_user_id) if item.resolved_by_user_id else None,
+                "resolved_at": item.resolved_at.isoformat() if item.resolved_at else None,
+            }
+            for item in actions
+        ],
+        "children": [
+            {
+                "id": str(child.id),
+                "stage_attempt_id": str(child.stage_attempt_id),
+                "purpose": child.purpose,
+                "child_type": child.child_type,
+                "child_id": str(child.child_id),
+                "status": child.status,
+                "derivation_key": child.derivation_key,
+                "batching_policy": child.context.get("batching_policy"),
+            }
+            for child in children
+        ],
+        "completion": {
+            "completed_by_user_id": str(action.resolved_by_user_id or run.initiated_by_user_id),
+            "completed_at": action.resolved_at.isoformat() if action.resolved_at else utcnow().isoformat(),
+            "reason": action.resolution_reason,
+            "publication_effect": "NONE",
+            "accepted_limitations": {
+                "low_support": current_version.configuration_snapshot.get("accepted_low_support") or {},
+                "qc_limitations": qc_report.get("limitations") or [],
+                "unresolved": {
+                    "qc": int(qc_report.get("unresolved_document_count") or 0),
+                    "manual_resolution": int(qc_report.get("mandatory_unreviewable_count") or 0),
+                },
+            },
+        },
+    }
+    report["checklist"] = {
+        "matter_definition_accepted": bool(report["definition"]),
+        "qa_task_published": bool(report["qa_task"]),
+        "training_labels_finalized": bool(report["training_labels"]),
+        "classifiers_accepted": bool(report["classifier"]["results"]),
+        "whole_collection_scored": bool(report["classifier"]["whole_collection_scoring"]),
+        "classifier_positives_covered": bool(report["coverage"]),
+        "final_alignment_ready": bool(report["final_alignment"]),
+        "negative_population_qc_accepted": progress.get("negative_population_qc_state") == "ACCEPTED",
+    }
+    return report
+
+
+def _finalize_review_program_completion(
+    db: Session,
+    *,
+    program: ReviewProgram,
+    run: ReviewProgramRun,
+    attempt: ReviewProgramStageAttempt,
+    action: ReviewProgramAction,
+) -> None:
+    if db.scalar(select(ReviewProgramCompletionReport).where(ReviewProgramCompletionReport.run_id == run.id)):
+        raise ReviewProgramError("Review Program completion report already exists")
+    _complete_action_attempt(attempt, action)
+    report = _build_review_program_completion_report(db, program=program, run=run, action=action)
+    incomplete = [key for key, value in report["checklist"].items() if not value]
+    if incomplete:
+        raise ReviewProgramError(f"First-pass completion checklist is incomplete: {', '.join(incomplete)}")
+    payload = json.dumps(report, sort_keys=True, separators=(",", ":"), ensure_ascii=False).encode()
+    content_hash = hashlib.sha256(payload).hexdigest()
+    derivation_key = canonical_hash(
+        {
+            "contract": "review-program-completion-report-v1",
+            "run_id": str(run.id),
+            "program_version_id": str(run.current_program_version_id),
+            "content_hash": content_hash,
+        }
+    )
+    matter = db.get(Matter, program.matter_id)
+    if matter is None:
+        raise ReviewProgramError("Review Program matter is unavailable")
+    try:
+        reference, _ = store_workflow_artifact(
+            content=io.BytesIO(payload),
+            artifact_type=ArtifactType.REVIEW_PROGRAM_COMPLETION_REPORT,
+            core_scope_kind="MATTER",
+            core_scope_id=matter.id,
+            schema_version=1,
+            derivation_key=derivation_key,
+            content_hash=content_hash,
+            byte_length=len(payload),
+            media_type="application/json",
+            producer_kind="CORE",
+            producer_run_id=run.id,
+            artifact_metadata={
+                "contract_version": "review-program-completion-report-v1",
+                "program_id": str(program.id),
+                "run_id": str(run.id),
+                "program_version_id": str(run.current_program_version_id),
+                "content_hash": content_hash,
+                "byte_length": len(payload),
+                "filename": f"{program.key}-first-pass-completion.json",
+            },
+            lineage=[
+                WorkflowArtifactLineageInput(
+                    source_kind="WORKFLOW_ARTIFACT",
+                    source_artifact_id=artifact_id,
+                )
+                for artifact_id in _completion_lineage_artifact_ids(db, run=run)
+            ],
+            actor_user_id=action.resolved_by_user_id or run.initiated_by_user_id,
+            tenant_id=program.tenant_id,
+            client_id=matter.client_id,
+            filename=f"{program.key}-first-pass-completion.json",
+        )
+    except (httpx.HTTPError, PermissionError, ValueError) as exc:
+        raise ReviewProgramError(f"Completion report artifact could not be stored: {exc}") from exc
+    completed_at = action.resolved_at or utcnow()
+    record = ReviewProgramCompletionReport(
+        tenant_id=program.tenant_id,
+        matter_id=program.matter_id,
+        program_id=program.id,
+        program_version_id=run.current_program_version_id,
+        run_id=run.id,
+        schema_version=1,
+        report=report,
+        content_hash=content_hash,
+        artifact_id=reference.artifact_id,
+        artifact_content_hash=reference.content_hash,
+        completion_reason=action.resolution_reason,
+        completed_by_user_id=action.resolved_by_user_id or run.initiated_by_user_id,
+        completed_at=completed_at,
+    )
+    db.add(record)
+    db.flush()
+    summary = {
+        "id": str(record.id),
+        "state": "FINALIZED",
+        "content_hash": content_hash,
+        "artifact_id": str(reference.artifact_id),
+        "artifact_content_hash": reference.content_hash,
+        "completed_by_user_id": str(record.completed_by_user_id),
+        "completed_at": completed_at.isoformat(),
+        "publication_effect": "NONE",
+        "unresolved": report["unresolved"],
+    }
+    run.progress_summary = {**run.progress_summary, "completion_report": summary}
+    _complete_action_attempt(
+        attempt,
+        action,
+        result={"completion_report": summary},
+    )
+    _advance_after_stage(db, program=program, run=run, attempt=attempt)
 
 
 def _transition_definition_refinement(
@@ -3377,6 +3766,22 @@ def process_review_program_event(
                 attempt=attempt,
                 action=action,
             )
+        elif action.stage_key == "NO_CODE_QC" and choice == "REVIEW_QC_FINDINGS":
+            _start_negative_population_qc_findings_review(
+                db,
+                program=program,
+                run=run,
+                attempt=attempt,
+                action=action,
+            )
+        elif action.stage_key == "NO_CODE_QC" and choice == "CONFIRM_QC_REVIEW":
+            _confirm_negative_population_qc_findings_review(
+                db,
+                program=program,
+                run=run,
+                attempt=attempt,
+                action=action,
+            )
         elif action.stage_key == "NO_CODE_QC" and choice == "ACCEPT_QC":
             qc = dict((run.progress_summary or {}).get("negative_population_qc") or {})
             if qc.get("state") != "REPORT_READY":
@@ -3408,6 +3813,64 @@ def process_review_program_event(
                 "negative_population_qc_acceptance": accepted,
             }
             _advance_after_stage(db, program=program, run=run, attempt=attempt)
+        elif action.stage_key == "NO_CODE_QC" and choice in {"RETRIEVE_AND_RETRAIN", "REVISE_GUIDANCE"}:
+            qc = dict((run.progress_summary or {}).get("negative_population_qc") or {})
+            if qc.get("state") != "REPORT_READY":
+                raise ReviewProgramError("Negative-population QC report is not ready for remediation")
+            target_stage = "CLASSIFIER_IMPROVEMENT" if choice == "RETRIEVE_AND_RETRAIN" else "DEFINITION_REFINEMENT"
+            history = list((run.progress_summary or {}).get("negative_population_qc_history") or [])
+            history.append(
+                {
+                    **qc,
+                    "remediation_choice": choice,
+                    "remediation_reason": action.resolution_reason,
+                    "reopened_by_user_id": str(action.resolved_by_user_id or run.initiated_by_user_id),
+                    "reopened_at": action.resolved_at.isoformat() if action.resolved_at else None,
+                    "target_stage": target_stage,
+                }
+            )
+            remediation = {
+                "schema_version": 1,
+                "choice": choice,
+                "source_qc_report_hash": canonical_hash(qc.get("report") or {}),
+                "target_stage": target_stage,
+                "requested_by_user_id": str(action.resolved_by_user_id or run.initiated_by_user_id),
+                "requested_at": action.resolved_at.isoformat() if action.resolved_at else None,
+                "reason": action.resolution_reason,
+            }
+            version = _create_review_program_version(
+                db,
+                program=program,
+                run=run,
+                actor_user_id=action.resolved_by_user_id or run.initiated_by_user_id,
+                configuration_stage=target_stage,
+                configuration_updates={
+                    "negative_population_qc_history": history,
+                    "negative_population_qc_remediation": remediation,
+                },
+                source_hash_updates={"negative_population_qc_remediation_hash": canonical_hash(remediation)},
+            )
+            _complete_action_attempt(
+                attempt,
+                action,
+                result={"remediation": remediation, "program_version_id": str(version.id)},
+            )
+            run.progress_summary = {
+                **run.progress_summary,
+                "negative_population_qc_state": "REOPENED",
+                "negative_population_qc_history": history,
+                "negative_population_qc": {},
+                "negative_population_qc_remediation": remediation,
+            }
+            _activate_stage_by_key(db, program=program, run=run, stage_key=target_stage)
+        elif action.stage_key == "COMPLETION" and choice == "COMPLETE":
+            _finalize_review_program_completion(
+                db,
+                program=program,
+                run=run,
+                attempt=attempt,
+                action=action,
+            )
         elif choice == "CONTINUE":
             _complete_action_attempt(attempt, action)
             _advance_after_stage(db, program=program, run=run, attempt=attempt)
@@ -7233,6 +7696,307 @@ def _wilson_interval(successes: int, total: int, *, z: float = 1.959963984540054
     return max(0.0, center - margin), min(1.0, center + margin)
 
 
+def _negative_population_qc_findings_document_ids(
+    db: Session,
+    *,
+    run: ReviewProgramRun,
+    manifest: AnalysisInputManifest,
+) -> list[uuid.UUID]:
+    _, task_version, profiles = _qa_task_records(db, run)
+    try:
+        rows = AnalysisInputManifestReader(manifest, actor_user_id=run.initiated_by_user_id).rows(
+            0, manifest.item_count
+        )
+    except AnalysisInputManifestError as exc:
+        raise ReviewProgramError(str(exc)) from exc
+    results_by_document = _program_qa_results_by_profile(
+        db,
+        run=run,
+        task_version_id=task_version.id,
+        profile_ids={profile.id for profile in profiles},
+        completed_only=False,
+    )
+    selected: list[uuid.UUID] = []
+    for row in rows:
+        try:
+            document_id = uuid.UUID(str(row["matter_document_id"]))
+        except (KeyError, TypeError, ValueError) as exc:
+            raise ReviewProgramError("Negative-population QC manifest is invalid") from exc
+        expected_hash = row.get("source_content_hash")
+        current = {
+            profile_id: result
+            for profile_id, result in results_by_document.get(document_id, {}).items()
+            if result.status == "COMPLETED"
+            and expected_hash is not None
+            and result.source_content_hash == expected_hash
+        }
+        if len(current) != len(profiles):
+            selected.append(document_id)
+            continue
+        issue_sets = [_decision_result_issue_keys(current[profile.id]) for profile in profiles]
+        if set().union(*issue_sets) or issue_sets[0] != issue_sets[1]:
+            selected.append(document_id)
+    return list(dict.fromkeys(selected))
+
+
+def _start_negative_population_qc_findings_review(
+    db: Session,
+    *,
+    program: ReviewProgram,
+    run: ReviewProgramRun,
+    attempt: ReviewProgramStageAttempt,
+    action: ReviewProgramAction,
+) -> None:
+    qc = dict((run.progress_summary or {}).get("negative_population_qc") or {})
+    if qc.get("state") != "REPORT_READY":
+        raise ReviewProgramError("Negative-population QC report is not ready for findings review")
+    try:
+        manifest_id = uuid.UUID(str(qc["input_manifest_id"]))
+    except (KeyError, TypeError, ValueError) as exc:
+        raise ReviewProgramError("Negative-population QC manifest is unavailable") from exc
+    manifest = db.get(AnalysisInputManifest, manifest_id)
+    if manifest is None or manifest.matter_id != program.matter_id:
+        raise ReviewProgramError("Negative-population QC manifest is unavailable")
+    document_ids = _negative_population_qc_findings_document_ids(db, run=run, manifest=manifest)
+    if not document_ids:
+        raise ReviewProgramError("Negative-population QC has no positive, disputed, or unresolved findings to review")
+    _, task_version, _ = _qa_task_records(db, run)
+    try:
+        definition_ids = list(
+            dict.fromkeys(uuid.UUID(str(value)) for value in task_version.destination_metadata_definition_ids or [])
+        )
+    except (TypeError, ValueError) as exc:
+        raise ReviewProgramError("Q&A destination-field provenance is invalid") from exc
+    definitions = list(
+        db.scalars(
+            select(MetadataDefinition)
+            .where(
+                MetadataDefinition.matter_id == program.matter_id,
+                MetadataDefinition.id.in_(definition_ids),
+            )
+            .order_by(MetadataDefinition.display_name, MetadataDefinition.id)
+        )
+    )
+    if len(definitions) != len(definition_ids):
+        raise ReviewProgramError("A Q&A destination field is unavailable")
+    actor_user_id = action.resolved_by_user_id or run.initiated_by_user_id
+    batch_id = uuid.uuid4()
+    batch = ReviewBatch(
+        id=batch_id,
+        matter_id=program.matter_id,
+        name=f"{program.name} · QC findings review"[:200],
+        description="Ad hoc human review of Negative-population QC positives, disputes, and unresolved results.",
+        selection_type="EXPLICIT_DOCUMENTS",
+        selection_definition={
+            "type": "EXPLICIT_DOCUMENTS",
+            "review_program_id": str(program.id),
+            "review_program_run_id": str(run.id),
+            "stage_attempt_id": str(attempt.id),
+            "batching_policy": "AD_HOC_BATCH",
+            "purpose": "NEGATIVE_POPULATION_QC_FINDINGS",
+            "input_manifest_id": str(manifest.id),
+            "document_ids": [str(document_id) for document_id in document_ids],
+            "candidate_count": len(document_ids),
+            "metadata_definition_ids": [str(definition.id) for definition in definitions],
+        },
+        source_batch_id=None,
+        assigned_user_id=program.owner_user_id,
+        assigned_by_user_id=actor_user_id,
+        assigned_at=utcnow(),
+        reviewer_value_visibility="OWN_VALUES",
+        status="QUEUED",
+        search_status="NOT_CONFIGURED",
+        workflow_id=f"review-batch:{batch_id}",
+        created_by_user_id=actor_user_id,
+    )
+    db.add(batch)
+    db.flush()
+    group = ReviewBatchCodingGroup(
+        review_batch_id=batch.id,
+        source_metadata_group_id=None,
+        display_name="QC findings review",
+        description="Assign the final human coding for each QC finding.",
+        sort_order=0,
+    )
+    db.add(group)
+    db.flush()
+    for ordinal, definition in enumerate(definitions):
+        db.add(
+            ReviewBatchCodingField(
+                review_batch_coding_group_id=group.id,
+                metadata_definition_id=definition.id,
+                sort_order=ordinal,
+                definition_snapshot={
+                    "key": definition.key,
+                    "display_name": definition.display_name,
+                    "description": definition.description,
+                    "type": definition.type,
+                    "cardinality": definition.cardinality,
+                    "allowed_values": definition.allowed_values,
+                },
+            )
+        )
+    execution = create_review_batch_execution(
+        db,
+        batch,
+        initiated_by_user_id=actor_user_id,
+        notification_parent_type="REVIEW_PROGRAM_RUN",
+        notification_parent_id=run.id,
+    )
+    link_review_program_child(
+        db,
+        program=program,
+        run=run,
+        stage_attempt=attempt,
+        purpose="NEGATIVE_POPULATION_QC_FINDINGS_REVIEW",
+        child_type="REVIEW_BATCH",
+        child_id=batch.id,
+        derivation_key=f"negative-population-qc-findings:{attempt.id}:{manifest.id}",
+        batching_policy="AD_HOC_BATCH",
+        context={
+            "input_manifest_id": str(manifest.id),
+            "candidate_count": len(document_ids),
+            "assigned_user_id": str(program.owner_user_id),
+        },
+    )
+    review = {
+        "schema_version": 1,
+        "state": "AWAITING_MANUAL_REVIEW",
+        "review_batch_id": str(batch.id),
+        "document_count": len(document_ids),
+        "metadata_definition_ids": [str(definition.id) for definition in definitions],
+        "assigned_user_id": str(program.owner_user_id),
+        "started_by_user_id": str(actor_user_id),
+        "started_at": action.resolved_at.isoformat() if action.resolved_at else None,
+    }
+    version = _create_review_program_version(
+        db,
+        program=program,
+        run=run,
+        actor_user_id=actor_user_id,
+        configuration_stage="NO_CODE_QC",
+        configuration_updates={"negative_population_qc_findings_review": review},
+        source_hash_updates={"negative_population_qc_findings_review_hash": canonical_hash(review)},
+    )
+    qc = {**qc, "state": "AWAITING_MANUAL_REVIEW", "findings_review": review}
+    run.progress_summary = {
+        **run.progress_summary,
+        "negative_population_qc_state": "AWAITING_MANUAL_REVIEW",
+        "negative_population_qc": qc,
+    }
+    attempt.status = "RUNNING"
+    attempt.result_summary = {
+        **attempt.result_summary,
+        "findings_review": review,
+        "program_version_id": str(version.id),
+    }
+    _create_action_for_stage(
+        db,
+        program=program,
+        run=run,
+        attempt=attempt,
+        stage=_stage_for_run(program, run),
+        template=_template_for_program(program),
+    )
+    enqueue_review_batch(db, execution.dbos_workflow_id, str(batch.id))
+
+
+def _confirm_negative_population_qc_findings_review(
+    db: Session,
+    *,
+    program: ReviewProgram,
+    run: ReviewProgramRun,
+    attempt: ReviewProgramStageAttempt,
+    action: ReviewProgramAction,
+) -> None:
+    qc = dict((run.progress_summary or {}).get("negative_population_qc") or {})
+    review = dict(qc.get("findings_review") or {})
+    if qc.get("state") != "AWAITING_MANUAL_REVIEW" or review.get("state") != "AWAITING_MANUAL_REVIEW":
+        raise ReviewProgramError("QC findings review is not awaiting confirmation")
+    try:
+        batch_id = uuid.UUID(str(review["review_batch_id"]))
+        definition_ids = [uuid.UUID(str(value)) for value in review.get("metadata_definition_ids", [])]
+    except (KeyError, TypeError, ValueError) as exc:
+        raise ReviewProgramError("QC findings-review provenance is invalid") from exc
+    batch = db.get(ReviewBatch, batch_id)
+    if batch is None or batch.matter_id != program.matter_id or batch.status != "READY":
+        raise ReviewProgramError("QC findings-review batch is not ready")
+    if batch.assigned_user_id is None:
+        raise ReviewProgramError("QC findings-review batch has no assigned reviewer")
+    coding = db.scalar(
+        select(ReviewBatchReviewerCoding).where(
+            ReviewBatchReviewerCoding.review_batch_id == batch.id,
+            ReviewBatchReviewerCoding.reviewer_user_id == batch.assigned_user_id,
+        )
+    )
+    if coding is None:
+        raise ReviewProgramError("QC findings-review batch has not been reviewed")
+    document_ids = list(
+        db.scalars(
+            select(ReviewBatchDocument.matter_document_id)
+            .where(ReviewBatchDocument.review_batch_id == batch.id)
+            .order_by(ReviewBatchDocument.sequence_number)
+        )
+    )
+    if len(document_ids) != batch.document_count:
+        raise ReviewProgramError("QC findings-review batch membership is incomplete")
+    resolved = resolve_reviewer_coding_as_of(
+        db,
+        reviewer_coding_id=coding.id,
+        revision=coding.revision,
+        document_ids=document_ids,
+        metadata_definition_ids=definition_ids,
+    )
+    completed_ids = {item.matter_document_id for item in resolved.documents if item.status == "COMPLETED"}
+    if completed_ids != set(document_ids):
+        raise ReviewProgramError(
+            f"QC findings-review batch has {len(set(document_ids) - completed_ids)} unresolved documents"
+        )
+    reviewed_fields = {(item.matter_document_id, item.metadata_definition_id) for item in resolved.fields}
+    expected_fields = {(document_id, definition_id) for document_id in document_ids for definition_id in definition_ids}
+    if reviewed_fields != expected_fields:
+        raise ReviewProgramError("QC findings-review batch has incomplete field coding")
+    review = {
+        **review,
+        "state": "COMPLETED",
+        "reviewer_coding_id": str(coding.id),
+        "reviewer_coding_revision": coding.revision,
+        "reviewer_user_id": str(coding.reviewer_user_id),
+        "confirmed_by_user_id": str(action.resolved_by_user_id or run.initiated_by_user_id),
+        "confirmed_at": action.resolved_at.isoformat() if action.resolved_at else None,
+    }
+    report = {**dict(qc.get("report") or {}), "human_findings_review": review}
+    qc = {**qc, "state": "REPORT_READY", "report": report, "findings_review": review}
+    version = _create_review_program_version(
+        db,
+        program=program,
+        run=run,
+        actor_user_id=action.resolved_by_user_id or run.initiated_by_user_id,
+        configuration_stage="NO_CODE_QC",
+        configuration_updates={"negative_population_qc": qc},
+        source_hash_updates={"negative_population_qc_human_review_hash": canonical_hash(review)},
+    )
+    run.progress_summary = {
+        **run.progress_summary,
+        "negative_population_qc_state": "REPORT_READY",
+        "negative_population_qc": qc,
+    }
+    attempt.status = "RUNNING"
+    attempt.result_summary = {
+        **attempt.result_summary,
+        "findings_review": review,
+        "program_version_id": str(version.id),
+    }
+    _create_action_for_stage(
+        db,
+        program=program,
+        run=run,
+        attempt=attempt,
+        stage=_stage_for_run(program, run),
+        template=_template_for_program(program),
+    )
+
+
 def _finalize_negative_population_qc(
     db: Session,
     *,
@@ -8207,9 +8971,11 @@ def review_program_action_decision_context(
     """Return live operational detail without changing the action's frozen decision preview."""
 
     context = dict(action.decision_context)
-    if action.status == "OPEN" and action.stage_key in {
-        "DISAGREEMENT_REVIEW",
-        "TRAINING_LABEL_FINALIZATION",
-    }:
-        context.update(_training_label_stage_context(db, run=run))
+    if action.status == "OPEN":
+        if action.stage_key in {"MATTER_DEFINITION", "DEFINITION_REFINEMENT", "DEFINITION_ACCEPTANCE"}:
+            program = db.get(ReviewProgram, run.program_id)
+            if program is not None:
+                context.update(_definition_stage_context(db, program=program, run=run))
+        elif action.stage_key in {"DISAGREEMENT_REVIEW", "TRAINING_LABEL_FINALIZATION"}:
+            context.update(_training_label_stage_context(db, run=run))
     return context

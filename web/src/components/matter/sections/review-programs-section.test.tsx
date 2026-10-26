@@ -1,5 +1,5 @@
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
-import { cleanup, render, screen, waitFor } from "@testing-library/react";
+import { cleanup, render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { afterEach, describe, expect, it, vi } from "vitest";
 
@@ -28,6 +28,134 @@ function renderSection() {
 }
 
 describe("ReviewProgramsSection", () => {
+  it("guides an unconfigured program into Matter Definition setup", async () => {
+    vi.mocked(coreApi).mockImplementation(async (path, options) => {
+      if (path === "/v1/review-workflow-templates") return [{
+        key: "FIRST_PASS_REVIEW",
+        version: 1,
+        schema_version: 1,
+        content_hash: "a".repeat(64),
+        name: "First Pass Review",
+        description: "Guided review",
+        workflow_type: "FIRST_PASS_REVIEW",
+        phases: [],
+        stages: [{ key: "MATTER_DEFINITION", name: "Matter definition", phase_key: "MATTER_DEFINITION", ordinal: 1, batching_policy: "NONE", requires_human_gate: true }],
+      }] as never;
+      if (path === "/v1/matters/matter-1/review-programs") return [{
+        id: "program-1",
+        tenant_id: "tenant-1",
+        matter_id: "matter-1",
+        template_key: "FIRST_PASS_REVIEW",
+        template_version: 1,
+        template_content_hash: "a".repeat(64),
+        key: "standard-first-pass",
+        name: "Standard first pass",
+        description: "Investigation team review",
+        status: "DRAFT",
+        current_run_id: null,
+        current_version: { version: 1 },
+        created_at: "2026-10-21T00:00:00Z",
+      }] as never;
+      if (path === "/v1/matters/matter-1/review-programs/program-1/runs" && !options) return [] as never;
+      if (path === "/v1/matters/matter-1/review-programs/program-1/runs" && options?.method === "POST") return {
+        id: "run-1",
+        program_id: "program-1",
+        status: "WAITING_FOR_USER",
+      } as never;
+      throw new Error(`Unexpected API request: ${path}`);
+    });
+    renderSection();
+
+    expect(await screen.findByText("This program has not been configured yet.")).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "Start run" })).not.toBeInTheDocument();
+    await userEvent.click(screen.getByRole("button", { name: "Start Setup" }));
+
+    await waitFor(() => expect(coreApi).toHaveBeenCalledWith(
+      "/v1/matters/matter-1/review-programs/program-1/runs",
+      expect.objectContaining({ method: "POST" }),
+    ));
+  });
+
+  it("reports live document progress for a repeated definition assessment", async () => {
+    vi.mocked(coreApi).mockImplementation(async (path) => {
+      if (path === "/v1/review-workflow-templates") return [{
+        key: "FIRST_PASS_REVIEW",
+        version: 1,
+        schema_version: 1,
+        content_hash: "a".repeat(64),
+        name: "First Pass Review",
+        description: "Guided review",
+        workflow_type: "FIRST_PASS_REVIEW",
+        phases: [],
+        stages: [
+          { key: "DEFINITION_ASSESSMENT", name: "Definition assessment", phase_key: "MATTER_DEFINITION", ordinal: 2, batching_policy: "AD_HOC_BATCH", requires_human_gate: false },
+          { key: "DEFINITION_REFINEMENT", name: "Definition refinement", phase_key: "MATTER_DEFINITION", ordinal: 3, batching_policy: "NONE", requires_human_gate: true },
+        ],
+      }] as never;
+      if (path === "/v1/matters/matter-1/review-programs") return [{
+        id: "program-1",
+        tenant_id: "tenant-1",
+        matter_id: "matter-1",
+        template_key: "FIRST_PASS_REVIEW",
+        template_version: 1,
+        template_content_hash: "a".repeat(64),
+        key: "standard-first-pass",
+        name: "Standard first pass",
+        description: "Responsive review",
+        status: "ACTIVE",
+        current_run_id: "run-1",
+        current_version: { version: 2 },
+        created_at: "2026-10-21T00:00:00Z",
+      }] as never;
+      if (path === "/v1/matters/matter-1/review-programs/program-1/runs") return [{
+        id: "run-1",
+        program_id: "program-1",
+        status: "RUNNING",
+        current_stage: "DEFINITION_ASSESSMENT",
+        current_stage_ordinal: 2,
+        progress_summary: { current_assessment_id: "assessment-2", definition_assessment_round: 2 },
+        created_at: "2026-10-21T00:00:00Z",
+        failure_retriable: false,
+        failure_summary: null,
+        stage_attempts: [
+          { stage_key: "DEFINITION_ASSESSMENT", attempt: 1, status: "FAILED", error_summary: "Earlier retrieval failed." },
+          { stage_key: "DEFINITION_ASSESSMENT", attempt: 2, status: "COMPLETED" },
+          { stage_key: "DEFINITION_REFINEMENT", attempt: 1, status: "COMPLETED" },
+          { stage_key: "DEFINITION_ASSESSMENT", attempt: 3, status: "RUNNING" },
+        ],
+        actions: [],
+      }] as never;
+      if (path === "/v1/matters/matter-1/definition-assessments") return [{
+        id: "assessment-2",
+        guidance_id: "guidance-1",
+        status: "SUMMARIZING",
+        requested_document_count: 1000,
+        selected_count: 1000,
+        summarized_count: 50,
+        skipped_count: 2,
+        failed_count: 3,
+      }] as never;
+      throw new Error(`Unexpected API request: ${path}`);
+    });
+    renderSection();
+
+    expect(await screen.findByText("Definition reassessment · Round 2")).toBeInTheDocument();
+    expect(screen.getByText("55 of 1,000 documents processed")).toBeInTheDocument();
+    expect(screen.getByText("50 summarized · 2 skipped · 3 failed")).toBeInTheDocument();
+    const initialAssessmentStage = screen.getByText("Definition assessment").closest("li");
+    const refinementStage = screen.getByText("Definition refinement").closest("li");
+    expect(initialAssessmentStage).not.toBeNull();
+    expect(refinementStage).not.toBeNull();
+    expect(within(initialAssessmentStage as HTMLElement).getByText("completed")).toBeInTheDocument();
+    expect(within(initialAssessmentStage as HTMLElement).queryByText("running")).not.toBeInTheDocument();
+    expect(within(refinementStage as HTMLElement).getByText("Reassessment · Round 2")).toBeInTheDocument();
+    expect(within(refinementStage as HTMLElement).getByText("running")).toBeInTheDocument();
+    expect(screen.getByRole("link", { name: "Open current assessment" })).toHaveAttribute(
+      "href",
+      "/app/clients/client-1/matters/matter-1/definition?assessment=assessment-2&guidance=guidance-1",
+    );
+  });
+
   it("configures a new Matter Definition through the guided setup action", async () => {
     vi.mocked(coreApi).mockImplementation(async (path, options) => {
       if (path === "/v1/review-workflow-templates") return [{
@@ -471,10 +599,23 @@ describe("ReviewProgramsSection", () => {
         stage_attempts: [{ stage_key: "DEFINITION_ACCEPTANCE", status: "WAITING" }],
         actions: [{
           id: "action-1",
+          action_type: "HUMAN_DECISION",
+          stage_key: "DEFINITION_ACCEPTANCE",
           status: "OPEN",
           title: "Review Definition acceptance",
           explanation: "Confirm the definition before Q&A setup.",
           preview_hash: "b".repeat(64),
+          decision_context: {
+            matter_definition_id: "definition-2",
+            assessment: {
+              id: "assessment-2",
+              status: "COMPLETED",
+              summarized_count: 1000,
+              failed_count: 0,
+              question_counts: { open: 0, open_blocking: 0 },
+              guidance_refinement_status: "COMPLETED",
+            },
+          },
           allowed_choices: [
             { key: "CONTINUE", label: "Continue to Q&A task setup", consequence: "Advance the program." },
             { key: "STOP", label: "Stop program", consequence: "End this run." },
@@ -491,6 +632,10 @@ describe("ReviewProgramsSection", () => {
     renderSection();
 
     expect(await screen.findByText("Confirm the definition before Q&A setup.")).toBeInTheDocument();
+    expect(screen.getByRole("link", { name: "Open Matter Definition" })).toHaveAttribute(
+      "href",
+      "/app/clients/client-1/matters/matter-1/definition?guidance=definition-2&assessment=assessment-2",
+    );
     await userEvent.click(screen.getByRole("button", { name: "Continue to Q&A task setup" }));
 
     await waitFor(() => expect(coreApi).toHaveBeenCalledWith(
@@ -841,6 +986,62 @@ describe("ReviewProgramsSection", () => {
     expect(JSON.parse(String(call?.[1]?.body))).toEqual({
       preview_hash: "9".repeat(64),
       choice_key: "ACCEPT_QC",
+    });
+  });
+
+  it("shows the completion checklist and records completion notes", async () => {
+    vi.mocked(coreApi).mockImplementation(async (path, options) => {
+      if (path === "/v1/review-workflow-templates") return [{
+        key: "FIRST_PASS_REVIEW", version: 1, schema_version: 1, content_hash: "a".repeat(64),
+        name: "First Pass Review", description: "Guided review", workflow_type: "FIRST_PASS_REVIEW", phases: [],
+        stages: [{ key: "COMPLETION", name: "Completion", phase_key: "QC_COMPLETION", ordinal: 18, batching_policy: "NONE", requires_human_gate: true }],
+      }] as never;
+      if (path === "/v1/matters/matter-1/review-programs") return [{
+        id: "program-1", tenant_id: "tenant-1", matter_id: "matter-1", template_key: "FIRST_PASS_REVIEW",
+        template_version: 1, template_content_hash: "a".repeat(64), key: "standard-first-pass", name: "Standard first pass",
+        description: "Responsive review", status: "ACTIVE", current_run_id: "run-1", current_version: { version: 14 }, created_at: "2026-10-21T00:00:00Z",
+      }] as never;
+      if (path === "/v1/matters/matter-1/review-programs/program-1/runs") return [{
+        id: "run-1", program_id: "program-1", status: "WAITING_FOR_USER", current_stage: "COMPLETION",
+        current_stage_ordinal: 18, created_at: "2026-10-21T00:00:00Z", failure_retriable: false, failure_summary: null,
+        progress_summary: {}, stage_attempts: [{ stage_key: "COMPLETION", status: "WAITING" }],
+        actions: [{
+          id: "action-3", action_type: "REVIEW_PROGRAM_COMPLETION", stage_key: "COMPLETION", status: "OPEN",
+          title: "Complete first-pass review", explanation: "Review the final checklist.", preview_hash: "7".repeat(64),
+          decision_context: { completion_preview: {
+            checklist: {
+              matter_definition_accepted: true, qa_task_published: true, training_labels_finalized: true,
+              classifiers_accepted: true, whole_collection_scored: true, classifier_positives_covered: true,
+              final_alignment_ready: true, negative_population_qc_accepted: true,
+            },
+            child_record_count: 21, resolved_decision_count: 12, unresolved_qc_document_count: 2,
+            manual_resolution_document_count: 1, publication_effect: "NONE",
+          } },
+          allowed_choices: [{ key: "COMPLETE", label: "Complete first-pass review" }, { key: "STOP", label: "Stop program" }],
+        }],
+      }] as never;
+      if (path.endsWith("/actions/action-3/resolve") && options?.method === "POST") return {
+        id: "run-1", program_id: "program-1", status: "COMPLETED", current_stage: "COMPLETION",
+      } as never;
+      throw new Error(`Unexpected API request: ${path}`);
+    });
+    renderSection();
+
+    expect(await screen.findByText("Matter Definition Accepted")).toBeInTheDocument();
+    expect(screen.getAllByText("Ready")).toHaveLength(8);
+    expect(screen.getByText(/does not publish model or Q&A coding/)).toBeInTheDocument();
+    await userEvent.type(screen.getByLabelText("Completion notes"), "Accepted after senior review.");
+    await userEvent.click(screen.getByRole("button", { name: "Complete first-pass review" }));
+
+    await waitFor(() => expect(coreApi).toHaveBeenCalledWith(
+      "/v1/matters/matter-1/review-programs/program-1/runs/run-1/actions/action-3/resolve",
+      expect.objectContaining({ method: "POST" }),
+    ));
+    const call = vi.mocked(coreApi).mock.calls.find(([path]) => path.endsWith("/actions/action-3/resolve"));
+    expect(JSON.parse(String(call?.[1]?.body))).toEqual({
+      preview_hash: "7".repeat(64),
+      choice_key: "COMPLETE",
+      reason: "Accepted after senior review.",
     });
   });
 });

@@ -60,9 +60,17 @@ afterEach(() => {
   vi.clearAllMocks();
 });
 
-function renderPanel() {
+function renderPanel({ initialGuidanceId, initialAssessmentId }: { initialGuidanceId?: string; initialAssessmentId?: string } = {}) {
   const client = new QueryClient({ defaultOptions: { queries: { retry: false }, mutations: { retry: false } } });
-  return render(<QueryClientProvider client={client}><MatterDefinitionPanel matterId="matter-1" /></QueryClientProvider>);
+  return render(
+    <QueryClientProvider client={client}>
+      <MatterDefinitionPanel
+        matterId="matter-1"
+        initialGuidanceId={initialGuidanceId}
+        initialAssessmentId={initialAssessmentId}
+      />
+    </QueryClientProvider>,
+  );
 }
 
 describe("MatterDefinitionPanel", () => {
@@ -235,6 +243,63 @@ describe("MatterDefinitionPanel", () => {
     expect(assessmentPanel).toHaveClass("flex", "min-h-0", "overflow-hidden");
     expect(await within(assessmentPanel).findByLabelText("Assessment controls")).toHaveTextContent("No assessments");
     expect(screen.getByText("No corpus assessments have been run for this Matter Definition.")).toBeInTheDocument();
+  });
+
+  it("opens a linked Matter Definition assessment instead of the first assessment", async () => {
+    const linkedDefinition = {
+      ...definition,
+      id: "definition-2",
+      key: "linked_review",
+      name: "Linked Review Guidance",
+      revision: {
+        ...definition.revision,
+        id: "revision-2",
+        matter_definition_id: "definition-2",
+      },
+    };
+    const firstAssessment = {
+      id: "assessment-1",
+      name: "Earlier assessment",
+      status: "COMPLETED",
+      guidance_refinement_status: "NOT_READY",
+      review_batch_id: null,
+      selected_count: 5,
+      summarized_count: 5,
+      skipped_count: 0,
+      failed_count: 0,
+      partial_coverage_count: 0,
+      invalid_result_count: 0,
+      estimated_input_tokens: 500,
+      coverage_snapshot: null,
+      synthesis_result: {},
+    };
+    const linkedAssessment = { ...firstAssessment, id: "assessment-2", name: "Program assessment" };
+    vi.mocked(coreApi).mockImplementation(async (path) => {
+      if (path === "/v1/matters/matter-1/guidance") return [definition, linkedDefinition] as never;
+      if (path === "/v1/matters/matter-1/guidance/definition-2/revisions") return [linkedDefinition.revision] as never;
+      if (path === "/v1/matters/matter-1/agents") return [] as never;
+      if (path === "/v1/matters/matter-1/agent-conversations?workflow_type=MATTER_DEFINITION_SETUP&guidance_id=definition-2") return [] as never;
+      if (path === "/v1/matters/matter-1/guidance/definition-2/assessments") return [firstAssessment, linkedAssessment] as never;
+      if (path === "/v1/matters/matter-1/definition-assessments/assessment-2/queries") return [] as never;
+      if (path === "/v1/matters/matter-1/definition-assessments/assessment-2/questions") return [] as never;
+      if (path === "/v1/matters/matter-1/definition-assessments/assessment-2/execution?include_skill_runs=false") return {
+        request_count: 0,
+        input_tokens: 0,
+        cached_input_tokens: 0,
+        cache_write_tokens: 0,
+        output_tokens: 0,
+        steps: [],
+        skill_runs: [],
+      } as never;
+      throw new Error(`Unexpected API request: ${path}`);
+    });
+
+    renderPanel({ initialGuidanceId: "definition-2", initialAssessmentId: "assessment-2" });
+
+    expect(await screen.findByRole("tab", { name: "Assessment" })).toHaveAttribute("aria-selected", "true");
+    expect(await screen.findByRole("combobox", { name: "Assessment" })).toHaveTextContent("Program assessment");
+    expect(coreApi).toHaveBeenCalledWith("/v1/matters/matter-1/guidance/definition-2/assessments");
+    expect(coreApi).toHaveBeenCalledWith("/v1/matters/matter-1/definition-assessments/assessment-2/queries");
   });
 
   it("renames a Matter Definition chat", async () => {

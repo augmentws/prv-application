@@ -52,6 +52,7 @@ def content_for(artifact_type: ArtifactType) -> tuple[bytes, str]:
     if artifact_type in {
         ArtifactType.CLASSIFICATION_EVALUATION,
         ArtifactType.CLASSIFICATION_RESULT_MANIFEST,
+        ArtifactType.REVIEW_PROGRAM_COMPLETION_REPORT,
     }:
         return json.dumps({"artifact_type": artifact_type.value, "schema_version": 1}).encode(), "application/json"
     return parquet_bytes(artifact_type.value), "application/vnd.apache.parquet"

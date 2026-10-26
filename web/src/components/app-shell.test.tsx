@@ -151,6 +151,26 @@ describe("AppShell", () => {
     expect(screen.queryByRole("navigation", { name: "Collection" })).not.toBeInTheDocument();
   });
 
+  it("exposes the left navigation as an accessible mobile drawer", async () => {
+    const user = userEvent.setup();
+    renderShell();
+
+    expect(screen.queryByRole("dialog", { name: "Navigation" })).not.toBeInTheDocument();
+
+    await user.click(screen.getByRole("button", { name: "Open navigation" }));
+
+    const drawer = screen.getByRole("dialog", { name: "Navigation" });
+    expect(drawer).toHaveAttribute("aria-modal", "true");
+    expect(within(drawer).getByRole("navigation", { name: "Primary" })).toBeInTheDocument();
+
+    await user.keyboard("{Escape}");
+    expect(screen.queryByRole("dialog", { name: "Navigation" })).not.toBeInTheDocument();
+
+    await user.click(screen.getByRole("button", { name: "Open navigation" }));
+    await user.click(within(screen.getByRole("dialog", { name: "Navigation" })).getByRole("button", { name: "Close navigation" }));
+    expect(screen.queryByRole("dialog", { name: "Navigation" })).not.toBeInTheDocument();
+  });
+
   it("puts the account menu at the top right of the header instead of the sidebar", async () => {
     const user = userEvent.setup();
     renderShell();

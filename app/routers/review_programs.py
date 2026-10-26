@@ -6,10 +6,19 @@ from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
 from app.assessment_provider_batches import cancel_provider_batches
+from app.assessment_workflow_reconciliation import reconcile_terminal_assessment_workflows
 from app.authorization import ResourceRef, require
+from app.config import Settings, get_settings
 from app.database import get_db
 from app.dependencies import Principal, get_principal
-from app.models import Matter, ReviewProgram, ReviewProgramRun
+from app.models import (
+    Matter,
+    MatterDefinitionAssessmentRun,
+    ReviewProgram,
+    ReviewProgramChild,
+    ReviewProgramCompletionReport,
+    ReviewProgramRun,
+)
 from app.review_programs import (
     ReviewProgramError,
     cancel_review_program_discovery_children,
@@ -40,6 +49,7 @@ from app.schemas import (
     ReviewProgramActionRead,
     ReviewProgramActionResolve,
     ReviewProgramClassifierImprovementSetup,
+    ReviewProgramCompletionReportRead,
     ReviewProgramCreate,
     ReviewProgramDefinitionSetup,
     ReviewProgramDiscoverySetup,
@@ -105,6 +115,40 @@ def _run_read(db: Session, run: ReviewProgramRun) -> ReviewProgramRunRead:
             "events": [ReviewProgramEventRead.model_validate(item) for item in events],
         }
     )
+
+
+def _reconcile_definition_assessment_runs(
+    db: Session,
+    runs: list[ReviewProgramRun],
+    *,
+    settings: Settings,
+) -> None:
+    active_run_ids = [
+        run.id
+        for run in runs
+        if run.status not in {"COMPLETED", "COMPLETED_WITH_ERRORS", "FAILED", "CANCELED"}
+        and run.current_stage in {"DEFINITION_ASSESSMENT", "DEFINITION_REFINEMENT", "DEFINITION_ACCEPTANCE"}
+    ]
+    if not active_run_ids:
+        return
+    assessment_ids = list(
+        db.scalars(
+            select(ReviewProgramChild.child_id).where(
+                ReviewProgramChild.run_id.in_(active_run_ids),
+                ReviewProgramChild.child_type == "MATTER_DEFINITION_ASSESSMENT",
+            )
+        )
+    )
+    if not assessment_ids:
+        return
+    assessments = list(
+        db.scalars(
+            select(MatterDefinitionAssessmentRun).where(
+                MatterDefinitionAssessmentRun.id.in_(assessment_ids)
+            )
+        )
+    )
+    reconcile_terminal_assessment_workflows(db, assessments, settings=settings)
 
 
 def _matter_with_permission(
@@ -202,6 +246,7 @@ def list_review_program_runs(
     program_id: uuid.UUID,
     principal: Principal = Depends(get_principal),
     db: Session = Depends(get_db),
+    settings: Settings = Depends(get_settings),
 ) -> list[ReviewProgramRunRead]:
     _matter_with_permission(db, principal, matter_id, "review_program.view")
     try:
@@ -215,6 +260,7 @@ def list_review_program_runs(
             .order_by(ReviewProgramRun.created_at.desc(), ReviewProgramRun.id.desc())
         )
     )
+    _reconcile_definition_assessment_runs(db, runs, settings=settings)
     return [_run_read(db, run) for run in runs]
 
 
@@ -256,11 +302,14 @@ def read_program_run(
     run_id: uuid.UUID,
     principal: Principal = Depends(get_principal),
     db: Session = Depends(get_db),
+    settings: Settings = Depends(get_settings),
 ) -> ReviewProgramRunRead:
     _matter_with_permission(db, principal, matter_id, "review_program.view")
     try:
         program = get_review_program(db, matter_id=matter_id, program_id=program_id)
-        return _run_read(db, get_review_program_run(db, program=program, run_id=run_id))
+        run = get_review_program_run(db, program=program, run_id=run_id)
+        _reconcile_definition_assessment_runs(db, [run], settings=settings)
+        return _run_read(db, run)
     except ReviewProgramError as exc:
         raise _http_error(exc) from exc
 
@@ -662,11 +711,13 @@ def reconcile_program_run(
     run_id: uuid.UUID,
     principal: Principal = Depends(get_principal),
     db: Session = Depends(get_db),
+    settings: Settings = Depends(get_settings),
 ) -> ReviewProgramRunRead:
     _matter_with_permission(db, principal, matter_id, "review_program.manage")
     try:
         program = get_review_program(db, matter_id=matter_id, program_id=program_id, for_update=True)
         run = get_review_program_run(db, program=program, run_id=run_id, for_update=True)
+        _reconcile_definition_assessment_runs(db, [run], settings=settings)
         reconcile_review_program_run(db, program=program, run=run, actor=principal.user)
         db.commit()
     except ReviewProgramError as exc:
@@ -674,3 +725,28 @@ def reconcile_program_run(
         raise _http_error(exc) from exc
     db.refresh(run)
     return _run_read(db, run)
+
+
+@router.get(
+    "/{program_id}/runs/{run_id}/completion",
+    response_model=ReviewProgramCompletionReportRead,
+)
+def get_program_completion_report(
+    matter_id: uuid.UUID,
+    program_id: uuid.UUID,
+    run_id: uuid.UUID,
+    principal: Principal = Depends(get_principal),
+    db: Session = Depends(get_db),
+) -> ReviewProgramCompletionReportRead:
+    _matter_with_permission(db, principal, matter_id, "review_program.view")
+    program = get_review_program(db, matter_id=matter_id, program_id=program_id)
+    get_review_program_run(db, program=program, run_id=run_id)
+    report = db.scalar(
+        select(ReviewProgramCompletionReport).where(
+            ReviewProgramCompletionReport.program_id == program.id,
+            ReviewProgramCompletionReport.run_id == run_id,
+        )
+    )
+    if report is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Completion report not found")
+    return ReviewProgramCompletionReportRead.model_validate(report)

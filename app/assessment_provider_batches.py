@@ -13,10 +13,17 @@ from app.assessment_execution import (
     _skill_version,
     _step,
     persist_document_analysis,
+    refresh_progress,
 )
-from app.config import Settings
+from app.config import Settings, get_settings
+from app.document_analysis_schemas import (
+    DOCUMENT_ANALYSIS_DOCUMENT_INSTRUCTIONS,
+    DOCUMENT_ANALYSIS_MODEL_OUTPUT_SCHEMA,
+    DOCUMENT_ANALYSIS_PIPELINE_VERSION,
+)
 from app.document_evidence import (
     build_document_map_plan,
+    document_map_coverage,
     render_model_document,
     segment_paragraphs,
     validate_document_analysis_citations,
@@ -216,15 +223,17 @@ def _structured_request(assessment, workflow, revision, version, document, sourc
         "skill_version_id": str(version.id),
         "schema_version": version.output_schema_key,
         "paragraph_map_version": paragraph_map.version,
+        "analysis_pipeline_version": DOCUMENT_ANALYSIS_PIPELINE_VERSION,
     }
     return StructuredModelRequest(
         instruction_layers=(
             InstructionLayer("platform_security", PLATFORM_SKILL_INSTRUCTIONS),
             InstructionLayer("managed_skill", version.instructions),
+            InstructionLayer("analysis_stage", DOCUMENT_ANALYSIS_DOCUMENT_INSTRUCTIONS),
         ),
         stable_context=stable_context,
         dynamic_input=dynamic_input,
-        output_schema=version.output_schema,
+        output_schema=DOCUMENT_ANALYSIS_MODEL_OUTPUT_SCHEMA,
         model_key=version.model_key,
         model_settings=version.model_policy,
         limits=version.limits,
@@ -285,7 +294,7 @@ def submit_provider_batch(db: Session, batch_id: uuid.UUID, settings: Settings) 
                 custom_id=custom_id,
                 prompt=f"{assembly.stable_prefix}\n{assembly.dynamic_payload}",
                 instructions=assembly.instructions,
-                output_schema=version.output_schema,
+                output_schema=request.output_schema,
                 model_settings=version.model_policy,
                 limits=version.limits,
             )
@@ -367,7 +376,7 @@ def finalize_provider_batch(db: Session, batch_id: uuid.UUID) -> dict[str, int]:
             if not response_item.output_text:
                 raise ValueError("Batch API returned an empty document analysis")
             output = json.loads(response_item.output_text)
-            validate_structured_output(output, version.output_schema)
+            validate_structured_output(output, DOCUMENT_ANALYSIS_MODEL_OUTPUT_SCHEMA)
             source = get_preferred_text_source(
                 collection_item_id=document.collection_item_id,
                 actor_user_id=assessment.initiated_by_user_id,
@@ -378,6 +387,18 @@ def finalize_provider_batch(db: Session, batch_id: uuid.UUID) -> dict[str, int]:
                 raise ValueError("Document text source is unavailable while finalizing its batch result")
             paragraph_map = segment_paragraphs(source.text)
             validate_document_analysis_citations(output, paragraph_map)
+            plan = build_document_map_plan(
+                paragraph_map,
+                max_characters=get_settings().definition_assessment_map_max_characters,
+            )
+            if len(plan.windows) != 1:
+                raise ValueError("Provider batch document no longer fits in one analysis window")
+            output["coverage"] = document_map_coverage(
+                paragraph_map,
+                plan,
+                successful_window_ids={plan.windows[0].window_id},
+            )
+            validate_structured_output(output, version.output_schema)
             now = utcnow()
             persist_model_invocations(
                 db,
@@ -427,6 +448,18 @@ def finalize_provider_batch(db: Session, batch_id: uuid.UUID) -> dict[str, int]:
                 paragraph_map=paragraph_map,
                 output=output,
                 skill_run=skill_run,
+                pipeline_diagnostics={
+                    "mode": "DIRECT_PROVIDER_BATCH",
+                    "window_count": 1,
+                    "final_near_miss_count": sum(
+                        1
+                        for value in output.get("criterion_matches") or []
+                        if isinstance(value, dict) and value.get("match_type") == "NEAR_MISS"
+                    ),
+                    "final_clarification_count": len(output.get("clarification_requests") or []),
+                    "restored_near_miss_count": 0,
+                    "restored_clarification_count": 0,
+                },
             )
             completed += 1
         except Exception as exc:  # noqa: BLE001 - one invalid provider result must not discard the batch
@@ -441,7 +474,10 @@ def finalize_provider_batch(db: Session, batch_id: uuid.UUID) -> dict[str, int]:
     batch.status = "COMPLETED_WITH_ERRORS" if failed else "COMPLETED"
     batch.completed_at = utcnow()
     batch.error_message = f"{failed} document analyses failed" if failed else None
-    db.commit()
+    # Refresh immediately when this child batch finishes. The parent workflow
+    # waits for handles in submission order, so relying on its refresh can leave
+    # completed out-of-order batches invisible for a long time.
+    refresh_progress(db, assessment.id)
     return {"completed": completed, "failed": failed}
 
 
@@ -466,7 +502,7 @@ def fail_provider_batch(db: Session, batch_id: uuid.UUID, message: str) -> None:
         if run_document is not None and run_document.status not in {"COMPLETED", "SKIPPED"}:
             run_document.status = "FAILED"
             run_document.completed_at = utcnow()
-    db.commit()
+    refresh_progress(db, batch.assessment_run_id)
 
 
 def cancel_provider_batches(db: Session, assessment_id: uuid.UUID) -> None:

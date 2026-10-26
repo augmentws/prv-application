@@ -23,6 +23,7 @@ export interface ReviewBatchCreate {
   assessment_run_id?: string | null;
   sample_size?: number | null;
   random_seed?: string | null;
+  include_complete_families?: boolean;
   assigned_user_id?: string | null;
   reviewer_value_visibility?: ReviewBatchCreateReviewerValueVisibility;
   /** @maxItems 100 */

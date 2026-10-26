@@ -15,6 +15,7 @@ const tokenPair = {
 
 afterEach(() => {
   delete process.env.APP_ORIGIN;
+  delete process.env.APP_ALLOWED_ORIGINS;
   vi.unstubAllGlobals();
 });
 
@@ -45,6 +46,37 @@ describe("login route", () => {
     expect(response.status).toBe(200);
     expect(await response.json()).toEqual({ authenticated: true });
     expect(fetchMock).toHaveBeenCalledOnce();
+  });
+
+  it("accepts an explicitly allowed LAN origin without changing the redirect origin", async () => {
+    process.env.APP_ORIGIN = "https://priv.augment.ws";
+    process.env.APP_ALLOWED_ORIGINS = "http://192.168.7.103:3000, http://127.0.0.1:3000";
+    vi.stubGlobal(
+      "fetch",
+      vi.fn().mockResolvedValue(
+        new Response(JSON.stringify(tokenPair), {
+          status: 200,
+          headers: { "content-type": "application/json" },
+        }),
+      ),
+    );
+    const body = new URLSearchParams({
+      email: "admin@example.com",
+      password: "long-enough-password",
+    });
+    const request = new NextRequest("http://internal-next:3000/api/auth/login", {
+      method: "POST",
+      headers: {
+        origin: "http://192.168.7.103:3000",
+        "content-type": "application/x-www-form-urlencoded",
+      },
+      body,
+    });
+
+    const response = await POST(request);
+
+    expect(response.status).toBe(303);
+    expect(response.headers.get("location")).toBe("https://priv.augment.ws/app");
   });
 
   it("authenticates a native form fallback without putting credentials in the URL", async () => {

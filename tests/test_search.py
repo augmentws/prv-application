@@ -66,7 +66,7 @@ from app.search.query import (
     execute_search,
 )
 from app.search.schema import SearchReindexRequired, plan_schema_change
-from app.search.service import SearchIndexManager, build_document_projection
+from app.search.service import DocumentProjectionFailure, SearchIndexManager, build_document_projection
 
 
 def test_keyword_search_scope_can_filter_a_later_semantic_query() -> None:
@@ -1325,7 +1325,13 @@ def test_document_projection_attaches_nested_chunk_vectors(monkeypatch: pytest.M
     )
     db.scalars.return_value = []
     monkeypatch.setattr("app.search.service.get_search_item_snapshot", lambda **_: snapshot)
-    monkeypatch.setattr("app.search.service.load_current_chunk_artifacts", lambda **_: (chunk_set, vector_set))
+    artifact_request: dict = {}
+
+    def load_chunks(**kwargs):
+        artifact_request.update(kwargs)
+        return chunk_set, vector_set
+
+    monkeypatch.setattr("app.search.service.load_current_chunk_artifacts", load_chunks)
     monkeypatch.setattr("app.search.service.current_metadata_values", lambda *_: {})
     monkeypatch.setattr("app.search.service.coded_by_tokens", lambda *_: [])
     monkeypatch.setattr("app.search.service.document_fact_states", lambda _db, ids: dict.fromkeys(ids))
@@ -1335,6 +1341,8 @@ def test_document_projection_attaches_nested_chunk_vectors(monkeypatch: pytest.M
     assert projection["chunks"][0]["chunk_id"] == "c" * 64
     assert projection["chunks"][0]["text"] == "A short legal memorandum."
     assert len(projection["chunks"][0]["embedding"]) == 1024
+    assert artifact_request["compatible_embedding"]["dimensions"] == 1024
+    assert artifact_request["compatible_embedding"]["model"]
 
 
 class FakeIndexClient:
@@ -1347,6 +1355,7 @@ class FakeIndexClient:
         self.mapping_updates: list[tuple[str, dict]] = []
         self.deleted: list[str] = []
         self.indexed_document_count = 0
+        self.semantic_document_count = 0
 
     def close(self) -> None:
         pass
@@ -1391,6 +1400,16 @@ class FakeIndexClient:
 
     def count(self, index: str) -> int:
         return self.indexed_document_count
+
+    def count_matching(self, index: str, query: dict) -> int:
+        assert query == {
+            "nested": {
+                "path": "chunks",
+                "ignore_unmapped": True,
+                "query": {"exists": {"field": "chunks.embedding"}},
+            }
+        }
+        return self.semantic_document_count
 
 
 def test_batch_coding_sync_removes_only_the_target_run_projection(
@@ -1824,7 +1843,7 @@ def test_full_rebuild_records_progress_after_each_document_batch(
 
     fake = Mock()
     manager = SearchIndexManager(db, fake, Settings(search_bulk_batch_size=2))
-    bulk_upsert = Mock()
+    bulk_upsert = Mock(return_value=None)
     monkeypatch.setattr(manager, "_bulk_upsert", bulk_upsert)
     progress: list[dict] = []
     monkeypatch.setattr(
@@ -1938,6 +1957,68 @@ def test_bulk_projection_hydrates_documents_concurrently_in_input_order(
 
     assert maximum_workers >= 2
     assert [operation[1] for operation in captured_operations] == [str(document.id) for document in documents]
+
+
+def test_full_rebuild_skips_a_document_projection_failure_and_continues(
+    db: Session,
+    root_admin: User,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    client_record = Client(tenant_id=root_admin.tenant_id, name="Resilient Rebuild Client")
+    db.add(client_record)
+    db.flush()
+    matter = Matter(client_id=client_record.id, name="Resilient Rebuild Matter")
+    db.add(matter)
+    db.flush()
+    import_job = MatterDocumentImportJob(
+        matter_id=matter.id,
+        source_collection_id=uuid.uuid4(),
+        selection_type="EXPLICIT",
+        selection={},
+        selection_summary="Resilient rebuild test",
+        status="COMPLETED",
+        workflow_id=f"import:{uuid.uuid4()}",
+        created_by_user_id=root_admin.id,
+    )
+    db.add(import_job)
+    db.flush()
+    documents = [
+        MatterDocument(
+            matter_id=matter.id,
+            source_collection_id=import_job.source_collection_id,
+            collection_item_id=uuid.uuid4(),
+            added_by_import_job_id=import_job.id,
+        )
+        for _ in range(3)
+    ]
+    db.add_all(documents)
+    db.commit()
+
+    def projection(_db, document, _definitions, **_kwargs):
+        if document.id == documents[1].id:
+            raise FileNotFoundError("missing preferred text blob")
+        return {"document_id": str(document.id)}
+
+    monkeypatch.setattr("app.search.service.build_document_projection", projection)
+    fake = Mock()
+    captured_operations: list[tuple[str, str, dict]] = []
+    fake.bulk.side_effect = lambda _index, operations: captured_operations.extend(operations)
+    manager = SearchIndexManager(db, fake, Settings(search_bulk_batch_size=10))
+
+    result = manager._bulk_upsert(
+        "resilient-rebuild-index",
+        documents,
+        [],
+        continue_on_projection_error=True,
+    )
+
+    assert result.indexed_count == 2
+    assert [failure.document_id for failure in result.failures] == [str(documents[1].id)]
+    assert result.failures[0].error_type == "FileNotFoundError"
+    assert [operation[1] for operation in captured_operations] == [
+        str(documents[0].id),
+        str(documents[2].id),
+    ]
 
 
 def test_index_manager_adds_metadata_mapping_and_backfills_in_place(db: Session) -> None:
@@ -2149,6 +2230,83 @@ def test_index_manager_skips_an_orphaned_physical_index(db: Session) -> None:
     assert fake.deleted == [orphaned]
 
 
+def test_rebuild_with_document_errors_waits_for_explicit_promotion(
+    db: Session,
+    root_admin: User,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    client_record = Client(tenant_id=root_admin.tenant_id, name="Promotion Client")
+    db.add(client_record)
+    db.flush()
+    matter = Matter(client_id=client_record.id, name="Promotion Matter")
+    db.add(matter)
+    db.flush()
+    import_job = MatterDocumentImportJob(
+        matter_id=matter.id,
+        source_collection_id=uuid.uuid4(),
+        selection_type="EXPLICIT",
+        selection={},
+        selection_summary="Promotion test",
+        status="COMPLETED",
+        workflow_id=f"import:{uuid.uuid4()}",
+        created_by_user_id=root_admin.id,
+    )
+    db.add(import_job)
+    db.flush()
+    document = MatterDocument(
+        matter_id=matter.id,
+        source_collection_id=import_job.source_collection_id,
+        collection_item_id=uuid.uuid4(),
+        added_by_import_job_id=import_job.id,
+    )
+    db.add(document)
+    db.commit()
+
+    fake = FakeIndexClient()
+    manager = SearchIndexManager(db, fake, Settings(opensearch_index_prefix="test"))  # type: ignore[arg-type]
+    active = SearchIndexGeneration(
+        matter_id=matter.id,
+        generation=1,
+        index_name=f"test-matter-{matter.id.hex}-documents-v000001",
+        alias_name=f"test-matter-{matter.id.hex}-documents",
+        schema_hash="a" * 64,
+        status="ACTIVE",
+        document_count=1,
+        schema_snapshot={},
+        activated_at=datetime.now(timezone.utc),
+    )
+    db.add(active)
+    db.commit()
+    fake.existing.add(active.index_name)
+    fake.aliases[active.alias_name] = {active.index_name}
+
+    def incomplete_rebuild(*_args, **_kwargs):
+        manager._last_rebuild_failures = [
+            DocumentProjectionFailure(
+                document_id=str(document.id),
+                error_type="FileNotFoundError",
+                error_message="missing preferred text blob",
+            )
+        ]
+        manager._last_rebuild_failure_count = 1
+        return 0
+
+    monkeypatch.setattr(manager, "_index_all_documents", incomplete_rebuild)
+    candidate = manager.ensure(matter.id, force=True)
+
+    assert candidate.status == "READY_WITH_ERRORS"
+    assert candidate.activated_at is None
+    assert active.status == "ACTIVE"
+    assert fake.aliases[active.alias_name] == {active.index_name}
+
+    fake.indexed_document_count = 0
+    promoted = manager.promote_generation_with_errors(candidate)
+
+    assert promoted.status == "ACTIVE"
+    assert promoted.activated_at is not None
+    assert fake.aliases[promoted.alias_name] == {promoted.index_name}
+
+
 def test_matter_creation_queues_index_and_search_waits_for_active_generation(
     client: TestClient,
     root_token: str,
@@ -2254,7 +2412,115 @@ def test_search_index_status_reports_missing_index_on_configured_server(
     assert reported["physical_index_exists"] is False
     assert reported["alias_points_to_index"] is False
     assert reported["live_document_count"] == 0
+    assert reported["semantic_document_count"] == 0
     assert reported["verification_error"] is None
+
+
+def test_search_index_status_reports_projected_semantic_documents(
+    client: TestClient,
+    root_token: str,
+    db: Session,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    headers = auth(root_token)
+    tenant_id = create_client_tenant(client, root_token)
+    created_client = client.post(
+        f"/v1/tenants/{tenant_id}/clients",
+        headers=headers,
+        json={"name": "Semantic Index Client"},
+    ).json()
+    matter = client.post(
+        f"/v1/clients/{created_client['id']}/matters",
+        headers=headers,
+        json={"name": "Semantic Index Matter"},
+    ).json()
+    generation = SearchIndexGeneration(
+        matter_id=uuid.UUID(matter["id"]),
+        generation=1,
+        index_name="pvr-semantic-v000001",
+        alias_name="pvr-semantic",
+        schema_hash="a" * 64,
+        schema_snapshot={},
+        status="ACTIVE",
+        document_count=12,
+        activated_at=datetime.now(timezone.utc),
+    )
+    db.add(generation)
+    db.commit()
+    fake = FakeIndexClient()
+    fake.existing.add(generation.index_name)
+    fake.aliases[generation.alias_name] = {generation.index_name}
+    fake.indexed_document_count = 12
+    fake.semantic_document_count = 10
+    monkeypatch.setattr("app.routers.search.OpenSearchClient", lambda _settings: fake)
+
+    response = client.get(f"/v1/matters/{matter['id']}/search-indexes", headers=headers)
+
+    assert response.status_code == 200, response.text
+    [reported] = response.json()
+    assert reported["live_document_count"] == 12
+    assert reported["semantic_document_count"] == 10
+
+
+def test_promote_search_generation_with_errors_requires_explicit_request(
+    client: TestClient,
+    root_token: str,
+    db: Session,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    headers = auth(root_token)
+    tenant_id = create_client_tenant(client, root_token)
+    created_client = client.post(
+        f"/v1/tenants/{tenant_id}/clients",
+        headers=headers,
+        json={"name": "Promotion API Client"},
+    ).json()
+    matter = client.post(
+        f"/v1/clients/{created_client['id']}/matters",
+        headers=headers,
+        json={"name": "Promotion API Matter"},
+    ).json()
+    matter_id = uuid.UUID(matter["id"])
+    alias_name = f"test-matter-{matter_id.hex}-documents"
+    active = SearchIndexGeneration(
+        matter_id=matter_id,
+        generation=1,
+        index_name=f"{alias_name}-v000001",
+        alias_name=alias_name,
+        schema_hash="a" * 64,
+        status="ACTIVE",
+        document_count=10,
+        schema_snapshot={},
+        activated_at=datetime.now(timezone.utc),
+    )
+    candidate = SearchIndexGeneration(
+        matter_id=matter_id,
+        generation=2,
+        index_name=f"{alias_name}-v000002",
+        alias_name=alias_name,
+        schema_hash="b" * 64,
+        status="READY_WITH_ERRORS",
+        document_count=9,
+        schema_snapshot={},
+        error_message="Rebuild completed with 1 document projection failure; explicit promotion is required",
+    )
+    db.add_all([active, candidate])
+    db.commit()
+    fake = FakeIndexClient()
+    fake.existing.update({active.index_name, candidate.index_name})
+    fake.aliases[alias_name] = {active.index_name}
+    fake.indexed_document_count = 9
+    monkeypatch.setattr("app.routers.search.OpenSearchClient", lambda _settings: fake)
+
+    response = client.post(
+        f"/v1/matters/{matter_id}/search-indexes/{candidate.id}/promote",
+        headers=headers,
+    )
+
+    assert response.status_code == 200, response.text
+    assert response.json()["status"] == "ACTIVE"
+    assert response.json()["activated_at"] is not None
+    assert fake.aliases[alias_name] == {candidate.index_name}
 
 
 def test_reindex_confirmation_requeues_the_schema_operation(

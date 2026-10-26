@@ -16,7 +16,6 @@ GEMINI_JSON_SCHEMA_KEYWORDS = frozenset(
         "items",
         "prefixItems",
         "minItems",
-        "maxItems",
         "minimum",
         "maximum",
         "anyOf",

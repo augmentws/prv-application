@@ -642,6 +642,8 @@ def create_review_batch(
     batch_id = uuid.uuid4()
     seed = payload.random_seed or (str(batch_id) if payload.selection_type.startswith("RANDOM") else None)
     selection = {"type": payload.selection_type}
+    if payload.include_complete_families:
+        selection["family_policy"] = "EXPAND_COMPLETE_FAMILIES_IN_MATTER"
     if payload.search is not None:
         selection["search"] = payload.search.model_copy(update={"offset": 0}).model_dump(mode="json", by_alias=True)
     if saved_search is not None:
@@ -711,6 +713,7 @@ def create_review_batch(
             "selection_type": batch.selection_type,
             "saved_search_id": str(saved_search.id) if saved_search is not None else None,
             "assessment_run_id": str(assessment.id) if assessment is not None else None,
+            "family_policy": selection.get("family_policy"),
         },
     )
     enqueue_review_batch(db, execution.dbos_workflow_id, str(batch.id))

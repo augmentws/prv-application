@@ -139,17 +139,82 @@ describe("MatterDefinitionAssessmentPanel regeneration", () => {
       expect(renamePayload).toEqual({ name: "Updated coverage assessment" });
       expect(screen.getByRole("combobox", { name: "Assessment" })).toHaveTextContent("Updated coverage assessment");
     });
-    await user.click(await screen.findByRole("button", { name: "Regenerate assessment" }));
+    const regenerateButton = await screen.findByRole("button", { name: "Regenerate assessment" });
+    expect(regenerateButton).toBeVisible();
+    const regenerateTooltip = screen.getByRole("tooltip", { name: "Regenerate assessment" });
+    expect(regenerateButton).toHaveAttribute("aria-describedby", regenerateTooltip.id);
+    expect(regenerateTooltip).toHaveClass("group-hover:visible", "group-focus-within:visible");
+    await user.click(regenerateButton);
     expect(screen.getByText("Reuse current document analyses")).toBeInTheDocument();
     expect(screen.getByText("Reanalyze the frozen batch")).toBeInTheDocument();
     expect(screen.getByText(/11 existing analyses/)).toBeInTheDocument();
     expect(screen.getByText(/all 12 frozen documents/)).toBeInTheDocument();
+    expect(screen.getByText(/Synthesis completed without generating clarification questions/)).toBeInTheDocument();
 
     await user.click(screen.getByRole("button", { name: "Reanalyze documents" }));
     await waitFor(() => expect(coreApi).toHaveBeenCalledWith(
       "/v1/matters/matter-1/definition-assessments/assessment-1/regenerate-document-analyses",
       { method: "POST" },
     ));
+  });
+
+  it("refreshes the cumulative frozen-batch summary count after retrying failed documents", async () => {
+    const assessment = {
+      id: "assessment-1",
+      name: "Coverage assessment",
+      status: "COMPLETED_WITH_ERRORS",
+      guidance_refinement_status: "NOT_READY",
+      review_batch_id: "batch-1",
+      selected_count: 1000,
+      summarized_count: 119,
+      skipped_count: 1,
+      failed_count: 880,
+      partial_coverage_count: 0,
+      invalid_result_count: 0,
+      estimated_input_tokens: 12000,
+      coverage_snapshot: null,
+      synthesis_result: null,
+    };
+    let listRequests = 0;
+    vi.mocked(coreApi).mockImplementation(async (path, init) => {
+      if (path === "/v1/matters/matter-1/definition-assessments" && !init?.method) {
+        listRequests += 1;
+        return [{
+          ...assessment,
+          ...(listRequests > 1 ? { status: "QUEUED", summarized_count: 986, failed_count: 9 } : {}),
+        }] as never;
+      }
+      if (path === "/v1/matters/matter-1/definition-assessments/assessment-1/retry" && init?.method === "POST") {
+        return { ...assessment, status: "QUEUED" } as never;
+      }
+      if (path.endsWith("/queries") || path.endsWith("/questions")) return [] as never;
+      if (path.includes("/execution?include_skill_runs=true")) return {
+        request_count: 0,
+        input_tokens: 0,
+        cached_input_tokens: 0,
+        cache_write_tokens: 0,
+        output_tokens: 0,
+        steps: [],
+        skill_runs: [],
+      } as never;
+      throw new Error(`Unexpected API request: ${path}`);
+    });
+    const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false }, mutations: { retry: false } } });
+    render(
+      <QueryClientProvider client={queryClient}>
+        <MatterDefinitionAssessmentPanel
+          matterId="matter-1"
+          revisions={[{ revision: 1 } as never]}
+          publishedRevision={1}
+        />
+      </QueryClientProvider>,
+    );
+
+    expect(await screen.findByText("119 / 1,000")).toBeInTheDocument();
+    expect(await screen.findByText("Refinement questions will appear after assessment synthesis completes.")).toBeInTheDocument();
+    await userEvent.click(screen.getByRole("button", { name: "Retry failed documents" }));
+    expect(await screen.findByText("986 / 1,000")).toBeInTheDocument();
+    expect(listRequests).toBeGreaterThan(1);
   });
 
   it("shows retrieval clarification without offering a blind retry", async () => {
@@ -209,7 +274,7 @@ describe("MatterDefinitionAssessmentPanel regeneration", () => {
       name: "Coverage assessment",
       status: "COMPLETED",
       guidance_refinement_status: "NOT_READY",
-      review_batch_id: null,
+      review_batch_id: "batch-1",
       selected_count: 2,
       summarized_count: 2,
       skipped_count: 0,
@@ -226,7 +291,11 @@ describe("MatterDefinitionAssessmentPanel regeneration", () => {
       rationale: "The existing boundary is ambiguous.",
       priority: "HIGH",
       status: "OPEN",
-      evidence: [],
+      evidence: [{
+        matter_document_id: "document-1",
+        paragraph_ids: ["¶4", "¶7"],
+        reason: "The cited discussion treats an indirect claim differently from a direct claim.",
+      }],
       suggested_answers: ["Include indirect claims.", "Exclude indirect claims."],
       answer: null,
     };
@@ -263,6 +332,15 @@ describe("MatterDefinitionAssessmentPanel regeneration", () => {
       </QueryClientProvider>,
     );
 
+    const supportingDocuments = await screen.findByText("Supporting documents (1)");
+    await user.click(supportingDocuments);
+    expect(screen.getByText("Document 1 · ¶4, ¶7")).toBeInTheDocument();
+    expect(screen.getByText("The cited discussion treats an indirect claim differently from a direct claim.")).toBeInTheDocument();
+    expect(screen.getByRole("link", { name: "Open cited document" })).toHaveAttribute(
+      "href",
+      "/review/matters/matter-1?batch=batch-1&document=document-1&paragraph=%C2%B64%2C%C2%B67",
+    );
+    expect(screen.getByRole("link", { name: "Open cited document" })).toHaveAttribute("target", "_blank");
     await user.click(await screen.findByRole("button", { name: "Include indirect claims." }));
     expect(screen.getByPlaceholderText("Select a suggestion or enter a custom answer…")).toHaveValue(
       "Include indirect claims.",

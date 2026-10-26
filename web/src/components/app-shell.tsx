@@ -1,6 +1,7 @@
 "use client";
 
 import * as DropdownMenu from "@radix-ui/react-dropdown-menu";
+import * as Dialog from "@radix-ui/react-dialog";
 import { useQueryClient } from "@tanstack/react-query";
 import {
   Building2,
@@ -195,16 +196,29 @@ function Shell({ children }: { children: ReactNode }) {
   return (
     <div className="flex h-dvh min-h-0 overflow-hidden bg-background">
       <div className="hidden h-full shrink-0 lg:block">{sidebar}</div>
-      {mobileOpen ? <div className="fixed inset-0 z-40 bg-foreground/35 backdrop-blur-sm lg:hidden" onClick={() => setMobileOpen(false)} /> : null}
-      <div className={cn("fixed inset-y-0 left-0 z-50 w-64 transition-transform lg:hidden", mobileOpen ? "translate-x-0" : "-translate-x-full")}>{sidebar}</div>
 
       <div className="flex min-h-0 min-w-0 flex-1 flex-col overflow-hidden">
         <header className="z-30 flex h-16 shrink-0 items-center gap-3 border-b bg-background/92 px-4 backdrop-blur md:px-6">
-          <Button variant="ghost" size="icon" aria-label="Open navigation" className="lg:hidden" onClick={() => setMobileOpen(true)}><Menu /></Button>
           <div className="min-w-0 flex-1">
             <p className="truncate text-sm font-semibold">{tenant.name}</p>
             <p className="truncate text-xs text-muted-foreground">Secure workspace</p>
           </div>
+          <Dialog.Root open={mobileOpen} onOpenChange={setMobileOpen}>
+            <Dialog.Trigger asChild>
+              <Button variant="ghost" size="icon" aria-label="Open navigation" className="shrink-0 lg:hidden"><Menu /></Button>
+            </Dialog.Trigger>
+            <Dialog.Portal>
+              <Dialog.Overlay className="fixed inset-0 z-40 bg-foreground/35 backdrop-blur-sm lg:hidden" />
+              <Dialog.Content
+                aria-modal="true"
+                className="fixed inset-y-0 left-0 z-50 w-[min(20rem,calc(100vw-2rem))] overflow-hidden bg-sidebar text-sidebar-foreground shadow-2xl outline-none lg:hidden"
+              >
+                <Dialog.Title className="sr-only">Navigation</Dialog.Title>
+                <Dialog.Description className="sr-only">Browse workspace and matter pages.</Dialog.Description>
+                {sidebar}
+              </Dialog.Content>
+            </Dialog.Portal>
+          </Dialog.Root>
           <NotificationBell />
           <ThemeToggle />
           <AccountMenu displayName={user.display_name} email={user.email} onSignOut={() => void signOut()} />

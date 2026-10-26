@@ -15149,6 +15149,182 @@
         }
       }
     },
+    "/v1/matters/{matter_id}/review-programs/{program_id}/runs/{run_id}/actions/{action_id}/classifier-improvement-setup": {
+      "post": {
+        "tags": [
+          "review programs"
+        ],
+        "summary": "Setup Program Classifier Improvement",
+        "operationId": "setup_program_classifier_improvement_v1_matters__matter_id__review_programs__program_id__runs__run_id__actions__action_id__classifier_improvement_setup_post",
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "matter_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid",
+              "title": "Matter Id"
+            }
+          },
+          {
+            "name": "program_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid",
+              "title": "Program Id"
+            }
+          },
+          {
+            "name": "run_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid",
+              "title": "Run Id"
+            }
+          },
+          {
+            "name": "action_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid",
+              "title": "Action Id"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ReviewProgramClassifierImprovementSetup"
+              }
+            }
+          }
+        },
+        "responses": {
+          "202": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ReviewProgramRunRead"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v1/matters/{matter_id}/review-programs/{program_id}/runs/{run_id}/actions/{action_id}/negative-population-qc-setup": {
+      "post": {
+        "tags": [
+          "review programs"
+        ],
+        "summary": "Setup Program Negative Population Qc",
+        "operationId": "setup_program_negative_population_qc_v1_matters__matter_id__review_programs__program_id__runs__run_id__actions__action_id__negative_population_qc_setup_post",
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "matter_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid",
+              "title": "Matter Id"
+            }
+          },
+          {
+            "name": "program_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid",
+              "title": "Program Id"
+            }
+          },
+          {
+            "name": "run_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid",
+              "title": "Run Id"
+            }
+          },
+          {
+            "name": "action_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid",
+              "title": "Action Id"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ReviewProgramNegativePopulationQCSetup"
+              }
+            }
+          }
+        },
+        "responses": {
+          "202": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ReviewProgramRunRead"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/v1/matters/{matter_id}/review-programs/{program_id}/runs/{run_id}/cancel": {
       "post": {
         "tags": [
@@ -15356,6 +15532,74 @@
               "application/json": {
                 "schema": {
                   "$ref": "#/components/schemas/ReviewProgramRunRead"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v1/matters/{matter_id}/review-programs/{program_id}/runs/{run_id}/completion": {
+      "get": {
+        "tags": [
+          "review programs"
+        ],
+        "summary": "Get Program Completion Report",
+        "operationId": "get_program_completion_report_v1_matters__matter_id__review_programs__program_id__runs__run_id__completion_get",
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "matter_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid",
+              "title": "Matter Id"
+            }
+          },
+          {
+            "name": "program_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid",
+              "title": "Program Id"
+            }
+          },
+          {
+            "name": "run_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid",
+              "title": "Run Id"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ReviewProgramCompletionReportRead"
                 }
               }
             }
@@ -16216,6 +16460,64 @@
               "application/json": {
                 "schema": {
                   "$ref": "#/components/schemas/SearchProjectionOperationRead"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v1/matters/{matter_id}/search-indexes/{generation_id}/promote": {
+      "post": {
+        "tags": [
+          "matter search"
+        ],
+        "summary": "Promote Search Index Generation",
+        "operationId": "promote_search_index_generation_v1_matters__matter_id__search_indexes__generation_id__promote_post",
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "matter_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid",
+              "title": "Matter Id"
+            }
+          },
+          {
+            "name": "generation_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid",
+              "title": "Generation Id"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SearchIndexGenerationRead"
                 }
               }
             }
@@ -28219,7 +28521,8 @@
           "SEARCH_RESULT_EXPORT",
           "JOB_ITEM_OUTCOME_FRAGMENT",
           "JOB_ITEM_OUTCOMES",
-          "FACT_EXPORT"
+          "FACT_EXPORT",
+          "REVIEW_PROGRAM_COMPLETION_REPORT"
         ],
         "title": "ArtifactType"
       },
@@ -38457,7 +38760,7 @@
               "$ref": "#/components/schemas/LabelSourceSpecification"
             },
             "type": "array",
-            "maxItems": 20,
+            "maxItems": 1000,
             "minItems": 1,
             "title": "Allowed Sources"
           },
@@ -49782,6 +50085,11 @@
             ],
             "title": "Random Seed"
           },
+          "include_complete_families": {
+            "type": "boolean",
+            "title": "Include Complete Families",
+            "default": false
+          },
           "assigned_user_id": {
             "anyOf": [
               {
@@ -52835,6 +53143,188 @@
         ],
         "title": "ReviewProgramActionResolve"
       },
+      "ReviewProgramClassifierImprovementQuery": {
+        "properties": {
+          "metadata_definition_id": {
+            "type": "string",
+            "format": "uuid",
+            "title": "Metadata Definition Id"
+          },
+          "class_key": {
+            "type": "string",
+            "maxLength": 500,
+            "minLength": 1,
+            "title": "Class Key"
+          },
+          "query": {
+            "type": "string",
+            "maxLength": 2000,
+            "minLength": 1,
+            "title": "Query"
+          },
+          "quota": {
+            "type": "integer",
+            "maximum": 25000.0,
+            "minimum": 1.0,
+            "title": "Quota",
+            "default": 50
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "metadata_definition_id",
+          "class_key",
+          "query"
+        ],
+        "title": "ReviewProgramClassifierImprovementQuery"
+      },
+      "ReviewProgramClassifierImprovementSetup": {
+        "properties": {
+          "preview_hash": {
+            "type": "string",
+            "maxLength": 64,
+            "minLength": 64,
+            "title": "Preview Hash"
+          },
+          "queries": {
+            "items": {
+              "$ref": "#/components/schemas/ReviewProgramClassifierImprovementQuery"
+            },
+            "type": "array",
+            "maxItems": 100,
+            "minItems": 1,
+            "title": "Queries"
+          },
+          "control_sample_size": {
+            "type": "integer",
+            "maximum": 25000.0,
+            "minimum": 0.0,
+            "title": "Control Sample Size",
+            "default": 25
+          },
+          "target_batch_size": {
+            "type": "integer",
+            "maximum": 10000.0,
+            "minimum": 1.0,
+            "title": "Target Batch Size",
+            "default": 100
+          },
+          "keep_families_together": {
+            "type": "boolean",
+            "title": "Keep Families Together",
+            "default": true
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "preview_hash",
+          "queries"
+        ],
+        "title": "ReviewProgramClassifierImprovementSetup"
+      },
+      "ReviewProgramCompletionReportRead": {
+        "properties": {
+          "id": {
+            "type": "string",
+            "format": "uuid",
+            "title": "Id"
+          },
+          "tenant_id": {
+            "type": "string",
+            "format": "uuid",
+            "title": "Tenant Id"
+          },
+          "matter_id": {
+            "type": "string",
+            "format": "uuid",
+            "title": "Matter Id"
+          },
+          "program_id": {
+            "type": "string",
+            "format": "uuid",
+            "title": "Program Id"
+          },
+          "program_version_id": {
+            "type": "string",
+            "format": "uuid",
+            "title": "Program Version Id"
+          },
+          "run_id": {
+            "type": "string",
+            "format": "uuid",
+            "title": "Run Id"
+          },
+          "schema_version": {
+            "type": "integer",
+            "title": "Schema Version"
+          },
+          "report": {
+            "additionalProperties": true,
+            "type": "object",
+            "title": "Report"
+          },
+          "content_hash": {
+            "type": "string",
+            "title": "Content Hash"
+          },
+          "artifact_id": {
+            "type": "string",
+            "format": "uuid",
+            "title": "Artifact Id"
+          },
+          "artifact_content_hash": {
+            "type": "string",
+            "title": "Artifact Content Hash"
+          },
+          "completion_reason": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Completion Reason"
+          },
+          "completed_by_user_id": {
+            "type": "string",
+            "format": "uuid",
+            "title": "Completed By User Id"
+          },
+          "completed_at": {
+            "type": "string",
+            "format": "date-time",
+            "title": "Completed At"
+          },
+          "created_at": {
+            "type": "string",
+            "format": "date-time",
+            "title": "Created At"
+          }
+        },
+        "type": "object",
+        "required": [
+          "id",
+          "tenant_id",
+          "matter_id",
+          "program_id",
+          "program_version_id",
+          "run_id",
+          "schema_version",
+          "report",
+          "content_hash",
+          "artifact_id",
+          "artifact_content_hash",
+          "completion_reason",
+          "completed_by_user_id",
+          "completed_at",
+          "created_at"
+        ],
+        "title": "ReviewProgramCompletionReportRead"
+      },
       "ReviewProgramCreate": {
         "properties": {
           "template_key": {
@@ -53191,6 +53681,62 @@
           "processed_at"
         ],
         "title": "ReviewProgramEventRead"
+      },
+      "ReviewProgramNegativePopulationQCSetup": {
+        "properties": {
+          "preview_hash": {
+            "type": "string",
+            "maxLength": 64,
+            "minLength": 64,
+            "title": "Preview Hash"
+          },
+          "random_sample_size": {
+            "type": "integer",
+            "maximum": 25000.0,
+            "minimum": 0.0,
+            "title": "Random Sample Size",
+            "default": 200
+          },
+          "near_threshold_sample_size": {
+            "type": "integer",
+            "maximum": 25000.0,
+            "minimum": 0.0,
+            "title": "Near Threshold Sample Size",
+            "default": 100
+          },
+          "cohort_control_sample_size": {
+            "type": "integer",
+            "maximum": 25000.0,
+            "minimum": 0.0,
+            "title": "Cohort Control Sample Size",
+            "default": 50
+          },
+          "mandatory_review_limit": {
+            "type": "integer",
+            "maximum": 25000.0,
+            "minimum": 0.0,
+            "title": "Mandatory Review Limit",
+            "default": 100
+          },
+          "target_batch_size": {
+            "type": "integer",
+            "maximum": 10000.0,
+            "minimum": 1.0,
+            "title": "Target Batch Size",
+            "default": 100
+          },
+          "keep_families_together": {
+            "type": "boolean",
+            "title": "Keep Families Together",
+            "default": true
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "preview_hash"
+        ],
+        "title": "ReviewProgramNegativePopulationQCSetup"
       },
       "ReviewProgramQASetup": {
         "properties": {
@@ -54472,6 +55018,7 @@
             "type": "string",
             "enum": [
               "CREATING",
+              "READY_WITH_ERRORS",
               "ACTIVE",
               "RETIRED",
               "FAILED"
@@ -54514,6 +55061,17 @@
               }
             ],
             "title": "Live Document Count"
+          },
+          "semantic_document_count": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Semantic Document Count"
           },
           "verification_error": {
             "anyOf": [

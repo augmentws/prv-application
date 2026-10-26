@@ -18,7 +18,7 @@ import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Textarea } from "@/components/ui/textarea";
-import type { MatterDefinitionRead, MetadataDefinitionRead, ReviewProgramActionRead, ReviewProgramCreate, ReviewProgramRead, ReviewProgramRunRead, ReviewWorkflowStageRead, ReviewWorkflowTemplateRead } from "@/generated/models";
+import type { MatterDefinitionAssessmentRead, MatterDefinitionRead, MetadataDefinitionRead, ReviewProgramActionRead, ReviewProgramCreate, ReviewProgramRead, ReviewProgramRunRead, ReviewWorkflowStageRead, ReviewWorkflowTemplateRead } from "@/generated/models";
 import { coreApi } from "@/lib/api-client";
 import { formatDate } from "@/lib/format";
 import { cn } from "@/lib/utils";
@@ -79,7 +79,7 @@ export function ReviewProgramsSection() {
       method: "POST",
       body: JSON.stringify({ idempotency_key: crypto.randomUUID() }),
     }),
-    onSuccess: async (run) => { await refresh(run.program_id); toast.success("The Review Program has started."); },
+    onSuccess: async (run) => { await refresh(run.program_id); toast.success("The guided setup is ready. Configure the Matter Definition to continue."); },
     onError: mutationError("The Review Program could not be started."),
   });
   const command = useMutation({
@@ -91,9 +91,9 @@ export function ReviewProgramsSection() {
     onError: mutationError("The Review Program could not be updated."),
   });
   const resolveAction = useMutation({
-    mutationFn: ({ programId, runId, action, choiceKey }: { programId: string; runId: string; action: ReviewProgramActionRead; choiceKey: string }) => coreApi<ReviewProgramRunRead>(`/v1/matters/${matterId}/review-programs/${programId}/runs/${runId}/actions/${action.id}/resolve`, {
+    mutationFn: ({ programId, runId, action, choiceKey, reason }: { programId: string; runId: string; action: ReviewProgramActionRead; choiceKey: string; reason?: string }) => coreApi<ReviewProgramRunRead>(`/v1/matters/${matterId}/review-programs/${programId}/runs/${runId}/actions/${action.id}/resolve`, {
       method: "POST",
-      body: JSON.stringify({ preview_hash: action.preview_hash, choice_key: choiceKey }),
+      body: JSON.stringify({ preview_hash: action.preview_hash, choice_key: choiceKey, ...(reason ? { reason } : {}) }),
     }),
     onSuccess: async (run) => { await refresh(run.program_id); toast.success("The decision was recorded."); },
     onError: mutationError("The decision could not be recorded."),
@@ -167,7 +167,7 @@ export function ReviewProgramsSection() {
         busy={startRun.isPending || command.isPending || resolveAction.isPending || setupDefinition.isPending || setupQA.isPending || setupDiscovery.isPending || setupClassifierImprovement.isPending || setupNegativePopulationQC.isPending}
         onStart={() => startRun.mutate(selectedProgram.id)}
         onCommand={(verb) => currentRun && command.mutate({ programId: selectedProgram.id, runId: currentRun.id, verb })}
-        onResolve={(action, choiceKey) => currentRun && resolveAction.mutate({ programId: selectedProgram.id, runId: currentRun.id, action, choiceKey })}
+        onResolve={(action, choiceKey, reason) => currentRun && resolveAction.mutate({ programId: selectedProgram.id, runId: currentRun.id, action, choiceKey, reason })}
         onSetupDefinition={(action, payload) => currentRun && setupDefinition.mutate({ programId: selectedProgram.id, runId: currentRun.id, actionId: action.id, payload })}
         onSetupQA={(action, payload) => currentRun && setupQA.mutate({ programId: selectedProgram.id, runId: currentRun.id, actionId: action.id, payload })}
         onSetupDiscovery={(action, payload) => currentRun && setupDiscovery.mutate({ programId: selectedProgram.id, runId: currentRun.id, actionId: action.id, payload })}
@@ -190,7 +190,7 @@ function ProgramWorkspace({ clientId, matterId, program, run, stages, canManage,
   busy: boolean;
   onStart: () => void;
   onCommand: (verb: "cancel" | "retry" | "reconcile") => void;
-  onResolve: (action: ReviewProgramActionRead, choiceKey: string) => void;
+  onResolve: (action: ReviewProgramActionRead, choiceKey: string, reason?: string) => void;
   onSetupDefinition: (action: ReviewProgramActionRead, payload: DefinitionSetupPayload) => void;
   onSetupQA: (action: ReviewProgramActionRead, payload: QASetupPayload) => void;
   onSetupDiscovery: (action: ReviewProgramActionRead, payload: DiscoverySetupPayload) => void;
@@ -199,6 +199,23 @@ function ProgramWorkspace({ clientId, matterId, program, run, stages, canManage,
 }) {
   const openAction = run?.actions?.find((action) => action.status === "OPEN") ?? null;
   const attemptsByStage = useMemo(() => new Map(run?.stage_attempts?.map((attempt) => [attempt.stage_key, attempt]) ?? []), [run?.stage_attempts]);
+  const definitionAssessmentRound = Number(run?.progress_summary?.definition_assessment_round ?? 1);
+  const isDefinitionReassessment = run?.current_stage === "DEFINITION_ASSESSMENT" && definitionAssessmentRound > 1;
+  const definitionAssessmentAttempts = run?.stage_attempts?.filter((attempt) => attempt.stage_key === "DEFINITION_ASSESSMENT") ?? [];
+  const completedDefinitionAssessmentAttempt = [...definitionAssessmentAttempts]
+    .reverse()
+    .find((attempt) => attempt.status === "COMPLETED");
+  const currentDefinitionAssessmentAttempt = definitionAssessmentAttempts[definitionAssessmentAttempts.length - 1];
+  const currentAssessmentId = typeof run?.progress_summary?.current_assessment_id === "string"
+    ? run.progress_summary.current_assessment_id
+    : "";
+  const definitionAssessments = useQuery({
+    queryKey: ["definition-assessments", matterId, "review-program-progress"],
+    queryFn: () => coreApi<MatterDefinitionAssessmentRead[]>(`/v1/matters/${matterId}/definition-assessments`),
+    enabled: Boolean(run?.current_stage === "DEFINITION_ASSESSMENT" && currentAssessmentId),
+    refetchInterval: run?.current_stage === "DEFINITION_ASSESSMENT" ? 5_000 : false,
+  });
+  const currentAssessment = definitionAssessments.data?.find((assessment) => assessment.id === currentAssessmentId) ?? null;
   if (loading) return <TableLoading />;
   if (error) return <QueryError message={error.message} />;
   return <div className="space-y-4">
@@ -206,22 +223,53 @@ function ProgramWorkspace({ clientId, matterId, program, run, stages, canManage,
       <CardHeader className="flex-row items-start justify-between gap-4">
         <div><CardTitle>{program.name}</CardTitle><CardDescription>{program.description || "Guided First Pass Review workflow"}</CardDescription></div>
         <div className="flex shrink-0 flex-wrap justify-end gap-2">
-          {canManage && (!run || ["COMPLETED", "COMPLETED_WITH_ERRORS", "CANCELED"].includes(run.status) || run.status === "FAILED" && !run.failure_retriable) ? <Button size="sm" disabled={busy} onClick={onStart}><Play />Start run</Button> : null}
+          {canManage && run && (["COMPLETED", "COMPLETED_WITH_ERRORS", "CANCELED"].includes(run.status) || run.status === "FAILED" && !run.failure_retriable) ? <Button size="sm" disabled={busy} onClick={onStart}><Play />Start another run</Button> : null}
           {run && canManage && ACTIVE_RUN_STATUSES.has(run.status) ? <><Button size="sm" variant="outline" disabled={busy} onClick={() => onCommand("reconcile")}><RefreshCw />Reconcile</Button><Button size="sm" variant="outline" disabled={busy} onClick={() => onCommand("cancel")}><Ban />Cancel</Button></> : null}
           {run?.status === "FAILED" && run.failure_retriable && canManage ? <Button size="sm" disabled={busy} onClick={() => onCommand("retry")}><RotateCcw />Retry</Button> : null}
         </div>
       </CardHeader>
-      {run ? <CardContent><div className="flex flex-wrap items-center gap-2"><StatusBadge status={run.status} /><Badge variant="outline">{friendly(run.current_stage)}</Badge><span className="text-xs text-muted-foreground">Started {formatDate(run.created_at)}</span></div>{run.failure_summary ? <p className="mt-3 rounded-lg border border-destructive/30 bg-destructive/5 p-3 text-sm text-destructive">{run.failure_summary}</p> : null}</CardContent> : <CardContent><p className="text-sm text-muted-foreground">This program is configured but has not been started.</p></CardContent>}
+      {run ? <CardContent><div className="flex flex-wrap items-center gap-2"><StatusBadge status={run.status} /><Badge variant="outline">{isDefinitionReassessment ? `Definition refinement · reassessment round ${definitionAssessmentRound}` : friendly(run.current_stage)}</Badge><span className="text-xs text-muted-foreground">Started {formatDate(run.created_at)}</span></div>{run.failure_summary ? <p className="mt-3 rounded-lg border border-destructive/30 bg-destructive/5 p-3 text-sm text-destructive">{run.failure_summary}</p> : null}</CardContent> : <CardContent><div className="flex flex-wrap items-center justify-between gap-3"><div><p className="text-sm font-medium">This program has not been configured yet.</p><p className="mt-1 text-sm text-muted-foreground">Begin the guided setup to create, clone, or adopt a Matter Definition. No document analysis starts until you save the definition and choose to assess it.</p></div>{canManage ? <Button size="sm" disabled={busy} onClick={onStart}><Play />Start Setup</Button> : null}</div></CardContent>}
     </Card>
-    {openAction?.action_type === "MATTER_DEFINITION_SETUP" ? <DefinitionSetupCard matterId={matterId} action={openAction} canManage={canManage} busy={busy} onSubmit={(payload) => onSetupDefinition(openAction, payload)} onStop={() => onResolve(openAction, "STOP")} /> : openAction?.action_type === "QA_TASK_SETUP" ? <QASetupCard matterId={matterId} action={openAction} canManage={canManage} busy={busy} onSubmit={(payload) => onSetupQA(openAction, payload)} onStop={() => onResolve(openAction, "STOP")} /> : openAction?.action_type === "DISCOVERY_QA_SETUP" ? <DiscoverySetupCard action={openAction} canManage={canManage} busy={busy} onSubmit={(payload) => onSetupDiscovery(openAction, payload)} onStop={() => onResolve(openAction, "STOP")} /> : openAction?.action_type === "CLASSIFIER_IMPROVEMENT_SETUP" ? <ClassifierImprovementSetupCard action={openAction} canManage={canManage} busy={busy} onSubmit={(payload) => onSetupClassifierImprovement(openAction, payload)} onStop={() => onResolve(openAction, "STOP")} /> : openAction?.action_type === "NEGATIVE_POPULATION_QC_SETUP" ? <NegativePopulationQCSetupCard action={openAction} canManage={canManage} busy={busy} onSubmit={(payload) => onSetupNegativePopulationQC(openAction, payload)} onStop={() => onResolve(openAction, "STOP")} /> : openAction ? <Card className="border-accent/60 bg-accent/5"><CardHeader><CardTitle>{openAction.title}</CardTitle><CardDescription>{openAction.explanation}</CardDescription></CardHeader><CardContent><DefinitionAssessmentSummary action={openAction} /><QAPublicationSummary action={openAction} /><IssueSupportSummary action={openAction} /><TrainingLabelSummary action={openAction} matterId={matterId} /><ClassifierReviewSummary action={openAction} /><WholeCollectionScoringSummary action={openAction} /><ClassifierPositiveCoverageSummary action={openAction} /><FinalAlignmentSummary action={openAction} /><NegativePopulationQCReport action={openAction} />{openAction.stage_key === "DEFINITION_REFINEMENT" || openAction.stage_key === "DEFINITION_ACCEPTANCE" ? <Button asChild size="sm" variant="outline" className="mb-3"><Link href={`/app/clients/${clientId}/matters/${matterId}/definition`}><BookOpen />Open Matter Definition</Link></Button> : null}<div className="flex flex-wrap gap-2">{openAction.allowed_choices.map((choice, index) => {
+    {run && currentAssessment ? <DefinitionAssessmentProgress clientId={clientId} matterId={matterId} run={run} assessment={currentAssessment} /> : null}
+    {run?.status === "COMPLETED" || run?.status === "COMPLETED_WITH_ERRORS" ? <CompletedReviewProgramSummary run={run} /> : null}
+    {openAction?.action_type === "MATTER_DEFINITION_SETUP" ? <DefinitionSetupCard matterId={matterId} action={openAction} canManage={canManage} busy={busy} onSubmit={(payload) => onSetupDefinition(openAction, payload)} onStop={() => onResolve(openAction, "STOP")} /> : openAction?.action_type === "QA_TASK_SETUP" ? <QASetupCard matterId={matterId} action={openAction} canManage={canManage} busy={busy} onSubmit={(payload) => onSetupQA(openAction, payload)} onStop={() => onResolve(openAction, "STOP")} /> : openAction?.action_type === "DISCOVERY_QA_SETUP" ? <DiscoverySetupCard action={openAction} canManage={canManage} busy={busy} onSubmit={(payload) => onSetupDiscovery(openAction, payload)} onStop={() => onResolve(openAction, "STOP")} /> : openAction?.action_type === "CLASSIFIER_IMPROVEMENT_SETUP" ? <ClassifierImprovementSetupCard action={openAction} canManage={canManage} busy={busy} onSubmit={(payload) => onSetupClassifierImprovement(openAction, payload)} onStop={() => onResolve(openAction, "STOP")} /> : openAction?.action_type === "NEGATIVE_POPULATION_QC_SETUP" ? <NegativePopulationQCSetupCard action={openAction} canManage={canManage} busy={busy} onSubmit={(payload) => onSetupNegativePopulationQC(openAction, payload)} onStop={() => onResolve(openAction, "STOP")} /> : openAction?.action_type === "REVIEW_PROGRAM_COMPLETION" ? <CompletionDecisionCard action={openAction} canManage={canManage} busy={busy} onComplete={(reason) => onResolve(openAction, "COMPLETE", reason)} onStop={() => onResolve(openAction, "STOP")} /> : openAction ? <Card className="border-accent/60 bg-accent/5"><CardHeader><CardTitle>{openAction.title}</CardTitle><CardDescription>{openAction.explanation}</CardDescription></CardHeader><CardContent><DefinitionAssessmentSummary action={openAction} /><QAPublicationSummary action={openAction} /><IssueSupportSummary action={openAction} /><TrainingLabelSummary action={openAction} matterId={matterId} /><ClassifierReviewSummary action={openAction} /><WholeCollectionScoringSummary action={openAction} /><ClassifierPositiveCoverageSummary action={openAction} /><FinalAlignmentSummary action={openAction} /><NegativePopulationQCReport action={openAction} /><NegativePopulationQCFindingsReview action={openAction} matterId={matterId} />{openAction.stage_key === "DEFINITION_REFINEMENT" || openAction.stage_key === "DEFINITION_ACCEPTANCE" ? <Button asChild size="sm" variant="outline" className="mb-3"><Link href={definitionAssessmentHref(clientId, matterId, openAction)}><BookOpen />Open Matter Definition</Link></Button> : null}<div className="flex flex-wrap gap-2">{openAction.allowed_choices.map((choice, index) => {
       return <Button key={`${choice.key}-${index}`} size="sm" variant={choice.key === "STOP" ? "destructive" : "default"} disabled={!canManage || busy} onClick={() => onResolve(openAction, choice.key)} title={choice.consequence}>{choice.label}</Button>;
     })}</div></CardContent></Card> : null}
     {run ? <Card><CardHeader><CardTitle>Program stages</CardTitle><CardDescription>The coordinator records every stage attempt and waits only at explicit human gates.</CardDescription></CardHeader><CardContent><ol className="grid gap-2 sm:grid-cols-2">{stages.map((stage) => {
-      const attempt = attemptsByStage.get(stage.key);
-      const upcoming = stage.ordinal > run.current_stage_ordinal;
-      return <li key={stage.key} className={cn("flex items-start gap-3 rounded-lg border p-3", stage.key === run.current_stage && "border-primary/50 bg-primary/5", upcoming && "opacity-55")}><span className="grid size-7 shrink-0 place-items-center rounded-full bg-muted text-xs font-semibold">{stage.ordinal}</span><div className="min-w-0"><p className="text-sm font-medium">{stage.name}</p><div className="mt-1 flex flex-wrap gap-1">{attempt ? <StatusBadge status={attempt.status} /> : <Badge variant="outline">Upcoming</Badge>}<Badge variant="outline">{friendly(stage.batching_policy)}</Badge>{stage.requires_human_gate ? <Badge variant="outline">Decision</Badge> : null}</div></div></li>;
+      const attempt = isDefinitionReassessment && stage.key === "DEFINITION_ASSESSMENT"
+        ? completedDefinitionAssessmentAttempt
+        : attemptsByStage.get(stage.key);
+      const containsCurrentReassessment = isDefinitionReassessment && stage.key === "DEFINITION_REFINEMENT";
+      const isCurrent = (stage.key === run.current_stage && !isDefinitionReassessment) || containsCurrentReassessment;
+      const upcoming = isDefinitionReassessment ? stage.ordinal > 3 : stage.ordinal > run.current_stage_ordinal;
+      return <li key={stage.key} className={cn("flex items-start gap-3 rounded-lg border p-3", isCurrent && "border-primary/50 bg-primary/5", upcoming && "opacity-55")}><span className="grid size-7 shrink-0 place-items-center rounded-full bg-muted text-xs font-semibold">{stage.ordinal}</span><div className="min-w-0 flex-1"><p className="text-sm font-medium">{stage.name}</p><div className="mt-1 flex flex-wrap gap-1">{attempt ? <StatusBadge status={attempt.status} /> : <Badge variant="outline">Upcoming</Badge>}<Badge variant="outline">{friendly(stage.batching_policy)}</Badge>{stage.requires_human_gate ? <Badge variant="outline">Decision</Badge> : null}</div>{containsCurrentReassessment ? <div className="mt-2 flex items-center justify-between gap-2 rounded-md border border-primary/30 bg-background/80 px-2 py-1.5"><span className="text-xs font-medium">Reassessment · Round {definitionAssessmentRound}</span><StatusBadge status={currentDefinitionAssessmentAttempt?.status ?? run.status} /></div> : null}</div></li>;
     })}</ol></CardContent></Card> : null}
   </div>;
+}
+
+function DefinitionAssessmentProgress({ clientId, matterId, run, assessment }: { clientId: string; matterId: string; run: ReviewProgramRunRead; assessment: MatterDefinitionAssessmentRead }) {
+  const round = Number(run.progress_summary?.definition_assessment_round ?? 1);
+  const processed = assessment.summarized_count + assessment.skipped_count + assessment.failed_count;
+  const total = assessment.selected_count || assessment.requested_document_count;
+  const parameters = new URLSearchParams({ assessment: assessment.id });
+  if (assessment.guidance_id) parameters.set("guidance", assessment.guidance_id);
+  return <Card className="border-primary/30 bg-primary/5"><CardHeader><div className="flex flex-wrap items-start justify-between gap-3"><div><CardTitle>Definition reassessment · Round {round}</CardTitle><CardDescription>{assessment.status === "SUMMARIZING" ? "Analyzing documents against the newly published Matter Definition." : `Current activity: ${friendly(assessment.status)}.`}</CardDescription></div><StatusBadge status={assessment.status} /></div></CardHeader><CardContent><div className="flex flex-wrap items-center justify-between gap-3"><div><p className="text-sm font-medium tabular-nums">{processed.toLocaleString()} of {total.toLocaleString()} documents processed</p><p className="mt-1 text-xs text-muted-foreground">{assessment.summarized_count.toLocaleString()} summarized · {assessment.skipped_count.toLocaleString()} skipped · {assessment.failed_count.toLocaleString()} failed</p></div><Button asChild size="sm" variant="outline"><Link href={`/app/clients/${clientId}/matters/${matterId}/definition?${parameters.toString()}`}><BookOpen />Open current assessment</Link></Button></div></CardContent></Card>;
+}
+
+export function definitionAssessmentHref(clientId: string, matterId: string, action: ReviewProgramActionRead): string {
+  const base = `/app/clients/${clientId}/matters/${matterId}/definition`;
+  const context = action.decision_context;
+  if (!context || typeof context !== "object" || Array.isArray(context)) return base;
+  const definitionId = context.matter_definition_id;
+  const assessment = context.assessment;
+  const assessmentId = assessment && typeof assessment === "object" && !Array.isArray(assessment)
+    ? (assessment as Record<string, unknown>).id
+    : null;
+  const params = new URLSearchParams();
+  if (typeof definitionId === "string" && definitionId) params.set("guidance", definitionId);
+  if (typeof assessmentId === "string" && assessmentId) params.set("assessment", assessmentId);
+  const query = params.toString();
+  return query ? `${base}?${query}` : base;
 }
 
 function DefinitionAssessmentSummary({ action }: { action: ReviewProgramActionRead }) {
@@ -391,6 +439,41 @@ function NegativePopulationQCReport({ action }: { action: ReviewProgramActionRea
   const estimate = estimateRaw && typeof estimateRaw === "object" && !Array.isArray(estimateRaw) ? estimateRaw as Record<string, unknown> : {};
   const rate = typeof estimate.observed_positive_rate === "number" ? `${(estimate.observed_positive_rate * 100).toFixed(1)}%` : "Unavailable";
   return <div className="mb-4 space-y-3 rounded-lg border bg-background/70 p-3 text-sm"><div className="grid gap-2 sm:grid-cols-5"><div><p className="text-xs text-muted-foreground">QC documents</p><p className="font-medium">{Number(report.selected_document_count ?? 0)}</p></div><div><p className="text-xs text-muted-foreground">New positives</p><p className="font-medium">{Number(report.positive_document_count ?? 0)}</p></div><div><p className="text-xs text-muted-foreground">Random-audit rate</p><p className="font-medium">{rate}</p></div><div><p className="text-xs text-muted-foreground">Unresolved runs</p><p className="font-medium">{Number(report.unresolved_document_count ?? 0)}</p></div><div><p className="text-xs text-muted-foreground">Manual resolution</p><p className="font-medium">{Number(report.mandatory_unreviewable_count ?? 0)}</p></div></div><p className="text-xs text-muted-foreground">Only the random-audit lane supports a population estimate. Targeted-lane yield identifies risk but is not a collection-wide error rate.</p></div>;
+}
+
+function NegativePopulationQCFindingsReview({ action, matterId }: { action: ReviewProgramActionRead; matterId: string }) {
+  if (action.action_type !== "NEGATIVE_POPULATION_QC_FINDINGS_REVIEW") return null;
+  const qcRaw = action.decision_context?.negative_population_qc;
+  const qc = qcRaw && typeof qcRaw === "object" && !Array.isArray(qcRaw) ? qcRaw as Record<string, unknown> : {};
+  const reviewRaw = qc.findings_review;
+  const review = reviewRaw && typeof reviewRaw === "object" && !Array.isArray(reviewRaw) ? reviewRaw as Record<string, unknown> : {};
+  const batchId = String(review.review_batch_id ?? "");
+  return <div className="mb-4 flex flex-wrap items-center justify-between gap-3 rounded-lg border bg-background/70 p-3 text-sm"><div><p className="font-medium">Assigned QC findings batch</p><p className="text-xs text-muted-foreground">{Number(review.document_count ?? 0)} positive, disputed, or unresolved documents · assigned for human coding</p></div>{batchId ? <Button asChild size="sm" variant="outline"><Link href={`/review/matters/${matterId}?batch=${batchId}`}>Open review batch</Link></Button> : null}</div>;
+}
+
+function CompletionDecisionCard({ action, canManage, busy, onComplete, onStop }: {
+  action: ReviewProgramActionRead;
+  canManage: boolean;
+  busy: boolean;
+  onComplete: (reason?: string) => void;
+  onStop: () => void;
+}) {
+  const previewRaw = action.decision_context?.completion_preview;
+  const preview = previewRaw && typeof previewRaw === "object" && !Array.isArray(previewRaw) ? previewRaw as Record<string, unknown> : {};
+  const checklistRaw = preview.checklist;
+  const checklist = checklistRaw && typeof checklistRaw === "object" && !Array.isArray(checklistRaw) ? checklistRaw as Record<string, unknown> : {};
+  const incomplete = Object.entries(checklist).filter(([, value]) => value !== true);
+  const [reason, setReason] = useState("");
+  return <Card className="border-accent/60 bg-accent/5"><CardHeader><CardTitle>{action.title}</CardTitle><CardDescription>{action.explanation}</CardDescription></CardHeader><CardContent className="space-y-4"><div className="grid gap-2 sm:grid-cols-2">{Object.entries(checklist).map(([key, value]) => <div key={key} className="flex items-center justify-between rounded-lg border bg-background/70 px-3 py-2 text-sm"><span>{friendly(key)}</span><Badge variant={value === true ? "active" : "outline"}>{value === true ? "Ready" : "Incomplete"}</Badge></div>)}</div><div className="grid gap-2 rounded-lg border bg-background/70 p-3 text-sm sm:grid-cols-4"><div><p className="text-xs text-muted-foreground">Child records</p><p className="font-medium">{Number(preview.child_record_count ?? 0)}</p></div><div><p className="text-xs text-muted-foreground">Recorded decisions</p><p className="font-medium">{Number(preview.resolved_decision_count ?? 0)}</p></div><div><p className="text-xs text-muted-foreground">Unresolved QC</p><p className="font-medium">{Number(preview.unresolved_qc_document_count ?? 0)}</p></div><div><p className="text-xs text-muted-foreground">Manual resolution</p><p className="font-medium">{Number(preview.manual_resolution_document_count ?? 0)}</p></div></div><div className="space-y-2"><Label htmlFor="completion-reason">Completion notes</Label><Textarea id="completion-reason" value={reason} onChange={(event) => setReason(event.target.value)} placeholder="Optional rationale or accepted limitations" maxLength={4000} /></div><p className="text-xs text-muted-foreground">Completion creates an immutable report and closes this run. It does not publish model or Q&A coding into matter metadata.</p><div className="flex flex-wrap gap-2"><Button disabled={!canManage || busy || incomplete.length > 0} onClick={() => onComplete(reason.trim() || undefined)}>{busy ? "Completing…" : "Complete first-pass review"}</Button><Button variant="destructive" disabled={!canManage || busy} onClick={onStop}>Stop program</Button></div></CardContent></Card>;
+}
+
+function CompletedReviewProgramSummary({ run }: { run: ReviewProgramRunRead }) {
+  const summaryRaw = run.progress_summary?.completion_report;
+  const summary = summaryRaw && typeof summaryRaw === "object" && !Array.isArray(summaryRaw) ? summaryRaw as Record<string, unknown> : {};
+  if (!summary.id) return null;
+  const unresolvedRaw = summary.unresolved;
+  const unresolved = unresolvedRaw && typeof unresolvedRaw === "object" && !Array.isArray(unresolvedRaw) ? unresolvedRaw as Record<string, unknown> : {};
+  return <Card className="border-emerald-500/40 bg-emerald-500/5"><CardHeader><CardTitle>First-pass review complete</CardTitle><CardDescription>The immutable completion report preserves the accepted workflow state and provenance. No coding was published to matter metadata.</CardDescription></CardHeader><CardContent><div className="grid gap-2 text-sm sm:grid-cols-4"><div><p className="text-xs text-muted-foreground">Completed</p><p className="font-medium">{formatDate(String(summary.completed_at ?? run.completed_at ?? ""))}</p></div><div><p className="text-xs text-muted-foreground">QC unresolved</p><p className="font-medium">{Number(unresolved.qc_unresolved_document_count ?? 0)}</p></div><div><p className="text-xs text-muted-foreground">Manual resolution</p><p className="font-medium">{Number(unresolved.manual_resolution_document_count ?? 0)}</p></div><div><p className="text-xs text-muted-foreground">Report hash</p><p className="truncate font-mono text-xs">{String(summary.content_hash ?? "")}</p></div></div></CardContent></Card>;
 }
 
 interface DiscoverySetupPayload {
@@ -610,7 +693,7 @@ function CreateReviewProgramDialog({ matterId, onCreated }: { matterId: string; 
     event.preventDefault();
     create.mutate({ key, name, description: description || null });
   }
-  return <Dialog open={open} onOpenChange={setOpen}><DialogTrigger asChild><Button><Plus />New Review Program</Button></DialogTrigger><DialogContent><form onSubmit={submit}><DialogHeader><DialogTitle>Create Review Program</DialogTitle><DialogDescription>Start a reusable First Pass Review workflow. This creates the program workspace; it does not launch analysis work yet.</DialogDescription></DialogHeader><div className="space-y-4"><div className="space-y-2"><Label htmlFor="review-program-name">Name</Label><Input id="review-program-name" value={name} onChange={(event) => { setName(event.target.value); if (!keyEdited) setKey(slug(event.target.value)); }} required maxLength={200} placeholder="Standard first pass" /></div><div className="space-y-2"><Label htmlFor="review-program-key">Key</Label><Input id="review-program-key" value={key} onChange={(event) => { setKeyEdited(true); setKey(slug(event.target.value)); }} required minLength={3} maxLength={100} pattern="[a-z][a-z0-9_-]+[a-z0-9]" placeholder="standard-first-pass" /><p className="text-xs text-muted-foreground">Stable within this matter; lowercase letters, numbers, hyphens, and underscores.</p></div><div className="space-y-2"><Label htmlFor="review-program-description">Description</Label><Textarea id="review-program-description" value={description} onChange={(event) => setDescription(event.target.value)} maxLength={4000} placeholder="Guidance, fields, or scope that distinguishes this program." /></div></div><DialogFooter><Button type="button" variant="outline" onClick={() => setOpen(false)}>Cancel</Button><Button type="submit" disabled={create.isPending || !name.trim() || !key}>{create.isPending ? "Creating…" : "Create program"}</Button></DialogFooter></form></DialogContent></Dialog>;
+  return <Dialog open={open} onOpenChange={setOpen}><DialogTrigger asChild><Button><Plus />New Review Program</Button></DialogTrigger><DialogContent><form onSubmit={submit}><DialogHeader><DialogTitle>Create Review Program</DialogTitle><DialogDescription>Create a reusable First Pass Review workspace. After creation, guided setup begins with the Matter Definition; no analysis work launches yet.</DialogDescription></DialogHeader><div className="space-y-4"><div className="space-y-2"><Label htmlFor="review-program-name">Name</Label><Input id="review-program-name" value={name} onChange={(event) => { setName(event.target.value); if (!keyEdited) setKey(slug(event.target.value)); }} required maxLength={200} placeholder="Standard first pass" /></div><div className="space-y-2"><Label htmlFor="review-program-key">Key</Label><Input id="review-program-key" value={key} onChange={(event) => { setKeyEdited(true); setKey(slug(event.target.value)); }} required minLength={3} maxLength={100} pattern="[a-z][a-z0-9_-]+[a-z0-9]" placeholder="standard-first-pass" /><p className="text-xs text-muted-foreground">Stable within this matter; lowercase letters, numbers, hyphens, and underscores.</p></div><div className="space-y-2"><Label htmlFor="review-program-description">Program description (optional)</Label><Textarea id="review-program-description" value={description} onChange={(event) => setDescription(event.target.value)} maxLength={4000} placeholder="For example: Standard first pass for the investigation team." /><p className="text-xs text-muted-foreground">Administrative note only. You will configure substantive review guidance in the Matter Definition during guided setup.</p></div></div><DialogFooter><Button type="button" variant="outline" onClick={() => setOpen(false)}>Cancel</Button><Button type="submit" disabled={create.isPending || !name.trim() || !key}>{create.isPending ? "Creating…" : "Create program"}</Button></DialogFooter></form></DialogContent></Dialog>;
 }
 
 function mutationError(fallback: string) {

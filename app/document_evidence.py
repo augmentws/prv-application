@@ -1,4 +1,5 @@
 import re
+from copy import deepcopy
 from dataclasses import dataclass
 from itertools import pairwise
 from typing import Any
@@ -321,6 +322,120 @@ def _citation_values(value: Any, *, path: str = "$") -> list[tuple[str, Any]]:
     return citations
 
 
+def document_citation_ids(value: Any) -> frozenset[str]:
+    return frozenset(
+        citation_id
+        for _, citations in _citation_values(value)
+        if isinstance(citations, list)
+        for citation_id in citations
+        if isinstance(citation_id, str)
+    )
+
+
+def _normalized_signal_text(value: Any) -> str:
+    return " ".join(str(value or "").casefold().split())
+
+
+def _near_miss_key(item: dict[str, Any]) -> tuple[str, tuple[str, ...]]:
+    return (
+        _normalized_signal_text(item.get("criterion_key")),
+        tuple(sorted(str(value) for value in item.get("citation_ids") or [])),
+    )
+
+
+def _clarification_key(item: dict[str, Any]) -> str:
+    return _normalized_signal_text(item.get("question"))
+
+
+def preserve_document_map_signals(
+    reduced_result: dict[str, Any],
+    map_results: dict[str, dict[str, Any]],
+) -> tuple[dict[str, Any], dict[str, Any]]:
+    """Restore high-value map signals that a generative reducer omitted.
+
+    Overlapping windows can repeat the same signal, so preservation is based on
+    stable semantic keys rather than raw object equality. The reducer remains
+    responsible for the narrative and overall determination; the application
+    owns the lossless union of near misses and clarification candidates.
+    """
+
+    merged = deepcopy(reduced_result)
+    reduced_matches = list(merged.get("criterion_matches") or [])
+    reduced_clarifications = list(merged.get("clarification_requests") or [])
+    merged["criterion_matches"] = reduced_matches
+    merged["clarification_requests"] = reduced_clarifications
+
+    final_near_miss_keys = {
+        _near_miss_key(item)
+        for item in reduced_matches
+        if isinstance(item, dict) and item.get("match_type") == "NEAR_MISS"
+    }
+    final_clarification_keys = {
+        _clarification_key(item)
+        for item in reduced_clarifications
+        if isinstance(item, dict) and _clarification_key(item)
+    }
+    map_near_miss_keys: set[tuple[str, tuple[str, ...]]] = set()
+    map_clarification_keys: set[str] = set()
+    restored_near_misses: list[dict[str, Any]] = []
+    restored_clarifications: list[dict[str, Any]] = []
+
+    for map_result in map_results.values():
+        for item in map_result.get("criterion_matches") or []:
+            if not isinstance(item, dict) or item.get("match_type") != "NEAR_MISS":
+                continue
+            key = _near_miss_key(item)
+            map_near_miss_keys.add(key)
+            if key in final_near_miss_keys:
+                continue
+            copied = deepcopy(item)
+            reduced_matches.append(copied)
+            final_near_miss_keys.add(key)
+            restored_near_misses.append(
+                {
+                    "criterion_key": copied.get("criterion_key"),
+                    "citation_ids": list(copied.get("citation_ids") or []),
+                }
+            )
+
+        for item in map_result.get("clarification_requests") or []:
+            if not isinstance(item, dict):
+                continue
+            key = _clarification_key(item)
+            if not key:
+                continue
+            map_clarification_keys.add(key)
+            if key in final_clarification_keys:
+                continue
+            copied = deepcopy(item)
+            reduced_clarifications.append(copied)
+            final_clarification_keys.add(key)
+            restored_clarifications.append(
+                {
+                    "question": copied.get("question"),
+                    "citation_ids": list(copied.get("citation_ids") or []),
+                }
+            )
+
+    diagnostics = {
+        "map_near_miss_count": len(map_near_miss_keys),
+        "map_clarification_count": len(map_clarification_keys),
+        "reducer_near_miss_count": len(final_near_miss_keys) - len(restored_near_misses),
+        "reducer_clarification_count": len(final_clarification_keys) - len(restored_clarifications),
+        "restored_near_miss_count": len(restored_near_misses),
+        "restored_clarification_count": len(restored_clarifications),
+        "restored_near_misses": restored_near_misses,
+        "restored_clarifications": restored_clarifications,
+        "final_near_miss_count": len(final_near_miss_keys),
+        "final_clarification_count": len(final_clarification_keys),
+    }
+    if not map_near_miss_keys.issubset(final_near_miss_keys):
+        raise ValueError("Final document analysis dropped map-level near misses")
+    if not map_clarification_keys.issubset(final_clarification_keys):
+        raise ValueError("Final document analysis dropped map-level clarification candidates")
+    return merged, diagnostics
+
+
 def _require_citations(result: dict[str, Any], field: str, errors: list[str]) -> None:
     values = result.get(field)
     if not isinstance(values, list):
@@ -335,20 +450,15 @@ def _require_citations(result: dict[str, Any], field: str, errors: list[str]) ->
             errors.append(f"$.{field}[{index}].citation_ids must contain at least one paragraph ID")
 
 
-def validate_document_analysis_citations(
+def _validate_citations_for_fields(
     result: dict[str, Any],
     paragraph_map: ParagraphMap,
+    *,
+    cited_fields: tuple[str, ...],
 ) -> None:
     valid_ids = paragraph_map.paragraph_ids
     errors: list[str] = []
-    for field in (
-        "summary",
-        "responsiveness_summary",
-        "criterion_matches",
-        "scope_analysis",
-        "countervailing_considerations",
-        "clarification_requests",
-    ):
+    for field in cited_fields:
         _require_citations(result, field, errors)
     for path, citations in _citation_values(result):
         if not isinstance(citations, list) or any(not isinstance(value, str) for value in citations):
@@ -359,6 +469,41 @@ def validate_document_analysis_citations(
             errors.append(f"{path} contains unknown paragraph IDs: {', '.join(unknown)}")
     if errors:
         raise CitationValidationError("; ".join(errors))
+
+
+def validate_document_analysis_citations(
+    result: dict[str, Any],
+    paragraph_map: ParagraphMap,
+) -> None:
+    _validate_citations_for_fields(
+        result,
+        paragraph_map,
+        cited_fields=(
+            "summary",
+            "responsiveness_summary",
+            "criterion_matches",
+            "scope_analysis",
+            "countervailing_considerations",
+            "clarification_requests",
+        ),
+    )
+
+
+def validate_document_map_citations(
+    result: dict[str, Any],
+    paragraph_map: ParagraphMap,
+) -> None:
+    _validate_citations_for_fields(
+        result,
+        paragraph_map,
+        cited_fields=(
+            "findings",
+            "criterion_matches",
+            "scope_analysis",
+            "countervailing_considerations",
+            "clarification_requests",
+        ),
+    )
 
 
 def _citation_links(citation_ids: list[str]) -> str:

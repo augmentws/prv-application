@@ -1179,7 +1179,7 @@ class SearchIndexGeneration(TimestampMixin, Base):
         UniqueConstraint("matter_id", "generation", name="uq_search_index_matter_generation"),
         UniqueConstraint("index_name", name="uq_search_index_name"),
         CheckConstraint(
-            "status IN ('CREATING', 'ACTIVE', 'RETIRED', 'FAILED')",
+            "status IN ('CREATING', 'READY_WITH_ERRORS', 'ACTIVE', 'RETIRED', 'FAILED')",
             name="ck_search_index_generation_status",
         ),
         Index("ix_search_index_matter_status", "matter_id", "status"),
@@ -1529,7 +1529,8 @@ class ReviewBatch(TimestampMixin, Base):
         CheckConstraint(
             "selection_type IN ('ALL_MATTER', 'SEARCH_QUERY', 'RANDOM_MATTER', 'RANDOM_BATCH', "
             "'RANDOM_SAVED_SEARCH', 'RANDOM_ASSESSMENT', 'DEFINITION_ASSESSMENT', "
-            "'CLASSIFICATION_PREDICTIONS', 'COMPARISON_RESULT', 'TASK_BATCH_PARTITION')",
+            "'CLASSIFICATION_PREDICTIONS', 'COMPARISON_RESULT', 'TASK_BATCH_PARTITION', "
+            "'EXPLICIT_DOCUMENTS')",
             name="ck_review_batch_selection_type",
         ),
         CheckConstraint(
@@ -1946,6 +1947,39 @@ class ReviewProgramAction(TimestampMixin, Base):
     )
     authorization_context: Mapped[dict[str, Any]] = mapped_column(JSON_DOCUMENT, default=dict)
     resolved_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+
+
+class ReviewProgramCompletionReport(Base):
+    __tablename__ = "review_program_completion_report"
+    __table_args__ = (
+        UniqueConstraint("run_id", name="uq_review_program_completion_report_run"),
+        CheckConstraint("schema_version > 0", name="ck_review_program_completion_report_schema_version"),
+        Index("ix_review_program_completion_report_program_created", "program_id", "created_at"),
+    )
+
+    id: Mapped[uuid.UUID] = mapped_column(Uuid, primary_key=True, default=uuid.uuid4)
+    tenant_id: Mapped[uuid.UUID] = mapped_column(Uuid, ForeignKey("tenant.id", ondelete="RESTRICT"), index=True)
+    matter_id: Mapped[uuid.UUID] = mapped_column(Uuid, ForeignKey("matter.id", ondelete="CASCADE"), index=True)
+    program_id: Mapped[uuid.UUID] = mapped_column(
+        Uuid, ForeignKey("review_program.id", ondelete="CASCADE"), index=True
+    )
+    program_version_id: Mapped[uuid.UUID] = mapped_column(
+        Uuid, ForeignKey("review_program_version.id", ondelete="RESTRICT"), index=True
+    )
+    run_id: Mapped[uuid.UUID] = mapped_column(
+        Uuid, ForeignKey("review_program_run.id", ondelete="CASCADE"), index=True
+    )
+    schema_version: Mapped[int] = mapped_column(Integer, default=1)
+    report: Mapped[dict[str, Any]] = mapped_column(JSON_DOCUMENT)
+    content_hash: Mapped[str] = mapped_column(String(64))
+    artifact_id: Mapped[uuid.UUID] = mapped_column(Uuid, index=True)
+    artifact_content_hash: Mapped[str] = mapped_column(String(64))
+    completion_reason: Mapped[str | None] = mapped_column(Text, nullable=True)
+    completed_by_user_id: Mapped[uuid.UUID] = mapped_column(
+        Uuid, ForeignKey("app_user.id", ondelete="RESTRICT"), index=True
+    )
+    completed_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
 
 
 class ReviewProgramEvent(Base):

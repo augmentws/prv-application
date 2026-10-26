@@ -891,7 +891,7 @@ SearchOperationKind = Literal[
     "BATCH_CODING_SYNC",
 ]
 SearchOperationStatus = Literal["QUEUED", "RUNNING", "AWAITING_USER", "COMPLETED", "FAILED"]
-SearchIndexStatus = Literal["CREATING", "ACTIVE", "RETIRED", "FAILED"]
+SearchIndexStatus = Literal["CREATING", "READY_WITH_ERRORS", "ACTIVE", "RETIRED", "FAILED"]
 DateHistogramInterval = Literal["week", "month", "year"]
 
 
@@ -1277,6 +1277,7 @@ class ReviewBatchCreate(BaseModel):
     assessment_run_id: uuid.UUID | None = None
     sample_size: int | None = Field(default=None, ge=1, le=10_000_000)
     random_seed: str | None = Field(default=None, min_length=1, max_length=100)
+    include_complete_families: bool = False
     assigned_user_id: uuid.UUID | None = None
     reviewer_value_visibility: ReviewBatchValueVisibility = "OWN_VALUES"
     coding_group_ids: list[uuid.UUID] = Field(default_factory=list, max_length=100)
@@ -2009,6 +2010,7 @@ class SearchIndexGenerationRead(ORMModel):
     physical_index_exists: bool | None = None
     alias_points_to_index: bool | None = None
     live_document_count: int | None = None
+    semantic_document_count: int | None = None
     verification_error: str | None = None
     error_message: str | None
     activated_at: datetime | None
@@ -5143,6 +5145,24 @@ class ReviewProgramNegativePopulationQCSetup(BaseModel):
         if total > 100_000:
             raise ValueError("Negative-population QC cannot select more than 100,000 documents")
         return self
+
+
+class ReviewProgramCompletionReportRead(ORMModel):
+    id: uuid.UUID
+    tenant_id: uuid.UUID
+    matter_id: uuid.UUID
+    program_id: uuid.UUID
+    program_version_id: uuid.UUID
+    run_id: uuid.UUID
+    schema_version: int
+    report: dict[str, Any]
+    content_hash: str
+    artifact_id: uuid.UUID
+    artifact_content_hash: str
+    completion_reason: str | None
+    completed_by_user_id: uuid.UUID
+    completed_at: datetime
+    created_at: datetime
 
 
 class ReviewProgramStageAttemptRead(ORMModel):
