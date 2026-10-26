@@ -38,6 +38,7 @@ from app.models import (
 )
 from tests.test_agents_and_matter_definitions import auth
 from tests.test_fact_development_tasks import _ready_batch
+from tests.test_fact_search import FakeEmbeddings
 from tests.test_facts_and_entities import DOCUMENT_TEXT, _matter_with_task, document_text  # noqa: F401
 
 PRICING_QUOTE = "Jane Smith approved the 5% price increase"
@@ -70,6 +71,7 @@ def inputs(monkeypatch: pytest.MonkeyPatch) -> dict:
     """Fake Artifact inputs, keyed by matter document ID: File Dates, the text hash, and documents without text."""
 
     state: dict = {"item_documents": {}, "file_dates": {}, "content_hash": "a" * 64, "no_text": set(), "text_reads": 0}
+    embeddings = FakeEmbeddings()
 
     def snapshots(*, item_ids, **_):
         result = {}
@@ -107,6 +109,7 @@ def inputs(monkeypatch: pytest.MonkeyPatch) -> dict:
 
     monkeypatch.setattr("app.fact_development.get_collection_item_analysis_input_snapshots", snapshots)
     monkeypatch.setattr("app.fact_development.read_text_source", read_text)
+    monkeypatch.setattr("app.fact_recall.get_embedding_gateway", lambda: embeddings)
     return state
 
 

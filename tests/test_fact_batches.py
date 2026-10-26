@@ -263,7 +263,12 @@ def test_cancel_after_the_batch_finished_closes_unapplied_skill_runs(
         assert db.query(MatterFact).count() == 0
 
 
-def test_batch_api_requires_a_supported_model(client: TestClient, run_ctx: dict) -> None:  # noqa: F811 - pytest fixtures
+def test_batch_api_requires_a_supported_model(
+    client: TestClient,
+    run_ctx: dict,  # noqa: F811 - pytest fixture imported for reuse
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr("app.fact_development.resolve_batch_target", lambda _model_key: None)
     estimate = client.post(
         f"/v1/matters/{run_ctx['matter_id']}/analysis-tasks/{run_ctx['task_id']}/fact-runs/estimate",
         headers=auth(run_ctx["token"]),

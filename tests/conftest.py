@@ -2,11 +2,13 @@ import os
 import uuid
 
 os.environ.setdefault("APP_ENV", "development")
+os.environ.setdefault("POSTGRES_PASSWORD", "test-postgres-password")
 os.environ.setdefault("DATABASE_URL", "sqlite+pysqlite:///:memory:")
 os.environ.setdefault("ARTIFACT_DATABASE_URL", "sqlite+pysqlite:///:memory:")
 os.environ.setdefault("JWT_SECRET", "test-secret-that-is-long-enough-for-jwt-signing")
 os.environ.setdefault("CLASSIFICATION_SERVICE_TOKEN", "test-classification-service-token")
 os.environ.setdefault("EMBEDDING_SERVICE_TOKEN", "test-embedding-service-token-long-enough-0123")
+os.environ.setdefault("AGENT_DEFAULT_MODEL", "google:gemini-3.7-flash")
 os.environ.setdefault("ARTIFACT_DELEGATION_SECRET", "test-artifact-delegation-secret-long-enough-0123")
 os.environ.setdefault("ARTIFACT_STORAGE_ACCESS_KEY", "test-storage-access-key")
 os.environ.setdefault("ARTIFACT_STORAGE_SECRET_KEY", "test-storage-secret-key")
