@@ -29,6 +29,7 @@ from app.models import (
     MatterAnalysisTaskVersion,
     MatterDocument,
     MatterEntity,
+    MatterEntityEvent,
     MatterFact,
     MatterFactEvidence,
     MetadataDefinition,
@@ -37,6 +38,7 @@ from app.models import (
 )
 from tests.test_agents_and_matter_definitions import auth
 from tests.test_fact_development_tasks import _ready_batch
+from tests.test_fact_search import FakeEmbeddings
 from tests.test_facts_and_entities import DOCUMENT_TEXT, _matter_with_task, document_text  # noqa: F401
 
 PRICING_QUOTE = "Jane Smith approved the 5% price increase"
@@ -53,9 +55,9 @@ def _operation(**overrides) -> dict:
         "event_date_start": "2021-03-03",
         "event_date_end": None,
         "date_basis": "STATED_IN_TEXT",
-        "owner": {"name": "Jane Smith", "email": "jane@acme.com", "entity_type": "PERSON"},
+        "owner": {"entity_id": None, "name": "Jane Smith", "email": "jane@acme.com", "entity_type": "PERSON"},
         "participants": [
-            {"entity": {"name": "Acme Corp", "email": None, "entity_type": "ORGANIZATION"}, "role": "PARTICIPANT_RECIPIENT"}
+            {"entity": {"entity_id": None, "name": "Acme Corp", "email": None, "entity_type": "ORGANIZATION"}, "role": "PARTICIPANT_RECIPIENT"}
         ],
         "evidence": [{"paragraph_id": "¶1", "quote": PRICING_QUOTE, "stance": "SUPPORTS"}],
         "reason": None,
@@ -69,6 +71,7 @@ def inputs(monkeypatch: pytest.MonkeyPatch) -> dict:
     """Fake Artifact inputs, keyed by matter document ID: File Dates, the text hash, and documents without text."""
 
     state: dict = {"item_documents": {}, "file_dates": {}, "content_hash": "a" * 64, "no_text": set(), "text_reads": 0}
+    embeddings = FakeEmbeddings()
 
     def snapshots(*, item_ids, **_):
         result = {}
@@ -80,10 +83,10 @@ def inputs(monkeypatch: pytest.MonkeyPatch) -> dict:
                 record_type="EMAIL",
                 original_filename="pricing.msg",
                 file_date=state["file_dates"].get(document_id),
-                email_sender="jane@acme.com",
+                email_sender='"jane@acme.com"',
                 email_subject="Price increase",
                 email_sent_at=state["file_dates"].get(document_id),
-                email_recipients={"TO": ["bob@acme.com"], "CC": [], "BCC": []},
+                email_recipients={"TO": ["“bob@acme.com”"], "CC": [], "BCC": []},
                 text_source=(
                     None
                     if document_id in state["no_text"]
@@ -106,6 +109,7 @@ def inputs(monkeypatch: pytest.MonkeyPatch) -> dict:
 
     monkeypatch.setattr("app.fact_development.get_collection_item_analysis_input_snapshots", snapshots)
     monkeypatch.setattr("app.fact_development.read_text_source", read_text)
+    monkeypatch.setattr("app.fact_recall.get_embedding_gateway", lambda: embeddings)
     return state
 
 
@@ -253,7 +257,16 @@ def test_run_extracts_verified_facts_and_publishes_outcomes(
                        reason="No safety content."),
         ]
     }
-    _run_all(run["id"], TestModel(custom_output_args=output))
+    with TestingSessionLocal() as db:
+        chunk_ids = prepare_fact_development_run(db, uuid.UUID(run["id"]))
+        seeded_jane = db.scalar(select(MatterEntity).where(MatterEntity.normalized_email == "jane@acme.com"))
+        assert seeded_jane is not None
+        output["operations"][0]["owner"]["entity_id"] = str(seeded_jane.id)
+    for chunk_id in chunk_ids:
+        process_fact_development_chunk(uuid.UUID(chunk_id), session_factory=TestingSessionLocal,
+                                       model=TestModel(custom_output_args=output))
+    with TestingSessionLocal() as db:
+        finalize_fact_development_run(db, uuid.UUID(run["id"]))
 
     detail = client.get(
         f"/v1/matters/{ctx['matter_id']}/analysis-tasks/{ctx['task_id']}/fact-runs/{run['id']}",
@@ -269,8 +282,21 @@ def test_run_extracts_verified_facts_and_publishes_outcomes(
     assert report["counts"]["facts_created"] == 1
     assert report["counts"]["invalid_operations"] == 4
     assert report["facts_by_issue"] == [{"issue_key": "pricing", "fact_count": 1}]
-    assert report["qc"]["entities_awaiting_confirmation"] == 2
+    assert report["qc"]["entities_awaiting_confirmation"] == 3
     assert report["matched_document_count"] == 2
+    assert report["entity_seeding"] == {
+        "status": "COMPLETED",
+        "normalizer_version": "email-metadata-v1",
+        "documents_scanned": 3,
+        "documents_with_email_metadata": 3,
+        "header_values_scanned": 6,
+        "parsed_addresses": 6,
+        "unique_emails": 2,
+        "entities_created": 2,
+        "entities_reused": 0,
+        "rejected_entities_skipped": 0,
+        "invalid_values_skipped": 0,
+    }
 
     with TestingSessionLocal() as db:
         facts = list(db.scalars(select(MatterFact).where(MatterFact.matter_id == uuid.UUID(ctx["matter_id"]))))
@@ -288,6 +314,20 @@ def test_run_extracts_verified_facts_and_publishes_outcomes(
         assert entities["Jane Smith"].normalized_email == "jane@acme.com"
         assert entities["Acme Corp"].entity_type == "ORGANIZATION"
         assert fact.owner_entity_id == entities["Jane Smith"].id
+        bob = db.scalar(select(MatterEntity).where(MatterEntity.normalized_email == "bob@acme.com"))
+        assert bob.display_name is None
+        assert bob.status == "PROPOSED"
+        seeded = db.scalar(
+            select(MatterEntityEvent).where(
+                MatterEntityEvent.entity_id == bob.id,
+                MatterEntityEvent.event_type == "CREATED",
+            )
+        )
+        assert seeded.actor_type == "SYSTEM"
+        assert seeded.payload["source"] == "EMAIL_METADATA_SEED"
+        assert seeded.payload["analysis_input_manifest_id"] == str(
+            db.get(MatterAnalysisTaskRun, uuid.UUID(run["id"])).analysis_input_manifest_id
+        )
         assert db.query(SkillRun).filter(SkillRun.scope_type == "MATTER_DOCUMENT").count() == 2
         manifest = db.scalar(select(JobOutcomeManifest).where(JobOutcomeManifest.job_id == uuid.UUID(run["id"])))
         assert manifest.manifest_status == "FINALIZED"
@@ -311,6 +351,42 @@ def test_run_extracts_verified_facts_and_publishes_outcomes(
         headers=auth(ctx["token"]),
     )
     assert jobs.status_code == 200, jobs.text
+
+
+def test_batch_entity_seeding_reuses_existing_entities_and_is_idempotent(
+    client: TestClient,
+    run_ctx: dict,
+    artifacts: dict,
+) -> None:
+    ctx = run_ctx
+    existing = client.post(
+        f"/v1/matters/{ctx['matter_id']}/entities",
+        headers=auth(ctx["token"]),
+        json={
+            "entity_type": "PERSON",
+            "display_name": "Jane Smith",
+            "email": "jane@acme.com",
+            "status": "CONFIRMED",
+        },
+    )
+    assert existing.status_code == 201, existing.text
+    run = _launch(client, ctx, "seed-idempotency")
+
+    with TestingSessionLocal() as db:
+        prepare_fact_development_run(db, uuid.UUID(run["id"]))
+        first_count = db.query(MatterEntity).filter(MatterEntity.matter_id == uuid.UUID(ctx["matter_id"])).count()
+        run_row = db.get(MatterAnalysisTaskRun, uuid.UUID(run["id"]))
+        assert run_row.report["entity_seeding"]["entities_created"] == 1
+        assert run_row.report["entity_seeding"]["entities_reused"] == 1
+
+    with TestingSessionLocal() as db:
+        prepare_fact_development_run(db, uuid.UUID(run["id"]))
+        second_count = db.query(MatterEntity).filter(MatterEntity.matter_id == uuid.UUID(ctx["matter_id"])).count()
+        jane = db.scalar(select(MatterEntity).where(MatterEntity.normalized_email == "jane@acme.com"))
+        bob = db.scalar(select(MatterEntity).where(MatterEntity.normalized_email == "bob@acme.com"))
+        assert second_count == first_count == 2
+        assert (jane.display_name, jane.status) == ("Jane Smith", "CONFIRMED")
+        assert (bob.display_name, bob.status) == (None, "PROPOSED")
 
 
 def test_add_evidence_targets_only_recalled_working_facts(
@@ -540,7 +616,8 @@ def test_population_is_frozen_in_a_chronological_input_manifest(
         assert ready["source_content_hash"] == "a" * 64
         assert ready["file_date"] == "2021-03-04T00:00:00+00:00"
         assert ready["resolved_inputs"]["issue_keys"] == ["pricing"]
-        assert ready["resolved_inputs"]["metadata"]["email_from"] == "jane@acme.com"
+        # The immutable manifest retains the imported value; seeding cleans it only for identity matching.
+        assert ready["resolved_inputs"]["metadata"]["email_from"] == '"jane@acme.com"'
         assert run_row.report["input_status_counts"] == {"MISSING": 1, "READY": 1, "EXCLUDED": 1}
         assert run_row.report["reason_counts"] == {
             "fact.facts_proposed": 1,
@@ -603,6 +680,8 @@ def test_whole_matter_run_freezes_native_matter_manifest(
         assert manifest is not None
         assert (manifest.scope_type, manifest.scope_id) == ("MATTER", uuid.UUID(ctx["matter_id"]))
         assert manifest.item_count == len(ctx["documents"])
+        assert run_row.report["entity_seeding"]["status"] == "SKIPPED"
+        assert run_row.report["entity_seeding"]["reason"] == "scope_not_review_batch"
 
 
 def test_chunks_refuse_a_mismatched_or_unsupported_input_manifest(
