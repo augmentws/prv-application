@@ -792,8 +792,8 @@ def test_search_and_saved_search_populations_pin_generation_and_query(
             "target_batch_size": 2,
         },
     )
-    assert preview.status_code == 200, preview.text
-    assert preview.json()["estimated_batch_sizes"] == [2, 1]
+    assert preview.status_code == 409, preview.text
+    assert "does not allow a document to belong to more than one Batch Set" in preview.text
 
     created = client.post(
         f"/v1/matters/{matter_id}/analysis-tasks/{task['id']}/batch-sets",
@@ -806,7 +806,8 @@ def test_search_and_saved_search_populations_pin_generation_and_query(
         },
     )
     assert created.status_code == 202, created.text
-    assert created.json()["status"] == "READY"
+    assert created.json()["status"] == "FAILED"
+    assert "does not allow a document to belong to more than one Batch Set" in created.json()["error_message"]
     assert created.json()["selection_definition"]["saved_search_id"] == saved.json()["id"]
     assert created.json()["selection_definition"]["saved_search_name"] == "Contract documents"
 

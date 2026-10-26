@@ -5,6 +5,7 @@ import math
 import uuid
 from dataclasses import dataclass
 from datetime import datetime
+from typing import Any
 
 from sqlalchemy import delete, select, update
 from sqlalchemy.orm import Session
@@ -60,6 +61,26 @@ class BatchSetPlan:
     population_hash: str
     warnings: list[dict[str, object]]
     oversized_groups: list[dict[str, object]]
+
+
+@dataclass(frozen=True)
+class TaskBatchSearchQuery:
+    ordinal: int
+    key: str
+    label: str
+    reason: str
+    search_definition: dict[str, object]
+    quota: int
+
+
+@dataclass(frozen=True)
+class TaskBatchSearchPopulation:
+    document_ids: list[uuid.UUID]
+    selection_reasons: dict[uuid.UUID, list[str]]
+    query_yields: list[dict[str, Any]]
+    control_document_ids: list[uuid.UUID]
+    excluded_document_count: int
+    prior_batch_set_ids: list[uuid.UUID]
 
 
 def _validate_task_version(
@@ -413,6 +434,134 @@ def search_document_ids(
     return document_ids
 
 
+def task_batch_document_ids(
+    db: Session,
+    *,
+    task_id: uuid.UUID,
+    excluding_batch_set_id: uuid.UUID | None = None,
+) -> tuple[list[uuid.UUID], set[uuid.UUID]]:
+    batch_set_query = select(AnalysisTaskBatchSet.id).where(
+        AnalysisTaskBatchSet.matter_analysis_task_id == task_id
+    )
+    if excluding_batch_set_id is not None:
+        batch_set_query = batch_set_query.where(AnalysisTaskBatchSet.id != excluding_batch_set_id)
+    batch_set_ids = list(
+        db.scalars(batch_set_query.order_by(AnalysisTaskBatchSet.created_at, AnalysisTaskBatchSet.id))
+    )
+    if not batch_set_ids:
+        return [], set()
+    document_ids = set(
+        db.scalars(
+            select(ReviewBatchDocument.matter_document_id).where(
+                ReviewBatchDocument.analysis_task_batch_set_id.in_(batch_set_ids)
+            )
+        )
+    )
+    return batch_set_ids, document_ids
+
+
+def select_task_batch_search_population(
+    db: Session,
+    *,
+    matter: Matter,
+    task: MatterAnalysisTask,
+    generation: SearchIndexGeneration,
+    queries: list[TaskBatchSearchQuery],
+    target_document_count: int,
+    settings: Settings,
+    control_sample_size: int = 0,
+) -> TaskBatchSearchPopulation:
+    """Resolve one deduplicated population for a task-specific partitioned batch set."""
+    if task.matter_id != matter.id:
+        raise AnalysisTaskBatchSetError("Analysis Task does not belong to this matter")
+    prior_batch_set_ids, prior_document_ids = task_batch_document_ids(db, task_id=task.id)
+    selected_ids: list[uuid.UUID] = []
+    selected_set: set[uuid.UUID] = set()
+    selection_reasons: dict[uuid.UUID, list[str]] = {}
+    query_yields: list[dict[str, Any]] = []
+    for query in queries:
+        remaining = target_document_count - len(selected_ids)
+        if remaining <= 0:
+            break
+        requested = min(query.quota, remaining)
+        hits = search_document_ids(
+            db,
+            matter=matter,
+            generation=generation,
+            search_definition=query.search_definition,
+            settings=settings,
+            limit=requested,
+            relevance_order=True,
+            excluded_document_ids=prior_document_ids | selected_set,
+        )
+        accepted_hits: list[uuid.UUID] = []
+        for document_id in hits:
+            if document_id in prior_document_ids:
+                continue
+            reasons = selection_reasons.setdefault(document_id, [])
+            if query.reason not in reasons:
+                reasons.append(query.reason)
+            if document_id not in selected_set and len(accepted_hits) < requested:
+                selected_ids.append(document_id)
+                selected_set.add(document_id)
+                accepted_hits.append(document_id)
+        query_yields.append(
+            {
+                "ordinal": query.ordinal,
+                "query_key": query.key,
+                "label": query.label,
+                "quota": query.quota,
+                "requested": requested,
+                "search_hit_count": len(hits),
+                "selected_count": len(accepted_hits),
+            }
+        )
+    control_document_ids: list[uuid.UUID] = []
+    if control_sample_size:
+        excluded_for_control = prior_document_ids | selected_set
+        for document_id in db.scalars(
+            select(MatterDocument.id)
+            .where(MatterDocument.matter_id == matter.id)
+            .order_by(MatterDocument.created_at, MatterDocument.id)
+        ).yield_per(1_000):
+            if document_id in excluded_for_control:
+                continue
+            control_document_ids.append(document_id)
+            selected_ids.append(document_id)
+            selected_set.add(document_id)
+            selection_reasons[document_id] = ["CONTROL"]
+            if len(control_document_ids) >= control_sample_size:
+                break
+    return TaskBatchSearchPopulation(
+        document_ids=selected_ids,
+        selection_reasons=selection_reasons,
+        query_yields=query_yields,
+        control_document_ids=control_document_ids,
+        excluded_document_count=len(prior_document_ids),
+        prior_batch_set_ids=prior_batch_set_ids,
+    )
+
+
+def assert_task_batch_population_is_disjoint(
+    db: Session,
+    *,
+    task_id: uuid.UUID,
+    batch_set_id: uuid.UUID | None,
+    document_ids: list[uuid.UUID],
+) -> None:
+    _, prior_document_ids = task_batch_document_ids(
+        db,
+        task_id=task_id,
+        excluding_batch_set_id=batch_set_id,
+    )
+    overlap = prior_document_ids.intersection(document_ids)
+    if overlap:
+        raise AnalysisTaskBatchSetError(
+            "Partitioned task batching does not allow a document to belong to more than one Batch Set "
+            f"for the same task ({len(overlap)} overlapping documents)"
+        )
+
+
 def _population_documents(
     db: Session,
     *,
@@ -669,7 +818,7 @@ def preview_batch_set(
         matter_id=matter.id,
         population_source_type=population_source_type,
     )
-    return plan_batch_set(
+    plan = plan_batch_set(
         db,
         matter=matter,
         population_source_type=population_source_type,
@@ -688,6 +837,13 @@ def preview_batch_set(
         actor_user_id=actor_user_id,
         settings=settings,
     )
+    assert_task_batch_population_is_disjoint(
+        db,
+        task_id=task.id,
+        batch_set_id=None,
+        document_ids=plan.document_ids,
+    )
+    return plan
 
 
 def _assert_not_canceled(db: Session, batch_set_id: uuid.UUID) -> None:
@@ -765,6 +921,12 @@ def materialize_batch_set(
             actor_user_id=batch_set.created_by_user_id,
             population_snapshot_at=snapshot_at,
             settings=settings,
+        )
+        assert_task_batch_population_is_disjoint(
+            db,
+            task_id=batch_set.matter_analysis_task_id,
+            batch_set_id=batch_set.id,
+            document_ids=plan.document_ids,
         )
         batch_set.population_count = len(plan.document_ids)
         batch_set.batch_count = len(plan.partitions)

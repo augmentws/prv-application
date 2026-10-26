@@ -1088,11 +1088,44 @@ def test_synthetic_run_advances_waits_resumes_retries_reconciles_and_cancels(
     assert discovery_action["action_type"] == "DISCOVERY_QA_SETUP"
     user_id = uuid.UUID(client.get("/v1/auth/me", headers=auth(token)).json()["id"])
     document_ids = [uuid.UUID(value) for value in add_documents(matter["id"], user_id, count=3)]
+    with TestingSessionLocal() as db:
+        diagnostic_batch = ReviewBatch(
+            matter_id=uuid.UUID(matter["id"]),
+            name="Accepted assessment diagnostic batch",
+            selection_type="EXPLICIT_DOCUMENTS",
+            selection_definition={"type": "EXPLICIT_DOCUMENTS"},
+            reviewer_value_visibility="OWN_VALUES",
+            status="READY",
+            search_status="NOT_CONFIGURED",
+            workflow_id=f"test-diagnostic-batch:{uuid.uuid4()}",
+            document_count=1,
+            created_by_user_id=user_id,
+        )
+        db.add(diagnostic_batch)
+        db.flush()
+        db.add(
+            ReviewBatchDocument(
+                review_batch_id=diagnostic_batch.id,
+                matter_document_id=document_ids[0],
+                sequence_number=1,
+            )
+        )
+        run = db.get(ReviewProgramRun, uuid.UUID(run_id))
+        assert run is not None
+        progress = dict(run.progress_summary or {})
+        accepted_definition = dict(progress["accepted_matter_definition"])
+        accepted_definition["diagnostic_batch_ids"] = [str(diagnostic_batch.id)]
+        progress["accepted_matter_definition"] = accepted_definition
+        run.progress_summary = progress
+        db.commit()
     search_hits = list(document_ids)
-    monkeypatch.setattr(
-        "app.review_programs.search_document_ids",
-        lambda *args, **kwargs: list(search_hits),
-    )
+    search_requests: list[dict] = []
+
+    def fake_search_document_ids(*args, **kwargs):
+        search_requests.append(kwargs)
+        return list(search_hits)
+
+    monkeypatch.setattr(batch_sets, "search_document_ids", fake_search_document_ids)
 
     published_populations: list[list[uuid.UUID]] = []
     manifest_populations: dict[uuid.UUID, list[uuid.UUID]] = {}
@@ -1146,6 +1179,7 @@ def test_synthetic_run_advances_waits_resumes_retries_reconciles_and_cancels(
     assert discovery_started.json()["status"] == "RUNNING"
     assert discovery_started.json()["progress_summary"]["discovery_qa_state"] == "MATERIALIZING_BATCH_SET"
     assert discovery_started.json()["progress_summary"]["discovery_qa"]["selected_document_count"] == 3
+    assert search_requests[0]["excluded_document_ids"] == set()
 
     class DiscoveryReader:
         def __init__(self, manifest, *, actor_user_id):
@@ -1178,6 +1212,17 @@ def test_synthetic_run_advances_waits_resumes_retries_reconciles_and_cancels(
             batch_sets.get_settings().model_copy(update={"search_enabled": False}),
         )
         batch_sets.complete_batch_set_materialization(db, discovery_child.child_id)
+        memberships = list(
+            db.execute(
+                select(
+                    ReviewBatchDocument.review_batch_id,
+                    ReviewBatchDocument.matter_document_id,
+                ).where(ReviewBatchDocument.analysis_task_batch_set_id == discovery_child.child_id)
+            ).all()
+        )
+        assert len(memberships) == len(document_ids)
+        assert {document_id for _, document_id in memberships} == set(document_ids)
+        assert len({batch_id for batch_id, _ in memberships}) == 2
         db.commit()
 
     running_profiles = client.get(f"{runs_url}/{run_id}", headers=auth(token))
@@ -1200,6 +1245,19 @@ def test_synthetic_run_advances_waits_resumes_retries_reconciles_and_cancels(
         )
         profile_runs = [db.get(AnalysisTaskBatchSetRun, run_id_) for run_id_ in profile_run_ids]
         assert all(item is not None for item in profile_runs)
+        profile_batch_ids = [
+            {
+                child.review_batch_id
+                for child in db.scalars(
+                    select(AnalysisTaskBatchSetRunChild).where(
+                        AnalysisTaskBatchSetRunChild.batch_set_run_id == profile_run.id
+                    )
+                )
+            }
+            for profile_run in profile_runs
+            if profile_run is not None
+        ]
+        assert profile_batch_ids[0] == profile_batch_ids[1]
         complete_discovery_profile_run(
             db,
             profile_run=profile_runs[0],
@@ -1294,6 +1352,7 @@ def test_synthetic_run_advances_waits_resumes_retries_reconciles_and_cancels(
     assert supplement.json()["current_stage"] == "DISCOVERY_QA"
     assert supplement.json()["current_stage_ordinal"] == 6
     second_discovery_action = next(action for action in supplement.json()["actions"] if action["status"] == "OPEN")
+    search_requests.clear()
     second_started = client.post(
         f"{runs_url}/{run_id}/actions/{second_discovery_action['id']}/discovery-setup",
         headers=auth(token),
@@ -1307,6 +1366,7 @@ def test_synthetic_run_advances_waits_resumes_retries_reconciles_and_cancels(
     assert second_started.status_code == 202, second_started.text
     assert second_started.json()["progress_summary"]["discovery_qa"]["round"] == 2
     assert published_populations == [document_ids, supplemental_documents]
+    assert search_requests[0]["excluded_document_ids"] == set(document_ids)
 
     with TestingSessionLocal() as db:
         discovery_children = list(
@@ -1323,7 +1383,7 @@ def test_synthetic_run_advances_waits_resumes_retries_reconciles_and_cancels(
         supplemental_set = db.get(batch_sets.AnalysisTaskBatchSet, discovery_children[-1].child_id)
         assert supplemental_set is not None
         provenance = supplemental_set.selection_definition["review_program"]
-        assert provenance["excluded_prior_program_document_count"] == len(document_ids)
+        assert provenance["excluded_prior_qa_document_count"] == len(document_ids)
         assert provenance["prior_discovery_batch_set_ids"] == [str(discovery_children[0].child_id)]
 
         batch_sets.materialize_batch_set(
