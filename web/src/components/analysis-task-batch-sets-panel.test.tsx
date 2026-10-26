@@ -44,6 +44,7 @@ const createdSet = {
   population_source_type: "ALL_MATTER",
   selection_definition: {},
   source_review_batch_id: null,
+  input_manifest_id: null,
   search_index_generation_id: null,
   target_batch_size: 500,
   allocation_policy: { keep_together: ["FAMILY"] },

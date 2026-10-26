@@ -64,6 +64,7 @@ from app.search.query import (
     execute_facet_values,
     execute_search,
 )
+from app.search.service import SearchIndexManager
 from app.search_exports import as_utc, create_search_export_job, search_export_field_catalog
 from app.workflows.dispatcher import enqueue_search_export, enqueue_search_projection, get_dbos_client
 from classification_service.schemas import ArtifactType
@@ -823,12 +824,27 @@ def list_search_indexes(
                 physical_exists = client.index_exists(generation.index_name)
                 alias_points_to_index = generation.index_name in aliases[generation.alias_name]
                 live_count = client.count(generation.index_name) if physical_exists else 0
+                semantic_count = (
+                    client.count_matching(
+                        generation.index_name,
+                        {
+                            "nested": {
+                                "path": "chunks",
+                                "ignore_unmapped": True,
+                                "query": {"exists": {"field": "chunks.embedding"}},
+                            }
+                        },
+                    )
+                    if physical_exists
+                    else 0
+                )
                 reads.append(
                     SearchIndexGenerationRead.model_validate(generation).model_copy(
                         update={
                             "physical_index_exists": physical_exists,
                             "alias_points_to_index": alias_points_to_index,
                             "live_document_count": live_count,
+                            "semantic_document_count": semantic_count,
                         }
                     )
                 )
@@ -1027,3 +1043,64 @@ def rebuild_search_index(
     db.commit()
     db.refresh(operation)
     return operation
+
+
+@router.post(
+    "/search-indexes/{generation_id}/promote",
+    response_model=SearchIndexGenerationRead,
+)
+def promote_search_index_generation(
+    matter_id: uuid.UUID,
+    generation_id: uuid.UUID,
+    principal: Principal = Depends(get_principal),
+    db: Session = Depends(get_db),
+    settings: Settings = Depends(get_settings),
+) -> SearchIndexGeneration:
+    matter = _matter(db, matter_id, principal, "search.rebuild")
+    if not settings.search_enabled:
+        raise HTTPException(status_code=status.HTTP_503_SERVICE_UNAVAILABLE, detail="Search is disabled")
+    generation = db.scalar(
+        select(SearchIndexGeneration)
+        .where(
+            SearchIndexGeneration.id == generation_id,
+            SearchIndexGeneration.matter_id == matter.id,
+        )
+        .with_for_update()
+    )
+    if generation is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Search index generation not found")
+    if generation.status != "READY_WITH_ERRORS":
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail="Search index generation is not awaiting promotion",
+        )
+    client = OpenSearchClient(settings)
+    try:
+        manager = SearchIndexManager(db, client, settings)
+        manager.promote_generation_with_errors(generation)
+    except ValueError as exc:
+        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=str(exc)) from exc
+    except OpenSearchError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="Search index promotion failed",
+        ) from exc
+    finally:
+        client.close()
+    record_audit(
+        db,
+        tenant_id=matter.client.tenant_id,
+        actor_user_id=principal.user.id,
+        action="search_index.generation_promoted_with_errors",
+        target_type="search_index_generation",
+        target_id=generation.id,
+        details={
+            "matter_id": str(matter.id),
+            "generation": generation.generation,
+            "document_count": generation.document_count,
+            "error_message": generation.error_message,
+        },
+    )
+    db.commit()
+    db.refresh(generation)
+    return generation

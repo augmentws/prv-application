@@ -19,6 +19,8 @@ interface SearchIndexPanelProps {
   rebuilding: boolean;
   onConfirmReindex: (operationId: string) => Promise<void>;
   confirmingReindex: boolean;
+  onPromoteGeneration: (generationId: string) => Promise<void>;
+  promotingGeneration: boolean;
   onRetryFailed: () => Promise<void>;
   retryingFailed: boolean;
   retryableOperationCount?: number;
@@ -30,14 +32,17 @@ interface RebuildProgress {
   phase: string;
   processedDocuments: number;
   totalDocuments: number;
+  indexedDocuments: number;
+  failedDocuments: number;
   indexName?: string;
   documentsPerSecond?: number;
   estimatedCompletionAt?: string;
   updatedAt?: string;
 }
 
-export function SearchIndexPanel({ coreDocumentCount, indexes, operations, onRebuild, rebuilding, onConfirmReindex, confirmingReindex, onRetryFailed, retryingFailed, retryableOperationCount, retryableDocumentCount }: SearchIndexPanelProps) {
+export function SearchIndexPanel({ coreDocumentCount, indexes, operations, onRebuild, rebuilding, onConfirmReindex, confirmingReindex, onPromoteGeneration, promotingGeneration, onRetryFailed, retryingFailed, retryableOperationCount, retryableDocumentCount }: SearchIndexPanelProps) {
   const activeIndex = indexes.find((index) => index.status === "ACTIVE");
+  const promotableIndex = indexes.find((index) => index.status === "READY_WITH_ERRORS");
   const latestIndex = indexes[0];
   const activeOperation = operations.find((operation) => operation.status === "QUEUED" || operation.status === "RUNNING");
   const awaitingOperation = operations.find((operation) => operation.status === "AWAITING_USER");
@@ -101,7 +106,14 @@ export function SearchIndexPanel({ coreDocumentCount, indexes, operations, onReb
   const indexedDocumentCount = activeIndex?.live_document_count
     ?? (activeIndex?.physical_index_exists === false ? 0 : activeIndex?.document_count ?? 0);
   const countDelta = coreDocumentCount - indexedDocumentCount;
-  const health = deriveHealth({ activeIndex, activeOperation, awaitingOperation, latestStructuralOperation, countDelta });
+  const health = deriveHealth({ activeIndex, activeOperation, awaitingOperation, promotableIndex, latestStructuralOperation, countDelta });
+  const semanticCoverageMissing = Boolean(
+    activeIndex
+    && activeIndex.physical_index_exists !== false
+    && !activeIndex.verification_error
+    && indexedDocumentCount > 0
+    && activeIndex.semantic_document_count === 0,
+  );
 
   return (
     <div className="space-y-5">
@@ -126,15 +138,17 @@ export function SearchIndexPanel({ coreDocumentCount, indexes, operations, onReb
       {activeOperation ? <Card className="border-accent/50 bg-accent/5 p-4"><div className="flex items-start gap-3"><LoaderCircle className="mt-0.5 size-4 shrink-0 animate-spin text-accent-foreground" /><div className="min-w-0 flex-1"><p className="font-semibold">{operationLabel(activeOperation)} {friendlyStatus(activeOperation.status)}</p>{rebuildProgress ? <RebuildProgressView progress={rebuildProgress} observedDocumentsPerSecond={observedDocumentsPerSecond} /> : <p className="mt-1 text-sm text-muted-foreground">Started {formatDate(activeOperation.started_at ?? activeOperation.created_at)} · attempt {activeOperation.attempt_count.toLocaleString()}</p>}</div></div></Card> : null}
       {health === "MISSING" ? <Card className="border-destructive/30 bg-destructive/5 p-4"><div className="flex items-start gap-3"><AlertTriangle className="mt-0.5 size-5 text-destructive" /><div><p className="font-semibold">The active index is missing from OpenSearch</p><p className="mt-1 text-sm text-muted-foreground">Core still has generation history, but the configured OpenSearch server does not have the physical index and active alias. Start a full rebuild to recreate it.</p></div></div></Card> : null}
       {health === "UNAVAILABLE" ? <Card className="border-accent/50 bg-accent/5 p-4"><div className="flex items-start gap-3"><AlertTriangle className="mt-0.5 size-5 text-accent-foreground" /><div><p className="font-semibold">OpenSearch status could not be verified</p><p className="mt-1 text-sm text-muted-foreground">{activeIndex?.verification_error ?? "The configured OpenSearch server is unavailable."}</p></div></div></Card> : null}
+      {semanticCoverageMissing ? <Card className="border-accent/50 bg-accent/5 p-4"><div className="flex items-start gap-3"><AlertTriangle className="mt-0.5 size-5 text-accent-foreground" /><div><p className="font-semibold">Semantic search is unavailable for this generation</p><p className="mt-1 text-sm text-muted-foreground">Generation #{activeIndex?.generation} has no projected document embeddings. Keyword search remains available. Rebuild the search index to reuse the matter&apos;s existing compatible embeddings; regenerating embeddings is not required.</p></div></div></Card> : null}
       {awaitingOperation ? <ReindexConfirmationCard operation={awaitingOperation} onConfirm={onConfirmReindex} confirming={confirmingReindex} /> : null}
+      {promotableIndex ? <GenerationPromotionCard generation={promotableIndex} operations={operations} onPromote={onPromoteGeneration} promoting={promotingGeneration} /> : null}
 
       <section aria-labelledby="generation-history-heading">
         <div className="mb-3 flex items-center justify-between gap-3"><div><h3 id="generation-history-heading" className="font-semibold">Current generation</h3><p className="mt-1 text-sm text-muted-foreground">After a replacement is activated, obsolete physical indexes and generation records are removed automatically.</p></div></div>
         <Card className="overflow-hidden">
           <Table>
-            <TableHeader><TableRow><TableHead>Generation</TableHead><TableHead>Status</TableHead><TableHead>Documents</TableHead><TableHead>Schema</TableHead><TableHead>Updated</TableHead></TableRow></TableHeader>
+            <TableHeader><TableRow><TableHead>Generation</TableHead><TableHead>Status</TableHead><TableHead>Documents</TableHead><TableHead>Semantic</TableHead><TableHead>Schema</TableHead><TableHead>Updated</TableHead></TableRow></TableHeader>
             <TableBody>
-              {indexes.length ? indexes.map((index) => <TableRow key={index.id}><TableCell className="font-semibold">#{index.generation}</TableCell><TableCell><IndexStatusBadge index={index} /></TableCell><TableCell className="tabular-nums">{(index.live_document_count ?? (index.physical_index_exists === false ? 0 : index.document_count)).toLocaleString()}</TableCell><TableCell><code className="text-xs text-muted-foreground">{shortHash(index.schema_hash)}</code></TableCell><TableCell className="whitespace-nowrap text-muted-foreground">{formatDate(index.updated_at)}</TableCell></TableRow>) : <TableRow><TableCell colSpan={5} className="h-24 text-center text-muted-foreground">No search index has been created for this matter.</TableCell></TableRow>}
+              {indexes.length ? indexes.map((index) => <TableRow key={index.id}><TableCell className="font-semibold">#{index.generation}</TableCell><TableCell><IndexStatusBadge index={index} /></TableCell><TableCell className="tabular-nums">{(index.live_document_count ?? (index.physical_index_exists === false ? 0 : index.document_count)).toLocaleString()}</TableCell><TableCell className="tabular-nums">{index.semantic_document_count?.toLocaleString() ?? "—"}</TableCell><TableCell><code className="text-xs text-muted-foreground">{shortHash(index.schema_hash)}</code></TableCell><TableCell className="whitespace-nowrap text-muted-foreground">{formatDate(index.updated_at)}</TableCell></TableRow>) : <TableRow><TableCell colSpan={6} className="h-24 text-center text-muted-foreground">No search index has been created for this matter.</TableCell></TableRow>}
             </TableBody>
           </Table>
         </Card>
@@ -225,6 +239,7 @@ function RebuildProgressView({ progress, observedDocumentsPerSecond }: { progres
           ? `${documentsPerSecond.toFixed(1)} docs/sec${remainingSeconds !== undefined ? ` · Estimated completion in ${formatRemainingDuration(remainingSeconds)}` : ""}`
           : "Calculating throughput and estimated completion…"}
       </p>
+      {progress.failedDocuments > 0 ? <p className="text-sm text-destructive">{progress.failedDocuments.toLocaleString()} {progress.failedDocuments === 1 ? "document was" : "documents were"} skipped after projection errors; {progress.indexedDocuments.toLocaleString()} indexed successfully.</p> : null}
       {progress.indexName ? <p className="truncate font-mono text-xs text-muted-foreground">{progress.indexName}</p> : null}
     </div>
   );
@@ -244,6 +259,22 @@ function ReindexConfirmationCard({ operation, onConfirm, confirming }: {
     ? reasonValues.filter((reason): reason is string => typeof reason === "string")
     : [];
   return <Card className="border-accent/50 bg-accent/5 p-4"><div className="flex flex-wrap items-start justify-between gap-4"><div className="flex max-w-3xl items-start gap-3"><AlertTriangle className="mt-0.5 size-5 shrink-0 text-accent-foreground" /><div><p className="font-semibold">Search changes require a full reindex</p><p className="mt-1 text-sm text-muted-foreground">The active index remains available. Confirm before the system builds a replacement.</p>{reasons.length ? <ul className="mt-2 list-disc space-y-1 pl-5 text-sm text-muted-foreground">{reasons.map((reason) => <li key={reason}>{reason}</li>)}</ul> : null}</div></div><Dialog open={open} onOpenChange={setOpen}><DialogTrigger asChild><Button><AlertTriangle />Review and confirm</Button></DialogTrigger><DialogContent><DialogHeader><DialogTitle>Build a replacement search index?</DialogTitle><DialogDescription>This operation must reread and reindex every matter document. The current index remains searchable until the replacement is ready.</DialogDescription></DialogHeader>{reasons.length ? <ul className="list-disc space-y-2 pl-5 text-sm text-muted-foreground">{reasons.map((reason) => <li key={reason}>{reason}</li>)}</ul> : null}<DialogFooter><Button variant="outline" onClick={() => setOpen(false)} disabled={confirming}>Cancel</Button><Button onClick={() => void onConfirm(operation.id).then(() => setOpen(false))} disabled={confirming}>{confirming ? <LoaderCircle className="animate-spin" /> : <RefreshCw />}{confirming ? "Queuing…" : "Confirm full reindex"}</Button></DialogFooter></DialogContent></Dialog></div></Card>;
+}
+
+function GenerationPromotionCard({ generation, operations, onPromote, promoting }: {
+  generation: SearchIndexGenerationRead;
+  operations: SearchProjectionOperationRead[];
+  onPromote: (generationId: string) => Promise<void>;
+  promoting: boolean;
+}) {
+  const [open, setOpen] = useState(false);
+  const operation = operations.find((candidate) => {
+    const progress = parseRebuildProgress(candidate.payload.progress);
+    return candidate.kind === "REBUILD" && progress?.indexName === generation.index_name;
+  });
+  const progress = parseRebuildProgress(operation?.payload.progress);
+  const failed = progress?.failedDocuments ?? Math.max(0, (progress?.totalDocuments ?? generation.document_count) - generation.document_count);
+  return <Card className="border-accent/50 bg-accent/5 p-4"><div className="flex flex-wrap items-start justify-between gap-4"><div className="flex max-w-3xl items-start gap-3"><AlertTriangle className="mt-0.5 size-5 shrink-0 text-accent-foreground" /><div><p className="font-semibold">Generation #{generation.generation} is ready with document errors</p><p className="mt-1 text-sm text-muted-foreground">The current active index remains in use. This replacement indexed {generation.document_count.toLocaleString()} documents and skipped {failed.toLocaleString()} that could not be projected.</p><p className="mt-2 text-sm text-muted-foreground">Review the error count before explicitly promoting this generation.</p></div></div><Dialog open={open} onOpenChange={setOpen}><DialogTrigger asChild><Button><AlertTriangle />Review and promote</Button></DialogTrigger><DialogContent><DialogHeader><DialogTitle>Promote generation #{generation.generation} with errors?</DialogTitle><DialogDescription>This replaces the active search index even though {failed.toLocaleString()} {failed === 1 ? "document was" : "documents were"} skipped. Those documents will not appear in search until repaired and reindexed.</DialogDescription></DialogHeader><div className="rounded-lg bg-muted/60 p-4 text-sm"><p>{generation.document_count.toLocaleString()} documents indexed successfully.</p>{generation.error_message ? <p className="mt-2 text-muted-foreground">{generation.error_message}</p> : null}</div><DialogFooter><Button variant="outline" onClick={() => setOpen(false)} disabled={promoting}>Keep current index</Button><Button onClick={() => void onPromote(generation.id).then(() => setOpen(false))} disabled={promoting}>{promoting ? <LoaderCircle className="animate-spin" /> : <AlertTriangle />}{promoting ? "Promoting…" : "Promote with errors"}</Button></DialogFooter></DialogContent></Dialog></div></Card>;
 }
 
 function RebuildDialog({ onRebuild, rebuilding }: { onRebuild: () => Promise<void>; rebuilding: boolean }) {
@@ -293,7 +324,10 @@ function HealthBadge({ health }: { health: IndexHealth }) {
 
 function IndexStatusBadge({ index }: { index: SearchIndexGenerationRead }) {
   if (index.verification_error) return <Badge variant="accent">Unverified</Badge>;
-  if (index.physical_index_exists === false || index.alias_points_to_index === false) return <Badge className="bg-destructive/10 text-destructive">Missing</Badge>;
+  if (index.physical_index_exists === false) return <Badge className="bg-destructive/10 text-destructive">Missing</Badge>;
+  if (index.status === "READY_WITH_ERRORS") return <Badge variant="accent">Awaiting promotion</Badge>;
+  if (index.alias_points_to_index === false) return <Badge className="bg-destructive/10 text-destructive">Missing</Badge>;
+  if (index.status === "ACTIVE" && index.error_message) return <Badge variant="accent">Active with errors</Badge>;
   if (index.status === "ACTIVE") return <Badge variant="active">Active</Badge>;
   if (index.status === "CREATING") return <Badge variant="accent">Creating</Badge>;
   if (index.status === "FAILED") return <Badge className="bg-destructive/10 text-destructive">Failed</Badge>;
@@ -307,15 +341,17 @@ function OperationStatusBadge({ status }: { status: SearchProjectionOperationRea
   return <Badge className="bg-destructive/10 text-destructive">Failed</Badge>;
 }
 
-function deriveHealth({ activeIndex, activeOperation, awaitingOperation, latestStructuralOperation, countDelta }: {
+function deriveHealth({ activeIndex, activeOperation, awaitingOperation, promotableIndex, latestStructuralOperation, countDelta }: {
   activeIndex?: SearchIndexGenerationRead;
   activeOperation?: SearchProjectionOperationRead;
   awaitingOperation?: SearchProjectionOperationRead;
+  promotableIndex?: SearchIndexGenerationRead;
   latestStructuralOperation?: SearchProjectionOperationRead;
   countDelta: number;
 }): IndexHealth {
   if (activeOperation) return "BUILDING";
   if (awaitingOperation) return "ACTION_REQUIRED";
+  if (promotableIndex) return "ACTION_REQUIRED";
   if (latestStructuralOperation?.status === "FAILED" && (!activeIndex || latestStructuralOperation.created_at > activeIndex.updated_at)) return "FAILED";
   if (!activeIndex) return "NOT_CREATED";
   if (activeIndex.verification_error) return "UNAVAILABLE";
@@ -327,7 +363,7 @@ function deriveHealth({ activeIndex, activeOperation, awaitingOperation, latestS
 function healthDescription(health: IndexHealth, countDelta: number) {
   if (health === "NOT_CREATED") return "Request a rebuild to make this matter searchable.";
   if (health === "BUILDING") return "A projection workflow is currently in progress.";
-  if (health === "ACTION_REQUIRED") return "A schema change needs confirmation before the matter is reindexed.";
+  if (health === "ACTION_REQUIRED") return "A schema change or completed rebuild requires review before activation.";
   if (health === "FAILED") return "The latest index build failed. Review the operation details and retry.";
   if (health === "MISSING") return "The recorded active generation is not present on the configured OpenSearch server.";
   if (health === "UNAVAILABLE") return "The configured OpenSearch server could not be checked.";
@@ -362,6 +398,9 @@ function operationLabel(operation: SearchProjectionOperationRead) {
 function operationDetails(operation: SearchProjectionOperationRead) {
   if (operation.error_message) return operation.error_message;
   const progress = parseRebuildProgress(operation.payload.progress);
+  if (operation.kind === "REBUILD" && progress?.failedDocuments) {
+    return `Completed with ${progress.failedDocuments.toLocaleString()} document projection ${progress.failedDocuments === 1 ? "error" : "errors"}`;
+  }
   if (progress && operation.payload.reason === "EMAIL_DOMAIN_UPDATE") {
     return `${progress.processedDocuments.toLocaleString()} / ${progress.totalDocuments.toLocaleString()} documents`;
   }
@@ -376,6 +415,8 @@ function parseRebuildProgress(value: unknown): RebuildProgress | undefined {
     phase: progress.phase,
     processedDocuments: typeof progress.processed_documents === "number" ? progress.processed_documents : 0,
     totalDocuments: typeof progress.total_documents === "number" ? progress.total_documents : 0,
+    indexedDocuments: typeof progress.indexed_documents === "number" ? progress.indexed_documents : 0,
+    failedDocuments: typeof progress.failed_documents === "number" ? progress.failed_documents : 0,
     indexName: typeof progress.index_name === "string" ? progress.index_name : undefined,
     documentsPerSecond: typeof progress.documents_per_second === "number" && progress.documents_per_second > 0 ? progress.documents_per_second : undefined,
     estimatedCompletionAt: typeof progress.estimated_completion_at === "string" ? progress.estimated_completion_at : undefined,
@@ -390,6 +431,7 @@ function rebuildPhaseLabel(phase: string) {
     INDEXING_DOCUMENTS: "Indexing matter documents",
     REFRESHING_INDEX: "Refreshing the completed index",
     ACTIVATING_ALIAS: "Activating the new index",
+    AWAITING_PROMOTION: "Waiting for promotion approval",
     CLEANING_UP: "Removing obsolete index generations",
     COMPLETED: "Rebuild completed",
   };

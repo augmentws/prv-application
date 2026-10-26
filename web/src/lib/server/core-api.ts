@@ -36,6 +36,21 @@ function configuredAppOrigin() {
   }
 }
 
+function configuredAllowedOrigins() {
+  const values = process.env.APP_ALLOWED_ORIGINS?.split(",") ?? [];
+  return values.flatMap((value) => {
+    const candidate = value.trim();
+    if (!candidate) return [];
+    try {
+      const url = new URL(candidate);
+      if (!["http:", "https:"].includes(url.protocol)) throw new Error();
+      return [url.origin];
+    } catch {
+      throw new Error("APP_ALLOWED_ORIGINS must contain comma-separated absolute HTTP or HTTPS URLs");
+    }
+  });
+}
+
 export function coreUrl(path: string) {
   return `${CORE_API_URL}/${path.replace(/^\//, "")}`;
 }
@@ -46,6 +61,7 @@ export function isSameOrigin(request: Request) {
   const trustedOrigins = new Set([new URL(request.url).origin]);
   const appOrigin = configuredAppOrigin();
   if (appOrigin) trustedOrigins.add(appOrigin);
+  for (const allowedOrigin of configuredAllowedOrigins()) trustedOrigins.add(allowedOrigin);
   return trustedOrigins.has(origin);
 }
 

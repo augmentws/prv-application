@@ -21,6 +21,14 @@ export function notificationHref(notification: NotificationRead) {
     if (batchId) params.set("batch", batchId);
     return `/review/matters/${matterId}${params.size ? `?${params.toString()}` : ""}`;
   }
+  if (notification.primary_route_name === "REVIEW_PROGRAM" && clientId && matterId) {
+    const programId = stringParam(notification, "program_id");
+    const actionId = stringParam(notification, "action_id");
+    const params = new URLSearchParams();
+    if (programId) params.set("program", programId);
+    if (actionId) params.set("action", actionId);
+    return `/app/clients/${clientId}/matters/${matterId}/review-programs${params.size ? `?${params.toString()}` : ""}`;
+  }
   return "/app/notifications";
 }
 

@@ -1,12 +1,14 @@
 import hashlib
 import json
+import logging
 import uuid
-from collections.abc import Iterator
+from collections.abc import Callable, Iterator
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from typing import Any, BinaryIO
 
 import httpx
+from botocore.exceptions import ClientError
 from sqlalchemy import Uuid, and_, bindparam, case, func, select
 from sqlalchemy.dialects.postgresql import ARRAY
 from sqlalchemy.exc import IntegrityError
@@ -67,6 +69,8 @@ from artifact_service.workflow_artifacts import (
     stage_workflow_upload,
     workflow_artifact_max_bytes,
 )
+
+logger = logging.getLogger(__name__)
 from artifact_service.workflow_artifacts import store_workflow_artifact as persist_workflow_artifact
 
 REMOTE_GROUPING_SNAPSHOT_BATCH_SIZE = 5000
@@ -393,20 +397,58 @@ def _embedded_body_text(db: Session, item: CollectionItem, max_bytes: int) -> st
         )
         for role, artifact in rows
     ]
-    candidate = _search_text_candidate(artifacts, record_type=item.record_type)
-    if candidate is None or candidate.content_blob_id is None:
-        return None
-    blob = db.get(ContentBlob, candidate.content_blob_id)
-    if blob is None:
-        raise ValueError("Search text artifact content is unavailable")
-    content = read_search_text_bytes(get_storage().open(blob.bucket_name, blob.storage_key), max_bytes)
-    return extract_search_text(
-        content,
-        role=candidate.role,
-        media_type=candidate.media_type,
-        filename=candidate.original_filename,
-        record_type=item.record_type,
-    )
+    remaining = artifacts
+    while candidate := _search_text_candidate(remaining, record_type=item.record_type):
+        remaining = [artifact for artifact in remaining if artifact.id != candidate.id]
+        if candidate.content_blob_id is None:
+            logger.warning(
+                "Search text artifact has no content blob; trying fallback collection_item_id=%s artifact_id=%s role=%s",
+                item.id,
+                candidate.id,
+                candidate.role,
+            )
+            continue
+        blob = db.get(ContentBlob, candidate.content_blob_id)
+        if blob is None:
+            logger.warning(
+                "Search text content blob is unavailable; trying fallback collection_item_id=%s artifact_id=%s blob_id=%s",
+                item.id,
+                candidate.id,
+                candidate.content_blob_id,
+            )
+            continue
+        try:
+            content = read_search_text_bytes(get_storage().open(blob.bucket_name, blob.storage_key), max_bytes)
+        except FileNotFoundError:
+            logger.warning(
+                "Search text blob is missing; trying fallback collection_item_id=%s artifact_id=%s blob_id=%s",
+                item.id,
+                candidate.id,
+                blob.id,
+            )
+            continue
+        except ClientError as exc:
+            error_code = str(exc.response.get("Error", {}).get("Code", ""))
+            if error_code not in {"404", "NoSuchKey", "NotFound"}:
+                raise
+            logger.warning(
+                "Search text blob is missing; trying fallback collection_item_id=%s artifact_id=%s blob_id=%s code=%s",
+                item.id,
+                candidate.id,
+                blob.id,
+                error_code,
+            )
+            continue
+        text = extract_search_text(
+            content,
+            role=candidate.role,
+            media_type=candidate.media_type,
+            filename=candidate.original_filename,
+            record_type=item.record_type,
+        )
+        if text and text.strip():
+            return text
+    return None
 
 
 def _remote_body_text(
@@ -1969,6 +2011,7 @@ def load_current_chunk_artifacts(
     *,
     collection_item_id: uuid.UUID,
     configuration_hash: str,
+    compatible_embedding: dict[str, Any] | None = None,
     actor_user_id: uuid.UUID,
     tenant_id: uuid.UUID,
     client_id: uuid.UUID,
@@ -1986,9 +2029,11 @@ def load_current_chunk_artifacts(
                 )
                 .order_by(Artifact.created_at.desc())
             ).all()
-            vector = next(
-                (artifact for artifact, _ in rows if (artifact.artifact_metadata or {}).get("configuration_hash") == configuration_hash),
-                None,
+            vector = _select_compatible_chunk_vector(
+                [artifact for artifact, _ in rows],
+                configuration_hash=configuration_hash,
+                compatible_embedding=compatible_embedding,
+                metadata=lambda artifact: artifact.artifact_metadata or {},
             )
             if vector is None:
                 return None
@@ -2015,11 +2060,15 @@ def load_current_chunk_artifacts(
             artifact
             for artifact in response.json()
             if artifact.get("role") == "CHUNK_VECTOR_SET"
-            and (artifact.get("metadata") or {}).get("configuration_hash") == configuration_hash
         ]
-        if not vectors:
+        vector = _select_compatible_chunk_vector(
+            vectors,
+            configuration_hash=configuration_hash,
+            compatible_embedding=compatible_embedding,
+            metadata=lambda artifact: artifact.get("metadata") or {},
+        )
+        if vector is None:
             return None
-        vector = vectors[0]
         chunk_id = vector["metadata"].get("chunk_set_artifact_id")
         if not chunk_id:
             raise ValueError("Chunk vector set does not identify its chunk set")
@@ -2028,6 +2077,36 @@ def load_current_chunk_artifacts(
         vector_response = client.get(f"/v1/artifacts/{vector['id']}/content", headers=headers)
         vector_response.raise_for_status()
     return chunk_response.content, vector_response.content
+
+
+def _select_compatible_chunk_vector(
+    candidates: list[Any],
+    *,
+    configuration_hash: str,
+    compatible_embedding: dict[str, Any] | None,
+    metadata: Callable[[Any], dict[str, Any]],
+) -> Any | None:
+    """Prefer the exact processing configuration, then reuse the newest compatible vector space."""
+
+    exact = next(
+        (candidate for candidate in candidates if metadata(candidate).get("configuration_hash") == configuration_hash),
+        None,
+    )
+    if exact is not None or compatible_embedding is None:
+        return exact
+    compatibility_keys = ("provider", "model", "model_revision", "dimensions", "normalized")
+    return next(
+        (
+            candidate
+            for candidate in candidates
+            if isinstance(metadata(candidate).get("embedding"), dict)
+            and all(
+                metadata(candidate)["embedding"].get(key) == compatible_embedding.get(key)
+                for key in compatibility_keys
+            )
+        ),
+        None,
+    )
 
 
 def load_current_chunk_vector_artifact(

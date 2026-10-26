@@ -80,4 +80,34 @@ describe("CreateReviewBatchDialog", () => {
       sample_size: 125,
     })));
   });
+
+  it("can include complete families for an ad hoc sample", async () => {
+    const onCreate = vi.fn().mockResolvedValue(undefined);
+    const user = userEvent.setup();
+
+    render(
+      <CreateReviewBatchDialog
+        groups={[]}
+        batches={[]}
+        savedSearches={[]}
+        assessments={[]}
+        onCreate={onCreate}
+      />,
+    );
+
+    await user.click(screen.getByRole("button", { name: "Create batch" }));
+    await user.type(screen.getByLabelText("Name"), "Family sample");
+    await user.click(screen.getByRole("combobox", { name: "Document source" }));
+    await user.click(screen.getByRole("option", { name: "Random matter sample" }));
+    await user.type(screen.getByLabelText("Sample size"), "10");
+    await user.click(screen.getByRole("checkbox", { name: /Include complete families/ }));
+    await user.click(screen.getByRole("button", { name: "Create batch" }));
+
+    await waitFor(() => expect(onCreate).toHaveBeenCalledWith(expect.objectContaining({
+      name: "Family sample",
+      selection_type: "RANDOM_MATTER",
+      sample_size: 10,
+      include_complete_families: true,
+    })));
+  });
 });

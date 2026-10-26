@@ -23,6 +23,7 @@ const schema = z.object({
   saved_search_id: z.string(),
   assessment_run_id: z.string(),
   sample_size: z.number().int().positive().max(10_000_000).optional(),
+  include_complete_families: z.boolean(),
   reviewer_value_visibility: z.enum(["OWN_VALUES", "ALL_REVIEWER_VALUES"]),
   coding_group_ids: z.array(z.string()),
 }).superRefine((values, context) => {
@@ -66,6 +67,7 @@ export function CreateReviewBatchDialog({ groups, batches, savedSearches, assess
       source_batch_id: "",
       saved_search_id: "",
       assessment_run_id: "",
+      include_complete_families: false,
       reviewer_value_visibility: "OWN_VALUES",
       coding_group_ids: [],
     },
@@ -79,6 +81,7 @@ export function CreateReviewBatchDialog({ groups, batches, savedSearches, assess
       name: values.name,
       description: values.description || null,
       selection_type: values.selection_type,
+      include_complete_families: values.selection_type !== "ALL_MATTER" && values.include_complete_families,
       reviewer_value_visibility: values.reviewer_value_visibility,
       coding_group_ids: values.coding_group_ids,
     };
@@ -122,6 +125,7 @@ export function CreateReviewBatchDialog({ groups, batches, savedSearches, assess
           {selectionType === "RANDOM_SAVED_SEARCH" ? <div className="space-y-2"><Label>Saved search</Label><Controller control={control} name="saved_search_id" render={({ field }) => <Select value={field.value} onValueChange={field.onChange}><SelectTrigger aria-label="Saved search"><SelectValue placeholder="Choose a keyword saved search" /></SelectTrigger><SelectContent>{keywordSavedSearches.map((saved) => <SelectItem key={saved.id} value={saved.id}>{saved.name}</SelectItem>)}</SelectContent></Select>} />{errors.saved_search_id ? <p className="text-sm text-destructive">{errors.saved_search_id.message}</p> : null}<p className="text-xs text-muted-foreground">The saved search is snapshotted when the batch is created, then sampled using a reproducible random seed.</p></div> : null}
           {selectionType === "RANDOM_ASSESSMENT" ? <div className="space-y-2"><Label>Assessment</Label><Controller control={control} name="assessment_run_id" render={({ field }) => <Select value={field.value} onValueChange={field.onChange}><SelectTrigger aria-label="Assessment"><SelectValue placeholder="Choose an assessment candidate pool" /></SelectTrigger><SelectContent>{assessmentsWithCandidates.map((assessment) => <SelectItem key={assessment.id} value={assessment.id}>{assessment.name} ({assessment.candidate_count.toLocaleString()} candidates · {assessment.selected_count.toLocaleString()} selected)</SelectItem>)}</SelectContent></Select>} />{errors.assessment_run_id ? <p className="text-sm text-destructive">{errors.assessment_run_id.message}</p> : null}<p className="text-xs text-muted-foreground">Samples the full persisted retrieval pool, including candidates that were not selected for the assessment batch. Retrieval is not rerun.</p></div> : null}
           {selectionType.startsWith("RANDOM") ? <div className="space-y-2"><Label htmlFor="batch-sample-size">Sample size</Label><Input id="batch-sample-size" type="number" min={1} max={10000000} placeholder={selectionType === "RANDOM_SAVED_SEARCH" ? "Number of matching documents" : selectionType === "RANDOM_ASSESSMENT" ? "Number of assessment candidates" : "Leave empty to randomize all documents"} {...register("sample_size", { setValueAs: (value) => value === "" ? undefined : Number(value) })} />{errors.sample_size ? <p className="text-sm text-destructive">{errors.sample_size.message}</p> : null}</div> : null}
+          {selectionType !== "ALL_MATTER" ? <label className="flex items-start gap-3 rounded-lg border p-3 text-sm"><input type="checkbox" className="mt-0.5 size-4 accent-primary" {...register("include_complete_families")} /><span><span className="block font-semibold">Include complete families</span><span className="text-xs text-muted-foreground">When a selected document belongs to a family, add its parent and attachments that are already in this matter. The final batch may exceed the requested sample size.</span></span></label> : null}
           <div className="space-y-2"><Label>Reviewer visibility</Label><Controller control={control} name="reviewer_value_visibility" render={({ field }) => <Select value={field.value} onValueChange={field.onChange}><SelectTrigger><SelectValue /></SelectTrigger><SelectContent><SelectItem value="OWN_VALUES">Only the reviewer&apos;s values</SelectItem><SelectItem value="ALL_REVIEWER_VALUES">Values from all reviewers</SelectItem></SelectContent></Select>} /><p className="text-xs text-muted-foreground">Agent results remain isolated by run. This setting controls human review visibility.</p></div>
           <fieldset className="space-y-2"><legend className="text-sm font-medium">Coding groups</legend><div className="grid gap-2 sm:grid-cols-2">{availableGroups.map((group) => <label key={group.id} className="flex items-start gap-3 rounded-lg border p-3 text-sm"><input type="checkbox" value={group.id} className="mt-0.5 size-4 accent-primary" {...register("coding_group_ids")} /><span><span className="block font-semibold">{group.display_name}</span><span className="text-xs text-muted-foreground">{group.definition_ids.length} fields</span></span></label>)}</div><p className="text-xs text-muted-foreground">The selected fields are snapshotted so later group edits do not change an evaluation already in progress.</p></fieldset>
           {errors.root ? <p role="alert" className="text-sm text-destructive">{errors.root.message}</p> : null}

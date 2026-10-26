@@ -60,9 +60,17 @@ afterEach(() => {
   vi.clearAllMocks();
 });
 
-function renderPanel() {
+function renderPanel({ initialGuidanceId, initialAssessmentId }: { initialGuidanceId?: string; initialAssessmentId?: string } = {}) {
   const client = new QueryClient({ defaultOptions: { queries: { retry: false }, mutations: { retry: false } } });
-  return render(<QueryClientProvider client={client}><MatterDefinitionPanel matterId="matter-1" /></QueryClientProvider>);
+  return render(
+    <QueryClientProvider client={client}>
+      <MatterDefinitionPanel
+        matterId="matter-1"
+        initialGuidanceId={initialGuidanceId}
+        initialAssessmentId={initialAssessmentId}
+      />
+    </QueryClientProvider>,
+  );
 }
 
 describe("MatterDefinitionPanel", () => {
@@ -204,8 +212,14 @@ describe("MatterDefinitionPanel", () => {
     expect(screen.queryByLabelText("Revision history")).not.toBeInTheDocument();
     const draftToolbar = screen.getByText("Current draft").parentElement?.parentElement;
     expect(draftToolbar).not.toBeNull();
+    expect(within(draftToolbar!).getByRole("button", { name: "View differences" })).toBeInTheDocument();
     expect(within(draftToolbar!).getByRole("button", { name: "Publish current draft" })).toBeInTheDocument();
     expect(within(draftToolbar!).getByRole("button", { name: "Save draft" })).toBeInTheDocument();
+
+    await user.click(within(draftToolbar!).getByRole("button", { name: "View differences" }));
+    const currentDraftDiff = await screen.findByRole("dialog", { name: "Changes in current draft revision 2" });
+    expect(within(currentDraftDiff).getByRole("region", { name: "Revision 1 to Current draft r2 diff" })).toBeInTheDocument();
+    await user.click(within(currentDraftDiff).getAllByRole("button", { name: "Close" })[0]);
 
     await user.click(screen.getByRole("button", { name: "Current draft" }));
     const revisionHistory = screen.getByLabelText("Revision history");
@@ -231,10 +245,130 @@ describe("MatterDefinitionPanel", () => {
     await user.click(assessmentTab);
 
     expect(assessmentTab).toHaveAttribute("aria-selected", "true");
-    const assessmentPanel = screen.getByRole("tabpanel");
+    const assessmentPanel = await screen.findByRole("tabpanel");
     expect(assessmentPanel).toHaveClass("flex", "min-h-0", "overflow-hidden");
     expect(await within(assessmentPanel).findByLabelText("Assessment controls")).toHaveTextContent("No assessments");
     expect(screen.getByText("No corpus assessments have been run for this Matter Definition.")).toBeInTheDocument();
+  });
+
+  it("opens the publish confirmation from a completed assessment refinement", async () => {
+    const refinedDefinition = {
+      ...definition,
+      current_revision: 2,
+      published_revision: 1,
+      revision: {
+        ...definition.revision,
+        id: "revision-2",
+        revision: 2,
+        content_markdown: "# Refined coding guidance\n\nInclude indirect claims.",
+        based_on_revision: 1,
+      },
+    };
+    const assessment = {
+      id: "assessment-1",
+      name: "Coverage assessment",
+      matter_definition_revision_id: "revision-1",
+      status: "COMPLETED",
+      guidance_refinement_status: "COMPLETED",
+      refined_matter_definition_revision_id: "revision-2",
+      review_batch_id: "batch-1",
+      selected_count: 2,
+      summarized_count: 2,
+      skipped_count: 0,
+      failed_count: 0,
+      partial_coverage_count: 0,
+      invalid_result_count: 0,
+      estimated_input_tokens: 2000,
+      coverage_snapshot: { status: "SUFFICIENT" },
+      synthesis_result: {},
+    };
+    vi.mocked(coreApi).mockImplementation(async (path) => {
+      if (path === "/v1/matters/matter-1/guidance") return [refinedDefinition] as never;
+      if (path === "/v1/matters/matter-1/guidance/definition-1/revisions") return [refinedDefinition.revision, definition.revision] as never;
+      if (path === "/v1/matters/matter-1/agents") return [] as never;
+      if (path === "/v1/matters/matter-1/agent-conversations?workflow_type=MATTER_DEFINITION_SETUP&guidance_id=definition-1") return [] as never;
+      if (path === "/v1/matters/matter-1/guidance/definition-1/assessments") return [assessment] as never;
+      if (path.endsWith("/queries")) return [] as never;
+      if (path.endsWith("/questions")) return [{
+        id: "question-1", question: "Should indirect claims be included?", rationale: "The boundary was unclear.",
+        priority: "HIGH", blocking: true, status: "ANSWERED", answer: "Include indirect claims.", evidence: [], suggested_answers: [],
+      }] as never;
+      if (path.includes("/execution?include_skill_runs=false")) return {
+        request_count: 0, input_tokens: 0, cached_input_tokens: 0, cache_write_tokens: 0, output_tokens: 0, steps: [], skill_runs: [],
+      } as never;
+      throw new Error(`Unexpected API request: ${path}`);
+    });
+
+    const user = userEvent.setup();
+    renderPanel({ initialGuidanceId: "definition-1", initialAssessmentId: "assessment-1" });
+
+    const assessmentPanel = await screen.findByRole("tabpanel");
+    await user.click(await within(assessmentPanel).findByRole("button", { name: "View differences" }));
+    const diffDialog = await screen.findByRole("dialog", { name: "Changes in current draft revision 2" });
+    const diffRegion = within(diffDialog).getByRole("region", { name: "Revision 1 to Current draft r2 diff" });
+    expect(diffRegion.querySelector("del[data-diff='delete']")).toHaveClass("text-destructive");
+    expect(diffRegion.querySelector("ins[data-diff='insert']")).toHaveClass("text-success");
+    await user.click(within(diffDialog).getAllByRole("button", { name: "Close" })[0]);
+    await user.click(await screen.findByRole("button", { name: "Review draft and publish" }));
+    const publishDialog = await screen.findByRole("dialog", { name: "Publish revision 2?" });
+    expect(within(publishDialog).getByRole("button", { name: "View differences" })).toBeInTheDocument();
+  });
+
+  it("opens a linked Matter Definition assessment instead of the first assessment", async () => {
+    const linkedDefinition = {
+      ...definition,
+      id: "definition-2",
+      key: "linked_review",
+      name: "Linked Review Guidance",
+      revision: {
+        ...definition.revision,
+        id: "revision-2",
+        matter_definition_id: "definition-2",
+      },
+    };
+    const firstAssessment = {
+      id: "assessment-1",
+      name: "Earlier assessment",
+      status: "COMPLETED",
+      guidance_refinement_status: "NOT_READY",
+      review_batch_id: null,
+      selected_count: 5,
+      summarized_count: 5,
+      skipped_count: 0,
+      failed_count: 0,
+      partial_coverage_count: 0,
+      invalid_result_count: 0,
+      estimated_input_tokens: 500,
+      coverage_snapshot: null,
+      synthesis_result: {},
+    };
+    const linkedAssessment = { ...firstAssessment, id: "assessment-2", name: "Program assessment" };
+    vi.mocked(coreApi).mockImplementation(async (path) => {
+      if (path === "/v1/matters/matter-1/guidance") return [definition, linkedDefinition] as never;
+      if (path === "/v1/matters/matter-1/guidance/definition-2/revisions") return [linkedDefinition.revision] as never;
+      if (path === "/v1/matters/matter-1/agents") return [] as never;
+      if (path === "/v1/matters/matter-1/agent-conversations?workflow_type=MATTER_DEFINITION_SETUP&guidance_id=definition-2") return [] as never;
+      if (path === "/v1/matters/matter-1/guidance/definition-2/assessments") return [firstAssessment, linkedAssessment] as never;
+      if (path === "/v1/matters/matter-1/definition-assessments/assessment-2/queries") return [] as never;
+      if (path === "/v1/matters/matter-1/definition-assessments/assessment-2/questions") return [] as never;
+      if (path === "/v1/matters/matter-1/definition-assessments/assessment-2/execution?include_skill_runs=false") return {
+        request_count: 0,
+        input_tokens: 0,
+        cached_input_tokens: 0,
+        cache_write_tokens: 0,
+        output_tokens: 0,
+        steps: [],
+        skill_runs: [],
+      } as never;
+      throw new Error(`Unexpected API request: ${path}`);
+    });
+
+    renderPanel({ initialGuidanceId: "definition-2", initialAssessmentId: "assessment-2" });
+
+    expect(await screen.findByRole("tab", { name: "Assessment" })).toHaveAttribute("aria-selected", "true");
+    expect(await screen.findByRole("combobox", { name: "Assessment" })).toHaveTextContent("Program assessment");
+    expect(coreApi).toHaveBeenCalledWith("/v1/matters/matter-1/guidance/definition-2/assessments");
+    expect(coreApi).toHaveBeenCalledWith("/v1/matters/matter-1/definition-assessments/assessment-2/queries");
   });
 
   it("renames a Matter Definition chat", async () => {

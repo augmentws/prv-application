@@ -11,6 +11,7 @@ from app.analysis_task_promotions import (
     complete_analysis_task_promotion,
     prepare_analysis_task_promotion,
 )
+from app.artifact_gateway import CollectionItemRelationshipSnapshot
 from app.models import (
     AuditRecord,
     DocumentMetadataCurrent,
@@ -285,6 +286,105 @@ def test_random_assessment_batch_requires_a_persisted_candidate_pool(
 
     assert created.status_code == 409
     assert "persisted retrieval candidate pool" in created.text
+
+
+def test_ad_hoc_batch_can_expand_selected_documents_to_complete_matter_families(
+    client: TestClient,
+    root_token: str,
+    root_admin,
+    monkeypatch,
+) -> None:
+    matter_id = create_matter(client, root_token, create_client_tenant(client, root_token))
+    document_ids = add_documents(matter_id, root_admin.id, count=3)
+    seed = "complete-family-sample"
+    with TestingSessionLocal() as db:
+        documents = list(
+            db.scalars(
+                select(MatterDocument).where(
+                    MatterDocument.id.in_([uuid.UUID(value) for value in document_ids])
+                )
+            )
+        )
+    selected = min(documents, key=lambda document: hashlib.sha256(f"{seed}:{document.id}".encode()).digest())
+    sibling = next(document for document in documents if document.id != selected.id)
+    family_id = uuid.uuid4()
+
+    def relationship_snapshots(**kwargs):
+        snapshots = {}
+        for item_id in kwargs["item_ids"]:
+            if item_id == selected.collection_item_id:
+                snapshots[item_id] = CollectionItemRelationshipSnapshot(
+                    item_id=item_id,
+                    family_id=family_id,
+                    parent_item_id=None,
+                    parent_source_item_id=None,
+                    parent_identifier=None,
+                    child_item_ids=[sibling.collection_item_id],
+                    child_source_item_ids=["sibling"],
+                    child_identifiers=["sibling"],
+                )
+            elif item_id == sibling.collection_item_id:
+                snapshots[item_id] = CollectionItemRelationshipSnapshot(
+                    item_id=item_id,
+                    family_id=family_id,
+                    parent_item_id=selected.collection_item_id,
+                    parent_source_item_id="parent",
+                    parent_identifier="parent",
+                    child_item_ids=[],
+                    child_source_item_ids=[],
+                    child_identifiers=[],
+                )
+            else:
+                snapshots[item_id] = CollectionItemRelationshipSnapshot(
+                    item_id=item_id,
+                    family_id=None,
+                    parent_item_id=None,
+                    parent_source_item_id=None,
+                    parent_identifier=None,
+                    child_item_ids=[],
+                    child_source_item_ids=[],
+                    child_identifiers=[],
+                )
+        return snapshots
+
+    monkeypatch.setattr("app.review_batches.get_collection_item_relationship_snapshots", relationship_snapshots)
+
+    created = client.post(
+        f"/v1/matters/{matter_id}/review-batches",
+        headers=auth(root_token),
+        json={
+            "name": "Complete family sample",
+            "selection_type": "RANDOM_MATTER",
+            "sample_size": 1,
+            "random_seed": seed,
+            "include_complete_families": True,
+        },
+    )
+
+    assert created.status_code == 202, created.text
+    payload = created.json()
+    assert payload["status"] == "READY"
+    assert payload["document_count"] == 2
+    assert payload["selection_definition"]["family_policy"] == "EXPAND_COMPLETE_FAMILIES_IN_MATTER"
+    assert payload["selection_definition"]["family_expansion"] == {
+        "policy": "EXPAND_COMPLETE_FAMILIES_IN_MATTER",
+        "seed_document_count": 1,
+        "family_count": 1,
+        "discovered_family_item_count": 2,
+        "matter_family_document_count": 2,
+        "added_document_count": 1,
+        "family_items_outside_matter_count": 0,
+        "final_document_count": 2,
+    }
+    with TestingSessionLocal() as db:
+        actual_ids = list(
+            db.scalars(
+                select(ReviewBatchDocument.matter_document_id)
+                .where(ReviewBatchDocument.review_batch_id == uuid.UUID(payload["id"]))
+                .order_by(ReviewBatchDocument.sequence_number)
+            )
+        )
+    assert actual_ids == [selected.id, sibling.id]
 
 
 def test_review_batch_common_execution_can_be_canceled_and_retried(

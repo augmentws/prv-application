@@ -37,6 +37,7 @@ from app.routers import (
     notifications,
     provider_usage,
     review_batches,
+    review_programs,
     saved_searches,
     search,
     tenants,
@@ -106,6 +107,8 @@ app.include_router(provider_usage.matter_router)
 app.include_router(matter_templates.router)
 app.include_router(saved_searches.router)
 app.include_router(review_batches.router)
+app.include_router(review_programs.template_router)
+app.include_router(review_programs.router)
 app.include_router(search.router)
 app.include_router(managed_skills.router)
 app.include_router(matter_definition_assessments.router)

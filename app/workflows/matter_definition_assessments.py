@@ -35,7 +35,10 @@ DOCUMENT_QUEUE = Queue(
     "definition-assessment-documents",
     global_concurrency=get_settings().definition_assessment_document_concurrency,
 )
-PROVIDER_BATCH_QUEUE = Queue("definition-assessment-provider-batches", global_concurrency=2)
+PROVIDER_BATCH_QUEUE = Queue(
+    "definition-assessment-provider-batches",
+    global_concurrency=get_settings().definition_assessment_provider_batch_concurrency,
+)
 
 
 def step_failure_message(error: BaseException) -> str:
@@ -65,14 +68,29 @@ def retrieve(assessment_id: str) -> list[str]:
         return retrieve_and_materialize(db, uuid.UUID(assessment_id), get_settings())
 
 
-@DBOS.step(name="sync_definition_assessment_batch_search", retries_allowed=True, max_attempts=5)
-def sync_batch_search(assessment_id: str) -> None:
+def _sync_batch_search_best_effort(assessment_id: str) -> dict[str, str | None]:
     with SessionLocal() as db:
         assessment = db.get(MatterDefinitionAssessmentRun, uuid.UUID(assessment_id))
         if assessment is None or assessment.review_batch_id is None:
             raise ValueError("Assessment batch has not been created")
         batch_id = assessment.review_batch_id
-    sync_review_batch_search(batch_id, get_settings())
+    try:
+        sync_review_batch_search(batch_id, get_settings())
+    except Exception as exc:
+        logger.warning(
+            "Matter Definition assessment will continue without batch search projection "
+            "assessment_id=%s batch_id=%s",
+            assessment_id,
+            batch_id,
+            exc_info=True,
+        )
+        return {"status": "FAILED", "error": str(exc)[:4000]}
+    return {"status": "READY", "error": None}
+
+
+@DBOS.step(name="sync_definition_assessment_batch_search", retries_allowed=True, max_attempts=5)
+def sync_batch_search(assessment_id: str) -> dict[str, str | None]:
+    return _sync_batch_search_best_effort(assessment_id)
 
 
 @DBOS.step(name="analyze_definition_assessment_document", retries_allowed=True, max_attempts=3)

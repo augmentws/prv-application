@@ -5,6 +5,7 @@
  * Phase-one Core API for authentication, hierarchical tenants, clients, matters, and matter metadata definitions.
  * OpenAPI spec version: 0.1.0
  */
+import type { MatterDefinitionAssessmentReadArchiveReason } from './matterDefinitionAssessmentReadArchiveReason';
 import type { MatterDefinitionAssessmentReadConfigurationSnapshot } from './matterDefinitionAssessmentReadConfigurationSnapshot';
 import type { MatterDefinitionAssessmentReadCoverageSnapshot } from './matterDefinitionAssessmentReadCoverageSnapshot';
 import type { MatterDefinitionAssessmentReadGuidanceRefinementStatus } from './matterDefinitionAssessmentReadGuidanceRefinementStatus';
@@ -55,6 +56,10 @@ export interface MatterDefinitionAssessmentRead {
   started_at: string | null;
   completed_at: string | null;
   canceled_at: string | null;
+  archived_at: string | null;
+  archived_by_user_id: string | null;
+  archive_reason: MatterDefinitionAssessmentReadArchiveReason;
+  superseded_by_assessment_id: string | null;
   created_at: string;
   updated_at: string;
 }

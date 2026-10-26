@@ -38,6 +38,8 @@ import type {
   AnalysisTaskBatchSetRead,
   AnalysisTaskBatchSetRunCreate,
   AnalysisTaskBatchSetRunRead,
+  AnalysisTaskExecutionProfileCreate,
+  AnalysisTaskExecutionProfileRead,
   ArtifactLineageRead,
   ArtifactRead,
   AuditRecordPage,
@@ -155,6 +157,7 @@ import type {
   JobOutcomeManifestRead,
   ListAgentConversationsV1MattersMatterIdAgentConversationsGetParams,
   ListAgentPackagesV1AgentPackagesGetParams,
+  ListAssessmentsV1MattersMatterIdDefinitionAssessmentsGetParams,
   ListAuditRecordsV1TenantsTenantIdAuditRecordsGetParams,
   ListAuthorizationGrantsV1TenantsTenantIdAuthorizationGrantsGetParams,
   ListAvailableMatterAgentsV1MattersMatterIdAgentsGetParams,
@@ -167,12 +170,14 @@ import type {
   ListFactExportsV1MattersMatterIdFactExportsGetParams,
   ListFactsV1MattersMatterIdFactsGetParams,
   ListFailedJobDocumentsV1JobsJobTypeJobIdFailedDocumentsGetParams,
+  ListGuidanceAssessmentsV1MattersMatterIdGuidanceGuidanceIdAssessmentsGetParams,
   ListGuidanceV1MattersMatterIdGuidanceGetParams,
   ListJobOutcomeItemsV1MattersMatterIdJobOutcomesJobTypeJobIdItemsGetParams,
   ListMatterAccessUsersV1MattersMatterIdAccessUsersGetParams,
   ListMatterDocumentsV1MattersMatterIdDocumentsGetParams,
   ListNotificationsV1NotificationsGetParams,
   ListReviewBatchDocumentsV1MattersMatterIdReviewBatchesBatchIdDocumentsGetParams,
+  ListReviewProgramsV1MattersMatterIdReviewProgramsGetParams,
   ListSearchExportArtifactsV1MattersMatterIdSearchExportsArtifactsGetParams,
   ListSearchExportsV1MattersMatterIdSearchExportsGetParams,
   ListSearchOperationsV1MattersMatterIdSearchOperationsGetParams,
@@ -195,6 +200,8 @@ import type {
   MatterCreate,
   MatterDateHistogramRequest,
   MatterDateHistogramResponse,
+  MatterDefinitionAssessmentArchiveFailed,
+  MatterDefinitionAssessmentArchiveResult,
   MatterDefinitionAssessmentCreate,
   MatterDefinitionAssessmentQueryRead,
   MatterDefinitionAssessmentQuestionRead,
@@ -314,6 +321,19 @@ import type {
   ReviewBatchSearchRequest,
   ReviewBatchStatisticsRead,
   ReviewDecisionResultRead,
+  ReviewProgramActionResolve,
+  ReviewProgramClassifierImprovementSetup,
+  ReviewProgramCompletionReportRead,
+  ReviewProgramCreate,
+  ReviewProgramDefinitionSetup,
+  ReviewProgramDiscoverySetup,
+  ReviewProgramNegativePopulationQCSetup,
+  ReviewProgramQASetup,
+  ReviewProgramRead,
+  ReviewProgramRunCommand,
+  ReviewProgramRunRead,
+  ReviewProgramRunStart,
+  ReviewWorkflowTemplateRead,
   RoleCreate,
   RolePermissionsReplace,
   RoleRead,
@@ -5497,6 +5517,129 @@ const res = await fetch(getCreateAnalysisTaskVersionV1MattersMatterIdAnalysisTas
 
   const data: createAnalysisTaskVersionV1MattersMatterIdAnalysisTasksTaskIdVersionsPostResponse['data'] = body ? JSON.parse(body) : {}
   return { data, status: res.status, headers: res.headers } as createAnalysisTaskVersionV1MattersMatterIdAnalysisTasksTaskIdVersionsPostResponse
+}
+
+
+
+export type listAnalysisTaskExecutionProfilesV1MattersMatterIdAnalysisTasksTaskIdVersionsVersionNumberExecutionProfilesGetResponse200 = {
+  data: AnalysisTaskExecutionProfileRead[]
+  status: 200
+}
+
+export type listAnalysisTaskExecutionProfilesV1MattersMatterIdAnalysisTasksTaskIdVersionsVersionNumberExecutionProfilesGetResponse422 = {
+  data: HTTPValidationError
+  status: 422
+}
+
+export type listAnalysisTaskExecutionProfilesV1MattersMatterIdAnalysisTasksTaskIdVersionsVersionNumberExecutionProfilesGetResponseSuccess = (listAnalysisTaskExecutionProfilesV1MattersMatterIdAnalysisTasksTaskIdVersionsVersionNumberExecutionProfilesGetResponse200) & {
+  headers: Headers;
+};
+export type listAnalysisTaskExecutionProfilesV1MattersMatterIdAnalysisTasksTaskIdVersionsVersionNumberExecutionProfilesGetResponseError = (listAnalysisTaskExecutionProfilesV1MattersMatterIdAnalysisTasksTaskIdVersionsVersionNumberExecutionProfilesGetResponse422) & {
+  headers: Headers;
+};
+
+export type listAnalysisTaskExecutionProfilesV1MattersMatterIdAnalysisTasksTaskIdVersionsVersionNumberExecutionProfilesGetResponse = (listAnalysisTaskExecutionProfilesV1MattersMatterIdAnalysisTasksTaskIdVersionsVersionNumberExecutionProfilesGetResponseSuccess | listAnalysisTaskExecutionProfilesV1MattersMatterIdAnalysisTasksTaskIdVersionsVersionNumberExecutionProfilesGetResponseError)
+
+export const getListAnalysisTaskExecutionProfilesV1MattersMatterIdAnalysisTasksTaskIdVersionsVersionNumberExecutionProfilesGetUrl = (matterId: string,
+    taskId: string,
+    versionNumber: number,) => {
+
+
+
+
+  return `/api/core/v1/matters/${matterId}/analysis-tasks/${taskId}/versions/${versionNumber}/execution-profiles`
+}
+
+/**
+ * @summary List Analysis Task Execution Profiles
+ */
+export const listAnalysisTaskExecutionProfilesV1MattersMatterIdAnalysisTasksTaskIdVersionsVersionNumberExecutionProfilesGet = async (matterId: string,
+    taskId: string,
+    versionNumber: number, options?: RequestInit): Promise<listAnalysisTaskExecutionProfilesV1MattersMatterIdAnalysisTasksTaskIdVersionsVersionNumberExecutionProfilesGetResponse> => {
+
+  const res = await fetch(getListAnalysisTaskExecutionProfilesV1MattersMatterIdAnalysisTasksTaskIdVersionsVersionNumberExecutionProfilesGetUrl(matterId,taskId,versionNumber),
+  {
+    ...options,
+    method: 'GET'
+
+
+  }
+)
+
+
+  const body = [204, 205, 304].includes(res.status) ? null : await res.text();
+
+  const data: listAnalysisTaskExecutionProfilesV1MattersMatterIdAnalysisTasksTaskIdVersionsVersionNumberExecutionProfilesGetResponse['data'] = body ? JSON.parse(body) : {}
+  return { data, status: res.status, headers: res.headers } as listAnalysisTaskExecutionProfilesV1MattersMatterIdAnalysisTasksTaskIdVersionsVersionNumberExecutionProfilesGetResponse
+}
+
+
+
+export type createAnalysisTaskExecutionProfileV1MattersMatterIdAnalysisTasksTaskIdVersionsVersionNumberExecutionProfilesPostResponse201 = {
+  data: AnalysisTaskExecutionProfileRead
+  status: 201
+}
+
+export type createAnalysisTaskExecutionProfileV1MattersMatterIdAnalysisTasksTaskIdVersionsVersionNumberExecutionProfilesPostResponse422 = {
+  data: HTTPValidationError
+  status: 422
+}
+
+export type createAnalysisTaskExecutionProfileV1MattersMatterIdAnalysisTasksTaskIdVersionsVersionNumberExecutionProfilesPostResponseSuccess = (createAnalysisTaskExecutionProfileV1MattersMatterIdAnalysisTasksTaskIdVersionsVersionNumberExecutionProfilesPostResponse201) & {
+  headers: Headers;
+};
+export type createAnalysisTaskExecutionProfileV1MattersMatterIdAnalysisTasksTaskIdVersionsVersionNumberExecutionProfilesPostResponseError = (createAnalysisTaskExecutionProfileV1MattersMatterIdAnalysisTasksTaskIdVersionsVersionNumberExecutionProfilesPostResponse422) & {
+  headers: Headers;
+};
+
+export type createAnalysisTaskExecutionProfileV1MattersMatterIdAnalysisTasksTaskIdVersionsVersionNumberExecutionProfilesPostResponse = (createAnalysisTaskExecutionProfileV1MattersMatterIdAnalysisTasksTaskIdVersionsVersionNumberExecutionProfilesPostResponseSuccess | createAnalysisTaskExecutionProfileV1MattersMatterIdAnalysisTasksTaskIdVersionsVersionNumberExecutionProfilesPostResponseError)
+
+export const getCreateAnalysisTaskExecutionProfileV1MattersMatterIdAnalysisTasksTaskIdVersionsVersionNumberExecutionProfilesPostUrl = (matterId: string,
+    taskId: string,
+    versionNumber: number,) => {
+
+
+
+
+  return `/api/core/v1/matters/${matterId}/analysis-tasks/${taskId}/versions/${versionNumber}/execution-profiles`
+}
+
+/**
+ * @summary Create Analysis Task Execution Profile
+ */
+export const createAnalysisTaskExecutionProfileV1MattersMatterIdAnalysisTasksTaskIdVersionsVersionNumberExecutionProfilesPost = async (matterId: string,
+    taskId: string,
+    versionNumber: number,
+    analysisTaskExecutionProfileCreate: AnalysisTaskExecutionProfileCreate, options?: RequestInit): Promise<createAnalysisTaskExecutionProfileV1MattersMatterIdAnalysisTasksTaskIdVersionsVersionNumberExecutionProfilesPostResponse> => {
+
+    const getHeaders = (h?: NonNullable<RequestInit['headers']>): Record<string, string | readonly string[]> => {
+    if (!h) return {};
+    if (h instanceof Headers) return Object.fromEntries(h.entries());
+    if (Symbol.iterator in h) {
+      return Object.fromEntries(
+        Array.from(h as Iterable<Iterable<string>>, (entry) => Array.from(entry) as [string, string]),
+      );
+    }
+    const headers: Record<string, string | readonly string[]> = {};
+    for (const [name, value] of Object.entries<string | readonly string[] | undefined>(h)) {
+      if (value !== undefined) headers[name] = value;
+    }
+    return headers;
+  };
+const res = await fetch(getCreateAnalysisTaskExecutionProfileV1MattersMatterIdAnalysisTasksTaskIdVersionsVersionNumberExecutionProfilesPostUrl(matterId,taskId,versionNumber),
+  {
+    ...options,
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json', ...getHeaders(options?.headers) },
+    body: JSON.stringify(analysisTaskExecutionProfileCreate)
+  }
+)
+
+
+  const body = [204, 205, 304].includes(res.status) ? null : await res.text();
+
+  const data: createAnalysisTaskExecutionProfileV1MattersMatterIdAnalysisTasksTaskIdVersionsVersionNumberExecutionProfilesPostResponse['data'] = body ? JSON.parse(body) : {}
+  return { data, status: res.status, headers: res.headers } as createAnalysisTaskExecutionProfileV1MattersMatterIdAnalysisTasksTaskIdVersionsVersionNumberExecutionProfilesPostResponse
 }
 
 
@@ -13413,6 +13556,1070 @@ export const compareReviewBatchRunsV1MattersMatterIdReviewBatchesBatchIdComparis
 
 
 
+export type listReviewWorkflowTemplatesV1ReviewWorkflowTemplatesGetResponse200 = {
+  data: ReviewWorkflowTemplateRead[]
+  status: 200
+}
+
+export type listReviewWorkflowTemplatesV1ReviewWorkflowTemplatesGetResponseSuccess = (listReviewWorkflowTemplatesV1ReviewWorkflowTemplatesGetResponse200) & {
+  headers: Headers;
+};
+;
+
+export type listReviewWorkflowTemplatesV1ReviewWorkflowTemplatesGetResponse = (listReviewWorkflowTemplatesV1ReviewWorkflowTemplatesGetResponseSuccess)
+
+export const getListReviewWorkflowTemplatesV1ReviewWorkflowTemplatesGetUrl = () => {
+
+
+
+
+  return `/api/core/v1/review-workflow-templates`
+}
+
+/**
+ * @summary List Review Workflow Templates
+ */
+export const listReviewWorkflowTemplatesV1ReviewWorkflowTemplatesGet = async ( options?: RequestInit): Promise<listReviewWorkflowTemplatesV1ReviewWorkflowTemplatesGetResponse> => {
+
+  const res = await fetch(getListReviewWorkflowTemplatesV1ReviewWorkflowTemplatesGetUrl(),
+  {
+    ...options,
+    method: 'GET'
+
+
+  }
+)
+
+
+  const body = [204, 205, 304].includes(res.status) ? null : await res.text();
+
+  const data: listReviewWorkflowTemplatesV1ReviewWorkflowTemplatesGetResponse['data'] = body ? JSON.parse(body) : {}
+  return { data, status: res.status, headers: res.headers } as listReviewWorkflowTemplatesV1ReviewWorkflowTemplatesGetResponse
+}
+
+
+
+export type listReviewProgramsV1MattersMatterIdReviewProgramsGetResponse200 = {
+  data: ReviewProgramRead[]
+  status: 200
+}
+
+export type listReviewProgramsV1MattersMatterIdReviewProgramsGetResponse422 = {
+  data: HTTPValidationError
+  status: 422
+}
+
+export type listReviewProgramsV1MattersMatterIdReviewProgramsGetResponseSuccess = (listReviewProgramsV1MattersMatterIdReviewProgramsGetResponse200) & {
+  headers: Headers;
+};
+export type listReviewProgramsV1MattersMatterIdReviewProgramsGetResponseError = (listReviewProgramsV1MattersMatterIdReviewProgramsGetResponse422) & {
+  headers: Headers;
+};
+
+export type listReviewProgramsV1MattersMatterIdReviewProgramsGetResponse = (listReviewProgramsV1MattersMatterIdReviewProgramsGetResponseSuccess | listReviewProgramsV1MattersMatterIdReviewProgramsGetResponseError)
+
+export const getListReviewProgramsV1MattersMatterIdReviewProgramsGetUrl = (matterId: string,
+    params?: ListReviewProgramsV1MattersMatterIdReviewProgramsGetParams,) => {
+  const normalizedParams = new URLSearchParams();
+
+  Object.entries(params || {}).forEach(([key, value]) => {
+
+    if (value !== undefined) {
+      normalizedParams.append(key, value === null ? 'null' : String(value))
+    }
+  });
+
+  const stringifiedParams = normalizedParams.toString();
+
+  return stringifiedParams.length > 0 ? `/api/core/v1/matters/${matterId}/review-programs?${stringifiedParams}` : `/api/core/v1/matters/${matterId}/review-programs`
+}
+
+/**
+ * @summary List Review Programs
+ */
+export const listReviewProgramsV1MattersMatterIdReviewProgramsGet = async (matterId: string,
+    params?: ListReviewProgramsV1MattersMatterIdReviewProgramsGetParams, options?: RequestInit): Promise<listReviewProgramsV1MattersMatterIdReviewProgramsGetResponse> => {
+
+  const res = await fetch(getListReviewProgramsV1MattersMatterIdReviewProgramsGetUrl(matterId,params),
+  {
+    ...options,
+    method: 'GET'
+
+
+  }
+)
+
+
+  const body = [204, 205, 304].includes(res.status) ? null : await res.text();
+
+  const data: listReviewProgramsV1MattersMatterIdReviewProgramsGetResponse['data'] = body ? JSON.parse(body) : {}
+  return { data, status: res.status, headers: res.headers } as listReviewProgramsV1MattersMatterIdReviewProgramsGetResponse
+}
+
+
+
+export type createProgramV1MattersMatterIdReviewProgramsPostResponse201 = {
+  data: ReviewProgramRead
+  status: 201
+}
+
+export type createProgramV1MattersMatterIdReviewProgramsPostResponse422 = {
+  data: HTTPValidationError
+  status: 422
+}
+
+export type createProgramV1MattersMatterIdReviewProgramsPostResponseSuccess = (createProgramV1MattersMatterIdReviewProgramsPostResponse201) & {
+  headers: Headers;
+};
+export type createProgramV1MattersMatterIdReviewProgramsPostResponseError = (createProgramV1MattersMatterIdReviewProgramsPostResponse422) & {
+  headers: Headers;
+};
+
+export type createProgramV1MattersMatterIdReviewProgramsPostResponse = (createProgramV1MattersMatterIdReviewProgramsPostResponseSuccess | createProgramV1MattersMatterIdReviewProgramsPostResponseError)
+
+export const getCreateProgramV1MattersMatterIdReviewProgramsPostUrl = (matterId: string,) => {
+
+
+
+
+  return `/api/core/v1/matters/${matterId}/review-programs`
+}
+
+/**
+ * @summary Create Program
+ */
+export const createProgramV1MattersMatterIdReviewProgramsPost = async (matterId: string,
+    reviewProgramCreate: ReviewProgramCreate, options?: RequestInit): Promise<createProgramV1MattersMatterIdReviewProgramsPostResponse> => {
+
+    const getHeaders = (h?: NonNullable<RequestInit['headers']>): Record<string, string | readonly string[]> => {
+    if (!h) return {};
+    if (h instanceof Headers) return Object.fromEntries(h.entries());
+    if (Symbol.iterator in h) {
+      return Object.fromEntries(
+        Array.from(h as Iterable<Iterable<string>>, (entry) => Array.from(entry) as [string, string]),
+      );
+    }
+    const headers: Record<string, string | readonly string[]> = {};
+    for (const [name, value] of Object.entries<string | readonly string[] | undefined>(h)) {
+      if (value !== undefined) headers[name] = value;
+    }
+    return headers;
+  };
+const res = await fetch(getCreateProgramV1MattersMatterIdReviewProgramsPostUrl(matterId),
+  {
+    ...options,
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json', ...getHeaders(options?.headers) },
+    body: JSON.stringify(reviewProgramCreate)
+  }
+)
+
+
+  const body = [204, 205, 304].includes(res.status) ? null : await res.text();
+
+  const data: createProgramV1MattersMatterIdReviewProgramsPostResponse['data'] = body ? JSON.parse(body) : {}
+  return { data, status: res.status, headers: res.headers } as createProgramV1MattersMatterIdReviewProgramsPostResponse
+}
+
+
+
+export type readReviewProgramV1MattersMatterIdReviewProgramsProgramIdGetResponse200 = {
+  data: ReviewProgramRead
+  status: 200
+}
+
+export type readReviewProgramV1MattersMatterIdReviewProgramsProgramIdGetResponse422 = {
+  data: HTTPValidationError
+  status: 422
+}
+
+export type readReviewProgramV1MattersMatterIdReviewProgramsProgramIdGetResponseSuccess = (readReviewProgramV1MattersMatterIdReviewProgramsProgramIdGetResponse200) & {
+  headers: Headers;
+};
+export type readReviewProgramV1MattersMatterIdReviewProgramsProgramIdGetResponseError = (readReviewProgramV1MattersMatterIdReviewProgramsProgramIdGetResponse422) & {
+  headers: Headers;
+};
+
+export type readReviewProgramV1MattersMatterIdReviewProgramsProgramIdGetResponse = (readReviewProgramV1MattersMatterIdReviewProgramsProgramIdGetResponseSuccess | readReviewProgramV1MattersMatterIdReviewProgramsProgramIdGetResponseError)
+
+export const getReadReviewProgramV1MattersMatterIdReviewProgramsProgramIdGetUrl = (matterId: string,
+    programId: string,) => {
+
+
+
+
+  return `/api/core/v1/matters/${matterId}/review-programs/${programId}`
+}
+
+/**
+ * @summary Read Review Program
+ */
+export const readReviewProgramV1MattersMatterIdReviewProgramsProgramIdGet = async (matterId: string,
+    programId: string, options?: RequestInit): Promise<readReviewProgramV1MattersMatterIdReviewProgramsProgramIdGetResponse> => {
+
+  const res = await fetch(getReadReviewProgramV1MattersMatterIdReviewProgramsProgramIdGetUrl(matterId,programId),
+  {
+    ...options,
+    method: 'GET'
+
+
+  }
+)
+
+
+  const body = [204, 205, 304].includes(res.status) ? null : await res.text();
+
+  const data: readReviewProgramV1MattersMatterIdReviewProgramsProgramIdGetResponse['data'] = body ? JSON.parse(body) : {}
+  return { data, status: res.status, headers: res.headers } as readReviewProgramV1MattersMatterIdReviewProgramsProgramIdGetResponse
+}
+
+
+
+export type listReviewProgramRunsV1MattersMatterIdReviewProgramsProgramIdRunsGetResponse200 = {
+  data: ReviewProgramRunRead[]
+  status: 200
+}
+
+export type listReviewProgramRunsV1MattersMatterIdReviewProgramsProgramIdRunsGetResponse422 = {
+  data: HTTPValidationError
+  status: 422
+}
+
+export type listReviewProgramRunsV1MattersMatterIdReviewProgramsProgramIdRunsGetResponseSuccess = (listReviewProgramRunsV1MattersMatterIdReviewProgramsProgramIdRunsGetResponse200) & {
+  headers: Headers;
+};
+export type listReviewProgramRunsV1MattersMatterIdReviewProgramsProgramIdRunsGetResponseError = (listReviewProgramRunsV1MattersMatterIdReviewProgramsProgramIdRunsGetResponse422) & {
+  headers: Headers;
+};
+
+export type listReviewProgramRunsV1MattersMatterIdReviewProgramsProgramIdRunsGetResponse = (listReviewProgramRunsV1MattersMatterIdReviewProgramsProgramIdRunsGetResponseSuccess | listReviewProgramRunsV1MattersMatterIdReviewProgramsProgramIdRunsGetResponseError)
+
+export const getListReviewProgramRunsV1MattersMatterIdReviewProgramsProgramIdRunsGetUrl = (matterId: string,
+    programId: string,) => {
+
+
+
+
+  return `/api/core/v1/matters/${matterId}/review-programs/${programId}/runs`
+}
+
+/**
+ * @summary List Review Program Runs
+ */
+export const listReviewProgramRunsV1MattersMatterIdReviewProgramsProgramIdRunsGet = async (matterId: string,
+    programId: string, options?: RequestInit): Promise<listReviewProgramRunsV1MattersMatterIdReviewProgramsProgramIdRunsGetResponse> => {
+
+  const res = await fetch(getListReviewProgramRunsV1MattersMatterIdReviewProgramsProgramIdRunsGetUrl(matterId,programId),
+  {
+    ...options,
+    method: 'GET'
+
+
+  }
+)
+
+
+  const body = [204, 205, 304].includes(res.status) ? null : await res.text();
+
+  const data: listReviewProgramRunsV1MattersMatterIdReviewProgramsProgramIdRunsGetResponse['data'] = body ? JSON.parse(body) : {}
+  return { data, status: res.status, headers: res.headers } as listReviewProgramRunsV1MattersMatterIdReviewProgramsProgramIdRunsGetResponse
+}
+
+
+
+export type startProgramRunV1MattersMatterIdReviewProgramsProgramIdRunsPostResponse201 = {
+  data: ReviewProgramRunRead
+  status: 201
+}
+
+export type startProgramRunV1MattersMatterIdReviewProgramsProgramIdRunsPostResponse422 = {
+  data: HTTPValidationError
+  status: 422
+}
+
+export type startProgramRunV1MattersMatterIdReviewProgramsProgramIdRunsPostResponseSuccess = (startProgramRunV1MattersMatterIdReviewProgramsProgramIdRunsPostResponse201) & {
+  headers: Headers;
+};
+export type startProgramRunV1MattersMatterIdReviewProgramsProgramIdRunsPostResponseError = (startProgramRunV1MattersMatterIdReviewProgramsProgramIdRunsPostResponse422) & {
+  headers: Headers;
+};
+
+export type startProgramRunV1MattersMatterIdReviewProgramsProgramIdRunsPostResponse = (startProgramRunV1MattersMatterIdReviewProgramsProgramIdRunsPostResponseSuccess | startProgramRunV1MattersMatterIdReviewProgramsProgramIdRunsPostResponseError)
+
+export const getStartProgramRunV1MattersMatterIdReviewProgramsProgramIdRunsPostUrl = (matterId: string,
+    programId: string,) => {
+
+
+
+
+  return `/api/core/v1/matters/${matterId}/review-programs/${programId}/runs`
+}
+
+/**
+ * @summary Start Program Run
+ */
+export const startProgramRunV1MattersMatterIdReviewProgramsProgramIdRunsPost = async (matterId: string,
+    programId: string,
+    reviewProgramRunStart: ReviewProgramRunStart, options?: RequestInit): Promise<startProgramRunV1MattersMatterIdReviewProgramsProgramIdRunsPostResponse> => {
+
+    const getHeaders = (h?: NonNullable<RequestInit['headers']>): Record<string, string | readonly string[]> => {
+    if (!h) return {};
+    if (h instanceof Headers) return Object.fromEntries(h.entries());
+    if (Symbol.iterator in h) {
+      return Object.fromEntries(
+        Array.from(h as Iterable<Iterable<string>>, (entry) => Array.from(entry) as [string, string]),
+      );
+    }
+    const headers: Record<string, string | readonly string[]> = {};
+    for (const [name, value] of Object.entries<string | readonly string[] | undefined>(h)) {
+      if (value !== undefined) headers[name] = value;
+    }
+    return headers;
+  };
+const res = await fetch(getStartProgramRunV1MattersMatterIdReviewProgramsProgramIdRunsPostUrl(matterId,programId),
+  {
+    ...options,
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json', ...getHeaders(options?.headers) },
+    body: JSON.stringify(reviewProgramRunStart)
+  }
+)
+
+
+  const body = [204, 205, 304].includes(res.status) ? null : await res.text();
+
+  const data: startProgramRunV1MattersMatterIdReviewProgramsProgramIdRunsPostResponse['data'] = body ? JSON.parse(body) : {}
+  return { data, status: res.status, headers: res.headers } as startProgramRunV1MattersMatterIdReviewProgramsProgramIdRunsPostResponse
+}
+
+
+
+export type readProgramRunV1MattersMatterIdReviewProgramsProgramIdRunsRunIdGetResponse200 = {
+  data: ReviewProgramRunRead
+  status: 200
+}
+
+export type readProgramRunV1MattersMatterIdReviewProgramsProgramIdRunsRunIdGetResponse422 = {
+  data: HTTPValidationError
+  status: 422
+}
+
+export type readProgramRunV1MattersMatterIdReviewProgramsProgramIdRunsRunIdGetResponseSuccess = (readProgramRunV1MattersMatterIdReviewProgramsProgramIdRunsRunIdGetResponse200) & {
+  headers: Headers;
+};
+export type readProgramRunV1MattersMatterIdReviewProgramsProgramIdRunsRunIdGetResponseError = (readProgramRunV1MattersMatterIdReviewProgramsProgramIdRunsRunIdGetResponse422) & {
+  headers: Headers;
+};
+
+export type readProgramRunV1MattersMatterIdReviewProgramsProgramIdRunsRunIdGetResponse = (readProgramRunV1MattersMatterIdReviewProgramsProgramIdRunsRunIdGetResponseSuccess | readProgramRunV1MattersMatterIdReviewProgramsProgramIdRunsRunIdGetResponseError)
+
+export const getReadProgramRunV1MattersMatterIdReviewProgramsProgramIdRunsRunIdGetUrl = (matterId: string,
+    programId: string,
+    runId: string,) => {
+
+
+
+
+  return `/api/core/v1/matters/${matterId}/review-programs/${programId}/runs/${runId}`
+}
+
+/**
+ * @summary Read Program Run
+ */
+export const readProgramRunV1MattersMatterIdReviewProgramsProgramIdRunsRunIdGet = async (matterId: string,
+    programId: string,
+    runId: string, options?: RequestInit): Promise<readProgramRunV1MattersMatterIdReviewProgramsProgramIdRunsRunIdGetResponse> => {
+
+  const res = await fetch(getReadProgramRunV1MattersMatterIdReviewProgramsProgramIdRunsRunIdGetUrl(matterId,programId,runId),
+  {
+    ...options,
+    method: 'GET'
+
+
+  }
+)
+
+
+  const body = [204, 205, 304].includes(res.status) ? null : await res.text();
+
+  const data: readProgramRunV1MattersMatterIdReviewProgramsProgramIdRunsRunIdGetResponse['data'] = body ? JSON.parse(body) : {}
+  return { data, status: res.status, headers: res.headers } as readProgramRunV1MattersMatterIdReviewProgramsProgramIdRunsRunIdGetResponse
+}
+
+
+
+export type resolveProgramActionV1MattersMatterIdReviewProgramsProgramIdRunsRunIdActionsActionIdResolvePostResponse200 = {
+  data: ReviewProgramRunRead
+  status: 200
+}
+
+export type resolveProgramActionV1MattersMatterIdReviewProgramsProgramIdRunsRunIdActionsActionIdResolvePostResponse422 = {
+  data: HTTPValidationError
+  status: 422
+}
+
+export type resolveProgramActionV1MattersMatterIdReviewProgramsProgramIdRunsRunIdActionsActionIdResolvePostResponseSuccess = (resolveProgramActionV1MattersMatterIdReviewProgramsProgramIdRunsRunIdActionsActionIdResolvePostResponse200) & {
+  headers: Headers;
+};
+export type resolveProgramActionV1MattersMatterIdReviewProgramsProgramIdRunsRunIdActionsActionIdResolvePostResponseError = (resolveProgramActionV1MattersMatterIdReviewProgramsProgramIdRunsRunIdActionsActionIdResolvePostResponse422) & {
+  headers: Headers;
+};
+
+export type resolveProgramActionV1MattersMatterIdReviewProgramsProgramIdRunsRunIdActionsActionIdResolvePostResponse = (resolveProgramActionV1MattersMatterIdReviewProgramsProgramIdRunsRunIdActionsActionIdResolvePostResponseSuccess | resolveProgramActionV1MattersMatterIdReviewProgramsProgramIdRunsRunIdActionsActionIdResolvePostResponseError)
+
+export const getResolveProgramActionV1MattersMatterIdReviewProgramsProgramIdRunsRunIdActionsActionIdResolvePostUrl = (matterId: string,
+    programId: string,
+    runId: string,
+    actionId: string,) => {
+
+
+
+
+  return `/api/core/v1/matters/${matterId}/review-programs/${programId}/runs/${runId}/actions/${actionId}/resolve`
+}
+
+/**
+ * @summary Resolve Program Action
+ */
+export const resolveProgramActionV1MattersMatterIdReviewProgramsProgramIdRunsRunIdActionsActionIdResolvePost = async (matterId: string,
+    programId: string,
+    runId: string,
+    actionId: string,
+    reviewProgramActionResolve: ReviewProgramActionResolve, options?: RequestInit): Promise<resolveProgramActionV1MattersMatterIdReviewProgramsProgramIdRunsRunIdActionsActionIdResolvePostResponse> => {
+
+    const getHeaders = (h?: NonNullable<RequestInit['headers']>): Record<string, string | readonly string[]> => {
+    if (!h) return {};
+    if (h instanceof Headers) return Object.fromEntries(h.entries());
+    if (Symbol.iterator in h) {
+      return Object.fromEntries(
+        Array.from(h as Iterable<Iterable<string>>, (entry) => Array.from(entry) as [string, string]),
+      );
+    }
+    const headers: Record<string, string | readonly string[]> = {};
+    for (const [name, value] of Object.entries<string | readonly string[] | undefined>(h)) {
+      if (value !== undefined) headers[name] = value;
+    }
+    return headers;
+  };
+const res = await fetch(getResolveProgramActionV1MattersMatterIdReviewProgramsProgramIdRunsRunIdActionsActionIdResolvePostUrl(matterId,programId,runId,actionId),
+  {
+    ...options,
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json', ...getHeaders(options?.headers) },
+    body: JSON.stringify(reviewProgramActionResolve)
+  }
+)
+
+
+  const body = [204, 205, 304].includes(res.status) ? null : await res.text();
+
+  const data: resolveProgramActionV1MattersMatterIdReviewProgramsProgramIdRunsRunIdActionsActionIdResolvePostResponse['data'] = body ? JSON.parse(body) : {}
+  return { data, status: res.status, headers: res.headers } as resolveProgramActionV1MattersMatterIdReviewProgramsProgramIdRunsRunIdActionsActionIdResolvePostResponse
+}
+
+
+
+export type setupProgramDefinitionV1MattersMatterIdReviewProgramsProgramIdRunsRunIdActionsActionIdDefinitionSetupPostResponse200 = {
+  data: ReviewProgramRunRead
+  status: 200
+}
+
+export type setupProgramDefinitionV1MattersMatterIdReviewProgramsProgramIdRunsRunIdActionsActionIdDefinitionSetupPostResponse422 = {
+  data: HTTPValidationError
+  status: 422
+}
+
+export type setupProgramDefinitionV1MattersMatterIdReviewProgramsProgramIdRunsRunIdActionsActionIdDefinitionSetupPostResponseSuccess = (setupProgramDefinitionV1MattersMatterIdReviewProgramsProgramIdRunsRunIdActionsActionIdDefinitionSetupPostResponse200) & {
+  headers: Headers;
+};
+export type setupProgramDefinitionV1MattersMatterIdReviewProgramsProgramIdRunsRunIdActionsActionIdDefinitionSetupPostResponseError = (setupProgramDefinitionV1MattersMatterIdReviewProgramsProgramIdRunsRunIdActionsActionIdDefinitionSetupPostResponse422) & {
+  headers: Headers;
+};
+
+export type setupProgramDefinitionV1MattersMatterIdReviewProgramsProgramIdRunsRunIdActionsActionIdDefinitionSetupPostResponse = (setupProgramDefinitionV1MattersMatterIdReviewProgramsProgramIdRunsRunIdActionsActionIdDefinitionSetupPostResponseSuccess | setupProgramDefinitionV1MattersMatterIdReviewProgramsProgramIdRunsRunIdActionsActionIdDefinitionSetupPostResponseError)
+
+export const getSetupProgramDefinitionV1MattersMatterIdReviewProgramsProgramIdRunsRunIdActionsActionIdDefinitionSetupPostUrl = (matterId: string,
+    programId: string,
+    runId: string,
+    actionId: string,) => {
+
+
+
+
+  return `/api/core/v1/matters/${matterId}/review-programs/${programId}/runs/${runId}/actions/${actionId}/definition-setup`
+}
+
+/**
+ * @summary Setup Program Definition
+ */
+export const setupProgramDefinitionV1MattersMatterIdReviewProgramsProgramIdRunsRunIdActionsActionIdDefinitionSetupPost = async (matterId: string,
+    programId: string,
+    runId: string,
+    actionId: string,
+    reviewProgramDefinitionSetup: ReviewProgramDefinitionSetup, options?: RequestInit): Promise<setupProgramDefinitionV1MattersMatterIdReviewProgramsProgramIdRunsRunIdActionsActionIdDefinitionSetupPostResponse> => {
+
+    const getHeaders = (h?: NonNullable<RequestInit['headers']>): Record<string, string | readonly string[]> => {
+    if (!h) return {};
+    if (h instanceof Headers) return Object.fromEntries(h.entries());
+    if (Symbol.iterator in h) {
+      return Object.fromEntries(
+        Array.from(h as Iterable<Iterable<string>>, (entry) => Array.from(entry) as [string, string]),
+      );
+    }
+    const headers: Record<string, string | readonly string[]> = {};
+    for (const [name, value] of Object.entries<string | readonly string[] | undefined>(h)) {
+      if (value !== undefined) headers[name] = value;
+    }
+    return headers;
+  };
+const res = await fetch(getSetupProgramDefinitionV1MattersMatterIdReviewProgramsProgramIdRunsRunIdActionsActionIdDefinitionSetupPostUrl(matterId,programId,runId,actionId),
+  {
+    ...options,
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json', ...getHeaders(options?.headers) },
+    body: JSON.stringify(reviewProgramDefinitionSetup)
+  }
+)
+
+
+  const body = [204, 205, 304].includes(res.status) ? null : await res.text();
+
+  const data: setupProgramDefinitionV1MattersMatterIdReviewProgramsProgramIdRunsRunIdActionsActionIdDefinitionSetupPostResponse['data'] = body ? JSON.parse(body) : {}
+  return { data, status: res.status, headers: res.headers } as setupProgramDefinitionV1MattersMatterIdReviewProgramsProgramIdRunsRunIdActionsActionIdDefinitionSetupPostResponse
+}
+
+
+
+export type setupProgramQaTaskV1MattersMatterIdReviewProgramsProgramIdRunsRunIdActionsActionIdQaSetupPostResponse202 = {
+  data: ReviewProgramRunRead
+  status: 202
+}
+
+export type setupProgramQaTaskV1MattersMatterIdReviewProgramsProgramIdRunsRunIdActionsActionIdQaSetupPostResponse422 = {
+  data: HTTPValidationError
+  status: 422
+}
+
+export type setupProgramQaTaskV1MattersMatterIdReviewProgramsProgramIdRunsRunIdActionsActionIdQaSetupPostResponseSuccess = (setupProgramQaTaskV1MattersMatterIdReviewProgramsProgramIdRunsRunIdActionsActionIdQaSetupPostResponse202) & {
+  headers: Headers;
+};
+export type setupProgramQaTaskV1MattersMatterIdReviewProgramsProgramIdRunsRunIdActionsActionIdQaSetupPostResponseError = (setupProgramQaTaskV1MattersMatterIdReviewProgramsProgramIdRunsRunIdActionsActionIdQaSetupPostResponse422) & {
+  headers: Headers;
+};
+
+export type setupProgramQaTaskV1MattersMatterIdReviewProgramsProgramIdRunsRunIdActionsActionIdQaSetupPostResponse = (setupProgramQaTaskV1MattersMatterIdReviewProgramsProgramIdRunsRunIdActionsActionIdQaSetupPostResponseSuccess | setupProgramQaTaskV1MattersMatterIdReviewProgramsProgramIdRunsRunIdActionsActionIdQaSetupPostResponseError)
+
+export const getSetupProgramQaTaskV1MattersMatterIdReviewProgramsProgramIdRunsRunIdActionsActionIdQaSetupPostUrl = (matterId: string,
+    programId: string,
+    runId: string,
+    actionId: string,) => {
+
+
+
+
+  return `/api/core/v1/matters/${matterId}/review-programs/${programId}/runs/${runId}/actions/${actionId}/qa-setup`
+}
+
+/**
+ * @summary Setup Program Qa Task
+ */
+export const setupProgramQaTaskV1MattersMatterIdReviewProgramsProgramIdRunsRunIdActionsActionIdQaSetupPost = async (matterId: string,
+    programId: string,
+    runId: string,
+    actionId: string,
+    reviewProgramQASetup: ReviewProgramQASetup, options?: RequestInit): Promise<setupProgramQaTaskV1MattersMatterIdReviewProgramsProgramIdRunsRunIdActionsActionIdQaSetupPostResponse> => {
+
+    const getHeaders = (h?: NonNullable<RequestInit['headers']>): Record<string, string | readonly string[]> => {
+    if (!h) return {};
+    if (h instanceof Headers) return Object.fromEntries(h.entries());
+    if (Symbol.iterator in h) {
+      return Object.fromEntries(
+        Array.from(h as Iterable<Iterable<string>>, (entry) => Array.from(entry) as [string, string]),
+      );
+    }
+    const headers: Record<string, string | readonly string[]> = {};
+    for (const [name, value] of Object.entries<string | readonly string[] | undefined>(h)) {
+      if (value !== undefined) headers[name] = value;
+    }
+    return headers;
+  };
+const res = await fetch(getSetupProgramQaTaskV1MattersMatterIdReviewProgramsProgramIdRunsRunIdActionsActionIdQaSetupPostUrl(matterId,programId,runId,actionId),
+  {
+    ...options,
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json', ...getHeaders(options?.headers) },
+    body: JSON.stringify(reviewProgramQASetup)
+  }
+)
+
+
+  const body = [204, 205, 304].includes(res.status) ? null : await res.text();
+
+  const data: setupProgramQaTaskV1MattersMatterIdReviewProgramsProgramIdRunsRunIdActionsActionIdQaSetupPostResponse['data'] = body ? JSON.parse(body) : {}
+  return { data, status: res.status, headers: res.headers } as setupProgramQaTaskV1MattersMatterIdReviewProgramsProgramIdRunsRunIdActionsActionIdQaSetupPostResponse
+}
+
+
+
+export type setupProgramDiscoveryV1MattersMatterIdReviewProgramsProgramIdRunsRunIdActionsActionIdDiscoverySetupPostResponse202 = {
+  data: ReviewProgramRunRead
+  status: 202
+}
+
+export type setupProgramDiscoveryV1MattersMatterIdReviewProgramsProgramIdRunsRunIdActionsActionIdDiscoverySetupPostResponse422 = {
+  data: HTTPValidationError
+  status: 422
+}
+
+export type setupProgramDiscoveryV1MattersMatterIdReviewProgramsProgramIdRunsRunIdActionsActionIdDiscoverySetupPostResponseSuccess = (setupProgramDiscoveryV1MattersMatterIdReviewProgramsProgramIdRunsRunIdActionsActionIdDiscoverySetupPostResponse202) & {
+  headers: Headers;
+};
+export type setupProgramDiscoveryV1MattersMatterIdReviewProgramsProgramIdRunsRunIdActionsActionIdDiscoverySetupPostResponseError = (setupProgramDiscoveryV1MattersMatterIdReviewProgramsProgramIdRunsRunIdActionsActionIdDiscoverySetupPostResponse422) & {
+  headers: Headers;
+};
+
+export type setupProgramDiscoveryV1MattersMatterIdReviewProgramsProgramIdRunsRunIdActionsActionIdDiscoverySetupPostResponse = (setupProgramDiscoveryV1MattersMatterIdReviewProgramsProgramIdRunsRunIdActionsActionIdDiscoverySetupPostResponseSuccess | setupProgramDiscoveryV1MattersMatterIdReviewProgramsProgramIdRunsRunIdActionsActionIdDiscoverySetupPostResponseError)
+
+export const getSetupProgramDiscoveryV1MattersMatterIdReviewProgramsProgramIdRunsRunIdActionsActionIdDiscoverySetupPostUrl = (matterId: string,
+    programId: string,
+    runId: string,
+    actionId: string,) => {
+
+
+
+
+  return `/api/core/v1/matters/${matterId}/review-programs/${programId}/runs/${runId}/actions/${actionId}/discovery-setup`
+}
+
+/**
+ * @summary Setup Program Discovery
+ */
+export const setupProgramDiscoveryV1MattersMatterIdReviewProgramsProgramIdRunsRunIdActionsActionIdDiscoverySetupPost = async (matterId: string,
+    programId: string,
+    runId: string,
+    actionId: string,
+    reviewProgramDiscoverySetup: ReviewProgramDiscoverySetup, options?: RequestInit): Promise<setupProgramDiscoveryV1MattersMatterIdReviewProgramsProgramIdRunsRunIdActionsActionIdDiscoverySetupPostResponse> => {
+
+    const getHeaders = (h?: NonNullable<RequestInit['headers']>): Record<string, string | readonly string[]> => {
+    if (!h) return {};
+    if (h instanceof Headers) return Object.fromEntries(h.entries());
+    if (Symbol.iterator in h) {
+      return Object.fromEntries(
+        Array.from(h as Iterable<Iterable<string>>, (entry) => Array.from(entry) as [string, string]),
+      );
+    }
+    const headers: Record<string, string | readonly string[]> = {};
+    for (const [name, value] of Object.entries<string | readonly string[] | undefined>(h)) {
+      if (value !== undefined) headers[name] = value;
+    }
+    return headers;
+  };
+const res = await fetch(getSetupProgramDiscoveryV1MattersMatterIdReviewProgramsProgramIdRunsRunIdActionsActionIdDiscoverySetupPostUrl(matterId,programId,runId,actionId),
+  {
+    ...options,
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json', ...getHeaders(options?.headers) },
+    body: JSON.stringify(reviewProgramDiscoverySetup)
+  }
+)
+
+
+  const body = [204, 205, 304].includes(res.status) ? null : await res.text();
+
+  const data: setupProgramDiscoveryV1MattersMatterIdReviewProgramsProgramIdRunsRunIdActionsActionIdDiscoverySetupPostResponse['data'] = body ? JSON.parse(body) : {}
+  return { data, status: res.status, headers: res.headers } as setupProgramDiscoveryV1MattersMatterIdReviewProgramsProgramIdRunsRunIdActionsActionIdDiscoverySetupPostResponse
+}
+
+
+
+export type setupProgramClassifierImprovementV1MattersMatterIdReviewProgramsProgramIdRunsRunIdActionsActionIdClassifierImprovementSetupPostResponse202 = {
+  data: ReviewProgramRunRead
+  status: 202
+}
+
+export type setupProgramClassifierImprovementV1MattersMatterIdReviewProgramsProgramIdRunsRunIdActionsActionIdClassifierImprovementSetupPostResponse422 = {
+  data: HTTPValidationError
+  status: 422
+}
+
+export type setupProgramClassifierImprovementV1MattersMatterIdReviewProgramsProgramIdRunsRunIdActionsActionIdClassifierImprovementSetupPostResponseSuccess = (setupProgramClassifierImprovementV1MattersMatterIdReviewProgramsProgramIdRunsRunIdActionsActionIdClassifierImprovementSetupPostResponse202) & {
+  headers: Headers;
+};
+export type setupProgramClassifierImprovementV1MattersMatterIdReviewProgramsProgramIdRunsRunIdActionsActionIdClassifierImprovementSetupPostResponseError = (setupProgramClassifierImprovementV1MattersMatterIdReviewProgramsProgramIdRunsRunIdActionsActionIdClassifierImprovementSetupPostResponse422) & {
+  headers: Headers;
+};
+
+export type setupProgramClassifierImprovementV1MattersMatterIdReviewProgramsProgramIdRunsRunIdActionsActionIdClassifierImprovementSetupPostResponse = (setupProgramClassifierImprovementV1MattersMatterIdReviewProgramsProgramIdRunsRunIdActionsActionIdClassifierImprovementSetupPostResponseSuccess | setupProgramClassifierImprovementV1MattersMatterIdReviewProgramsProgramIdRunsRunIdActionsActionIdClassifierImprovementSetupPostResponseError)
+
+export const getSetupProgramClassifierImprovementV1MattersMatterIdReviewProgramsProgramIdRunsRunIdActionsActionIdClassifierImprovementSetupPostUrl = (matterId: string,
+    programId: string,
+    runId: string,
+    actionId: string,) => {
+
+
+
+
+  return `/api/core/v1/matters/${matterId}/review-programs/${programId}/runs/${runId}/actions/${actionId}/classifier-improvement-setup`
+}
+
+/**
+ * @summary Setup Program Classifier Improvement
+ */
+export const setupProgramClassifierImprovementV1MattersMatterIdReviewProgramsProgramIdRunsRunIdActionsActionIdClassifierImprovementSetupPost = async (matterId: string,
+    programId: string,
+    runId: string,
+    actionId: string,
+    reviewProgramClassifierImprovementSetup: ReviewProgramClassifierImprovementSetup, options?: RequestInit): Promise<setupProgramClassifierImprovementV1MattersMatterIdReviewProgramsProgramIdRunsRunIdActionsActionIdClassifierImprovementSetupPostResponse> => {
+
+    const getHeaders = (h?: NonNullable<RequestInit['headers']>): Record<string, string | readonly string[]> => {
+    if (!h) return {};
+    if (h instanceof Headers) return Object.fromEntries(h.entries());
+    if (Symbol.iterator in h) {
+      return Object.fromEntries(
+        Array.from(h as Iterable<Iterable<string>>, (entry) => Array.from(entry) as [string, string]),
+      );
+    }
+    const headers: Record<string, string | readonly string[]> = {};
+    for (const [name, value] of Object.entries<string | readonly string[] | undefined>(h)) {
+      if (value !== undefined) headers[name] = value;
+    }
+    return headers;
+  };
+const res = await fetch(getSetupProgramClassifierImprovementV1MattersMatterIdReviewProgramsProgramIdRunsRunIdActionsActionIdClassifierImprovementSetupPostUrl(matterId,programId,runId,actionId),
+  {
+    ...options,
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json', ...getHeaders(options?.headers) },
+    body: JSON.stringify(reviewProgramClassifierImprovementSetup)
+  }
+)
+
+
+  const body = [204, 205, 304].includes(res.status) ? null : await res.text();
+
+  const data: setupProgramClassifierImprovementV1MattersMatterIdReviewProgramsProgramIdRunsRunIdActionsActionIdClassifierImprovementSetupPostResponse['data'] = body ? JSON.parse(body) : {}
+  return { data, status: res.status, headers: res.headers } as setupProgramClassifierImprovementV1MattersMatterIdReviewProgramsProgramIdRunsRunIdActionsActionIdClassifierImprovementSetupPostResponse
+}
+
+
+
+export type setupProgramNegativePopulationQcV1MattersMatterIdReviewProgramsProgramIdRunsRunIdActionsActionIdNegativePopulationQcSetupPostResponse202 = {
+  data: ReviewProgramRunRead
+  status: 202
+}
+
+export type setupProgramNegativePopulationQcV1MattersMatterIdReviewProgramsProgramIdRunsRunIdActionsActionIdNegativePopulationQcSetupPostResponse422 = {
+  data: HTTPValidationError
+  status: 422
+}
+
+export type setupProgramNegativePopulationQcV1MattersMatterIdReviewProgramsProgramIdRunsRunIdActionsActionIdNegativePopulationQcSetupPostResponseSuccess = (setupProgramNegativePopulationQcV1MattersMatterIdReviewProgramsProgramIdRunsRunIdActionsActionIdNegativePopulationQcSetupPostResponse202) & {
+  headers: Headers;
+};
+export type setupProgramNegativePopulationQcV1MattersMatterIdReviewProgramsProgramIdRunsRunIdActionsActionIdNegativePopulationQcSetupPostResponseError = (setupProgramNegativePopulationQcV1MattersMatterIdReviewProgramsProgramIdRunsRunIdActionsActionIdNegativePopulationQcSetupPostResponse422) & {
+  headers: Headers;
+};
+
+export type setupProgramNegativePopulationQcV1MattersMatterIdReviewProgramsProgramIdRunsRunIdActionsActionIdNegativePopulationQcSetupPostResponse = (setupProgramNegativePopulationQcV1MattersMatterIdReviewProgramsProgramIdRunsRunIdActionsActionIdNegativePopulationQcSetupPostResponseSuccess | setupProgramNegativePopulationQcV1MattersMatterIdReviewProgramsProgramIdRunsRunIdActionsActionIdNegativePopulationQcSetupPostResponseError)
+
+export const getSetupProgramNegativePopulationQcV1MattersMatterIdReviewProgramsProgramIdRunsRunIdActionsActionIdNegativePopulationQcSetupPostUrl = (matterId: string,
+    programId: string,
+    runId: string,
+    actionId: string,) => {
+
+
+
+
+  return `/api/core/v1/matters/${matterId}/review-programs/${programId}/runs/${runId}/actions/${actionId}/negative-population-qc-setup`
+}
+
+/**
+ * @summary Setup Program Negative Population Qc
+ */
+export const setupProgramNegativePopulationQcV1MattersMatterIdReviewProgramsProgramIdRunsRunIdActionsActionIdNegativePopulationQcSetupPost = async (matterId: string,
+    programId: string,
+    runId: string,
+    actionId: string,
+    reviewProgramNegativePopulationQCSetup: ReviewProgramNegativePopulationQCSetup, options?: RequestInit): Promise<setupProgramNegativePopulationQcV1MattersMatterIdReviewProgramsProgramIdRunsRunIdActionsActionIdNegativePopulationQcSetupPostResponse> => {
+
+    const getHeaders = (h?: NonNullable<RequestInit['headers']>): Record<string, string | readonly string[]> => {
+    if (!h) return {};
+    if (h instanceof Headers) return Object.fromEntries(h.entries());
+    if (Symbol.iterator in h) {
+      return Object.fromEntries(
+        Array.from(h as Iterable<Iterable<string>>, (entry) => Array.from(entry) as [string, string]),
+      );
+    }
+    const headers: Record<string, string | readonly string[]> = {};
+    for (const [name, value] of Object.entries<string | readonly string[] | undefined>(h)) {
+      if (value !== undefined) headers[name] = value;
+    }
+    return headers;
+  };
+const res = await fetch(getSetupProgramNegativePopulationQcV1MattersMatterIdReviewProgramsProgramIdRunsRunIdActionsActionIdNegativePopulationQcSetupPostUrl(matterId,programId,runId,actionId),
+  {
+    ...options,
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json', ...getHeaders(options?.headers) },
+    body: JSON.stringify(reviewProgramNegativePopulationQCSetup)
+  }
+)
+
+
+  const body = [204, 205, 304].includes(res.status) ? null : await res.text();
+
+  const data: setupProgramNegativePopulationQcV1MattersMatterIdReviewProgramsProgramIdRunsRunIdActionsActionIdNegativePopulationQcSetupPostResponse['data'] = body ? JSON.parse(body) : {}
+  return { data, status: res.status, headers: res.headers } as setupProgramNegativePopulationQcV1MattersMatterIdReviewProgramsProgramIdRunsRunIdActionsActionIdNegativePopulationQcSetupPostResponse
+}
+
+
+
+export type cancelProgramRunV1MattersMatterIdReviewProgramsProgramIdRunsRunIdCancelPostResponse200 = {
+  data: ReviewProgramRunRead
+  status: 200
+}
+
+export type cancelProgramRunV1MattersMatterIdReviewProgramsProgramIdRunsRunIdCancelPostResponse422 = {
+  data: HTTPValidationError
+  status: 422
+}
+
+export type cancelProgramRunV1MattersMatterIdReviewProgramsProgramIdRunsRunIdCancelPostResponseSuccess = (cancelProgramRunV1MattersMatterIdReviewProgramsProgramIdRunsRunIdCancelPostResponse200) & {
+  headers: Headers;
+};
+export type cancelProgramRunV1MattersMatterIdReviewProgramsProgramIdRunsRunIdCancelPostResponseError = (cancelProgramRunV1MattersMatterIdReviewProgramsProgramIdRunsRunIdCancelPostResponse422) & {
+  headers: Headers;
+};
+
+export type cancelProgramRunV1MattersMatterIdReviewProgramsProgramIdRunsRunIdCancelPostResponse = (cancelProgramRunV1MattersMatterIdReviewProgramsProgramIdRunsRunIdCancelPostResponseSuccess | cancelProgramRunV1MattersMatterIdReviewProgramsProgramIdRunsRunIdCancelPostResponseError)
+
+export const getCancelProgramRunV1MattersMatterIdReviewProgramsProgramIdRunsRunIdCancelPostUrl = (matterId: string,
+    programId: string,
+    runId: string,) => {
+
+
+
+
+  return `/api/core/v1/matters/${matterId}/review-programs/${programId}/runs/${runId}/cancel`
+}
+
+/**
+ * @summary Cancel Program Run
+ */
+export const cancelProgramRunV1MattersMatterIdReviewProgramsProgramIdRunsRunIdCancelPost = async (matterId: string,
+    programId: string,
+    runId: string,
+    reviewProgramRunCommand: ReviewProgramRunCommand, options?: RequestInit): Promise<cancelProgramRunV1MattersMatterIdReviewProgramsProgramIdRunsRunIdCancelPostResponse> => {
+
+    const getHeaders = (h?: NonNullable<RequestInit['headers']>): Record<string, string | readonly string[]> => {
+    if (!h) return {};
+    if (h instanceof Headers) return Object.fromEntries(h.entries());
+    if (Symbol.iterator in h) {
+      return Object.fromEntries(
+        Array.from(h as Iterable<Iterable<string>>, (entry) => Array.from(entry) as [string, string]),
+      );
+    }
+    const headers: Record<string, string | readonly string[]> = {};
+    for (const [name, value] of Object.entries<string | readonly string[] | undefined>(h)) {
+      if (value !== undefined) headers[name] = value;
+    }
+    return headers;
+  };
+const res = await fetch(getCancelProgramRunV1MattersMatterIdReviewProgramsProgramIdRunsRunIdCancelPostUrl(matterId,programId,runId),
+  {
+    ...options,
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json', ...getHeaders(options?.headers) },
+    body: JSON.stringify(reviewProgramRunCommand)
+  }
+)
+
+
+  const body = [204, 205, 304].includes(res.status) ? null : await res.text();
+
+  const data: cancelProgramRunV1MattersMatterIdReviewProgramsProgramIdRunsRunIdCancelPostResponse['data'] = body ? JSON.parse(body) : {}
+  return { data, status: res.status, headers: res.headers } as cancelProgramRunV1MattersMatterIdReviewProgramsProgramIdRunsRunIdCancelPostResponse
+}
+
+
+
+export type retryProgramRunV1MattersMatterIdReviewProgramsProgramIdRunsRunIdRetryPostResponse200 = {
+  data: ReviewProgramRunRead
+  status: 200
+}
+
+export type retryProgramRunV1MattersMatterIdReviewProgramsProgramIdRunsRunIdRetryPostResponse422 = {
+  data: HTTPValidationError
+  status: 422
+}
+
+export type retryProgramRunV1MattersMatterIdReviewProgramsProgramIdRunsRunIdRetryPostResponseSuccess = (retryProgramRunV1MattersMatterIdReviewProgramsProgramIdRunsRunIdRetryPostResponse200) & {
+  headers: Headers;
+};
+export type retryProgramRunV1MattersMatterIdReviewProgramsProgramIdRunsRunIdRetryPostResponseError = (retryProgramRunV1MattersMatterIdReviewProgramsProgramIdRunsRunIdRetryPostResponse422) & {
+  headers: Headers;
+};
+
+export type retryProgramRunV1MattersMatterIdReviewProgramsProgramIdRunsRunIdRetryPostResponse = (retryProgramRunV1MattersMatterIdReviewProgramsProgramIdRunsRunIdRetryPostResponseSuccess | retryProgramRunV1MattersMatterIdReviewProgramsProgramIdRunsRunIdRetryPostResponseError)
+
+export const getRetryProgramRunV1MattersMatterIdReviewProgramsProgramIdRunsRunIdRetryPostUrl = (matterId: string,
+    programId: string,
+    runId: string,) => {
+
+
+
+
+  return `/api/core/v1/matters/${matterId}/review-programs/${programId}/runs/${runId}/retry`
+}
+
+/**
+ * @summary Retry Program Run
+ */
+export const retryProgramRunV1MattersMatterIdReviewProgramsProgramIdRunsRunIdRetryPost = async (matterId: string,
+    programId: string,
+    runId: string,
+    reviewProgramRunCommand: ReviewProgramRunCommand, options?: RequestInit): Promise<retryProgramRunV1MattersMatterIdReviewProgramsProgramIdRunsRunIdRetryPostResponse> => {
+
+    const getHeaders = (h?: NonNullable<RequestInit['headers']>): Record<string, string | readonly string[]> => {
+    if (!h) return {};
+    if (h instanceof Headers) return Object.fromEntries(h.entries());
+    if (Symbol.iterator in h) {
+      return Object.fromEntries(
+        Array.from(h as Iterable<Iterable<string>>, (entry) => Array.from(entry) as [string, string]),
+      );
+    }
+    const headers: Record<string, string | readonly string[]> = {};
+    for (const [name, value] of Object.entries<string | readonly string[] | undefined>(h)) {
+      if (value !== undefined) headers[name] = value;
+    }
+    return headers;
+  };
+const res = await fetch(getRetryProgramRunV1MattersMatterIdReviewProgramsProgramIdRunsRunIdRetryPostUrl(matterId,programId,runId),
+  {
+    ...options,
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json', ...getHeaders(options?.headers) },
+    body: JSON.stringify(reviewProgramRunCommand)
+  }
+)
+
+
+  const body = [204, 205, 304].includes(res.status) ? null : await res.text();
+
+  const data: retryProgramRunV1MattersMatterIdReviewProgramsProgramIdRunsRunIdRetryPostResponse['data'] = body ? JSON.parse(body) : {}
+  return { data, status: res.status, headers: res.headers } as retryProgramRunV1MattersMatterIdReviewProgramsProgramIdRunsRunIdRetryPostResponse
+}
+
+
+
+export type reconcileProgramRunV1MattersMatterIdReviewProgramsProgramIdRunsRunIdReconcilePostResponse200 = {
+  data: ReviewProgramRunRead
+  status: 200
+}
+
+export type reconcileProgramRunV1MattersMatterIdReviewProgramsProgramIdRunsRunIdReconcilePostResponse422 = {
+  data: HTTPValidationError
+  status: 422
+}
+
+export type reconcileProgramRunV1MattersMatterIdReviewProgramsProgramIdRunsRunIdReconcilePostResponseSuccess = (reconcileProgramRunV1MattersMatterIdReviewProgramsProgramIdRunsRunIdReconcilePostResponse200) & {
+  headers: Headers;
+};
+export type reconcileProgramRunV1MattersMatterIdReviewProgramsProgramIdRunsRunIdReconcilePostResponseError = (reconcileProgramRunV1MattersMatterIdReviewProgramsProgramIdRunsRunIdReconcilePostResponse422) & {
+  headers: Headers;
+};
+
+export type reconcileProgramRunV1MattersMatterIdReviewProgramsProgramIdRunsRunIdReconcilePostResponse = (reconcileProgramRunV1MattersMatterIdReviewProgramsProgramIdRunsRunIdReconcilePostResponseSuccess | reconcileProgramRunV1MattersMatterIdReviewProgramsProgramIdRunsRunIdReconcilePostResponseError)
+
+export const getReconcileProgramRunV1MattersMatterIdReviewProgramsProgramIdRunsRunIdReconcilePostUrl = (matterId: string,
+    programId: string,
+    runId: string,) => {
+
+
+
+
+  return `/api/core/v1/matters/${matterId}/review-programs/${programId}/runs/${runId}/reconcile`
+}
+
+/**
+ * @summary Reconcile Program Run
+ */
+export const reconcileProgramRunV1MattersMatterIdReviewProgramsProgramIdRunsRunIdReconcilePost = async (matterId: string,
+    programId: string,
+    runId: string, options?: RequestInit): Promise<reconcileProgramRunV1MattersMatterIdReviewProgramsProgramIdRunsRunIdReconcilePostResponse> => {
+
+  const res = await fetch(getReconcileProgramRunV1MattersMatterIdReviewProgramsProgramIdRunsRunIdReconcilePostUrl(matterId,programId,runId),
+  {
+    ...options,
+    method: 'POST'
+
+
+  }
+)
+
+
+  const body = [204, 205, 304].includes(res.status) ? null : await res.text();
+
+  const data: reconcileProgramRunV1MattersMatterIdReviewProgramsProgramIdRunsRunIdReconcilePostResponse['data'] = body ? JSON.parse(body) : {}
+  return { data, status: res.status, headers: res.headers } as reconcileProgramRunV1MattersMatterIdReviewProgramsProgramIdRunsRunIdReconcilePostResponse
+}
+
+
+
+export type getProgramCompletionReportV1MattersMatterIdReviewProgramsProgramIdRunsRunIdCompletionGetResponse200 = {
+  data: ReviewProgramCompletionReportRead
+  status: 200
+}
+
+export type getProgramCompletionReportV1MattersMatterIdReviewProgramsProgramIdRunsRunIdCompletionGetResponse422 = {
+  data: HTTPValidationError
+  status: 422
+}
+
+export type getProgramCompletionReportV1MattersMatterIdReviewProgramsProgramIdRunsRunIdCompletionGetResponseSuccess = (getProgramCompletionReportV1MattersMatterIdReviewProgramsProgramIdRunsRunIdCompletionGetResponse200) & {
+  headers: Headers;
+};
+export type getProgramCompletionReportV1MattersMatterIdReviewProgramsProgramIdRunsRunIdCompletionGetResponseError = (getProgramCompletionReportV1MattersMatterIdReviewProgramsProgramIdRunsRunIdCompletionGetResponse422) & {
+  headers: Headers;
+};
+
+export type getProgramCompletionReportV1MattersMatterIdReviewProgramsProgramIdRunsRunIdCompletionGetResponse = (getProgramCompletionReportV1MattersMatterIdReviewProgramsProgramIdRunsRunIdCompletionGetResponseSuccess | getProgramCompletionReportV1MattersMatterIdReviewProgramsProgramIdRunsRunIdCompletionGetResponseError)
+
+export const getGetProgramCompletionReportV1MattersMatterIdReviewProgramsProgramIdRunsRunIdCompletionGetUrl = (matterId: string,
+    programId: string,
+    runId: string,) => {
+
+
+
+
+  return `/api/core/v1/matters/${matterId}/review-programs/${programId}/runs/${runId}/completion`
+}
+
+/**
+ * @summary Get Program Completion Report
+ */
+export const getProgramCompletionReportV1MattersMatterIdReviewProgramsProgramIdRunsRunIdCompletionGet = async (matterId: string,
+    programId: string,
+    runId: string, options?: RequestInit): Promise<getProgramCompletionReportV1MattersMatterIdReviewProgramsProgramIdRunsRunIdCompletionGetResponse> => {
+
+  const res = await fetch(getGetProgramCompletionReportV1MattersMatterIdReviewProgramsProgramIdRunsRunIdCompletionGetUrl(matterId,programId,runId),
+  {
+    ...options,
+    method: 'GET'
+
+
+  }
+)
+
+
+  const body = [204, 205, 304].includes(res.status) ? null : await res.text();
+
+  const data: getProgramCompletionReportV1MattersMatterIdReviewProgramsProgramIdRunsRunIdCompletionGetResponse['data'] = body ? JSON.parse(body) : {}
+  return { data, status: res.status, headers: res.headers } as getProgramCompletionReportV1MattersMatterIdReviewProgramsProgramIdRunsRunIdCompletionGetResponse
+}
+
+
+
 export type listSearchExportFieldsV1MattersMatterIdSearchExportFieldsGetResponse200 = {
   data: SearchExportFieldRead[]
   status: 200
@@ -14256,6 +15463,58 @@ export const rebuildSearchIndexV1MattersMatterIdSearchIndexesRebuildPost = async
 
   const data: rebuildSearchIndexV1MattersMatterIdSearchIndexesRebuildPostResponse['data'] = body ? JSON.parse(body) : {}
   return { data, status: res.status, headers: res.headers } as rebuildSearchIndexV1MattersMatterIdSearchIndexesRebuildPostResponse
+}
+
+
+
+export type promoteSearchIndexGenerationV1MattersMatterIdSearchIndexesGenerationIdPromotePostResponse200 = {
+  data: SearchIndexGenerationRead
+  status: 200
+}
+
+export type promoteSearchIndexGenerationV1MattersMatterIdSearchIndexesGenerationIdPromotePostResponse422 = {
+  data: HTTPValidationError
+  status: 422
+}
+
+export type promoteSearchIndexGenerationV1MattersMatterIdSearchIndexesGenerationIdPromotePostResponseSuccess = (promoteSearchIndexGenerationV1MattersMatterIdSearchIndexesGenerationIdPromotePostResponse200) & {
+  headers: Headers;
+};
+export type promoteSearchIndexGenerationV1MattersMatterIdSearchIndexesGenerationIdPromotePostResponseError = (promoteSearchIndexGenerationV1MattersMatterIdSearchIndexesGenerationIdPromotePostResponse422) & {
+  headers: Headers;
+};
+
+export type promoteSearchIndexGenerationV1MattersMatterIdSearchIndexesGenerationIdPromotePostResponse = (promoteSearchIndexGenerationV1MattersMatterIdSearchIndexesGenerationIdPromotePostResponseSuccess | promoteSearchIndexGenerationV1MattersMatterIdSearchIndexesGenerationIdPromotePostResponseError)
+
+export const getPromoteSearchIndexGenerationV1MattersMatterIdSearchIndexesGenerationIdPromotePostUrl = (matterId: string,
+    generationId: string,) => {
+
+
+
+
+  return `/api/core/v1/matters/${matterId}/search-indexes/${generationId}/promote`
+}
+
+/**
+ * @summary Promote Search Index Generation
+ */
+export const promoteSearchIndexGenerationV1MattersMatterIdSearchIndexesGenerationIdPromotePost = async (matterId: string,
+    generationId: string, options?: RequestInit): Promise<promoteSearchIndexGenerationV1MattersMatterIdSearchIndexesGenerationIdPromotePostResponse> => {
+
+  const res = await fetch(getPromoteSearchIndexGenerationV1MattersMatterIdSearchIndexesGenerationIdPromotePostUrl(matterId,generationId),
+  {
+    ...options,
+    method: 'POST'
+
+
+  }
+)
+
+
+  const body = [204, 205, 304].includes(res.status) ? null : await res.text();
+
+  const data: promoteSearchIndexGenerationV1MattersMatterIdSearchIndexesGenerationIdPromotePostResponse['data'] = body ? JSON.parse(body) : {}
+  return { data, status: res.status, headers: res.headers } as promoteSearchIndexGenerationV1MattersMatterIdSearchIndexesGenerationIdPromotePostResponse
 }
 
 
@@ -15120,20 +16379,29 @@ export type listAssessmentsV1MattersMatterIdDefinitionAssessmentsGetResponseErro
 
 export type listAssessmentsV1MattersMatterIdDefinitionAssessmentsGetResponse = (listAssessmentsV1MattersMatterIdDefinitionAssessmentsGetResponseSuccess | listAssessmentsV1MattersMatterIdDefinitionAssessmentsGetResponseError)
 
-export const getListAssessmentsV1MattersMatterIdDefinitionAssessmentsGetUrl = (matterId: string,) => {
+export const getListAssessmentsV1MattersMatterIdDefinitionAssessmentsGetUrl = (matterId: string,
+    params?: ListAssessmentsV1MattersMatterIdDefinitionAssessmentsGetParams,) => {
+  const normalizedParams = new URLSearchParams();
 
+  Object.entries(params || {}).forEach(([key, value]) => {
 
+    if (value !== undefined) {
+      normalizedParams.append(key, value === null ? 'null' : String(value))
+    }
+  });
 
+  const stringifiedParams = normalizedParams.toString();
 
-  return `/api/core/v1/matters/${matterId}/definition-assessments`
+  return stringifiedParams.length > 0 ? `/api/core/v1/matters/${matterId}/definition-assessments?${stringifiedParams}` : `/api/core/v1/matters/${matterId}/definition-assessments`
 }
 
 /**
  * @summary List Assessments
  */
-export const listAssessmentsV1MattersMatterIdDefinitionAssessmentsGet = async (matterId: string, options?: RequestInit): Promise<listAssessmentsV1MattersMatterIdDefinitionAssessmentsGetResponse> => {
+export const listAssessmentsV1MattersMatterIdDefinitionAssessmentsGet = async (matterId: string,
+    params?: ListAssessmentsV1MattersMatterIdDefinitionAssessmentsGetParams, options?: RequestInit): Promise<listAssessmentsV1MattersMatterIdDefinitionAssessmentsGetResponse> => {
 
-  const res = await fetch(getListAssessmentsV1MattersMatterIdDefinitionAssessmentsGetUrl(matterId),
+  const res = await fetch(getListAssessmentsV1MattersMatterIdDefinitionAssessmentsGetUrl(matterId,params),
   {
     ...options,
     method: 'GET'
@@ -15266,6 +16534,123 @@ export const getAssessmentV1MattersMatterIdDefinitionAssessmentsAssessmentIdGet 
 
   const data: getAssessmentV1MattersMatterIdDefinitionAssessmentsAssessmentIdGetResponse['data'] = body ? JSON.parse(body) : {}
   return { data, status: res.status, headers: res.headers } as getAssessmentV1MattersMatterIdDefinitionAssessmentsAssessmentIdGetResponse
+}
+
+
+
+export type archiveFailedAssessmentsV1MattersMatterIdDefinitionAssessmentsArchiveFailedPostResponse200 = {
+  data: MatterDefinitionAssessmentArchiveResult
+  status: 200
+}
+
+export type archiveFailedAssessmentsV1MattersMatterIdDefinitionAssessmentsArchiveFailedPostResponse422 = {
+  data: HTTPValidationError
+  status: 422
+}
+
+export type archiveFailedAssessmentsV1MattersMatterIdDefinitionAssessmentsArchiveFailedPostResponseSuccess = (archiveFailedAssessmentsV1MattersMatterIdDefinitionAssessmentsArchiveFailedPostResponse200) & {
+  headers: Headers;
+};
+export type archiveFailedAssessmentsV1MattersMatterIdDefinitionAssessmentsArchiveFailedPostResponseError = (archiveFailedAssessmentsV1MattersMatterIdDefinitionAssessmentsArchiveFailedPostResponse422) & {
+  headers: Headers;
+};
+
+export type archiveFailedAssessmentsV1MattersMatterIdDefinitionAssessmentsArchiveFailedPostResponse = (archiveFailedAssessmentsV1MattersMatterIdDefinitionAssessmentsArchiveFailedPostResponseSuccess | archiveFailedAssessmentsV1MattersMatterIdDefinitionAssessmentsArchiveFailedPostResponseError)
+
+export const getArchiveFailedAssessmentsV1MattersMatterIdDefinitionAssessmentsArchiveFailedPostUrl = (matterId: string,) => {
+
+
+
+
+  return `/api/core/v1/matters/${matterId}/definition-assessments/archive-failed`
+}
+
+/**
+ * @summary Archive Failed Assessments
+ */
+export const archiveFailedAssessmentsV1MattersMatterIdDefinitionAssessmentsArchiveFailedPost = async (matterId: string,
+    matterDefinitionAssessmentArchiveFailed: MatterDefinitionAssessmentArchiveFailed, options?: RequestInit): Promise<archiveFailedAssessmentsV1MattersMatterIdDefinitionAssessmentsArchiveFailedPostResponse> => {
+
+    const getHeaders = (h?: NonNullable<RequestInit['headers']>): Record<string, string | readonly string[]> => {
+    if (!h) return {};
+    if (h instanceof Headers) return Object.fromEntries(h.entries());
+    if (Symbol.iterator in h) {
+      return Object.fromEntries(
+        Array.from(h as Iterable<Iterable<string>>, (entry) => Array.from(entry) as [string, string]),
+      );
+    }
+    const headers: Record<string, string | readonly string[]> = {};
+    for (const [name, value] of Object.entries<string | readonly string[] | undefined>(h)) {
+      if (value !== undefined) headers[name] = value;
+    }
+    return headers;
+  };
+const res = await fetch(getArchiveFailedAssessmentsV1MattersMatterIdDefinitionAssessmentsArchiveFailedPostUrl(matterId),
+  {
+    ...options,
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json', ...getHeaders(options?.headers) },
+    body: JSON.stringify(matterDefinitionAssessmentArchiveFailed)
+  }
+)
+
+
+  const body = [204, 205, 304].includes(res.status) ? null : await res.text();
+
+  const data: archiveFailedAssessmentsV1MattersMatterIdDefinitionAssessmentsArchiveFailedPostResponse['data'] = body ? JSON.parse(body) : {}
+  return { data, status: res.status, headers: res.headers } as archiveFailedAssessmentsV1MattersMatterIdDefinitionAssessmentsArchiveFailedPostResponse
+}
+
+
+
+export type restoreArchivedAssessmentV1MattersMatterIdDefinitionAssessmentsAssessmentIdRestorePostResponse200 = {
+  data: MatterDefinitionAssessmentRead
+  status: 200
+}
+
+export type restoreArchivedAssessmentV1MattersMatterIdDefinitionAssessmentsAssessmentIdRestorePostResponse422 = {
+  data: HTTPValidationError
+  status: 422
+}
+
+export type restoreArchivedAssessmentV1MattersMatterIdDefinitionAssessmentsAssessmentIdRestorePostResponseSuccess = (restoreArchivedAssessmentV1MattersMatterIdDefinitionAssessmentsAssessmentIdRestorePostResponse200) & {
+  headers: Headers;
+};
+export type restoreArchivedAssessmentV1MattersMatterIdDefinitionAssessmentsAssessmentIdRestorePostResponseError = (restoreArchivedAssessmentV1MattersMatterIdDefinitionAssessmentsAssessmentIdRestorePostResponse422) & {
+  headers: Headers;
+};
+
+export type restoreArchivedAssessmentV1MattersMatterIdDefinitionAssessmentsAssessmentIdRestorePostResponse = (restoreArchivedAssessmentV1MattersMatterIdDefinitionAssessmentsAssessmentIdRestorePostResponseSuccess | restoreArchivedAssessmentV1MattersMatterIdDefinitionAssessmentsAssessmentIdRestorePostResponseError)
+
+export const getRestoreArchivedAssessmentV1MattersMatterIdDefinitionAssessmentsAssessmentIdRestorePostUrl = (matterId: string,
+    assessmentId: string,) => {
+
+
+
+
+  return `/api/core/v1/matters/${matterId}/definition-assessments/${assessmentId}/restore`
+}
+
+/**
+ * @summary Restore Archived Assessment
+ */
+export const restoreArchivedAssessmentV1MattersMatterIdDefinitionAssessmentsAssessmentIdRestorePost = async (matterId: string,
+    assessmentId: string, options?: RequestInit): Promise<restoreArchivedAssessmentV1MattersMatterIdDefinitionAssessmentsAssessmentIdRestorePostResponse> => {
+
+  const res = await fetch(getRestoreArchivedAssessmentV1MattersMatterIdDefinitionAssessmentsAssessmentIdRestorePostUrl(matterId,assessmentId),
+  {
+    ...options,
+    method: 'POST'
+
+
+  }
+)
+
+
+  const body = [204, 205, 304].includes(res.status) ? null : await res.text();
+
+  const data: restoreArchivedAssessmentV1MattersMatterIdDefinitionAssessmentsAssessmentIdRestorePostResponse['data'] = body ? JSON.parse(body) : {}
+  return { data, status: res.status, headers: res.headers } as restoreArchivedAssessmentV1MattersMatterIdDefinitionAssessmentsAssessmentIdRestorePostResponse
 }
 
 
@@ -15799,21 +17184,30 @@ export type listGuidanceAssessmentsV1MattersMatterIdGuidanceGuidanceIdAssessment
 export type listGuidanceAssessmentsV1MattersMatterIdGuidanceGuidanceIdAssessmentsGetResponse = (listGuidanceAssessmentsV1MattersMatterIdGuidanceGuidanceIdAssessmentsGetResponseSuccess | listGuidanceAssessmentsV1MattersMatterIdGuidanceGuidanceIdAssessmentsGetResponseError)
 
 export const getListGuidanceAssessmentsV1MattersMatterIdGuidanceGuidanceIdAssessmentsGetUrl = (matterId: string,
-    guidanceId: string,) => {
+    guidanceId: string,
+    params?: ListGuidanceAssessmentsV1MattersMatterIdGuidanceGuidanceIdAssessmentsGetParams,) => {
+  const normalizedParams = new URLSearchParams();
 
+  Object.entries(params || {}).forEach(([key, value]) => {
 
+    if (value !== undefined) {
+      normalizedParams.append(key, value === null ? 'null' : String(value))
+    }
+  });
 
+  const stringifiedParams = normalizedParams.toString();
 
-  return `/api/core/v1/matters/${matterId}/guidance/${guidanceId}/assessments`
+  return stringifiedParams.length > 0 ? `/api/core/v1/matters/${matterId}/guidance/${guidanceId}/assessments?${stringifiedParams}` : `/api/core/v1/matters/${matterId}/guidance/${guidanceId}/assessments`
 }
 
 /**
  * @summary List Guidance Assessments
  */
 export const listGuidanceAssessmentsV1MattersMatterIdGuidanceGuidanceIdAssessmentsGet = async (matterId: string,
-    guidanceId: string, options?: RequestInit): Promise<listGuidanceAssessmentsV1MattersMatterIdGuidanceGuidanceIdAssessmentsGetResponse> => {
+    guidanceId: string,
+    params?: ListGuidanceAssessmentsV1MattersMatterIdGuidanceGuidanceIdAssessmentsGetParams, options?: RequestInit): Promise<listGuidanceAssessmentsV1MattersMatterIdGuidanceGuidanceIdAssessmentsGetResponse> => {
 
-  const res = await fetch(getListGuidanceAssessmentsV1MattersMatterIdGuidanceGuidanceIdAssessmentsGetUrl(matterId,guidanceId),
+  const res = await fetch(getListGuidanceAssessmentsV1MattersMatterIdGuidanceGuidanceIdAssessmentsGetUrl(matterId,guidanceId,params),
   {
     ...options,
     method: 'GET'

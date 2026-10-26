@@ -190,6 +190,8 @@ def start_assessment(
     control_sample_size: int = 0,
     use_batching: bool = True,
     acknowledge_large_run_warning: bool = False,
+    notification_parent_type: str | None = None,
+    notification_parent_id: uuid.UUID | None = None,
 ) -> MatterDefinitionAssessmentRun:
     if matter.status != "ACTIVE":
         raise AssessmentError("Matter is not active")
@@ -203,6 +205,8 @@ def start_assessment(
             f"Assessments over {settings.definition_assessment_warning_document_count} documents require "
             "large-run warning acknowledgment"
         )
+    if (notification_parent_type is None) != (notification_parent_id is None):
+        raise AssessmentError("Assessment notification parent is incomplete")
     try:
         definition = (
             get_guidance(
@@ -267,6 +271,9 @@ def start_assessment(
         workflow_key=MATTER_DEFINITION_ASSESSMENT_SPEC.key,
         code_version=MATTER_DEFINITION_ASSESSMENT_SPEC.code_version,
         dbos_workflow_id=workflow_id,
+        notification_policy="PARENT_MANAGED" if notification_parent_id is not None else "DEFAULT",
+        notification_parent_type=notification_parent_type,
+        notification_parent_id=notification_parent_id,
         status="QUEUED",
         input_snapshot={
             "assessment_id": str(assessment_id),

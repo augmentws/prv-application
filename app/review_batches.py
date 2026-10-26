@@ -5,6 +5,7 @@ from datetime import datetime, timezone
 from sqlalchemy import delete, func, select
 from sqlalchemy.orm import Session
 
+from app.artifact_gateway import get_collection_item_relationship_snapshots
 from app.config import Settings
 from app.job_executions import (
     EXECUTION_TERMINAL_STATUSES,
@@ -37,6 +38,7 @@ def utcnow() -> datetime:
 
 
 MATERIALIZATION_CHUNK_SIZE = 1_000
+FAMILY_LOOKUP_CHUNK_SIZE = 5_000
 
 
 def create_review_batch_execution(
@@ -45,7 +47,11 @@ def create_review_batch_execution(
     *,
     initiated_by_user_id: uuid.UUID,
     retry_of: WorkflowRun | None = None,
+    notification_parent_type: str | None = None,
+    notification_parent_id: uuid.UUID | None = None,
 ) -> WorkflowRun:
+    if (notification_parent_type is None) != (notification_parent_id is None):
+        raise ValueError("Review batch notification parent type and id must be supplied together")
     matter = db.get(Matter, batch.matter_id)
     if matter is None:
         raise ValueError("Matter not found")
@@ -82,6 +88,9 @@ def create_review_batch_execution(
         },
         configuration_snapshot={"materialization_chunk_size": MATERIALIZATION_CHUNK_SIZE},
         retry_of=retry_of,
+        notification_policy="PARENT_MANAGED" if notification_parent_id is not None else "DEFAULT",
+        notification_parent_type=notification_parent_type,
+        notification_parent_id=notification_parent_id,
     )
     batch.workflow_id = execution.dbos_workflow_id
     return execution
@@ -114,6 +123,8 @@ def retry_review_batch_execution(
         batch,
         initiated_by_user_id=initiated_by_user_id,
         retry_of=current,
+        notification_parent_type=current.notification_parent_type,
+        notification_parent_id=current.notification_parent_id,
     )
 
 
@@ -201,8 +212,123 @@ def _sample_document_ids(ids: list[uuid.UUID], batch: ReviewBatch) -> list[uuid.
     return ids[: batch.sample_size] if batch.sample_size is not None else ids
 
 
+def _expand_complete_families(
+    db: Session,
+    *,
+    batch: ReviewBatch,
+    matter: Matter,
+    seed_document_ids: list[uuid.UUID],
+) -> list[uuid.UUID]:
+    """Add every linked family member that is already part of the matter."""
+
+    seed_documents = list(
+        db.scalars(
+            select(MatterDocument).where(
+                MatterDocument.matter_id == matter.id,
+                MatterDocument.id.in_(seed_document_ids),
+            )
+        )
+    )
+    if len(seed_documents) != len(seed_document_ids):
+        raise ValueError("Family expansion seed contains documents outside the matter")
+    seed_by_item_id = {document.collection_item_id: document for document in seed_documents}
+    pending_item_ids = list(seed_by_item_id)
+    visited_item_ids: set[uuid.UUID] = set()
+    family_item_ids: set[uuid.UUID] = set()
+    family_ids: set[uuid.UUID] = set()
+
+    while pending_item_ids:
+        page = pending_item_ids[:FAMILY_LOOKUP_CHUNK_SIZE]
+        pending_item_ids = pending_item_ids[FAMILY_LOOKUP_CHUNK_SIZE:]
+        page = list(dict.fromkeys(item_id for item_id in page if item_id not in visited_item_ids))
+        if not page:
+            continue
+        snapshots = get_collection_item_relationship_snapshots(
+            item_ids=page,
+            actor_user_id=batch.created_by_user_id,
+            tenant_id=matter.client.tenant_id,
+            client_id=matter.client_id,
+        )
+        missing_item_ids = set(page).difference(snapshots)
+        if missing_item_ids:
+            raise ValueError(
+                f"Document family data is unavailable for {len(missing_item_ids)} selected documents"
+            )
+        visited_item_ids.update(page)
+        for item_id in page:
+            snapshot = snapshots[item_id]
+            if snapshot.family_id is None:
+                continue
+            family_ids.add(snapshot.family_id)
+            family_item_ids.add(item_id)
+            related_item_ids = [
+                *([snapshot.parent_item_id] if snapshot.parent_item_id is not None else []),
+                *snapshot.child_item_ids,
+            ]
+            for related_item_id in related_item_ids:
+                family_item_ids.add(related_item_id)
+                if related_item_id not in visited_item_ids:
+                    pending_item_ids.append(related_item_id)
+
+    family_documents: list[MatterDocument] = []
+    ordered_family_item_ids = sorted(family_item_ids, key=str)
+    for offset in range(0, len(ordered_family_item_ids), FAMILY_LOOKUP_CHUNK_SIZE):
+        family_documents.extend(
+            db.scalars(
+                select(MatterDocument)
+                .where(
+                    MatterDocument.matter_id == matter.id,
+                    MatterDocument.collection_item_id.in_(
+                        ordered_family_item_ids[offset : offset + FAMILY_LOOKUP_CHUNK_SIZE]
+                    ),
+                )
+                .order_by(MatterDocument.created_at, MatterDocument.id)
+            )
+        )
+
+    expanded_document_ids = list(seed_document_ids)
+    expanded_set = set(seed_document_ids)
+    for document in family_documents:
+        if document.id not in expanded_set:
+            expanded_document_ids.append(document.id)
+            expanded_set.add(document.id)
+    matter_family_item_ids = {document.collection_item_id for document in family_documents}
+    batch.selection_definition = {
+        **batch.selection_definition,
+        "family_expansion": {
+            "policy": "EXPAND_COMPLETE_FAMILIES_IN_MATTER",
+            "seed_document_count": len(seed_document_ids),
+            "family_count": len(family_ids),
+            "discovered_family_item_count": len(family_item_ids),
+            "matter_family_document_count": len(family_documents),
+            "added_document_count": len(expanded_document_ids) - len(seed_document_ids),
+            "family_items_outside_matter_count": len(family_item_ids.difference(matter_family_item_ids)),
+            "final_document_count": len(expanded_document_ids),
+        },
+    }
+    return expanded_document_ids
+
+
 def _database_document_ids(db: Session, batch: ReviewBatch) -> list[uuid.UUID]:
-    if batch.selection_type == "CLASSIFICATION_PREDICTIONS":
+    if batch.selection_type == "EXPLICIT_DOCUMENTS":
+        raw_ids = batch.selection_definition.get("document_ids")
+        if not isinstance(raw_ids, list) or not raw_ids or len(raw_ids) > 100_000:
+            raise ValueError("Explicit-document batch membership is invalid")
+        try:
+            ids = list(dict.fromkeys(uuid.UUID(str(value)) for value in raw_ids))
+        except (TypeError, ValueError) as exc:
+            raise ValueError("Explicit-document batch membership is invalid") from exc
+        matter_count = int(
+            db.scalar(
+                select(func.count())
+                .select_from(MatterDocument)
+                .where(MatterDocument.matter_id == batch.matter_id, MatterDocument.id.in_(ids))
+            )
+            or 0
+        )
+        if matter_count != len(ids):
+            raise ValueError("Explicit-document batch contains documents outside the matter")
+    elif batch.selection_type == "CLASSIFICATION_PREDICTIONS":
         from app.classification_projections import classification_projection_document_ids
 
         ids = classification_projection_document_ids(db, batch)
@@ -357,6 +483,13 @@ def materialize_review_batch(db: Session, batch_id: uuid.UUID, settings: Setting
                 document_ids = _sample_document_ids(document_ids, batch)
         else:
             document_ids = _database_document_ids(db, batch)
+        if batch.selection_definition.get("family_policy") == "EXPAND_COMPLETE_FAMILIES_IN_MATTER":
+            document_ids = _expand_complete_families(
+                db,
+                batch=batch,
+                matter=matter,
+                seed_document_ids=document_ids,
+            )
         if execution_cancel_requested(
             db,
             job_type=REVIEW_BATCH_MATERIALIZATION_JOB_TYPE,

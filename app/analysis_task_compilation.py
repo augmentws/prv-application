@@ -267,8 +267,14 @@ def queue_analysis_task_compilation(
     version_number: int,
     initiated_by_user_id: uuid.UUID,
     settings: Settings | None = None,
+    notification_parent_type: str | None = None,
+    notification_parent_id: uuid.UUID | None = None,
 ) -> tuple[MatterAnalysisTaskVersion, WorkflowRun]:
     settings = settings or get_settings()
+    if (notification_parent_type is None) != (notification_parent_id is None):
+        raise MatterAnalysisTaskConflict(
+            "Compilation notification parent type and id must be supplied together"
+        )
     locked_task = db.scalar(select(MatterAnalysisTask).where(MatterAnalysisTask.id == task.id).with_for_update())
     if locked_task is None or locked_task.matter_id != matter.id:
         raise MatterAnalysisTaskConflict("Matter Analysis Task not found")
@@ -337,6 +343,9 @@ def queue_analysis_task_compilation(
             **_compilation_progress_context(references, metadata_definitions),
         },
         initiated_by_user_id=initiated_by_user_id,
+        notification_policy="PARENT_MANAGED" if notification_parent_id is not None else "DEFAULT",
+        notification_parent_type=notification_parent_type,
+        notification_parent_id=notification_parent_id,
     )
     db.add(workflow)
     db.flush()
@@ -589,6 +598,10 @@ def compile_analysis_task_version(
         "omission_count": len(compiled.omissions),
     }
     workflow.completed_at = utcnow()
+    if workflow.notification_policy == "PARENT_MANAGED":
+        from app.review_programs import project_review_program_qa_compilation_terminal
+
+        project_review_program_qa_compilation_terminal(db, workflow=workflow)
     db.commit()
     return specification.model_dump(mode="json")
 
@@ -635,6 +648,10 @@ def fail_analysis_task_compilation(
             "errors": [{"code": "COMPILATION_FAILED", "message": message[:4000]}],
             "warnings": [],
         }
+    if workflow is not None and workflow.notification_policy == "PARENT_MANAGED":
+        from app.review_programs import project_review_program_qa_compilation_terminal
+
+        project_review_program_qa_compilation_terminal(db, workflow=workflow)
     db.commit()
 
 

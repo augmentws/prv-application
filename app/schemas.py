@@ -568,6 +568,9 @@ class JobExecutionRead(ORMModel):
     retry_of_workflow_run_id: uuid.UUID | None
     workflow_key: str
     dbos_workflow_id: str
+    notification_policy: Literal["DEFAULT", "PARENT_MANAGED"]
+    notification_parent_type: str | None
+    notification_parent_id: uuid.UUID | None
     status: JobExecutionStatus
     current_stage: str | None
     stage_label: str
@@ -888,7 +891,7 @@ SearchOperationKind = Literal[
     "BATCH_CODING_SYNC",
 ]
 SearchOperationStatus = Literal["QUEUED", "RUNNING", "AWAITING_USER", "COMPLETED", "FAILED"]
-SearchIndexStatus = Literal["CREATING", "ACTIVE", "RETIRED", "FAILED"]
+SearchIndexStatus = Literal["CREATING", "READY_WITH_ERRORS", "ACTIVE", "RETIRED", "FAILED"]
 DateHistogramInterval = Literal["week", "month", "year"]
 
 
@@ -1274,6 +1277,7 @@ class ReviewBatchCreate(BaseModel):
     assessment_run_id: uuid.UUID | None = None
     sample_size: int | None = Field(default=None, ge=1, le=10_000_000)
     random_seed: str | None = Field(default=None, min_length=1, max_length=100)
+    include_complete_families: bool = False
     assigned_user_id: uuid.UUID | None = None
     reviewer_value_visibility: ReviewBatchValueVisibility = "OWN_VALUES"
     coding_group_ids: list[uuid.UUID] = Field(default_factory=list, max_length=100)
@@ -2006,6 +2010,7 @@ class SearchIndexGenerationRead(ORMModel):
     physical_index_exists: bool | None = None
     alias_points_to_index: bool | None = None
     live_document_count: int | None = None
+    semantic_document_count: int | None = None
     verification_error: str | None = None
     error_message: str | None
     activated_at: datetime | None
@@ -2894,6 +2899,39 @@ class MatterAnalysisTaskVersionRead(ORMModel):
     published_at: datetime | None
 
 
+class AnalysisTaskExecutionProfileCreate(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    key: MetadataKey
+    name: str = Field(min_length=1, max_length=200)
+    decision_provider: Literal["JEV", "OPENAI_DECISIONS"]
+
+    @field_validator("name")
+    @classmethod
+    def normalize_execution_profile_name(cls, value: str) -> str:
+        normalized = " ".join(value.split())
+        if not normalized:
+            raise ValueError("Execution profile name is required")
+        return normalized
+
+
+class AnalysisTaskExecutionProfileRead(ORMModel):
+    id: uuid.UUID
+    matter_analysis_task_version_id: uuid.UUID
+    key: str
+    name: str
+    decision_provider: Literal["JEV", "OPENAI_DECISIONS"]
+    model_key: str
+    resolved_model: str
+    model_policy: dict[str, Any]
+    required_capabilities: list[str]
+    skill_definition_version_id: uuid.UUID
+    provider_adapter_version: str
+    content_hash: str
+    created_by_user_id: uuid.UUID
+    created_at: datetime
+
+
 class MatterAnalysisTaskRead(ORMModel):
     id: uuid.UUID
     matter_id: uuid.UUID
@@ -2912,7 +2950,9 @@ class MatterAnalysisTaskRead(ORMModel):
     published_version_details: MatterAnalysisTaskVersionRead | None = None
 
 
-AnalysisTaskBatchSetSourceType = Literal["ALL_MATTER", "SOURCE_BATCH", "SEARCH_QUERY", "SAVED_SEARCH"]
+AnalysisTaskBatchSetSourceType = Literal[
+    "ALL_MATTER", "SOURCE_BATCH", "SEARCH_QUERY", "SAVED_SEARCH", "INPUT_MANIFEST"
+]
 AnalysisTaskBatchSetStatus = Literal["QUEUED", "BUILDING", "READY", "FAILED", "CANCELED", "ARCHIVED"]
 
 
@@ -2921,6 +2961,7 @@ class AnalysisTaskBatchSetPlanRequest(BaseModel):
 
     population_source_type: AnalysisTaskBatchSetSourceType
     source_review_batch_id: uuid.UUID | None = None
+    input_manifest_id: uuid.UUID | None = None
     search: MatterSearchRequest | None = None
     saved_search_id: uuid.UUID | None = None
     target_batch_size: int = Field(ge=1, le=10_000_000)
@@ -2932,6 +2973,10 @@ class AnalysisTaskBatchSetPlanRequest(BaseModel):
             raise ValueError("SOURCE_BATCH requires source_review_batch_id")
         if self.population_source_type != "SOURCE_BATCH" and self.source_review_batch_id is not None:
             raise ValueError("source_review_batch_id is only valid for SOURCE_BATCH")
+        if self.population_source_type == "INPUT_MANIFEST" and self.input_manifest_id is None:
+            raise ValueError("INPUT_MANIFEST requires input_manifest_id")
+        if self.population_source_type != "INPUT_MANIFEST" and self.input_manifest_id is not None:
+            raise ValueError("input_manifest_id is only valid for INPUT_MANIFEST")
         if self.population_source_type == "SEARCH_QUERY":
             if self.search is None:
                 raise ValueError("SEARCH_QUERY requires search")
@@ -2988,6 +3033,7 @@ class AnalysisTaskBatchSetRead(ORMModel):
     population_source_type: AnalysisTaskBatchSetSourceType
     selection_definition: dict[str, Any]
     source_review_batch_id: uuid.UUID | None
+    input_manifest_id: uuid.UUID | None
     search_index_generation_id: uuid.UUID | None
     target_batch_size: int
     allocation_policy: dict[str, Any]
@@ -3023,6 +3069,7 @@ class AnalysisTaskBatchSetRunCreate(BaseModel):
     embedding_job_id: uuid.UUID | None = None
     coding_source: Literal["MATTER_METADATA"] = "MATTER_METADATA"
     use_batch_api: bool = False
+    execution_profile_id: uuid.UUID | None = None
 
     @field_validator("idempotency_key")
     @classmethod
@@ -3052,6 +3099,7 @@ class AnalysisTaskBatchSetRunRead(ORMModel):
     analysis_task_batch_set_id: uuid.UUID
     matter_analysis_task_id: uuid.UUID
     matter_analysis_task_version_id: uuid.UUID
+    execution_profile_id: uuid.UUID | None
     task_type: MatterAnalysisTaskType
     status: AnalysisTaskBatchSetRunStatus
     configuration_snapshot: dict[str, Any]
@@ -3568,6 +3616,17 @@ class MatterDefinitionAssessmentUpdate(BaseModel):
         return name
 
 
+class MatterDefinitionAssessmentArchiveFailed(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    guidance_id: uuid.UUID | None = None
+
+
+class MatterDefinitionAssessmentArchiveResult(BaseModel):
+    archived_count: int
+    assessment_ids: list[uuid.UUID]
+
+
 class MatterDefinitionAssessmentRead(ORMModel):
     id: uuid.UUID
     name: str
@@ -3612,6 +3671,10 @@ class MatterDefinitionAssessmentRead(ORMModel):
     started_at: datetime | None
     completed_at: datetime | None
     canceled_at: datetime | None
+    archived_at: datetime | None
+    archived_by_user_id: uuid.UUID | None
+    archive_reason: Literal["MANUAL", "SUPERSEDED"] | None
+    superseded_by_assessment_id: uuid.UUID | None
     created_at: datetime
     updated_at: datetime
 
@@ -4836,3 +4899,377 @@ class MatterFactHistogramRead(BaseModel):
     interval: Literal["YEAR", "QUARTER", "MONTH"]
     buckets: list[MatterFactHistogramBucket]
     undated_count: int
+
+
+ReviewProgramKey = Annotated[
+    str,
+    StringConstraints(strip_whitespace=True, to_lower=True, pattern=r"^[a-z][a-z0-9_-]{1,98}[a-z0-9]$"),
+]
+ReviewProgramStatus = Literal["DRAFT", "ACTIVE", "SUSPENDED", "ARCHIVED"]
+ReviewProgramBatchingPolicy = Literal["NONE", "AD_HOC_BATCH", "PARTITIONED_SET", "WHOLE_MATTER"]
+
+
+class ReviewWorkflowPhaseRead(BaseModel):
+    key: str
+    name: str
+    ordinal: int
+
+
+class ReviewWorkflowStageRead(BaseModel):
+    key: str
+    name: str
+    phase_key: str
+    ordinal: int
+    batching_policy: ReviewProgramBatchingPolicy
+    requires_human_gate: bool
+
+
+class ReviewWorkflowTemplateRead(BaseModel):
+    key: str
+    version: int
+    schema_version: int
+    content_hash: str
+    name: str
+    description: str
+    workflow_type: str
+    phases: list[ReviewWorkflowPhaseRead]
+    stages: list[ReviewWorkflowStageRead]
+
+
+class ReviewProgramCreate(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    template_key: str = Field(default="FIRST_PASS_REVIEW", min_length=1, max_length=100)
+    key: ReviewProgramKey
+    name: str = Field(min_length=1, max_length=200)
+    description: str | None = Field(default=None, max_length=4_000)
+    owner_user_id: uuid.UUID | None = None
+    matter_definition_id: uuid.UUID | None = None
+
+
+class ReviewProgramVersionRead(ORMModel):
+    id: uuid.UUID
+    program_id: uuid.UUID
+    version: int
+    predecessor_version_id: uuid.UUID | None
+    template_key: str
+    template_version: int
+    template_content_hash: str
+    configuration_stage: str
+    configuration_snapshot: dict[str, Any]
+    source_hashes: dict[str, Any]
+    content_hash: str
+    created_by_user_id: uuid.UUID
+    created_at: datetime
+    published_at: datetime
+
+
+class ReviewProgramRead(ORMModel):
+    id: uuid.UUID
+    tenant_id: uuid.UUID
+    matter_id: uuid.UUID
+    template_key: str
+    template_version: int
+    template_content_hash: str
+    key: str
+    name: str
+    description: str | None
+    status: ReviewProgramStatus
+    matter_definition_id: uuid.UUID | None
+    target_metadata_definition_id: uuid.UUID | None
+    current_version_id: uuid.UUID | None
+    current_run_id: uuid.UUID | None
+    owner_user_id: uuid.UUID
+    created_by_user_id: uuid.UUID
+    row_version: int
+    created_at: datetime
+    updated_at: datetime
+    current_version: ReviewProgramVersionRead | None = None
+
+
+ReviewProgramRunStatus = Literal[
+    "QUEUED",
+    "RUNNING",
+    "WAITING_FOR_USER",
+    "COMPLETED",
+    "COMPLETED_WITH_ERRORS",
+    "FAILED",
+    "CANCELED",
+]
+
+
+class ReviewProgramRunStart(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    idempotency_key: str = Field(min_length=1, max_length=500)
+
+
+class ReviewProgramRunCommand(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    idempotency_key: str = Field(min_length=1, max_length=500)
+    reason: str | None = Field(default=None, max_length=4_000)
+
+
+class ReviewProgramActionResolve(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    preview_hash: str = Field(min_length=64, max_length=64)
+    choice_key: str = Field(min_length=1, max_length=100)
+    reason: str | None = Field(default=None, max_length=4_000)
+    input: dict[str, Any] = Field(default_factory=dict)
+
+
+class ReviewProgramDefinitionSetup(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    preview_hash: str = Field(min_length=64, max_length=64)
+    mode: Literal["CREATE", "CLONE", "ADOPT"]
+    existing_definition_id: uuid.UUID | None = None
+    source_revision: int | None = Field(default=None, ge=1)
+    definition_key: str | None = Field(
+        default=None,
+        min_length=1,
+        max_length=100,
+        pattern=r"^[a-z][a-z0-9_-]*$",
+    )
+    name: str | None = Field(default=None, min_length=1, max_length=200)
+    description: str | None = Field(default=None, max_length=10_000)
+    content_markdown: str | None = Field(default=None, min_length=1, max_length=2_000_000)
+    assessment_target_document_count: int = Field(default=500, ge=1, le=10_000_000)
+    assessment_control_sample_size: int = Field(default=0, ge=0, le=1_000_000)
+    assessment_use_batching: bool = True
+    acknowledge_large_run_warning: bool = False
+
+    @model_validator(mode="after")
+    def validate_setup(self) -> "ReviewProgramDefinitionSetup":
+        if self.assessment_control_sample_size > self.assessment_target_document_count:
+            raise ValueError("Control sample size cannot exceed the assessment target")
+        if self.mode == "CREATE" and not (
+            self.definition_key and self.name and (self.content_markdown or "").strip()
+        ):
+            raise ValueError("CREATE requires definition_key, name, and content_markdown")
+        if self.mode in {"CLONE", "ADOPT"} and self.existing_definition_id is None:
+            raise ValueError(f"{self.mode} requires existing_definition_id")
+        if self.mode == "CLONE" and not (self.definition_key and self.name):
+            raise ValueError("CLONE requires definition_key and name")
+        return self
+
+
+class ReviewProgramQASetup(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    preview_hash: str = Field(min_length=64, max_length=64)
+    task_key: MetadataKey
+    name: str = Field(min_length=1, max_length=200)
+    description: str | None = Field(default=None, max_length=10_000)
+    destination_metadata_definition_ids: list[uuid.UUID] = Field(min_length=1, max_length=100)
+
+    @field_validator("destination_metadata_definition_ids")
+    @classmethod
+    def validate_unique_qa_destinations(cls, value: list[uuid.UUID]) -> list[uuid.UUID]:
+        if len(value) != len(set(value)):
+            raise ValueError("Destination metadata fields must be unique")
+        return value
+
+    @field_validator("name")
+    @classmethod
+    def normalize_qa_task_name(cls, value: str) -> str:
+        normalized = " ".join(value.split())
+        if not normalized:
+            raise ValueError("Q&A task name is required")
+        return normalized
+
+
+class ReviewProgramDiscoverySetup(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    preview_hash: str = Field(min_length=64, max_length=64)
+    target_document_count: int = Field(default=500, ge=1, le=100_000)
+    control_sample_size: int = Field(default=50, ge=0, le=25_000)
+    target_batch_size: int = Field(default=100, ge=1, le=10_000)
+    keep_families_together: bool = True
+
+    @model_validator(mode="after")
+    def validate_discovery_setup(self) -> "ReviewProgramDiscoverySetup":
+        if self.control_sample_size > self.target_document_count:
+            raise ValueError("Control sample size cannot exceed the discovery target")
+        return self
+
+
+class ReviewProgramClassifierImprovementQuery(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    metadata_definition_id: uuid.UUID
+    class_key: str = Field(min_length=1, max_length=500)
+    query: str = Field(min_length=1, max_length=2000)
+    quota: int = Field(default=50, ge=1, le=25_000)
+
+    @field_validator("class_key", "query")
+    @classmethod
+    def normalize_improvement_text(cls, value: str) -> str:
+        normalized = " ".join(value.split())
+        if not normalized:
+            raise ValueError("Classifier improvement text is required")
+        return normalized
+
+
+class ReviewProgramClassifierImprovementSetup(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    preview_hash: str = Field(min_length=64, max_length=64)
+    queries: list[ReviewProgramClassifierImprovementQuery] = Field(min_length=1, max_length=100)
+    control_sample_size: int = Field(default=25, ge=0, le=25_000)
+    target_batch_size: int = Field(default=100, ge=1, le=10_000)
+    keep_families_together: bool = True
+
+    @model_validator(mode="after")
+    def validate_improvement_setup(self) -> "ReviewProgramClassifierImprovementSetup":
+        targets = [
+            (query.metadata_definition_id, query.class_key)
+            for query in self.queries
+        ]
+        if len(targets) != len(set(targets)):
+            raise ValueError("Classifier improvement targets must be unique")
+        if sum(query.quota for query in self.queries) + self.control_sample_size > 100_000:
+            raise ValueError("Classifier improvement population cannot exceed 100,000 documents")
+        return self
+
+
+class ReviewProgramNegativePopulationQCSetup(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    preview_hash: str = Field(min_length=64, max_length=64)
+    random_sample_size: int = Field(default=200, ge=0, le=25_000)
+    near_threshold_sample_size: int = Field(default=100, ge=0, le=25_000)
+    cohort_control_sample_size: int = Field(default=50, ge=0, le=25_000)
+    mandatory_review_limit: int = Field(default=100, ge=0, le=25_000)
+    target_batch_size: int = Field(default=100, ge=1, le=10_000)
+    keep_families_together: bool = True
+
+    @model_validator(mode="after")
+    def validate_negative_population_qc_setup(self) -> "ReviewProgramNegativePopulationQCSetup":
+        total = (
+            self.random_sample_size
+            + self.near_threshold_sample_size
+            + self.cohort_control_sample_size
+            + self.mandatory_review_limit
+        )
+        if total < 1:
+            raise ValueError("Negative-population QC requires at least one selected document")
+        if total > 100_000:
+            raise ValueError("Negative-population QC cannot select more than 100,000 documents")
+        return self
+
+
+class ReviewProgramCompletionReportRead(ORMModel):
+    id: uuid.UUID
+    tenant_id: uuid.UUID
+    matter_id: uuid.UUID
+    program_id: uuid.UUID
+    program_version_id: uuid.UUID
+    run_id: uuid.UUID
+    schema_version: int
+    report: dict[str, Any]
+    content_hash: str
+    artifact_id: uuid.UUID
+    artifact_content_hash: str
+    completion_reason: str | None
+    completed_by_user_id: uuid.UUID
+    completed_at: datetime
+    created_at: datetime
+
+
+class ReviewProgramStageAttemptRead(ORMModel):
+    id: uuid.UUID
+    run_id: uuid.UUID
+    stage_key: str
+    stage_ordinal: int
+    attempt: int
+    status: Literal["QUEUED", "RUNNING", "WAITING", "COMPLETED", "FAILED", "CANCELED"]
+    idempotency_key: str
+    input_snapshot: dict[str, Any]
+    policy_hashes: dict[str, Any]
+    result_summary: dict[str, Any]
+    error_code: str | None
+    error_summary: str | None
+    started_at: datetime | None
+    completed_at: datetime | None
+    created_at: datetime
+    updated_at: datetime
+
+
+class ReviewProgramActionChoiceRead(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    key: str
+    label: str
+    consequence: str
+
+
+class ReviewProgramActionRead(ORMModel):
+    id: uuid.UUID
+    run_id: uuid.UUID
+    stage_attempt_id: uuid.UUID | None
+    stage_key: str
+    action_type: str
+    title: str
+    explanation: str
+    decision_context: dict[str, Any]
+    preview_hash: str
+    allowed_choices: list[ReviewProgramActionChoiceRead]
+    status: Literal["OPEN", "RESOLVED", "SUPERSEDED", "CANCELED"]
+    resolution_payload: dict[str, Any] | None
+    resolution_reason: str | None
+    resolved_by_user_id: uuid.UUID | None
+    authorization_context: dict[str, Any]
+    resolved_at: datetime | None
+    created_at: datetime
+    updated_at: datetime
+
+
+class ReviewProgramEventRead(ORMModel):
+    id: uuid.UUID
+    event_type: str
+    schema_version: int
+    source_type: str
+    source_id: uuid.UUID
+    stage_attempt_id: uuid.UUID | None
+    payload: dict[str, Any]
+    idempotency_key: str
+    status: Literal["PENDING", "PROCESSING", "PROCESSED", "FAILED"]
+    processing_attempt: int
+    failure_code: str | None
+    failure_summary: str | None
+    occurred_at: datetime
+    created_at: datetime
+    processed_at: datetime | None
+
+
+class ReviewProgramRunRead(ORMModel):
+    id: uuid.UUID
+    tenant_id: uuid.UUID
+    matter_id: uuid.UUID
+    program_id: uuid.UUID
+    starting_program_version_id: uuid.UUID
+    current_program_version_id: uuid.UUID
+    status: ReviewProgramRunStatus
+    current_stage: str
+    current_stage_ordinal: int
+    current_discovery_round: int
+    current_training_round: int
+    pending_action_id: uuid.UUID | None
+    progress_summary: dict[str, Any]
+    frozen_configuration_hash: str
+    failure_code: str | None
+    failure_summary: str | None
+    failure_retriable: bool
+    initiated_by_user_id: uuid.UUID
+    started_at: datetime | None
+    completed_at: datetime | None
+    canceled_at: datetime | None
+    created_at: datetime
+    updated_at: datetime
+    stage_attempts: list[ReviewProgramStageAttemptRead] = Field(default_factory=list)
+    actions: list[ReviewProgramActionRead] = Field(default_factory=list)
+    events: list[ReviewProgramEventRead] = Field(default_factory=list)

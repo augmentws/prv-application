@@ -267,6 +267,21 @@ def test_standard_assessment_skills_are_idempotent(db, root_admin) -> None:
     search_schema = query_schema["properties"]["search"]
     assert search_schema["required"] == ["query", "search_mode"]
     assert set(search_schema["properties"]) == {"query", "search_mode"}
+    document_analysis = next(
+        version
+        for version in db.scalars(select(SkillDefinitionVersion))
+        if version.output_schema_key.startswith("document_analysis")
+    )
+    assert document_analysis.output_schema_key == "document_analysis_v3"
+    assert document_analysis.limits["max_output_retries"] == 4
+    assert "coverage" in document_analysis.output_schema["properties"]
+    synthesis = next(
+        version
+        for version in db.scalars(select(SkillDefinitionVersion))
+        if version.output_schema_key == "matter_definition_assessment_synthesis_output_v4"
+    )
+    assert "Never use a bare reference such as" in synthesis.instructions
+    assert "Issue 6: Legislative and Policy Reforms" in synthesis.instructions
 
 
 def test_standard_assessment_skills_publish_new_version_when_limits_change(db, root_admin) -> None:

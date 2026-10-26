@@ -33,6 +33,8 @@ async def execute_skill_run(
     dynamic_input: dict[str, Any],
     cache_identity: dict[str, Any],
     output_validators: tuple[Callable[[dict[str, Any]], None], ...] = (),
+    output_schema: dict[str, Any] | None = None,
+    additional_instructions: str | None = None,
     usage_job_type: str = "MATTER_DEFINITION_ASSESSMENT",
     model: Any | None = None,
 ) -> tuple[dict[str, Any], SkillRun]:
@@ -56,6 +58,8 @@ async def execute_skill_run(
             dynamic_input=dynamic_input,
             cache_identity=cache_identity,
             output_validators=output_validators,
+            output_schema=output_schema,
+            additional_instructions=additional_instructions,
             usage_job_type=usage_job_type,
             model=model,
         )
@@ -110,18 +114,23 @@ async def execute_skill_call(
     dynamic_input: dict[str, Any],
     cache_identity: dict[str, Any],
     output_validators: tuple[Callable[[dict[str, Any]], None], ...] = (),
+    output_schema: dict[str, Any] | None = None,
+    additional_instructions: str | None = None,
     attempt: int = 1,
     usage_job_type: str = "MATTER_DEFINITION_ASSESSMENT",
     model: Any | None = None,
 ) -> dict[str, Any]:
+    instruction_layers = [
+        InstructionLayer("platform_security", PLATFORM_SKILL_INSTRUCTIONS),
+        InstructionLayer("managed_skill", skill_version.instructions),
+    ]
+    if additional_instructions:
+        instruction_layers.append(InstructionLayer("analysis_stage", additional_instructions))
     request = StructuredModelRequest(
-        instruction_layers=(
-            InstructionLayer("platform_security", PLATFORM_SKILL_INSTRUCTIONS),
-            InstructionLayer("managed_skill", skill_version.instructions),
-        ),
+        instruction_layers=tuple(instruction_layers),
         stable_context=stable_context,
         dynamic_input=dynamic_input,
-        output_schema=skill_version.output_schema,
+        output_schema=output_schema or skill_version.output_schema,
         model_key=skill_version.model_key,
         model_settings=skill_version.model_policy,
         limits=skill_version.limits,

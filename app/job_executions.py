@@ -840,6 +840,9 @@ def create_job_execution(
     binding_snapshot: dict[str, Any] | None = None,
     configuration_snapshot: dict[str, Any] | None = None,
     retry_of: WorkflowRun | None = None,
+    notification_policy: str = "DEFAULT",
+    notification_parent_type: str | None = None,
+    notification_parent_id: uuid.UUID | None = None,
 ) -> WorkflowRun:
     adapter = get_job_execution_adapter(job_type)
     job = adapter.load(db, job_id, for_update=True)
@@ -855,6 +858,20 @@ def create_job_execution(
         return existing
     if retry_of is not None and existing is not None and existing.id != retry_of.id:
         raise JobExecutionConflict("The requested retry source is not the current execution")
+    if retry_of is not None:
+        notification_policy = retry_of.notification_policy
+        notification_parent_type = retry_of.notification_parent_type
+        notification_parent_id = retry_of.notification_parent_id
+    if notification_policy not in {"DEFAULT", "PARENT_MANAGED"}:
+        raise JobExecutionConflict("Unsupported notification policy")
+    if notification_policy == "DEFAULT" and (
+        notification_parent_type is not None or notification_parent_id is not None
+    ):
+        raise JobExecutionConflict("Default notification policy cannot have a parent")
+    if notification_policy == "PARENT_MANAGED" and (
+        not notification_parent_type or notification_parent_id is None
+    ):
+        raise JobExecutionConflict("Parent-managed notification policy requires a parent")
     attempt_number = (existing.attempt_number + 1) if existing is not None else 1
     execution = WorkflowRun(
         tenant_id=scope.tenant_id,
@@ -868,6 +885,9 @@ def create_job_execution(
         code_version=code_version,
         dbos_workflow_id=dbos_workflow_id,
         idempotency_key=idempotency_key,
+        notification_policy=notification_policy,
+        notification_parent_type=notification_parent_type,
+        notification_parent_id=notification_parent_id,
         status="QUEUED",
         current_stage=current_stage,
         progress_completed=0,
@@ -952,6 +972,7 @@ def transition_job_execution(
     if (
         execution.status != previous_status
         and execution.status in {"COMPLETED", "COMPLETED_WITH_ERRORS", "FAILED"}
+        and execution.notification_policy == "DEFAULT"
         and scope.matter_id is not None
         and scope.client_id is not None
     ):

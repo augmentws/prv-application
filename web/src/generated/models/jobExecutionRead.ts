@@ -6,6 +6,7 @@
  * OpenAPI spec version: 0.1.0
  */
 import type { JobExecutionReadAvailableActionsItem } from './jobExecutionReadAvailableActionsItem';
+import type { JobExecutionReadNotificationPolicy } from './jobExecutionReadNotificationPolicy';
 import type { JobExecutionReadProgress } from './jobExecutionReadProgress';
 import type { JobExecutionReadStatus } from './jobExecutionReadStatus';
 
@@ -17,6 +18,9 @@ export interface JobExecutionRead {
   retry_of_workflow_run_id: string | null;
   workflow_key: string;
   dbos_workflow_id: string;
+  notification_policy: JobExecutionReadNotificationPolicy;
+  notification_parent_type: string | null;
+  notification_parent_id: string | null;
   status: JobExecutionReadStatus;
   current_stage: string | null;
   stage_label: string;

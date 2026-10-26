@@ -158,6 +158,10 @@ class OpenSearchClient:
         result = self._request("GET", f"/{index}/_count")
         return int(result.get("count", 0))
 
+    def count_matching(self, index: str, query: dict[str, Any]) -> int:
+        result = self._request("GET", f"/{index}/_count", json={"query": query})
+        return int(result.get("count", 0))
+
     def ensure_rrf_search_pipeline(self, pipeline_id: str) -> None:
         self._request(
             "PUT",

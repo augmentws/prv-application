@@ -11,6 +11,7 @@ import type { MatterSearchRequest } from './matterSearchRequest';
 export interface AnalysisTaskBatchSetCreate {
   population_source_type: AnalysisTaskBatchSetCreatePopulationSourceType;
   source_review_batch_id?: string | null;
+  input_manifest_id?: string | null;
   search?: MatterSearchRequest | null;
   saved_search_id?: string | null;
   /**

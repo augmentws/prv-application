@@ -18,6 +18,7 @@ export interface AnalysisTaskBatchSetRunRead {
   analysis_task_batch_set_id: string;
   matter_analysis_task_id: string;
   matter_analysis_task_version_id: string;
+  execution_profile_id: string | null;
   task_type: AnalysisTaskBatchSetRunReadTaskType;
   status: AnalysisTaskBatchSetRunReadStatus;
   configuration_snapshot: AnalysisTaskBatchSetRunReadConfigurationSnapshot;

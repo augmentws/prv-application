@@ -1,6 +1,7 @@
 import logging
 import uuid
 from concurrent.futures import ThreadPoolExecutor
+from dataclasses import dataclass
 from datetime import date, datetime, timedelta, timezone
 from typing import Any
 
@@ -55,6 +56,26 @@ from embedding_service.config import get_embedding_settings
 logger = logging.getLogger(__name__)
 
 
+@dataclass(frozen=True)
+class DocumentProjectionFailure:
+    document_id: str
+    error_type: str
+    error_message: str
+
+    def as_dict(self) -> dict[str, str]:
+        return {
+            "document_id": self.document_id,
+            "error_type": self.error_type,
+            "error_message": self.error_message,
+        }
+
+
+@dataclass(frozen=True)
+class BulkProjectionResult:
+    indexed_count: int
+    failures: tuple[DocumentProjectionFailure, ...] = ()
+
+
 def utcnow() -> datetime:
     return datetime.now(timezone.utc)
 
@@ -66,6 +87,9 @@ def _save_rebuild_progress(
     processed_documents: int,
     total_documents: int,
     index_name: str | None = None,
+    indexed_documents: int | None = None,
+    failed_documents: int = 0,
+    failure_samples: list[dict[str, str]] | None = None,
 ) -> None:
     if operation_id is None:
         return
@@ -111,6 +135,9 @@ def _save_rebuild_progress(
                     "phase": phase,
                     "processed_documents": processed_documents,
                     "total_documents": total_documents,
+                    "indexed_documents": indexed_documents if indexed_documents is not None else processed_documents,
+                    "failed_documents": failed_documents,
+                    "failure_samples": failure_samples or [],
                     "index_name": index_name,
                     "documents_per_second": documents_per_second,
                     "estimated_completion_at": estimated_completion_at,
@@ -275,10 +302,12 @@ def build_document_projection(
     }
     projected_hierarchy_facets = hierarchy_entries(definitions, searchable_metadata)
     embedding_settings = get_embedding_settings()
-    configuration_hash = canonical_hash(processing_configuration(get_settings(), embedding_settings))
+    processing = processing_configuration(get_settings(), embedding_settings)
+    configuration_hash = canonical_hash(processing)
     chunk_artifacts = load_current_chunk_artifacts(
         collection_item_id=document.collection_item_id,
         configuration_hash=configuration_hash,
+        compatible_embedding=processing["embedding"],
         actor_user_id=import_job.created_by_user_id,
         tenant_id=matter.client.tenant_id,
         client_id=matter.client_id,
@@ -342,6 +371,8 @@ class SearchIndexManager:
         self.db = db
         self.client = client
         self.settings = settings
+        self._last_rebuild_failures: list[DocumentProjectionFailure] = []
+        self._last_rebuild_failure_count = 0
 
     def active(self, matter_id: uuid.UUID) -> SearchIndexGeneration | None:
         return self.db.scalar(
@@ -595,12 +626,35 @@ class SearchIndexManager:
                 operation_id=operation_id,
                 total_documents=total_documents,
             )
+            failed_count = self._last_rebuild_failure_count
+            if failed_count:
+                generation.status = "READY_WITH_ERRORS"
+                generation.document_count = count
+                generation.error_message = (
+                    f"Rebuild completed with {failed_count} document projection failure"
+                    f"{'s' if failed_count != 1 else ''}; explicit promotion is required"
+                )
+                self.db.commit()
+                _save_rebuild_progress(
+                    operation_id,
+                    phase="AWAITING_PROMOTION",
+                    processed_documents=total_documents,
+                    total_documents=total_documents,
+                    index_name=generation.index_name,
+                    indexed_documents=count,
+                    failed_documents=failed_count,
+                    failure_samples=[failure.as_dict() for failure in self._last_rebuild_failures[:100]],
+                )
+                return generation
             _save_rebuild_progress(
                 operation_id,
                 phase="ACTIVATING_ALIAS",
-                processed_documents=count,
+                processed_documents=total_documents,
                 total_documents=total_documents,
                 index_name=generation.index_name,
+                indexed_documents=count,
+                failed_documents=self._last_rebuild_failure_count,
+                failure_samples=[failure.as_dict() for failure in self._last_rebuild_failures[:100]],
             )
             self._activate_alias(generation)
             if active is not None:
@@ -608,6 +662,7 @@ class SearchIndexManager:
                 self.db.flush()
             generation.status = "ACTIVE"
             generation.document_count = count
+            generation.error_message = None
             generation.activated_at = utcnow()
             # A rebuild sources every retained READY run from Postgres, so all
             # of those projections are current in the newly activated index.
@@ -641,17 +696,23 @@ class SearchIndexManager:
             _save_rebuild_progress(
                 operation_id,
                 phase="CLEANING_UP",
-                processed_documents=count,
+                processed_documents=total_documents,
                 total_documents=total_documents,
                 index_name=generation.index_name,
+                indexed_documents=count,
+                failed_documents=self._last_rebuild_failure_count,
+                failure_samples=[failure.as_dict() for failure in self._last_rebuild_failures[:100]],
             )
             self._cleanup_obsolete_generations(generation)
             _save_rebuild_progress(
                 operation_id,
                 phase="COMPLETED",
-                processed_documents=count,
+                processed_documents=total_documents,
                 total_documents=total_documents,
                 index_name=generation.index_name,
+                indexed_documents=count,
+                failed_documents=self._last_rebuild_failure_count,
+                failure_samples=[failure.as_dict() for failure in self._last_rebuild_failures[:100]],
             )
             return generation
         except Exception as exc:
@@ -662,6 +723,32 @@ class SearchIndexManager:
             generation.error_message = str(exc)[:4000]
             self.db.commit()
             raise
+
+    def promote_generation_with_errors(self, generation: SearchIndexGeneration) -> SearchIndexGeneration:
+        self._lock_matter_search(generation.matter_id)
+        if generation.status != "READY_WITH_ERRORS":
+            raise ValueError("Search index generation is not awaiting promotion")
+        if not self.client.index_exists(generation.index_name):
+            raise ValueError("Search index generation is not present in OpenSearch")
+        generation.document_count = self.client.count(generation.index_name)
+        active = self.active(generation.matter_id)
+        self._activate_alias(generation)
+        if active is not None and active.id != generation.id:
+            active.status = "RETIRED"
+            self.db.flush()
+        generation.status = "ACTIVE"
+        generation.activated_at = utcnow()
+        resolved_schema_operation_count = self._resolve_superseded_schema_operations(generation)
+        self.db.commit()
+        if resolved_schema_operation_count:
+            logger.info(
+                "Resolved schema operations after promoting search generation matter_id=%s generation=%s count=%s",
+                generation.matter_id,
+                generation.generation,
+                resolved_schema_operation_count,
+            )
+        self._cleanup_obsolete_generations(generation)
+        return generation
 
     def _index_all_documents(
         self,
@@ -679,6 +766,11 @@ class SearchIndexManager:
             or 0
         )
         processed = 0
+        indexed = 0
+        failure_count = 0
+        failure_samples: list[DocumentProjectionFailure] = []
+        self._last_rebuild_failures = []
+        self._last_rebuild_failure_count = 0
         last_created_at: datetime | None = None
         last_document_id: uuid.UUID | None = None
         while True:
@@ -702,13 +794,28 @@ class SearchIndexManager:
             )
             if not batch:
                 break
-            self._bulk_upsert(index_name, batch, definitions)
+            result = self._bulk_upsert(
+                index_name,
+                batch,
+                definitions,
+                continue_on_projection_error=True,
+            )
             processed += len(batch)
+            # Tests and extensions may provide a legacy no-result override.
+            indexed += len(batch) if result is None else result.indexed_count
+            if result is not None:
+                failure_count += len(result.failures)
+                remaining_sample_slots = 100 - len(failure_samples)
+                if remaining_sample_slots > 0:
+                    failure_samples.extend(result.failures[:remaining_sample_slots])
             _save_rebuild_progress(
                 operation_id,
                 phase="INDEXING_DOCUMENTS",
                 processed_documents=processed,
                 total_documents=total,
+                indexed_documents=indexed,
+                failed_documents=failure_count,
+                failure_samples=[failure.as_dict() for failure in failure_samples],
                 index_name=index_name,
             )
             last_created_at = batch[-1].created_at
@@ -718,10 +825,15 @@ class SearchIndexManager:
             phase="REFRESHING_INDEX",
             processed_documents=processed,
             total_documents=total,
+            indexed_documents=indexed,
+            failed_documents=failure_count,
+            failure_samples=[failure.as_dict() for failure in failure_samples],
             index_name=index_name,
         )
         self.client.refresh(index_name)
-        return processed
+        self._last_rebuild_failures = failure_samples
+        self._last_rebuild_failure_count = failure_count
+        return indexed
 
     def _backfill_metadata_fields(
         self,
@@ -1302,8 +1414,12 @@ class SearchIndexManager:
         index_name: str,
         documents: list[MatterDocument],
         definitions: list[MetadataDefinition],
-    ) -> None:
+        *,
+        continue_on_projection_error: bool = False,
+    ) -> BulkProjectionResult:
         batch_size = self.settings.search_bulk_batch_size
+        indexed_count = 0
+        all_failures: list[DocumentProjectionFailure] = []
         for offset in range(0, len(documents), batch_size):
             batch = documents[offset : offset + batch_size]
             coding_actors = coded_by_tokens_for_documents(
@@ -1391,12 +1507,12 @@ class SearchIndexManager:
                 # The local/test SQLite configuration uses one shared connection,
                 # which cannot safely serve multiple sessions at the same time.
                 worker_count = 1
+            failures: list[DocumentProjectionFailure] = []
             if worker_count <= 1:
-                operations = [
-                    (
-                        "index",
-                        str(document.id),
-                        build_document_projection(
+                operations = []
+                for document in batch:
+                    try:
+                        projection = build_document_projection(
                             self.db,
                             document,
                             definitions,
@@ -1405,10 +1521,22 @@ class SearchIndexManager:
                             batch_coding=batch_coding[document.id],
                             coded_by=coding_actors[document.id],
                             fact_state=fact_states[document.id],
-                        ),
-                    )
-                    for document in batch
-                ]
+                        )
+                    except Exception as exc:
+                        if not continue_on_projection_error:
+                            raise
+                        failure = DocumentProjectionFailure(
+                            document_id=str(document.id),
+                            error_type=type(exc).__name__,
+                            error_message=str(exc)[:1000],
+                        )
+                        failures.append(failure)
+                        logger.exception(
+                            "Skipping document that failed during full search rebuild document_id=%s",
+                            document.id,
+                        )
+                        continue
+                    operations.append(("index", str(document.id), projection))
             else:
                 projection_session = sessionmaker(
                     bind=bind,
@@ -1438,7 +1566,7 @@ class SearchIndexManager:
                         str | None,
                     ],
                     session_factory=projection_session,
-                ) -> tuple[str, str, dict[str, Any]]:
+                ) -> tuple[str, str, dict[str, Any]] | DocumentProjectionFailure:
                     (
                         document_id,
                         document_batch_ids,
@@ -1450,25 +1578,51 @@ class SearchIndexManager:
                     with session_factory() as worker_db:
                         document = worker_db.get(MatterDocument, document_id)
                         if document is None:
-                            raise ValueError("Matter document disappeared during search projection")
-                        projection = build_document_projection(
-                            worker_db,
-                            document,
-                            definitions,
-                            batch_ids=document_batch_ids,
-                            batch_topics=document_batch_topics,
-                            batch_coding=document_batch_coding,
-                            coded_by=document_coding_actors,
-                            fact_state=document_fact_state,
-                        )
+                            error = ValueError("Matter document disappeared during search projection")
+                            if not continue_on_projection_error:
+                                raise error
+                            return DocumentProjectionFailure(
+                                document_id=str(document_id),
+                                error_type=type(error).__name__,
+                                error_message=str(error),
+                            )
+                        try:
+                            projection = build_document_projection(
+                                worker_db,
+                                document,
+                                definitions,
+                                batch_ids=document_batch_ids,
+                                batch_topics=document_batch_topics,
+                                batch_coding=document_batch_coding,
+                                coded_by=document_coding_actors,
+                                fact_state=document_fact_state,
+                            )
+                        except Exception as exc:
+                            if not continue_on_projection_error:
+                                raise
+                            logger.exception(
+                                "Skipping document that failed during full search rebuild document_id=%s",
+                                document_id,
+                            )
+                            return DocumentProjectionFailure(
+                                document_id=str(document_id),
+                                error_type=type(exc).__name__,
+                                error_message=str(exc)[:1000],
+                            )
                         return "index", str(document_id), projection
 
                 with ThreadPoolExecutor(
                     max_workers=worker_count,
                     thread_name_prefix="search-projection",
                 ) as executor:
-                    operations = list(executor.map(build_operation, work_items))
-            self.client.bulk(index_name, operations)
+                    results = list(executor.map(build_operation, work_items))
+                failures.extend(result for result in results if isinstance(result, DocumentProjectionFailure))
+                operations = [result for result in results if not isinstance(result, DocumentProjectionFailure)]
+            if operations:
+                self.client.bulk(index_name, operations)
+            indexed_count += len(operations)
+            all_failures.extend(failures)
+        return BulkProjectionResult(indexed_count=indexed_count, failures=tuple(all_failures))
 
 
 def sync_review_batch_search(batch_id: uuid.UUID, settings: Settings | None = None) -> None:

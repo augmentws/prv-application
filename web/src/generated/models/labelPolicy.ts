@@ -13,7 +13,7 @@ export interface LabelPolicy {
   contract_version?: 1;
   /**
      * @minItems 1
-     * @maxItems 20
+     * @maxItems 1000
      */
   allowed_sources: LabelSourceSpecification[];
   missing_label_action?: MissingLabelAction;

@@ -8,6 +8,7 @@ export type MatterSection =
   | "entities"
   | "entities-proposed"
   | "analysis"
+  | "review-programs"
   | "batches"
   | "classification"
   | "jobs"
@@ -24,6 +25,7 @@ const SECTION_PATHS: Record<MatterSection, string> = {
   entities: "/entities",
   "entities-proposed": "/entities/proposed",
   analysis: "/analysis",
+  "review-programs": "/review-programs",
   batches: "/batches",
   classification: "/classification",
   jobs: "/jobs",
@@ -106,6 +108,7 @@ function legacySection(query: URLSearchParams): MatterSection {
       return "search-index";
     case "definition":
     case "analysis":
+    case "review-programs":
     case "batches":
     case "classification":
     case "jobs":
@@ -154,6 +157,7 @@ export function matterSectionFromPath(pathname: string): MatterSection | null {
       return "jobs";
     case "definition":
     case "analysis":
+    case "review-programs":
     case "batches":
     case "usage":
     case "search-index":

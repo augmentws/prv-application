@@ -1,4 +1,4 @@
-import { Activity, BrainCircuit, Coins, Database, FileSearch, FileText, Layers, LayoutDashboard, ListTree, Sparkles, Tags, UsersRound } from "lucide-react";
+import { Activity, BrainCircuit, Coins, Database, FileSearch, FileText, Layers, LayoutDashboard, ListTree, Sparkles, Tags, UsersRound, Workflow } from "lucide-react";
 
 import { type NavGroup, type NavItem, visibleNav } from "@/components/resource-nav/types";
 import { type MatterSection, matterHref, matterJobsHref, searchAndReviewHref } from "@/lib/matter-routes";
@@ -14,6 +14,7 @@ export const MATTER_NAV: MatterNavGroup[] = [
   {
     label: "Review",
     items: [
+      { label: "Review programs", icon: Workflow, target: "review-programs", permission: "review_program.view" },
       { label: "Search and review", icon: FileSearch, target: "search-and-review" },
       { label: "Batches", icon: Layers, target: "batches" },
     ],

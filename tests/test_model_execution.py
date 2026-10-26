@@ -75,6 +75,7 @@ def test_gemini_admission_schema_removes_unsupported_constraints_but_preserves_p
                 "pattern": "^[a-z]+$",
                 "default": "unknown",
             },
+            "items": {"type": "array", "maxItems": 2, "items": {"type": "string"}},
             "value": {},
         },
         "required": ["answer"],
@@ -84,9 +85,10 @@ def test_gemini_admission_schema_removes_unsupported_constraints_but_preserves_p
 
     admitted = provider_output_schema(schema, provider="google")
 
-    assert set(admitted["properties"]) == {"answer", "value"}
+    assert set(admitted["properties"]) == {"answer", "items", "value"}
     assert admitted["properties"]["answer"] == {"type": "string"}
     assert admitted["properties"]["value"]["anyOf"]
+    assert "maxItems" not in admitted["properties"]["items"]
     assert "maxProperties" not in admitted
     assert provider_output_schema(schema, provider="openai") is schema
 

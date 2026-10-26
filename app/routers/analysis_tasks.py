@@ -25,6 +25,11 @@ from app.analysis_task_batch_sets import (
     retry_batch_set,
 )
 from app.analysis_task_compilation import queue_analysis_task_compilation
+from app.analysis_task_execution_profiles import (
+    AnalysisTaskExecutionProfileError,
+    create_execution_profile,
+    execution_profiles_for_version,
+)
 from app.analysis_task_playground import queue_analysis_task_playground
 from app.analysis_tasks import (
     MatterAnalysisTaskError,
@@ -66,6 +71,7 @@ from app.models import (
     AnalysisInputManifest,
     AnalysisTaskBatchSet,
     AnalysisTaskBatchSetRun,
+    AnalysisTaskExecutionProfile,
     ClassificationModelVersion,
     Matter,
     MatterAnalysisTask,
@@ -93,6 +99,8 @@ from app.schemas import (
     AnalysisTaskBatchSetRead,
     AnalysisTaskBatchSetRunCreate,
     AnalysisTaskBatchSetRunRead,
+    AnalysisTaskExecutionProfileCreate,
+    AnalysisTaskExecutionProfileRead,
     FactDevelopmentRunCreate,
     FactDevelopmentRunEstimateCreate,
     FactDevelopmentRunEstimateRead,
@@ -664,6 +672,7 @@ def preview_analysis_task_batch_set(
             task_version=task_version,
             population_source_type=payload.population_source_type,
             source_review_batch_id=payload.source_review_batch_id,
+            input_manifest_id=payload.input_manifest_id,
             search=search,
             target_batch_size=payload.target_batch_size,
             keep_together=list(payload.keep_together),
@@ -737,6 +746,7 @@ def create_analysis_task_batch_set(
             description=payload.description,
             population_source_type=payload.population_source_type,
             source_review_batch_id=payload.source_review_batch_id,
+            input_manifest_id=payload.input_manifest_id,
             search=search,
             saved_search_id=saved_search.id if saved_search else None,
             saved_search_name=saved_search.name if saved_search else None,
@@ -763,6 +773,7 @@ def create_analysis_task_batch_set(
             "source_review_batch_id": (
                 str(batch_set.source_review_batch_id) if batch_set.source_review_batch_id else None
             ),
+            "input_manifest_id": str(batch_set.input_manifest_id) if batch_set.input_manifest_id else None,
             "saved_search_id": batch_set.selection_definition.get("saved_search_id"),
             "search_index_generation_id": (
                 str(batch_set.search_index_generation_id)
@@ -913,6 +924,17 @@ def start_analysis_task_batch_set_run(
     task_version = db.get(MatterAnalysisTaskVersion, batch_set.matter_analysis_task_version_id)
     if task_version is None:
         raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="Batch Set task version was not found")
+    execution_profile = None
+    if payload.execution_profile_id is not None:
+        execution_profile = db.get(AnalysisTaskExecutionProfile, payload.execution_profile_id)
+        if (
+            execution_profile is None
+            or execution_profile.matter_analysis_task_version_id != task_version.id
+        ):
+            raise HTTPException(
+                status_code=status.HTTP_409_CONFLICT,
+                detail="Execution profile does not belong to the Batch Set task version",
+            )
     try:
         run, created = create_batch_set_run(
             db,
@@ -923,6 +945,7 @@ def start_analysis_task_batch_set_run(
             configuration=_batch_set_run_configuration(task, payload),
             idempotency_key=payload.idempotency_key,
             actor_user_id=principal.user.id,
+            execution_profile=execution_profile,
         )
     except AnalysisTaskBatchSetRunError as exc:
         raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=str(exc)) from exc
@@ -940,6 +963,9 @@ def start_analysis_task_batch_set_run(
                 "batch_set_id": str(batch_set.id),
                 "child_count": run.child_count,
                 "max_concurrency": run.configuration_snapshot["max_concurrency"],
+                "execution_profile_id": (
+                    str(execution_profile.id) if execution_profile is not None else None
+                ),
             },
         )
         enqueue_analysis_task_batch_set_run(db, run.workflow_id, str(run.id))
@@ -1035,6 +1061,72 @@ def list_analysis_task_versions(
         )
     )
     return [_task_version_read(db, version) for version in versions]
+
+
+@router.get(
+    "/{task_id}/versions/{version_number}/execution-profiles",
+    response_model=list[AnalysisTaskExecutionProfileRead],
+)
+def list_analysis_task_execution_profiles(
+    matter_id: uuid.UUID,
+    task_id: uuid.UUID,
+    version_number: int,
+    principal: Principal = Depends(get_principal),
+    db: Session = Depends(get_db),
+) -> list[AnalysisTaskExecutionProfile]:
+    _require_task_viewer(db, principal, matter_id)
+    task = _require_task(db, matter_id=matter_id, task_id=task_id)
+    task_version = _task_version(db, task_id=task.id, version_number=version_number)
+    return execution_profiles_for_version(db, task_version.id)
+
+
+@router.post(
+    "/{task_id}/versions/{version_number}/execution-profiles",
+    response_model=AnalysisTaskExecutionProfileRead,
+    status_code=status.HTTP_201_CREATED,
+)
+def create_analysis_task_execution_profile(
+    matter_id: uuid.UUID,
+    task_id: uuid.UUID,
+    version_number: int,
+    payload: AnalysisTaskExecutionProfileCreate,
+    principal: Principal = Depends(get_principal),
+    db: Session = Depends(get_db),
+) -> AnalysisTaskExecutionProfile:
+    matter = _require_task_manager(db, principal, matter_id)
+    task = _require_task(db, matter_id=matter_id, task_id=task_id)
+    task_version = _task_version(db, task_id=task.id, version_number=version_number)
+    try:
+        profile = create_execution_profile(
+            db,
+            matter=matter,
+            task=task,
+            task_version=task_version,
+            key=payload.key,
+            name=payload.name,
+            decision_provider=payload.decision_provider,
+            actor_user_id=principal.user.id,
+        )
+    except AnalysisTaskExecutionProfileError as exc:
+        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=str(exc)) from exc
+    record_audit(
+        db,
+        tenant_id=matter.client.tenant_id,
+        actor_user_id=principal.user.id,
+        action="matter_analysis_task.execution_profile.created",
+        target_type="analysis_task_execution_profile",
+        target_id=profile.id,
+        details={
+            "matter_id": str(matter.id),
+            "task_id": str(task.id),
+            "task_version_id": str(task_version.id),
+            "decision_provider": profile.decision_provider,
+            "content_hash": profile.content_hash,
+        },
+    )
+    db.commit()
+    db.refresh(profile)
+    return profile
 
 
 @router.post(

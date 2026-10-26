@@ -14,16 +14,28 @@ from sqlalchemy.orm import Session
 from app.artifact_gateway import get_preferred_text_source, read_artifact_bytes, store_derived_artifact
 from app.audit import record_audit
 from app.config import Settings, get_settings
+from app.document_analysis_schemas import (
+    DOCUMENT_ANALYSIS_DOCUMENT_INSTRUCTIONS,
+    DOCUMENT_ANALYSIS_MAP_INSTRUCTIONS,
+    DOCUMENT_ANALYSIS_MAP_OUTPUT_SCHEMA,
+    DOCUMENT_ANALYSIS_MODEL_OUTPUT_SCHEMA,
+    DOCUMENT_ANALYSIS_PIPELINE_VERSION,
+    DOCUMENT_ANALYSIS_REDUCE_INSTRUCTIONS,
+)
 from app.document_evidence import (
     PARAGRAPH_MAP_VERSION,
     EvidenceParagraph,
     ParagraphMap,
     build_document_map_plan,
     build_document_reduce_input,
+    document_citation_ids,
+    document_map_coverage,
+    preserve_document_map_signals,
     render_document_analysis_markdown,
     render_model_document,
     segment_paragraphs,
     validate_document_analysis_citations,
+    validate_document_map_citations,
 )
 from app.embedding_gateway import get_query_embedding_gateway
 from app.matter_definition_assessments import (
@@ -34,7 +46,7 @@ from app.matter_definition_assessments import (
     merge_retrieval_candidates,
     select_control_documents,
 )
-from app.model_execution import content_hash
+from app.model_execution import content_hash, validate_structured_output
 from app.models import (
     BatchTopic,
     BatchTopicAssignment,
@@ -79,6 +91,11 @@ REFINEMENT_DIMENSIONS = {
     "GEOGRAPHIC_SCOPE",
     "ACTOR_ENTITY_SCOPE",
 }
+ISSUE_HEADING_PATTERN = re.compile(
+    r"^\s*#{1,6}\s+Issue\s+(?P<number>[1-9][0-9]*)\s*:\s*(?P<name>.+?)\s*$",
+    re.IGNORECASE | re.MULTILINE,
+)
+ISSUE_REFERENCE_PATTERN = re.compile(r"\bIssue\s+(?P<number>[1-9][0-9]*)\b", re.IGNORECASE)
 MAX_RETRIEVAL_OFFSET = 10_000
 MAX_RETRIEVAL_PLAN_ATTEMPTS = 3
 
@@ -756,7 +773,7 @@ def analyze_document(
         max_characters=settings.definition_assessment_map_max_characters,
     )
     model = model if model is not None else _pinned_model(assessment, "document_analysis")
-    output, skill_run = asyncio.run(
+    output, skill_run, pipeline_diagnostics = asyncio.run(
         _execute_document_analysis(
             db,
             assessment=assessment,
@@ -783,6 +800,7 @@ def analyze_document(
         paragraph_map=paragraph_map,
         output=output,
         skill_run=skill_run,
+        pipeline_diagnostics=pipeline_diagnostics,
     )
     db.commit()
     return {"status": "COMPLETED", "artifact_id": str(artifact_id)}
@@ -801,10 +819,13 @@ def persist_document_analysis(
     paragraph_map: ParagraphMap,
     output: dict[str, Any],
     skill_run: SkillRun,
+    pipeline_diagnostics: dict[str, Any] | None = None,
 ) -> uuid.UUID:
     markdown = render_document_analysis_markdown(output)
     payload = {
         "schema_version": version.output_schema_key,
+        "pipeline_version": DOCUMENT_ANALYSIS_PIPELINE_VERSION,
+        "pipeline_diagnostics": pipeline_diagnostics or {},
         "result": output,
         "rendered_markdown": markdown,
         "paragraph_map": paragraph_map.as_dict(),
@@ -825,6 +846,7 @@ def persist_document_analysis(
             "model_key": version.model_key,
             "model_policy": version.model_policy,
             "output_schema_version": version.output_schema_key,
+            "analysis_pipeline_version": DOCUMENT_ANALYSIS_PIPELINE_VERSION,
             "paragraph_map_version": PARAGRAPH_MAP_VERSION,
         }
     )
@@ -845,6 +867,14 @@ def persist_document_analysis(
             "matter_definition_revision_id": str(revision.id),
             "skill_definition_version_id": str(version.id),
             "schema_version": version.output_schema_key,
+            "analysis_pipeline_version": DOCUMENT_ANALYSIS_PIPELINE_VERSION,
+            "pipeline_mode": (pipeline_diagnostics or {}).get("mode", "UNKNOWN"),
+            "restored_near_miss_count": (pipeline_diagnostics or {}).get(
+                "restored_near_miss_count", 0
+            ),
+            "restored_clarification_count": (pipeline_diagnostics or {}).get(
+                "restored_clarification_count", 0
+            ),
             "source_role": source.artifact_role,
             "source_hash": source.content_hash,
             "paragraph_map_version": PARAGRAPH_MAP_VERSION,
@@ -885,6 +915,7 @@ async def _execute_document_analysis(
         "skill_version_id": str(version.id),
         "schema_version": version.output_schema_key,
         "paragraph_map_version": PARAGRAPH_MAP_VERSION,
+        "analysis_pipeline_version": DOCUMENT_ANALYSIS_PIPELINE_VERSION,
     }
     document_metadata = {
         "matter_document_id": str(document.id),
@@ -892,25 +923,6 @@ async def _execute_document_analysis(
         "source_artifact_id": str(source.artifact_id),
         "source_hash": source.content_hash,
     }
-    if len(plan.windows) == 1:
-        return await execute_skill_run(
-            db,
-            workflow=workflow,
-            step=step,
-            skill_version=version,
-            scope_type="MATTER_DOCUMENT",
-            scope_id=document.id,
-            stable_context=stable_context,
-            dynamic_input={
-                "analysis_stage": "DOCUMENT",
-                "document": {**document_metadata, "text": render_model_document(paragraph_map)},
-                "paragraph_map": paragraph_map.as_dict()["paragraphs"],
-            },
-            cache_identity=cache_identity,
-            output_validators=(lambda result: validate_document_analysis_citations(result, paragraph_map),),
-            model=model,
-        )
-
     skill_run = create_skill_run(
         db,
         workflow=workflow,
@@ -926,6 +938,46 @@ async def _execute_document_analysis(
         },
     )
     try:
+        if len(plan.windows) == 1:
+            output = await execute_skill_call(
+                db,
+                workflow=workflow,
+                step=step,
+                skill_version=version,
+                skill_run=skill_run,
+                stable_context=stable_context,
+                dynamic_input={
+                    "analysis_stage": "DOCUMENT",
+                    "document": {**document_metadata, "text": render_model_document(paragraph_map)},
+                    "paragraph_map": paragraph_map.as_dict()["paragraphs"],
+                },
+                cache_identity=cache_identity,
+                output_validators=(lambda result: validate_document_analysis_citations(result, paragraph_map),),
+                output_schema=DOCUMENT_ANALYSIS_MODEL_OUTPUT_SCHEMA,
+                additional_instructions=DOCUMENT_ANALYSIS_DOCUMENT_INSTRUCTIONS,
+                model=model,
+            )
+            output["coverage"] = document_map_coverage(
+                paragraph_map,
+                plan,
+                successful_window_ids={plan.windows[0].window_id},
+            )
+            validate_structured_output(output, version.output_schema)
+            complete_skill_run(db, skill_run)
+            diagnostics = {
+                "mode": "DIRECT",
+                "window_count": 1,
+                "final_near_miss_count": sum(
+                    1
+                    for item in output.get("criterion_matches") or []
+                    if isinstance(item, dict) and item.get("match_type") == "NEAR_MISS"
+                ),
+                "final_clarification_count": len(output.get("clarification_requests") or []),
+                "restored_near_miss_count": 0,
+                "restored_clarification_count": 0,
+            }
+            return output, skill_run, diagnostics
+
         map_results: dict[str, dict[str, Any]] = {}
         paragraphs_by_id = {item.paragraph_id: item for item in paragraph_map.paragraphs}
         for window in plan.windows:
@@ -964,12 +1016,24 @@ async def _execute_document_analysis(
                 },
                 cache_identity=cache_identity,
                 output_validators=(
-                    lambda result, allowed=window_map: validate_document_analysis_citations(result, allowed),
+                    lambda result, allowed=window_map: validate_document_map_citations(result, allowed),
                 ),
+                output_schema=DOCUMENT_ANALYSIS_MAP_OUTPUT_SCHEMA,
+                additional_instructions=DOCUMENT_ANALYSIS_MAP_INSTRUCTIONS,
                 attempt=window.ordinal,
                 model=model,
             )
         reduce_input = build_document_reduce_input(paragraph_map, plan, map_results=map_results)
+        reduce_citation_ids = document_citation_ids(map_results)
+        reduce_paragraph_map = ParagraphMap(
+            version=paragraph_map.version,
+            source_length=paragraph_map.source_length,
+            paragraphs=tuple(
+                paragraph
+                for paragraph in paragraph_map.paragraphs
+                if paragraph.paragraph_id in reduce_citation_ids
+            ),
+        )
         output = await execute_skill_call(
             db,
             workflow=workflow,
@@ -980,17 +1044,30 @@ async def _execute_document_analysis(
             dynamic_input={
                 "analysis_stage": "REDUCE",
                 "document": document_metadata,
-                "paragraph_ids": [item.paragraph_id for item in paragraph_map.paragraphs],
-                **reduce_input,
+                "paragraph_ids": [item.paragraph_id for item in reduce_paragraph_map.paragraphs],
+                "map_plan_version": reduce_input["map_plan_version"],
+                "paragraph_map_version": reduce_input["paragraph_map_version"],
+                "map_results": reduce_input["map_results"],
+                "failed_window_ids": reduce_input["failed_window_ids"],
             },
             cache_identity=cache_identity,
-            output_validators=(lambda result: validate_document_analysis_citations(result, paragraph_map),),
+            output_validators=(
+                lambda result: validate_document_analysis_citations(result, reduce_paragraph_map),
+            ),
+            output_schema=DOCUMENT_ANALYSIS_MODEL_OUTPUT_SCHEMA,
+            additional_instructions=DOCUMENT_ANALYSIS_REDUCE_INSTRUCTIONS,
             attempt=len(plan.windows) + 1,
             model=model,
         )
+        output, pipeline_diagnostics = preserve_document_map_signals(output, map_results)
         output["coverage"] = reduce_input["coverage"]
+        validate_structured_output(output, version.output_schema)
         complete_skill_run(db, skill_run)
-        return output, skill_run
+        return output, skill_run, {
+            "mode": "MAP_REDUCE",
+            "window_count": len(plan.windows),
+            **pipeline_diagnostics,
+        }
     except Exception as exc:
         fail_skill_run(skill_run, exc)
         raise
@@ -1217,12 +1294,59 @@ def _analysis_citation_ids(value: Any) -> set[str]:
     return set()
 
 
+def _numbered_issue_names(matter_definition: str) -> dict[str, str]:
+    return {
+        match.group("number"): " ".join(match.group("name").rstrip("#").split())
+        for match in ISSUE_HEADING_PATTERN.finditer(matter_definition)
+    }
+
+
+def _enforce_named_issue_references(value: Any, matter_definition: str) -> None:
+    """Expand bare issue references and reject references carrying the wrong title."""
+
+    issue_names = _numbered_issue_names(matter_definition)
+    if not issue_names:
+        return
+
+    def normalize(node: Any, path: str) -> Any:
+        if isinstance(node, dict):
+            for key, child in node.items():
+                node[key] = normalize(child, f"{path}.{key}" if path else str(key))
+            return node
+        if isinstance(node, list):
+            for index, child in enumerate(node):
+                node[index] = normalize(child, f"{path}.{index}" if path else str(index))
+            return node
+        if not isinstance(node, str):
+            return node
+
+        normalized = node
+        for match in reversed(list(ISSUE_REFERENCE_PATTERN.finditer(node))):
+            number = match.group("number")
+            issue_name = issue_names.get(number)
+            if issue_name is None:
+                raise ValueError(f"{path} refers to Issue {number}, which is not defined in the Matter Definition")
+            expected = f"Issue {number}: {issue_name}"
+            if normalized[match.start() :].startswith(expected):
+                continue
+            suffix = normalized[match.end() :].lstrip()
+            if suffix.startswith(":"):
+                raise ValueError(f'{path} must use the exact issue reference "{expected}"')
+            normalized = f"{normalized[:match.start()]}{expected}{normalized[match.end():]}"
+        return normalized
+
+    normalize(value, "output")
+
+
 def _validate_synthesis_refinement(
     result: dict[str, Any],
     analyses: list[dict[str, Any]],
     coverage: dict[str, Any],
     refinement_signals: dict[str, Any] | None = None,
+    matter_definition: str | None = None,
 ) -> None:
+    if matter_definition:
+        _enforce_named_issue_references(result, matter_definition)
     refinement = result.get("refinement_assessment")
     if not isinstance(refinement, dict):
         raise AssessmentError("refinement_assessment is required")
@@ -1531,6 +1655,7 @@ def synthesize_assessment(
                         analyses,
                         coverage,
                         refinement_signals,
+                        revision.content_markdown,
                     ),
                 ),
                 model=model,
@@ -1562,6 +1687,42 @@ def fail_document(db: Session, assessment_id: uuid.UUID, document_id: uuid.UUID,
     db.commit()
 
 
+def archive_superseded_assessments(
+    db: Session,
+    *,
+    assessment: MatterDefinitionAssessmentRun,
+    revision: MatterDefinitionRevision,
+    archived_at: datetime,
+) -> list[uuid.UUID]:
+    """Hide older failed attempts once a later assessment completes successfully."""
+
+    db.flush()
+    superseded = list(
+        db.scalars(
+            select(MatterDefinitionAssessmentRun)
+            .join(
+                MatterDefinitionRevision,
+                MatterDefinitionRevision.id
+                == MatterDefinitionAssessmentRun.matter_definition_revision_id,
+            )
+            .where(
+                MatterDefinitionAssessmentRun.matter_id == assessment.matter_id,
+                MatterDefinitionAssessmentRun.id != assessment.id,
+                MatterDefinitionAssessmentRun.created_at <= assessment.created_at,
+                MatterDefinitionAssessmentRun.status.in_(("FAILED", "CANCELED")),
+                MatterDefinitionAssessmentRun.archived_at.is_(None),
+                MatterDefinitionRevision.matter_definition_id == revision.matter_definition_id,
+            )
+        )
+    )
+    for prior in superseded:
+        prior.archived_at = archived_at
+        prior.archived_by_user_id = None
+        prior.archive_reason = "SUPERSEDED"
+        prior.superseded_by_assessment_id = assessment.id
+    return [prior.id for prior in superseded]
+
+
 def complete_assessment(db: Session, assessment_id: uuid.UUID) -> None:
     assessment, workflow, revision, matter = _records(db, assessment_id)
     refresh_progress(db, assessment_id)
@@ -1590,6 +1751,12 @@ def complete_assessment(db: Session, assessment_id: uuid.UUID) -> None:
     if review_run is not None:
         review_run.status = final_status
         review_run.completed_at = now
+    superseded_assessment_ids = archive_superseded_assessments(
+        db,
+        assessment=assessment,
+        revision=revision,
+        archived_at=now,
+    )
     record_audit(
         db,
         tenant_id=matter.client.tenant_id,
@@ -1603,8 +1770,12 @@ def complete_assessment(db: Session, assessment_id: uuid.UUID) -> None:
             "matter_definition_revision_id": str(revision.id),
             "revision": revision.revision,
             "status": final_status,
+            "superseded_assessment_ids": [str(value) for value in superseded_assessment_ids],
         },
     )
+    from app.review_programs import project_review_program_assessment_terminal
+
+    project_review_program_assessment_terminal(db, assessment=assessment)
     db.commit()
 
 
@@ -1644,4 +1815,12 @@ def fail_assessment(db: Session, assessment_id: uuid.UUID, message: str) -> None
                 latest_failure.error_message if latest_failure and latest_failure.error_message else message
             )[:4000]
             step.completed_at = assessment.completed_at
+    review_run = db.get(ReviewBatchRun, assessment.review_batch_run_id) if assessment.review_batch_run_id else None
+    if review_run is not None:
+        review_run.status = "FAILED"
+        review_run.error_message = message[:4000]
+        review_run.completed_at = assessment.completed_at
+    from app.review_programs import project_review_program_assessment_terminal
+
+    project_review_program_assessment_terminal(db, assessment=assessment)
     db.commit()

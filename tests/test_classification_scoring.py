@@ -15,7 +15,7 @@ from test_classification_models import auth
 
 from app.classification_builds import execute_training_run
 from app.classification_projections import execute_classifier_projection
-from app.classification_scoring import execute_scoring_run
+from app.classification_scoring import create_scoring_run, execute_scoring_run, prepare_scoring
 from app.models import (
     ClassificationModel,
     ClassificationModelConfiguration,
@@ -274,6 +274,41 @@ def test_scoring_launch_is_idempotent_and_cancelable(
     )
     assert retired.status_code == 201
     assert retired.json()["policy_snapshot"]["blocking_reference_count"] == 0
+
+
+def test_scoring_run_can_delegate_notifications_to_a_parent_workflow(
+    client: TestClient,
+    root_token: str,
+    root_admin,
+) -> None:
+    matter, model, snapshot, version_id, _ = approved_version_fixture(
+        client,
+        root_token,
+        root_admin,
+    )
+    parent_id = uuid.uuid4()
+    with TestingSessionLocal() as db:
+        prepared = prepare_scoring(
+            db,
+            matter_id=uuid.UUID(matter["id"]),
+            classification_model_id=uuid.UUID(model["id"]),
+            dataset_snapshot_id=snapshot.id,
+            model_version_id=version_id,
+        )
+        run, created = create_scoring_run(
+            db,
+            prepared=prepared,
+            idempotency_key="parent-managed-scoring",
+            actor_user_id=root_admin.id,
+            notification_parent_type="REVIEW_PROGRAM_RUN",
+            notification_parent_id=parent_id,
+        )
+        execution = db.get(WorkflowRun, run.current_workflow_run_id)
+        assert created is True
+        assert execution is not None
+        assert execution.notification_policy == "PARENT_MANAGED"
+        assert execution.notification_parent_type == "REVIEW_PROGRAM_RUN"
+        assert execution.notification_parent_id == parent_id
 
 
 def test_scoring_retry_backfills_a_missing_legacy_execution(

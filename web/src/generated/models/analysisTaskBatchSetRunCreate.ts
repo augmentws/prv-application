@@ -20,4 +20,5 @@ export interface AnalysisTaskBatchSetRunCreate {
   embedding_job_id?: string | null;
   coding_source?: 'MATTER_METADATA';
   use_batch_api?: boolean;
+  execution_profile_id?: string | null;
 }

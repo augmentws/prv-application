@@ -44,6 +44,8 @@ The web application is the browser-facing layer. It keeps authentication tokens 
 
 For local development, set `APP_ORIGIN` in `web/.env.local` to the exact browser origin, normally `http://localhost:3000` or `http://127.0.0.1:3000`. When the web application is exposed through `cloudflared` or another reverse proxy, set it to the public HTTPS origin, for example `https://priv.augment.ws`. The BFF uses this value for same-origin request validation and server-side redirects; it must not include a path.
 
+If the same web process must also accept direct LAN access, keep `APP_ORIGIN` set to the canonical public origin and add each trusted LAN origin to the comma-separated `APP_ALLOWED_ORIGINS` setting, for example `APP_ALLOWED_ORIGINS=http://192.168.7.103:3000`. These origins are accepted for login and mutation CSRF validation but are not used for redirects. Wildcards are intentionally unsupported.
+
 Do not expose `next dev` as a deployment. Build and run the optimized server instead:
 
 ```bash
