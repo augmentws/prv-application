@@ -1,10 +1,10 @@
 "use client";
 
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { Ban, BookOpen, Play, Plus, RefreshCw, RotateCcw, Workflow } from "lucide-react";
+import { Ban, BookOpen, CircleHelp, Play, Plus, RefreshCw, RotateCcw, Workflow } from "lucide-react";
 import Link from "next/link";
 import { usePathname, useRouter, useSearchParams } from "next/navigation";
-import { useEffect, useMemo, useState, type FormEvent } from "react";
+import { useEffect, useMemo, useRef, useState, type FormEvent } from "react";
 import { toast } from "sonner";
 
 import { useMatter } from "@/components/matter/matter-context";
@@ -24,6 +24,27 @@ import { formatDate } from "@/lib/format";
 import { cn } from "@/lib/utils";
 
 const ACTIVE_RUN_STATUSES = new Set(["QUEUED", "RUNNING", "WAITING_FOR_USER"]);
+
+const PROGRAM_STAGE_HELP: Record<string, string> = {
+  MATTER_DEFINITION: "Define the review scope, issues, responsive criteria, and guidance that control the rest of the program.",
+  DEFINITION_ASSESSMENT: "Test the Matter Definition against a targeted document batch and identify gaps, ambiguities, and retrieval weaknesses.",
+  DEFINITION_REFINEMENT: "Resolve assessment questions, review the generated refinements, and publish the next Matter Definition revision.",
+  DEFINITION_ACCEPTANCE: "Freeze the accepted Matter Definition revision and its assessment provenance for downstream Q&A work.",
+  QA_TASK_SETUP: "Generate and publish the structured Q&A coding task, including its questions, destination fields, and model profiles.",
+  DISCOVERY_QA: "Run both Q&A model profiles on discovery batches to produce initial issue coding examples.",
+  DISCOVERY_ANALYSIS: "Compare the Q&A results, measure model agreement, and determine the amount of training support for each issue.",
+  ISSUE_SUPPORT_DECISION: "Decide how to handle issues that do not yet have enough reliable examples for classifier training.",
+  DISAGREEMENT_REVIEW: "Create an ad hoc review batch for model disagreements and incorporate the reviewer’s decisions.",
+  TRAINING_LABEL_FINALIZATION: "Choose the accepted coding source and freeze the labels that will be used to train the classifier.",
+  CLASSIFIER_TRAINING: "Train and evaluate the issue classifier using the finalized Q&A and reviewer labels.",
+  CLASSIFIER_REVIEW: "Review classifier quality by issue and decide whether to accept the model or improve weak categories.",
+  CLASSIFIER_IMPROVEMENT: "Retrieve and review additional targeted documents for weak categories, then retrain the classifier.",
+  WHOLE_COLLECTION_SCORING: "Apply the accepted classifier across the entire matter collection.",
+  CLASSIFIER_POSITIVE_COVERAGE: "Run Q&A review on classifier-positive documents that have not already received Q&A coding.",
+  FINAL_ALIGNMENT: "Compare the final Q&A and classifier codings and summarize agreement, differences, and coverage.",
+  NO_CODE_QC: "Sample documents with no issue codes to check the negative population for missed responsive material.",
+  COMPLETION: "Freeze the final reports and provenance, record completion, and close the First Pass Review run.",
+};
 
 export function ReviewProgramsSection() {
   const { clientId, matterId, permissionKeys } = useMatter();
@@ -50,6 +71,7 @@ export function ReviewProgramsSection() {
   });
   const currentRun = runs.data?.find((run) => run.id === selectedProgram?.current_run_id) ?? runs.data?.[0] ?? null;
   const template = templates.data?.find((item) => item.key === selectedProgram?.template_key) ?? null;
+  const carriedForwardAcceptanceRuns = useRef(new Set<string>());
 
   useEffect(() => {
     if (!requestedProgramId && selectedProgram) {
@@ -91,9 +113,9 @@ export function ReviewProgramsSection() {
     onError: mutationError("The Review Program could not be updated."),
   });
   const resolveAction = useMutation({
-    mutationFn: ({ programId, runId, action, choiceKey, reason }: { programId: string; runId: string; action: ReviewProgramActionRead; choiceKey: string; reason?: string }) => coreApi<ReviewProgramRunRead>(`/v1/matters/${matterId}/review-programs/${programId}/runs/${runId}/actions/${action.id}/resolve`, {
+    mutationFn: ({ programId, runId, action, choiceKey, reason, input }: { programId: string; runId: string; action: ReviewProgramActionRead; choiceKey: string; reason?: string; input?: Record<string, unknown> }) => coreApi<ReviewProgramRunRead>(`/v1/matters/${matterId}/review-programs/${programId}/runs/${runId}/actions/${action.id}/resolve`, {
       method: "POST",
-      body: JSON.stringify({ preview_hash: action.preview_hash, choice_key: choiceKey, ...(reason ? { reason } : {}) }),
+      body: JSON.stringify({ preview_hash: action.preview_hash, choice_key: choiceKey, ...(reason ? { reason } : {}), ...(input ? { input } : {}) }),
     }),
     onSuccess: async (run) => { await refresh(run.program_id); toast.success("The decision was recorded."); },
     onError: mutationError("The decision could not be recorded."),
@@ -139,6 +161,21 @@ export function ReviewProgramsSection() {
     onError: mutationError("Negative-population QC could not be started."),
   });
 
+  useEffect(() => {
+    const hasRecordedFinalAcceptance = Boolean(currentRun?.progress_summary?.final_unassessed_refinement);
+    if (
+      !canManage
+      || !selectedProgram
+      || !currentRun
+      || currentRun.status !== "WAITING_FOR_USER"
+      || currentRun.current_stage !== "DEFINITION_ACCEPTANCE"
+      || !hasRecordedFinalAcceptance
+      || carriedForwardAcceptanceRuns.current.has(currentRun.id)
+    ) return;
+    carriedForwardAcceptanceRuns.current.add(currentRun.id);
+    command.mutate({ programId: selectedProgram.id, runId: currentRun.id, verb: "reconcile" });
+  }, [canManage, command, currentRun, selectedProgram]);
+
   if (programs.isPending || templates.isPending) return <TableLoading />;
   if (programs.error || templates.error) return <QueryError message={programs.error?.message ?? templates.error?.message} />;
 
@@ -167,7 +204,7 @@ export function ReviewProgramsSection() {
         busy={startRun.isPending || command.isPending || resolveAction.isPending || setupDefinition.isPending || setupQA.isPending || setupDiscovery.isPending || setupClassifierImprovement.isPending || setupNegativePopulationQC.isPending}
         onStart={() => startRun.mutate(selectedProgram.id)}
         onCommand={(verb) => currentRun && command.mutate({ programId: selectedProgram.id, runId: currentRun.id, verb })}
-        onResolve={(action, choiceKey, reason) => currentRun && resolveAction.mutate({ programId: selectedProgram.id, runId: currentRun.id, action, choiceKey, reason })}
+        onResolve={(action, choiceKey, reason, input) => currentRun && resolveAction.mutate({ programId: selectedProgram.id, runId: currentRun.id, action, choiceKey, reason, input })}
         onSetupDefinition={(action, payload) => currentRun && setupDefinition.mutate({ programId: selectedProgram.id, runId: currentRun.id, actionId: action.id, payload })}
         onSetupQA={(action, payload) => currentRun && setupQA.mutate({ programId: selectedProgram.id, runId: currentRun.id, actionId: action.id, payload })}
         onSetupDiscovery={(action, payload) => currentRun && setupDiscovery.mutate({ programId: selectedProgram.id, runId: currentRun.id, actionId: action.id, payload })}
@@ -190,7 +227,7 @@ function ProgramWorkspace({ clientId, matterId, program, run, stages, canManage,
   busy: boolean;
   onStart: () => void;
   onCommand: (verb: "cancel" | "retry" | "reconcile") => void;
-  onResolve: (action: ReviewProgramActionRead, choiceKey: string, reason?: string) => void;
+  onResolve: (action: ReviewProgramActionRead, choiceKey: string, reason?: string, input?: Record<string, unknown>) => void;
   onSetupDefinition: (action: ReviewProgramActionRead, payload: DefinitionSetupPayload) => void;
   onSetupQA: (action: ReviewProgramActionRead, payload: QASetupPayload) => void;
   onSetupDiscovery: (action: ReviewProgramActionRead, payload: DiscoverySetupPayload) => void;
@@ -232,7 +269,7 @@ function ProgramWorkspace({ clientId, matterId, program, run, stages, canManage,
     </Card>
     {run && currentAssessment ? <DefinitionAssessmentProgress clientId={clientId} matterId={matterId} run={run} assessment={currentAssessment} /> : null}
     {run?.status === "COMPLETED" || run?.status === "COMPLETED_WITH_ERRORS" ? <CompletedReviewProgramSummary run={run} /> : null}
-    {openAction?.action_type === "MATTER_DEFINITION_SETUP" ? <DefinitionSetupCard matterId={matterId} action={openAction} canManage={canManage} busy={busy} onSubmit={(payload) => onSetupDefinition(openAction, payload)} onStop={() => onResolve(openAction, "STOP")} /> : openAction?.action_type === "QA_TASK_SETUP" ? <QASetupCard matterId={matterId} action={openAction} canManage={canManage} busy={busy} onSubmit={(payload) => onSetupQA(openAction, payload)} onStop={() => onResolve(openAction, "STOP")} /> : openAction?.action_type === "DISCOVERY_QA_SETUP" ? <DiscoverySetupCard action={openAction} canManage={canManage} busy={busy} onSubmit={(payload) => onSetupDiscovery(openAction, payload)} onStop={() => onResolve(openAction, "STOP")} /> : openAction?.action_type === "CLASSIFIER_IMPROVEMENT_SETUP" ? <ClassifierImprovementSetupCard action={openAction} canManage={canManage} busy={busy} onSubmit={(payload) => onSetupClassifierImprovement(openAction, payload)} onStop={() => onResolve(openAction, "STOP")} /> : openAction?.action_type === "NEGATIVE_POPULATION_QC_SETUP" ? <NegativePopulationQCSetupCard action={openAction} canManage={canManage} busy={busy} onSubmit={(payload) => onSetupNegativePopulationQC(openAction, payload)} onStop={() => onResolve(openAction, "STOP")} /> : openAction?.action_type === "REVIEW_PROGRAM_COMPLETION" ? <CompletionDecisionCard action={openAction} canManage={canManage} busy={busy} onComplete={(reason) => onResolve(openAction, "COMPLETE", reason)} onStop={() => onResolve(openAction, "STOP")} /> : openAction ? <Card className="border-accent/60 bg-accent/5"><CardHeader><CardTitle>{openAction.title}</CardTitle><CardDescription>{openAction.explanation}</CardDescription></CardHeader><CardContent><DefinitionAssessmentSummary action={openAction} /><QAPublicationSummary action={openAction} /><IssueSupportSummary action={openAction} /><TrainingLabelSummary action={openAction} matterId={matterId} /><ClassifierReviewSummary action={openAction} /><WholeCollectionScoringSummary action={openAction} /><ClassifierPositiveCoverageSummary action={openAction} /><FinalAlignmentSummary action={openAction} /><NegativePopulationQCReport action={openAction} /><NegativePopulationQCFindingsReview action={openAction} matterId={matterId} />{openAction.stage_key === "DEFINITION_REFINEMENT" || openAction.stage_key === "DEFINITION_ACCEPTANCE" ? <Button asChild size="sm" variant="outline" className="mb-3"><Link href={definitionAssessmentHref(clientId, matterId, openAction)}><BookOpen />Open Matter Definition</Link></Button> : null}<div className="flex flex-wrap gap-2">{openAction.allowed_choices.map((choice, index) => {
+    {openAction?.action_type === "MATTER_DEFINITION_SETUP" ? <DefinitionSetupCard matterId={matterId} action={openAction} canManage={canManage} busy={busy} onSubmit={(payload) => onSetupDefinition(openAction, payload)} onStop={() => onResolve(openAction, "STOP")} /> : openAction?.action_type === "MATTER_DEFINITION_REFINEMENT" ? <DefinitionRefinementCard clientId={clientId} matterId={matterId} action={openAction} canManage={canManage} busy={busy} onResolve={(choice, input) => onResolve(openAction, choice, undefined, input)} /> : openAction?.action_type === "QA_TASK_SETUP" ? <QASetupCard matterId={matterId} action={openAction} canManage={canManage} busy={busy} onSubmit={(payload) => onSetupQA(openAction, payload)} onStop={() => onResolve(openAction, "STOP")} /> : openAction?.action_type === "DISCOVERY_QA_SETUP" ? <DiscoverySetupCard action={openAction} canManage={canManage} busy={busy} onSubmit={(payload) => onSetupDiscovery(openAction, payload)} onStop={() => onResolve(openAction, "STOP")} /> : openAction?.action_type === "CLASSIFIER_IMPROVEMENT_SETUP" ? <ClassifierImprovementSetupCard action={openAction} canManage={canManage} busy={busy} onSubmit={(payload) => onSetupClassifierImprovement(openAction, payload)} onStop={() => onResolve(openAction, "STOP")} /> : openAction?.action_type === "NEGATIVE_POPULATION_QC_SETUP" ? <NegativePopulationQCSetupCard action={openAction} canManage={canManage} busy={busy} onSubmit={(payload) => onSetupNegativePopulationQC(openAction, payload)} onStop={() => onResolve(openAction, "STOP")} /> : openAction?.action_type === "REVIEW_PROGRAM_COMPLETION" ? <CompletionDecisionCard action={openAction} canManage={canManage} busy={busy} onComplete={(reason) => onResolve(openAction, "COMPLETE", reason)} onStop={() => onResolve(openAction, "STOP")} /> : openAction ? <Card className="border-accent/60 bg-accent/5"><CardHeader><CardTitle>{openAction.title}</CardTitle><CardDescription>{openAction.explanation}</CardDescription></CardHeader><CardContent><DefinitionAssessmentSummary action={openAction} /><QAPublicationSummary action={openAction} /><IssueSupportSummary action={openAction} /><TrainingLabelSummary action={openAction} matterId={matterId} /><ClassifierReviewSummary action={openAction} /><WholeCollectionScoringSummary action={openAction} /><ClassifierPositiveCoverageSummary action={openAction} /><FinalAlignmentSummary action={openAction} /><NegativePopulationQCReport action={openAction} /><NegativePopulationQCFindingsReview action={openAction} matterId={matterId} />{openAction.stage_key === "DEFINITION_ACCEPTANCE" ? <Button asChild size="sm" variant="outline" className="mb-3"><Link href={definitionAssessmentHref(clientId, matterId, openAction)}><BookOpen />Open Matter Definition</Link></Button> : null}<div className="flex flex-wrap gap-2">{openAction.allowed_choices.map((choice, index) => {
       return <Button key={`${choice.key}-${index}`} size="sm" variant={choice.key === "STOP" ? "destructive" : "default"} disabled={!canManage || busy} onClick={() => onResolve(openAction, choice.key)} title={choice.consequence}>{choice.label}</Button>;
     })}</div></CardContent></Card> : null}
     {run ? <Card><CardHeader><CardTitle>Program stages</CardTitle><CardDescription>The coordinator records every stage attempt and waits only at explicit human gates.</CardDescription></CardHeader><CardContent><ol className="grid gap-2 sm:grid-cols-2">{stages.map((stage) => {
@@ -242,9 +279,23 @@ function ProgramWorkspace({ clientId, matterId, program, run, stages, canManage,
       const containsCurrentReassessment = isDefinitionReassessment && stage.key === "DEFINITION_REFINEMENT";
       const isCurrent = (stage.key === run.current_stage && !isDefinitionReassessment) || containsCurrentReassessment;
       const upcoming = isDefinitionReassessment ? stage.ordinal > 3 : stage.ordinal > run.current_stage_ordinal;
-      return <li key={stage.key} className={cn("flex items-start gap-3 rounded-lg border p-3", isCurrent && "border-primary/50 bg-primary/5", upcoming && "opacity-55")}><span className="grid size-7 shrink-0 place-items-center rounded-full bg-muted text-xs font-semibold">{stage.ordinal}</span><div className="min-w-0 flex-1"><p className="text-sm font-medium">{stage.name}</p><div className="mt-1 flex flex-wrap gap-1">{attempt ? <StatusBadge status={attempt.status} /> : <Badge variant="outline">Upcoming</Badge>}<Badge variant="outline">{friendly(stage.batching_policy)}</Badge>{stage.requires_human_gate ? <Badge variant="outline">Decision</Badge> : null}</div>{containsCurrentReassessment ? <div className="mt-2 flex items-center justify-between gap-2 rounded-md border border-primary/30 bg-background/80 px-2 py-1.5"><span className="text-xs font-medium">Reassessment · Round {definitionAssessmentRound}</span><StatusBadge status={currentDefinitionAssessmentAttempt?.status ?? run.status} /></div> : null}</div></li>;
+      return <li key={stage.key} className={cn("flex items-start gap-3 rounded-lg border p-3", isCurrent && "border-primary/50 bg-primary/5", upcoming && "opacity-55")}><span className="grid size-7 shrink-0 place-items-center rounded-full bg-muted text-xs font-semibold">{stage.ordinal}</span><div className="min-w-0 flex-1"><div className="flex items-start justify-between gap-2"><p className="text-sm font-medium">{stage.name}</p><ProgramStageTooltip stage={stage} /></div><div className="mt-1 flex flex-wrap gap-1">{attempt ? <StatusBadge status={attempt.status} /> : <Badge variant="outline">Upcoming</Badge>}<Badge variant="outline">{friendly(stage.batching_policy)}</Badge>{stage.requires_human_gate ? <Badge variant="outline">Decision</Badge> : null}</div>{containsCurrentReassessment ? <div className="mt-2 flex items-center justify-between gap-2 rounded-md border border-primary/30 bg-background/80 px-2 py-1.5"><span className="text-xs font-medium">Reassessment · Round {definitionAssessmentRound}</span><StatusBadge status={currentDefinitionAssessmentAttempt?.status ?? run.status} /></div> : null}</div></li>;
     })}</ol></CardContent></Card> : null}
   </div>;
+}
+
+function ProgramStageTooltip({ stage }: { stage: ReviewWorkflowStageRead }) {
+  const tooltipId = `review-program-stage-${stage.ordinal}-help`;
+  const description = PROGRAM_STAGE_HELP[stage.key]
+    ?? `${stage.name} is a ${friendly(stage.batching_policy)} stage${stage.requires_human_gate ? " that requires a user decision" : ""}.`;
+  return <span className="group/stage-tooltip relative inline-flex shrink-0">
+    <button type="button" className="rounded-sm text-muted-foreground outline-none hover:text-foreground focus-visible:ring-2 focus-visible:ring-ring" aria-label={`About ${stage.name}`} aria-describedby={tooltipId}>
+      <CircleHelp className="size-4" aria-hidden="true" />
+    </button>
+    <span id={tooltipId} role="tooltip" className="pointer-events-none invisible absolute right-0 top-6 z-50 w-max max-w-[min(18rem,calc(100vw-2rem))] rounded-md border bg-popover px-3 py-2 text-left text-xs font-normal leading-relaxed text-popover-foreground opacity-0 shadow-md transition-opacity group-hover/stage-tooltip:visible group-hover/stage-tooltip:opacity-100 group-focus-within/stage-tooltip:visible group-focus-within/stage-tooltip:opacity-100">
+      {description}
+    </span>
+  </span>;
 }
 
 function DefinitionAssessmentProgress({ clientId, matterId, run, assessment }: { clientId: string; matterId: string; run: ReviewProgramRunRead; assessment: MatterDefinitionAssessmentRead }) {
@@ -280,7 +331,52 @@ function DefinitionAssessmentSummary({ action }: { action: ReviewProgramActionRe
   const questions = values.question_counts && typeof values.question_counts === "object" && !Array.isArray(values.question_counts)
     ? values.question_counts as Record<string, unknown>
     : {};
-  return <div className="mb-3 grid gap-2 rounded-lg border bg-background/70 p-3 text-sm sm:grid-cols-2 lg:grid-cols-4"><div><p className="text-xs text-muted-foreground">Assessment</p><p className="font-medium">{friendly(String(values.status ?? "unknown"))}</p></div><div><p className="text-xs text-muted-foreground">Documents</p><p className="font-medium">{Number(values.summarized_count ?? 0)} summarized · {Number(values.failed_count ?? 0)} failed</p></div><div><p className="text-xs text-muted-foreground">Open questions</p><p className="font-medium">{Number(questions.open ?? 0)} open · {Number(questions.open_blocking ?? 0)} blocking</p></div><div><p className="text-xs text-muted-foreground">Refinement</p><p className="font-medium">{friendly(String(values.guidance_refinement_status ?? "not ready"))}</p></div></div>;
+  const finalRefinement = action.decision_context?.final_unassessed_refinement;
+  const finalValues = finalRefinement && typeof finalRefinement === "object" && !Array.isArray(finalRefinement)
+    ? finalRefinement as Record<string, unknown>
+    : null;
+  return <>{finalValues && action.stage_key === "DEFINITION_ACCEPTANCE" ? <div className="mb-3 rounded-lg border border-warning/40 bg-warning/8 p-3 text-sm"><p className="font-semibold">Final refinement was not independently reassessed</p><p className="mt-1 text-xs text-muted-foreground">Revision {String(finalValues.accepted_revision ?? "—")} was produced from the resolved questions in assessment round {String(finalValues.assessment_round ?? "—")}. Accepting it records that limitation and continues to Q&amp;A setup.</p></div> : null}<div className="mb-3 grid gap-2 rounded-lg border bg-background/70 p-3 text-sm sm:grid-cols-2 lg:grid-cols-4"><div><p className="text-xs text-muted-foreground">Assessment</p><p className="font-medium">{friendly(String(values.status ?? "unknown"))}</p></div><div><p className="text-xs text-muted-foreground">Documents</p><p className="font-medium">{Number(values.summarized_count ?? 0)} summarized · {Number(values.failed_count ?? 0)} failed</p></div><div><p className="text-xs text-muted-foreground">Open questions</p><p className="font-medium">{Number(questions.open ?? 0)} open · {Number(questions.open_blocking ?? 0)} blocking</p></div><div><p className="text-xs text-muted-foreground">Refinement</p><p className="font-medium">{friendly(String(values.guidance_refinement_status ?? "not ready"))}</p></div></div></>;
+}
+
+function DefinitionRefinementCard({ clientId, matterId, action, canManage, busy, onResolve }: {
+  clientId: string;
+  matterId: string;
+  action: ReviewProgramActionRead;
+  canManage: boolean;
+  busy: boolean;
+  onResolve: (choice: string, input?: Record<string, unknown>) => void;
+}) {
+  const assessment = action.decision_context?.assessment;
+  const values = assessment && typeof assessment === "object" && !Array.isArray(assessment)
+    ? assessment as Record<string, unknown>
+    : {};
+  const questions = values.question_counts && typeof values.question_counts === "object" && !Array.isArray(values.question_counts)
+    ? values.question_counts as Record<string, unknown>
+    : {};
+  const openQuestions = Number(questions.open ?? 0);
+  const refinementStatus = String(values.guidance_refinement_status ?? "NOT_READY");
+  const publicationRequired = values.publication_required === true;
+  const publicationReady = values.publication_ready === true;
+  const refinedRevision = Number(values.refined_matter_definition_revision ?? 0) || null;
+  const assessmentRound = Number(values.assessment_round ?? 1);
+  const assessmentRoundLimit = Number(values.assessment_round_limit ?? 3);
+  const assessmentLimitReached = values.assessment_round_limit_reached === true;
+  const generating = ["QUEUED", "RUNNING"].includes(refinementStatus);
+  const failed = refinementStatus === "FAILED";
+  const canContinue = openQuestions === 0 && !generating && !failed && (!publicationRequired || publicationReady);
+  const primary = action.allowed_choices.find((choice) => choice.key === "CONTINUE");
+  const stop = action.allowed_choices.find((choice) => choice.key === "STOP");
+
+  let guidance = "Resolve every assessment question before a revised Matter Definition can be prepared.";
+  if (generating) guidance = "All questions are resolved. The revised Matter Definition draft is being created.";
+  else if (failed) guidance = "The revised Matter Definition draft could not be created. Open the assessment for the failure details.";
+  else if (publicationRequired && !publicationReady) guidance = `Draft revision ${refinedRevision ?? "—"} is ready. Review it and publish it before continuing.`;
+  else if (publicationRequired && assessmentLimitReached) guidance = `Revision ${refinedRevision ?? "—"} is published, but assessment round ${assessmentRound} reached the configured limit of ${assessmentRoundLimit}. Choose whether to use this revision as the final candidate or run one additional validation assessment.`;
+  else if (publicationRequired) guidance = `Revision ${refinedRevision ?? "—"} is published and ready for reassessment.`;
+  else if (openQuestions === 0) guidance = "No revised draft is required. Continue to the Matter Definition acceptance decision.";
+
+  const finalRoundDecision = publicationRequired && publicationReady && assessmentLimitReached;
+  return <Card className="border-accent/60 bg-accent/5"><CardHeader><CardTitle>Resolve findings and publish the revised Matter Definition</CardTitle><CardDescription>Review the assessment findings, answer every question, and explicitly publish any generated draft before the program reassesses it.</CardDescription></CardHeader><CardContent><DefinitionAssessmentSummary action={action} /><p className="mb-3 rounded-md border bg-background/70 p-3 text-sm font-medium">{guidance}</p><div className="flex flex-wrap gap-2"><Button asChild size="sm" variant="outline"><Link href={definitionAssessmentHref(clientId, matterId, action)}><BookOpen />{publicationRequired && !publicationReady ? "Review and publish draft" : "Open Matter Definition"}</Link></Button>{primary && finalRoundDecision ? <><Button size="sm" disabled={!canManage || busy || !canContinue} onClick={() => onResolve(primary.key, { final_round_decision: "ACCEPT_REFINEMENT" })}>Accept revision {refinedRevision ?? "—"} and continue to Q&amp;A setup</Button><Button size="sm" variant="outline" disabled={!canManage || busy || !canContinue} onClick={() => onResolve(primary.key, { final_round_decision: "EXTEND_AND_REASSESS" })}>Run additional validation assessment</Button></> : primary ? <Button size="sm" disabled={!canManage || busy || !canContinue} onClick={() => onResolve(primary.key)} title={canContinue ? primary.consequence : guidance}>{publicationRequired ? "Continue to reassessment" : "Continue to acceptance"}</Button> : null}{stop ? <Button size="sm" variant="destructive" disabled={!canManage || busy} onClick={() => onResolve(stop.key)} title={stop.consequence}>{stop.label}</Button> : null}</div></CardContent></Card>;
 }
 
 function QAPublicationSummary({ action }: { action: ReviewProgramActionRead }) {

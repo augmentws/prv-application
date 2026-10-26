@@ -345,15 +345,15 @@ def _action_contract(
         )
     if stage.key == "DEFINITION_REFINEMENT":
         return (
-            "Review assessment findings",
+            "Resolve findings and publish the revised Matter Definition",
             (
-                "Resolve every blocking assessment question. If a refinement draft was generated, publish a "
-                "revision before continuing; the coordinator will assess that new revision in another round."
+                "Resolve every assessment question. When the refinement draft is ready, review and publish it "
+                "before continuing. The coordinator will assess the newly published revision in another round."
             ),
             [
                 {
                     "key": "CONTINUE",
-                    "label": "Check readiness and continue",
+                    "label": "Continue after publication",
                     "consequence": (
                         "Proceed to acceptance when the assessed revision remains current, or assess a newly "
                         "published revision."
@@ -741,6 +741,7 @@ def _definition_stage_context(
 ) -> dict[str, Any]:
     context: dict[str, Any] = {
         "matter_definition_id": str(program.matter_definition_id) if program.matter_definition_id else None,
+        "final_unassessed_refinement": (run.progress_summary or {}).get("final_unassessed_refinement"),
     }
     child = db.scalar(
         select(ReviewProgramChild)
@@ -756,6 +757,35 @@ def _definition_stage_context(
     assessment = db.get(MatterDefinitionAssessmentRun, child.child_id)
     if assessment is None:
         return context
+    definition = db.get(MatterDefinition, program.matter_definition_id) if program.matter_definition_id else None
+    refined_revision = (
+        db.get(MatterDefinitionRevision, assessment.refined_matter_definition_revision_id)
+        if assessment.refined_matter_definition_revision_id
+        else None
+    )
+    assessed_revision = db.get(MatterDefinitionRevision, assessment.matter_definition_revision_id)
+    publication_required = refined_revision is not None
+    publication_ready = bool(
+        not publication_required
+        or (
+            definition is not None
+            and definition.published_revision is not None
+            and assessed_revision is not None
+            and definition.published_revision != assessed_revision.revision
+        )
+    )
+    configuration = current_review_program_version(db, program).configuration_snapshot
+    policy = configuration.get("matter_definition_policy") or {}
+    configured_round_limit = int(policy.get("maximum_assessment_rounds", 3))
+    round_limit = max(
+        configured_round_limit,
+        int((run.progress_summary or {}).get("definition_assessment_round_limit_override") or 0),
+    )
+    assessment_round = int((run.progress_summary or {}).get("definition_assessment_round") or 1)
+    context["matter_definition"] = {
+        "current_revision": definition.current_revision if definition is not None else None,
+        "published_revision": definition.published_revision if definition is not None else None,
+    }
     questions = list(
         db.scalars(
             select(MatterDefinitionAssessmentQuestion).where(
@@ -780,6 +810,12 @@ def _definition_stage_context(
             if assessment.refined_matter_definition_revision_id
             else None
         ),
+        "refined_matter_definition_revision": refined_revision.revision if refined_revision is not None else None,
+        "publication_required": publication_required,
+        "publication_ready": publication_ready,
+        "assessment_round": assessment_round,
+        "assessment_round_limit": round_limit,
+        "assessment_round_limit_reached": assessment_round >= round_limit,
         "question_counts": {
             "open": sum(question.status == "OPEN" for question in questions),
             "open_blocking": sum(question.status == "OPEN" and question.blocking for question in questions),
@@ -1437,7 +1473,10 @@ def _launch_definition_assessment(
             or 0
         )
         round_number = completed_rounds + 1
-        maximum_rounds = int(policy.get("maximum_assessment_rounds", 3))
+        maximum_rounds = max(
+            int(policy.get("maximum_assessment_rounds", 3)),
+            int((run.progress_summary or {}).get("definition_assessment_round_limit_override") or 0),
+        )
         if round_number > maximum_rounds:
             raise ReviewProgramError(f"Matter Definition assessment limit of {maximum_rounds} rounds has been reached")
         assessment = start_assessment(
@@ -2546,6 +2585,20 @@ def _transition_definition_refinement(
         and published.id == assessment.matter_definition_revision_id
     ):
         raise ReviewProgramError("Review and publish a refinement revision before continuing")
+    configuration = current_review_program_version(db, program).configuration_snapshot
+    policy = configuration.get("matter_definition_policy") or {}
+    round_limit = max(
+        int(policy.get("maximum_assessment_rounds", 3)),
+        int((run.progress_summary or {}).get("definition_assessment_round_limit_override") or 0),
+    )
+    assessment_round = int((run.progress_summary or {}).get("definition_assessment_round") or 1)
+    limit_reached = assessment_round >= round_limit
+    decision = str(((action.resolution_payload or {}).get("input") or {}).get("final_round_decision") or "")
+    published_changed = published.id != assessment.matter_definition_revision_id
+    if published_changed and limit_reached and decision not in {"ACCEPT_REFINEMENT", "EXTEND_AND_REASSESS"}:
+        raise ReviewProgramError(
+            "Choose whether to accept the final refinement or run an additional validation assessment"
+        )
     _complete_action_attempt(
         attempt,
         action,
@@ -2553,12 +2606,44 @@ def _transition_definition_refinement(
             "assessment_id": str(assessment.id),
             "assessed_revision_id": str(assessment.matter_definition_revision_id),
             "published_revision_id": str(published.id),
+            "final_round_decision": decision or None,
             "open_nonblocking_question_ids": [
                 str(question.id) for question in questions if not question.blocking and question.status == "OPEN"
             ],
         },
     )
-    if published.id != assessment.matter_definition_revision_id:
+    if published_changed and limit_reached and decision == "ACCEPT_REFINEMENT":
+        run.progress_summary = {
+            **run.progress_summary,
+            "final_unassessed_refinement": {
+                "assessment_id": str(assessment.id),
+                "assessed_revision_id": str(assessment.matter_definition_revision_id),
+                "accepted_revision_id": str(published.id),
+                "accepted_revision": published.revision,
+                "assessment_round": assessment_round,
+                "assessment_round_limit": round_limit,
+            },
+        }
+        _advance_after_stage(db, program=program, run=run, attempt=attempt)
+        _carry_forward_final_refinement_acceptance(
+            db,
+            program=program,
+            run=run,
+            source_action=action,
+        )
+    elif published_changed and limit_reached and decision == "EXTEND_AND_REASSESS":
+        run.progress_summary = {
+            **run.progress_summary,
+            "definition_assessment_round_limit_override": assessment_round + 1,
+            "final_unassessed_refinement": None,
+        }
+        _activate_stage_by_key(
+            db,
+            program=program,
+            run=run,
+            stage_key="DEFINITION_ASSESSMENT",
+        )
+    elif published_changed:
         _activate_stage_by_key(
             db,
             program=program,
@@ -2593,13 +2678,22 @@ def _accept_matter_definition(
             MatterDefinitionRevision.revision == definition.published_revision,
         )
     )
-    if revision is None or revision.id != assessment.matter_definition_revision_id:
+    final_refinement = (run.progress_summary or {}).get("final_unassessed_refinement") or {}
+    accepts_final_refinement = bool(
+        revision is not None
+        and final_refinement.get("assessment_id") == str(assessment.id)
+        and final_refinement.get("accepted_revision_id") == str(revision.id)
+        and assessment.refined_matter_definition_revision_id == revision.id
+    )
+    if revision is None or (
+        revision.id != assessment.matter_definition_revision_id and not accepts_final_refinement
+    ):
         raise ReviewProgramError("The current published Matter Definition revision has not been assessed")
     questions = _assessment_questions(db, assessment)
     if any(question.blocking and question.status == "OPEN" for question in questions):
         raise ReviewProgramError("Blocking assessment questions remain unresolved")
     content_hash = hashlib.sha256(revision.content_markdown.encode()).hexdigest()
-    if content_hash != assessment.definition_content_hash:
+    if not accepts_final_refinement and content_hash != assessment.definition_content_hash:
         raise ReviewProgramError("Matter Definition content no longer matches the assessed revision")
     query_keys = list(
         dict.fromkeys(
@@ -2627,6 +2721,12 @@ def _accept_matter_definition(
         "revision": revision.revision,
         "revision_id": str(revision.id),
         "content_hash": content_hash,
+        "assessment_status": (
+            "FINAL_REFINEMENT_ACCEPTED_WITHOUT_REASSESSMENT"
+            if accepts_final_refinement
+            else "ASSESSED"
+        ),
+        "assessed_revision_id": str(assessment.matter_definition_revision_id),
         "issue_keys": query_keys,
         "assessment_ids": [str(item.id) for item in assessments if item is not None],
         "diagnostic_batch_ids": [
@@ -2676,6 +2776,61 @@ def _accept_matter_definition(
         "accepted_matter_definition": accepted,
     }
     _advance_after_stage(db, program=program, run=run, attempt=attempt)
+
+
+def _carry_forward_final_refinement_acceptance(
+    db: Session,
+    *,
+    program: ReviewProgram,
+    run: ReviewProgramRun,
+    source_action: ReviewProgramAction,
+) -> None:
+    """Apply the user's final-round acceptance to the acceptance audit stage.
+
+    The final-round choice is already an explicit acceptance decision. The
+    separate DEFINITION_ACCEPTANCE stage is retained in history, but its action
+    is resolved from that choice instead of presenting the user with the same
+    decision twice.
+    """
+    if run.current_stage != "DEFINITION_ACCEPTANCE" or run.pending_action_id is None:
+        raise ReviewProgramError("Matter Definition acceptance stage is unavailable")
+    attempt = _current_stage_attempt(db, run, for_update=True)
+    action = db.scalar(
+        select(ReviewProgramAction)
+        .where(
+            ReviewProgramAction.id == run.pending_action_id,
+            ReviewProgramAction.run_id == run.id,
+        )
+        .with_for_update()
+    )
+    if action is None or action.status != "OPEN" or action.stage_attempt_id != attempt.id:
+        raise ReviewProgramError("Matter Definition acceptance action is unavailable")
+    accepted_at = source_action.resolved_at or utcnow()
+    action.status = "RESOLVED"
+    action.resolution_payload = {
+        "choice_key": "ACCEPT",
+        "input": {
+            "carried_forward_from_action_id": str(source_action.id),
+            "final_round_decision": "ACCEPT_REFINEMENT",
+        },
+    }
+    action.resolution_reason = "Acceptance carried forward from the final assessment-round decision."
+    action.resolved_by_user_id = source_action.resolved_by_user_id or run.initiated_by_user_id
+    action.resolved_at = accepted_at
+    resolve_source_notifications(
+        db,
+        source=NotificationSource("review_program_action", action.id),
+        resolution_code="ACCEPT",
+        resolved_at=accepted_at,
+    )
+    run.pending_action_id = None
+    _accept_matter_definition(
+        db,
+        program=program,
+        run=run,
+        attempt=attempt,
+        action=action,
+    )
 
 
 def _qa_task_records(
@@ -8804,6 +8959,38 @@ def reconcile_review_program_run(
     )
     for event in pending_events:
         process_review_program_event(db, event=event)
+    if (
+        run.status == "WAITING_FOR_USER"
+        and run.current_stage == "DEFINITION_ACCEPTANCE"
+        and (run.progress_summary or {}).get("final_unassessed_refinement")
+    ):
+        refinement_actions = list(
+            db.scalars(
+                select(ReviewProgramAction)
+                .where(
+                    ReviewProgramAction.run_id == run.id,
+                    ReviewProgramAction.stage_key == "DEFINITION_REFINEMENT",
+                    ReviewProgramAction.status == "RESOLVED",
+                )
+                .order_by(ReviewProgramAction.resolved_at.desc(), ReviewProgramAction.id.desc())
+            )
+        )
+        source_action = next(
+            (
+                action
+                for action in refinement_actions
+                if ((action.resolution_payload or {}).get("input") or {}).get("final_round_decision")
+                == "ACCEPT_REFINEMENT"
+            ),
+            None,
+        )
+        if source_action is not None:
+            _carry_forward_final_refinement_acceptance(
+                db,
+                program=program,
+                run=run,
+                source_action=source_action,
+            )
     if run.status == "RUNNING" and run.current_stage == "DEFINITION_ASSESSMENT":
         current_attempt = _current_stage_attempt(db, run, for_update=True)
         child = db.scalar(

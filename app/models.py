@@ -5301,6 +5301,7 @@ class MatterDefinitionAssessmentRun(TimestampMixin, Base):
         Index("ix_definition_assessment_revision", "matter_definition_revision_id"),
         Index("ix_definition_assessment_generation", "search_index_generation_id"),
         Index("ix_definition_assessment_status", "status"),
+        Index("ix_definition_assessment_matter_archived", "matter_id", "archived_at"),
         Index("ix_definition_assessment_initiator", "initiated_by_user_id"),
     )
 
@@ -5361,6 +5362,17 @@ class MatterDefinitionAssessmentRun(TimestampMixin, Base):
     started_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     completed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     canceled_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    archived_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    archived_by_user_id: Mapped[uuid.UUID | None] = mapped_column(
+        Uuid, ForeignKey("app_user.id", ondelete="RESTRICT"), nullable=True, index=True
+    )
+    archive_reason: Mapped[str | None] = mapped_column(String(30), nullable=True)
+    superseded_by_assessment_id: Mapped[uuid.UUID | None] = mapped_column(
+        Uuid,
+        ForeignKey("matter_definition_assessment_run.id", ondelete="SET NULL"),
+        nullable=True,
+        index=True,
+    )
 
     @property
     def use_batching(self) -> bool:

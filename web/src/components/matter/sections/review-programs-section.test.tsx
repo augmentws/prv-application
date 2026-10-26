@@ -150,6 +150,9 @@ describe("ReviewProgramsSection", () => {
     expect(within(initialAssessmentStage as HTMLElement).queryByText("running")).not.toBeInTheDocument();
     expect(within(refinementStage as HTMLElement).getByText("Reassessment · Round 2")).toBeInTheDocument();
     expect(within(refinementStage as HTMLElement).getByText("running")).toBeInTheDocument();
+    const assessmentHelp = screen.getByRole("button", { name: "About Definition assessment" });
+    expect(assessmentHelp).toHaveAttribute("aria-describedby", "review-program-stage-2-help");
+    expect(screen.getByText("Test the Matter Definition against a targeted document batch and identify gaps, ambiguities, and retrieval weaknesses.")).toHaveAttribute("role", "tooltip");
     expect(screen.getByRole("link", { name: "Open current assessment" })).toHaveAttribute(
       "href",
       "/app/clients/client-1/matters/matter-1/definition?assessment=assessment-2&guidance=guidance-1",
@@ -644,6 +647,142 @@ describe("ReviewProgramsSection", () => {
     ));
     const call = vi.mocked(coreApi).mock.calls.find(([path]) => path.endsWith("/actions/action-1/resolve"));
     expect(JSON.parse(String(call?.[1]?.body))).toEqual({ preview_hash: "b".repeat(64), choice_key: "CONTINUE" });
+  });
+
+  it("requires an explicit Matter Definition publication before reassessment", async () => {
+    vi.mocked(coreApi).mockImplementation(async (path, options) => {
+      if (path === "/v1/review-workflow-templates") return [{
+        key: "FIRST_PASS_REVIEW", version: 1, schema_version: 1, content_hash: "a".repeat(64),
+        name: "First Pass Review", description: "Guided review", workflow_type: "FIRST_PASS_REVIEW", phases: [],
+        stages: [{ key: "DEFINITION_REFINEMENT", name: "Definition refinement", phase_key: "MATTER_DEFINITION", ordinal: 3, batching_policy: "NONE", requires_human_gate: true }],
+      }] as never;
+      if (path === "/v1/matters/matter-1/review-programs") return [{
+        id: "program-1", tenant_id: "tenant-1", matter_id: "matter-1", template_key: "FIRST_PASS_REVIEW",
+        template_version: 1, template_content_hash: "a".repeat(64), key: "standard-first-pass", name: "Standard first pass",
+        description: "Responsive review", status: "ACTIVE", current_run_id: "run-1", current_version: { version: 3 }, created_at: "2026-10-21T00:00:00Z",
+      }] as never;
+      if (path === "/v1/matters/matter-1/review-programs/program-1/runs" && !options) return [{
+        id: "run-1", program_id: "program-1", status: "WAITING_FOR_USER", current_stage: "DEFINITION_REFINEMENT",
+        current_stage_ordinal: 3, created_at: "2026-10-21T00:00:00Z", failure_retriable: false, failure_summary: null,
+        stage_attempts: [{ stage_key: "DEFINITION_REFINEMENT", status: "WAITING" }],
+        actions: [{
+          id: "action-1", action_type: "MATTER_DEFINITION_REFINEMENT", stage_key: "DEFINITION_REFINEMENT", status: "OPEN",
+          title: "Review assessment findings", explanation: "Legacy action copy", preview_hash: "b".repeat(64),
+          decision_context: {
+            matter_definition_id: "definition-1",
+            assessment: {
+              id: "assessment-1", status: "COMPLETED", summarized_count: 1000, failed_count: 0,
+              question_counts: { open: 0, open_blocking: 0, answered: 2, dismissed: 0 },
+              guidance_refinement_status: "COMPLETED", refined_matter_definition_revision: 2,
+              publication_required: true, publication_ready: false,
+            },
+          },
+          allowed_choices: [
+            { key: "CONTINUE", label: "Check readiness and continue", consequence: "Continue." },
+            { key: "STOP", label: "Stop program", consequence: "Stop." },
+          ],
+        }],
+      }] as never;
+      throw new Error(`Unexpected API request: ${path}`);
+    });
+    renderSection();
+
+    expect(await screen.findByText("Draft revision 2 is ready. Review it and publish it before continuing.")).toBeInTheDocument();
+    expect(screen.getByRole("link", { name: "Review and publish draft" })).toHaveAttribute(
+      "href",
+      "/app/clients/client-1/matters/matter-1/definition?guidance=definition-1&assessment=assessment-1",
+    );
+    expect(screen.getByRole("button", { name: "Continue to reassessment" })).toBeDisabled();
+  });
+
+  it("replaces reassessment with an explicit final-round decision at the assessment limit", async () => {
+    vi.mocked(coreApi).mockImplementation(async (path, options) => {
+      if (path === "/v1/review-workflow-templates") return [{
+        key: "FIRST_PASS_REVIEW", version: 1, schema_version: 1, content_hash: "a".repeat(64),
+        name: "First Pass Review", description: "Guided review", workflow_type: "FIRST_PASS_REVIEW", phases: [],
+        stages: [{ key: "DEFINITION_REFINEMENT", name: "Definition refinement", phase_key: "MATTER_DEFINITION", ordinal: 3, batching_policy: "NONE", requires_human_gate: true }],
+      }] as never;
+      if (path === "/v1/matters/matter-1/review-programs") return [{
+        id: "program-1", tenant_id: "tenant-1", matter_id: "matter-1", template_key: "FIRST_PASS_REVIEW",
+        template_version: 1, template_content_hash: "a".repeat(64), key: "standard-first-pass", name: "Standard first pass",
+        description: "Responsive review", status: "ACTIVE", current_run_id: "run-1", current_version: { version: 4 }, created_at: "2026-10-21T00:00:00Z",
+      }] as never;
+      if (path === "/v1/matters/matter-1/review-programs/program-1/runs" && !options) return [{
+        id: "run-1", program_id: "program-1", status: "WAITING_FOR_USER", current_stage: "DEFINITION_REFINEMENT",
+        current_stage_ordinal: 3, created_at: "2026-10-21T00:00:00Z", failure_retriable: false, failure_summary: null,
+        stage_attempts: [{ stage_key: "DEFINITION_REFINEMENT", status: "WAITING" }],
+        actions: [{
+          id: "action-1", action_type: "MATTER_DEFINITION_REFINEMENT", stage_key: "DEFINITION_REFINEMENT", status: "OPEN",
+          title: "Review assessment findings", explanation: "Legacy action copy", preview_hash: "b".repeat(64),
+          decision_context: {
+            matter_definition_id: "definition-1",
+            assessment: {
+              id: "assessment-1", status: "COMPLETED", summarized_count: 993, failed_count: 7,
+              question_counts: { open: 0, open_blocking: 0, answered: 9, dismissed: 0 },
+              guidance_refinement_status: "COMPLETED", refined_matter_definition_revision: 4,
+              publication_required: true, publication_ready: true,
+              assessment_round: 3, assessment_round_limit: 3, assessment_round_limit_reached: true,
+            },
+          },
+          allowed_choices: [
+            { key: "CONTINUE", label: "Check readiness and continue", consequence: "Continue." },
+            { key: "STOP", label: "Stop program", consequence: "Stop." },
+          ],
+        }],
+      }] as never;
+      if (path.endsWith("/actions/action-1/resolve") && options?.method === "POST") return {
+        id: "run-1", program_id: "program-1", status: "WAITING_FOR_USER", current_stage: "DEFINITION_ACCEPTANCE",
+      } as never;
+      throw new Error(`Unexpected API request: ${path}`);
+    });
+    renderSection();
+
+    expect(await screen.findByText(/assessment round 3 reached the configured limit of 3/)).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "Continue to reassessment" })).not.toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Run additional validation assessment" })).toBeEnabled();
+    await userEvent.click(screen.getByRole("button", { name: "Accept revision 4 and continue to Q&A setup" }));
+
+    await waitFor(() => expect(coreApi).toHaveBeenCalledWith(
+      "/v1/matters/matter-1/review-programs/program-1/runs/run-1/actions/action-1/resolve",
+      expect.objectContaining({ method: "POST" }),
+    ));
+    const call = vi.mocked(coreApi).mock.calls.find(([path]) => path.endsWith("/actions/action-1/resolve"));
+    expect(JSON.parse(String(call?.[1]?.body))).toEqual({
+      preview_hash: "b".repeat(64),
+      choice_key: "CONTINUE",
+      input: { final_round_decision: "ACCEPT_REFINEMENT" },
+    });
+  });
+
+  it("reconciles a legacy duplicate acceptance gate after final acceptance was recorded", async () => {
+    vi.mocked(coreApi).mockImplementation(async (path, options) => {
+      if (path === "/v1/review-workflow-templates") return [{
+        key: "FIRST_PASS_REVIEW", version: 1, schema_version: 1, content_hash: "a".repeat(64),
+        name: "First Pass Review", description: "Guided review", workflow_type: "FIRST_PASS_REVIEW", phases: [],
+        stages: [{ key: "DEFINITION_ACCEPTANCE", name: "Definition acceptance", phase_key: "MATTER_DEFINITION", ordinal: 4, batching_policy: "NONE", requires_human_gate: true }],
+      }] as never;
+      if (path === "/v1/matters/matter-1/review-programs") return [{
+        id: "program-1", tenant_id: "tenant-1", matter_id: "matter-1", template_key: "FIRST_PASS_REVIEW",
+        template_version: 1, template_content_hash: "a".repeat(64), key: "standard-first-pass", name: "Standard first pass",
+        description: "Responsive review", status: "ACTIVE", current_run_id: "run-1", current_version: { version: 4 }, created_at: "2026-10-21T00:00:00Z",
+      }] as never;
+      if (path === "/v1/matters/matter-1/review-programs/program-1/runs" && !options) return [{
+        id: "run-1", program_id: "program-1", status: "WAITING_FOR_USER", current_stage: "DEFINITION_ACCEPTANCE",
+        current_stage_ordinal: 4, progress_summary: { final_unassessed_refinement: { accepted_revision: 4 } },
+        created_at: "2026-10-21T00:00:00Z", failure_retriable: false, failure_summary: null,
+        stage_attempts: [{ stage_key: "DEFINITION_ACCEPTANCE", status: "WAITING" }], actions: [],
+      }] as never;
+      if (path.endsWith("/runs/run-1/reconcile") && options?.method === "POST") return {
+        id: "run-1", program_id: "program-1", status: "WAITING_FOR_USER", current_stage: "QA_TASK_SETUP",
+      } as never;
+      throw new Error(`Unexpected API request: ${path}`);
+    });
+    renderSection();
+
+    await waitFor(() => expect(coreApi).toHaveBeenCalledWith(
+      "/v1/matters/matter-1/review-programs/program-1/runs/run-1/reconcile",
+      expect.objectContaining({ method: "POST" }),
+    ));
   });
 
   it("summarizes classifier quality and routes weak categories to improvement", async () => {

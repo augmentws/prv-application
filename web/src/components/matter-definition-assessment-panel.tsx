@@ -1,7 +1,7 @@
 "use client";
 
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { AlertTriangle, ExternalLink, LoaderCircle, PencilLine, Play, RotateCcw, Sparkles, Workflow } from "lucide-react";
+import { AlertTriangle, Archive, ArchiveRestore, ExternalLink, GitCompareArrows, History, LoaderCircle, PencilLine, Play, RotateCcw, Sparkles, Workflow } from "lucide-react";
 import Link from "next/link";
 import { useEffect, useId, useMemo, useState } from "react";
 import { toast } from "sonner";
@@ -52,6 +52,8 @@ export function MatterDefinitionAssessmentPanel({
   revisions,
   publishedRevision,
   embedded = false,
+  onReviewDraft,
+  onViewDraftDifferences,
 }: {
   matterId: string;
   guidanceId?: string;
@@ -61,12 +63,16 @@ export function MatterDefinitionAssessmentPanel({
   revisions: MatterDefinitionRevisionRead[];
   publishedRevision: number | null;
   embedded?: boolean;
+  onReviewDraft: () => void;
+  onViewDraftDifferences: () => void;
 }) {
   const queryClient = useQueryClient();
   const [launchOpen, setLaunchOpen] = useState(false);
   const [renameOpen, setRenameOpen] = useState(false);
   const [renameName, setRenameName] = useState("");
   const [regenerateOpen, setRegenerateOpen] = useState(false);
+  const [showArchived, setShowArchived] = useState(false);
+  const [updatingQuestionIds, setUpdatingQuestionIds] = useState<Set<string>>(() => new Set());
   const [selectedId, setSelectedId] = useState(initialAssessmentId);
   const [revision, setRevision] = useState(String(revisions[0]?.revision ?? 1));
   const [name, setName] = useState("");
@@ -80,14 +86,22 @@ export function MatterDefinitionAssessmentPanel({
     ? `/v1/matters/${matterId}/guidance/${guidanceId}/assessments`
     : `/v1/matters/${matterId}/definition-assessments`;
   const runs = useQuery({
-    queryKey: ["definition-assessments", matterId, guidanceId],
-    queryFn: () => coreApi<MatterDefinitionAssessmentRead[]>(assessmentBase),
+    queryKey: ["definition-assessments", matterId, guidanceId, showArchived],
+    queryFn: () => coreApi<MatterDefinitionAssessmentRead[]>(`${assessmentBase}${showArchived ? "?include_archived=true" : ""}`),
     refetchInterval: (query) => query.state.data?.some((run) =>
       !TERMINAL.has(run.status) || ["QUEUED", "RUNNING"].includes(run.guidance_refinement_status)
     ) ? 2000 : false,
   });
   const effectiveId = runs.data?.some((run) => run.id === selectedId) ? selectedId : runs.data?.[0]?.id || "";
   const selected = runs.data?.find((run) => run.id === effectiveId);
+  const assessedRevision = revisions.find((item) => item.id === selected?.matter_definition_revision_id);
+  const refinedRevision = revisions.find((item) => item.id === selected?.refined_matter_definition_revision_id);
+  const refinementPublished = Boolean(
+    refinedRevision
+    && publishedRevision !== null
+    && assessedRevision
+    && publishedRevision > assessedRevision.revision
+  );
   const includeSkillRuns = selected?.status !== "COMPLETED";
   const queries = useQuery({
     queryKey: ["definition-assessment-queries", matterId, effectiveId],
@@ -122,7 +136,7 @@ export function MatterDefinitionAssessmentPanel({
   const rename = useMutation({
     mutationFn: ({ assessmentId, payload }: { assessmentId: string; payload: MatterDefinitionAssessmentUpdate }) => coreApi<MatterDefinitionAssessmentRead>(`/v1/matters/${matterId}/definition-assessments/${assessmentId}`, { method: "PATCH", body: JSON.stringify(payload) }),
     onSuccess: async (updated) => {
-      queryClient.setQueryData<MatterDefinitionAssessmentRead[]>(["definition-assessments", matterId, guidanceId], (current) => current?.map((run) => run.id === updated.id ? updated : run));
+      queryClient.setQueriesData<MatterDefinitionAssessmentRead[]>({ queryKey: ["definition-assessments", matterId, guidanceId] }, (current) => current?.map((run) => run.id === updated.id ? updated : run));
       await queryClient.invalidateQueries({ queryKey: ["review-batches", matterId] });
       setRenameOpen(false);
       toast.success("Assessment renamed.");
@@ -132,7 +146,7 @@ export function MatterDefinitionAssessmentPanel({
   const retry = useMutation({
     mutationFn: (assessmentId: string) => coreApi<MatterDefinitionAssessmentRead>(`/v1/matters/${matterId}/definition-assessments/${assessmentId}/retry`, { method: "POST" }),
     onSuccess: async (updated) => {
-      queryClient.setQueryData<MatterDefinitionAssessmentRead[]>(["definition-assessments", matterId, guidanceId], (current) => current?.map((run) => run.id === updated.id ? updated : run));
+      queryClient.setQueriesData<MatterDefinitionAssessmentRead[]>({ queryKey: ["definition-assessments", matterId, guidanceId] }, (current) => current?.map((run) => run.id === updated.id ? updated : run));
       await Promise.all([
         queryClient.invalidateQueries({ queryKey: ["definition-assessments", matterId, guidanceId] }),
         queryClient.invalidateQueries({ queryKey: ["definition-assessment-execution", matterId, updated.id] }),
@@ -144,7 +158,7 @@ export function MatterDefinitionAssessmentPanel({
   const regenerateSynthesis = useMutation({
     mutationFn: (assessmentId: string) => coreApi<MatterDefinitionAssessmentRead>(`/v1/matters/${matterId}/definition-assessments/${assessmentId}/regenerate-synthesis`, { method: "POST" }),
     onSuccess: async (updated) => {
-      queryClient.setQueryData<MatterDefinitionAssessmentRead[]>(["definition-assessments", matterId, guidanceId], (current) => current?.map((run) => run.id === updated.id ? updated : run));
+      queryClient.setQueriesData<MatterDefinitionAssessmentRead[]>({ queryKey: ["definition-assessments", matterId, guidanceId] }, (current) => current?.map((run) => run.id === updated.id ? updated : run));
       await Promise.all([
         queryClient.invalidateQueries({ queryKey: ["definition-assessment-execution", matterId, updated.id] }),
         queryClient.invalidateQueries({ queryKey: ["definition-assessment-questions", matterId, updated.id] }),
@@ -157,7 +171,7 @@ export function MatterDefinitionAssessmentPanel({
   const regenerateDocumentAnalyses = useMutation({
     mutationFn: (assessmentId: string) => coreApi<MatterDefinitionAssessmentRead>(`/v1/matters/${matterId}/definition-assessments/${assessmentId}/regenerate-document-analyses`, { method: "POST" }),
     onSuccess: async (updated) => {
-      queryClient.setQueryData<MatterDefinitionAssessmentRead[]>(["definition-assessments", matterId, guidanceId], (current) => current?.map((run) => run.id === updated.id ? updated : run));
+      queryClient.setQueriesData<MatterDefinitionAssessmentRead[]>({ queryKey: ["definition-assessments", matterId, guidanceId] }, (current) => current?.map((run) => run.id === updated.id ? updated : run));
       await Promise.all([
         queryClient.invalidateQueries({ queryKey: ["definition-assessment-execution", matterId, updated.id] }),
         queryClient.invalidateQueries({ queryKey: ["definition-assessment-questions", matterId, updated.id] }),
@@ -177,6 +191,27 @@ export function MatterDefinitionAssessmentPanel({
       toast.success("Refinement decision saved.");
     },
     onError: (error) => toast.error(error instanceof Error ? error.message : "The clarification could not be updated."),
+  });
+  const archiveFailed = useMutation({
+    mutationFn: () => coreApi<{ archived_count: number }>(`/v1/matters/${matterId}/definition-assessments/archive-failed`, {
+      method: "POST",
+      body: JSON.stringify({ guidance_id: guidanceId ?? null }),
+    }),
+    onSuccess: async (result) => {
+      setSelectedId("");
+      await queryClient.invalidateQueries({ queryKey: ["definition-assessments", matterId, guidanceId] });
+      toast.success(`${result.archived_count} failed assessment${result.archived_count === 1 ? "" : "s"} archived.`);
+    },
+    onError: (error) => toast.error(error instanceof Error ? error.message : "Failed assessments could not be archived."),
+  });
+  const restore = useMutation({
+    mutationFn: (assessmentId: string) => coreApi<MatterDefinitionAssessmentRead>(`/v1/matters/${matterId}/definition-assessments/${assessmentId}/restore`, { method: "POST" }),
+    onSuccess: async (restored) => {
+      await queryClient.invalidateQueries({ queryKey: ["definition-assessments", matterId, guidanceId] });
+      setSelectedId(restored.id);
+      toast.success(`${restored.name} was restored to assessment history.`);
+    },
+    onError: (error) => toast.error(error instanceof Error ? error.message : "The assessment could not be restored."),
   });
 
   const requested = Math.max(1, Number(target) || 500);
@@ -203,6 +238,9 @@ export function MatterDefinitionAssessmentPanel({
       ? <p className="rounded-md border border-success/40 bg-success/8 p-3 text-sm">Synthesis completed without generating clarification questions. No question resolution is required.</p>
       : <p className="rounded-md border bg-muted/30 p-3 text-sm text-muted-foreground">Refinement questions will appear after assessment synthesis completes.</p>
     : null;
+  const archivableCount = runs.data?.filter((run) =>
+    !run.archived_at && ["FAILED", "CANCELED"].includes(run.status)
+  ).length ?? 0;
 
   useEffect(() => {
     if (selected?.guidance_refinement_status !== "COMPLETED") return;
@@ -235,20 +273,40 @@ export function MatterDefinitionAssessmentPanel({
     rename.mutate({ assessmentId: selected.id, payload: { name: nextName } });
   };
 
+  const submitQuestionUpdate = async (
+    questionId: string,
+    status: "ANSWERED" | "DISMISSED",
+    answer?: string,
+  ) => {
+    setUpdatingQuestionIds((current) => new Set(current).add(questionId));
+    try {
+      await updateQuestion.mutateAsync({ id: questionId, status, answer });
+    } finally {
+      setUpdatingQuestionIds((current) => {
+        const next = new Set(current);
+        next.delete(questionId);
+        return next;
+      });
+    }
+  };
+
   const toolbar = (
     <>
-      {runs.data?.length ? <Select value={effectiveId} onValueChange={setSelectedId}><SelectTrigger className="min-w-0 max-w-64 flex-1" aria-label="Assessment"><SelectValue /></SelectTrigger><SelectContent>{runs.data.map((run) => <SelectItem key={run.id} value={run.id}>{run.name} · {run.status.toLowerCase().replaceAll("_", " ")}</SelectItem>)}</SelectContent></Select> : <p className="min-w-0 flex-1 truncate text-right text-xs text-muted-foreground">No assessments</p>}
+      {runs.data?.length ? <Select value={effectiveId} onValueChange={setSelectedId}><SelectTrigger className="min-w-0 max-w-64 flex-1" aria-label="Assessment"><SelectValue /></SelectTrigger><SelectContent>{runs.data.map((run) => <SelectItem key={run.id} value={run.id}>{run.name} · {run.archived_at ? run.archive_reason === "SUPERSEDED" ? "superseded" : "archived" : run.status.toLowerCase().replaceAll("_", " ")}</SelectItem>)}</SelectContent></Select> : <p className="min-w-0 flex-1 truncate text-right text-xs text-muted-foreground">No assessments</p>}
       {selected ? <Button type="button" size="icon" className="size-8 shrink-0" variant="outline" disabled={rename.isPending} aria-label="Rename assessment" onClick={openRename}><PencilLine /></Button> : null}
+      {selected?.archived_at ? <Button type="button" size="sm" className="shrink-0" variant="outline" disabled={restore.isPending} onClick={() => restore.mutate(selected.id)}>{restore.isPending ? <LoaderCircle className="animate-spin" /> : <ArchiveRestore />}Restore</Button> : null}
       {selected && !statusInCoverage ? <StatusBadge status={selected.status} /> : null}
       {selected?.review_batch_id ? <Button asChild size="icon" className="size-8 shrink-0" variant="outline"><Link href={`/review/matters/${matterId}?batch=${selected.review_batch_id}`} aria-label="Open assessment batch"><ExternalLink /></Link></Button> : null}
       {selected?.review_batch_id ? <Button asChild size="sm" className="shrink-0" variant="outline"><Link href={`/review/matters/${matterId}?batch=${selected.review_batch_id}&analysis=run`}><Play />Run analysis</Link></Button> : null}
       {selected && ["COMPLETED", "COMPLETED_WITH_ERRORS"].includes(selected.status) && selected.selected_count > 0 ? <span className="group relative shrink-0"><Button type="button" size="icon" className="size-8" variant="outline" aria-label="Regenerate assessment" aria-describedby={regenerateTooltipId} onClick={() => setRegenerateOpen(true)}><RotateCcw /></Button><span id={regenerateTooltipId} role="tooltip" className="pointer-events-none invisible absolute right-0 top-full z-50 mt-2 whitespace-nowrap rounded-md bg-foreground px-2 py-1 text-xs font-medium text-background opacity-0 shadow-md transition-opacity group-hover:visible group-hover:opacity-100 group-focus-within:visible group-focus-within:opacity-100">Regenerate assessment</span></span> : null}
+      {archivableCount > 0 ? <Button type="button" size="sm" className="shrink-0" variant="outline" disabled={archiveFailed.isPending} onClick={() => archiveFailed.mutate()}>{archiveFailed.isPending ? <LoaderCircle className="animate-spin" /> : <Archive />}Archive failed ({archivableCount})</Button> : null}
+      <Button type="button" size="sm" className="shrink-0" variant="ghost" onClick={() => setShowArchived((value) => !value)}><History />{showArchived ? "Hide archived" : "Show archived"}</Button>
       <Button type="button" size="sm" className="shrink-0" onClick={() => setLaunchOpen(true)} disabled={!revisions.length || guidanceArchived}><Play />New</Button>
     </>
   );
 
   return <Card className={cn("overflow-hidden", embedded && "flex h-full min-h-0 flex-col rounded-none border-0 shadow-none")}>
-    <div className="flex shrink-0 items-center gap-2 border-b p-2" aria-label="Assessment controls">{toolbar}</div>
+    <div className="flex shrink-0 flex-wrap items-center gap-2 border-b p-2" aria-label="Assessment controls">{toolbar}</div>
     <div className={cn(embedded && "min-h-0 flex-1 overflow-y-auto overscroll-contain")}>
       {runs.error ? <div className="p-4"><QueryError message={runs.error.message} /></div> : runs.isPending ? <p className="p-4 text-sm text-muted-foreground">Loading assessment history…</p> : !runs.data?.length ? <p className="p-4 text-sm text-muted-foreground">No corpus assessments have been run for this Matter Definition.</p> : <div className="space-y-4 p-4">
       {selected ? <>
@@ -279,15 +337,17 @@ export function MatterDefinitionAssessmentPanel({
                   question={question}
                   matterId={matterId}
                   reviewBatchId={selected.review_batch_id}
-                  disabled={updateQuestion.isPending}
-                  onUpdate={(status, answer) => updateQuestion.mutate({ id: question.id, status, answer })}
+                  disabled={updatingQuestionIds.has(question.id)}
+                  onUpdate={(status, answer) => void submitQuestionUpdate(question.id, status, answer)}
                 />
               ))}
             </div>
             {selected.guidance_refinement_status === "QUEUED" || selected.guidance_refinement_status === "RUNNING" ? (
               <p className="mt-3 flex items-center gap-2 rounded-md border bg-muted/30 p-3 text-sm"><LoaderCircle className="size-4 animate-spin" />All questions are resolved. Creating a revised guidance draft…</p>
+            ) : selected.guidance_refinement_status === "COMPLETED" && refinementPublished ? (
+              <div className="mt-3 rounded-md border border-success/40 bg-success/8 p-3 text-sm"><p className="font-semibold">Revised Matter Definition revision {publishedRevision} is published.</p><p className="mt-1 text-xs text-muted-foreground">Return to the Review Program and continue to reassessment.</p></div>
             ) : selected.guidance_refinement_status === "COMPLETED" ? (
-              <p className="mt-3 rounded-md border border-success/40 bg-success/8 p-3 text-sm font-medium">A new reviewer-guidance draft was created. Review it in the guidance editor before publishing.</p>
+              <div className="mt-3 flex flex-wrap items-center justify-between gap-3 rounded-md border border-success/40 bg-success/8 p-3 text-sm"><div><p className="font-semibold">A revised Matter Definition draft is ready.</p><p className="mt-1 text-xs text-muted-foreground">Review the generated changes and explicitly publish the draft before returning to the Review Program.</p></div><div className="flex flex-wrap gap-2"><Button type="button" size="sm" variant="outline" onClick={onViewDraftDifferences}><GitCompareArrows />View differences</Button><Button type="button" size="sm" onClick={onReviewDraft}><Sparkles />Review draft and publish</Button></div></div>
             ) : selected.guidance_refinement_status === "NOT_REQUIRED" ? (
               <p className="mt-3 rounded-md border p-3 text-sm text-muted-foreground">All questions were dismissed, so no new guidance draft was created.</p>
             ) : selected.guidance_refinement_status === "FAILED" ? (
@@ -355,5 +415,5 @@ function questionEvidenceHref(matterId: string, reviewBatchId: string, evidence:
 function ClarificationQuestion({ question, matterId, reviewBatchId, disabled, onUpdate }: { question: MatterDefinitionAssessmentQuestionRead; matterId: string; reviewBatchId?: string | null; disabled: boolean; onUpdate: (status: "ANSWERED" | "DISMISSED", answer?: string) => void }) {
   const [answer, setAnswer] = useState(question.answer ?? "");
   const evidence = useMemo(() => parseQuestionEvidence(question.evidence), [question.evidence]);
-  return <div className="rounded-lg border p-3"><div className="flex flex-wrap items-start justify-between gap-2"><p className="max-w-3xl text-sm font-semibold">{question.question}</p><div className="flex gap-1"><Badge variant="outline">{question.priority.toLowerCase()}</Badge><StatusBadge status={question.status} /></div></div><p className="mt-1 text-xs leading-5 text-muted-foreground">{question.rationale}</p>{evidence.length ? <details className="mt-2 rounded-md border bg-muted/20"><summary className="cursor-pointer px-3 py-2 text-xs font-medium">Supporting documents ({evidence.length})</summary><ol className="space-y-2 border-t p-3">{evidence.map((item, index) => <li key={`${item.matterDocumentId}-${index}`} className="rounded-md bg-background p-2 text-xs"><div className="flex flex-wrap items-center justify-between gap-2"><span className="font-medium">Document {index + 1}{item.paragraphIds.length ? ` · ${item.paragraphIds.join(", ")}` : ""}</span>{reviewBatchId ? <Link className="inline-flex items-center gap-1 font-medium text-primary hover:underline" href={questionEvidenceHref(matterId, reviewBatchId, item)} target="_blank" rel="noopener noreferrer">Open cited document<ExternalLink className="size-3" /></Link> : null}</div>{item.reason ? <p className="mt-1 leading-5 text-muted-foreground">{item.reason}</p> : null}</li>)}</ol></details> : null}{question.status === "OPEN" ? <div className="mt-3 space-y-3">{question.suggested_answers.length ? <div><p className="mb-1.5 text-xs font-medium text-muted-foreground">Suggested answers</p><div className="flex flex-wrap gap-2">{question.suggested_answers.map((suggestion) => <Button key={suggestion} type="button" size="sm" variant={answer === suggestion ? "default" : "outline"} disabled={disabled} className="h-auto whitespace-normal text-left" onClick={() => setAnswer(suggestion)}>{suggestion}</Button>)}</div></div> : null}<div className="flex items-end gap-2"><Textarea className="min-h-20" placeholder="Select a suggestion or enter a custom answer…" value={answer} onChange={(event) => setAnswer(event.target.value)} /><div className="flex shrink-0 flex-col gap-2"><Button size="sm" disabled={disabled || !answer.trim()} onClick={() => onUpdate("ANSWERED", answer)}>Answer</Button><Button size="sm" variant="ghost" disabled={disabled} onClick={() => onUpdate("DISMISSED")}>Dismiss</Button></div></div></div> : question.answer ? <p className="mt-3 rounded-md bg-muted/40 p-2 text-sm">{question.answer}</p> : null}</div>;
+  return <div className="rounded-lg border p-3" aria-busy={disabled}><div className="flex flex-wrap items-start justify-between gap-2"><p className="max-w-3xl text-sm font-semibold">{question.question}</p><div className="flex gap-1"><Badge variant="outline">{question.priority.toLowerCase()}</Badge><StatusBadge status={question.status} /></div></div><p className="mt-1 text-xs leading-5 text-muted-foreground">{question.rationale}</p>{evidence.length ? <details className="mt-2 rounded-md border bg-muted/20"><summary className="cursor-pointer px-3 py-2 text-xs font-medium">Supporting documents ({evidence.length})</summary><ol className="space-y-2 border-t p-3">{evidence.map((item, index) => <li key={`${item.matterDocumentId}-${index}`} className="rounded-md bg-background p-2 text-xs"><div className="flex flex-wrap items-center justify-between gap-2"><span className="font-medium">Document {index + 1}{item.paragraphIds.length ? ` · ${item.paragraphIds.join(", ")}` : ""}</span>{reviewBatchId ? <Link className="inline-flex items-center gap-1 font-medium text-primary hover:underline" href={questionEvidenceHref(matterId, reviewBatchId, item)} target="_blank" rel="noopener noreferrer">Open cited document<ExternalLink className="size-3" /></Link> : null}</div>{item.reason ? <p className="mt-1 leading-5 text-muted-foreground">{item.reason}</p> : null}</li>)}</ol></details> : null}{question.status === "OPEN" ? <div className="mt-3 space-y-3">{question.suggested_answers.length ? <div><p className="mb-1.5 text-xs font-medium text-muted-foreground">Suggested answers</p><div className="flex flex-wrap gap-2">{question.suggested_answers.map((suggestion) => <Button key={suggestion} type="button" size="sm" variant={answer === suggestion ? "default" : "outline"} disabled={disabled} className="h-auto whitespace-normal text-left" onClick={() => setAnswer(suggestion)}>{suggestion}</Button>)}</div></div> : null}<div className="flex items-end gap-2"><Textarea className="min-h-20" disabled={disabled} placeholder="Select a suggestion or enter a custom answer…" value={answer} onChange={(event) => setAnswer(event.target.value)} /><div className="flex shrink-0 flex-col gap-2"><Button type="button" size="sm" disabled={disabled || !answer.trim()} onClick={() => onUpdate("ANSWERED", answer)}>Answer</Button><Button type="button" size="sm" variant="ghost" disabled={disabled} onClick={() => onUpdate("DISMISSED")}>Dismiss</Button></div></div></div> : question.answer ? <p className="mt-3 rounded-md bg-muted/40 p-2 text-sm">{question.answer}</p> : null}</div>;
 }

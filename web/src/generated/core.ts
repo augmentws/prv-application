@@ -157,6 +157,7 @@ import type {
   JobOutcomeManifestRead,
   ListAgentConversationsV1MattersMatterIdAgentConversationsGetParams,
   ListAgentPackagesV1AgentPackagesGetParams,
+  ListAssessmentsV1MattersMatterIdDefinitionAssessmentsGetParams,
   ListAuditRecordsV1TenantsTenantIdAuditRecordsGetParams,
   ListAuthorizationGrantsV1TenantsTenantIdAuthorizationGrantsGetParams,
   ListAvailableMatterAgentsV1MattersMatterIdAgentsGetParams,
@@ -169,6 +170,7 @@ import type {
   ListFactExportsV1MattersMatterIdFactExportsGetParams,
   ListFactsV1MattersMatterIdFactsGetParams,
   ListFailedJobDocumentsV1JobsJobTypeJobIdFailedDocumentsGetParams,
+  ListGuidanceAssessmentsV1MattersMatterIdGuidanceGuidanceIdAssessmentsGetParams,
   ListGuidanceV1MattersMatterIdGuidanceGetParams,
   ListJobOutcomeItemsV1MattersMatterIdJobOutcomesJobTypeJobIdItemsGetParams,
   ListMatterAccessUsersV1MattersMatterIdAccessUsersGetParams,
@@ -198,6 +200,8 @@ import type {
   MatterCreate,
   MatterDateHistogramRequest,
   MatterDateHistogramResponse,
+  MatterDefinitionAssessmentArchiveFailed,
+  MatterDefinitionAssessmentArchiveResult,
   MatterDefinitionAssessmentCreate,
   MatterDefinitionAssessmentQueryRead,
   MatterDefinitionAssessmentQuestionRead,
@@ -16375,20 +16379,29 @@ export type listAssessmentsV1MattersMatterIdDefinitionAssessmentsGetResponseErro
 
 export type listAssessmentsV1MattersMatterIdDefinitionAssessmentsGetResponse = (listAssessmentsV1MattersMatterIdDefinitionAssessmentsGetResponseSuccess | listAssessmentsV1MattersMatterIdDefinitionAssessmentsGetResponseError)
 
-export const getListAssessmentsV1MattersMatterIdDefinitionAssessmentsGetUrl = (matterId: string,) => {
+export const getListAssessmentsV1MattersMatterIdDefinitionAssessmentsGetUrl = (matterId: string,
+    params?: ListAssessmentsV1MattersMatterIdDefinitionAssessmentsGetParams,) => {
+  const normalizedParams = new URLSearchParams();
 
+  Object.entries(params || {}).forEach(([key, value]) => {
 
+    if (value !== undefined) {
+      normalizedParams.append(key, value === null ? 'null' : String(value))
+    }
+  });
 
+  const stringifiedParams = normalizedParams.toString();
 
-  return `/api/core/v1/matters/${matterId}/definition-assessments`
+  return stringifiedParams.length > 0 ? `/api/core/v1/matters/${matterId}/definition-assessments?${stringifiedParams}` : `/api/core/v1/matters/${matterId}/definition-assessments`
 }
 
 /**
  * @summary List Assessments
  */
-export const listAssessmentsV1MattersMatterIdDefinitionAssessmentsGet = async (matterId: string, options?: RequestInit): Promise<listAssessmentsV1MattersMatterIdDefinitionAssessmentsGetResponse> => {
+export const listAssessmentsV1MattersMatterIdDefinitionAssessmentsGet = async (matterId: string,
+    params?: ListAssessmentsV1MattersMatterIdDefinitionAssessmentsGetParams, options?: RequestInit): Promise<listAssessmentsV1MattersMatterIdDefinitionAssessmentsGetResponse> => {
 
-  const res = await fetch(getListAssessmentsV1MattersMatterIdDefinitionAssessmentsGetUrl(matterId),
+  const res = await fetch(getListAssessmentsV1MattersMatterIdDefinitionAssessmentsGetUrl(matterId,params),
   {
     ...options,
     method: 'GET'
@@ -16521,6 +16534,123 @@ export const getAssessmentV1MattersMatterIdDefinitionAssessmentsAssessmentIdGet 
 
   const data: getAssessmentV1MattersMatterIdDefinitionAssessmentsAssessmentIdGetResponse['data'] = body ? JSON.parse(body) : {}
   return { data, status: res.status, headers: res.headers } as getAssessmentV1MattersMatterIdDefinitionAssessmentsAssessmentIdGetResponse
+}
+
+
+
+export type archiveFailedAssessmentsV1MattersMatterIdDefinitionAssessmentsArchiveFailedPostResponse200 = {
+  data: MatterDefinitionAssessmentArchiveResult
+  status: 200
+}
+
+export type archiveFailedAssessmentsV1MattersMatterIdDefinitionAssessmentsArchiveFailedPostResponse422 = {
+  data: HTTPValidationError
+  status: 422
+}
+
+export type archiveFailedAssessmentsV1MattersMatterIdDefinitionAssessmentsArchiveFailedPostResponseSuccess = (archiveFailedAssessmentsV1MattersMatterIdDefinitionAssessmentsArchiveFailedPostResponse200) & {
+  headers: Headers;
+};
+export type archiveFailedAssessmentsV1MattersMatterIdDefinitionAssessmentsArchiveFailedPostResponseError = (archiveFailedAssessmentsV1MattersMatterIdDefinitionAssessmentsArchiveFailedPostResponse422) & {
+  headers: Headers;
+};
+
+export type archiveFailedAssessmentsV1MattersMatterIdDefinitionAssessmentsArchiveFailedPostResponse = (archiveFailedAssessmentsV1MattersMatterIdDefinitionAssessmentsArchiveFailedPostResponseSuccess | archiveFailedAssessmentsV1MattersMatterIdDefinitionAssessmentsArchiveFailedPostResponseError)
+
+export const getArchiveFailedAssessmentsV1MattersMatterIdDefinitionAssessmentsArchiveFailedPostUrl = (matterId: string,) => {
+
+
+
+
+  return `/api/core/v1/matters/${matterId}/definition-assessments/archive-failed`
+}
+
+/**
+ * @summary Archive Failed Assessments
+ */
+export const archiveFailedAssessmentsV1MattersMatterIdDefinitionAssessmentsArchiveFailedPost = async (matterId: string,
+    matterDefinitionAssessmentArchiveFailed: MatterDefinitionAssessmentArchiveFailed, options?: RequestInit): Promise<archiveFailedAssessmentsV1MattersMatterIdDefinitionAssessmentsArchiveFailedPostResponse> => {
+
+    const getHeaders = (h?: NonNullable<RequestInit['headers']>): Record<string, string | readonly string[]> => {
+    if (!h) return {};
+    if (h instanceof Headers) return Object.fromEntries(h.entries());
+    if (Symbol.iterator in h) {
+      return Object.fromEntries(
+        Array.from(h as Iterable<Iterable<string>>, (entry) => Array.from(entry) as [string, string]),
+      );
+    }
+    const headers: Record<string, string | readonly string[]> = {};
+    for (const [name, value] of Object.entries<string | readonly string[] | undefined>(h)) {
+      if (value !== undefined) headers[name] = value;
+    }
+    return headers;
+  };
+const res = await fetch(getArchiveFailedAssessmentsV1MattersMatterIdDefinitionAssessmentsArchiveFailedPostUrl(matterId),
+  {
+    ...options,
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json', ...getHeaders(options?.headers) },
+    body: JSON.stringify(matterDefinitionAssessmentArchiveFailed)
+  }
+)
+
+
+  const body = [204, 205, 304].includes(res.status) ? null : await res.text();
+
+  const data: archiveFailedAssessmentsV1MattersMatterIdDefinitionAssessmentsArchiveFailedPostResponse['data'] = body ? JSON.parse(body) : {}
+  return { data, status: res.status, headers: res.headers } as archiveFailedAssessmentsV1MattersMatterIdDefinitionAssessmentsArchiveFailedPostResponse
+}
+
+
+
+export type restoreArchivedAssessmentV1MattersMatterIdDefinitionAssessmentsAssessmentIdRestorePostResponse200 = {
+  data: MatterDefinitionAssessmentRead
+  status: 200
+}
+
+export type restoreArchivedAssessmentV1MattersMatterIdDefinitionAssessmentsAssessmentIdRestorePostResponse422 = {
+  data: HTTPValidationError
+  status: 422
+}
+
+export type restoreArchivedAssessmentV1MattersMatterIdDefinitionAssessmentsAssessmentIdRestorePostResponseSuccess = (restoreArchivedAssessmentV1MattersMatterIdDefinitionAssessmentsAssessmentIdRestorePostResponse200) & {
+  headers: Headers;
+};
+export type restoreArchivedAssessmentV1MattersMatterIdDefinitionAssessmentsAssessmentIdRestorePostResponseError = (restoreArchivedAssessmentV1MattersMatterIdDefinitionAssessmentsAssessmentIdRestorePostResponse422) & {
+  headers: Headers;
+};
+
+export type restoreArchivedAssessmentV1MattersMatterIdDefinitionAssessmentsAssessmentIdRestorePostResponse = (restoreArchivedAssessmentV1MattersMatterIdDefinitionAssessmentsAssessmentIdRestorePostResponseSuccess | restoreArchivedAssessmentV1MattersMatterIdDefinitionAssessmentsAssessmentIdRestorePostResponseError)
+
+export const getRestoreArchivedAssessmentV1MattersMatterIdDefinitionAssessmentsAssessmentIdRestorePostUrl = (matterId: string,
+    assessmentId: string,) => {
+
+
+
+
+  return `/api/core/v1/matters/${matterId}/definition-assessments/${assessmentId}/restore`
+}
+
+/**
+ * @summary Restore Archived Assessment
+ */
+export const restoreArchivedAssessmentV1MattersMatterIdDefinitionAssessmentsAssessmentIdRestorePost = async (matterId: string,
+    assessmentId: string, options?: RequestInit): Promise<restoreArchivedAssessmentV1MattersMatterIdDefinitionAssessmentsAssessmentIdRestorePostResponse> => {
+
+  const res = await fetch(getRestoreArchivedAssessmentV1MattersMatterIdDefinitionAssessmentsAssessmentIdRestorePostUrl(matterId,assessmentId),
+  {
+    ...options,
+    method: 'POST'
+
+
+  }
+)
+
+
+  const body = [204, 205, 304].includes(res.status) ? null : await res.text();
+
+  const data: restoreArchivedAssessmentV1MattersMatterIdDefinitionAssessmentsAssessmentIdRestorePostResponse['data'] = body ? JSON.parse(body) : {}
+  return { data, status: res.status, headers: res.headers } as restoreArchivedAssessmentV1MattersMatterIdDefinitionAssessmentsAssessmentIdRestorePostResponse
 }
 
 
@@ -17054,21 +17184,30 @@ export type listGuidanceAssessmentsV1MattersMatterIdGuidanceGuidanceIdAssessment
 export type listGuidanceAssessmentsV1MattersMatterIdGuidanceGuidanceIdAssessmentsGetResponse = (listGuidanceAssessmentsV1MattersMatterIdGuidanceGuidanceIdAssessmentsGetResponseSuccess | listGuidanceAssessmentsV1MattersMatterIdGuidanceGuidanceIdAssessmentsGetResponseError)
 
 export const getListGuidanceAssessmentsV1MattersMatterIdGuidanceGuidanceIdAssessmentsGetUrl = (matterId: string,
-    guidanceId: string,) => {
+    guidanceId: string,
+    params?: ListGuidanceAssessmentsV1MattersMatterIdGuidanceGuidanceIdAssessmentsGetParams,) => {
+  const normalizedParams = new URLSearchParams();
 
+  Object.entries(params || {}).forEach(([key, value]) => {
 
+    if (value !== undefined) {
+      normalizedParams.append(key, value === null ? 'null' : String(value))
+    }
+  });
 
+  const stringifiedParams = normalizedParams.toString();
 
-  return `/api/core/v1/matters/${matterId}/guidance/${guidanceId}/assessments`
+  return stringifiedParams.length > 0 ? `/api/core/v1/matters/${matterId}/guidance/${guidanceId}/assessments?${stringifiedParams}` : `/api/core/v1/matters/${matterId}/guidance/${guidanceId}/assessments`
 }
 
 /**
  * @summary List Guidance Assessments
  */
 export const listGuidanceAssessmentsV1MattersMatterIdGuidanceGuidanceIdAssessmentsGet = async (matterId: string,
-    guidanceId: string, options?: RequestInit): Promise<listGuidanceAssessmentsV1MattersMatterIdGuidanceGuidanceIdAssessmentsGetResponse> => {
+    guidanceId: string,
+    params?: ListGuidanceAssessmentsV1MattersMatterIdGuidanceGuidanceIdAssessmentsGetParams, options?: RequestInit): Promise<listGuidanceAssessmentsV1MattersMatterIdGuidanceGuidanceIdAssessmentsGetResponse> => {
 
-  const res = await fetch(getListGuidanceAssessmentsV1MattersMatterIdGuidanceGuidanceIdAssessmentsGetUrl(matterId,guidanceId),
+  const res = await fetch(getListGuidanceAssessmentsV1MattersMatterIdGuidanceGuidanceIdAssessmentsGetUrl(matterId,guidanceId,params),
   {
     ...options,
     method: 'GET'

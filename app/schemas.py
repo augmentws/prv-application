@@ -3616,6 +3616,17 @@ class MatterDefinitionAssessmentUpdate(BaseModel):
         return name
 
 
+class MatterDefinitionAssessmentArchiveFailed(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    guidance_id: uuid.UUID | None = None
+
+
+class MatterDefinitionAssessmentArchiveResult(BaseModel):
+    archived_count: int
+    assessment_ids: list[uuid.UUID]
+
+
 class MatterDefinitionAssessmentRead(ORMModel):
     id: uuid.UUID
     name: str
@@ -3660,6 +3671,10 @@ class MatterDefinitionAssessmentRead(ORMModel):
     started_at: datetime | None
     completed_at: datetime | None
     canceled_at: datetime | None
+    archived_at: datetime | None
+    archived_by_user_id: uuid.UUID | None
+    archive_reason: Literal["MANUAL", "SUPERSEDED"] | None
+    superseded_by_assessment_id: uuid.UUID | None
     created_at: datetime
     updated_at: datetime
 

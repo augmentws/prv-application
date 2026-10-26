@@ -91,6 +91,11 @@ REFINEMENT_DIMENSIONS = {
     "GEOGRAPHIC_SCOPE",
     "ACTOR_ENTITY_SCOPE",
 }
+ISSUE_HEADING_PATTERN = re.compile(
+    r"^\s*#{1,6}\s+Issue\s+(?P<number>[1-9][0-9]*)\s*:\s*(?P<name>.+?)\s*$",
+    re.IGNORECASE | re.MULTILINE,
+)
+ISSUE_REFERENCE_PATTERN = re.compile(r"\bIssue\s+(?P<number>[1-9][0-9]*)\b", re.IGNORECASE)
 MAX_RETRIEVAL_OFFSET = 10_000
 MAX_RETRIEVAL_PLAN_ATTEMPTS = 3
 
@@ -1289,12 +1294,59 @@ def _analysis_citation_ids(value: Any) -> set[str]:
     return set()
 
 
+def _numbered_issue_names(matter_definition: str) -> dict[str, str]:
+    return {
+        match.group("number"): " ".join(match.group("name").rstrip("#").split())
+        for match in ISSUE_HEADING_PATTERN.finditer(matter_definition)
+    }
+
+
+def _enforce_named_issue_references(value: Any, matter_definition: str) -> None:
+    """Expand bare issue references and reject references carrying the wrong title."""
+
+    issue_names = _numbered_issue_names(matter_definition)
+    if not issue_names:
+        return
+
+    def normalize(node: Any, path: str) -> Any:
+        if isinstance(node, dict):
+            for key, child in node.items():
+                node[key] = normalize(child, f"{path}.{key}" if path else str(key))
+            return node
+        if isinstance(node, list):
+            for index, child in enumerate(node):
+                node[index] = normalize(child, f"{path}.{index}" if path else str(index))
+            return node
+        if not isinstance(node, str):
+            return node
+
+        normalized = node
+        for match in reversed(list(ISSUE_REFERENCE_PATTERN.finditer(node))):
+            number = match.group("number")
+            issue_name = issue_names.get(number)
+            if issue_name is None:
+                raise ValueError(f"{path} refers to Issue {number}, which is not defined in the Matter Definition")
+            expected = f"Issue {number}: {issue_name}"
+            if normalized[match.start() :].startswith(expected):
+                continue
+            suffix = normalized[match.end() :].lstrip()
+            if suffix.startswith(":"):
+                raise ValueError(f'{path} must use the exact issue reference "{expected}"')
+            normalized = f"{normalized[:match.start()]}{expected}{normalized[match.end():]}"
+        return normalized
+
+    normalize(value, "output")
+
+
 def _validate_synthesis_refinement(
     result: dict[str, Any],
     analyses: list[dict[str, Any]],
     coverage: dict[str, Any],
     refinement_signals: dict[str, Any] | None = None,
+    matter_definition: str | None = None,
 ) -> None:
+    if matter_definition:
+        _enforce_named_issue_references(result, matter_definition)
     refinement = result.get("refinement_assessment")
     if not isinstance(refinement, dict):
         raise AssessmentError("refinement_assessment is required")
@@ -1603,6 +1655,7 @@ def synthesize_assessment(
                         analyses,
                         coverage,
                         refinement_signals,
+                        revision.content_markdown,
                     ),
                 ),
                 model=model,
@@ -1634,6 +1687,42 @@ def fail_document(db: Session, assessment_id: uuid.UUID, document_id: uuid.UUID,
     db.commit()
 
 
+def archive_superseded_assessments(
+    db: Session,
+    *,
+    assessment: MatterDefinitionAssessmentRun,
+    revision: MatterDefinitionRevision,
+    archived_at: datetime,
+) -> list[uuid.UUID]:
+    """Hide older failed attempts once a later assessment completes successfully."""
+
+    db.flush()
+    superseded = list(
+        db.scalars(
+            select(MatterDefinitionAssessmentRun)
+            .join(
+                MatterDefinitionRevision,
+                MatterDefinitionRevision.id
+                == MatterDefinitionAssessmentRun.matter_definition_revision_id,
+            )
+            .where(
+                MatterDefinitionAssessmentRun.matter_id == assessment.matter_id,
+                MatterDefinitionAssessmentRun.id != assessment.id,
+                MatterDefinitionAssessmentRun.created_at <= assessment.created_at,
+                MatterDefinitionAssessmentRun.status.in_(("FAILED", "CANCELED")),
+                MatterDefinitionAssessmentRun.archived_at.is_(None),
+                MatterDefinitionRevision.matter_definition_id == revision.matter_definition_id,
+            )
+        )
+    )
+    for prior in superseded:
+        prior.archived_at = archived_at
+        prior.archived_by_user_id = None
+        prior.archive_reason = "SUPERSEDED"
+        prior.superseded_by_assessment_id = assessment.id
+    return [prior.id for prior in superseded]
+
+
 def complete_assessment(db: Session, assessment_id: uuid.UUID) -> None:
     assessment, workflow, revision, matter = _records(db, assessment_id)
     refresh_progress(db, assessment_id)
@@ -1662,6 +1751,12 @@ def complete_assessment(db: Session, assessment_id: uuid.UUID) -> None:
     if review_run is not None:
         review_run.status = final_status
         review_run.completed_at = now
+    superseded_assessment_ids = archive_superseded_assessments(
+        db,
+        assessment=assessment,
+        revision=revision,
+        archived_at=now,
+    )
     record_audit(
         db,
         tenant_id=matter.client.tenant_id,
@@ -1675,6 +1770,7 @@ def complete_assessment(db: Session, assessment_id: uuid.UUID) -> None:
             "matter_definition_revision_id": str(revision.id),
             "revision": revision.revision,
             "status": final_status,
+            "superseded_assessment_ids": [str(value) for value in superseded_assessment_ids],
         },
     )
     from app.review_programs import project_review_program_assessment_terminal

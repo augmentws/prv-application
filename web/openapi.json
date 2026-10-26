@@ -17318,6 +17318,16 @@
               "format": "uuid",
               "title": "Matter Id"
             }
+          },
+          {
+            "name": "include_archived",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "boolean",
+              "default": false,
+              "title": "Include Archived"
+            }
           }
         ],
         "responses": {
@@ -17421,6 +17431,122 @@
         ],
         "summary": "Get Assessment",
         "operationId": "get_assessment_v1_matters__matter_id__definition_assessments__assessment_id__get",
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "matter_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid",
+              "title": "Matter Id"
+            }
+          },
+          {
+            "name": "assessment_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid",
+              "title": "Assessment Id"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/MatterDefinitionAssessmentRead"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v1/matters/{matter_id}/definition-assessments/archive-failed": {
+      "post": {
+        "tags": [
+          "matter definition assessments"
+        ],
+        "summary": "Archive Failed Assessments",
+        "operationId": "archive_failed_assessments_v1_matters__matter_id__definition_assessments_archive_failed_post",
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "matter_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid",
+              "title": "Matter Id"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/MatterDefinitionAssessmentArchiveFailed"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/MatterDefinitionAssessmentArchiveResult"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v1/matters/{matter_id}/definition-assessments/{assessment_id}/restore": {
+      "post": {
+        "tags": [
+          "matter definition assessments"
+        ],
+        "summary": "Restore Archived Assessment",
+        "operationId": "restore_archived_assessment_v1_matters__matter_id__definition_assessments__assessment_id__restore_post",
         "security": [
           {
             "HTTPBearer": []
@@ -18071,6 +18197,16 @@
               "type": "string",
               "format": "uuid",
               "title": "Guidance Id"
+            }
+          },
+          {
+            "name": "include_archived",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "boolean",
+              "default": false,
+              "title": "Include Archived"
             }
           }
         ],
@@ -40534,6 +40670,47 @@
         "title": "MatterDecisionContext",
         "description": "Frozen matter guidance supplied with every document decision in a task version."
       },
+      "MatterDefinitionAssessmentArchiveFailed": {
+        "properties": {
+          "guidance_id": {
+            "anyOf": [
+              {
+                "type": "string",
+                "format": "uuid"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Guidance Id"
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "title": "MatterDefinitionAssessmentArchiveFailed"
+      },
+      "MatterDefinitionAssessmentArchiveResult": {
+        "properties": {
+          "archived_count": {
+            "type": "integer",
+            "title": "Archived Count"
+          },
+          "assessment_ids": {
+            "items": {
+              "type": "string",
+              "format": "uuid"
+            },
+            "type": "array",
+            "title": "Assessment Ids"
+          }
+        },
+        "type": "object",
+        "required": [
+          "archived_count",
+          "assessment_ids"
+        ],
+        "title": "MatterDefinitionAssessmentArchiveResult"
+      },
       "MatterDefinitionAssessmentCreate": {
         "properties": {
           "name": {
@@ -41168,6 +41345,57 @@
             ],
             "title": "Canceled At"
           },
+          "archived_at": {
+            "anyOf": [
+              {
+                "type": "string",
+                "format": "date-time"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Archived At"
+          },
+          "archived_by_user_id": {
+            "anyOf": [
+              {
+                "type": "string",
+                "format": "uuid"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Archived By User Id"
+          },
+          "archive_reason": {
+            "anyOf": [
+              {
+                "type": "string",
+                "enum": [
+                  "MANUAL",
+                  "SUPERSEDED"
+                ]
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Archive Reason"
+          },
+          "superseded_by_assessment_id": {
+            "anyOf": [
+              {
+                "type": "string",
+                "format": "uuid"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Superseded By Assessment Id"
+          },
           "created_at": {
             "type": "string",
             "format": "date-time",
@@ -41221,6 +41449,10 @@
           "started_at",
           "completed_at",
           "canceled_at",
+          "archived_at",
+          "archived_by_user_id",
+          "archive_reason",
+          "superseded_by_assessment_id",
           "created_at",
           "updated_at"
         ],

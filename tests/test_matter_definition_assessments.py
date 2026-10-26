@@ -13,11 +13,13 @@ from sqlalchemy import select
 
 from app.assessment_execution import (
     _coverage_envelope,
+    _enforce_named_issue_references,
     _execute_document_analysis,
     _load_document_analyses,
     _synthesis_context,
     _validate_retrieval_plan,
     _validate_synthesis_refinement,
+    archive_superseded_assessments,
     collect_retrieval_hits,
     fail_assessment,
     retrieval_plan_feedback,
@@ -52,7 +54,7 @@ from app.models import (
     WorkflowRun,
     WorkflowStepRun,
 )
-from app.routers.matter_definition_assessments import _assessment_reads
+from app.routers.matter_definition_assessments import _assessment_reads, _workflow_step_reads
 from app.schemas import (
     MatterDefinitionAssessmentCreate,
     MatterDefinitionSourceKind,
@@ -298,6 +300,108 @@ def test_assessment_launch_pins_inputs_and_requires_large_run_acknowledgment(
         )
 
 
+def test_failed_assessments_can_be_archived_and_restored(
+    client: TestClient,
+    root_token: str,
+    root_admin,
+) -> None:
+    matter_id = create_assessment_matter(client, root_token, root_admin)
+    base = f"/v1/matters/{matter_id}/definition-assessments"
+    assessment_ids = [
+        uuid.UUID(
+            client.post(
+                base,
+                headers=auth(root_token),
+                json={"name": name, "target_document_count": 1},
+            ).json()["id"]
+        )
+        for name in ("Failed planning", "Canceled attempt", "Successful attempt")
+    ]
+    with TestingSessionLocal() as db:
+        failed = db.get(MatterDefinitionAssessmentRun, assessment_ids[0])
+        canceled = db.get(MatterDefinitionAssessmentRun, assessment_ids[1])
+        completed = db.get(MatterDefinitionAssessmentRun, assessment_ids[2])
+        assert failed is not None and canceled is not None and completed is not None
+        failed.status = "FAILED"
+        canceled.status = "CANCELED"
+        completed.status = "COMPLETED"
+        guidance_id = db.get(
+            MatterDefinitionRevision,
+            failed.matter_definition_revision_id,
+        ).matter_definition_id
+        db.commit()
+
+    archived = client.post(
+        f"{base}/archive-failed",
+        headers=auth(root_token),
+        json={"guidance_id": str(guidance_id)},
+    )
+    assert archived.status_code == 200, archived.text
+    assert archived.json()["archived_count"] == 2
+    assert set(archived.json()["assessment_ids"]) == {
+        str(assessment_ids[0]),
+        str(assessment_ids[1]),
+    }
+
+    visible = client.get(base, headers=auth(root_token))
+    assert visible.status_code == 200
+    assert [item["name"] for item in visible.json()] == ["Successful attempt"]
+
+    history = client.get(f"{base}?include_archived=true", headers=auth(root_token))
+    assert history.status_code == 200
+    archived_items = [item for item in history.json() if item["archived_at"]]
+    assert len(archived_items) == 2
+    assert {item["archive_reason"] for item in archived_items} == {"MANUAL"}
+    assert {item["archived_by_user_id"] for item in archived_items} == {str(root_admin.id)}
+
+    restored = client.post(
+        f"{base}/{assessment_ids[0]}/restore",
+        headers=auth(root_token),
+    )
+    assert restored.status_code == 200, restored.text
+    assert restored.json()["archived_at"] is None
+    visible_after_restore = client.get(base, headers=auth(root_token))
+    assert {item["name"] for item in visible_after_restore.json()} == {
+        "Failed planning",
+        "Successful attempt",
+    }
+
+
+def test_successful_assessment_supersedes_older_failed_attempts(
+    client: TestClient,
+    root_token: str,
+    root_admin,
+) -> None:
+    matter_id = create_assessment_matter(client, root_token, root_admin)
+    base = f"/v1/matters/{matter_id}/definition-assessments"
+    prior_id = uuid.UUID(
+        client.post(base, headers=auth(root_token), json={"target_document_count": 1}).json()["id"]
+    )
+    current_id = uuid.UUID(
+        client.post(base, headers=auth(root_token), json={"target_document_count": 1}).json()["id"]
+    )
+    with TestingSessionLocal() as db:
+        prior = db.get(MatterDefinitionAssessmentRun, prior_id)
+        current = db.get(MatterDefinitionAssessmentRun, current_id)
+        assert prior is not None and current is not None
+        revision = db.get(MatterDefinitionRevision, current.matter_definition_revision_id)
+        assert revision is not None
+        prior.status = "FAILED"
+        archived_ids = archive_superseded_assessments(
+            db,
+            assessment=current,
+            revision=revision,
+            archived_at=datetime.now(timezone.utc),
+        )
+        db.commit()
+        db.refresh(prior)
+
+        assert archived_ids == [prior.id]
+        assert prior.archive_reason == "SUPERSEDED"
+        assert prior.archived_by_user_id is None
+        assert prior.superseded_by_assessment_id == current.id
+
+
 def test_answering_all_refinement_questions_queues_and_creates_guidance_draft(
     client: TestClient,
     root_token: str,
@@ -422,6 +526,48 @@ def test_assessment_reads_use_live_document_counts(
     assert result.summarized_count == 7
     assert result.skipped_count == 1
     assert result.failed_count == 2
+
+
+def test_execution_step_reads_use_live_document_counts() -> None:
+    run_id = uuid.uuid4()
+    assessment = SimpleNamespace(review_batch_run_id=run_id)
+    step = WorkflowStepRun(
+        id=uuid.uuid4(),
+        workflow_run_id=uuid.uuid4(),
+        role_key="document_analysis",
+        ordinal=3,
+        fan_out_group="documents",
+        status="RUNNING",
+        total_count=1000,
+        completed_count=0,
+        failed_count=0,
+        request_count=0,
+        input_tokens=0,
+        cached_input_tokens=0,
+        cache_write_tokens=0,
+        output_tokens=0,
+        error_message=None,
+        started_at=datetime.now(timezone.utc),
+        completed_at=None,
+    )
+
+    class StubSession:
+        def execute(self, statement):
+            del statement
+            return SimpleNamespace(
+                all=lambda: [
+                    ("COMPLETED", 4),
+                    ("SKIPPED", 1),
+                    ("FAILED", 2),
+                    ("IN_PROGRESS", 100),
+                ]
+            )
+
+    result = _workflow_step_reads(StubSession(), assessment, [step])  # type: ignore[arg-type]
+
+    assert result[0].completed_count == 5
+    assert result[0].failed_count == 2
+    assert result[0].total_count == 1000
 
 
 def test_execution_can_omit_document_skill_runs(
@@ -1454,6 +1600,42 @@ def test_synthesis_refinement_requires_questions_or_structured_no_refinement_exp
         ],
     }
     _validate_synthesis_refinement(proposed, analyses, {"status": "SUFFICIENT"})
+
+
+def test_synthesis_expands_bare_issue_references_and_rejects_wrong_names() -> None:
+    matter_definition = """# Matter Definition
+
+## Issues
+
+### Issue 4: Executive Action and Inaction
+
+### Issue 8: Economic Consequences
+"""
+    output = {
+        "clarification_questions": [
+            {
+                "question": (
+                    "Should executive disaster recovery recommendations concerning housing programs be "
+                    "classified as responsive under Issue 4 when they do not propose specific property "
+                    "insurance policy reforms?"
+                ),
+                "rationale": "This distinguishes Issue 4 from Issue 8.",
+            }
+        ]
+    }
+
+    _enforce_named_issue_references(output, matter_definition)
+
+    question = output["clarification_questions"][0]
+    assert "Issue 4: Executive Action and Inaction" in question["question"]
+    assert question["rationale"] == (
+        "This distinguishes Issue 4: Executive Action and Inaction from "
+        "Issue 8: Economic Consequences."
+    )
+
+    wrong_name = {"question": "Should Issue 4: Property Insurance Policy Reforms apply?"}
+    with pytest.raises(ValueError, match="must use the exact issue reference"):
+        _enforce_named_issue_references(wrong_name, matter_definition)
 
 
 def test_long_document_map_reduce_uses_one_skill_run(

@@ -35,7 +35,10 @@ DOCUMENT_QUEUE = Queue(
     "definition-assessment-documents",
     global_concurrency=get_settings().definition_assessment_document_concurrency,
 )
-PROVIDER_BATCH_QUEUE = Queue("definition-assessment-provider-batches", global_concurrency=2)
+PROVIDER_BATCH_QUEUE = Queue(
+    "definition-assessment-provider-batches",
+    global_concurrency=get_settings().definition_assessment_provider_batch_concurrency,
+)
 
 
 def step_failure_message(error: BaseException) -> str:

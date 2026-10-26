@@ -89,6 +89,7 @@ export function MatterDefinitionPanel({
   const [guidanceInitialFilename, setGuidanceInitialFilename] = useState<string | null>(null);
   const [draftEdit, setDraftEdit] = useState<DraftEdit | null>(null);
   const [publishOpen, setPublishOpen] = useState(false);
+  const [diffOpen, setDiffOpen] = useState(false);
   const [selectedConversationId, setSelectedConversationId] = useState<string>("");
   const [sidePanel, setSidePanel] = useState<MatterDefinitionSidePanel>(initialAssessmentId ? "assessment" : "agent");
   const [historyOpen, setHistoryOpen] = useState(false);
@@ -155,12 +156,45 @@ export function MatterDefinitionPanel({
   const selectedRevision = selectedRevisionNumber === null
     ? null
     : revisions.data?.find((revision) => revision.revision === selectedRevisionNumber) ?? null;
+  const comparisonBaseRevisionNumber = definition.data?.revision.based_on_revision
+    ?? (definition.data?.published_revision !== currentRevision ? definition.data?.published_revision : null);
+  const comparisonBaseRevision = revisions.data?.find(
+    (revision) => revision.revision === comparisonBaseRevisionNumber,
+  ) ?? null;
   const draft = draftEdit?.content ?? definition.data?.revision.content_markdown ?? "";
   const displayedContent = selectedRevision?.content_markdown ?? draft;
   const draftSource = draftEdit?.source ?? (definition.data ? "USER_EDIT" : "PASTE");
   const sourceFilename = draftEdit?.sourceFilename ?? null;
   const loadedRevision = draftEdit?.basedOnRevision ?? currentRevision;
   const dirty = draftEdit !== null;
+
+  function reviewRefinementDraft() {
+    if (dirty) {
+      toast.error("Save or discard your unsaved Matter Definition edits before publishing the generated draft.");
+      return;
+    }
+    if (!currentRevision || definition.data?.published_revision === currentRevision) {
+      toast.info("The current Matter Definition revision is already published.");
+      return;
+    }
+    setSelectedRevisionNumber(null);
+    setCompareOpen(false);
+    setHistoryOpen(false);
+    setPublishOpen(true);
+  }
+
+  function viewRefinementDifferences() {
+    if (dirty) {
+      toast.error("Save or discard your unsaved Matter Definition edits before comparing the generated draft.");
+      return;
+    }
+    if (!comparisonBaseRevision) {
+      toast.info("There is no earlier revision available for comparison.");
+      return;
+    }
+    setPublishOpen(false);
+    setDiffOpen(true);
+  }
 
   const updateGuidanceCache = (updated: MatterDefinitionRead) => {
     queryClient.setQueryData<MatterDefinitionRead[]>(["matter-guidance", matterId], (current) =>
@@ -573,6 +607,15 @@ export function MatterDefinitionPanel({
                     type="button"
                     size="sm"
                     variant="outline"
+                    disabled={Boolean(selectedRevision) || !comparisonBaseRevision || dirty}
+                    onClick={viewRefinementDifferences}
+                  >
+                    <GitCompareArrows />View differences
+                  </Button>
+                  <Button
+                    type="button"
+                    size="sm"
+                    variant="outline"
                     disabled={Boolean(selectedRevision) || !definition.data || definition.data.status === "ARCHIVED" || definition.data.published_revision === definition.data.current_revision || dirty}
                     onClick={() => setPublishOpen(true)}
                   >
@@ -736,6 +779,8 @@ export function MatterDefinitionPanel({
                   guidanceArchived={definition.data?.status === "ARCHIVED"}
                   revisions={revisions.data ?? []}
                   publishedRevision={definition.data?.published_revision ?? null}
+                  onReviewDraft={reviewRefinementDraft}
+                  onViewDraftDifferences={viewRefinementDifferences}
                 />
               </div>
             )}
@@ -827,10 +872,35 @@ export function MatterDefinitionPanel({
           </DialogHeader>
           <DialogFooter>
             <Button type="button" variant="outline" onClick={() => setPublishOpen(false)}>Cancel</Button>
+            <Button type="button" variant="outline" onClick={viewRefinementDifferences}><GitCompareArrows />View differences</Button>
             <Button type="button" disabled={!currentRevision || publish.isPending} onClick={() => currentRevision && publish.mutate(currentRevision)}>
               {publish.isPending ? <LoaderCircle className="animate-spin" /> : <Sparkles />}
               Publish revision
             </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+
+      <Dialog open={diffOpen} onOpenChange={setDiffOpen}>
+        <DialogContent className="flex h-[min(52rem,90vh)] max-w-6xl flex-col overflow-hidden">
+          <DialogHeader className="shrink-0">
+            <DialogTitle>Changes in current draft revision {currentRevision}</DialogTitle>
+            <DialogDescription>
+              Comparing revision {comparisonBaseRevision?.revision ?? "—"} with the current draft. Removed text is red and added text is green.
+            </DialogDescription>
+          </DialogHeader>
+          {comparisonBaseRevision ? (
+            <MatterDefinitionDiff
+              previous={comparisonBaseRevision}
+              currentContent={draft}
+              currentRevision={currentRevision}
+              currentIsUnsaved={dirty}
+              modal
+            />
+          ) : <p className="grid flex-1 place-items-center text-sm text-muted-foreground">No earlier revision is available for comparison.</p>}
+          <DialogFooter className="shrink-0">
+            <Button type="button" variant="outline" onClick={() => setDiffOpen(false)}>Close</Button>
+            <Button type="button" disabled={!currentRevision || dirty || definition.data?.published_revision === currentRevision} onClick={() => { setDiffOpen(false); setPublishOpen(true); }}><Sparkles />Continue to publish</Button>
           </DialogFooter>
         </DialogContent>
       </Dialog>
@@ -843,11 +913,13 @@ function MatterDefinitionDiff({
   currentContent,
   currentRevision,
   currentIsUnsaved,
+  modal = false,
 }: {
   previous: MatterDefinitionRevisionRead;
   currentContent: string;
   currentRevision: number | null;
   currentIsUnsaved: boolean;
+  modal?: boolean;
 }) {
   const currentLabel = currentIsUnsaved
     ? `Unsaved current draft${currentRevision ? ` based on r${currentRevision}` : ""}`
@@ -864,7 +936,7 @@ function MatterDefinitionDiff({
     <section
       role="region"
       aria-label={`Revision ${previous.revision} to ${currentLabel} diff`}
-      className="flex min-h-[34rem] flex-1 flex-col overflow-hidden rounded-md border bg-background"
+      className={cn("flex flex-1 flex-col overflow-hidden rounded-md border bg-background", modal ? "min-h-0" : "min-h-[34rem]")}
     >
       <div className="flex flex-wrap items-center justify-between gap-3 border-b bg-muted/25 px-4 py-2 text-xs">
         <p className="font-semibold">Revision {previous.revision} → {currentLabel}</p>

@@ -22,6 +22,7 @@ from app.job_executions import (
     transition_job_execution,
 )
 from app.main import app
+from app.matter_definitions import append_matter_definition_revision
 from app.models import (
     AnalysisInputManifest,
     AnalysisTaskBatchSetRun,
@@ -29,7 +30,9 @@ from app.models import (
     AuditRecord,
     ClassificationModelConfiguration,
     ClassificationTrainingJob,
+    Matter,
     MatterAnalysisTaskVersion,
+    MatterDefinition,
     MatterDefinitionAssessmentQuery,
     MatterDefinitionAssessmentQuestion,
     MatterDefinitionAssessmentRun,
@@ -881,6 +884,12 @@ def test_synthetic_run_advances_waits_resumes_retries_reconciles_and_cancels(
         assessment.synthesis_result = {"status": "SUFFICIENT"}
         db.commit()
     refinement_action = next(action for action in reconciled_assessment.json()["actions"] if action["status"] == "OPEN")
+    assert refinement_action["title"] == "Resolve findings and publish the revised Matter Definition"
+    assert next(
+        choice["label"] for choice in refinement_action["allowed_choices"] if choice["key"] == "CONTINUE"
+    ) == "Continue after publication"
+    assert refinement_action["decision_context"]["assessment"]["publication_required"] is False
+    assert refinement_action["decision_context"]["assessment"]["publication_ready"] is True
     blocked = client.post(
         f"{runs_url}/{run_id}/actions/{refinement_action['id']}/resolve",
         headers=auth(token),
@@ -950,30 +959,70 @@ def test_synthetic_run_advances_waits_resumes_retries_reconciles_and_cancels(
                 result_count=6,
             )
         )
+        db.add(
+            MatterDefinitionAssessmentQuestion(
+                assessment_run_id=assessment.id,
+                question="Should the final refinement include indirect hurricane claims?",
+                rationale="The final assessment identified one remaining boundary.",
+                priority="HIGH",
+                blocking=True,
+                status="ANSWERED",
+                answer="Include indirect hurricane claims.",
+            )
+        )
+        program = db.get(ReviewProgram, uuid.UUID(program_id))
+        definition = db.get(MatterDefinition, program.matter_definition_id if program else None)
+        matter_record = db.get(Matter, uuid.UUID(matter["id"]))
+        assert program is not None and definition is not None and matter_record is not None
+        version = db.get(ReviewProgramVersion, program.current_version_id)
+        assert version is not None
+        configuration = dict(version.configuration_snapshot)
+        configuration["matter_definition_policy"] = {
+            **dict(configuration.get("matter_definition_policy") or {}),
+            "maximum_assessment_rounds": 2,
+        }
+        version.configuration_snapshot = configuration
+        _, refined_revision = append_matter_definition_revision(
+            db,
+            matter=matter_record,
+            matter_definition_id=definition.id,
+            actor_user_id=root_admin.id,
+            content_markdown="# Refined Matter Definition\n\nInclude indirect hurricane claims.",
+            source_kind="ASSESSMENT_REFINEMENT",
+            based_on_revision=definition.current_revision,
+        )
+        definition.published_revision = refined_revision.revision
+        assessment.guidance_refinement_status = "COMPLETED"
+        assessment.refined_matter_definition_revision_id = refined_revision.id
         db.commit()
     third_result = client.post(f"{runs_url}/{run_id}/reconcile", headers=auth(token))
     assert third_result.status_code == 200, third_result.text
     third_refinement = next(action for action in third_result.json()["actions"] if action["status"] == "OPEN")
+    assert third_refinement["decision_context"]["assessment"]["assessment_round_limit_reached"] is True
     third_ready = client.post(
         f"{runs_url}/{run_id}/actions/{third_refinement['id']}/resolve",
         headers=auth(token),
-        json={"preview_hash": third_refinement["preview_hash"], "choice_key": "CONTINUE"},
+        json={
+            "preview_hash": third_refinement["preview_hash"],
+            "choice_key": "CONTINUE",
+            "input": {"final_round_decision": "ACCEPT_REFINEMENT"},
+        },
     )
     assert third_ready.status_code == 200, third_ready.text
-    final_acceptance = next(action for action in third_ready.json()["actions"] if action["status"] == "OPEN")
-    accepted = client.post(
-        f"{runs_url}/{run_id}/actions/{final_acceptance['id']}/resolve",
-        headers=auth(token),
-        json={"preview_hash": final_acceptance["preview_hash"], "choice_key": "ACCEPT"},
-    )
-    assert accepted.status_code == 200, accepted.text
-    assert accepted.json()["current_stage"] == "QA_TASK_SETUP"
-    assert accepted.json()["status"] == "WAITING_FOR_USER"
-    frozen = accepted.json()["progress_summary"]["accepted_matter_definition"]
+    assert third_ready.json()["current_stage"] == "QA_TASK_SETUP"
+    assert third_ready.json()["status"] == "WAITING_FOR_USER"
+    frozen = third_ready.json()["progress_summary"]["accepted_matter_definition"]
     assert frozen["issue_keys"] == ["hurricane-disruption"]
     assert len(frozen["assessment_ids"]) == 3
+    assert frozen["assessment_status"] == "FINAL_REFINEMENT_ACCEPTED_WITHOUT_REASSESSMENT"
+    acceptance_attempt = next(
+        attempt
+        for attempt in third_ready.json()["stage_attempts"]
+        if attempt["stage_key"] == "DEFINITION_ACCEPTANCE"
+    )
+    assert acceptance_attempt["status"] == "COMPLETED"
 
-    qa_action = next(action for action in accepted.json()["actions"] if action["status"] == "OPEN")
+    qa_action = next(action for action in third_ready.json()["actions"] if action["status"] == "OPEN")
     with TestingSessionLocal() as db:
         destination = MetadataDefinition(
             matter_id=uuid.UUID(matter["id"]),

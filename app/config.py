@@ -122,6 +122,7 @@ class Settings(BaseSettings):
     definition_assessment_document_concurrency: int = Field(default=8, ge=1, le=32)
     definition_assessment_map_max_characters: int = Field(default=60_000, ge=10_000, le=500_000)
     definition_assessment_provider_batch_size: int = Field(default=50, ge=1, le=100)
+    definition_assessment_provider_batch_concurrency: int = Field(default=8, ge=1, le=64)
     definition_assessment_provider_batch_poll_seconds: float = Field(default=15.0, ge=1, le=300)
 
     jwt_secret: str = Field(min_length=32)

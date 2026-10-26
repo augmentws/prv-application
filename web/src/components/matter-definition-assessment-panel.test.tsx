@@ -39,6 +39,93 @@ describe("assessmentCanRetry", () => {
 });
 
 describe("MatterDefinitionAssessmentPanel regeneration", () => {
+  it("archives failed assessments and can reveal and restore history", async () => {
+    const failed = {
+      id: "assessment-failed",
+      name: "Failed planning attempt",
+      status: "FAILED",
+      archived_at: null,
+      archive_reason: null,
+      guidance_refinement_status: "NOT_READY",
+      selected_count: 0,
+      summarized_count: 0,
+      skipped_count: 0,
+      failed_count: 0,
+      partial_coverage_count: 0,
+      invalid_result_count: 0,
+      coverage_snapshot: null,
+      synthesis_result: null,
+    };
+    const completed = {
+      ...failed,
+      id: "assessment-completed",
+      name: "Successful assessment",
+      status: "COMPLETED",
+    };
+    let isArchived = false;
+    vi.mocked(coreApi).mockImplementation(async (path, init) => {
+      if (path === "/v1/matters/matter-1/definition-assessments" && !init?.method) {
+        return (isArchived ? [completed] : [failed, completed]) as never;
+      }
+      if (path === "/v1/matters/matter-1/definition-assessments?include_archived=true") {
+        return [{
+          ...failed,
+          archived_at: isArchived ? "2026-10-26T12:00:00Z" : null,
+          archive_reason: isArchived ? "MANUAL" : null,
+        }, completed] as never;
+      }
+      if (path.endsWith("/archive-failed") && init?.method === "POST") {
+        isArchived = true;
+        return { archived_count: 1, assessment_ids: [failed.id] } as never;
+      }
+      if (path.endsWith("/assessment-failed/restore") && init?.method === "POST") {
+        isArchived = false;
+        return failed as never;
+      }
+      if (path.endsWith("/queries") || path.endsWith("/questions")) return [] as never;
+      if (path.includes("/execution?include_skill_runs=")) return {
+        request_count: 0,
+        input_tokens: 0,
+        cached_input_tokens: 0,
+        cache_write_tokens: 0,
+        output_tokens: 0,
+        steps: [],
+        skill_runs: [],
+      } as never;
+      throw new Error(`Unexpected API request: ${path}`);
+    });
+    const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false }, mutations: { retry: false } } });
+    const user = userEvent.setup();
+    render(
+      <QueryClientProvider client={queryClient}>
+        <MatterDefinitionAssessmentPanel
+          matterId="matter-1"
+          revisions={[{ revision: 1 } as never]}
+          publishedRevision={1}
+          onReviewDraft={() => undefined}
+          onViewDraftDifferences={() => undefined}
+        />
+      </QueryClientProvider>,
+    );
+
+    await user.click(await screen.findByRole("button", { name: "Archive failed (1)" }));
+    await waitFor(() => expect(screen.queryByText(/Failed planning attempt/)).not.toBeInTheDocument());
+    expect(coreApi).toHaveBeenCalledWith(
+      "/v1/matters/matter-1/definition-assessments/archive-failed",
+      { method: "POST", body: JSON.stringify({ guidance_id: null }) },
+    );
+
+    await user.click(screen.getByRole("button", { name: "Show archived" }));
+    expect(await screen.findByRole("button", { name: "Restore" })).toBeVisible();
+    expect(screen.getByRole("combobox", { name: "Assessment" })).toHaveTextContent("Failed planning attempt · archived");
+
+    await user.click(screen.getByRole("button", { name: "Restore" }));
+    await waitFor(() => expect(coreApi).toHaveBeenCalledWith(
+      "/v1/matters/matter-1/definition-assessments/assessment-failed/restore",
+      { method: "POST" },
+    ));
+  });
+
   it("defaults new assessments to provider batching and sends the selected mode", async () => {
     let launchPayload: Record<string, unknown> | undefined;
     vi.mocked(coreApi).mockImplementation(async (path, init) => {
@@ -57,6 +144,8 @@ describe("MatterDefinitionAssessmentPanel regeneration", () => {
           matterId="matter-1"
           revisions={[{ id: "revision-1", revision: 1 } as never]}
           publishedRevision={1}
+          onReviewDraft={() => undefined}
+          onViewDraftDifferences={() => undefined}
         />
       </QueryClientProvider>,
     );
@@ -120,6 +209,8 @@ describe("MatterDefinitionAssessmentPanel regeneration", () => {
           matterId="matter-1"
           revisions={[{ revision: 1 } as never]}
           publishedRevision={1}
+          onReviewDraft={() => undefined}
+          onViewDraftDifferences={() => undefined}
         />
       </QueryClientProvider>,
     );
@@ -206,6 +297,8 @@ describe("MatterDefinitionAssessmentPanel regeneration", () => {
           matterId="matter-1"
           revisions={[{ revision: 1 } as never]}
           publishedRevision={1}
+          onReviewDraft={() => undefined}
+          onViewDraftDifferences={() => undefined}
         />
       </QueryClientProvider>,
     );
@@ -259,6 +352,8 @@ describe("MatterDefinitionAssessmentPanel regeneration", () => {
           matterId="matter-1"
           revisions={[{ revision: 1 } as never]}
           publishedRevision={1}
+          onReviewDraft={() => undefined}
+          onViewDraftDifferences={() => undefined}
         />
       </QueryClientProvider>,
     );
@@ -328,6 +423,8 @@ describe("MatterDefinitionAssessmentPanel regeneration", () => {
           matterId="matter-1"
           revisions={[{ revision: 1 } as never]}
           publishedRevision={1}
+          onReviewDraft={() => undefined}
+          onViewDraftDifferences={() => undefined}
         />
       </QueryClientProvider>,
     );
@@ -350,5 +447,155 @@ describe("MatterDefinitionAssessmentPanel regeneration", () => {
       status: "ANSWERED",
       answer: "Include indirect claims.",
     }));
+  });
+
+  it("does not block other questions while one answer request is pending", async () => {
+    const assessment = {
+      id: "assessment-1",
+      name: "Coverage assessment",
+      status: "COMPLETED",
+      guidance_refinement_status: "NOT_READY",
+      review_batch_id: "batch-1",
+      selected_count: 2,
+      summarized_count: 2,
+      skipped_count: 0,
+      failed_count: 0,
+      partial_coverage_count: 0,
+      invalid_result_count: 0,
+      estimated_input_tokens: 2000,
+      coverage_snapshot: { status: "SUFFICIENT" },
+      synthesis_result: {},
+    };
+    const questions = [
+      {
+        id: "question-1",
+        question: "Should the first boundary be included?",
+        rationale: "The first boundary is ambiguous.",
+        priority: "HIGH",
+        status: "OPEN",
+        evidence: [],
+        suggested_answers: ["Include the first boundary."],
+        answer: null,
+      },
+      {
+        id: "question-2",
+        question: "Should the second boundary be included?",
+        rationale: "The second boundary is ambiguous.",
+        priority: "MEDIUM",
+        status: "OPEN",
+        evidence: [],
+        suggested_answers: ["Include the second boundary."],
+        answer: null,
+      },
+    ];
+    vi.mocked(coreApi).mockImplementation(async (path, init) => {
+      if (path === "/v1/matters/matter-1/definition-assessments") return [assessment] as never;
+      if (path.endsWith("/queries")) return [] as never;
+      if (path.endsWith("/questions") && !init?.method) return questions as never;
+      if (path.endsWith("/questions/question-1") && init?.method === "PUT") {
+        return await new Promise<never>(() => undefined);
+      }
+      if (path.includes("/execution?include_skill_runs=false")) return {
+        request_count: 0,
+        input_tokens: 0,
+        cached_input_tokens: 0,
+        cache_write_tokens: 0,
+        output_tokens: 0,
+        steps: [],
+        skill_runs: [],
+      } as never;
+      throw new Error(`Unexpected API request: ${path}`);
+    });
+    const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false }, mutations: { retry: false } } });
+    const user = userEvent.setup();
+    render(
+      <QueryClientProvider client={queryClient}>
+        <MatterDefinitionAssessmentPanel
+          matterId="matter-1"
+          revisions={[{ revision: 1 } as never]}
+          publishedRevision={1}
+          onReviewDraft={() => undefined}
+          onViewDraftDifferences={() => undefined}
+        />
+      </QueryClientProvider>,
+    );
+
+    const firstCard = (await screen.findByText("Should the first boundary be included?")).parentElement?.parentElement;
+    const secondCard = screen.getByText("Should the second boundary be included?").parentElement?.parentElement;
+    expect(firstCard).toBeTruthy();
+    expect(secondCard).toBeTruthy();
+    await user.click(within(firstCard as HTMLElement).getByRole("button", { name: "Include the first boundary." }));
+    await user.click(within(firstCard as HTMLElement).getByRole("button", { name: "Answer" }));
+
+    await waitFor(() => expect(within(firstCard as HTMLElement).getByRole("button", { name: "Answer" })).toBeDisabled());
+    expect(within(secondCard as HTMLElement).getByRole("button", { name: "Include the second boundary." })).toBeEnabled();
+    await user.click(within(secondCard as HTMLElement).getByRole("button", { name: "Include the second boundary." }));
+    expect(within(secondCard as HTMLElement).getByPlaceholderText("Select a suggestion or enter a custom answer…")).toHaveValue(
+      "Include the second boundary.",
+    );
+  });
+
+  it("presents the generated refinement as an explicit review-and-publish step", async () => {
+    const onReviewDraft = vi.fn();
+    const onViewDraftDifferences = vi.fn();
+    const assessment = {
+      id: "assessment-1",
+      name: "Coverage assessment",
+      status: "COMPLETED",
+      guidance_refinement_status: "COMPLETED",
+      review_batch_id: "batch-1",
+      selected_count: 2,
+      summarized_count: 2,
+      skipped_count: 0,
+      failed_count: 0,
+      partial_coverage_count: 0,
+      invalid_result_count: 0,
+      estimated_input_tokens: 2000,
+      coverage_snapshot: { status: "SUFFICIENT" },
+      synthesis_result: {},
+    };
+    vi.mocked(coreApi).mockImplementation(async (path) => {
+      if (path === "/v1/matters/matter-1/definition-assessments") return [assessment] as never;
+      if (path.endsWith("/queries")) return [] as never;
+      if (path.endsWith("/questions")) return [{
+        id: "question-1",
+        question: "Should indirect claims be included?",
+        rationale: "The boundary was unclear.",
+        priority: "HIGH",
+        blocking: true,
+        status: "ANSWERED",
+        answer: "Include indirect claims.",
+        evidence: [],
+        suggested_answers: [],
+      }] as never;
+      if (path.includes("/execution?include_skill_runs=false")) return {
+        request_count: 0,
+        input_tokens: 0,
+        cached_input_tokens: 0,
+        cache_write_tokens: 0,
+        output_tokens: 0,
+        steps: [],
+        skill_runs: [],
+      } as never;
+      throw new Error(`Unexpected API request: ${path}`);
+    });
+    const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false }, mutations: { retry: false } } });
+    render(
+      <QueryClientProvider client={queryClient}>
+        <MatterDefinitionAssessmentPanel
+          matterId="matter-1"
+          revisions={[{ revision: 1 } as never]}
+          publishedRevision={1}
+          onReviewDraft={onReviewDraft}
+          onViewDraftDifferences={onViewDraftDifferences}
+        />
+      </QueryClientProvider>,
+    );
+
+    expect(await screen.findByText("A revised Matter Definition draft is ready.")).toBeInTheDocument();
+    await userEvent.click(screen.getByRole("button", { name: "View differences" }));
+    expect(onViewDraftDifferences).toHaveBeenCalledOnce();
+    await userEvent.click(screen.getByRole("button", { name: "Review draft and publish" }));
+    expect(onReviewDraft).toHaveBeenCalledOnce();
   });
 });

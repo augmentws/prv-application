@@ -34,6 +34,8 @@ from app.models import (
     WorkflowStepRun,
 )
 from app.schemas import (
+    MatterDefinitionAssessmentArchiveFailed,
+    MatterDefinitionAssessmentArchiveResult,
     MatterDefinitionAssessmentCreate,
     MatterDefinitionAssessmentQueryRead,
     MatterDefinitionAssessmentQuestionRead,
@@ -155,6 +157,38 @@ def _assessment_reads(
     return results
 
 
+def _workflow_step_reads(
+    db: Session,
+    assessment: MatterDefinitionAssessmentRun,
+    steps: list[WorkflowStepRun],
+) -> list[WorkflowStepExecutionRead]:
+    reads = [WorkflowStepExecutionRead.model_validate(step) for step in steps]
+    if assessment.review_batch_run_id is None:
+        return reads
+    counts = dict(
+        db.execute(
+            select(ReviewBatchRunDocument.status, func.count())
+            .where(
+                ReviewBatchRunDocument.review_batch_run_id == assessment.review_batch_run_id
+            )
+            .group_by(ReviewBatchRunDocument.status)
+        ).all()
+    )
+    completed_count = int(counts.get("COMPLETED", 0)) + int(counts.get("SKIPPED", 0))
+    failed_count = int(counts.get("FAILED", 0))
+    return [
+        step.model_copy(
+            update={
+                "completed_count": completed_count,
+                "failed_count": failed_count,
+            }
+        )
+        if step.role_key == "document_analysis"
+        else step
+        for step in reads
+    ]
+
+
 def _create_assessment_for_guidance(
     *,
     db: Session,
@@ -218,6 +252,7 @@ def create_guidance_assessment(
 def list_guidance_assessments(
     matter_id: uuid.UUID,
     guidance_id: uuid.UUID,
+    include_archived: bool = False,
     principal: Principal = Depends(get_principal),
     db: Session = Depends(get_db),
     settings: Settings = Depends(get_settings),
@@ -231,21 +266,21 @@ def list_guidance_assessments(
     )
     if guidance_exists is None:
         raise HTTPException(status_code=404, detail="Review Guidance not found")
-    assessments = list(
-        db.scalars(
-            select(MatterDefinitionAssessmentRun)
-            .join(
-                MatterDefinitionRevision,
-                MatterDefinitionRevision.id
-                == MatterDefinitionAssessmentRun.matter_definition_revision_id,
-            )
-            .where(
-                MatterDefinitionAssessmentRun.matter_id == matter_id,
-                MatterDefinitionRevision.matter_definition_id == guidance_id,
-            )
-            .order_by(MatterDefinitionAssessmentRun.created_at.desc())
+    statement = (
+        select(MatterDefinitionAssessmentRun)
+        .join(
+            MatterDefinitionRevision,
+            MatterDefinitionRevision.id
+            == MatterDefinitionAssessmentRun.matter_definition_revision_id,
+        )
+        .where(
+            MatterDefinitionAssessmentRun.matter_id == matter_id,
+            MatterDefinitionRevision.matter_definition_id == guidance_id,
         )
     )
+    if not include_archived:
+        statement = statement.where(MatterDefinitionAssessmentRun.archived_at.is_(None))
+    assessments = list(db.scalars(statement.order_by(MatterDefinitionAssessmentRun.created_at.desc())))
     reconcile_terminal_assessment_workflows(db, assessments, settings=settings)
     return _assessment_reads(db, assessments)
 
@@ -301,6 +336,99 @@ def update_assessment(
             "previous_name": previous_name,
             "name": assessment.name,
             "review_batch_renamed": batch_renamed,
+        },
+    )
+    db.commit()
+    db.refresh(assessment)
+    return _assessment_reads(db, [assessment])[0]
+
+
+@router.post("/archive-failed", response_model=MatterDefinitionAssessmentArchiveResult)
+def archive_failed_assessments(
+    matter_id: uuid.UUID,
+    payload: MatterDefinitionAssessmentArchiveFailed,
+    principal: Principal = Depends(get_principal),
+    db: Session = Depends(get_db),
+) -> MatterDefinitionAssessmentArchiveResult:
+    matter = _matter(db, matter_id, principal)
+    statement = select(MatterDefinitionAssessmentRun).where(
+        MatterDefinitionAssessmentRun.matter_id == matter_id,
+        MatterDefinitionAssessmentRun.status.in_(("FAILED", "CANCELED")),
+        MatterDefinitionAssessmentRun.archived_at.is_(None),
+    )
+    if payload.guidance_id is not None:
+        guidance_exists = db.scalar(
+            select(MatterDefinition.id).where(
+                MatterDefinition.id == payload.guidance_id,
+                MatterDefinition.matter_id == matter_id,
+            )
+        )
+        if guidance_exists is None:
+            raise HTTPException(status_code=404, detail="Review Guidance not found")
+        statement = statement.join(
+            MatterDefinitionRevision,
+            MatterDefinitionRevision.id
+            == MatterDefinitionAssessmentRun.matter_definition_revision_id,
+        ).where(MatterDefinitionRevision.matter_definition_id == payload.guidance_id)
+    assessments = list(db.scalars(statement))
+    archived_at = utcnow()
+    for assessment in assessments:
+        assessment.archived_at = archived_at
+        assessment.archived_by_user_id = principal.user.id
+        assessment.archive_reason = "MANUAL"
+        assessment.superseded_by_assessment_id = None
+    assessment_ids = [assessment.id for assessment in assessments]
+    record_audit(
+        db,
+        tenant_id=matter.client.tenant_id,
+        actor_user_id=principal.user.id,
+        action="matter_definition.assessments.archived",
+        target_type="matter",
+        target_id=matter.id,
+        details={
+            "matter_id": str(matter.id),
+            "guidance_id": str(payload.guidance_id) if payload.guidance_id else None,
+            "assessment_ids": [str(value) for value in assessment_ids],
+            "archived_count": len(assessment_ids),
+        },
+    )
+    db.commit()
+    return MatterDefinitionAssessmentArchiveResult(
+        archived_count=len(assessment_ids),
+        assessment_ids=assessment_ids,
+    )
+
+
+@router.post("/{assessment_id}/restore", response_model=MatterDefinitionAssessmentRead)
+def restore_archived_assessment(
+    matter_id: uuid.UUID,
+    assessment_id: uuid.UUID,
+    principal: Principal = Depends(get_principal),
+    db: Session = Depends(get_db),
+) -> MatterDefinitionAssessmentRead:
+    matter = _matter(db, matter_id, principal)
+    assessment = _assessment(db, matter_id, assessment_id)
+    if assessment.archived_at is None:
+        raise HTTPException(status_code=409, detail="Assessment is not archived")
+    archive_reason = assessment.archive_reason
+    superseded_by_assessment_id = assessment.superseded_by_assessment_id
+    assessment.archived_at = None
+    assessment.archived_by_user_id = None
+    assessment.archive_reason = None
+    assessment.superseded_by_assessment_id = None
+    record_audit(
+        db,
+        tenant_id=matter.client.tenant_id,
+        actor_user_id=principal.user.id,
+        action="matter_definition.assessment.restored",
+        target_type="matter_definition_assessment_run",
+        target_id=assessment.id,
+        details={
+            "matter_id": str(matter.id),
+            "archive_reason": archive_reason,
+            "superseded_by_assessment_id": (
+                str(superseded_by_assessment_id) if superseded_by_assessment_id else None
+            ),
         },
     )
     db.commit()
@@ -408,18 +536,18 @@ def regenerate_document_analyses(
 @router.get("", response_model=list[MatterDefinitionAssessmentRead])
 def list_assessments(
     matter_id: uuid.UUID,
+    include_archived: bool = False,
     principal: Principal = Depends(get_principal),
     db: Session = Depends(get_db),
     settings: Settings = Depends(get_settings),
 ) -> list[MatterDefinitionAssessmentRead]:
     _matter(db, matter_id, principal)
-    assessments = list(
-        db.scalars(
-            select(MatterDefinitionAssessmentRun)
-            .where(MatterDefinitionAssessmentRun.matter_id == matter_id)
-            .order_by(MatterDefinitionAssessmentRun.created_at.desc())
-        )
+    statement = select(MatterDefinitionAssessmentRun).where(
+        MatterDefinitionAssessmentRun.matter_id == matter_id
     )
+    if not include_archived:
+        statement = statement.where(MatterDefinitionAssessmentRun.archived_at.is_(None))
+    assessments = list(db.scalars(statement.order_by(MatterDefinitionAssessmentRun.created_at.desc())))
     reconcile_terminal_assessment_workflows(db, assessments, settings=settings)
     return _assessment_reads(db, assessments)
 
@@ -484,7 +612,7 @@ def get_assessment_execution(
         error_message=workflow.error_message,
         started_at=workflow.started_at,
         completed_at=workflow.completed_at,
-        steps=[WorkflowStepExecutionRead.model_validate(step) for step in steps],
+        steps=_workflow_step_reads(db, assessment, steps),
         skill_runs=[SkillRunExecutionRead.model_validate(run) for run in skill_runs],
     )
 
