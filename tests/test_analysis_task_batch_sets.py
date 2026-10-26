@@ -725,17 +725,36 @@ def test_search_and_saved_search_populations_pin_generation_and_query(
         settings=batch_sets.get_settings(),
         limit=501,
         relevance_order=True,
+        excluded_document_ids={uuid.UUID(document_ids[3])},
     ) == hybrid_relevance_ids
     first_relevance_body, first_relevance_pipeline = search_calls[-2]
     second_relevance_body, second_relevance_pipeline = search_calls[-1]
     assert "sort" not in first_relevance_body
     assert first_relevance_body["from"] == 0
     assert first_relevance_body["query"]["hybrid"]["pagination_depth"] == 500
+    keyword_exclusions = first_relevance_body["query"]["hybrid"]["queries"][0]["bool"]["filter"][-1]
+    semantic_exclusions = first_relevance_body["query"]["hybrid"]["queries"][1]["nested"]["query"]["knn"]["chunks.embedding"]["filter"]["bool"]["filter"][-1]
+    expected_exclusions = {"bool": {"must_not": [{"terms": {"document_id": [document_ids[3]]}}]}}
+    assert keyword_exclusions == expected_exclusions
+    assert semantic_exclusions == expected_exclusions
     assert first_relevance_pipeline == batch_sets.RRF_SEARCH_PIPELINE
     assert "sort" not in second_relevance_body
     assert second_relevance_body["from"] == 500
     assert second_relevance_body["query"]["hybrid"]["pagination_depth"] == 1_000
     assert second_relevance_pipeline == batch_sets.RRF_SEARCH_PIPELINE
+
+    assert batch_sets.search_document_ids(
+        db,
+        matter=matter,
+        generation=generation,
+        search_definition={"query": "concealed pricing", "search_mode": "HYBRID"},
+        settings=batch_sets.get_settings(),
+        limit=150,
+        relevance_order=True,
+    ) == hybrid_relevance_ids[:150]
+    bounded_relevance_body, _ = search_calls[-1]
+    assert bounded_relevance_body["size"] == 150
+    assert bounded_relevance_body["query"]["hybrid"]["pagination_depth"] == 150
 
     direct = client.post(
         f"/v1/matters/{matter_id}/analysis-tasks/{task['id']}/batch-sets",

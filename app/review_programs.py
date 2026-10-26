@@ -168,6 +168,7 @@ from app.schemas import (
     ClassificationTrainingJobCreate,
     ReviewBatchComparisonSourceOptionRead,
 )
+from app.search.client import OpenSearchError
 from app.workflows.dispatcher import (
     enqueue_analysis_task_batch_set,
     enqueue_analysis_task_batch_set_run,
@@ -2947,15 +2948,21 @@ def setup_review_program_discovery(
         if remaining <= 0:
             break
         requested = min(query.quota, remaining)
-        hits = search_document_ids(
-            db,
-            matter=matter,
-            generation=generation,
-            search_definition=query.search_request,
-            settings=get_settings(),
-            limit=max(requested + len(excluded_document_ids) + len(selected_set), requested),
-            relevance_order=True,
-        )
+        try:
+            hits = search_document_ids(
+                db,
+                matter=matter,
+                generation=generation,
+                search_definition=query.search_request,
+                settings=get_settings(),
+                limit=requested,
+                relevance_order=True,
+                excluded_document_ids=excluded_document_ids | selected_set,
+            )
+        except OpenSearchError as exc:
+            raise ReviewProgramError(
+                f"Discovery retrieval failed for {query.criterion_label}: {exc}"
+            ) from exc
         accepted_hits: list[uuid.UUID] = []
         for document_id in hits:
             if document_id in excluded_document_ids:
@@ -3267,15 +3274,21 @@ def setup_review_program_classifier_improvement(
         query_text = " ".join(str(query["query"]).split())
         quota = int(query["quota"])
         reason = f"{definition_id}:{class_key}"
-        hits = search_document_ids(
-            db,
-            matter=matter,
-            generation=generation,
-            search_definition={"query": query_text, "search_mode": "KEYWORD"},
-            settings=get_settings(),
-            limit=max(quota + len(excluded_document_ids) + len(selected_set), quota),
-            relevance_order=True,
-        )
+        try:
+            hits = search_document_ids(
+                db,
+                matter=matter,
+                generation=generation,
+                search_definition={"query": query_text, "search_mode": "KEYWORD"},
+                settings=get_settings(),
+                limit=quota,
+                relevance_order=True,
+                excluded_document_ids=excluded_document_ids | selected_set,
+            )
+        except OpenSearchError as exc:
+            raise ReviewProgramError(
+                f"Classifier-improvement retrieval failed for {definition_id}:{class_key}: {exc}"
+            ) from exc
         accepted_hits: list[uuid.UUID] = []
         for document_id in hits:
             if document_id in excluded_document_ids:

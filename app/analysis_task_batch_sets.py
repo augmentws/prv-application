@@ -337,6 +337,7 @@ def search_document_ids(
     settings: Settings,
     limit: int | None = None,
     relevance_order: bool = False,
+    excluded_document_ids: set[uuid.UUID] | None = None,
 ) -> list[uuid.UUID]:
     request = MatterSearchRequest.model_validate(search_definition)
     query_vector = None
@@ -345,12 +346,19 @@ def search_document_ids(
     definitions = list(
         db.scalars(select(MetadataDefinition).where(MetadataDefinition.matter_id == matter.id))
     )
+    page_size = min(500, max(1, limit or 500))
+    excluded_values = sorted(str(document_id) for document_id in (excluded_document_ids or set()))
+    exclusion_clauses = [
+        {"terms": {"document_id": excluded_values[offset : offset + 10_000]}}
+        for offset in range(0, len(excluded_values), 10_000)
+    ]
     body = compile_search_request(
-        request.model_copy(update={"offset": 0, "size": 500, "facets": []}),
+        request.model_copy(update={"offset": 0, "size": page_size, "facets": []}),
         definitions,
         tenant_id=str(matter.client.tenant_id),
         matter_id=str(matter.id),
         query_vector=query_vector,
+        required_filters=[{"bool": {"must_not": exclusion_clauses}}] if exclusion_clauses else None,
     )
     body.pop("highlight", None)
     body["_source"] = ["document_id"]
