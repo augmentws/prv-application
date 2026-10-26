@@ -12,6 +12,7 @@ from sqlalchemy.orm import Session
 from app.analysis_input_manifests import AnalysisInputManifestError, AnalysisInputManifestReader
 from app.artifact_gateway import get_collection_item_grouping_snapshots
 from app.config import Settings, get_settings
+from app.embedding_gateway import get_query_embedding_gateway
 from app.job_executions import (
     ANALYSIS_TASK_BATCH_SET_JOB_TYPE,
     JobExecutionConflict,
@@ -38,7 +39,7 @@ from app.models import (
 )
 from app.schemas import MatterSearchRequest
 from app.search.client import OpenSearchClient
-from app.search.query import compile_search_request
+from app.search.query import RRF_SEARCH_PIPELINE, compile_search_request
 
 ALLOCATION_ALGORITHM_VERSION = "stable-sequence-v1"
 FAMILY_ALLOCATION_ALGORITHM_VERSION = "stable-family-least-loaded-v1"
@@ -338,6 +339,9 @@ def search_document_ids(
     relevance_order: bool = False,
 ) -> list[uuid.UUID]:
     request = MatterSearchRequest.model_validate(search_definition)
+    query_vector = None
+    if request.search_mode in {"SEMANTIC", "HYBRID"}:
+        query_vector = get_query_embedding_gateway().embed([request.query or ""], "query").embeddings[0]
     definitions = list(
         db.scalars(select(MetadataDefinition).where(MetadataDefinition.matter_id == matter.id))
     )
@@ -346,6 +350,7 @@ def search_document_ids(
         definitions,
         tenant_id=str(matter.client.tenant_id),
         matter_id=str(matter.id),
+        query_vector=query_vector,
     )
     body.pop("highlight", None)
     body["_source"] = ["document_id"]
@@ -358,8 +363,14 @@ def search_document_ids(
     client = OpenSearchClient(settings)
     document_ids: list[uuid.UUID] = []
     try:
+        if request.search_mode == "HYBRID":
+            client.ensure_rrf_search_pipeline(RRF_SEARCH_PIPELINE)
         while True:
-            raw = client.search(generation.index_name, body)
+            raw = client.search(
+                generation.index_name,
+                body,
+                search_pipeline=RRF_SEARCH_PIPELINE if request.search_mode == "HYBRID" else None,
+            )
             hits = raw.get("hits", {}).get("hits", [])
             if not hits:
                 break

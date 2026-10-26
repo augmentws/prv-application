@@ -1,5 +1,6 @@
 import uuid
 from datetime import datetime, timezone
+from types import SimpleNamespace
 
 import pytest
 from fastapi.testclient import TestClient
@@ -645,13 +646,27 @@ def test_search_and_saved_search_populations_pin_generation_and_query(
     db.add(generation)
     db.commit()
 
+    query_vector = [0.25] * 32
+    embedded: list[tuple[list[str], str]] = []
+    search_calls: list[tuple[dict, str | None]] = []
+    ensured_pipelines: list[str] = []
+
+    class FakeQueryEmbeddingGateway:
+        def embed(self, inputs: list[str], input_type: str) -> SimpleNamespace:
+            embedded.append((inputs, input_type))
+            return SimpleNamespace(embeddings=[query_vector])
+
     class FakeOpenSearchClient:
         def __init__(self, _settings: object) -> None:
             pass
 
-        def search(self, index_name: str, body: dict) -> dict:
+        def ensure_rrf_search_pipeline(self, pipeline_id: str) -> None:
+            ensured_pipelines.append(pipeline_id)
+
+        def search(self, index_name: str, body: dict, *, search_pipeline: str | None = None) -> dict:
             assert index_name == generation.index_name
             assert body["sort"] == [{"document_id": "asc"}]
+            search_calls.append((body, search_pipeline))
             return {
                 "hits": {
                     "hits": [
@@ -665,6 +680,29 @@ def test_search_and_saved_search_populations_pin_generation_and_query(
             pass
 
     monkeypatch.setattr(batch_sets, "OpenSearchClient", FakeOpenSearchClient)
+    monkeypatch.setattr(batch_sets, "get_query_embedding_gateway", FakeQueryEmbeddingGateway)
+    matter = db.get(Matter, uuid.UUID(matter_id))
+    assert matter is not None
+    for search_mode in ("SEMANTIC", "HYBRID"):
+        assert batch_sets.search_document_ids(
+            db,
+            matter=matter,
+            generation=generation,
+            search_definition={"query": "concealed pricing", "search_mode": search_mode},
+            settings=batch_sets.get_settings(),
+        ) == [uuid.UUID(document_id) for document_id in document_ids[:3]]
+    assert embedded == [
+        (["concealed pricing"], "query"),
+        (["concealed pricing"], "query"),
+    ]
+    semantic_body, semantic_pipeline = search_calls[-2]
+    assert semantic_body["query"]["nested"]["query"]["knn"]["chunks.embedding"]["vector"] == query_vector
+    assert semantic_pipeline is None
+    hybrid_body, hybrid_pipeline = search_calls[-1]
+    assert hybrid_body["query"]["hybrid"]["queries"][1]["nested"]["query"]["knn"]["chunks.embedding"]["vector"] == query_vector
+    assert ensured_pipelines == [batch_sets.RRF_SEARCH_PIPELINE]
+    assert hybrid_pipeline == batch_sets.RRF_SEARCH_PIPELINE
+
     direct = client.post(
         f"/v1/matters/{matter_id}/analysis-tasks/{task['id']}/batch-sets",
         headers=auth(token),
