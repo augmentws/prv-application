@@ -354,12 +354,19 @@ def search_document_ids(
     )
     body.pop("highlight", None)
     body["_source"] = ["document_id"]
-    body["sort"] = (
-        [{"_score": "desc"}, {"document_id": "asc"}]
-        if relevance_order
-        else [{"document_id": "asc"}]
-    )
-    body.pop("from", None)
+    hybrid_relevance_order = relevance_order and request.search_mode == "HYBRID"
+    if hybrid_relevance_order:
+        # The RRF search pipeline rejects combining _score with a tie-breaker sort.
+        # Preserve its native relevance order and paginate with an offset instead.
+        body.pop("sort", None)
+        body["from"] = 0
+    else:
+        body["sort"] = (
+            [{"_score": "desc"}, {"document_id": "asc"}]
+            if relevance_order
+            else [{"document_id": "asc"}]
+        )
+        body.pop("from", None)
     client = OpenSearchClient(settings)
     document_ids: list[uuid.UUID] = []
     try:
@@ -381,7 +388,18 @@ def search_document_ids(
                     return document_ids
             if len(hits) < body["size"]:
                 break
-            body["search_after"] = hits[-1]["sort"]
+            if hybrid_relevance_order:
+                next_offset = int(body.get("from", 0)) + len(hits)
+                candidate_limit = request.candidate_limit or 10_000
+                if next_offset >= candidate_limit:
+                    break
+                body["from"] = next_offset
+                body["query"]["hybrid"]["pagination_depth"] = min(
+                    candidate_limit,
+                    next_offset + body["size"],
+                )
+            else:
+                body["search_after"] = hits[-1]["sort"]
     finally:
         client.close()
     return document_ids

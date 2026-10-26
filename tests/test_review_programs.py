@@ -1138,7 +1138,6 @@ def test_synthetic_run_advances_waits_resumes_retries_reconciles_and_cancels(
         json={
             "preview_hash": discovery_action["preview_hash"],
             "target_document_count": 3,
-            "control_sample_size": 0,
             "target_batch_size": 2,
             "keep_families_together": False,
         },
@@ -1301,7 +1300,6 @@ def test_synthetic_run_advances_waits_resumes_retries_reconciles_and_cancels(
         json={
             "preview_hash": second_discovery_action["preview_hash"],
             "target_document_count": 2,
-            "control_sample_size": 0,
             "target_batch_size": 2,
             "keep_families_together": False,
         },

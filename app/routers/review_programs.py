@@ -507,7 +507,6 @@ def setup_program_discovery(
             actor=principal.user,
             preview_hash=payload.preview_hash,
             target_document_count=payload.target_document_count,
-            control_sample_size=payload.control_sample_size,
             target_batch_size=payload.target_batch_size,
             keep_families_together=payload.keep_families_together,
         )

@@ -18,11 +18,6 @@ export interface ReviewProgramDiscoverySetup {
      */
   target_document_count?: number;
   /**
-     * @minimum 0
-     * @maximum 25000
-     */
-  control_sample_size?: number;
-  /**
      * @minimum 1
      * @maximum 10000
      */

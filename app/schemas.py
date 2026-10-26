@@ -5086,15 +5086,8 @@ class ReviewProgramDiscoverySetup(BaseModel):
 
     preview_hash: str = Field(min_length=64, max_length=64)
     target_document_count: int = Field(default=500, ge=1, le=100_000)
-    control_sample_size: int = Field(default=50, ge=0, le=25_000)
     target_batch_size: int = Field(default=100, ge=1, le=10_000)
     keep_families_together: bool = True
-
-    @model_validator(mode="after")
-    def validate_discovery_setup(self) -> "ReviewProgramDiscoverySetup":
-        if self.control_sample_size > self.target_document_count:
-            raise ValueError("Control sample size cannot exceed the discovery target")
-        return self
 
 
 class ReviewProgramClassifierImprovementQuery(BaseModel):

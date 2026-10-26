@@ -1,4 +1,5 @@
 import uuid
+from copy import deepcopy
 from datetime import datetime, timezone
 from types import SimpleNamespace
 
@@ -650,6 +651,7 @@ def test_search_and_saved_search_populations_pin_generation_and_query(
     embedded: list[tuple[list[str], str]] = []
     search_calls: list[tuple[dict, str | None]] = []
     ensured_pipelines: list[str] = []
+    hybrid_relevance_ids = [uuid.uuid4() for _ in range(501)]
 
     class FakeQueryEmbeddingGateway:
         def embed(self, inputs: list[str], input_type: str) -> SimpleNamespace:
@@ -665,8 +667,18 @@ def test_search_and_saved_search_populations_pin_generation_and_query(
 
         def search(self, index_name: str, body: dict, *, search_pipeline: str | None = None) -> dict:
             assert index_name == generation.index_name
-            assert body["sort"] == [{"document_id": "asc"}]
-            search_calls.append((body, search_pipeline))
+            search_calls.append((deepcopy(body), search_pipeline))
+            if search_pipeline and "sort" not in body:
+                offset = int(body.get("from", 0))
+                page = hybrid_relevance_ids[offset : offset + int(body["size"])]
+                return {
+                    "hits": {
+                        "hits": [
+                            {"_source": {"document_id": str(document_id)}}
+                            for document_id in page
+                        ]
+                    }
+                }
             return {
                 "hits": {
                     "hits": [
@@ -696,12 +708,34 @@ def test_search_and_saved_search_populations_pin_generation_and_query(
         (["concealed pricing"], "query"),
     ]
     semantic_body, semantic_pipeline = search_calls[-2]
+    assert semantic_body["sort"] == [{"document_id": "asc"}]
     assert semantic_body["query"]["nested"]["query"]["knn"]["chunks.embedding"]["vector"] == query_vector
     assert semantic_pipeline is None
     hybrid_body, hybrid_pipeline = search_calls[-1]
+    assert hybrid_body["sort"] == [{"document_id": "asc"}]
     assert hybrid_body["query"]["hybrid"]["queries"][1]["nested"]["query"]["knn"]["chunks.embedding"]["vector"] == query_vector
     assert ensured_pipelines == [batch_sets.RRF_SEARCH_PIPELINE]
     assert hybrid_pipeline == batch_sets.RRF_SEARCH_PIPELINE
+
+    assert batch_sets.search_document_ids(
+        db,
+        matter=matter,
+        generation=generation,
+        search_definition={"query": "concealed pricing", "search_mode": "HYBRID"},
+        settings=batch_sets.get_settings(),
+        limit=501,
+        relevance_order=True,
+    ) == hybrid_relevance_ids
+    first_relevance_body, first_relevance_pipeline = search_calls[-2]
+    second_relevance_body, second_relevance_pipeline = search_calls[-1]
+    assert "sort" not in first_relevance_body
+    assert first_relevance_body["from"] == 0
+    assert first_relevance_body["query"]["hybrid"]["pagination_depth"] == 500
+    assert first_relevance_pipeline == batch_sets.RRF_SEARCH_PIPELINE
+    assert "sort" not in second_relevance_body
+    assert second_relevance_body["from"] == 500
+    assert second_relevance_body["query"]["hybrid"]["pagination_depth"] == 1_000
+    assert second_relevance_pipeline == batch_sets.RRF_SEARCH_PIPELINE
 
     direct = client.post(
         f"/v1/matters/{matter_id}/analysis-tasks/{task['id']}/batch-sets",

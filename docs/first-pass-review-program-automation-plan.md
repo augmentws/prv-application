@@ -679,7 +679,6 @@ plan, this plan targets training support. For each active issue it specifies:
 - keyword, semantic, and hybrid searches;
 - positive-document quota;
 - hard-negative and near-miss quota;
-- random or broad control quota;
 - family and duplicate handling;
 - exclusions for documents already reviewed in the program; and
 - rationale and Matter Definition source references.

@@ -360,7 +360,7 @@ describe("ReviewProgramsSection", () => {
           title: "Start discovery Q&A", explanation: "Freeze one population and run both profiles.", preview_hash: "b".repeat(64),
           decision_context: {
             retrieval_plan: { query_count: 4 }, search_index_generation: { generation: 7 },
-            defaults: { target_document_count: 500, control_sample_size: 50, target_batch_size: 100, keep_families_together: true },
+            defaults: { target_document_count: 500, target_batch_size: 100, keep_families_together: true },
           },
           allowed_choices: [{ key: "START", label: "Start discovery Q&A", consequence: "Start it." }, { key: "STOP", label: "Stop program", consequence: "End this run." }],
         }],
@@ -374,6 +374,7 @@ describe("ReviewProgramsSection", () => {
 
     expect(await screen.findByText("4")).toBeInTheDocument();
     expect(screen.getByText("Generation 7")).toBeInTheDocument();
+    expect(screen.queryByLabelText("Broad control")).not.toBeInTheDocument();
     await userEvent.clear(screen.getByLabelText("Document target"));
     await userEvent.type(screen.getByLabelText("Document target"), "800");
     await userEvent.click(screen.getByRole("button", { name: "Start discovery Q&A" }));
@@ -386,7 +387,6 @@ describe("ReviewProgramsSection", () => {
     expect(JSON.parse(String(call?.[1]?.body))).toEqual({
       preview_hash: "b".repeat(64),
       target_document_count: 800,
-      control_sample_size: 50,
       target_batch_size: 100,
       keep_families_together: true,
     });

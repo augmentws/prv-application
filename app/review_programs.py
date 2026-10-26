@@ -919,7 +919,7 @@ def _discovery_stage_context(
     return {
         "retrieval_plan": {
             "source": "ACCEPTED_ASSESSMENT_PLAN",
-            "policy_version": "review-program-discovery-retrieval-v1",
+            "policy_version": "review-program-discovery-retrieval-v2",
             "assessment_id": str(assessment.id),
             "query_count": len(queries),
             "queries": [
@@ -954,7 +954,6 @@ def _discovery_stage_context(
         },
         "defaults": {
             "target_document_count": 500,
-            "control_sample_size": 50,
             "target_batch_size": 100,
             "keep_families_together": True,
         },
@@ -2870,7 +2869,6 @@ def setup_review_program_discovery(
     actor: User,
     preview_hash: str,
     target_document_count: int,
-    control_sample_size: int,
     target_batch_size: int,
     keep_families_together: bool,
 ) -> ReviewProgramRun:
@@ -2889,8 +2887,6 @@ def setup_review_program_discovery(
         raise ReviewProgramError("Review Program is not waiting for Discovery Q&A setup")
     if action.preview_hash != preview_hash:
         raise ReviewProgramError("Discovery Q&A setup preview is stale")
-    if control_sample_size > target_document_count:
-        raise ReviewProgramError("Control sample size cannot exceed the discovery target")
 
     matter = db.get(Matter, program.matter_id)
     if matter is None:
@@ -2942,13 +2938,12 @@ def setup_review_program_discovery(
             )
         )
 
-    targeted_limit = target_document_count - control_sample_size
     selected_ids: list[uuid.UUID] = []
     selected_set: set[uuid.UUID] = set()
     selection_reasons: dict[uuid.UUID, list[str]] = {}
     query_yields: list[dict[str, Any]] = []
     for query in queries:
-        remaining = targeted_limit - len(selected_ids)
+        remaining = target_document_count - len(selected_ids)
         if remaining <= 0:
             break
         requested = min(query.quota, remaining)
@@ -2983,24 +2978,6 @@ def setup_review_program_discovery(
             }
         )
 
-    control_ids: list[uuid.UUID] = []
-    if control_sample_size:
-        excluded_for_control = excluded_document_ids | selected_set
-        control_candidates = db.scalars(
-            select(MatterDocument.id)
-            .where(MatterDocument.matter_id == matter.id)
-            .order_by(MatterDocument.created_at, MatterDocument.id)
-        ).yield_per(1_000)
-        for document_id in control_candidates:
-            if document_id in excluded_for_control:
-                continue
-            control_ids.append(document_id)
-            if len(control_ids) >= control_sample_size:
-                break
-        for document_id in control_ids:
-            selected_ids.append(document_id)
-            selected_set.add(document_id)
-            selection_reasons[document_id] = ["CONTROL"]
     if not selected_ids:
         raise ReviewProgramError("The discovery retrieval plan selected no documents")
 
@@ -3018,10 +2995,9 @@ def setup_review_program_discovery(
     round_number = run.current_discovery_round + 1
     contract = AnalysisInputContract(
         key="review-program.discovery-population",
-        version=1,
-        resolver_version="review-program-discovery-retrieval-v1",
+        version=2,
+        resolver_version="review-program-discovery-retrieval-v2",
         extension_fields=[
-            AnalysisInputExtensionField(name="retrieval_lane", type="STRING", nullable=False),
             AnalysisInputExtensionField(name="selection_reasons", type="STRING", nullable=False),
         ],
         options={
@@ -3030,7 +3006,7 @@ def setup_review_program_discovery(
             "round": round_number,
             "assessment_id": str(assessment.id),
             "search_index_generation_id": str(generation.id),
-            "policy_version": "review-program-discovery-retrieval-v1",
+            "policy_version": "review-program-discovery-retrieval-v2",
         },
     )
     attempt = _current_stage_attempt(db, run, for_update=True)
@@ -3042,7 +3018,6 @@ def setup_review_program_discovery(
                 source_collection_id=documents_by_id[document_id].source_collection_id,
                 scope_ordinal=ordinal,
                 extensions={
-                    "retrieval_lane": ("CONTROL" if selection_reasons[document_id] == ["CONTROL"] else "TARGETED"),
                     "selection_reasons": ",".join(selection_reasons[document_id]),
                 },
             )
@@ -3099,9 +3074,8 @@ def setup_review_program_discovery(
             "accepted_definition_content_hash": accepted_definition.get("content_hash"),
             "task_version_id": str(task_version.id),
             "profile_ids": [str(profile.id) for profile in profiles],
-            "retrieval_policy_version": "review-program-discovery-retrieval-v1",
+            "retrieval_policy_version": "review-program-discovery-retrieval-v2",
             "query_yields": query_yields,
-            "control_selected_count": len(control_ids),
             "excluded_diagnostic_document_count": diagnostic_excluded_count,
             "excluded_prior_program_document_count": len(excluded_document_ids) - diagnostic_excluded_count,
             "prior_discovery_batch_set_ids": [str(value) for value in prior_batch_set_ids],
@@ -3120,13 +3094,11 @@ def setup_review_program_discovery(
         context={
             "input_manifest_id": str(manifest.id),
             "population_count": len(selected_ids),
-            "targeted_count": len(selected_ids) - len(control_ids),
-            "control_count": len(control_ids),
             "round": round_number,
         },
     )
     discovery_snapshot = {
-        "schema_version": 1,
+        "schema_version": 2,
         "round": round_number,
         "assessment_id": str(assessment.id),
         "search_index_generation_id": str(generation.id),
@@ -3138,8 +3110,6 @@ def setup_review_program_discovery(
         "execution_profile_ids": [str(profile.id) for profile in profiles],
         "target_document_count": target_document_count,
         "selected_document_count": len(selected_ids),
-        "targeted_document_count": len(selected_ids) - len(control_ids),
-        "control_document_count": len(control_ids),
         "target_batch_size": target_batch_size,
         "keep_families_together": keep_families_together,
         "query_yields": query_yields,
