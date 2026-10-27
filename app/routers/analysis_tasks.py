@@ -642,7 +642,10 @@ def list_analysis_task_batch_sets(
     rows = list(
         db.scalars(
             select(AnalysisTaskBatchSet)
-            .where(AnalysisTaskBatchSet.matter_analysis_task_id == task.id)
+            .where(
+                AnalysisTaskBatchSet.matter_analysis_task_id == task.id,
+                AnalysisTaskBatchSet.status != "ARCHIVED",
+            )
             .order_by(AnalysisTaskBatchSet.created_at.desc(), AnalysisTaskBatchSet.id.desc())
         )
     )

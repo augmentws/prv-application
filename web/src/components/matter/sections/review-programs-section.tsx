@@ -112,6 +112,14 @@ export function ReviewProgramsSection() {
     onSuccess: async (run) => { await refresh(run.program_id); toast.success("The Review Program was updated."); },
     onError: mutationError("The Review Program could not be updated."),
   });
+  const resetDiscoveryQA = useMutation({
+    mutationFn: ({ programId, runId }: { programId: string; runId: string }) => coreApi<ReviewProgramRunRead>(`/v1/matters/${matterId}/review-programs/${programId}/runs/${runId}/reset-discovery-qa`, {
+      method: "POST",
+      body: JSON.stringify({ idempotency_key: crypto.randomUUID(), reason: "Reset from the Review Program workspace" }),
+    }),
+    onSuccess: async (run) => { await refresh(run.program_id); toast.success("Discovery Q&A was reset. You can now start it again."); },
+    onError: mutationError("Discovery Q&A could not be reset."),
+  });
   const resolveAction = useMutation({
     mutationFn: ({ programId, runId, action, choiceKey, reason, input }: { programId: string; runId: string; action: ReviewProgramActionRead; choiceKey: string; reason?: string; input?: Record<string, unknown> }) => coreApi<ReviewProgramRunRead>(`/v1/matters/${matterId}/review-programs/${programId}/runs/${runId}/actions/${action.id}/resolve`, {
       method: "POST",
@@ -201,9 +209,10 @@ export function ReviewProgramsSection() {
         canManage={canManage}
         loading={runs.isPending}
         error={runs.error}
-        busy={startRun.isPending || command.isPending || resolveAction.isPending || setupDefinition.isPending || setupQA.isPending || setupDiscovery.isPending || setupClassifierImprovement.isPending || setupNegativePopulationQC.isPending}
+        busy={startRun.isPending || command.isPending || resetDiscoveryQA.isPending || resolveAction.isPending || setupDefinition.isPending || setupQA.isPending || setupDiscovery.isPending || setupClassifierImprovement.isPending || setupNegativePopulationQC.isPending}
         onStart={() => startRun.mutate(selectedProgram.id)}
         onCommand={(verb) => currentRun && command.mutate({ programId: selectedProgram.id, runId: currentRun.id, verb })}
+        onResetDiscovery={() => currentRun && resetDiscoveryQA.mutate({ programId: selectedProgram.id, runId: currentRun.id })}
         onResolve={(action, choiceKey, reason, input) => currentRun && resolveAction.mutate({ programId: selectedProgram.id, runId: currentRun.id, action, choiceKey, reason, input })}
         onSetupDefinition={(action, payload) => currentRun && setupDefinition.mutate({ programId: selectedProgram.id, runId: currentRun.id, actionId: action.id, payload })}
         onSetupQA={(action, payload) => currentRun && setupQA.mutate({ programId: selectedProgram.id, runId: currentRun.id, actionId: action.id, payload })}
@@ -215,7 +224,7 @@ export function ReviewProgramsSection() {
   </div>;
 }
 
-function ProgramWorkspace({ clientId, matterId, program, run, stages, canManage, loading, error, busy, onStart, onCommand, onResolve, onSetupDefinition, onSetupQA, onSetupDiscovery, onSetupClassifierImprovement, onSetupNegativePopulationQC }: {
+function ProgramWorkspace({ clientId, matterId, program, run, stages, canManage, loading, error, busy, onStart, onCommand, onResetDiscovery, onResolve, onSetupDefinition, onSetupQA, onSetupDiscovery, onSetupClassifierImprovement, onSetupNegativePopulationQC }: {
   clientId: string;
   matterId: string;
   program: ReviewProgramRead;
@@ -227,6 +236,7 @@ function ProgramWorkspace({ clientId, matterId, program, run, stages, canManage,
   busy: boolean;
   onStart: () => void;
   onCommand: (verb: "cancel" | "retry" | "reconcile") => void;
+  onResetDiscovery: () => void;
   onResolve: (action: ReviewProgramActionRead, choiceKey: string, reason?: string, input?: Record<string, unknown>) => void;
   onSetupDefinition: (action: ReviewProgramActionRead, payload: DefinitionSetupPayload) => void;
   onSetupQA: (action: ReviewProgramActionRead, payload: QASetupPayload) => void;
@@ -261,6 +271,7 @@ function ProgramWorkspace({ clientId, matterId, program, run, stages, canManage,
         <div><CardTitle>{program.name}</CardTitle><CardDescription>{program.description || "Guided First Pass Review workflow"}</CardDescription></div>
         <div className="flex shrink-0 flex-wrap justify-end gap-2">
           {canManage && run && (["COMPLETED", "COMPLETED_WITH_ERRORS", "CANCELED"].includes(run.status) || run.status === "FAILED" && !run.failure_retriable) ? <Button size="sm" disabled={busy} onClick={onStart}><Play />Start another run</Button> : null}
+          {run && canManage && run.current_stage === "DISCOVERY_QA" && Boolean(run.progress_summary?.discovery_qa) ? <ResetDiscoveryQADialog busy={busy} onReset={onResetDiscovery} /> : null}
           {run && canManage && ACTIVE_RUN_STATUSES.has(run.status) ? <><Button size="sm" variant="outline" disabled={busy} onClick={() => onCommand("reconcile")}><RefreshCw />Reconcile</Button><Button size="sm" variant="outline" disabled={busy} onClick={() => onCommand("cancel")}><Ban />Cancel</Button></> : null}
           {run?.status === "FAILED" && run.failure_retriable && canManage ? <Button size="sm" disabled={busy} onClick={() => onCommand("retry")}><RotateCcw />Retry</Button> : null}
         </div>
@@ -282,6 +293,23 @@ function ProgramWorkspace({ clientId, matterId, program, run, stages, canManage,
       return <li key={stage.key} className={cn("flex items-start gap-3 rounded-lg border p-3", isCurrent && "border-primary/50 bg-primary/5", upcoming && "opacity-55")}><span className="grid size-7 shrink-0 place-items-center rounded-full bg-muted text-xs font-semibold">{stage.ordinal}</span><div className="min-w-0 flex-1"><div className="flex items-start justify-between gap-2"><p className="text-sm font-medium">{stage.name}</p><ProgramStageTooltip stage={stage} /></div><div className="mt-1 flex flex-wrap gap-1">{attempt ? <StatusBadge status={attempt.status} /> : <Badge variant="outline">Upcoming</Badge>}<Badge variant="outline">{friendly(stage.batching_policy)}</Badge>{stage.requires_human_gate ? <Badge variant="outline">Decision</Badge> : null}</div>{containsCurrentReassessment ? <div className="mt-2 flex items-center justify-between gap-2 rounded-md border border-primary/30 bg-background/80 px-2 py-1.5"><span className="text-xs font-medium">Reassessment · Round {definitionAssessmentRound}</span><StatusBadge status={currentDefinitionAssessmentAttempt?.status ?? run.status} /></div> : null}</div></li>;
     })}</ol></CardContent></Card> : null}
   </div>;
+}
+
+function ResetDiscoveryQADialog({ busy, onReset }: { busy: boolean; onReset: () => void }) {
+  const [open, setOpen] = useState(false);
+  return <Dialog open={open} onOpenChange={setOpen}>
+    <DialogTrigger asChild><Button size="sm" variant="outline" disabled={busy}><RotateCcw />Reset Discovery Q&amp;A</Button></DialogTrigger>
+    <DialogContent>
+      <DialogHeader>
+        <DialogTitle>Reset Discovery Q&amp;A?</DialogTitle>
+        <DialogDescription>This cancels active Discovery Q&amp;A processing, archives its batch set and child batches, and returns this stage to setup. Prior records remain available for audit, but their documents may be selected again.</DialogDescription>
+      </DialogHeader>
+      <DialogFooter>
+        <Button type="button" variant="outline" onClick={() => setOpen(false)}>Keep current run</Button>
+        <Button type="button" variant="destructive" disabled={busy} onClick={() => { setOpen(false); onReset(); }}>Reset Discovery Q&amp;A</Button>
+      </DialogFooter>
+    </DialogContent>
+  </Dialog>;
 }
 
 function ProgramStageTooltip({ stage }: { stage: ReviewWorkflowStageRead }) {
@@ -575,7 +603,6 @@ function CompletedReviewProgramSummary({ run }: { run: ReviewProgramRunRead }) {
 interface DiscoverySetupPayload {
   preview_hash: string;
   target_document_count: number;
-  control_sample_size: number;
   target_batch_size: number;
   keep_families_together: boolean;
 }
@@ -594,18 +621,16 @@ function DiscoverySetupCard({ action, canManage, busy, onSubmit, onStop }: {
   const searchRaw = action.decision_context?.search_index_generation;
   const search = searchRaw && typeof searchRaw === "object" && !Array.isArray(searchRaw) ? searchRaw as Record<string, unknown> : {};
   const [targetCount, setTargetCount] = useState(String(defaults.target_document_count ?? 500));
-  const [controlCount, setControlCount] = useState(String(defaults.control_sample_size ?? 50));
   const [batchSize, setBatchSize] = useState(String(defaults.target_batch_size ?? 100));
   const [keepFamilies, setKeepFamilies] = useState(Boolean(defaults.keep_families_together ?? true));
   function submit(event: FormEvent) {
     event.preventDefault();
     const target = Number(targetCount);
-    const control = Number(controlCount);
     const size = Number(batchSize);
-    if (![target, control, size].every(Number.isInteger) || target < 1 || control < 0 || control > target || size < 1) return;
-    onSubmit({ preview_hash: action.preview_hash, target_document_count: target, control_sample_size: control, target_batch_size: size, keep_families_together: keepFamilies });
+    if (![target, size].every(Number.isInteger) || target < 1 || size < 1) return;
+    onSubmit({ preview_hash: action.preview_hash, target_document_count: target, target_batch_size: size, keep_families_together: keepFamilies });
   }
-  return <Card className="border-accent/60 bg-accent/5"><CardHeader><CardTitle>{action.title}</CardTitle><CardDescription>{action.explanation}</CardDescription></CardHeader><CardContent><form className="space-y-4" onSubmit={submit}><div className="grid gap-2 rounded-lg border bg-background/70 p-3 text-sm sm:grid-cols-3"><div><p className="text-xs text-muted-foreground">Retrieval queries</p><p className="font-medium">{Number(plan.query_count ?? 0)}</p></div><div><p className="text-xs text-muted-foreground">Pinned index</p><p className="font-medium">Generation {String(search.generation ?? "unavailable")}</p></div><div><p className="text-xs text-muted-foreground">Plan source</p><p className="font-medium">Accepted assessment</p></div></div><div className="grid gap-4 sm:grid-cols-3"><div className="space-y-2"><Label htmlFor="discovery-target">Document target</Label><Input id="discovery-target" type="number" min={1} max={100000} value={targetCount} onChange={(event) => setTargetCount(event.target.value)} /></div><div className="space-y-2"><Label htmlFor="discovery-control">Broad control</Label><Input id="discovery-control" type="number" min={0} max={25000} value={controlCount} onChange={(event) => setControlCount(event.target.value)} /></div><div className="space-y-2"><Label htmlFor="discovery-batch-size">Documents per batch</Label><Input id="discovery-batch-size" type="number" min={1} max={10000} value={batchSize} onChange={(event) => setBatchSize(event.target.value)} /></div></div><label className="flex items-center gap-2 text-sm"><input type="checkbox" checked={keepFamilies} onChange={(event) => setKeepFamilies(event.target.checked)} disabled={!canManage || busy} />Keep document families together</label><p className="text-xs text-muted-foreground">The same immutable population and managed child batches will be used for both pinned model profiles. Results remain isolated from matter metadata.</p><div className="flex flex-wrap gap-2"><Button type="submit" disabled={!canManage || busy}>{busy ? "Starting…" : "Start discovery Q&A"}</Button><Button type="button" variant="destructive" disabled={!canManage || busy} onClick={onStop}>Stop program</Button></div></form></CardContent></Card>;
+  return <Card className="border-accent/60 bg-accent/5"><CardHeader><CardTitle>{action.title}</CardTitle><CardDescription>{action.explanation}</CardDescription></CardHeader><CardContent><form className="space-y-4" onSubmit={submit}><div className="grid gap-2 rounded-lg border bg-background/70 p-3 text-sm sm:grid-cols-3"><div><p className="text-xs text-muted-foreground">Retrieval queries</p><p className="font-medium">{Number(plan.query_count ?? 0)}</p></div><div><p className="text-xs text-muted-foreground">Pinned index</p><p className="font-medium">Generation {String(search.generation ?? "unavailable")}</p></div><div><p className="text-xs text-muted-foreground">Plan source</p><p className="font-medium">Accepted assessment</p></div></div><div className="grid gap-4 sm:grid-cols-2"><div className="space-y-2"><Label htmlFor="discovery-target">Document target</Label><Input id="discovery-target" type="number" min={1} max={100000} value={targetCount} onChange={(event) => setTargetCount(event.target.value)} /></div><div className="space-y-2"><Label htmlFor="discovery-batch-size">Documents per batch</Label><Input id="discovery-batch-size" type="number" min={1} max={10000} value={batchSize} onChange={(event) => setBatchSize(event.target.value)} /></div></div><label className="flex items-center gap-2 text-sm"><input type="checkbox" checked={keepFamilies} onChange={(event) => setKeepFamilies(event.target.checked)} disabled={!canManage || busy} />Keep document families together</label><p className="text-xs text-muted-foreground">The same immutable targeted population and managed child batches will be used for both pinned model profiles. Results remain isolated from matter metadata.</p><div className="flex flex-wrap gap-2"><Button type="submit" disabled={!canManage || busy}>{busy ? "Starting…" : "Start discovery Q&A"}</Button><Button type="button" variant="destructive" disabled={!canManage || busy} onClick={onStop}>Stop program</Button></div></form></CardContent></Card>;
 }
 
 interface ClassifierImprovementQueryPayload {

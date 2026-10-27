@@ -53763,13 +53763,6 @@
             "title": "Target Document Count",
             "default": 500
           },
-          "control_sample_size": {
-            "type": "integer",
-            "maximum": 25000.0,
-            "minimum": 0.0,
-            "title": "Control Sample Size",
-            "default": 50
-          },
           "target_batch_size": {
             "type": "integer",
             "maximum": 10000.0,

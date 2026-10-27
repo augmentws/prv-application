@@ -1,5 +1,7 @@
 import uuid
+from copy import deepcopy
 from datetime import datetime, timezone
+from types import SimpleNamespace
 
 import pytest
 from fastapi.testclient import TestClient
@@ -27,6 +29,7 @@ from app.models import (
     Tenant,
     WorkflowRun,
 )
+from app.search.client import OpenSearchError
 from tests.test_agents_and_matter_definitions import auth, create_tenant_context
 from tests.test_analysis_tasks import _specification
 from tests.test_review_batches import add_documents
@@ -83,6 +86,130 @@ def _ready_batch_set(
     assert response.status_code == 202, response.text
     assert response.json()["status"] == "READY"
     return response.json()
+
+
+def test_task_batch_query_quotas_scale_to_requested_discovery_population() -> None:
+    quotas = [150, 50, 150, 120, 120, 120, 100, 100, 90]
+    queries = [
+        batch_sets.TaskBatchSearchQuery(
+            ordinal=index,
+            key=f"issue_{index}",
+            label=f"Issue {index}",
+            reason=f"issue_{index}",
+            search_definition={"query": f"issue {index}", "search_mode": "HYBRID"},
+            quota=quota,
+        )
+        for index, quota in enumerate(quotas, start=1)
+    ]
+
+    allocations = batch_sets.allocate_task_batch_query_quotas(queries, 5_000)
+
+    assert allocations == [750, 250, 750, 600, 600, 600, 500, 500, 450]
+    assert sum(allocations) == 5_000
+
+
+def test_task_batch_search_uses_scaled_query_limits(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    matter_id = uuid.uuid4()
+    calls: list[int] = []
+
+    monkeypatch.setattr(batch_sets, "task_batch_document_ids", lambda *args, **kwargs: ([], set()))
+
+    def fake_search_document_ids(*args, **kwargs):
+        limit = kwargs["limit"]
+        calls.append(limit)
+        return [uuid.uuid5(uuid.NAMESPACE_URL, f"query:{len(calls)}:document:{index}") for index in range(limit)]
+
+    monkeypatch.setattr(batch_sets, "search_document_ids", fake_search_document_ids)
+    population = batch_sets.select_task_batch_search_population(
+        SimpleNamespace(),
+        matter=SimpleNamespace(id=matter_id),
+        task=SimpleNamespace(id=uuid.uuid4(), matter_id=matter_id),
+        generation=SimpleNamespace(),
+        queries=[
+            batch_sets.TaskBatchSearchQuery(
+                ordinal=1,
+                key="issue_1",
+                label="Issue 1",
+                reason="issue_1",
+                search_definition={"query": "first", "search_mode": "KEYWORD"},
+                quota=2,
+            ),
+            batch_sets.TaskBatchSearchQuery(
+                ordinal=2,
+                key="issue_2",
+                label="Issue 2",
+                reason="issue_2",
+                search_definition={"query": "second", "search_mode": "KEYWORD"},
+                quota=1,
+            ),
+        ],
+        target_document_count=6,
+        settings=SimpleNamespace(),
+    )
+
+    assert calls == [4, 2]
+    assert len(population.document_ids) == 6
+    assert [item["requested"] for item in population.query_yields] == [4, 2]
+
+
+def test_task_batch_search_identifies_query_that_failed(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    matter_id = uuid.uuid4()
+    monkeypatch.setattr(batch_sets, "task_batch_document_ids", lambda *args, **kwargs: ([], set()))
+    monkeypatch.setattr(
+        batch_sets,
+        "search_document_ids",
+        lambda *args, **kwargs: (_ for _ in ()).throw(
+            OpenSearchError("OpenSearch request failed: timed out")
+        ),
+    )
+
+    with pytest.raises(
+        batch_sets.AnalysisTaskBatchSetError,
+        match='Retrieval query "Issue 3: Regulatory Actions" failed: .*timed out',
+    ):
+        batch_sets.select_task_batch_search_population(
+            SimpleNamespace(),
+            matter=SimpleNamespace(id=matter_id),
+            task=SimpleNamespace(id=uuid.uuid4(), matter_id=matter_id),
+            generation=SimpleNamespace(),
+            queries=[
+                batch_sets.TaskBatchSearchQuery(
+                    ordinal=1,
+                    key="issue_3",
+                    label="Issue 3: Regulatory Actions",
+                    reason="issue_3",
+                    search_definition={"query": "rate filing", "search_mode": "HYBRID"},
+                    quota=100,
+                )
+            ],
+            target_document_count=100,
+            settings=SimpleNamespace(),
+        )
+
+
+def test_task_batch_selection_warns_when_retrieval_misses_requested_target() -> None:
+    warnings = batch_sets._selection_warnings(
+        {
+            "review_program": {
+                "target_document_count": 5_000,
+                "selected_document_count": 4_250,
+            }
+        }
+    )
+
+    assert warnings == [
+        {
+            "code": "RETRIEVAL_TARGET_SHORTFALL",
+            "message": "Retrieval selected 4250 of the requested 5000 documents.",
+            "target_document_count": 5_000,
+            "selected_document_count": 4_250,
+            "shortfall_count": 750,
+        }
+    ]
 
 
 def test_batch_set_run_creates_one_parent_with_ordered_child_references(
@@ -645,13 +772,42 @@ def test_search_and_saved_search_populations_pin_generation_and_query(
     db.add(generation)
     db.commit()
 
+    query_vector = [0.25] * 32
+    embedded: list[tuple[list[str], str]] = []
+    search_calls: list[tuple[dict, str | None]] = []
+    ensured_pipelines: list[str] = []
+    hybrid_relevance_ids = [uuid.uuid4() for _ in range(501)]
+    transient_failures = [0]
+
+    class FakeQueryEmbeddingGateway:
+        def embed(self, inputs: list[str], input_type: str) -> SimpleNamespace:
+            embedded.append((inputs, input_type))
+            return SimpleNamespace(embeddings=[query_vector])
+
     class FakeOpenSearchClient:
         def __init__(self, _settings: object) -> None:
             pass
 
-        def search(self, index_name: str, body: dict) -> dict:
+        def ensure_rrf_search_pipeline(self, pipeline_id: str) -> None:
+            ensured_pipelines.append(pipeline_id)
+
+        def search(self, index_name: str, body: dict, *, search_pipeline: str | None = None) -> dict:
             assert index_name == generation.index_name
-            assert body["sort"] == [{"document_id": "asc"}]
+            search_calls.append((deepcopy(body), search_pipeline))
+            if transient_failures[0]:
+                transient_failures[0] -= 1
+                raise OpenSearchError("OpenSearch request failed: timed out")
+            if search_pipeline and "sort" not in body:
+                offset = int(body.get("from", 0))
+                page = hybrid_relevance_ids[offset : offset + int(body["size"])]
+                return {
+                    "hits": {
+                        "hits": [
+                            {"_source": {"document_id": str(document_id)}}
+                            for document_id in page
+                        ]
+                    }
+                }
             return {
                 "hits": {
                     "hits": [
@@ -665,6 +821,119 @@ def test_search_and_saved_search_populations_pin_generation_and_query(
             pass
 
     monkeypatch.setattr(batch_sets, "OpenSearchClient", FakeOpenSearchClient)
+    monkeypatch.setattr(batch_sets, "get_query_embedding_gateway", FakeQueryEmbeddingGateway)
+    matter = db.get(Matter, uuid.UUID(matter_id))
+    assert matter is not None
+    for search_mode in ("SEMANTIC", "HYBRID"):
+        assert batch_sets.search_document_ids(
+            db,
+            matter=matter,
+            generation=generation,
+            search_definition={"query": "concealed pricing", "search_mode": search_mode},
+            settings=batch_sets.get_settings(),
+        ) == [uuid.UUID(document_id) for document_id in document_ids[:3]]
+    assert embedded == [
+        (["concealed pricing"], "query"),
+        (["concealed pricing"], "query"),
+    ]
+    semantic_body, semantic_pipeline = search_calls[-2]
+    assert semantic_body["sort"] == [{"document_id": "asc"}]
+    assert semantic_body["query"]["nested"]["query"]["knn"]["chunks.embedding"]["vector"] == query_vector
+    assert semantic_pipeline is None
+    hybrid_body, hybrid_pipeline = search_calls[-1]
+    assert hybrid_body["sort"] == [{"document_id": "asc"}]
+    assert hybrid_body["query"]["hybrid"]["queries"][1]["nested"]["query"]["knn"]["chunks.embedding"]["vector"] == query_vector
+    assert ensured_pipelines == [batch_sets.RRF_SEARCH_PIPELINE]
+    assert hybrid_pipeline == batch_sets.RRF_SEARCH_PIPELINE
+
+    assert batch_sets.search_document_ids(
+        db,
+        matter=matter,
+        generation=generation,
+        search_definition={"query": "concealed pricing", "search_mode": "HYBRID", "size": 150},
+        settings=batch_sets.get_settings(),
+        limit=501,
+        relevance_order=True,
+        excluded_document_ids={uuid.UUID(document_ids[3])},
+    ) == hybrid_relevance_ids
+    relevance_calls = search_calls[-4:]
+    first_relevance_body, first_relevance_pipeline = relevance_calls[0]
+    second_relevance_body, second_relevance_pipeline = relevance_calls[1]
+    final_relevance_body, final_relevance_pipeline = relevance_calls[-1]
+    assert "sort" not in first_relevance_body
+    assert first_relevance_body["from"] == 0
+    assert first_relevance_body["size"] == 150
+    assert first_relevance_body["query"]["hybrid"]["pagination_depth"] == 150
+    keyword_exclusions = first_relevance_body["query"]["hybrid"]["queries"][0]["bool"]["filter"][-1]
+    semantic_exclusions = first_relevance_body["query"]["hybrid"]["queries"][1]["nested"]["query"]["knn"]["chunks.embedding"]["filter"]["bool"]["filter"][-1]
+    expected_exclusions = {"bool": {"must_not": [{"terms": {"document_id": [document_ids[3]]}}]}}
+    assert keyword_exclusions == expected_exclusions
+    assert semantic_exclusions == expected_exclusions
+    assert first_relevance_pipeline == batch_sets.RRF_SEARCH_PIPELINE
+    assert "sort" not in second_relevance_body
+    assert second_relevance_body["from"] == 150
+    assert second_relevance_body["query"]["hybrid"]["pagination_depth"] == 300
+    assert second_relevance_pipeline == batch_sets.RRF_SEARCH_PIPELINE
+    assert final_relevance_body["from"] == 450
+    assert final_relevance_body["query"]["hybrid"]["pagination_depth"] == 600
+    assert final_relevance_pipeline == batch_sets.RRF_SEARCH_PIPELINE
+
+    assert batch_sets.search_document_ids(
+        db,
+        matter=matter,
+        generation=generation,
+        search_definition={"query": "concealed pricing", "search_mode": "HYBRID", "size": 150},
+        settings=batch_sets.get_settings(),
+        limit=150,
+        relevance_order=True,
+    ) == hybrid_relevance_ids[:150]
+    bounded_relevance_body, _ = search_calls[-1]
+    assert bounded_relevance_body["size"] == 150
+    assert bounded_relevance_body["query"]["hybrid"]["pagination_depth"] == 150
+
+    assert len(
+        batch_sets.search_document_ids(
+            db,
+            matter=matter,
+            generation=generation,
+            search_definition={"query": "concealed pricing", "search_mode": "SEMANTIC"},
+            settings=batch_sets.get_settings(),
+            limit=250,
+            relevance_order=True,
+        )
+    ) == 3
+    semantic_population_body, _ = search_calls[-1]
+    assert semantic_population_body["size"] == 250
+    assert semantic_population_body["query"]["nested"]["query"]["knn"]["chunks.embedding"]["k"] == 250
+
+    retry_sleeps: list[float] = []
+    transient_failures[0] = 2
+    monkeypatch.setattr(batch_sets.time, "sleep", retry_sleeps.append)
+    assert len(
+        batch_sets.search_document_ids(
+            db,
+            matter=matter,
+            generation=generation,
+            search_definition={"query": "concealed pricing", "search_mode": "SEMANTIC"},
+            settings=batch_sets.get_settings(),
+            limit=1,
+            relevance_order=True,
+        )
+    ) == 1
+    assert retry_sleeps == [0.25, 0.5]
+
+    transient_failures[0] = 3
+    with pytest.raises(OpenSearchError, match="after 3 attempts"):
+        batch_sets.search_document_ids(
+            db,
+            matter=matter,
+            generation=generation,
+            search_definition={"query": "concealed pricing", "search_mode": "SEMANTIC"},
+            settings=batch_sets.get_settings(),
+            limit=1,
+            relevance_order=True,
+        )
+
     direct = client.post(
         f"/v1/matters/{matter_id}/analysis-tasks/{task['id']}/batch-sets",
         headers=auth(token),
@@ -701,8 +970,8 @@ def test_search_and_saved_search_populations_pin_generation_and_query(
             "target_batch_size": 2,
         },
     )
-    assert preview.status_code == 200, preview.text
-    assert preview.json()["estimated_batch_sizes"] == [2, 1]
+    assert preview.status_code == 409, preview.text
+    assert "does not allow a document to belong to more than one Batch Set" in preview.text
 
     created = client.post(
         f"/v1/matters/{matter_id}/analysis-tasks/{task['id']}/batch-sets",
@@ -715,9 +984,48 @@ def test_search_and_saved_search_populations_pin_generation_and_query(
         },
     )
     assert created.status_code == 202, created.text
-    assert created.json()["status"] == "READY"
+    assert created.json()["status"] == "FAILED"
+    assert "does not allow a document to belong to more than one Batch Set" in created.json()["error_message"]
     assert created.json()["selection_definition"]["saved_search_id"] == saved.json()["id"]
     assert created.json()["selection_definition"]["saved_search_name"] == "Contract documents"
+
+    direct_batch_set = db.get(AnalysisTaskBatchSet, uuid.UUID(direct.json()["id"]))
+    assert direct_batch_set is not None
+    direct_batch_set.status = "ARCHIVED"
+    for child_batch in db.scalars(
+        select(ReviewBatch).where(ReviewBatch.analysis_task_batch_set_id == direct_batch_set.id)
+    ):
+        child_batch.status = "ARCHIVED"
+    db.commit()
+    active_set_ids, active_document_ids = batch_sets.task_batch_document_ids(
+        db,
+        task_id=uuid.UUID(task["id"]),
+    )
+    assert direct_batch_set.id not in active_set_ids
+    assert not active_document_ids
+    visible_sets = client.get(
+        f"/v1/matters/{matter_id}/analysis-tasks/{task['id']}/batch-sets",
+        headers=auth(token),
+    )
+    assert visible_sets.status_code == 200, visible_sets.text
+    assert str(direct_batch_set.id) not in {item["id"] for item in visible_sets.json()}
+    archived_detail = client.get(
+        f"/v1/matters/{matter_id}/analysis-tasks/{task['id']}/batch-sets/{direct_batch_set.id}",
+        headers=auth(token),
+    )
+    assert archived_detail.status_code == 200, archived_detail.text
+    assert archived_detail.json()["status"] == "ARCHIVED"
+
+    released_preview = client.post(
+        f"/v1/matters/{matter_id}/analysis-tasks/{task['id']}/batch-sets/preview",
+        headers=auth(token),
+        json={
+            "population_source_type": "SAVED_SEARCH",
+            "saved_search_id": saved.json()["id"],
+            "target_batch_size": 2,
+        },
+    )
+    assert released_preview.status_code == 200, released_preview.text
 
 
 def test_child_search_projection_failure_completes_set_with_warning(

@@ -679,14 +679,13 @@ plan, this plan targets training support. For each active issue it specifies:
 - keyword, semantic, and hybrid searches;
 - positive-document quota;
 - hard-negative and near-miss quota;
-- random or broad control quota;
 - family and duplicate handling;
-- exclusions for documents already reviewed in the program; and
+- task-specific batching rules that omit documents already assigned to that Q&A task; and
 - rationale and Matter Definition source references.
 
-The plan returns only controlled `MatterSearchRequest` shapes. Code executes searches against one pinned physical
-index generation, fuses ranks deterministically, removes previously reviewed documents, keeps configured families
-together, and records selection reasons.
+The plan returns only controlled `MatterSearchRequest` shapes. Task-specific batching executes searches against one
+pinned physical index generation, fuses ranks deterministically, removes documents already assigned to the same task,
+keeps configured families together, and records selection reasons.
 
 ### 10.2 Discovery task-specific batch set
 
@@ -700,8 +699,9 @@ that manifest. The set and its managed child Review Batches record:
 - per-issue quotas and retrieval reasons; and
 - deterministic document order.
 
-Mark the set's managed children and Q&A runs as classification-training eligible. Do not reuse the ad hoc assessment
-batch or its blinded results as training labels. No ordinary discovery Review Batch is created as a staging source.
+Mark the set's managed children and Q&A runs as classification-training eligible. Do not use the ad hoc assessment's
+blinded results as training labels. Because assessment uses ad hoc batching, its batch membership does not remove a
+document from the Q&A task population. No ordinary discovery Review Batch is created as a staging source.
 
 ### 10.3 Dual Q&A execution
 
@@ -758,7 +758,7 @@ When an active issue is not feasible under any acceptable label option:
 
 1. Generate a supplemental retrieval plan only for deficient issues and required hard negatives.
 2. Use existing positive examples, Matter Definition language, near misses, entities, date ranges, and cohort gaps.
-3. Exclude all previously reviewed documents and already selected family or duplicate groups according to policy.
+3. Let task-specific batching omit documents already assigned to the Q&A task and apply the family or duplicate policy.
 4. Preview expected new counts, allocation, and estimated Q&A usage.
 5. Materialize a supplemental task-specific Analysis Task Batch Set.
 6. Run both Q&A profiles.
@@ -1373,7 +1373,7 @@ program version or a fresh child snapshot rather than mutating completed stages.
 - Initial, supplemental, and improvement Q&A populations materialize only as task-specific batch sets.
 - `INPUT_MANIFEST` populations verify artifact identity, document count, order, and hash before partitioning.
 - Managed children cover the manifest exactly and do not overlap within their set.
-- Retrieval excludes previously reviewed documents.
+- Task-specific batching prevents repeat assignment within the Q&A task; ad hoc diagnostic batches are outside it.
 - Family and duplicate groups follow policy.
 - Per-issue quotas and query yield are reproducible.
 - Support combines multiple rounds without double counting documents or groups.

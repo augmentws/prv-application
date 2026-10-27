@@ -84,9 +84,9 @@ describe("AnalysisTaskBatchSetsPanel", () => {
     const user = userEvent.setup();
 
     render(<QueryClientProvider client={client}><AnalysisTaskBatchSetsPanel matterId="matter-1" task={task} /></QueryClientProvider>);
-    expect(await screen.findByText("No partitioned batch sets have been created for this task.")).toBeInTheDocument();
+    expect(await screen.findByText("No batch sets have been created for this task.")).toBeInTheDocument();
 
-    await user.click(screen.getByRole("button", { name: "New partitioned set" }));
+    await user.click(screen.getByRole("button", { name: "New batch set" }));
     await user.type(screen.getByLabelText("Name"), "Privilege wave");
     expect(screen.getByRole("button", { name: "Create set" })).toBeDisabled();
     await user.click(screen.getByRole("button", { name: "Preview allocation" }));

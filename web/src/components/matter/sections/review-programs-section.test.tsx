@@ -360,7 +360,7 @@ describe("ReviewProgramsSection", () => {
           title: "Start discovery Q&A", explanation: "Freeze one population and run both profiles.", preview_hash: "b".repeat(64),
           decision_context: {
             retrieval_plan: { query_count: 4 }, search_index_generation: { generation: 7 },
-            defaults: { target_document_count: 500, control_sample_size: 50, target_batch_size: 100, keep_families_together: true },
+            defaults: { target_document_count: 500, target_batch_size: 100, keep_families_together: true },
           },
           allowed_choices: [{ key: "START", label: "Start discovery Q&A", consequence: "Start it." }, { key: "STOP", label: "Stop program", consequence: "End this run." }],
         }],
@@ -374,6 +374,7 @@ describe("ReviewProgramsSection", () => {
 
     expect(await screen.findByText("4")).toBeInTheDocument();
     expect(screen.getByText("Generation 7")).toBeInTheDocument();
+    expect(screen.queryByLabelText("Broad control")).not.toBeInTheDocument();
     await userEvent.clear(screen.getByLabelText("Document target"));
     await userEvent.type(screen.getByLabelText("Document target"), "800");
     await userEvent.click(screen.getByRole("button", { name: "Start discovery Q&A" }));
@@ -386,10 +387,49 @@ describe("ReviewProgramsSection", () => {
     expect(JSON.parse(String(call?.[1]?.body))).toEqual({
       preview_hash: "b".repeat(64),
       target_document_count: 800,
-      control_sample_size: 50,
       target_batch_size: 100,
       keep_families_together: true,
     });
+  });
+
+  it("confirms and resets an active Discovery Q&A run", async () => {
+    vi.mocked(coreApi).mockImplementation(async (path, options) => {
+      if (path === "/v1/review-workflow-templates") return [{
+        key: "FIRST_PASS_REVIEW", version: 1, schema_version: 1, content_hash: "a".repeat(64),
+        name: "First Pass Review", description: "Guided review", workflow_type: "FIRST_PASS_REVIEW", phases: [],
+        stages: [{ key: "DISCOVERY_QA", name: "Discovery Q&A", phase_key: "TRAINING_SET", ordinal: 6, batching_policy: "PARTITIONED_SET", requires_human_gate: true }],
+      }] as never;
+      if (path === "/v1/matters/matter-1/review-programs") return [{
+        id: "program-1", tenant_id: "tenant-1", matter_id: "matter-1", template_key: "FIRST_PASS_REVIEW",
+        template_version: 1, template_content_hash: "a".repeat(64), key: "standard-first-pass", name: "Standard first pass",
+        description: "Responsive review", status: "ACTIVE", current_run_id: "run-1", current_version: { version: 3 }, created_at: "2026-10-21T00:00:00Z",
+      }] as never;
+      if (path === "/v1/matters/matter-1/review-programs/program-1/runs" && !options) return [{
+        id: "run-1", program_id: "program-1", status: "RUNNING", current_stage: "DISCOVERY_QA",
+        current_stage_ordinal: 6, current_discovery_round: 1, progress_summary: { discovery_qa: { batch_set_id: "set-1" } },
+        created_at: "2026-10-21T00:00:00Z", failure_retriable: false, failure_summary: null,
+        stage_attempts: [{ stage_key: "DISCOVERY_QA", status: "RUNNING" }], actions: [],
+      }] as never;
+      if (path.endsWith("/reset-discovery-qa") && options?.method === "POST") return {
+        id: "run-1", program_id: "program-1", status: "WAITING_FOR_USER",
+      } as never;
+      throw new Error(`Unexpected API request: ${path}`);
+    });
+    renderSection();
+
+    await userEvent.click(await screen.findByRole("button", { name: "Reset Discovery Q&A" }));
+    const dialog = await screen.findByRole("dialog");
+    expect(within(dialog).getByText(/archives its batch set and child batches/)).toBeInTheDocument();
+    await userEvent.click(within(dialog).getByRole("button", { name: "Reset Discovery Q&A" }));
+
+    await waitFor(() => expect(coreApi).toHaveBeenCalledWith(
+      "/v1/matters/matter-1/review-programs/program-1/runs/run-1/reset-discovery-qa",
+      expect.objectContaining({ method: "POST" }),
+    ));
+    const call = vi.mocked(coreApi).mock.calls.find(([path]) => path.endsWith("/reset-discovery-qa"));
+    expect(JSON.parse(String(call?.[1]?.body))).toEqual(expect.objectContaining({
+      reason: "Reset from the Review Program workspace",
+    }));
   });
 
   it("shows discovery alignment and starts a supplemental retrieval round", async () => {

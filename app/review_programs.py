@@ -29,9 +29,10 @@ from app.analysis_task_batch_set_runs import (
 )
 from app.analysis_task_batch_sets import (
     AnalysisTaskBatchSetError,
+    TaskBatchSearchQuery,
     cancel_batch_set,
     create_batch_set,
-    search_document_ids,
+    select_task_batch_search_population,
 )
 from app.analysis_task_compilation import queue_analysis_task_compilation
 from app.analysis_task_execution_profiles import (
@@ -168,6 +169,7 @@ from app.schemas import (
     ClassificationTrainingJobCreate,
     ReviewBatchComparisonSourceOptionRead,
 )
+from app.search.client import OpenSearchError
 from app.workflows.dispatcher import (
     enqueue_analysis_task_batch_set,
     enqueue_analysis_task_batch_set_run,
@@ -919,7 +921,7 @@ def _discovery_stage_context(
     return {
         "retrieval_plan": {
             "source": "ACCEPTED_ASSESSMENT_PLAN",
-            "policy_version": "review-program-discovery-retrieval-v1",
+            "policy_version": "review-program-discovery-retrieval-v3",
             "assessment_id": str(assessment.id),
             "query_count": len(queries),
             "queries": [
@@ -954,7 +956,6 @@ def _discovery_stage_context(
         },
         "defaults": {
             "target_document_count": 500,
-            "control_sample_size": 50,
             "target_batch_size": 100,
             "keep_families_together": True,
         },
@@ -2861,6 +2862,162 @@ def _qa_task_records(
     return task, task_version, profiles
 
 
+def _accepted_qa_task_snapshot(
+    task_version: MatterAnalysisTaskVersion,
+    profiles: list[AnalysisTaskExecutionProfile],
+) -> dict[str, Any]:
+    validation = task_version.validation_report or {}
+    return {
+        "schema_version": 1,
+        "task_id": str(task_version.matter_analysis_task_id),
+        "task_version_id": str(task_version.id),
+        "version": task_version.version,
+        "definition_content_hash": task_version.definition_content_hash,
+        "specification_content_hash": task_version.specification_content_hash,
+        "destination_metadata_definition_ids": task_version.destination_metadata_definition_ids,
+        "scope_policy": task_version.scope_policy,
+        "input_contract": task_version.input_contract,
+        "output_contract": task_version.output_contract,
+        "evidence_policy": task_version.evidence_policy,
+        "routing_policy": task_version.routing_policy,
+        "validation_report": validation,
+        "execution_profiles": [
+            {
+                "id": str(profile.id),
+                "key": profile.key,
+                "decision_provider": profile.decision_provider,
+                "model_key": profile.model_key,
+                "resolved_model": profile.resolved_model,
+                "model_policy": profile.model_policy,
+                "required_capabilities": profile.required_capabilities,
+                "skill_definition_version_id": str(profile.skill_definition_version_id),
+                "provider_adapter_version": profile.provider_adapter_version,
+                "content_hash": profile.content_hash,
+            }
+            for profile in profiles
+        ],
+        "published_by_user_id": (
+            str(task_version.published_by_user_id) if task_version.published_by_user_id else None
+        ),
+        "published_at": task_version.published_at.isoformat() if task_version.published_at else None,
+    }
+
+
+def _refresh_review_program_qa_task_pin(
+    db: Session,
+    *,
+    program: ReviewProgram,
+    run: ReviewProgramRun,
+    actor: User,
+) -> tuple[MatterAnalysisTask, MatterAnalysisTaskVersion, list[AnalysisTaskExecutionProfile]]:
+    """Move a retired program task pin to the same task's latest published version."""
+    task, pinned_version, pinned_profiles = _qa_task_records(db, run)
+    if pinned_version.status == "PUBLISHED":
+        return task, pinned_version, pinned_profiles
+    if task.published_version is None:
+        raise ReviewProgramError(
+            "The pinned Q&A task version is no longer published and the task has no replacement published version"
+        )
+    replacement = db.scalar(
+        select(MatterAnalysisTaskVersion).where(
+            MatterAnalysisTaskVersion.matter_analysis_task_id == task.id,
+            MatterAnalysisTaskVersion.version == task.published_version,
+        )
+    )
+    if replacement is None or replacement.status != "PUBLISHED":
+        raise ReviewProgramError("The Q&A task's latest published version is unavailable")
+    if replacement.compilation_status != "READY" or replacement.decision_specification is None:
+        raise ReviewProgramError("The Q&A task's latest published version is not ready for Discovery Q&A")
+    validation = replacement.validation_report or {}
+    if validation.get("errors"):
+        raise ReviewProgramError("The Q&A task's latest published version has unresolved validation errors")
+    matter = db.get(Matter, program.matter_id)
+    if matter is None:
+        raise ReviewProgramError("Review Program matter is unavailable")
+
+    profiles = execution_profiles_for_version(db, replacement.id)
+    by_provider: dict[str, AnalysisTaskExecutionProfile] = {}
+    for profile in profiles:
+        if profile.decision_provider in by_provider:
+            raise ReviewProgramError(
+                f"The latest Q&A task version has multiple {profile.decision_provider} execution profiles"
+            )
+        by_provider[profile.decision_provider] = profile
+    profile_specs = (
+        ("JEV", "jev", "Jev review model"),
+        ("OPENAI_DECISIONS", "openai_decisions", "OpenAI decisions model"),
+    )
+    try:
+        for provider, key, name in profile_specs:
+            if provider not in by_provider:
+                by_provider[provider] = create_execution_profile(
+                    db,
+                    matter=matter,
+                    task=task,
+                    task_version=replacement,
+                    key=key,
+                    name=name,
+                    decision_provider=provider,
+                    actor_user_id=actor.id,
+                )
+        replacement_profiles = validate_dual_execution_profiles(
+            db,
+            task_version=replacement,
+            profile_ids=[by_provider[provider].id for provider, _, _ in profile_specs],
+        )
+    except AnalysisTaskExecutionProfileError as exc:
+        raise ReviewProgramError(str(exc)) from exc
+
+    accepted_task = _accepted_qa_task_snapshot(replacement, replacement_profiles)
+    setup = dict((run.progress_summary or {}).get("qa_task_setup") or {})
+    setup.update(
+        {
+            "task_id": str(task.id),
+            "task_version_id": str(replacement.id),
+            "execution_profile_ids": [str(profile.id) for profile in replacement_profiles],
+        }
+    )
+    version = _create_review_program_version(
+        db,
+        program=program,
+        run=run,
+        actor_user_id=actor.id,
+        configuration_stage="DISCOVERY_QA",
+        configuration_updates={"accepted_qa_task": accepted_task},
+        source_hash_updates={
+            "qa_task_specification_content_hash": replacement.specification_content_hash,
+            "qa_execution_profile_hashes": [profile.content_hash for profile in replacement_profiles],
+        },
+    )
+    run.progress_summary = {
+        **run.progress_summary,
+        "qa_task_setup_state": "PUBLISHED",
+        "qa_task_setup": setup,
+        "accepted_qa_task": accepted_task,
+        "qa_task_repin": {
+            "from_task_version_id": str(pinned_version.id),
+            "to_task_version_id": str(replacement.id),
+            "program_version_id": str(version.id),
+        },
+    }
+    record_audit(
+        db,
+        tenant_id=program.tenant_id,
+        actor_user_id=actor.id,
+        action="review_program.qa_task_repinned",
+        target_type="review_program_run",
+        target_id=run.id,
+        details={
+            "program_id": str(program.id),
+            "task_id": str(task.id),
+            "from_task_version_id": str(pinned_version.id),
+            "to_task_version_id": str(replacement.id),
+            "execution_profile_ids": [str(profile.id) for profile in replacement_profiles],
+        },
+    )
+    return task, replacement, replacement_profiles
+
+
 def setup_review_program_discovery(
     db: Session,
     *,
@@ -2870,7 +3027,6 @@ def setup_review_program_discovery(
     actor: User,
     preview_hash: str,
     target_document_count: int,
-    control_sample_size: int,
     target_batch_size: int,
     keep_families_together: bool,
 ) -> ReviewProgramRun:
@@ -2889,8 +3045,6 @@ def setup_review_program_discovery(
         raise ReviewProgramError("Review Program is not waiting for Discovery Q&A setup")
     if action.preview_hash != preview_hash:
         raise ReviewProgramError("Discovery Q&A setup preview is stale")
-    if control_sample_size > target_document_count:
-        raise ReviewProgramError("Control sample size cannot exceed the discovery target")
 
     matter = db.get(Matter, program.matter_id)
     if matter is None:
@@ -2904,103 +3058,48 @@ def setup_review_program_discovery(
     if generation is None:
         raise ReviewProgramError("The matter search index must be ready before Discovery Q&A")
     assessment, queries = _accepted_discovery_queries(db, run=run)
-    task, task_version, profiles = _qa_task_records(db, run)
+    task, task_version, profiles = _refresh_review_program_qa_task_pin(
+        db,
+        program=program,
+        run=run,
+        actor=actor,
+    )
     if task_version.status != "PUBLISHED" or len(profiles) != 2:
         raise ReviewProgramError("Discovery Q&A requires one published task and two pinned profiles")
 
     accepted_definition = (run.progress_summary or {}).get("accepted_matter_definition") or {}
     try:
-        diagnostic_batch_ids = [uuid.UUID(str(value)) for value in accepted_definition.get("diagnostic_batch_ids", [])]
-    except (TypeError, ValueError) as exc:
-        raise ReviewProgramError("Diagnostic batch provenance is invalid") from exc
-    excluded_document_ids = (
-        set(
-            db.scalars(
-                select(ReviewBatchDocument.matter_document_id).where(
-                    ReviewBatchDocument.review_batch_id.in_(diagnostic_batch_ids)
-                )
-            )
-        )
-        if diagnostic_batch_ids
-        else set()
-    )
-    diagnostic_excluded_count = len(excluded_document_ids)
-    prior_batch_set_ids = list(
-        db.scalars(
-            select(ReviewProgramChild.child_id).where(
-                ReviewProgramChild.run_id == run.id,
-                ReviewProgramChild.child_type == "ANALYSIS_TASK_BATCH_SET",
-            )
-        )
-    )
-    if prior_batch_set_ids:
-        excluded_document_ids.update(
-            db.scalars(
-                select(ReviewBatchDocument.matter_document_id).where(
-                    ReviewBatchDocument.analysis_task_batch_set_id.in_(prior_batch_set_ids)
-                )
-            )
-        )
-
-    targeted_limit = target_document_count - control_sample_size
-    selected_ids: list[uuid.UUID] = []
-    selected_set: set[uuid.UUID] = set()
-    selection_reasons: dict[uuid.UUID, list[str]] = {}
-    query_yields: list[dict[str, Any]] = []
-    for query in queries:
-        remaining = targeted_limit - len(selected_ids)
-        if remaining <= 0:
-            break
-        requested = min(query.quota, remaining)
-        hits = search_document_ids(
+        population = select_task_batch_search_population(
             db,
             matter=matter,
+            task=task,
             generation=generation,
-            search_definition=query.search_request,
+            queries=[
+                TaskBatchSearchQuery(
+                    ordinal=query.ordinal,
+                    key=query.criterion_key,
+                    label=query.criterion_label,
+                    reason=query.criterion_key,
+                    search_definition=query.search_request,
+                    quota=query.quota,
+                )
+                for query in queries
+            ],
+            target_document_count=target_document_count,
             settings=get_settings(),
-            limit=max(requested + len(excluded_document_ids) + len(selected_set), requested),
-            relevance_order=True,
         )
-        accepted_hits: list[uuid.UUID] = []
-        for document_id in hits:
-            if document_id in excluded_document_ids:
-                continue
-            reasons = selection_reasons.setdefault(document_id, [])
-            if query.criterion_key not in reasons:
-                reasons.append(query.criterion_key)
-            if document_id not in selected_set and len(accepted_hits) < requested:
-                selected_ids.append(document_id)
-                selected_set.add(document_id)
-                accepted_hits.append(document_id)
-        query_yields.append(
-            {
-                "ordinal": query.ordinal,
-                "criterion_key": query.criterion_key,
-                "quota": query.quota,
-                "requested": requested,
-                "search_hit_count": len(hits),
-                "selected_count": len(accepted_hits),
-            }
-        )
+    except (AnalysisTaskBatchSetError, OpenSearchError) as exc:
+        raise ReviewProgramError(f"Discovery retrieval failed: {exc}") from exc
+    selected_ids = population.document_ids
+    selection_reasons = population.selection_reasons
+    query_yields = [
+        {
+            **item,
+            "criterion_key": item["query_key"],
+        }
+        for item in population.query_yields
+    ]
 
-    control_ids: list[uuid.UUID] = []
-    if control_sample_size:
-        excluded_for_control = excluded_document_ids | selected_set
-        control_candidates = db.scalars(
-            select(MatterDocument.id)
-            .where(MatterDocument.matter_id == matter.id)
-            .order_by(MatterDocument.created_at, MatterDocument.id)
-        ).yield_per(1_000)
-        for document_id in control_candidates:
-            if document_id in excluded_for_control:
-                continue
-            control_ids.append(document_id)
-            if len(control_ids) >= control_sample_size:
-                break
-        for document_id in control_ids:
-            selected_ids.append(document_id)
-            selected_set.add(document_id)
-            selection_reasons[document_id] = ["CONTROL"]
     if not selected_ids:
         raise ReviewProgramError("The discovery retrieval plan selected no documents")
 
@@ -3018,10 +3117,9 @@ def setup_review_program_discovery(
     round_number = run.current_discovery_round + 1
     contract = AnalysisInputContract(
         key="review-program.discovery-population",
-        version=1,
-        resolver_version="review-program-discovery-retrieval-v1",
+        version=3,
+        resolver_version="review-program-discovery-retrieval-v3",
         extension_fields=[
-            AnalysisInputExtensionField(name="retrieval_lane", type="STRING", nullable=False),
             AnalysisInputExtensionField(name="selection_reasons", type="STRING", nullable=False),
         ],
         options={
@@ -3030,7 +3128,7 @@ def setup_review_program_discovery(
             "round": round_number,
             "assessment_id": str(assessment.id),
             "search_index_generation_id": str(generation.id),
-            "policy_version": "review-program-discovery-retrieval-v1",
+            "policy_version": "review-program-discovery-retrieval-v3",
         },
     )
     attempt = _current_stage_attempt(db, run, for_update=True)
@@ -3042,7 +3140,6 @@ def setup_review_program_discovery(
                 source_collection_id=documents_by_id[document_id].source_collection_id,
                 scope_ordinal=ordinal,
                 extensions={
-                    "retrieval_lane": ("CONTROL" if selection_reasons[document_id] == ["CONTROL"] else "TARGETED"),
                     "selection_reasons": ",".join(selection_reasons[document_id]),
                 },
             )
@@ -3099,12 +3196,13 @@ def setup_review_program_discovery(
             "accepted_definition_content_hash": accepted_definition.get("content_hash"),
             "task_version_id": str(task_version.id),
             "profile_ids": [str(profile.id) for profile in profiles],
-            "retrieval_policy_version": "review-program-discovery-retrieval-v1",
+            "retrieval_policy_version": "review-program-discovery-retrieval-v3",
             "query_yields": query_yields,
-            "control_selected_count": len(control_ids),
-            "excluded_diagnostic_document_count": diagnostic_excluded_count,
-            "excluded_prior_program_document_count": len(excluded_document_ids) - diagnostic_excluded_count,
-            "prior_discovery_batch_set_ids": [str(value) for value in prior_batch_set_ids],
+            "target_document_count": target_document_count,
+            "selected_document_count": len(selected_ids),
+            "retrieval_shortfall_count": max(target_document_count - len(selected_ids), 0),
+            "excluded_prior_qa_document_count": population.excluded_document_count,
+            "prior_discovery_batch_set_ids": [str(value) for value in population.prior_batch_set_ids],
         },
     }
     link_review_program_child(
@@ -3120,13 +3218,11 @@ def setup_review_program_discovery(
         context={
             "input_manifest_id": str(manifest.id),
             "population_count": len(selected_ids),
-            "targeted_count": len(selected_ids) - len(control_ids),
-            "control_count": len(control_ids),
             "round": round_number,
         },
     )
     discovery_snapshot = {
-        "schema_version": 1,
+        "schema_version": 3,
         "round": round_number,
         "assessment_id": str(assessment.id),
         "search_index_generation_id": str(generation.id),
@@ -3138,8 +3234,6 @@ def setup_review_program_discovery(
         "execution_profile_ids": [str(profile.id) for profile in profiles],
         "target_document_count": target_document_count,
         "selected_document_count": len(selected_ids),
-        "targeted_document_count": len(selected_ids) - len(control_ids),
-        "control_document_count": len(control_ids),
         "target_batch_size": target_batch_size,
         "keep_families_together": keep_families_together,
         "query_yields": query_yields,
@@ -3193,7 +3287,9 @@ def setup_review_program_discovery(
             "program_id": str(program.id),
             "batch_set_id": str(batch_set.id),
             "input_manifest_id": str(manifest.id),
+            "target_document_count": target_document_count,
             "population_count": len(selected_ids),
+            "retrieval_shortfall_count": max(target_document_count - len(selected_ids), 0),
             "profile_ids": [str(profile.id) for profile in profiles],
         },
     )
@@ -3255,68 +3351,14 @@ def setup_review_program_classifier_improvement(
     if task_version.status != "PUBLISHED" or len(profiles) != 2:
         raise ReviewProgramError("Classifier improvement requires one published task and two pinned profiles")
 
-    prior_batch_set_ids = list(
-        db.scalars(
-            select(ReviewProgramChild.child_id).where(
-                ReviewProgramChild.run_id == run.id,
-                ReviewProgramChild.child_type == "ANALYSIS_TASK_BATCH_SET",
-            )
-        )
-    )
-    excluded_document_ids: set[uuid.UUID] = set()
-    accepted_definition = (run.progress_summary or {}).get("accepted_matter_definition") or {}
-    try:
-        diagnostic_batch_ids = [uuid.UUID(str(value)) for value in accepted_definition.get("diagnostic_batch_ids", [])]
-    except (TypeError, ValueError) as exc:
-        raise ReviewProgramError("Diagnostic batch provenance is invalid") from exc
-    if diagnostic_batch_ids:
-        excluded_document_ids.update(
-            db.scalars(
-                select(ReviewBatchDocument.matter_document_id).where(
-                    ReviewBatchDocument.review_batch_id.in_(diagnostic_batch_ids)
-                )
-            )
-        )
-    if prior_batch_set_ids:
-        excluded_document_ids.update(
-            db.scalars(
-                select(ReviewBatchDocument.matter_document_id).where(
-                    ReviewBatchDocument.analysis_task_batch_set_id.in_(prior_batch_set_ids)
-                )
-            )
-        )
-
-    selected_ids: list[uuid.UUID] = []
-    selected_set: set[uuid.UUID] = set()
-    selection_reasons: dict[uuid.UUID, list[str]] = {}
-    query_yields: list[dict[str, Any]] = []
     frozen_queries: list[dict[str, Any]] = []
+    task_queries: list[TaskBatchSearchQuery] = []
     for ordinal, query in enumerate(queries, start=1):
         definition_id = str(query["metadata_definition_id"])
         class_key = str(query["class_key"])
         query_text = " ".join(str(query["query"]).split())
         quota = int(query["quota"])
         reason = f"{definition_id}:{class_key}"
-        hits = search_document_ids(
-            db,
-            matter=matter,
-            generation=generation,
-            search_definition={"query": query_text, "search_mode": "KEYWORD"},
-            settings=get_settings(),
-            limit=max(quota + len(excluded_document_ids) + len(selected_set), quota),
-            relevance_order=True,
-        )
-        accepted_hits: list[uuid.UUID] = []
-        for document_id in hits:
-            if document_id in excluded_document_ids:
-                continue
-            reasons = selection_reasons.setdefault(document_id, [])
-            if reason not in reasons:
-                reasons.append(reason)
-            if document_id not in selected_set and len(accepted_hits) < quota:
-                selected_ids.append(document_id)
-                selected_set.add(document_id)
-                accepted_hits.append(document_id)
         frozen = {
             "ordinal": ordinal,
             "metadata_definition_id": definition_id,
@@ -3325,31 +3367,40 @@ def setup_review_program_classifier_improvement(
             "quota": quota,
         }
         frozen_queries.append(frozen)
-        query_yields.append(
-            {
-                **frozen,
-                "search_hit_count": len(hits),
-                "selected_count": len(accepted_hits),
-            }
+        task_queries.append(
+            TaskBatchSearchQuery(
+                ordinal=ordinal,
+                key=reason,
+                label=reason,
+                reason=reason,
+                search_definition={"query": query_text, "search_mode": "KEYWORD"},
+                quota=quota,
+            )
         )
-
-    control_ids: list[uuid.UUID] = []
-    if control_sample_size:
-        excluded_for_control = excluded_document_ids | selected_set
-        for document_id in db.scalars(
-            select(MatterDocument.id)
-            .where(MatterDocument.matter_id == matter.id)
-            .order_by(MatterDocument.created_at, MatterDocument.id)
-        ).yield_per(1_000):
-            if document_id in excluded_for_control:
-                continue
-            control_ids.append(document_id)
-            if len(control_ids) >= control_sample_size:
-                break
-        for document_id in control_ids:
-            selected_ids.append(document_id)
-            selected_set.add(document_id)
-            selection_reasons[document_id] = ["CONTROL"]
+    try:
+        population = select_task_batch_search_population(
+            db,
+            matter=matter,
+            task=task,
+            generation=generation,
+            queries=task_queries,
+            target_document_count=sum(item.quota for item in task_queries),
+            settings=get_settings(),
+            control_sample_size=control_sample_size,
+        )
+    except (AnalysisTaskBatchSetError, OpenSearchError) as exc:
+        raise ReviewProgramError(f"Classifier-improvement retrieval failed: {exc}") from exc
+    selected_ids = population.document_ids
+    selection_reasons = population.selection_reasons
+    frozen_by_ordinal = {item["ordinal"]: item for item in frozen_queries}
+    query_yields = [
+        {
+            **frozen_by_ordinal[item["ordinal"]],
+            "search_hit_count": item["search_hit_count"],
+            "selected_count": item["selected_count"],
+        }
+        for item in population.query_yields
+    ]
     if not selected_ids:
         raise ReviewProgramError("The classifier improvement retrieval plan selected no documents")
 
@@ -3448,9 +3499,9 @@ def setup_review_program_classifier_improvement(
             "retrieval_policy_version": "review-program-classifier-improvement-retrieval-v1",
             "queries": frozen_queries,
             "query_yields": query_yields,
-            "control_selected_count": len(control_ids),
-            "excluded_prior_program_document_count": len(excluded_document_ids),
-            "prior_batch_set_ids": [str(value) for value in prior_batch_set_ids],
+            "control_selected_count": len(population.control_document_ids),
+            "excluded_prior_program_document_count": population.excluded_document_count,
+            "prior_batch_set_ids": [str(value) for value in population.prior_batch_set_ids],
         },
     }
     link_review_program_child(
@@ -3466,8 +3517,8 @@ def setup_review_program_classifier_improvement(
         context={
             "input_manifest_id": str(manifest.id),
             "population_count": len(selected_ids),
-            "targeted_count": len(selected_ids) - len(control_ids),
-            "control_count": len(control_ids),
+            "targeted_count": len(selected_ids) - len(population.control_document_ids),
+            "control_count": len(population.control_document_ids),
             "round": round_number,
         },
     )
@@ -3482,8 +3533,8 @@ def setup_review_program_classifier_improvement(
         "task_version_id": str(task_version.id),
         "execution_profile_ids": [str(profile.id) for profile in profiles],
         "selected_document_count": len(selected_ids),
-        "targeted_document_count": len(selected_ids) - len(control_ids),
-        "control_document_count": len(control_ids),
+        "targeted_document_count": len(selected_ids) - len(population.control_document_ids),
+        "control_document_count": len(population.control_document_ids),
         "target_batch_size": target_batch_size,
         "keep_families_together": keep_families_together,
         "queries": frozen_queries,
@@ -3569,38 +3620,7 @@ def _publish_review_program_qa_task(
         )
     except MatterAnalysisTaskError as exc:
         raise ReviewProgramError(str(exc)) from exc
-    accepted_task = {
-        "schema_version": 1,
-        "task_id": str(task.id),
-        "task_version_id": str(task_version.id),
-        "version": task_version.version,
-        "definition_content_hash": task_version.definition_content_hash,
-        "specification_content_hash": task_version.specification_content_hash,
-        "destination_metadata_definition_ids": task_version.destination_metadata_definition_ids,
-        "scope_policy": task_version.scope_policy,
-        "input_contract": task_version.input_contract,
-        "output_contract": task_version.output_contract,
-        "evidence_policy": task_version.evidence_policy,
-        "routing_policy": task_version.routing_policy,
-        "validation_report": validation,
-        "execution_profiles": [
-            {
-                "id": str(profile.id),
-                "key": profile.key,
-                "decision_provider": profile.decision_provider,
-                "model_key": profile.model_key,
-                "resolved_model": profile.resolved_model,
-                "model_policy": profile.model_policy,
-                "required_capabilities": profile.required_capabilities,
-                "skill_definition_version_id": str(profile.skill_definition_version_id),
-                "provider_adapter_version": profile.provider_adapter_version,
-                "content_hash": profile.content_hash,
-            }
-            for profile in profiles
-        ],
-        "published_by_user_id": str(action.resolved_by_user_id),
-        "published_at": action.resolved_at.isoformat() if action.resolved_at else None,
-    }
+    accepted_task = _accepted_qa_task_snapshot(task_version, profiles)
     version = _create_review_program_version(
         db,
         program=program,
@@ -4112,7 +4132,7 @@ def project_review_program_assessment_terminal(
             ReviewProgramChild.child_id == assessment.id,
         )
     )
-    if child is None:
+    if child is None or child.status == "ARCHIVED":
         return None
     child.status = assessment.status
     child.context = {
@@ -4203,7 +4223,7 @@ def project_review_program_qa_compilation_terminal(
             ReviewProgramChild.child_id == workflow.id,
         )
     )
-    if child is None:
+    if child is None or child.status == "ARCHIVED":
         return None
     child.status = workflow.status
     child.context = {
@@ -4285,7 +4305,7 @@ def project_review_program_discovery_batch_set_terminal(
             ReviewProgramChild.child_id == batch_set.id,
         )
     )
-    if child is None:
+    if child is None or child.status == "ARCHIVED":
         return None
     population_stage = {
         "DISCOVERY_POPULATION": (
@@ -4635,6 +4655,7 @@ def _completed_discovery_profile_runs(
                     ReviewProgramChild.run_id == run.id,
                     ReviewProgramChild.purpose.in_({"DISCOVERY_QA_PROFILE", "CLASSIFIER_IMPROVEMENT_QA_PROFILE"}),
                     ReviewProgramChild.child_type == "ANALYSIS_TASK_BATCH_SET_RUN",
+                    ReviewProgramChild.status != "ARCHIVED",
                 )
             )
         )
@@ -8349,7 +8370,7 @@ def project_review_program_discovery_qa_run_terminal(
             ReviewProgramChild.child_id == batch_run.id,
         )
     )
-    if child is None:
+    if child is None or child.status == "ARCHIVED":
         return None
     profile_stage = {
         "DISCOVERY_QA_PROFILE": (
@@ -8541,6 +8562,7 @@ def project_review_program_discovery_qa_run_terminal(
                 ReviewProgramChild.run_id == run.id,
                 ReviewProgramChild.purpose.in_({"DISCOVERY_QA_PROFILE", "CLASSIFIER_IMPROVEMENT_QA_PROFILE"}),
                 ReviewProgramChild.child_type == "ANALYSIS_TASK_BATCH_SET_RUN",
+                ReviewProgramChild.status != "ARCHIVED",
             )
         )
     )
@@ -8851,6 +8873,136 @@ def cancel_review_program_discovery_children(
         classification_training_workflow_ids,
         classification_scoring_workflow_ids,
     )
+
+
+def reset_review_program_discovery_qa(
+    db: Session,
+    *,
+    program: ReviewProgram,
+    run: ReviewProgramRun,
+    actor: User,
+    idempotency_key: str,
+    reason: str | None,
+) -> ReviewProgramRun:
+    """Archive the current run's Discovery Q&A work and reopen its setup gate."""
+    key = _validate_idempotency_key(idempotency_key)
+    progress = dict(run.progress_summary or {})
+    if progress.get("last_discovery_qa_reset_key") == key:
+        return run
+    if run.current_stage != "DISCOVERY_QA" or run.status not in ACTIVE_RUN_STATUSES | {"FAILED"}:
+        raise ReviewProgramError("Discovery Q&A can be reset only while the program is at Discovery Q&A")
+
+    now = utcnow()
+    current_attempt = _current_stage_attempt(db, run, for_update=True)
+    discovery_children = list(
+        db.scalars(
+            select(ReviewProgramChild).where(
+                ReviewProgramChild.run_id == run.id,
+                ReviewProgramChild.purpose.in_({"DISCOVERY_POPULATION", "DISCOVERY_QA_PROFILE"}),
+            )
+        )
+    )
+    batch_set_ids = {
+        child.child_id
+        for child in discovery_children
+        if child.child_type == "ANALYSIS_TASK_BATCH_SET"
+    }
+    for batch_set_id in batch_set_ids:
+        batch_set = db.get(AnalysisTaskBatchSet, batch_set_id)
+        if batch_set is not None:
+            batch_set.status = "ARCHIVED"
+            batch_set.completed_at = batch_set.completed_at or now
+        for batch in db.scalars(
+            select(ReviewBatch).where(ReviewBatch.analysis_task_batch_set_id == batch_set_id)
+        ):
+            batch.status = "ARCHIVED"
+            batch.completed_at = batch.completed_at or now
+    for child in discovery_children:
+        child.status = "ARCHIVED"
+        child.context = {
+            **(child.context or {}),
+            "archived_at": now.isoformat(),
+            "archive_reason": "DISCOVERY_QA_RESET",
+        }
+
+    if run.pending_action_id is not None:
+        action = db.get(ReviewProgramAction, run.pending_action_id)
+        if action is not None and action.status == "OPEN":
+            action.status = "SUPERSEDED"
+            action.resolution_reason = "Superseded by Discovery Q&A reset"
+            action.resolved_by_user_id = actor.id
+            action.resolved_at = now
+            resolve_source_notifications(
+                db,
+                source=NotificationSource("review_program_action", action.id),
+                resolution_code="SUPERSEDED",
+                resolved_at=now,
+            )
+    if current_attempt.status in {"QUEUED", "RUNNING", "WAITING", "FAILED"}:
+        current_attempt.status = "CANCELED"
+        current_attempt.completed_at = now
+    current_attempt.result_summary = {
+        **(current_attempt.result_summary or {}),
+        "reset": {
+            "reset_at": now.isoformat(),
+            "reset_by_user_id": str(actor.id),
+            "archived_batch_set_ids": [str(value) for value in sorted(batch_set_ids, key=str)],
+            "reason": reason.strip() if reason else None,
+        },
+    }
+
+    completed = [stage for stage in progress.get("completed_stages", []) if stage != "DISCOVERY_QA"]
+    for key_to_remove in (
+        "discovery_qa",
+        "discovery_qa_state",
+        "discovery_analysis",
+        "discovery_analysis_program_version_id",
+        "last_completed_stage",
+    ):
+        progress.pop(key_to_remove, None)
+    progress.update(
+        {
+            "completed_stages": completed,
+            "last_completed_stage": completed[-1] if completed else None,
+            "last_discovery_qa_reset_key": key,
+            "last_discovery_qa_reset_at": now.isoformat(),
+        }
+    )
+    run.progress_summary = progress
+    run.current_discovery_round = 0
+    run.pending_action_id = None
+    run.failure_code = None
+    run.failure_summary = None
+    run.failure_retriable = False
+    run.completed_at = None
+    run.canceled_at = None
+    _refresh_review_program_qa_task_pin(
+        db,
+        program=program,
+        run=run,
+        actor=actor,
+    )
+    _activate_stage_by_key(db, program=program, run=run, stage_key="DISCOVERY_QA")
+    resolve_source_notifications(
+        db,
+        source=NotificationSource("review_program_run", run.id),
+        resolution_code="RESET",
+        resolved_at=now,
+    )
+    record_audit(
+        db,
+        tenant_id=program.tenant_id,
+        actor_user_id=actor.id,
+        action="review_program.discovery_qa_reset",
+        target_type="review_program_run",
+        target_id=run.id,
+        details={
+            "program_id": str(program.id),
+            "archived_batch_set_ids": [str(value) for value in sorted(batch_set_ids, key=str)],
+            "reason": reason.strip() if reason else None,
+        },
+    )
+    return run
 
 
 def cancel_review_program_run(
