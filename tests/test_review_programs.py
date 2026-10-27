@@ -13,6 +13,7 @@ import app.analysis_task_batch_set_runs as batch_set_runs
 import app.analysis_task_batch_sets as batch_sets
 from app import review_batches
 from app.analysis_task_skills import ensure_standard_analysis_task_skills
+from app.analysis_tasks import append_analysis_task_version, publish_analysis_task_version
 from app.classification_scoring import create_scoring_run, prepare_scoring
 from app.config import get_settings
 from app.job_executions import (
@@ -25,6 +26,7 @@ from app.main import app
 from app.matter_definitions import append_matter_definition_revision
 from app.models import (
     AnalysisInputManifest,
+    AnalysisTaskBatchSet,
     AnalysisTaskBatchSetRun,
     AnalysisTaskBatchSetRunChild,
     AuditRecord,
@@ -1180,6 +1182,118 @@ def test_synthetic_run_advances_waits_resumes_retries_reconciles_and_cancels(
     assert discovery_started.json()["progress_summary"]["discovery_qa_state"] == "MATERIALIZING_BATCH_SET"
     assert discovery_started.json()["progress_summary"]["discovery_qa"]["selected_document_count"] == 3
     assert search_requests[0]["excluded_document_ids"] == set()
+    first_batch_set_id = discovery_started.json()["progress_summary"]["discovery_qa"]["batch_set_id"]
+    with TestingSessionLocal() as db:
+        run_model = db.get(ReviewProgramRun, uuid.UUID(run_id))
+        assert run_model is not None
+        pinned_setup = run_model.progress_summary["qa_task_setup"]
+        task_version = db.get(MatterAnalysisTaskVersion, uuid.UUID(pinned_setup["task_version_id"]))
+        assert task_version is not None
+        task, replacement = append_analysis_task_version(
+            db,
+            task_id=task_version.matter_analysis_task_id,
+            actor_user_id=user_id,
+            definition_markdown=f"{task_version.definition_markdown}\n\nCorrected task version.",
+            based_on_version=task_version.version,
+            decision_provider=None,
+            destination_metadata_definition_ids=None,
+        )
+        replacement.compilation_status = "READY"
+        replacement.decision_specification = task_version.decision_specification
+        replacement.specification_content_hash = task_version.specification_content_hash
+        replacement.input_contract = task_version.input_contract
+        replacement.output_contract = task_version.output_contract
+        replacement.evidence_policy = task_version.evidence_policy
+        replacement.routing_policy = task_version.routing_policy
+        replacement.validation_report = task_version.validation_report
+        _, replacement = publish_analysis_task_version(
+            db,
+            task_id=task.id,
+            version_number=replacement.version,
+            actor_user_id=user_id,
+        )
+        replacement_id = replacement.id
+        db.commit()
+
+    reset_payload = {"idempotency_key": "reset-first-discovery", "reason": "Correct the discovery setup"}
+    reset = client.post(
+        f"{runs_url}/{run_id}/reset-discovery-qa",
+        headers=auth(token),
+        json=reset_payload,
+    )
+    assert reset.status_code == 200, reset.text
+    assert reset.json()["status"] == "WAITING_FOR_USER"
+    assert reset.json()["current_stage"] == "DISCOVERY_QA"
+    assert reset.json()["current_discovery_round"] == 0
+    assert "discovery_qa" not in reset.json()["progress_summary"]
+    assert reset.json()["progress_summary"]["accepted_qa_task"]["task_version_id"] == str(replacement_id)
+    assert len(reset.json()["progress_summary"]["accepted_qa_task"]["execution_profiles"]) == 2
+    reset_action = next(action for action in reset.json()["actions"] if action["status"] == "OPEN")
+    assert reset_action["action_type"] == "DISCOVERY_QA_SETUP"
+    with TestingSessionLocal() as db:
+        archived_set = db.get(AnalysisTaskBatchSet, uuid.UUID(first_batch_set_id))
+        archived_child = db.scalar(
+            select(ReviewProgramChild).where(
+                ReviewProgramChild.run_id == uuid.UUID(run_id),
+                ReviewProgramChild.child_id == uuid.UUID(first_batch_set_id),
+            )
+        )
+        assert archived_set is not None and archived_set.status == "ARCHIVED"
+        assert archived_child is not None and archived_child.status == "ARCHIVED"
+
+    repeated_reset = client.post(
+        f"{runs_url}/{run_id}/reset-discovery-qa",
+        headers=auth(token),
+        json=reset_payload,
+    )
+    assert repeated_reset.status_code == 200, repeated_reset.text
+    assert len(repeated_reset.json()["stage_attempts"]) == len(reset.json()["stage_attempts"])
+
+    with TestingSessionLocal() as db:
+        replacement = db.get(MatterAnalysisTaskVersion, replacement_id)
+        assert replacement is not None
+        task, post_reset_replacement = append_analysis_task_version(
+            db,
+            task_id=replacement.matter_analysis_task_id,
+            actor_user_id=user_id,
+            definition_markdown=f"{replacement.definition_markdown}\n\nCorrected after reset.",
+            based_on_version=replacement.version,
+            decision_provider=None,
+            destination_metadata_definition_ids=None,
+        )
+        post_reset_replacement.compilation_status = "READY"
+        post_reset_replacement.decision_specification = replacement.decision_specification
+        post_reset_replacement.specification_content_hash = replacement.specification_content_hash
+        post_reset_replacement.input_contract = replacement.input_contract
+        post_reset_replacement.output_contract = replacement.output_contract
+        post_reset_replacement.evidence_policy = replacement.evidence_policy
+        post_reset_replacement.routing_policy = replacement.routing_policy
+        post_reset_replacement.validation_report = replacement.validation_report
+        _, post_reset_replacement = publish_analysis_task_version(
+            db,
+            task_id=task.id,
+            version_number=post_reset_replacement.version,
+            actor_user_id=user_id,
+        )
+        post_reset_replacement_id = post_reset_replacement.id
+        db.commit()
+
+    discovery_started = client.post(
+        f"{runs_url}/{run_id}/actions/{reset_action['id']}/discovery-setup",
+        headers=auth(token),
+        json={
+            "preview_hash": reset_action["preview_hash"],
+            "target_document_count": 3,
+            "target_batch_size": 2,
+            "keep_families_together": False,
+        },
+    )
+    assert discovery_started.status_code == 202, discovery_started.text
+    assert discovery_started.json()["progress_summary"]["accepted_qa_task"]["task_version_id"] == str(
+        post_reset_replacement_id
+    )
+    assert len(discovery_started.json()["progress_summary"]["accepted_qa_task"]["execution_profiles"]) == 2
+    assert search_requests[1]["excluded_document_ids"] == set()
 
     class DiscoveryReader:
         def __init__(self, manifest, *, actor_user_id):
@@ -1198,6 +1312,7 @@ def test_synthetic_run_advances_waits_resumes_retries_reconciles_and_cancels(
             select(ReviewProgramChild).where(
                 ReviewProgramChild.run_id == uuid.UUID(run_id),
                 ReviewProgramChild.child_type == "ANALYSIS_TASK_BATCH_SET",
+                ReviewProgramChild.status != "ARCHIVED",
             )
         )
         assert discovery_child is not None
@@ -1230,7 +1345,7 @@ def test_synthetic_run_advances_waits_resumes_retries_reconciles_and_cancels(
     assert running_profiles.json()["current_stage"] == "DISCOVERY_QA"
     assert running_profiles.json()["progress_summary"]["discovery_qa_state"] == "RUNNING_PROFILES"
     assert len(running_profiles.json()["progress_summary"]["discovery_qa"]["batch_set_run_ids"]) == 2
-    assert published_populations == [document_ids]
+    assert published_populations == [document_ids, document_ids]
 
     with TestingSessionLocal() as db:
         profile_run_ids = list(
@@ -1365,7 +1480,7 @@ def test_synthetic_run_advances_waits_resumes_retries_reconciles_and_cancels(
     )
     assert second_started.status_code == 202, second_started.text
     assert second_started.json()["progress_summary"]["discovery_qa"]["round"] == 2
-    assert published_populations == [document_ids, supplemental_documents]
+    assert published_populations == [document_ids, document_ids, supplemental_documents]
     assert search_requests[0]["excluded_document_ids"] == set(document_ids)
 
     with TestingSessionLocal() as db:
@@ -1375,12 +1490,13 @@ def test_synthetic_run_advances_waits_resumes_retries_reconciles_and_cancels(
                 .where(
                     ReviewProgramChild.run_id == uuid.UUID(run_id),
                     ReviewProgramChild.child_type == "ANALYSIS_TASK_BATCH_SET",
+                    ReviewProgramChild.status != "ARCHIVED",
                 )
                 .order_by(ReviewProgramChild.created_at, ReviewProgramChild.id)
             )
         )
         assert len(discovery_children) == 2
-        supplemental_set = db.get(batch_sets.AnalysisTaskBatchSet, discovery_children[-1].child_id)
+        supplemental_set = db.get(AnalysisTaskBatchSet, discovery_children[-1].child_id)
         assert supplemental_set is not None
         provenance = supplemental_set.selection_definition["review_program"]
         assert provenance["excluded_prior_qa_document_count"] == len(document_ids)
@@ -1952,7 +2068,8 @@ def test_synthetic_run_advances_waits_resumes_retries_reconciles_and_cancels(
                 .order_by(ReviewProgramChild.created_at, ReviewProgramChild.id)
             )
         )
-        assert len(discovery_children) == 3
+        assert len(discovery_children) == 4
+        assert sum(child.status == "ARCHIVED" for child in discovery_children) == 1
         profile_run_ids = list(
             db.scalars(
                 select(ReviewProgramChild.child_id).where(

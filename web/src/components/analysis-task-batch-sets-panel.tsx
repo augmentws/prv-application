@@ -60,7 +60,7 @@ export function AnalysisTaskBatchSetsPanel({ matterId, task }: { matterId: strin
     mutationFn: (setId: string) => coreApi<AnalysisTaskBatchSetRead>(`/v1/matters/${matterId}/analysis-tasks/${task.id}/batch-sets/${setId}/cancel`, { method: "POST" }),
     onSuccess: (updated) => {
       queryClient.setQueryData<AnalysisTaskBatchSetRead[]>(queryKey, (current) => current?.map((set) => set.id === updated.id ? updated : set) ?? [updated]);
-      toast.success("Partitioned batch set canceled.");
+      toast.success("Batch set canceled.");
     },
     onError: (error) => toast.error(error.message),
   });
@@ -68,7 +68,7 @@ export function AnalysisTaskBatchSetsPanel({ matterId, task }: { matterId: strin
     mutationFn: (setId: string) => coreApi<AnalysisTaskBatchSetRead>(`/v1/matters/${matterId}/analysis-tasks/${task.id}/batch-sets/${setId}/retry`, { method: "POST" }),
     onSuccess: (updated) => {
       queryClient.setQueryData<AnalysisTaskBatchSetRead[]>(queryKey, (current) => current?.map((set) => set.id === updated.id ? updated : set) ?? [updated]);
-      toast.success("Partitioned batch set retry queued.");
+      toast.success("Batch set retry queued.");
     },
     onError: (error) => toast.error(error.message),
   });
@@ -78,7 +78,7 @@ export function AnalysisTaskBatchSetsPanel({ matterId, task }: { matterId: strin
       <CardHeader className="border-b">
         <div className="flex flex-wrap items-start justify-between gap-3">
           <div>
-            <CardTitle className="flex items-center gap-2"><Layers3 className="size-4 text-primary" />Partitioned batch sets</CardTitle>
+            <CardTitle className="flex items-center gap-2"><Layers3 className="size-4 text-primary" />Batch sets</CardTitle>
             <p className="mt-1 max-w-3xl text-sm text-muted-foreground">Freeze a population against the published task version, then divide it into deterministic, mutually exclusive review batches.</p>
           </div>
           <CreateBatchSetDialog matterId={matterId} task={task} onCreated={(created) => {
@@ -88,7 +88,7 @@ export function AnalysisTaskBatchSetsPanel({ matterId, task }: { matterId: strin
       </CardHeader>
       <CardContent className="space-y-3 p-4">
         {sets.isPending ? <TableLoading /> : sets.error ? <QueryError message={sets.error.message} /> : !sets.data.length ? (
-          <p className="rounded-lg border border-dashed p-6 text-center text-sm text-muted-foreground">No partitioned batch sets have been created for this task.</p>
+          <p className="rounded-lg border border-dashed p-6 text-center text-sm text-muted-foreground">No batch sets have been created for this task.</p>
         ) : sets.data.map((set) => (
           <div key={set.id} className="rounded-lg border p-4">
             <div className="flex flex-wrap items-start justify-between gap-3">
@@ -366,7 +366,7 @@ function CreateBatchSetDialog({ matterId, task, onCreated }: { matterId: string;
     }),
     onSuccess: (created) => {
       onCreated(created);
-      toast.success("Partitioned batch set queued.");
+      toast.success("Batch set queued.");
       setOpen(false);
       reset();
     },
@@ -393,9 +393,9 @@ function CreateBatchSetDialog({ matterId, task, onCreated }: { matterId: string;
 
   return (
     <Dialog open={open} onOpenChange={(next) => { setOpen(next); if (!next) reset(); }}>
-      <DialogTrigger asChild><Button><Plus />New partitioned set</Button></DialogTrigger>
+      <DialogTrigger asChild><Button><Plus />New batch set</Button></DialogTrigger>
       <DialogContent className="max-w-3xl">
-        <DialogHeader><DialogTitle>Create a partitioned batch set</DialogTitle><DialogDescription>Preview the exact population and allocation before creating immutable child review batches.</DialogDescription></DialogHeader>
+        <DialogHeader><DialogTitle>Create a batch set</DialogTitle><DialogDescription>Preview the exact population and allocation before creating immutable child review batches.</DialogDescription></DialogHeader>
         <div className="grid gap-4 sm:grid-cols-2">
           <Field label="Name" htmlFor="batch-set-name"><Input id="batch-set-name" value={name} onChange={(event) => setName(event.target.value)} placeholder="Privilege review wave 1" /></Field>
           <Field label="Population source" htmlFor="batch-set-source"><Select value={source} onValueChange={(value) => { setSource(value as PopulationSource); invalidatePreview(); }}><SelectTrigger id="batch-set-source"><SelectValue /></SelectTrigger><SelectContent>{Object.entries(SOURCE_LABELS).filter(([value]) => value !== "INPUT_MANIFEST").map(([value, label]) => <SelectItem key={value} value={value}>{label}</SelectItem>)}</SelectContent></Select></Field>

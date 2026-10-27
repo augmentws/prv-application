@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import hashlib
 import math
+import time
 import uuid
 from dataclasses import dataclass
 from datetime import datetime
@@ -39,11 +40,14 @@ from app.models import (
     utcnow,
 )
 from app.schemas import MatterSearchRequest
-from app.search.client import OpenSearchClient
+from app.search.client import OpenSearchClient, OpenSearchError, is_retryable_opensearch_error
 from app.search.query import RRF_SEARCH_PIPELINE, compile_search_request
 
 ALLOCATION_ALGORITHM_VERSION = "stable-sequence-v1"
 FAMILY_ALLOCATION_ALGORITHM_VERSION = "stable-family-least-loaded-v1"
+TASK_BATCH_SEARCH_PAGE_SIZE = 150
+TASK_BATCH_SEARCH_MAX_ATTEMPTS = 3
+TASK_BATCH_SEARCH_RETRY_DELAY_SECONDS = 0.25
 
 
 class AnalysisTaskBatchSetError(ValueError):
@@ -83,6 +87,35 @@ class TaskBatchSearchPopulation:
     prior_batch_set_ids: list[uuid.UUID]
 
 
+def allocate_task_batch_query_quotas(
+    queries: list[TaskBatchSearchQuery],
+    target_document_count: int,
+) -> list[int]:
+    """Scale retrieval-plan quotas to the requested population using largest remainders."""
+    if target_document_count < 1:
+        raise AnalysisTaskBatchSetError("Task batch target document count must be positive")
+    if not queries:
+        raise AnalysisTaskBatchSetError("Task batch retrieval requires at least one query")
+    total_quota = sum(query.quota for query in queries)
+    if total_quota < 1 or any(query.quota < 1 for query in queries):
+        raise AnalysisTaskBatchSetError("Task batch retrieval query quotas must be positive")
+
+    proportional_shares = [divmod(target_document_count * query.quota, total_quota) for query in queries]
+    allocations = [share for share, _ in proportional_shares]
+    remainder = target_document_count - sum(allocations)
+    ranked_remainders = sorted(
+        range(len(queries)),
+        key=lambda index: (
+            -proportional_shares[index][1],
+            queries[index].ordinal,
+            index,
+        ),
+    )
+    for index in ranked_remainders[:remainder]:
+        allocations[index] += 1
+    return allocations
+
+
 def _validate_task_version(
     *,
     matter: Matter,
@@ -92,9 +125,9 @@ def _validate_task_version(
     if task.matter_id != matter.id or task_version.matter_analysis_task_id != task.id:
         raise AnalysisTaskBatchSetError("Analysis Task version does not belong to this matter")
     if task_version.status != "PUBLISHED":
-        raise AnalysisTaskBatchSetError("Partitioned batch sets require a published task version")
+        raise AnalysisTaskBatchSetError("Batch sets require a published task version")
     if "PARTITIONED_SET" not in (task_version.scope_policy or {}).get("allowed_modes", []):
-        raise AnalysisTaskBatchSetError("This task version does not allow partitioned batch sets")
+        raise AnalysisTaskBatchSetError("This task version does not allow batch sets")
 
 
 def _source_batch(
@@ -367,7 +400,12 @@ def search_document_ids(
     definitions = list(
         db.scalars(select(MetadataDefinition).where(MetadataDefinition.matter_id == matter.id))
     )
-    page_size = min(500, max(1, limit or 500))
+    # Assessment retrieval plans are generated with pages no larger than 150.
+    # Preserve that bounded query shape when their quotas are scaled for a larger
+    # task population instead of issuing a much more expensive 500-result hybrid
+    # search against the complete matter index.
+    page_size_limit = TASK_BATCH_SEARCH_PAGE_SIZE if request.search_mode == "HYBRID" else 500
+    page_size = min(page_size_limit, max(1, limit or request.size))
     excluded_values = sorted(str(document_id) for document_id in (excluded_document_ids or set()))
     exclusion_clauses = [
         {"terms": {"document_id": excluded_values[offset : offset + 10_000]}}
@@ -402,11 +440,26 @@ def search_document_ids(
         if request.search_mode == "HYBRID":
             client.ensure_rrf_search_pipeline(RRF_SEARCH_PIPELINE)
         while True:
-            raw = client.search(
-                generation.index_name,
-                body,
-                search_pipeline=RRF_SEARCH_PIPELINE if request.search_mode == "HYBRID" else None,
-            )
+            for attempt in range(1, TASK_BATCH_SEARCH_MAX_ATTEMPTS + 1):
+                try:
+                    raw = client.search(
+                        generation.index_name,
+                        body,
+                        search_pipeline=(
+                            RRF_SEARCH_PIPELINE if request.search_mode == "HYBRID" else None
+                        ),
+                    )
+                    break
+                except OpenSearchError as exc:
+                    retryable = is_retryable_opensearch_error(exc)
+                    if not retryable:
+                        raise
+                    if attempt >= TASK_BATCH_SEARCH_MAX_ATTEMPTS:
+                        raise OpenSearchError(
+                            f"{exc} after {attempt} attempts",
+                            status_code=exc.status_code,
+                        ) from exc
+                    time.sleep(TASK_BATCH_SEARCH_RETRY_DELAY_SECONDS * (2 ** (attempt - 1)))
             hits = raw.get("hits", {}).get("hits", [])
             if not hits:
                 break
@@ -441,7 +494,8 @@ def task_batch_document_ids(
     excluding_batch_set_id: uuid.UUID | None = None,
 ) -> tuple[list[uuid.UUID], set[uuid.UUID]]:
     batch_set_query = select(AnalysisTaskBatchSet.id).where(
-        AnalysisTaskBatchSet.matter_analysis_task_id == task_id
+        AnalysisTaskBatchSet.matter_analysis_task_id == task_id,
+        AnalysisTaskBatchSet.status != "ARCHIVED",
     )
     if excluding_batch_set_id is not None:
         batch_set_query = batch_set_query.where(AnalysisTaskBatchSet.id != excluding_batch_set_id)
@@ -471,7 +525,7 @@ def select_task_batch_search_population(
     settings: Settings,
     control_sample_size: int = 0,
 ) -> TaskBatchSearchPopulation:
-    """Resolve one deduplicated population for a task-specific partitioned batch set."""
+    """Resolve one deduplicated population for a task-specific batch set."""
     if task.matter_id != matter.id:
         raise AnalysisTaskBatchSetError("Analysis Task does not belong to this matter")
     prior_batch_set_ids, prior_document_ids = task_batch_document_ids(db, task_id=task.id)
@@ -479,21 +533,29 @@ def select_task_batch_search_population(
     selected_set: set[uuid.UUID] = set()
     selection_reasons: dict[uuid.UUID, list[str]] = {}
     query_yields: list[dict[str, Any]] = []
-    for query in queries:
+    requested_quotas = allocate_task_batch_query_quotas(queries, target_document_count)
+    for query, planned_request in zip(queries, requested_quotas, strict=True):
         remaining = target_document_count - len(selected_ids)
-        if remaining <= 0:
-            break
-        requested = min(query.quota, remaining)
-        hits = search_document_ids(
-            db,
-            matter=matter,
-            generation=generation,
-            search_definition=query.search_definition,
-            settings=settings,
-            limit=requested,
-            relevance_order=True,
-            excluded_document_ids=prior_document_ids | selected_set,
-        )
+        requested = min(planned_request, remaining)
+        try:
+            hits = (
+                search_document_ids(
+                    db,
+                    matter=matter,
+                    generation=generation,
+                    search_definition=query.search_definition,
+                    settings=settings,
+                    limit=requested,
+                    relevance_order=True,
+                    excluded_document_ids=prior_document_ids | selected_set,
+                )
+                if requested > 0
+                else []
+            )
+        except OpenSearchError as exc:
+            raise AnalysisTaskBatchSetError(
+                f'Retrieval query "{query.label}" failed: {exc}'
+            ) from exc
         accepted_hits: list[uuid.UUID] = []
         for document_id in hits:
             if document_id in prior_document_ids:
@@ -678,6 +740,25 @@ def _stable_partitions(document_ids: list[uuid.UUID], target_batch_size: int) ->
     ]
 
 
+def _selection_warnings(selection_definition: dict[str, object]) -> list[dict[str, object]]:
+    review_program = selection_definition.get("review_program")
+    if not isinstance(review_program, dict):
+        return []
+    target = review_program.get("target_document_count")
+    selected = review_program.get("selected_document_count")
+    if not isinstance(target, int) or not isinstance(selected, int) or selected >= target:
+        return []
+    return [
+        {
+            "code": "RETRIEVAL_TARGET_SHORTFALL",
+            "message": f"Retrieval selected {selected} of the requested {target} documents.",
+            "target_document_count": target,
+            "selected_document_count": selected,
+            "shortfall_count": target - selected,
+        }
+    ]
+
+
 def _family_partitions(
     documents: list[MatterDocument],
     *,
@@ -778,16 +859,17 @@ def plan_batch_set(
         raise AnalysisTaskBatchSetError("The selected population has no documents")
     document_ids = [document.id for document in documents]
     population_hash = hashlib.sha256("\n".join(str(value) for value in document_ids).encode()).hexdigest()
+    warnings = _selection_warnings(selection_definition or {})
     if "FAMILY" in keep_together:
-        partitions, warnings = _family_partitions(
+        partitions, family_warnings = _family_partitions(
             documents,
             matter=matter,
             target_batch_size=target_batch_size,
             actor_user_id=actor_user_id,
         )
+        warnings.extend(family_warnings)
     else:
         partitions = _stable_partitions(document_ids, target_batch_size)
-        warnings = []
     return BatchSetPlan(
         document_ids=document_ids,
         partitions=partitions,
