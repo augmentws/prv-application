@@ -282,7 +282,6 @@ function ProgramWorkspace({ clientId, matterId, program, run, stages, canManage,
       <CardHeader className="flex-row items-start justify-between gap-4">
         <div><CardTitle>{program.name}</CardTitle><CardDescription>{program.description || "Guided First Pass Review workflow"}</CardDescription></div>
         <div className="flex shrink-0 flex-wrap justify-end gap-2">
-          {canManage && run && (["COMPLETED", "COMPLETED_WITH_ERRORS", "CANCELED"].includes(run.status) || run.status === "FAILED" && !run.failure_retriable) ? <Button size="sm" disabled={busy} onClick={onStart}><Play />Start another run</Button> : null}
           {run && canManage && ACTIVE_RUN_STATUSES.has(run.status) ? <><Button size="sm" variant="outline" disabled={busy} onClick={() => onCommand("reconcile")}><RefreshCw />Reconcile</Button><Button size="sm" variant="outline" disabled={busy} onClick={() => onCommand("cancel")}><Ban />Stop program</Button></> : null}
           {run?.status === "FAILED" && run.failure_retriable && canManage ? <Button size="sm" disabled={busy} onClick={() => onCommand("retry")}><RotateCcw />Retry</Button> : null}
         </div>
