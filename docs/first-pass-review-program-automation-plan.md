@@ -89,7 +89,7 @@ Matter Definition draft
 | Initial target | Each first-pass program initially supports one multi-value issue-coding metadata field and a one-vs-rest classifier. Other programs in the same matter may select different fields and guidance. |
 | Assessment data | Matter Definition assessment runs remain diagnostic and blinded. They are not automatically used as classifier training labels. |
 | Training sufficiency | Use the actual classification dataset and split feasibility rules, not a standalone raw-count threshold. |
-| Label policy | The user chooses union, exact agreement only, or agreement plus human adjudication after seeing a preview of each option. |
+| Label policy | The user chooses union, exact agreement only, overlapping multi-value codes, or agreement plus human adjudication after seeing a preview of each option. |
 | Model agreement | Agreement is a consistency signal, not proof of accuracy. Q&A outputs remain machine-generated silver labels unless reviewed by a human. |
 | Human gates | Matter Definition publication, persistent issue insufficiency, training-label policy, classifier acceptance, whole-collection launch, and QC acceptance require explicit user action. |
 | Retrieval loops | Loops have document, round, token, and low-yield stopping policies. The system never searches indefinitely. |
@@ -131,7 +131,7 @@ The principal gaps are:
 - one logical Q&A task version with two model-specific execution profiles;
 - a training-oriented retrieval planner that targets issue support deficits;
 - a cross-round issue-support report based on actual classifier feasibility;
-- a durable training-label resolution artifact implementing union, agreement, and adjudication policies;
+- a durable training-label resolution artifact implementing union, exact-agreement, overlapping-value, and adjudication policies;
 - a user-facing retraining loop and comparable model-version summaries;
 - creation of Q&A batch sets from classifier-positive documents that lack Q&A coverage;
 - a final three-source Q&A and classifier comparison report;
@@ -168,7 +168,7 @@ replayable while still using the agent where legal judgment and synthesis add th
 | Discovery round | One retrieval batch followed by two Q&A runs and a support analysis. |
 | Training round | One immutable label snapshot and classifier build attempt. |
 | Q&A profile | A pinned provider, model, model policy, and skill binding used to execute one shared Q&A specification. |
-| Resolved training label set | The immutable result of applying union, agreement, or adjudication policy to Q&A outputs. |
+| Resolved training label set | The immutable result of applying union, exact-agreement, overlapping-value, or adjudication policy to Q&A outputs. |
 | Active issue | An issue value the program is expected to train and evaluate. |
 | Ignored issue | An issue deliberately excluded from the classifier track by a recorded user decision. It remains in Matter Definition unless separately edited. |
 | Classifier-positive document | A successfully scored, non-abstained document with at least one issue selected under the pinned prediction-resolution policy. |
@@ -800,11 +800,24 @@ Include a document only when both required models completed successfully and the
 The agreed set becomes the silver label. Exclude partial-set agreement, disagreements, failures, and incomplete
 documents.
 
-Exact document-set agreement is the recommended initial meaning of “use only codes where models agree.” Per-code
-intersection can silently convert disputed positives into negatives and should be a separate future policy if
-needed.
+Exact document-set agreement is the meaning of “use exact model agreements.” Per-code intersection is exposed as
+the separate **Use overlapping values** policy so the user explicitly chooses to drop model-only positives.
 
-### 12.3 Option C Agreement plus human-adjudicated disagreements
+### 12.3 Option C Overlapping multi-value codes
+
+For a multi-value target where both required model runs completed successfully:
+
+```text
+resolved issue set = model A issue set intersection model B issue set
+```
+
+Keep a document when the intersection contains at least one value. Drop values selected by only one model. If the
+intersection is empty, exclude the field/document from training rather than treating the disagreement as a negative
+label. For single-value targets, this policy has the same practical effect as exact agreement: unequal values are
+excluded. The frozen label artifact records the original claims and a `SOURCE_CONFLICTS_INTERSECTED` warning so the
+loss of model-only positives remains auditable.
+
+### 12.4 Option D Agreement plus human-adjudicated disagreements
 
 Use exact-agreement documents as silver labels and create a derived disagreement batch for all partial and complete
 disagreements. Reviewers assign final issue sets through reviewer coding. Completed human decisions have
@@ -818,9 +831,10 @@ new task-specific batch set from the difference manifest instead of executing th
 Failures, partial results, and documents that cannot be reliably adjudicated remain excluded or unresolved; they
 are not negative labels.
 
-### 12.4 Decision preview
+### 12.5 Decision preview
 
-Before asking the user, show all three options side by side:
+Before asking the user, show all four options side by side. Each decision control exposes its consequence through a
+hover and keyboard-focus tooltip:
 
 - eligible and excluded document counts;
 - per-issue positive and negative support;
@@ -830,14 +844,17 @@ Before asking the user, show all three options side by side:
 - expected disagreement-review volume; and
 - dataset and split feasibility.
 
-The user selects one option, records a reason, and may choose Option C even when A or B is feasible because quality
+The user selects one option, records a reason, and may choose overlap or adjudication even when another policy is
+feasible because quality
 policy is a legal-review decision, not an optimization performed by the agent.
 
-### 12.5 Training label finalization
+### 12.6 Training label finalization
 
 After any required disagreement review completes, materialize one immutable `first_pass_training_label_set`.
 Validate the artifact, recompute support, and run the authoritative classifier dataset preview. If the selected
 policy is no longer feasible because of exclusions or incomplete human review, return to the issue-support gate.
+Before the user freezes the snapshot, show policy-adjusted eligible and excluded document counts for each field and
+the final retained positive-document count for every coding label.
 
 ## 13. Phase 6 Classifier training and quality summary
 
@@ -1148,7 +1165,7 @@ action becomes stale and requires a new preview.
 
 - retrieval yield by query, issue, and round;
 - Q&A source coverage and alignment;
-- support under union, agreement, and adjudication options;
+- support under union, exact-agreement, overlapping-value, and adjudication options;
 - classifier feasibility and blocked classes.
 
 ### 21.3 Classifier report
@@ -1443,7 +1460,7 @@ Deliverables:
 - Define each stage's `AD_HOC_BATCH`, `PARTITIONED_SET`, or `WHOLE_MATTER` policy and fixtures that prove the two ad
   hoc exceptions.
 - Lock program, version, run, stage, action, support, label-set, and completion-report contracts.
-- Define union, exact-agreement, and adjudication semantics.
+- Define union, exact-agreement, overlapping-value, and adjudication semantics.
 - Define classifier readiness and weak-category policies.
 - Create fixtures covering rare issues, model disagreement, failures, family duplicates, weak categories,
   classifier-only positives, and negative-population QC discoveries.
@@ -1520,7 +1537,7 @@ Exit criteria:
 Deliverables:
 
 - Add option previews.
-- Implement union and exact-agreement resolution.
+- Implement union, exact-agreement, and overlapping-value resolution.
 - Create and manage ad hoc disagreement review batches.
 - Materialize immutable label artifacts with row-level authority and provenance.
 - Add the classifier label-source adapter.
@@ -1658,7 +1675,7 @@ The MVP is complete when:
 - the program measures per-issue alignment and actual classifier feasibility across multiple discovery rounds;
 - targeted retrieval can supplement deficient issues without re-reviewing existing documents;
 - persistent insufficiency requires an explicit refine, ignore, or stop decision;
-- the user can preview and choose union, exact agreement, or human-adjudicated label policy;
+- the user can preview and choose union, exact agreement, overlapping values, or human-adjudicated label policy;
 - the resulting label set is immutable, artifact-backed, and consumable by classifier dataset creation;
 - classifier builds produce per-category quality summaries and a bounded improvement loop;
 - one accepted model version can score a frozen whole-matter population;

@@ -1216,6 +1216,44 @@ def test_synthetic_run_advances_waits_resumes_retries_reconciles_and_cancels(
         db.commit()
 
     reset_payload = {"idempotency_key": "reset-first-discovery", "reason": "Correct the discovery setup"}
+    active_reset = client.post(
+        f"{runs_url}/{run_id}/reset-discovery-qa",
+        headers=auth(token),
+        json=reset_payload,
+    )
+    assert active_reset.status_code == 409, active_reset.text
+    assert "Cancel Discovery Q&A before resetting it" in active_reset.text
+
+    cancel_payload = {"idempotency_key": "cancel-first-discovery", "reason": "Correct the discovery setup"}
+    canceled = client.post(
+        f"{runs_url}/{run_id}/cancel-discovery-qa",
+        headers=auth(token),
+        json=cancel_payload,
+    )
+    assert canceled.status_code == 200, canceled.text
+    assert canceled.json()["status"] == "WAITING_FOR_USER"
+    assert canceled.json()["current_stage"] == "DISCOVERY_QA"
+    assert canceled.json()["progress_summary"]["discovery_qa_state"] == "CANCELED"
+    assert canceled.json()["progress_summary"]["discovery_qa"]["batch_set_id"] == first_batch_set_id
+    assert canceled.json()["stage_attempts"][-1]["status"] == "CANCELED"
+    with TestingSessionLocal() as db:
+        canceled_set = db.get(AnalysisTaskBatchSet, uuid.UUID(first_batch_set_id))
+        canceled_child = db.scalar(
+            select(ReviewProgramChild).where(
+                ReviewProgramChild.run_id == uuid.UUID(run_id),
+                ReviewProgramChild.child_id == uuid.UUID(first_batch_set_id),
+            )
+        )
+        assert canceled_set is not None and canceled_set.status == "CANCELED"
+        assert canceled_child is not None and canceled_child.status == "CANCELED"
+
+    repeated_cancel = client.post(
+        f"{runs_url}/{run_id}/cancel-discovery-qa",
+        headers=auth(token),
+        json=cancel_payload,
+    )
+    assert repeated_cancel.status_code == 200, repeated_cancel.text
+
     reset = client.post(
         f"{runs_url}/{run_id}/reset-discovery-qa",
         headers=auth(token),
@@ -1360,6 +1398,11 @@ def test_synthetic_run_advances_waits_resumes_retries_reconciles_and_cancels(
         )
         profile_runs = [db.get(AnalysisTaskBatchSetRun, run_id_) for run_id_ in profile_run_ids]
         assert all(item is not None for item in profile_runs)
+        assert all(
+            item.configuration_snapshot["max_concurrency"] == get_settings().qa_batch_concurrency
+            for item in profile_runs
+            if item is not None
+        )
         profile_batch_ids = [
             {
                 child.review_batch_id
@@ -1383,7 +1426,7 @@ def test_synthetic_run_advances_waits_resumes_retries_reconciles_and_cancels(
             db,
             profile_run=profile_runs[1],
             destination_id=destination_id,
-            value=True,
+            value=False,
             failed_child_ordinal=1,
         )
         db.commit()
@@ -1427,7 +1470,7 @@ def test_synthetic_run_advances_waits_resumes_retries_reconciles_and_cancels(
             db,
             child=retry_children[0],
             destination_id=destination_id,
-            value=True,
+            value=False,
         )
         batch_set_runs.complete_batch_set_run(db, failed_profile.id)
         db.commit()
@@ -1438,9 +1481,9 @@ def test_synthetic_run_advances_waits_resumes_retries_reconciles_and_cancels(
     assert support_state.json()["current_stage"] == "ISSUE_SUPPORT_DECISION"
     analysis = support_state.json()["progress_summary"]["discovery_analysis"]
     assert analysis["overall"] == {
-        "exact_count": 3,
+        "exact_count": 0,
         "partial_count": 0,
-        "disagreement_count": 0,
+        "disagreement_count": 3,
         "incomplete_count": 0,
     }
     assert analysis["support_status"] == "INSUFFICIENT"
@@ -1538,9 +1581,9 @@ def test_synthetic_run_advances_waits_resumes_retries_reconciles_and_cancels(
     assert second_support_state.json()["current_stage"] == "ISSUE_SUPPORT_DECISION"
     second_analysis = second_support_state.json()["progress_summary"]["discovery_analysis"]
     assert second_analysis["overall"] == {
-        "exact_count": 3,
+        "exact_count": 0,
         "partial_count": 0,
-        "disagreement_count": 2,
+        "disagreement_count": 5,
         "incomplete_count": 0,
     }
     second_support_action = next(
@@ -1559,6 +1602,7 @@ def test_synthetic_run_advances_waits_resumes_retries_reconciles_and_cancels(
     label_action = next(action for action in limitations_accepted.json()["actions"] if action["status"] == "OPEN")
     assert {choice["key"] for choice in label_action["allowed_choices"]} == {
         "USE_ALL_MODEL_CODES",
+        "USE_OVERLAPPING_VALUES",
         "USE_EXACT_AGREEMENT",
         "REVIEW_DISAGREEMENTS",
         "STOP",
@@ -1570,6 +1614,7 @@ def test_synthetic_run_advances_waits_resumes_retries_reconciles_and_cancels(
         json={
             "preview_hash": label_action["preview_hash"],
             "choice_key": "REVIEW_DISAGREEMENTS",
+            "input": {"metadata_definition_ids": [str(destination_id)]},
         },
     )
     assert disagreement_review.status_code == 200, disagreement_review.text
@@ -1580,6 +1625,10 @@ def test_synthetic_run_advances_waits_resumes_retries_reconciles_and_cancels(
     completion_action = next(action for action in disagreement_review.json()["actions"] if action["status"] == "OPEN")
     assert [choice["key"] for choice in completion_action["allowed_choices"]] == [
         "CONFIRM_ADJUDICATION",
+        "CONFIRM_PARTIAL_ADJUDICATION",
+        "USE_OVERLAPPING_VALUES",
+        "USE_EXACT_AGREEMENT",
+        "USE_ALL_MODEL_CODES",
         "STOP",
     ]
     premature_confirmation = client.post(
@@ -1592,7 +1641,6 @@ def test_synthetic_run_advances_waits_resumes_retries_reconciles_and_cancels(
     )
     assert premature_confirmation.status_code == 409
     assert "not ready" in premature_confirmation.text
-
     with TestingSessionLocal() as db:
         difference_children = list(
             db.scalars(
@@ -1607,7 +1655,10 @@ def test_synthetic_run_advances_waits_resumes_retries_reconciles_and_cancels(
         difference_batch = db.get(ReviewBatch, difference_children[0].child_id)
         assert difference_batch is not None
         assert difference_batch.selection_type == "COMPARISON_RESULT"
-        assert difference_batch.selection_definition["candidate_count"] == 2
+        assert difference_batch.source_batch_id is None
+        assert difference_batch.selection_definition["aggregation"] == "FIELD"
+        assert len(difference_batch.selection_definition["source_batches"]) == 3
+        assert difference_batch.selection_definition["candidate_count"] == 5
         difference_workflow = db.scalar(
             select(WorkflowRun).where(
                 WorkflowRun.job_type == REVIEW_BATCH_MATERIALIZATION_JOB_TYPE,
@@ -1646,13 +1697,44 @@ def test_synthetic_run_advances_waits_resumes_retries_reconciles_and_cancels(
             "id": str(difference_batch_id),
             "name": live_batches[0]["name"],
             "status": "READY",
-            "document_count": 2,
+            "document_count": 5,
             "assigned_user_id": str(user_id),
             "reviewer_coding_id": None,
             "reviewer_coding_revision": None,
             "completed_document_count": 0,
         }
     ]
+    empty_partial_confirmation = client.post(
+        f"{runs_url}/{run_id}/actions/{live_action['id']}/resolve",
+        headers=auth(token),
+        json={
+            "preview_hash": live_action["preview_hash"],
+            "choice_key": "CONFIRM_PARTIAL_ADJUDICATION",
+        },
+    )
+    assert empty_partial_confirmation.status_code == 409
+    assert "No completed human decisions" in empty_partial_confirmation.text
+
+    with TestingSessionLocal() as db:
+        difference_batch = db.get(ReviewBatch, difference_batch_id)
+        assert difference_batch is not None
+        first_difference_document_id = db.scalar(
+            select(ReviewBatchDocument.matter_document_id)
+            .where(ReviewBatchDocument.review_batch_id == difference_batch.id)
+            .order_by(ReviewBatchDocument.sequence_number)
+        )
+        aggregate_source_batch_ids = {
+            item["source_batch_id"] for item in difference_batch.selection_definition["source_batches"]
+        }
+    assert first_difference_document_id is not None
+    disagreement_context = client.get(
+        f"/v1/matters/{matter['id']}/review-batches/{difference_batch_id}/disagreements/documents/"
+        f"{first_difference_document_id}",
+        headers=auth(token),
+    )
+    assert disagreement_context.status_code == 200, disagreement_context.text
+    assert disagreement_context.json()["source_batch_id"] in aggregate_source_batch_ids
+    assert len(disagreement_context.json()["sources"]) == 2
 
     with TestingSessionLocal() as db:
         difference_batch = db.get(ReviewBatch, difference_batch_id)
@@ -1674,17 +1756,16 @@ def test_synthetic_run_advances_waits_resumes_retries_reconciles_and_cancels(
         destination = db.get(MetadataDefinition, destination_id)
         program = db.get(ReviewProgram, uuid.UUID(program_id))
         assert destination is not None and program is not None
-        for document_id in difference_document_ids:
-            append_reviewer_coding_revision(
-                db,
-                coding=coding,
-                matter_document_id=document_id,
-                status="COMPLETED",
-                field_replacements=(ReviewerFieldReplacement(definition=destination, values=(True,)),),
-                actor_user_id=user_id,
-                tenant_id=program.tenant_id,
-                matter_id=difference_batch.matter_id,
-            )
+        append_reviewer_coding_revision(
+            db,
+            coding=coding,
+            matter_document_id=difference_document_ids[0],
+            status="COMPLETED",
+            field_replacements=(ReviewerFieldReplacement(definition=destination, values=(True,)),),
+            actor_user_id=user_id,
+            tenant_id=program.tenant_id,
+            matter_id=difference_batch.matter_id,
+        )
         db.commit()
 
     adjudicated = client.post(
@@ -1692,7 +1773,7 @@ def test_synthetic_run_advances_waits_resumes_retries_reconciles_and_cancels(
         headers=auth(token),
         json={
             "preview_hash": completion_action["preview_hash"],
-            "choice_key": "CONFIRM_ADJUDICATION",
+            "choice_key": "CONFIRM_PARTIAL_ADJUDICATION",
         },
     )
     assert adjudicated.status_code == 200, adjudicated.text
@@ -1701,11 +1782,33 @@ def test_synthetic_run_advances_waits_resumes_retries_reconciles_and_cancels(
     assert finalization_action["decision_context"]["training_label_resolution"]["policy"] == (
         "ADJUDICATED_DISAGREEMENTS"
     )
+    label_preview = finalization_action["decision_context"]["training_label_preview"]
+    assert label_preview["policy"] == "ADJUDICATED_DISAGREEMENTS"
+    assert label_preview["fields"][0]["display_name"] == "Responsive"
+    assert label_preview["fields"][0]["basis"] == (
+        "Exact model agreements plus completed human decisions"
+    )
+    assert {value["value_key"] for value in label_preview["fields"][0]["values"]} == {
+        "false",
+        "true",
+    }
+    assert finalization_action["decision_context"]["training_label_resolution"][
+        "reconciliation_path"
+    ] == "PARTIAL_ADJUDICATION_EXCLUDE_UNRESOLVED"
+    assert finalization_action["decision_context"]["training_label_resolution"][
+        "difference_completed_document_count"
+    ] == 1
+    assert finalization_action["decision_context"]["training_label_resolution"][
+        "difference_unresolved_document_count"
+    ] == 4
+    assert finalization_action["decision_context"]["training_label_resolution"][
+        "selected_metadata_definition_ids"
+    ] == [str(destination_id)]
     assert (
         finalization_action["decision_context"]["training_label_resolution"]["adjudication_sources"][0][
             "reviewer_coding_revision"
         ]
-        == 2
+        == 1
     )
 
     with TestingSessionLocal() as db:
@@ -1961,10 +2064,13 @@ def test_synthetic_run_advances_waits_resumes_retries_reconciles_and_cancels(
         headers=auth(token),
         json={
             "preview_hash": improved_label_action["preview_hash"],
-            "choice_key": "USE_EXACT_AGREEMENT",
+            "choice_key": "USE_OVERLAPPING_VALUES",
         },
     )
     assert selected_labels.status_code == 200, selected_labels.text
+    assert selected_labels.json()["progress_summary"]["training_label_resolution"]["policy"] == (
+        "OVERLAPPING_VALUES"
+    )
     second_finalization_action = next(
         action for action in selected_labels.json()["actions"] if action["status"] == "OPEN"
     )

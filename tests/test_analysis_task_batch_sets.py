@@ -13,6 +13,7 @@ import app.analysis_task_batch_sets as batch_sets
 from app.analysis_task_batch_set_runs import complete_batch_set_run
 from app.analysis_task_skills import ensure_standard_analysis_task_skills
 from app.artifact_gateway import CollectionItemGroupingSnapshot
+from app.config import get_settings
 from app.job_executions import ANALYSIS_TASK_BATCH_SET_RUN_JOB_TYPE, transition_job_execution
 from app.models import (
     AnalysisInputManifest,
@@ -30,9 +31,19 @@ from app.models import (
     WorkflowRun,
 )
 from app.search.client import OpenSearchError
+from app.workflows.analysis_task_batch import BATCH_QUEUE, DOCUMENT_QUEUE
+from app.workflows.analysis_task_batch_set_runs import PARENT_QUEUE
 from tests.test_agents_and_matter_definitions import auth, create_tenant_context
 from tests.test_analysis_tasks import _specification
 from tests.test_review_batches import add_documents
+
+
+def test_question_answering_queues_use_explicit_global_limits() -> None:
+    settings = get_settings()
+
+    assert BATCH_QUEUE.global_concurrency == settings.qa_batch_concurrency
+    assert PARENT_QUEUE.global_concurrency == settings.qa_batch_concurrency
+    assert DOCUMENT_QUEUE.global_concurrency == settings.qa_document_concurrency
 
 
 def _published_partitioned_task(client: TestClient, token: str, matter_id: str) -> dict:
@@ -240,6 +251,47 @@ def test_batch_set_run_creates_one_parent_with_ordered_child_references(
     assert duplicate.status_code == 202, duplicate.text
     assert duplicate.json()["id"] == run["id"]
     assert db.scalar(select(func.count()).select_from(AnalysisTaskBatchSetRun)) == 1
+
+
+def test_question_answering_jobs_can_be_restricted_to_one_batch_set(
+    client: TestClient,
+    root_token: str,
+    root_admin,
+    db: Session,
+) -> None:
+    root_tenant = db.get(Tenant, root_admin.tenant_id)
+    assert root_tenant is not None
+    ensure_standard_analysis_task_skills(db, root_tenant, root_admin)
+    db.commit()
+    _, token, matter_id = create_tenant_context(client, root_token)
+    task = _published_partitioned_task(client, token, matter_id)
+    user_id = uuid.UUID(client.get("/v1/auth/me", headers=auth(token)).json()["id"])
+    add_documents(matter_id, user_id, count=3)
+    batch_set = _ready_batch_set(client, token, matter_id, task["id"], target_batch_size=2)
+    child_batch_id = batch_set["children"][0]["id"]
+
+    queued = client.post(
+        f"/v1/matters/{matter_id}/review-batches/{child_batch_id}/analysis-runs",
+        headers=auth(token),
+        json={"matter_analysis_task_id": task["id"]},
+    )
+    assert queued.status_code == 202, queued.text
+
+    filtered = client.get(
+        f"/v1/matters/{matter_id}/analysis-tasks/question-answering-jobs",
+        params={"batch_set_id": batch_set["id"]},
+        headers=auth(token),
+    )
+    assert filtered.status_code == 200, filtered.text
+    assert [job["id"] for job in filtered.json()] == [queued.json()["id"]]
+
+    unrelated = client.get(
+        f"/v1/matters/{matter_id}/analysis-tasks/question-answering-jobs",
+        params={"batch_set_id": str(uuid.uuid4())},
+        headers=auth(token),
+    )
+    assert unrelated.status_code == 200, unrelated.text
+    assert unrelated.json() == []
 
 
 def test_input_manifest_population_preserves_frozen_order(

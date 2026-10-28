@@ -454,10 +454,18 @@ def list_analysis_tasks(
 @router.get("/question-answering-jobs", response_model=list[MatterQuestionAnsweringJobRead])
 def list_question_answering_jobs(
     matter_id: uuid.UUID,
+    batch_set_id: uuid.UUID | None = None,
     principal: Principal = Depends(get_principal),
     db: Session = Depends(get_db),
 ) -> list[MatterQuestionAnsweringJobRead]:
     _require_task_viewer(db, principal, matter_id)
+    filters = [
+        or_(ReviewBatch.matter_id == matter_id, AnalysisInputManifest.matter_id == matter_id),
+        ReviewBatchRun.run_type == "WORKFLOW",
+        job_not_archived(ANALYSIS_TASK_BATCH_RUN_JOB_TYPE, ReviewBatchRun.id),
+    ]
+    if batch_set_id is not None:
+        filters.append(ReviewBatchRun.analysis_task_batch_set_id == batch_set_id)
     rows = db.execute(
         select(ReviewBatchRun, ReviewBatch)
         .outerjoin(ReviewBatch, ReviewBatch.id == ReviewBatchRun.review_batch_id)
@@ -465,11 +473,7 @@ def list_question_answering_jobs(
             AnalysisInputManifest,
             AnalysisInputManifest.id == ReviewBatchRun.analysis_input_manifest_id,
         )
-        .where(
-            or_(ReviewBatch.matter_id == matter_id, AnalysisInputManifest.matter_id == matter_id),
-            ReviewBatchRun.run_type == "WORKFLOW",
-            job_not_archived(ANALYSIS_TASK_BATCH_RUN_JOB_TYPE, ReviewBatchRun.id),
-        )
+        .where(*filters)
         .order_by(ReviewBatchRun.created_at.desc(), ReviewBatchRun.id.desc())
     ).all()
     if not rows:

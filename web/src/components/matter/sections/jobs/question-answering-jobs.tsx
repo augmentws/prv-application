@@ -19,15 +19,15 @@ import { SplitActionButton } from "@/components/ui/split-action-button";
 import type { JobExecutionRead, MatterQuestionAnsweringJobRead } from "@/generated/models";
 import { coreApi } from "@/lib/api-client";
 import { formatDate } from "@/lib/format";
-import { matterHref } from "@/lib/matter-routes";
+import { matterHref, matterJobsHref } from "@/lib/matter-routes";
 
-export function QuestionAnsweringJobs() {
+export function QuestionAnsweringJobs({ batchSetId }: { batchSetId?: string }) {
   const { clientId, matterId, permissionKeys } = useMatter();
   const queryClient = useQueryClient();
   const canDeleteJobs = permissionKeys.has("job.delete");
   const questionAnsweringJobs = useQuery({
-    queryKey: ["matter-question-answering-jobs", matterId],
-    queryFn: () => coreApi<MatterQuestionAnsweringJobRead[]>(`/v1/matters/${matterId}/analysis-tasks/question-answering-jobs`),
+    queryKey: ["matter-question-answering-jobs", matterId, batchSetId ?? "all"],
+    queryFn: () => coreApi<MatterQuestionAnsweringJobRead[]>(`/v1/matters/${matterId}/analysis-tasks/question-answering-jobs${batchSetId ? `?batch_set_id=${encodeURIComponent(batchSetId)}` : ""}`),
     refetchInterval: (query) => query.state.data?.some((run) => !TERMINAL_JOB_STATUSES.includes(run.status)) ? 1500 : false,
   });
   const deleteJob = useDeleteJob(["matter-question-answering-jobs", matterId]);
@@ -55,24 +55,33 @@ export function QuestionAnsweringJobs() {
       return <div className="min-w-44"><ProgressBar percent={percent} /><p className="text-xs tabular-nums text-muted-foreground">{successful.toLocaleString()} / {total.toLocaleString()} successful</p></div>;
     } },
     { accessorKey: "created_at", header: "Created", cell: ({ row }) => <span className="whitespace-nowrap text-muted-foreground">{formatDate(row.original.created_at)}</span> },
-    { id: "actions", header: "", cell: ({ row }) => <div className="flex justify-end gap-2">{row.original.execution?.available_actions.includes("CANCEL") ? <Button size="sm" variant="outline" disabled={cancelQuestionAnsweringMutation.isPending} onClick={() => cancelQuestionAnsweringMutation.mutate(row.original.id)}><Ban />Cancel</Button> : null}<QuestionAnsweringJobActions clientId={clientId} matterId={matterId} job={row.original} canDelete={canDeleteJobs && TERMINAL_JOB_STATUSES.includes(row.original.status)} onDelete={deleteJob} /></div> },
+    { id: "actions", header: "", cell: ({ row }) => <div className="flex justify-end"><QuestionAnsweringJobActions clientId={clientId} matterId={matterId} job={row.original} canCancel={row.original.execution?.available_actions.includes("CANCEL") ?? false} canceling={cancelQuestionAnsweringMutation.isPending} canDelete={canDeleteJobs && TERMINAL_JOB_STATUSES.includes(row.original.status)} onCancel={() => cancelQuestionAnsweringMutation.mutate(row.original.id)} onDelete={deleteJob} /></div> },
   ], [canDeleteJobs, cancelQuestionAnsweringMutation, clientId, deleteJob, matterId]);
 
   if (questionAnsweringJobs.isPending) return <TableLoading />;
   if (questionAnsweringJobs.error) return <QueryError message={questionAnsweringJobs.error.message} />;
   return <section className="space-y-4">
     <div className="flex flex-wrap items-start justify-between gap-3"><div><h2 className="flex items-center gap-2 text-lg font-semibold"><Sparkles className="size-5 text-primary" />Question answering</h2><p className="text-sm text-muted-foreground">Question-answering Analysis Task runs across frozen review batches or native whole-matter manifests. Results remain isolated until explicitly published.</p></div><Button asChild variant="outline"><Link href={matterHref(clientId, matterId, "analysis")}><FileSearch />Analysis tasks</Link></Button></div>
+    {batchSetId ? <div className="flex flex-wrap items-center justify-between gap-3 rounded-lg border border-primary/30 bg-primary/5 p-3"><div><p className="text-sm font-medium">Showing linked Batch Set jobs</p><p className="text-xs text-muted-foreground">Only Q&amp;A jobs created from Batch Set {batchSetId} are shown.</p></div><Button asChild size="sm" variant="outline"><Link href={matterJobsHref(clientId, matterId, "QUESTION_ANSWERING")}>Show all Q&amp;A jobs</Link></Button></div> : null}
     <DataTable columns={columns} data={questionAnsweringJobs.data} emptyMessage="No question-answering jobs have been started for this matter." />
   </section>;
 }
 
-function QuestionAnsweringJobActions({ clientId, matterId, job, canDelete, onDelete }: { clientId: string; matterId: string; job: MatterQuestionAnsweringJobRead; canDelete: boolean; onDelete: (jobType: string, jobId: string) => Promise<void> }) {
+function QuestionAnsweringJobActions({ clientId, matterId, job, canCancel, canceling, canDelete, onCancel, onDelete }: { clientId: string; matterId: string; job: MatterQuestionAnsweringJobRead; canCancel: boolean; canceling: boolean; canDelete: boolean; onCancel: () => void; onDelete: (jobType: string, jobId: string) => Promise<void> }) {
   const [failuresOpen, setFailuresOpen] = useState(false);
   const [deleteOpen, setDeleteOpen] = useState(false);
   const primary = job.review_batch_id
     ? <Link href={`/review/matters/${matterId}?batch=${job.review_batch_id}`}><FileSearch />Open batch</Link>
     : <Link href={matterHref(clientId, matterId, "analysis")}><FileSearch />Open task</Link>;
   const actions = [
+    ...(canCancel ? [{
+      id: "cancel",
+      label: "Cancel",
+      icon: <Ban aria-hidden="true" className="size-4" />,
+      disabled: canceling,
+      destructive: true,
+      onSelect: onCancel,
+    }] : []),
     ...((job.failed_document_count ?? 0) ? [{
       id: "view-errors",
       label: "View errors",

@@ -21,13 +21,10 @@ logger = logging.getLogger(__name__)
 
 _SETTINGS = get_settings()
 
-BATCH_QUEUE = Queue("analysis-task-batches", global_concurrency=2)
+BATCH_QUEUE = Queue("analysis-task-batches", global_concurrency=_SETTINGS.qa_batch_concurrency)
 DOCUMENT_QUEUE = Queue(
     "analysis-task-batch-documents",
-    global_concurrency=min(
-        _SETTINGS.definition_assessment_document_concurrency,
-        _SETTINGS.typesafe_concurrency,
-    ),
+    global_concurrency=_SETTINGS.qa_document_concurrency,
 )
 
 

@@ -488,17 +488,48 @@ def _action_contract(
     if stage.key == "DISAGREEMENT_REVIEW":
         if training_label_state == "AWAITING_ADJUDICATION":
             return (
-                "Complete the difference review",
+                "Choose a difference reconciliation path",
                 (
-                    "Open each ad hoc difference batch and assign the correct coding. Continue only after every "
-                    "document has a completed human coding; skipped documents remain unresolved."
+                    "Review as many model differences as needed to understand their pattern, then choose how "
+                    "completed and unresolved differences should contribute to classifier training."
                 ),
                 [
                     {
                         "key": "CONFIRM_ADJUDICATION",
-                        "label": "Confirm difference review complete",
+                        "label": "Require complete review",
                         "consequence": (
                             "Validate every assigned difference batch and freeze the reviewer coding revisions."
+                        ),
+                    },
+                    {
+                        "key": "CONFIRM_PARTIAL_ADJUDICATION",
+                        "label": "Use reviewed decisions",
+                        "consequence": (
+                            "Freeze completed human decisions and exclude every unresolved model difference from "
+                            "classifier training."
+                        ),
+                    },
+                    {
+                        "key": "USE_OVERLAPPING_VALUES",
+                        "label": "Use overlapping values",
+                        "consequence": (
+                            "For multi-value fields, retain only values selected by both models and drop "
+                            "model-only values; single-value disagreements are excluded."
+                        ),
+                    },
+                    {
+                        "key": "USE_EXACT_AGREEMENT",
+                        "label": "Use exact model agreements",
+                        "consequence": (
+                            "Treat the difference batches as exploratory and train only from complete exact model "
+                            "agreements."
+                        ),
+                    },
+                    {
+                        "key": "USE_ALL_MODEL_CODES",
+                        "label": "Use all model codings",
+                        "consequence": (
+                            "Use both model outputs as equal-authority claims and exclude their unresolved conflicts."
                         ),
                     },
                     stop,
@@ -517,6 +548,14 @@ def _action_contract(
                     "consequence": (
                         "Include both model outputs as equal-authority label claims; conflicting documents are "
                         "excluded from training."
+                    ),
+                },
+                {
+                    "key": "USE_OVERLAPPING_VALUES",
+                    "label": "Use overlapping values",
+                    "consequence": (
+                        "For multi-value fields, retain only values selected by both models and drop model-only "
+                        "values; single-value disagreements are excluded."
                     ),
                 },
                 {
@@ -962,8 +1001,112 @@ def _discovery_stage_context(
     }
 
 
+def _training_label_count_preview(
+    db: Session,
+    *,
+    discovery_analysis: dict[str, Any],
+    resolution: dict[str, Any],
+) -> dict[str, Any]:
+    policy = str(resolution.get("policy") or "")
+    adjudicated_counts: dict[str, Counter[str]] = {}
+    adjudicated_documents = Counter()
+    for raw_source in resolution.get("adjudication_sources", []):
+        if not isinstance(raw_source, dict):
+            continue
+        try:
+            coding_id = uuid.UUID(str(raw_source["reviewer_coding_id"]))
+            revision = int(raw_source["reviewer_coding_revision"])
+            definition_id = str(uuid.UUID(str(raw_source["metadata_definition_id"])))
+        except (KeyError, TypeError, ValueError) as exc:
+            raise ReviewProgramError("Human adjudication provenance is invalid") from exc
+        resolved = resolve_reviewer_coding_as_of(
+            db,
+            reviewer_coding_id=coding_id,
+            revision=revision,
+            metadata_definition_ids=[uuid.UUID(definition_id)],
+        )
+        completed_ids = {
+            item.matter_document_id for item in resolved.documents if item.status == "COMPLETED"
+        }
+        adjudicated_documents[definition_id] += len(completed_ids)
+        counts = adjudicated_counts.setdefault(definition_id, Counter())
+        for value in resolved.values:
+            selected = event_value(value)
+            if value.matter_document_id in completed_ids and selected is not None:
+                counts[_alignment_value_key(selected)] += 1
+
+    preview_fields: list[dict[str, Any]] = []
+    for raw_field in discovery_analysis.get("fields", []):
+        if not isinstance(raw_field, dict):
+            continue
+        definition_id = str(raw_field.get("metadata_definition_id") or "")
+        if policy == "OVERLAPPING_VALUES":
+            count_key = "intersection_count"
+            eligible_count = (
+                int(raw_field.get("overlap_eligible_count") or 0)
+                if "overlap_eligible_count" in raw_field
+                else None
+            )
+            basis = "Values selected by both models"
+        else:
+            count_key = "exact_selected_count"
+            eligible_count = int(raw_field.get("exact_count") or 0)
+            basis = "Values from complete exact model agreements"
+        if policy == "ADJUDICATED_DISAGREEMENTS":
+            eligible_count = (eligible_count or 0) + adjudicated_documents[definition_id]
+            basis = "Exact model agreements plus completed human decisions"
+        values = []
+        for raw_value in raw_field.get("classes", []):
+            if not isinstance(raw_value, dict):
+                continue
+            count = (
+                int(raw_value.get(count_key) or 0)
+                if count_key in raw_value
+                else int(raw_value.get("intersection_count") or 0)
+                if count_key == "exact_selected_count" and int(raw_field.get("partial_count") or 0) == 0
+                else None
+            )
+            if policy == "ADJUDICATED_DISAGREEMENTS":
+                count = (count or 0) + adjudicated_counts.get(definition_id, Counter())[
+                    str(raw_value.get("value_key") or "")
+                ]
+            values.append(
+                {
+                    "value_key": str(raw_value.get("value_key") or ""),
+                    "value_label": str(
+                        raw_value.get("value_label") or raw_value.get("value_key") or "Unknown"
+                    ),
+                    "positive_count": count,
+                }
+            )
+        preview_fields.append(
+            {
+                "metadata_definition_id": definition_id,
+                "key": str(raw_field.get("key") or definition_id),
+                "display_name": str(raw_field.get("display_name") or raw_field.get("key") or "Field"),
+                "eligible_document_count": eligible_count,
+                "excluded_document_count": (
+                    max(
+                        0,
+                        int(raw_field.get("exact_count") or 0)
+                        + int(raw_field.get("partial_count") or 0)
+                        + int(raw_field.get("disagreement_count") or 0)
+                        + int(raw_field.get("incomplete_count") or 0)
+                        - eligible_count,
+                    )
+                    if eligible_count is not None
+                    else None
+                ),
+                "basis": basis,
+                "values": values,
+            }
+        )
+    return {"schema_version": 1, "policy": policy, "fields": preview_fields}
+
+
 def _training_label_stage_context(db: Session, *, run: ReviewProgramRun) -> dict[str, Any]:
     resolution = dict((run.progress_summary or {}).get("training_label_resolution") or {})
+    discovery_analysis = dict((run.progress_summary or {}).get("discovery_analysis") or {})
     raw_batch_ids = resolution.get("difference_batch_ids") or []
     try:
         batch_ids = [uuid.UUID(str(value)) for value in raw_batch_ids]
@@ -1010,8 +1153,13 @@ def _training_label_stage_context(db: Session, *, run: ReviewProgramRun) -> dict
         )
     resolution["difference_batches"] = batch_reads
     return {
-        "discovery_analysis": (run.progress_summary or {}).get("discovery_analysis", {}),
+        "discovery_analysis": discovery_analysis,
         "training_label_resolution": resolution,
+        "training_label_preview": _training_label_count_preview(
+            db,
+            discovery_analysis=discovery_analysis,
+            resolution=resolution,
+        ),
     }
 
 
@@ -3886,6 +4034,15 @@ def process_review_program_event(
                 action=action,
                 policy="EXACT_AGREEMENT",
             )
+        elif action.stage_key == "DISAGREEMENT_REVIEW" and choice == "USE_OVERLAPPING_VALUES":
+            _select_training_label_policy(
+                db,
+                program=program,
+                run=run,
+                attempt=attempt,
+                action=action,
+                policy="OVERLAPPING_VALUES",
+            )
         elif action.stage_key == "DISAGREEMENT_REVIEW" and choice == "REVIEW_DISAGREEMENTS":
             _start_disagreement_review(
                 db,
@@ -3901,6 +4058,16 @@ def process_review_program_event(
                 run=run,
                 attempt=attempt,
                 action=action,
+                require_complete=True,
+            )
+        elif action.stage_key == "DISAGREEMENT_REVIEW" and choice == "CONFIRM_PARTIAL_ADJUDICATION":
+            _confirm_disagreement_review(
+                db,
+                program=program,
+                run=run,
+                attempt=attempt,
+                action=action,
+                require_complete=False,
             )
         elif action.stage_key == "TRAINING_LABEL_FINALIZATION" and choice == "FINALIZE":
             _finalize_training_labels(
@@ -4352,6 +4519,11 @@ def project_review_program_discovery_batch_set_terminal(
     if run is None or attempt is None or program is None:
         raise ReviewProgramError("Review Program Q&A Batch Set link is incomplete")
     if (
+        stage_key == "DISCOVERY_QA"
+        and (run.progress_summary or {}).get("discovery_qa_state") == "CANCELED"
+    ):
+        return None
+    if (
         run.status in TERMINAL_RUN_STATUSES
         or run.current_stage != stage_key
         or attempt.id != _current_stage_attempt(db, run).id
@@ -4385,7 +4557,10 @@ def project_review_program_discovery_batch_set_terminal(
                 batch_set=batch_set,
                 task=task,
                 task_version=task_version,
-                configuration={"max_concurrency": 2, "result_policy": "ISOLATED"},
+                configuration={
+                    "max_concurrency": get_settings().qa_batch_concurrency,
+                    "result_policy": "ISOLATED",
+                },
                 idempotency_key=(f"review-program:{run.id}:{idempotency_scope}:{attempt.attempt}:profile:{profile.id}"),
                 actor_user_id=run.initiated_by_user_id,
                 execution_profile=profile,
@@ -4548,11 +4723,18 @@ def _discovery_alignment_snapshot(
                     overall[document.agreement_status] += 1
                     left_values = set(document.sources[left_run.id].value_keys)
                     right_values = set(document.sources[right_run.id].value_keys)
+                    if left_values & right_values:
+                        counts["OVERLAP_ELIGIBLE"] += 1
                     for value_key in left_values | right_values:
                         value_counts = class_counts.setdefault(value_key, Counter())
                         value_counts["left"] += value_key in left_values
                         value_counts["right"] += value_key in right_values
                         value_counts["intersection"] += value_key in left_values and value_key in right_values
+                        value_counts["exact"] += (
+                            document.agreement_status == "EXACT"
+                            and value_key in left_values
+                            and value_key in right_values
+                        )
                         value_counts["union"] += 1
                         value_counts["disagreement"] += (value_key in left_values) != (value_key in right_values)
         declared_keys = [
@@ -4564,12 +4746,19 @@ def _discovery_alignment_snapshot(
         if not observed_keys:
             observed_keys = ["__NO_DECLARED_CLASS__"]
         evaluated_count = counts["EXACT"] + counts["PARTIAL"] + counts["DISAGREEMENT"]
+        value_labels = {
+            str(value.get("key")): str(value.get("label") or value.get("key"))
+            for value in definition.allowed_values or []
+            if value.get("key") is not None
+        }
         classes = [
             {
                 "value_key": value_key,
+                "value_label": value_labels.get(value_key, value_key),
                 "left_selected_count": class_counts.get(value_key, Counter())["left"],
                 "right_selected_count": class_counts.get(value_key, Counter())["right"],
                 "intersection_count": class_counts.get(value_key, Counter())["intersection"],
+                "exact_selected_count": class_counts.get(value_key, Counter())["exact"],
                 "union_count": class_counts.get(value_key, Counter())["union"],
                 "negative_count": max(
                     0,
@@ -4597,6 +4786,7 @@ def _discovery_alignment_snapshot(
                 "partial_count": counts["PARTIAL"],
                 "disagreement_count": counts["DISAGREEMENT"],
                 "incomplete_count": counts["INCOMPLETE"],
+                "overlap_eligible_count": counts["OVERLAP_ELIGIBLE"],
                 "classes": classes,
             }
         )
@@ -4722,6 +4912,7 @@ def _create_disagreement_review_batches(
     run: ReviewProgramRun,
     attempt: ReviewProgramStageAttempt,
     actor_user_id: uuid.UUID,
+    selected_definition_ids: list[uuid.UUID] | None = None,
 ) -> list[ReviewBatch]:
     profile_runs = _completed_discovery_profile_runs(db, run=run)
     runs_by_batch_set: dict[uuid.UUID, list[AnalysisTaskBatchSetRun]] = {}
@@ -4738,6 +4929,15 @@ def _create_disagreement_review_batches(
         raise ReviewProgramError("Q&A destination-field provenance is invalid") from exc
     if not definition_ids:
         raise ReviewProgramError("Q&A destination-field provenance is unavailable")
+    if selected_definition_ids is not None:
+        selected = list(dict.fromkeys(selected_definition_ids))
+        if not selected:
+            raise ReviewProgramError("Select at least one coding field for difference review")
+        unknown = set(selected).difference(definition_ids)
+        if unknown:
+            raise ReviewProgramError("Difference review selected a field outside the published Q&A task")
+        selected_set = set(selected)
+        definition_ids = [definition_id for definition_id in definition_ids if definition_id in selected_set]
     definitions = {
         definition.id: definition
         for definition in db.scalars(
@@ -4747,7 +4947,7 @@ def _create_disagreement_review_batches(
             )
         )
     }
-    created: list[ReviewBatch] = []
+    comparison_sources: list[dict[str, Any]] = []
     for batch_set_id, paired_runs in sorted(runs_by_batch_set.items(), key=lambda item: str(item[0])):
         if len(paired_runs) != 2:
             raise ReviewProgramError("Difference review requires exactly two profiles per discovery population")
@@ -4793,117 +4993,143 @@ def _create_disagreement_review_batches(
             source_snapshots = [
                 {**source.model_dump(mode="json"), "reviewer_revision": None} for source in source_options
             ]
-            for definition_id in definition_ids:
-                definition = definitions.get(definition_id)
-                if definition is None:
-                    raise ReviewProgramError("A Q&A destination field is unavailable")
-                candidate_ids = comparison_document_ids(
-                    db,
-                    batch_id=source_batch.id,
-                    definition_id=definition.id,
-                    source_options=source_options,
-                    row_filter="DISAGREEMENT",
-                )
-                if not candidate_ids:
-                    continue
-                batch_id = uuid.uuid4()
-                batch = ReviewBatch(
-                    id=batch_id,
-                    matter_id=program.matter_id,
-                    name=(f"{program.name} · {definition.display_name} differences · {len(created) + 1}")[:200],
-                    description=("Ad hoc human review of differences between the two pinned Discovery Q&A profiles."),
-                    selection_type="COMPARISON_RESULT",
-                    selection_definition={
-                        "type": "COMPARISON_RESULT",
-                        "review_program_id": str(program.id),
-                        "review_program_run_id": str(run.id),
-                        "stage_attempt_id": str(attempt.id),
-                        "batching_policy": "AD_HOC_BATCH",
-                        "source_batch_id": str(source_batch.id),
-                        "source_batch_name": source_batch.name,
-                        "source_batch_set_id": str(batch_set_id),
-                        "metadata_definition_id": str(definition.id),
-                        "field_display_name": definition.display_name,
-                        "row_filter": "DISAGREEMENT",
-                        "sources": source_snapshots,
-                        "candidate_count": len(candidate_ids),
-                    },
-                    source_batch_id=source_batch.id,
-                    assigned_user_id=program.owner_user_id,
-                    assigned_by_user_id=actor_user_id,
-                    assigned_at=utcnow(),
-                    reviewer_value_visibility="OWN_VALUES",
-                    status="QUEUED",
-                    workflow_id=f"review-batch:{batch_id}",
-                    created_by_user_id=actor_user_id,
-                )
-                db.add(batch)
-                db.flush()
-                group = ReviewBatchCodingGroup(
-                    review_batch_id=batch.id,
-                    source_metadata_group_id=None,
-                    display_name="Difference review",
-                    description="Assign the final coding for the field where the Q&A profiles differ.",
-                    sort_order=0,
-                )
-                db.add(group)
-                db.flush()
-                db.add(
-                    ReviewBatchCodingField(
-                        review_batch_coding_group_id=group.id,
-                        metadata_definition_id=definition.id,
-                        sort_order=0,
-                        definition_snapshot={
-                            "key": definition.key,
-                            "display_name": definition.display_name,
-                            "description": definition.description,
-                            "type": definition.type,
-                            "cardinality": definition.cardinality,
-                            "allowed_values": definition.allowed_values,
-                        },
-                    )
-                )
-                execution = create_review_batch_execution(
-                    db,
-                    batch,
-                    initiated_by_user_id=actor_user_id,
-                    notification_parent_type="REVIEW_PROGRAM_RUN",
-                    notification_parent_id=run.id,
-                )
-                link_review_program_child(
-                    db,
-                    program=program,
-                    run=run,
-                    stage_attempt=attempt,
-                    purpose="DISCOVERY_DISAGREEMENT_REVIEW",
-                    child_type="REVIEW_BATCH",
-                    child_id=batch.id,
-                    derivation_key=(f"disagreement-review:{attempt.id}:{source_batch.id}:{definition.id}"),
-                    batching_policy="AD_HOC_BATCH",
-                    context={
-                        "source_batch_id": str(source_batch.id),
-                        "metadata_definition_id": str(definition.id),
-                        "candidate_count": len(candidate_ids),
-                        "assigned_user_id": str(program.owner_user_id),
-                    },
-                )
-                enqueue_review_batch(db, execution.dbos_workflow_id, str(batch.id))
-                record_audit(
-                    db,
-                    tenant_id=program.tenant_id,
-                    actor_user_id=actor_user_id,
-                    action="review_program.disagreement_batch_created",
-                    target_type="review_batch",
-                    target_id=batch.id,
-                    details={
-                        "program_id": str(program.id),
-                        "run_id": str(run.id),
-                        "source_batch_id": str(source_batch.id),
-                        "metadata_definition_id": str(definition.id),
-                        "candidate_count": len(candidate_ids),
-                    },
-                )
-                created.append(batch)
+            comparison_sources.append(
+                {
+                    "batch_set_id": batch_set_id,
+                    "source_batch": source_batch,
+                    "source_options": source_options,
+                    "source_snapshots": source_snapshots,
+                }
+            )
+
+    created: list[ReviewBatch] = []
+    for definition_id in definition_ids:
+        definition = definitions.get(definition_id)
+        if definition is None:
+            raise ReviewProgramError("A Q&A destination field is unavailable")
+        source_batches: list[dict[str, Any]] = []
+        all_candidate_ids: list[uuid.UUID] = []
+        for source in comparison_sources:
+            source_batch = source["source_batch"]
+            candidate_ids = comparison_document_ids(
+                db,
+                batch_id=source_batch.id,
+                definition_id=definition.id,
+                source_options=source["source_options"],
+                row_filter="DISAGREEMENT",
+            )
+            if not candidate_ids:
+                continue
+            all_candidate_ids.extend(candidate_ids)
+            source_batches.append(
+                {
+                    "source_batch_id": str(source_batch.id),
+                    "source_batch_name": source_batch.name,
+                    "source_batch_set_id": str(source["batch_set_id"]),
+                    "sources": source["source_snapshots"],
+                    "candidate_count": len(candidate_ids),
+                }
+            )
+        candidate_count = len(set(all_candidate_ids))
+        if not candidate_count:
+            continue
+        batch_id = uuid.uuid4()
+        batch = ReviewBatch(
+            id=batch_id,
+            matter_id=program.matter_id,
+            name=(f"{program.name} · {definition.display_name} differences")[:200],
+            description=("Ad hoc human review of differences between the two pinned Discovery Q&A profiles."),
+            selection_type="COMPARISON_RESULT",
+            selection_definition={
+                "type": "COMPARISON_RESULT",
+                "review_program_id": str(program.id),
+                "review_program_run_id": str(run.id),
+                "stage_attempt_id": str(attempt.id),
+                "batching_policy": "AD_HOC_BATCH",
+                "aggregation": "FIELD",
+                "source_batches": source_batches,
+                "metadata_definition_id": str(definition.id),
+                "field_display_name": definition.display_name,
+                "row_filter": "DISAGREEMENT",
+                "candidate_count": candidate_count,
+            },
+            source_batch_id=None,
+            assigned_user_id=program.owner_user_id,
+            assigned_by_user_id=actor_user_id,
+            assigned_at=utcnow(),
+            reviewer_value_visibility="OWN_VALUES",
+            status="QUEUED",
+            workflow_id=f"review-batch:{batch_id}",
+            created_by_user_id=actor_user_id,
+        )
+        db.add(batch)
+        db.flush()
+        group = ReviewBatchCodingGroup(
+            review_batch_id=batch.id,
+            source_metadata_group_id=None,
+            display_name="Difference review",
+            description="Assign the final coding for the field where the Q&A profiles differ.",
+            sort_order=0,
+        )
+        db.add(group)
+        db.flush()
+        db.add(
+            ReviewBatchCodingField(
+                review_batch_coding_group_id=group.id,
+                metadata_definition_id=definition.id,
+                sort_order=0,
+                definition_snapshot={
+                    "key": definition.key,
+                    "display_name": definition.display_name,
+                    "description": definition.description,
+                    "type": definition.type,
+                    "cardinality": definition.cardinality,
+                    "allowed_values": definition.allowed_values,
+                },
+            )
+        )
+        execution = create_review_batch_execution(
+            db,
+            batch,
+            initiated_by_user_id=actor_user_id,
+            notification_parent_type="REVIEW_PROGRAM_RUN",
+            notification_parent_id=run.id,
+        )
+        source_batch_ids = [item["source_batch_id"] for item in source_batches]
+        link_review_program_child(
+            db,
+            program=program,
+            run=run,
+            stage_attempt=attempt,
+            purpose="DISCOVERY_DISAGREEMENT_REVIEW",
+            child_type="REVIEW_BATCH",
+            child_id=batch.id,
+            derivation_key=(f"disagreement-review:{attempt.id}:{definition.id}"),
+            batching_policy="AD_HOC_BATCH",
+            context={
+                "source_batch_ids": source_batch_ids,
+                "metadata_definition_id": str(definition.id),
+                "candidate_count": candidate_count,
+                "assigned_user_id": str(program.owner_user_id),
+            },
+        )
+        enqueue_review_batch(db, execution.dbos_workflow_id, str(batch.id))
+        record_audit(
+            db,
+            tenant_id=program.tenant_id,
+            actor_user_id=actor_user_id,
+            action="review_program.disagreement_batch_created",
+            target_type="review_batch",
+            target_id=batch.id,
+            details={
+                "program_id": str(program.id),
+                "run_id": str(run.id),
+                "source_batch_ids": source_batch_ids,
+                "metadata_definition_id": str(definition.id),
+                "candidate_count": candidate_count,
+            },
+        )
+        created.append(batch)
     return created
 
 
@@ -4917,12 +5143,31 @@ def _select_training_label_policy(
     policy: str,
 ) -> None:
     profile_runs = _completed_discovery_profile_runs(db, run=run)
+    prior_resolution = dict((run.progress_summary or {}).get("training_label_resolution") or {})
+    exploratory_batch_ids = (
+        list(prior_resolution.get("difference_batch_ids") or [])
+        if prior_resolution.get("state") == "AWAITING_ADJUDICATION"
+        else []
+    )
     resolution = {
         "schema_version": 1,
         "state": "POLICY_SELECTED",
         "policy": policy,
         "profile_run_ids": [str(item.id) for item in profile_runs],
-        "difference_batch_ids": [],
+        "difference_batch_ids": exploratory_batch_ids,
+        "difference_document_count": (
+            int(prior_resolution.get("difference_document_count") or 0)
+            if exploratory_batch_ids
+            else 0
+        ),
+        "selected_metadata_definition_ids": (
+            list(prior_resolution.get("selected_metadata_definition_ids") or [])
+            if exploratory_batch_ids
+            else []
+        ),
+        "reconciliation_path": (
+            policy if exploratory_batch_ids else "NO_DIFFERENCE_REVIEW"
+        ),
         "adjudication_sources": [],
         "selected_by_user_id": str(action.resolved_by_user_id),
         "selected_at": action.resolved_at.isoformat() if action.resolved_at else None,
@@ -4953,12 +5198,26 @@ def _start_disagreement_review(
     attempt: ReviewProgramStageAttempt,
     action: ReviewProgramAction,
 ) -> None:
+    raw_selected_ids = dict(action.resolution_payload or {}).get("input", {}).get(
+        "metadata_definition_ids"
+    )
+    selected_definition_ids: list[uuid.UUID] | None = None
+    if raw_selected_ids is not None:
+        if not isinstance(raw_selected_ids, list):
+            raise ReviewProgramError("Difference-review field selection is invalid")
+        try:
+            selected_definition_ids = list(
+                dict.fromkeys(uuid.UUID(str(value)) for value in raw_selected_ids)
+            )
+        except (TypeError, ValueError) as exc:
+            raise ReviewProgramError("Difference-review field selection is invalid") from exc
     batches = _create_disagreement_review_batches(
         db,
         program=program,
         run=run,
         attempt=attempt,
         actor_user_id=action.resolved_by_user_id or run.initiated_by_user_id,
+        selected_definition_ids=selected_definition_ids,
     )
     if not batches:
         _select_training_label_policy(
@@ -4976,6 +5235,9 @@ def _start_disagreement_review(
         "state": "AWAITING_ADJUDICATION",
         "policy": "ADJUDICATED_DISAGREEMENTS",
         "profile_run_ids": [str(item.id) for item in profile_runs],
+        "selected_metadata_definition_ids": [
+            str(value) for value in selected_definition_ids
+        ] if selected_definition_ids is not None else [],
         "difference_batch_ids": [str(batch.id) for batch in batches],
         "difference_document_count": sum(
             int(batch.selection_definition.get("candidate_count", 0)) for batch in batches
@@ -5012,6 +5274,7 @@ def _confirm_disagreement_review(
     run: ReviewProgramRun,
     attempt: ReviewProgramStageAttempt,
     action: ReviewProgramAction,
+    require_complete: bool,
 ) -> None:
     resolution = dict((run.progress_summary or {}).get("training_label_resolution") or {})
     if resolution.get("state") != "AWAITING_ADJUDICATION":
@@ -5023,12 +5286,31 @@ def _confirm_disagreement_review(
     if not batch_ids:
         raise ReviewProgramError("Difference-batch provenance is unavailable")
     adjudication_sources: list[dict[str, Any]] = []
+    completed_document_count = 0
+    unresolved_document_count = 0
     for batch_id in batch_ids:
         batch = db.get(ReviewBatch, batch_id)
         if batch is None or batch.matter_id != program.matter_id:
             raise ReviewProgramError("A difference batch is unavailable")
-        if batch.source_batch_id is None:
-            raise ReviewProgramError(f"Difference batch {batch.name} has no source batch")
+        raw_source_batches = batch.selection_definition.get("source_batches")
+        if isinstance(raw_source_batches, list):
+            if not raw_source_batches or any(not isinstance(item, dict) for item in raw_source_batches):
+                raise ReviewProgramError(
+                    f"Difference batch {batch.name} has invalid source-batch provenance"
+                )
+            try:
+                source_batch_ids = [
+                    uuid.UUID(str(item["source_batch_id"]))
+                    for item in raw_source_batches
+                ]
+            except (KeyError, TypeError, ValueError) as exc:
+                raise ReviewProgramError(
+                    f"Difference batch {batch.name} has invalid source-batch provenance"
+                ) from exc
+        else:
+            source_batch_ids = [batch.source_batch_id] if batch.source_batch_id is not None else []
+        if not source_batch_ids:
+            raise ReviewProgramError(f"Difference batch {batch.name} has no source batches")
         if batch.status != "READY":
             raise ReviewProgramError(f"Difference batch {batch.name} is not ready")
         if batch.assigned_user_id is None:
@@ -5040,7 +5322,10 @@ def _confirm_disagreement_review(
             )
         )
         if coding is None:
-            raise ReviewProgramError(f"Difference batch {batch.name} has not been reviewed")
+            if require_complete:
+                raise ReviewProgramError(f"Difference batch {batch.name} has not been reviewed")
+            unresolved_document_count += batch.document_count
+            continue
         document_ids = list(
             db.scalars(
                 select(ReviewBatchDocument.matter_document_id)
@@ -5062,7 +5347,7 @@ def _confirm_disagreement_review(
             metadata_definition_ids=[definition_id],
         )
         completed_document_ids = {item.matter_document_id for item in resolved.documents if item.status == "COMPLETED"}
-        if len(completed_document_ids) != batch.document_count:
+        if require_complete and len(completed_document_ids) != batch.document_count:
             raise ReviewProgramError(
                 f"Difference batch {batch.name} has "
                 f"{batch.document_count - len(completed_document_ids)} unresolved documents"
@@ -5070,22 +5355,39 @@ def _confirm_disagreement_review(
         coded_document_ids = {
             item.matter_document_id for item in resolved.fields if item.metadata_definition_id == definition_id
         }
-        if coded_document_ids != set(document_ids):
+        if not completed_document_ids.issubset(coded_document_ids):
             raise ReviewProgramError(f"Difference batch {batch.name} has incomplete field coding")
+        if require_complete and coded_document_ids != set(document_ids):
+            raise ReviewProgramError(f"Difference batch {batch.name} has incomplete field coding")
+        completed_document_count += len(completed_document_ids)
+        unresolved_document_count += batch.document_count - len(completed_document_ids)
+        if not completed_document_ids:
+            continue
         adjudication_sources.append(
             {
                 "review_batch_id": str(batch.id),
-                "source_batch_id": str(batch.source_batch_id),
+                "source_batch_ids": [str(value) for value in source_batch_ids],
                 "metadata_definition_id": str(definition_id),
                 "reviewer_coding_id": str(coding.id),
                 "reviewer_user_id": str(coding.reviewer_user_id),
                 "reviewer_coding_revision": coding.revision,
-                "document_count": batch.document_count,
+                "document_count": len(completed_document_ids),
             }
+        )
+    if not require_complete and completed_document_count == 0:
+        raise ReviewProgramError(
+            "No completed human decisions are available; choose exact agreements or all model codings instead"
         )
     resolution = {
         **resolution,
         "state": "POLICY_SELECTED",
+        "reconciliation_path": (
+            "FULL_ADJUDICATION"
+            if require_complete
+            else "PARTIAL_ADJUDICATION_EXCLUDE_UNRESOLVED"
+        ),
+        "difference_completed_document_count": completed_document_count,
+        "difference_unresolved_document_count": unresolved_document_count,
         "adjudication_sources": adjudication_sources,
         "confirmed_by_user_id": str(action.resolved_by_user_id),
         "confirmed_at": action.resolved_at.isoformat() if action.resolved_at else None,
@@ -6085,12 +6387,16 @@ def _human_adjudicated_issue_keys(
             revision=revision,
             metadata_definition_ids=[definition_id],
         )
-        document_ids = {item.matter_document_id for item in resolved.documents}
+        document_ids = {
+            item.matter_document_id
+            for item in resolved.documents
+            if item.status == "COMPLETED"
+        }
         for document_id in document_ids:
             by_document.setdefault(document_id, set())
         for value in resolved.values:
             selected = event_value(value)
-            if selected is not None:
+            if value.matter_document_id in document_ids and selected is not None:
                 by_document.setdefault(value.matter_document_id, set()).add(
                     f"{definition.key}:{_alignment_value_key(selected)}"
                 )
@@ -7082,7 +7388,9 @@ def _classifier_label_policy(
     return {
         "allowed_sources": allowed_sources,
         "missing_label_action": "EXCLUDE",
-        "source_conflict_action": "EXCLUDE",
+        "source_conflict_action": (
+            "INTERSECT" if training_labels.get("policy") == "OVERLAPPING_VALUES" else "EXCLUDE"
+        ),
         "target_value_conflict_action": "EXCLUDE",
     }
 
@@ -8409,6 +8717,11 @@ def project_review_program_discovery_qa_run_terminal(
     program = db.get(ReviewProgram, run.program_id) if run is not None else None
     if run is None or attempt is None or program is None:
         raise ReviewProgramError("Review Program Q&A profile link is incomplete")
+    if (
+        stage_key == "DISCOVERY_QA"
+        and (run.progress_summary or {}).get("discovery_qa_state") == "CANCELED"
+    ):
+        return None
     recovering_failed_profile = (
         run.status == "FAILED"
         and run.failure_code == failure_code
@@ -8777,6 +9090,7 @@ def cancel_review_program_discovery_children(
     *,
     run: ReviewProgramRun,
     actor_user_id: uuid.UUID,
+    purposes: set[str] | None = None,
 ) -> tuple[list[str], list[str], list[str], list[str], list[str], list[str]]:
     batch_set_workflow_ids: list[str] = []
     batch_run_workflow_ids: list[str] = []
@@ -8786,6 +9100,8 @@ def cancel_review_program_discovery_children(
     classification_scoring_workflow_ids: list[str] = []
     children = list(db.scalars(select(ReviewProgramChild).where(ReviewProgramChild.run_id == run.id)))
     for child in children:
+        if purposes is not None and child.purpose not in purposes:
+            continue
         if child.child_type == "ANALYSIS_TASK_BATCH_SET_RUN":
             batch_run = db.get(AnalysisTaskBatchSetRun, child.child_id)
             if batch_run is None or batch_run.status not in {"QUEUED", "RUNNING"}:
@@ -8875,6 +9191,75 @@ def cancel_review_program_discovery_children(
     )
 
 
+def cancel_review_program_discovery_qa(
+    db: Session,
+    *,
+    program: ReviewProgram,
+    run: ReviewProgramRun,
+    actor: User,
+    idempotency_key: str,
+    reason: str | None,
+) -> ReviewProgramRun:
+    """Cancel active Discovery Q&A work while preserving it for review and reset."""
+    key = _validate_idempotency_key(idempotency_key)
+    progress = dict(run.progress_summary or {})
+    if progress.get("last_discovery_qa_cancel_key") == key:
+        return run
+    if run.current_stage != "DISCOVERY_QA":
+        raise ReviewProgramError("Discovery Q&A can be canceled only while the program is at Discovery Q&A")
+    state = str(progress.get("discovery_qa_state") or "")
+    if state == "CANCELED":
+        raise ReviewProgramError("Discovery Q&A is already canceled and can now be reset")
+    if state not in {"MATERIALIZING_BATCH_SET", "RUNNING_PROFILES"}:
+        raise ReviewProgramError("Discovery Q&A has no active processing to cancel")
+
+    now = utcnow()
+    current_attempt = _current_stage_attempt(db, run, for_update=True)
+    progress.update(
+        {
+            "discovery_qa_state": "CANCELED",
+            "last_discovery_qa_cancel_key": key,
+            "last_discovery_qa_cancel_at": now.isoformat(),
+            "last_discovery_qa_cancel_reason": reason.strip() if reason else None,
+        }
+    )
+    run.progress_summary = progress
+    run.status = "WAITING_FOR_USER"
+    run.pending_action_id = None
+    run.failure_code = None
+    run.failure_summary = None
+    run.failure_retriable = False
+    current_attempt.status = "CANCELED"
+    current_attempt.completed_at = now
+    current_attempt.result_summary = {
+        **(current_attempt.result_summary or {}),
+        "discovery_qa_canceled": {
+            "canceled_at": now.isoformat(),
+            "canceled_by_user_id": str(actor.id),
+            "reason": reason.strip() if reason else None,
+        },
+    }
+    resolve_source_notifications(
+        db,
+        source=NotificationSource("review_program_run", run.id),
+        resolution_code="DISCOVERY_QA_CANCELED",
+        resolved_at=now,
+    )
+    record_audit(
+        db,
+        tenant_id=program.tenant_id,
+        actor_user_id=actor.id,
+        action="review_program.discovery_qa_canceled",
+        target_type="review_program_run",
+        target_id=run.id,
+        details={
+            "program_id": str(program.id),
+            "reason": reason.strip() if reason else None,
+        },
+    )
+    return run
+
+
 def reset_review_program_discovery_qa(
     db: Session,
     *,
@@ -8891,6 +9276,8 @@ def reset_review_program_discovery_qa(
         return run
     if run.current_stage != "DISCOVERY_QA" or run.status not in ACTIVE_RUN_STATUSES | {"FAILED"}:
         raise ReviewProgramError("Discovery Q&A can be reset only while the program is at Discovery Q&A")
+    if progress.get("discovery_qa_state") != "CANCELED":
+        raise ReviewProgramError("Cancel Discovery Q&A before resetting it")
 
     now = utcnow()
     current_attempt = _current_stage_attempt(db, run, for_update=True)

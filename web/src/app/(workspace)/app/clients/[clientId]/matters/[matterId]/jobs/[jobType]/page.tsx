@@ -14,10 +14,10 @@ export default async function MatterJobTypePage({
   params,
   searchParams,
 }: PageProps<"/app/clients/[clientId]/matters/[matterId]/jobs/[jobType]"> & {
-  searchParams: Promise<{ job?: string }>;
+  searchParams: Promise<{ job?: string; batch_set?: string }>;
 }) {
   const jobType = jobTypeFromSlug((await params).jobType);
   if (!jobType) notFound();
-  const { job } = await searchParams;
-  return <JobsSection jobType={jobType} selectedJobId={job} />;
+  const { job, batch_set: batchSetId } = await searchParams;
+  return <JobsSection jobType={jobType} selectedJobId={job} batchSetId={batchSetId} />;
 }

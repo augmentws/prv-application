@@ -542,18 +542,25 @@ The primary issue remains in Q&A reporting even if the user excludes it from the
 
 ### 10.6 Training-label decision
 
-Present the three choices using consequences rather than letters alone:
+Present the four choices using consequences rather than letters alone:
 
 | Choice | Explanation | Preview |
 | --- | --- | --- |
 | Broader training set | Use an issue when either model selected it, but only when both runs completed successfully. | Eligible documents, added positives, feasibility, and false-positive risk. |
 | High-agreement training set | Use documents only when both models assigned the same complete issue set. | Eligible documents, excluded disagreements, and classes losing feasibility. |
+| Overlapping values | For multi-value fields, keep each value selected by both models even when their complete value sets differ. Single-value disagreements remain excluded. | Retained shared values, dropped model-only values, and categories losing feasibility. |
 | Review disagreements | Use exact agreements and have reviewers assign the final issue set for disagreements. | Review volume, estimated effort, feasibility, and authority mix. |
 
-The card must state that agreement measures consistency rather than correctness. If **Review disagreements** is
+Every decision control must expose its full consequence in a hover and keyboard-focus tooltip. The card must state
+that agreement measures consistency rather than correctness. If **Review disagreements** is
 selected, create an ad hoc difference Review Batch, show that batch type in its provenance details, and link to the
 existing batch review workspace. Do not run the generated Q&A task ad hoc on that batch; any automated rerun uses a
 new task-specific batch set sourced from the difference manifest.
+
+The finalization gate repeats the selected policy and shows its computed outcome before the labels are frozen: one
+eligible/excluded document total per coding field and one retained positive-document count per coding label. These
+counts must reflect overlap removal and completed human decisions rather than the earlier union-based discovery
+support totals.
 
 ## 11. Phase 3 Train and evaluate
 

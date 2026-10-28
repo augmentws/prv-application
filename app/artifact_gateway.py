@@ -73,7 +73,7 @@ from artifact_service.workflow_artifacts import (
 logger = logging.getLogger(__name__)
 from artifact_service.workflow_artifacts import store_workflow_artifact as persist_workflow_artifact
 
-REMOTE_GROUPING_SNAPSHOT_BATCH_SIZE = 5000
+GROUPING_SNAPSHOT_BATCH_SIZE = 5000
 REMOTE_RELATIONSHIP_SNAPSHOT_BATCH_SIZE = 5000
 
 
@@ -543,7 +543,7 @@ def get_collection_item_grouping_snapshots(
                 )
                 .subquery("requested_grouping_item")
             )
-            rows = db.execute(
+            statement = (
                 select(
                     CollectionItem.id,
                     CollectionItem.family_id,
@@ -569,25 +569,27 @@ def get_collection_item_grouping_snapshots(
                 .where(
                     CollectionItem.tenant_id == tenant_id,
                     CollectionItem.client_id == client_id,
-                ),
-                {"grouping_item_ids": unique_item_ids},
-            )
-            for item_id, family_id, record_type, content_hash in rows:
-                snapshots[item_id] = CollectionItemGroupingSnapshot(
-                    item_id=item_id,
-                    family_id=family_id,
-                    record_type=record_type,
-                    native_content_hash=content_hash,
                 )
+            )
+            for offset in range(0, len(unique_item_ids), GROUPING_SNAPSHOT_BATCH_SIZE):
+                page = unique_item_ids[offset : offset + GROUPING_SNAPSHOT_BATCH_SIZE]
+                rows = db.execute(statement, {"grouping_item_ids": page})
+                for item_id, family_id, record_type, content_hash in rows:
+                    snapshots[item_id] = CollectionItemGroupingSnapshot(
+                        item_id=item_id,
+                        family_id=family_id,
+                        record_type=record_type,
+                        native_content_hash=content_hash,
+                    )
         return snapshots
 
     with httpx.Client(base_url=settings.artifact_base_url, timeout=120) as client:
-        for offset in range(0, len(unique_item_ids), REMOTE_GROUPING_SNAPSHOT_BATCH_SIZE):
+        for offset in range(0, len(unique_item_ids), GROUPING_SNAPSHOT_BATCH_SIZE):
             payload = CollectionItemGroupingSnapshotsRequest(
                 tenant_id=tenant_id,
                 client_id=client_id,
                 item_ids=unique_item_ids[
-                    offset : offset + REMOTE_GROUPING_SNAPSHOT_BATCH_SIZE
+                    offset : offset + GROUPING_SNAPSHOT_BATCH_SIZE
                 ],
             )
             response = client.post(
@@ -763,8 +765,8 @@ def get_collection_item_analysis_input_snapshots(
     unique_item_ids = list(dict.fromkeys(item_ids))
     snapshots: dict[uuid.UUID, AnalysisInputItemSnapshot] = {}
     settings = get_settings()
-    for offset in range(0, len(unique_item_ids), REMOTE_GROUPING_SNAPSHOT_BATCH_SIZE):
-        page = unique_item_ids[offset : offset + REMOTE_GROUPING_SNAPSHOT_BATCH_SIZE]
+    for offset in range(0, len(unique_item_ids), GROUPING_SNAPSHOT_BATCH_SIZE):
+        page = unique_item_ids[offset : offset + GROUPING_SNAPSHOT_BATCH_SIZE]
         if settings.artifact_mode == "embedded":
             with ArtifactSessionLocal() as db:
                 values = collection_item_analysis_input_snapshots(

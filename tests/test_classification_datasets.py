@@ -135,6 +135,7 @@ def create_configuration(
     dynamic_classes: bool = False,
     target_cardinality: str = "SINGLE",
     hierarchy_level: int | None = None,
+    source_conflict_action: str = "REQUIRE_ADJUDICATION",
 ) -> dict:
     if strategy == "BINARY":
         classes = ["negative", "positive"]
@@ -181,7 +182,7 @@ def create_configuration(
             "label_policy": {
                 "allowed_sources": sources,
                 "missing_label_action": "EXCLUDE",
-                "source_conflict_action": "REQUIRE_ADJUDICATION",
+                "source_conflict_action": source_conflict_action,
                 "target_value_conflict_action": "EXCLUDE",
             },
             "feature_contract": {
@@ -391,6 +392,96 @@ def read_workflow_parquet(
     )
     assert response.status_code == 200, response.text
     return pq.read_table(io.BytesIO(response.content)).to_pylist()
+
+
+def test_one_vs_rest_intersects_equal_authority_source_values(
+    client: TestClient,
+    root_token: str,
+    root_admin,
+    monkeypatch,
+) -> None:
+    matter = create_matter(client, root_token, create_client_tenant(client, root_token), "Intersection")
+    definition = create_field(
+        client,
+        root_token,
+        matter["id"],
+        key="dataset_intersection_target",
+        cardinality="MULTIPLE",
+    )
+    documents = add_documents(matter["id"], root_admin.id, 4)
+    configure_artifact_gateway(monkeypatch, documents)
+    _, left_source_id = create_review_source(
+        matter_id=matter["id"],
+        definition_id=definition["id"],
+        documents=documents,
+        user_id=root_admin.id,
+        values={
+            documents[0].id: ["responsive", "needs_review"],
+            documents[1].id: ["needs_review"],
+            documents[2].id: ["responsive"],
+            documents[3].id: ["responsive"],
+        },
+    )
+    _, right_source_id = create_review_source(
+        matter_id=matter["id"],
+        definition_id=definition["id"],
+        documents=documents,
+        user_id=root_admin.id,
+        values={
+            documents[0].id: ["responsive"],
+            documents[1].id: ["needs_review"],
+            documents[2].id: ["responsive"],
+            documents[3].id: ["needs_review"],
+        },
+    )
+    model = create_model(client, root_token, matter["id"], definition["id"])
+    configuration = create_configuration(
+        client,
+        root_token,
+        matter["id"],
+        model["id"],
+        strategy="ONE_VS_REST",
+        target_cardinality="MULTIPLE",
+        source_conflict_action="INTERSECT",
+        sources=[
+            {
+                "kind": "HUMAN_REVIEW",
+                "authority": "GOLD",
+                "source_weight": 1.0,
+                "source_reference_id": str(left_source_id),
+            },
+            {
+                "kind": "ADJUDICATED_REVIEW",
+                "authority": "GOLD",
+                "source_weight": 1.0,
+                "source_reference_id": str(right_source_id),
+            },
+        ],
+    )
+    base = f"/v1/matters/{matter['id']}/classification-models/{model['id']}/dataset-snapshots"
+    created = client.post(
+        base,
+        headers=auth(root_token),
+        json=snapshot_request(configuration["id"], "MATTER", matter["id"]),
+    )
+    assert created.status_code == 201, created.text
+    snapshot = created.json()["snapshot"]
+    assert snapshot["labeled_count"] == 3
+    assert next(
+        warning for warning in snapshot["warnings"] if warning["code"] == "SOURCE_CONFLICTS_INTERSECTED"
+    )["count"] == 1
+    assert next(
+        warning for warning in snapshot["warnings"] if warning["code"] == "SOURCE_CONFLICTS_EXCLUDED"
+    )["count"] == 1
+    rows = read_workflow_parquet(client, root_token, snapshot["label_artifact_id"])
+    intersected = next(row for row in rows if row["matter_document_id"] == str(documents[0].id))
+    assert intersected["raw_value_keys"] == ["responsive"]
+    assert intersected["one_vs_rest_labels"] == [1, 0]
+    assert len(intersected["source_record_ids"]) == 3
+    assert len(json.loads(intersected["candidate_claims_json"])) == 2
+    disjoint = next(row for row in rows if row["matter_document_id"] == str(documents[3].id))
+    assert disjoint["resolution_status"] == "CONFLICTING"
+    assert disjoint["reason_code"] == "SOURCE_CONFLICT"
 
 
 def test_matter_snapshot_resolves_precedence_deduplicates_and_reuses_identity(
