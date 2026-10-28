@@ -99,9 +99,12 @@ export function ReviewProgramsSection() {
   }
 
   const startRun = useMutation({
-    mutationFn: (programId: string) => coreApi<ReviewProgramRunRead>(`/v1/matters/${matterId}/review-programs/${programId}/runs`, {
+    mutationFn: ({ programId, confirmReplaceUnfinishedRun = false }: { programId: string; confirmReplaceUnfinishedRun?: boolean }) => coreApi<ReviewProgramRunRead>(`/v1/matters/${matterId}/review-programs/${programId}/runs`, {
       method: "POST",
-      body: JSON.stringify({ idempotency_key: crypto.randomUUID() }),
+      body: JSON.stringify({
+        idempotency_key: crypto.randomUUID(),
+        confirm_replace_unfinished_run: confirmReplaceUnfinishedRun,
+      }),
     }),
     onSuccess: async (run) => { await refresh(run.program_id); toast.success("The guided setup is ready. Configure the Matter Definition to continue."); },
     onError: mutationError("The Review Program could not be started."),
@@ -220,7 +223,7 @@ export function ReviewProgramsSection() {
         loading={runs.isPending}
         error={runs.error}
         busy={startRun.isPending || command.isPending || resetDiscoveryQA.isPending || cancelDiscoveryQA.isPending || resolveAction.isPending || setupDefinition.isPending || setupQA.isPending || setupDiscovery.isPending || setupClassifierImprovement.isPending || setupNegativePopulationQC.isPending}
-        onStart={() => startRun.mutate(selectedProgram.id)}
+        onStart={(confirmReplaceUnfinishedRun) => startRun.mutate({ programId: selectedProgram.id, confirmReplaceUnfinishedRun })}
         onCommand={(verb) => currentRun && command.mutate({ programId: selectedProgram.id, runId: currentRun.id, verb })}
         onResetDiscovery={() => currentRun && resetDiscoveryQA.mutate({ programId: selectedProgram.id, runId: currentRun.id })}
         onCancelDiscovery={() => currentRun && cancelDiscoveryQA.mutate({ programId: selectedProgram.id, runId: currentRun.id })}
@@ -245,7 +248,7 @@ function ProgramWorkspace({ clientId, matterId, program, run, stages, canManage,
   loading: boolean;
   error: Error | null;
   busy: boolean;
-  onStart: () => void;
+  onStart: (confirmReplaceUnfinishedRun?: boolean) => void;
   onCommand: (verb: "cancel" | "retry" | "reconcile") => void;
   onResetDiscovery: () => void;
   onCancelDiscovery: () => void;
@@ -283,10 +286,10 @@ function ProgramWorkspace({ clientId, matterId, program, run, stages, canManage,
         <div><CardTitle>{program.name}</CardTitle><CardDescription>{program.description || "Guided First Pass Review workflow"}</CardDescription></div>
         <div className="flex shrink-0 flex-wrap justify-end gap-2">
           {run && canManage && ACTIVE_RUN_STATUSES.has(run.status) ? <><Button size="sm" variant="outline" disabled={busy} onClick={() => onCommand("reconcile")}><RefreshCw />Reconcile</Button><Button size="sm" variant="outline" disabled={busy} onClick={() => onCommand("cancel")}><Ban />Stop program</Button></> : null}
-          {run?.status === "FAILED" && run.failure_retriable && canManage ? <Button size="sm" disabled={busy} onClick={() => onCommand("retry")}><RotateCcw />Retry</Button> : null}
+          {run && ["COMPLETED", "COMPLETED_WITH_ERRORS", "CANCELED"].includes(run.status) && canManage ? <Button size="sm" variant="outline" disabled={busy} onClick={() => onStart(false)}><Play />Start another run</Button> : null}
         </div>
       </CardHeader>
-      {run ? <CardContent><div className="flex flex-wrap items-center gap-2"><StatusBadge status={run.status} /><Badge variant="outline">{isDefinitionReassessment ? `Definition refinement · reassessment round ${definitionAssessmentRound}` : friendly(run.current_stage)}</Badge><span className="text-xs text-muted-foreground">Started {formatDate(run.created_at)}</span></div>{run.failure_summary ? <p className="mt-3 rounded-lg border border-destructive/30 bg-destructive/5 p-3 text-sm text-destructive">{run.failure_summary}</p> : null}</CardContent> : <CardContent><div className="flex flex-wrap items-center justify-between gap-3"><div><p className="text-sm font-medium">This program has not been configured yet.</p><p className="mt-1 text-sm text-muted-foreground">Begin the guided setup to create, clone, or adopt a Matter Definition. No document analysis starts until you save the definition and choose to assess it.</p></div>{canManage ? <Button size="sm" disabled={busy} onClick={onStart}><Play />Start Setup</Button> : null}</div></CardContent>}
+      {run ? <CardContent><div className="flex flex-wrap items-center gap-2">{run.status === "FAILED" ? <Badge variant="outline" className="border-amber-500/40 text-amber-700 dark:text-amber-300">Needs attention</Badge> : <StatusBadge status={run.status} />}<Badge variant="outline">{isDefinitionReassessment ? `Definition refinement · reassessment round ${definitionAssessmentRound}` : friendly(run.current_stage)}</Badge><span className="text-xs text-muted-foreground">Started {formatDate(run.created_at)}</span></div></CardContent> : <CardContent><div className="flex flex-wrap items-center justify-between gap-3"><div><p className="text-sm font-medium">This program has not been configured yet.</p><p className="mt-1 text-sm text-muted-foreground">Begin the guided setup to create, clone, or adopt a Matter Definition. No document analysis starts until you save the definition and choose to assess it.</p></div>{canManage ? <Button size="sm" disabled={busy} onClick={() => onStart(false)}><Play />Start Setup</Button> : null}</div></CardContent>}
     </Card>
     {run && currentAssessment ? <DefinitionAssessmentProgress clientId={clientId} matterId={matterId} run={run} assessment={currentAssessment} /> : null}
     {run?.status === "COMPLETED" || run?.status === "COMPLETED_WITH_ERRORS" ? <CompletedReviewProgramSummary run={run} /> : null}
@@ -301,10 +304,31 @@ function ProgramWorkspace({ clientId, matterId, program, run, stages, canManage,
       const isCurrent = (stage.key === run.current_stage && !isDefinitionReassessment) || containsCurrentReassessment;
       const upcoming = isDefinitionReassessment ? stage.ordinal > 3 : stage.ordinal > run.current_stage_ordinal;
       const isRunning = attempt?.status === "RUNNING" || (isCurrent && run.status === "RUNNING");
+      const showsRunFailure = isCurrent && run.status === "FAILED";
       const showsDiscoveryTask = isCurrent && stage.key === "DISCOVERY_QA" && Boolean(run.progress_summary?.discovery_qa);
-      return <li key={stage.key} className={cn("flex items-start gap-3 rounded-lg border p-3", isCurrent && "border-primary/50 bg-primary/5", upcoming && "opacity-55", (isRunning || showsDiscoveryTask) && "sm:col-span-2")}><span className="grid size-7 shrink-0 place-items-center rounded-full bg-muted text-xs font-semibold">{stage.ordinal}</span><div className="min-w-0 flex-1"><div className="flex items-start justify-between gap-2"><p className="text-sm font-medium">{stage.name}</p><ProgramStageTooltip stage={stage} /></div><div className="mt-1 flex flex-wrap gap-1">{attempt ? <StatusBadge status={attempt.status} /> : <Badge variant="outline">Upcoming</Badge>}<Badge variant="outline">{friendly(stage.batching_policy)}</Badge>{stage.requires_human_gate ? <Badge variant="outline">Decision</Badge> : null}</div>{showsDiscoveryTask ? <DiscoveryQAProgress clientId={clientId} matterId={matterId} run={run} canManage={canManage} busy={busy} onCancel={onCancelDiscovery} onReset={onResetDiscovery} /> : null}{containsCurrentReassessment ? <div className="mt-2 flex items-center justify-between gap-2 rounded-md border border-primary/30 bg-background/80 px-2 py-1.5"><span className="text-xs font-medium">Reassessment · Round {definitionAssessmentRound}</span><StatusBadge status={currentDefinitionAssessmentAttempt?.status ?? run.status} /></div> : null}</div></li>;
+      return <li key={stage.key} className={cn("flex items-start gap-3 rounded-lg border p-3", isCurrent && "border-primary/50 bg-primary/5", upcoming && "opacity-55", (isRunning || showsDiscoveryTask || showsRunFailure) && "sm:col-span-2")}><span className="grid size-7 shrink-0 place-items-center rounded-full bg-muted text-xs font-semibold">{stage.ordinal}</span><div className="min-w-0 flex-1"><div className="flex items-start justify-between gap-2"><p className="text-sm font-medium">{stage.name}</p><ProgramStageTooltip stage={stage} /></div><div className="mt-1 flex flex-wrap gap-1">{attempt ? <StatusBadge status={attempt.status} /> : <Badge variant="outline">Upcoming</Badge>}<Badge variant="outline">{friendly(stage.batching_policy)}</Badge>{stage.requires_human_gate ? <Badge variant="outline">Decision</Badge> : null}</div>{showsRunFailure ? <div className="mt-3 rounded-lg border border-destructive/30 bg-destructive/5 p-3"><p className="text-sm font-medium text-destructive">{stage.name} failed</p><p className="mt-1 text-sm text-destructive">{attempt?.error_summary || run.failure_summary || "This stage could not be completed."}</p>{canManage ? <div className="mt-3 flex flex-wrap gap-2">{run.failure_retriable ? <Button size="sm" disabled={busy} onClick={() => onCommand("retry")}><RotateCcw />Retry {stage.name}</Button> : null}<ReplacementRunDialog run={run} busy={busy} onConfirm={() => onStart(true)} /></div> : null}</div> : null}{showsDiscoveryTask ? <DiscoveryQAProgress clientId={clientId} matterId={matterId} run={run} canManage={canManage} busy={busy} onCancel={onCancelDiscovery} onReset={onResetDiscovery} /> : null}{containsCurrentReassessment ? <div className="mt-2 flex items-center justify-between gap-2 rounded-md border border-primary/30 bg-background/80 px-2 py-1.5"><span className="text-xs font-medium">Reassessment · Round {definitionAssessmentRound}</span><StatusBadge status={currentDefinitionAssessmentAttempt?.status ?? run.status} /></div> : null}</div></li>;
     })}</ol></CardContent></Card> : null}
   </div>;
+}
+
+function ReplacementRunDialog({ run, busy, onConfirm }: { run: ReviewProgramRunRead; busy: boolean; onConfirm: () => void }) {
+  const [open, setOpen] = useState(false);
+  return <Dialog open={open} onOpenChange={setOpen}>
+    <DialogTrigger asChild><Button size="sm" variant="outline" disabled={busy}><Play />Start replacement run</Button></DialogTrigger>
+    <DialogContent>
+      <DialogHeader>
+        <DialogTitle>Start a replacement run?</DialogTitle>
+        <DialogDescription>
+          This program already has an unfinished run that failed during {friendly(run.current_stage)}. Starting a replacement will make a new run current; it will not retry or delete the existing run.
+        </DialogDescription>
+      </DialogHeader>
+      {run.failure_retriable ? <p className="rounded-lg border border-amber-500/40 bg-amber-500/10 p-3 text-sm">This failure is retriable. Use Retry to continue the existing run from its failed stage unless you intentionally want to restart setup.</p> : null}
+      <DialogFooter>
+        <Button type="button" variant="outline" onClick={() => setOpen(false)}>Keep existing run</Button>
+        <Button type="button" variant="destructive" disabled={busy} onClick={() => { setOpen(false); onConfirm(); }}>Start replacement run</Button>
+      </DialogFooter>
+    </DialogContent>
+  </Dialog>;
 }
 
 function DiscoveryQAProgress({ clientId, matterId, run, canManage, busy, onCancel, onReset }: { clientId: string; matterId: string; run: ReviewProgramRunRead; canManage: boolean; busy: boolean; onCancel: () => void; onReset: () => void }) {

@@ -897,6 +897,8 @@ Distinguish:
 - report or artifact availability failure.
 
 Explain whether completed work remains valid and what retry will repeat.
+Display a stage failure and its retry control on the affected stage. The program summary may say **Needs attention**,
+but must not present a retriable classifier-training or child-task failure as though the entire First Pass Review failed.
 
 ### 17.4 Stale decisions
 
@@ -907,6 +909,13 @@ new preview. Retain the stale preview in history for audit.
 
 Use explicit language such as **No positive examples found in this round**. Do not display zero as evidence that the
 issue does not exist.
+
+### 17.6 Starting another run
+
+An active run blocks creation of another run. A failed current run remains unfinished: the normal recovery action is
+**Retry**, and the API rejects an unconfirmed replacement. If a manager intentionally starts a replacement, require a
+warning that identifies the failed stage and explains that the new run restarts setup, becomes current, and neither
+retries nor deletes the existing run. Completed and intentionally canceled runs may start again without this warning.
 
 ## 18. Responsive behavior
 

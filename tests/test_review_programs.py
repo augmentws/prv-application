@@ -665,6 +665,61 @@ def test_completion_freezes_report_and_closes_run(
     assert report.json()["report"]["completion"]["publication_effect"] == "NONE"
 
 
+def test_starting_replacement_run_requires_confirmation_for_failed_current_run(
+    client: TestClient,
+    root_token: str,
+) -> None:
+    _, _, matter, token = review_program_workspace(client, root_token)
+    create_response = client.post(
+        f"/v1/matters/{matter['id']}/review-programs",
+        headers=auth(token),
+        json={"key": "replacement-guard", "name": "Replacement guard"},
+    )
+    assert create_response.status_code == 201, create_response.text
+    program_id = create_response.json()["id"]
+    runs_url = f"/v1/matters/{matter['id']}/review-programs/{program_id}/runs"
+    started = client.post(
+        runs_url,
+        headers=auth(token),
+        json={"idempotency_key": "original-run"},
+    )
+    assert started.status_code == 201, started.text
+
+    with TestingSessionLocal() as db:
+        run = db.get(ReviewProgramRun, uuid.UUID(started.json()["id"]))
+        assert run is not None
+        run.status = "FAILED"
+        run.failure_retriable = True
+        run.failure_summary = "Temporary infrastructure failure"
+        db.commit()
+
+    blocked = client.post(
+        runs_url,
+        headers=auth(token),
+        json={"idempotency_key": "replacement-run"},
+    )
+    assert blocked.status_code == 409, blocked.text
+    assert "unfinished failed run" in blocked.json()["error"]["message"]
+
+    replacement = client.post(
+        runs_url,
+        headers=auth(token),
+        json={
+            "idempotency_key": "replacement-run",
+            "confirm_replace_unfinished_run": True,
+        },
+    )
+    assert replacement.status_code == 201, replacement.text
+    assert replacement.json()["id"] != started.json()["id"]
+
+    with TestingSessionLocal() as db:
+        program = db.get(ReviewProgram, uuid.UUID(program_id))
+        original = db.get(ReviewProgramRun, uuid.UUID(started.json()["id"]))
+        assert program is not None and original is not None
+        assert program.current_run_id == uuid.UUID(replacement.json()["id"])
+        assert original.status == "FAILED"
+
+
 def test_synthetic_run_advances_waits_resumes_retries_reconciles_and_cancels(
     client: TestClient,
     root_token: str,
@@ -707,7 +762,10 @@ def test_synthetic_run_advances_waits_resumes_retries_reconciles_and_cancels(
     competing_start = client.post(
         runs_url,
         headers=auth(token),
-        json={"idempotency_key": "different-run"},
+        json={
+            "idempotency_key": "different-run",
+            "confirm_replace_unfinished_run": True,
+        },
     )
     assert competing_start.status_code == 409
 

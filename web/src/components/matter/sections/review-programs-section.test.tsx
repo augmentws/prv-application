@@ -76,6 +76,79 @@ describe("ReviewProgramsSection", () => {
     ));
   });
 
+  it("warns before replacing an unfinished failed run", async () => {
+    vi.mocked(coreApi).mockImplementation(async (path, options) => {
+      if (path === "/v1/review-workflow-templates") return [{
+        key: "FIRST_PASS_REVIEW",
+        version: 1,
+        schema_version: 1,
+        content_hash: "a".repeat(64),
+        name: "First Pass Review",
+        description: "Guided review",
+        workflow_type: "FIRST_PASS_REVIEW",
+        phases: [],
+        stages: [{ key: "CLASSIFIER_TRAINING", name: "Classifier training", phase_key: "CLASSIFIER", ordinal: 11, batching_policy: "NONE", requires_human_gate: false }],
+      }] as never;
+      if (path === "/v1/matters/matter-1/review-programs") return [{
+        id: "program-1",
+        tenant_id: "tenant-1",
+        matter_id: "matter-1",
+        template_key: "FIRST_PASS_REVIEW",
+        template_version: 1,
+        template_content_hash: "a".repeat(64),
+        key: "standard-first-pass",
+        name: "Standard first pass",
+        description: "Responsive review",
+        status: "ACTIVE",
+        current_run_id: "run-failed",
+        current_version: { version: 2 },
+        created_at: "2026-10-21T00:00:00Z",
+      }] as never;
+      if (path === "/v1/matters/matter-1/review-programs/program-1/runs" && !options) return [{
+        id: "run-failed",
+        program_id: "program-1",
+        status: "FAILED",
+        current_stage: "CLASSIFIER_TRAINING",
+        current_stage_ordinal: 11,
+        progress_summary: {},
+        created_at: "2026-10-21T00:00:00Z",
+        failure_retriable: true,
+        failure_summary: "Database storage was temporarily unavailable.",
+        stage_attempts: [{ stage_key: "CLASSIFIER_TRAINING", status: "FAILED" }],
+        actions: [],
+      }] as never;
+      if (path === "/v1/matters/matter-1/review-programs/program-1/runs" && options?.method === "POST") return {
+        id: "run-replacement",
+        program_id: "program-1",
+        status: "WAITING_FOR_USER",
+      } as never;
+      throw new Error(`Unexpected API request: ${path}`);
+    });
+    renderSection();
+
+    expect(await screen.findByText("Needs attention")).toBeInTheDocument();
+    const classifierStage = screen.getByText("Classifier training").closest("li");
+    expect(classifierStage).not.toBeNull();
+    expect(within(classifierStage as HTMLElement).getByText("Classifier training failed")).toBeInTheDocument();
+    expect(within(classifierStage as HTMLElement).getByText("Database storage was temporarily unavailable.")).toBeInTheDocument();
+    expect(within(classifierStage as HTMLElement).getByRole("button", { name: "Retry Classifier training" })).toBeInTheDocument();
+
+    await userEvent.click(within(classifierStage as HTMLElement).getByRole("button", { name: "Start replacement run" }));
+    expect(screen.getByRole("heading", { name: "Start a replacement run?" })).toBeInTheDocument();
+    expect(screen.getByText(/failed during Classifier Training/)).toBeInTheDocument();
+    expect(screen.getByText(/Use Retry to continue the existing run/)).toBeInTheDocument();
+    expect(vi.mocked(coreApi).mock.calls.filter(([, options]) => options?.method === "POST")).toHaveLength(0);
+
+    await userEvent.click(within(screen.getByRole("dialog")).getByRole("button", { name: "Start replacement run" }));
+    await waitFor(() => expect(coreApi).toHaveBeenCalledWith(
+      "/v1/matters/matter-1/review-programs/program-1/runs",
+      expect.objectContaining({
+        method: "POST",
+        body: expect.stringContaining('"confirm_replace_unfinished_run":true'),
+      }),
+    ));
+  });
+
   it("reports live document progress for a repeated definition assessment", async () => {
     vi.mocked(coreApi).mockImplementation(async (path) => {
       if (path === "/v1/review-workflow-templates") return [{

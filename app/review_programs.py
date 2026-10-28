@@ -1831,6 +1831,7 @@ def start_review_program_run(
     program: ReviewProgram,
     actor: User,
     idempotency_key: str,
+    confirm_replace_unfinished_run: bool = False,
 ) -> ReviewProgramRun:
     key = _validate_idempotency_key(idempotency_key)
     deterministic_id = uuid.uuid5(program.id, f"review-program-run:{key}")
@@ -1850,6 +1851,12 @@ def start_review_program_run(
     )
     if active_run is not None:
         raise ReviewProgramError("Review Program already has an active run")
+
+    unfinished_run = db.get(ReviewProgramRun, program.current_run_id) if program.current_run_id is not None else None
+    if unfinished_run is not None and unfinished_run.status == "FAILED" and not confirm_replace_unfinished_run:
+        raise ReviewProgramError(
+            "Review Program has an unfinished failed run. Retry it when available, or explicitly confirm starting a replacement run."
+        )
 
     version = current_review_program_version(db, program)
     template = _template_for_program(program)
@@ -1889,7 +1896,15 @@ def start_review_program_run(
         action="review_program.run_started",
         target_type="review_program_run",
         target_id=run.id,
-        details={"program_id": str(program.id), "program_version_id": str(version.id)},
+        details={
+            "program_id": str(program.id),
+            "program_version_id": str(version.id),
+            "replaced_unfinished_run_id": (
+                str(unfinished_run.id)
+                if unfinished_run is not None and unfinished_run.status == "FAILED"
+                else None
+            ),
+        },
     )
     return run
 
