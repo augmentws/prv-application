@@ -22,6 +22,7 @@ from app.models import (
 from app.review_programs import (
     ReviewProgramError,
     cancel_review_program_discovery_children,
+    cancel_review_program_discovery_qa,
     cancel_review_program_run,
     create_review_program,
     current_review_program_version,
@@ -689,27 +690,6 @@ def reset_discovery_qa(
     try:
         program = get_review_program(db, matter_id=matter_id, program_id=program_id, for_update=True)
         run = get_review_program_run(db, program=program, run_id=run_id, for_update=True)
-        already_reset = (run.progress_summary or {}).get("last_discovery_qa_reset_key") == payload.idempotency_key.strip()
-        if already_reset:
-            batch_set_workflows = []
-            batch_run_workflows = []
-            child_workflows = []
-            review_batch_workflows = []
-            classification_training_workflows = []
-            classification_scoring_workflows = []
-        else:
-            (
-                batch_set_workflows,
-                batch_run_workflows,
-                child_workflows,
-                review_batch_workflows,
-                classification_training_workflows,
-                classification_scoring_workflows,
-            ) = cancel_review_program_discovery_children(
-                db,
-                run=run,
-                actor_user_id=principal.user.id,
-            )
         reset_review_program_discovery_qa(
             db,
             program=program,
@@ -722,6 +702,56 @@ def reset_discovery_qa(
     except ReviewProgramError as exc:
         db.rollback()
         raise _http_error(exc) from exc
+    db.refresh(run)
+    return _run_read(db, run)
+
+
+@router.post("/{program_id}/runs/{run_id}/cancel-discovery-qa", response_model=ReviewProgramRunRead)
+def cancel_discovery_qa(
+    matter_id: uuid.UUID,
+    program_id: uuid.UUID,
+    run_id: uuid.UUID,
+    payload: ReviewProgramRunCommand,
+    principal: Principal = Depends(get_principal),
+    db: Session = Depends(get_db),
+) -> ReviewProgramRunRead:
+    _matter_with_permission(db, principal, matter_id, "review_program.manage")
+    try:
+        program = get_review_program(db, matter_id=matter_id, program_id=program_id, for_update=True)
+        run = get_review_program_run(db, program=program, run_id=run_id, for_update=True)
+        already_canceled = (
+            (run.progress_summary or {}).get("last_discovery_qa_cancel_key")
+            == payload.idempotency_key.strip()
+        )
+        cancel_review_program_discovery_qa(
+            db,
+            program=program,
+            run=run,
+            actor=principal.user,
+            idempotency_key=payload.idempotency_key,
+            reason=payload.reason,
+        )
+        if already_canceled:
+            cancellation_targets = ([], [], [], [], [], [])
+        else:
+            cancellation_targets = cancel_review_program_discovery_children(
+                db,
+                run=run,
+                actor_user_id=principal.user.id,
+                purposes={"DISCOVERY_POPULATION", "DISCOVERY_QA_PROFILE"},
+            )
+        db.commit()
+    except ReviewProgramError as exc:
+        db.rollback()
+        raise _http_error(exc) from exc
+    (
+        batch_set_workflows,
+        batch_run_workflows,
+        child_workflows,
+        review_batch_workflows,
+        classification_training_workflows,
+        classification_scoring_workflows,
+    ) = cancellation_targets
     for workflow_id in batch_set_workflows:
         cancel_analysis_task_batch_set_workflow(workflow_id)
     for workflow_id in batch_run_workflows:

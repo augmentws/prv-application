@@ -93,6 +93,43 @@ def test_embedded_grouping_snapshots_use_one_array_join(monkeypatch) -> None:
     assert set(snapshots) == set(item_ids)
 
 
+def test_embedded_grouping_snapshots_bound_large_array_parameters(monkeypatch) -> None:
+    item_ids = [uuid.uuid4() for _ in range(5)]
+    parameter_sets: list[dict] = []
+
+    class FakeSession:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *_args) -> None:
+            return None
+
+        def execute(self, _statement, parameters):
+            parameter_sets.append(parameters)
+            return [
+                (item_id, None, "FILE", f"hash-{item_id}")
+                for item_id in parameters["grouping_item_ids"]
+            ]
+
+    monkeypatch.setattr(artifact_gateway, "get_settings", lambda: SimpleNamespace(artifact_mode="embedded"))
+    monkeypatch.setattr(artifact_gateway, "ArtifactSessionLocal", FakeSession)
+    monkeypatch.setattr(artifact_gateway, "GROUPING_SNAPSHOT_BATCH_SIZE", 2)
+
+    snapshots = artifact_gateway.get_collection_item_grouping_snapshots(
+        item_ids=item_ids,
+        actor_user_id=uuid.uuid4(),
+        tenant_id=uuid.uuid4(),
+        client_id=uuid.uuid4(),
+    )
+
+    assert [values["grouping_item_ids"] for values in parameter_sets] == [
+        item_ids[:2],
+        item_ids[2:4],
+        item_ids[4:],
+    ]
+    assert set(snapshots) == set(item_ids)
+
+
 def test_pinned_text_source_is_verified_against_its_frozen_hash(monkeypatch) -> None:
     content = b"Plain text body"
     monkeypatch.setattr(artifact_gateway, "read_artifact_bytes", lambda **_: content)

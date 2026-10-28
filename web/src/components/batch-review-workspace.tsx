@@ -1338,24 +1338,29 @@ export function DisagreementReviewPanel({ disagreement, coding, saving, onSave, 
   const [selectedSourceId, setSelectedSourceId] = useState<string | null>(null);
   const dirty = JSON.stringify(draft) !== JSON.stringify(initial);
 
-  const chooseSource = (sourceId: string, values: unknown[]) => {
-    setDraft(values.map((value) => editorValue(value, definition)));
-    setSelectedSourceId(sourceId);
-  };
-  const submit = async (event: FormEvent) => {
-    event.preventDefault();
+  const saveValues = async (values: string[]) => {
     try {
       await onSave({
         matter_document_id: coding.matter_document_id,
         fields: [{
           metadata_definition_id: disagreement.metadata_definition_id,
-          values: draft.filter((value) => value.trim()).map((value) => parseValue(value, definition)),
+          values: values.filter((value) => value.trim()).map((value) => parseValue(value, definition)),
           confidence: null,
         }],
       });
     } catch (error) {
       toast.error(error instanceof Error ? error.message : "Check the selected value.");
     }
+  };
+  const chooseSource = async (sourceId: string, values: unknown[]) => {
+    const selectedValues = values.map((value) => editorValue(value, definition));
+    setDraft(selectedValues);
+    setSelectedSourceId(sourceId);
+    await saveValues(selectedValues);
+  };
+  const submit = async (event: FormEvent) => {
+    event.preventDefault();
+    await saveValues(draft);
   };
 
   return <form className="flex min-h-0 flex-1 flex-col overflow-hidden" aria-label={`${disagreement.field_display_name} disagreement review`} onSubmit={submit}>
@@ -1379,13 +1384,13 @@ export function DisagreementReviewPanel({ disagreement, coding, saving, onSave, 
             <div className="mt-3 flex flex-wrap gap-1.5">
               {source.display_values.length ? source.display_values.map((value, index) => <Badge key={`${value}:${index}`}>{value}</Badge>) : <Badge variant="outline">No value</Badge>}
             </div>
-            <div className="mt-3 flex items-center justify-between gap-2"><span className="text-xs text-muted-foreground">{source.source_type === "REVIEWER" && source.reviewer_revision !== null && source.reviewer_revision !== undefined ? `Pinned revision ${source.reviewer_revision}` : source.run_type === "CLASSIFIER" ? "Classifier result" : "Pinned analysis result"}</span><Button type="button" size="sm" variant={selected ? "default" : "outline"} disabled={saving || source.state !== "EVALUATED"} aria-pressed={selected} onClick={() => chooseSource(source.id, source.values)}>{selected ? <Check /> : null}{selected ? "Selected" : "Use this coding"}</Button></div>
+            <div className="mt-3 flex items-center justify-between gap-2"><span className="text-xs text-muted-foreground">{source.source_type === "REVIEWER" && source.reviewer_revision !== null && source.reviewer_revision !== undefined ? `Pinned revision ${source.reviewer_revision}` : source.run_type === "CLASSIFIER" ? "Classifier result" : "Pinned analysis result"}</span><Button type="button" size="sm" variant={selected ? "default" : "outline"} disabled={saving || source.state !== "EVALUATED"} aria-pressed={selected} onClick={() => void chooseSource(source.id, source.values)}>{selected && saving ? <LoaderCircle className="animate-spin" /> : selected ? <Check /> : null}{selected && saving ? "Saving…" : selected ? "Selected" : "Use this coding"}</Button></div>
           </article>;
         })}
       </section>
       <section className="border-t p-4" aria-label="Correct coding">
         <Label htmlFor="disagreement-final-coding">Correct {disagreement.field_display_name} coding</Label>
-        <p className="mt-1 text-xs text-muted-foreground">You can use a source above or enter a different value.</p>
+        <p className="mt-1 text-xs text-muted-foreground">Enter a different value here when neither source is correct, then select Save &amp; next.</p>
         <div className="mt-2"><BatchFieldInput id="disagreement-final-coding" definition={definition} values={draft} disabled={saving} onChange={(values) => { setDraft(values); setSelectedSourceId(null); }} /></div>
       </section>
     </div>

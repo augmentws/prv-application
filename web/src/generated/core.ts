@@ -176,6 +176,7 @@ import type {
   ListMatterAccessUsersV1MattersMatterIdAccessUsersGetParams,
   ListMatterDocumentsV1MattersMatterIdDocumentsGetParams,
   ListNotificationsV1NotificationsGetParams,
+  ListQuestionAnsweringJobsV1MattersMatterIdAnalysisTasksQuestionAnsweringJobsGetParams,
   ListReviewBatchDocumentsV1MattersMatterIdReviewBatchesBatchIdDocumentsGetParams,
   ListReviewProgramsV1MattersMatterIdReviewProgramsGetParams,
   ListSearchExportArtifactsV1MattersMatterIdSearchExportsArtifactsGetParams,
@@ -4736,20 +4737,29 @@ export type listQuestionAnsweringJobsV1MattersMatterIdAnalysisTasksQuestionAnswe
 
 export type listQuestionAnsweringJobsV1MattersMatterIdAnalysisTasksQuestionAnsweringJobsGetResponse = (listQuestionAnsweringJobsV1MattersMatterIdAnalysisTasksQuestionAnsweringJobsGetResponseSuccess | listQuestionAnsweringJobsV1MattersMatterIdAnalysisTasksQuestionAnsweringJobsGetResponseError)
 
-export const getListQuestionAnsweringJobsV1MattersMatterIdAnalysisTasksQuestionAnsweringJobsGetUrl = (matterId: string,) => {
+export const getListQuestionAnsweringJobsV1MattersMatterIdAnalysisTasksQuestionAnsweringJobsGetUrl = (matterId: string,
+    params?: ListQuestionAnsweringJobsV1MattersMatterIdAnalysisTasksQuestionAnsweringJobsGetParams,) => {
+  const normalizedParams = new URLSearchParams();
 
+  Object.entries(params || {}).forEach(([key, value]) => {
 
+    if (value !== undefined) {
+      normalizedParams.append(key, value === null ? 'null' : String(value))
+    }
+  });
 
+  const stringifiedParams = normalizedParams.toString();
 
-  return `/api/core/v1/matters/${matterId}/analysis-tasks/question-answering-jobs`
+  return stringifiedParams.length > 0 ? `/api/core/v1/matters/${matterId}/analysis-tasks/question-answering-jobs?${stringifiedParams}` : `/api/core/v1/matters/${matterId}/analysis-tasks/question-answering-jobs`
 }
 
 /**
  * @summary List Question Answering Jobs
  */
-export const listQuestionAnsweringJobsV1MattersMatterIdAnalysisTasksQuestionAnsweringJobsGet = async (matterId: string, options?: RequestInit): Promise<listQuestionAnsweringJobsV1MattersMatterIdAnalysisTasksQuestionAnsweringJobsGetResponse> => {
+export const listQuestionAnsweringJobsV1MattersMatterIdAnalysisTasksQuestionAnsweringJobsGet = async (matterId: string,
+    params?: ListQuestionAnsweringJobsV1MattersMatterIdAnalysisTasksQuestionAnsweringJobsGetParams, options?: RequestInit): Promise<listQuestionAnsweringJobsV1MattersMatterIdAnalysisTasksQuestionAnsweringJobsGetResponse> => {
 
-  const res = await fetch(getListQuestionAnsweringJobsV1MattersMatterIdAnalysisTasksQuestionAnsweringJobsGetUrl(matterId),
+  const res = await fetch(getListQuestionAnsweringJobsV1MattersMatterIdAnalysisTasksQuestionAnsweringJobsGetUrl(matterId,params),
   {
     ...options,
     method: 'GET'
@@ -14439,6 +14449,144 @@ const res = await fetch(getCancelProgramRunV1MattersMatterIdReviewProgramsProgra
 
   const data: cancelProgramRunV1MattersMatterIdReviewProgramsProgramIdRunsRunIdCancelPostResponse['data'] = body ? JSON.parse(body) : {}
   return { data, status: res.status, headers: res.headers } as cancelProgramRunV1MattersMatterIdReviewProgramsProgramIdRunsRunIdCancelPostResponse
+}
+
+
+
+export type resetDiscoveryQaV1MattersMatterIdReviewProgramsProgramIdRunsRunIdResetDiscoveryQaPostResponse200 = {
+  data: ReviewProgramRunRead
+  status: 200
+}
+
+export type resetDiscoveryQaV1MattersMatterIdReviewProgramsProgramIdRunsRunIdResetDiscoveryQaPostResponse422 = {
+  data: HTTPValidationError
+  status: 422
+}
+
+export type resetDiscoveryQaV1MattersMatterIdReviewProgramsProgramIdRunsRunIdResetDiscoveryQaPostResponseSuccess = (resetDiscoveryQaV1MattersMatterIdReviewProgramsProgramIdRunsRunIdResetDiscoveryQaPostResponse200) & {
+  headers: Headers;
+};
+export type resetDiscoveryQaV1MattersMatterIdReviewProgramsProgramIdRunsRunIdResetDiscoveryQaPostResponseError = (resetDiscoveryQaV1MattersMatterIdReviewProgramsProgramIdRunsRunIdResetDiscoveryQaPostResponse422) & {
+  headers: Headers;
+};
+
+export type resetDiscoveryQaV1MattersMatterIdReviewProgramsProgramIdRunsRunIdResetDiscoveryQaPostResponse = (resetDiscoveryQaV1MattersMatterIdReviewProgramsProgramIdRunsRunIdResetDiscoveryQaPostResponseSuccess | resetDiscoveryQaV1MattersMatterIdReviewProgramsProgramIdRunsRunIdResetDiscoveryQaPostResponseError)
+
+export const getResetDiscoveryQaV1MattersMatterIdReviewProgramsProgramIdRunsRunIdResetDiscoveryQaPostUrl = (matterId: string,
+    programId: string,
+    runId: string,) => {
+
+
+
+
+  return `/api/core/v1/matters/${matterId}/review-programs/${programId}/runs/${runId}/reset-discovery-qa`
+}
+
+/**
+ * @summary Reset Discovery Qa
+ */
+export const resetDiscoveryQaV1MattersMatterIdReviewProgramsProgramIdRunsRunIdResetDiscoveryQaPost = async (matterId: string,
+    programId: string,
+    runId: string,
+    reviewProgramRunCommand: ReviewProgramRunCommand, options?: RequestInit): Promise<resetDiscoveryQaV1MattersMatterIdReviewProgramsProgramIdRunsRunIdResetDiscoveryQaPostResponse> => {
+
+    const getHeaders = (h?: NonNullable<RequestInit['headers']>): Record<string, string | readonly string[]> => {
+    if (!h) return {};
+    if (h instanceof Headers) return Object.fromEntries(h.entries());
+    if (Symbol.iterator in h) {
+      return Object.fromEntries(
+        Array.from(h as Iterable<Iterable<string>>, (entry) => Array.from(entry) as [string, string]),
+      );
+    }
+    const headers: Record<string, string | readonly string[]> = {};
+    for (const [name, value] of Object.entries<string | readonly string[] | undefined>(h)) {
+      if (value !== undefined) headers[name] = value;
+    }
+    return headers;
+  };
+const res = await fetch(getResetDiscoveryQaV1MattersMatterIdReviewProgramsProgramIdRunsRunIdResetDiscoveryQaPostUrl(matterId,programId,runId),
+  {
+    ...options,
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json', ...getHeaders(options?.headers) },
+    body: JSON.stringify(reviewProgramRunCommand)
+  }
+)
+
+
+  const body = [204, 205, 304].includes(res.status) ? null : await res.text();
+
+  const data: resetDiscoveryQaV1MattersMatterIdReviewProgramsProgramIdRunsRunIdResetDiscoveryQaPostResponse['data'] = body ? JSON.parse(body) : {}
+  return { data, status: res.status, headers: res.headers } as resetDiscoveryQaV1MattersMatterIdReviewProgramsProgramIdRunsRunIdResetDiscoveryQaPostResponse
+}
+
+
+
+export type cancelDiscoveryQaV1MattersMatterIdReviewProgramsProgramIdRunsRunIdCancelDiscoveryQaPostResponse200 = {
+  data: ReviewProgramRunRead
+  status: 200
+}
+
+export type cancelDiscoveryQaV1MattersMatterIdReviewProgramsProgramIdRunsRunIdCancelDiscoveryQaPostResponse422 = {
+  data: HTTPValidationError
+  status: 422
+}
+
+export type cancelDiscoveryQaV1MattersMatterIdReviewProgramsProgramIdRunsRunIdCancelDiscoveryQaPostResponseSuccess = (cancelDiscoveryQaV1MattersMatterIdReviewProgramsProgramIdRunsRunIdCancelDiscoveryQaPostResponse200) & {
+  headers: Headers;
+};
+export type cancelDiscoveryQaV1MattersMatterIdReviewProgramsProgramIdRunsRunIdCancelDiscoveryQaPostResponseError = (cancelDiscoveryQaV1MattersMatterIdReviewProgramsProgramIdRunsRunIdCancelDiscoveryQaPostResponse422) & {
+  headers: Headers;
+};
+
+export type cancelDiscoveryQaV1MattersMatterIdReviewProgramsProgramIdRunsRunIdCancelDiscoveryQaPostResponse = (cancelDiscoveryQaV1MattersMatterIdReviewProgramsProgramIdRunsRunIdCancelDiscoveryQaPostResponseSuccess | cancelDiscoveryQaV1MattersMatterIdReviewProgramsProgramIdRunsRunIdCancelDiscoveryQaPostResponseError)
+
+export const getCancelDiscoveryQaV1MattersMatterIdReviewProgramsProgramIdRunsRunIdCancelDiscoveryQaPostUrl = (matterId: string,
+    programId: string,
+    runId: string,) => {
+
+
+
+
+  return `/api/core/v1/matters/${matterId}/review-programs/${programId}/runs/${runId}/cancel-discovery-qa`
+}
+
+/**
+ * @summary Cancel Discovery Qa
+ */
+export const cancelDiscoveryQaV1MattersMatterIdReviewProgramsProgramIdRunsRunIdCancelDiscoveryQaPost = async (matterId: string,
+    programId: string,
+    runId: string,
+    reviewProgramRunCommand: ReviewProgramRunCommand, options?: RequestInit): Promise<cancelDiscoveryQaV1MattersMatterIdReviewProgramsProgramIdRunsRunIdCancelDiscoveryQaPostResponse> => {
+
+    const getHeaders = (h?: NonNullable<RequestInit['headers']>): Record<string, string | readonly string[]> => {
+    if (!h) return {};
+    if (h instanceof Headers) return Object.fromEntries(h.entries());
+    if (Symbol.iterator in h) {
+      return Object.fromEntries(
+        Array.from(h as Iterable<Iterable<string>>, (entry) => Array.from(entry) as [string, string]),
+      );
+    }
+    const headers: Record<string, string | readonly string[]> = {};
+    for (const [name, value] of Object.entries<string | readonly string[] | undefined>(h)) {
+      if (value !== undefined) headers[name] = value;
+    }
+    return headers;
+  };
+const res = await fetch(getCancelDiscoveryQaV1MattersMatterIdReviewProgramsProgramIdRunsRunIdCancelDiscoveryQaPostUrl(matterId,programId,runId),
+  {
+    ...options,
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json', ...getHeaders(options?.headers) },
+    body: JSON.stringify(reviewProgramRunCommand)
+  }
+)
+
+
+  const body = [204, 205, 304].includes(res.status) ? null : await res.text();
+
+  const data: cancelDiscoveryQaV1MattersMatterIdReviewProgramsProgramIdRunsRunIdCancelDiscoveryQaPostResponse['data'] = body ? JSON.parse(body) : {}
+  return { data, status: res.status, headers: res.headers } as cancelDiscoveryQaV1MattersMatterIdReviewProgramsProgramIdRunsRunIdCancelDiscoveryQaPostResponse
 }
 
 

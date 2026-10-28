@@ -392,7 +392,8 @@ describe("ReviewProgramsSection", () => {
     });
   });
 
-  it("confirms and resets an active Discovery Q&A run", async () => {
+  it("cancels an active Discovery Q&A task before offering reset on the task", async () => {
+    let discoveryCanceled = false;
     vi.mocked(coreApi).mockImplementation(async (path, options) => {
       if (path === "/v1/review-workflow-templates") return [{
         key: "FIRST_PASS_REVIEW", version: 1, schema_version: 1, content_hash: "a".repeat(64),
@@ -405,11 +406,22 @@ describe("ReviewProgramsSection", () => {
         description: "Responsive review", status: "ACTIVE", current_run_id: "run-1", current_version: { version: 3 }, created_at: "2026-10-21T00:00:00Z",
       }] as never;
       if (path === "/v1/matters/matter-1/review-programs/program-1/runs" && !options) return [{
-        id: "run-1", program_id: "program-1", status: "RUNNING", current_stage: "DISCOVERY_QA",
-        current_stage_ordinal: 6, current_discovery_round: 1, progress_summary: { discovery_qa: { batch_set_id: "set-1" } },
+        id: "run-1", program_id: "program-1", status: discoveryCanceled ? "WAITING_FOR_USER" : "RUNNING", current_stage: "DISCOVERY_QA",
+        current_stage_ordinal: 6, current_discovery_round: 1, progress_summary: { discovery_qa_state: discoveryCanceled ? "CANCELED" : "RUNNING_PROFILES", discovery_qa: { batch_set_id: "set-1", task_id: "task-1", execution_profile_ids: ["profile-1", "profile-2"] } },
         created_at: "2026-10-21T00:00:00Z", failure_retriable: false, failure_summary: null,
-        stage_attempts: [{ stage_key: "DISCOVERY_QA", status: "RUNNING" }], actions: [],
+        stage_attempts: [{ stage_key: "DISCOVERY_QA", status: discoveryCanceled ? "CANCELED" : "RUNNING" }], actions: [],
       }] as never;
+      if (path === "/v1/matters/matter-1/analysis-tasks/task-1/batch-sets/set-1") return { id: "set-1", status: "READY", population_count: 1500, batch_count: 3 } as never;
+      if (path === "/v1/matters/matter-1/analysis-tasks/question-answering-jobs?batch_set_id=set-1") return [
+        { id: "jev-1", scope_id: "batch-1", review_batch_id: "batch-1", review_batch_name: "Batch 1", task_name: "Discovery", decision_provider: "JEV", model_key: "jev-latest", status: "COMPLETED", successful_document_count: 500, document_count: 500, failed_document_count: 0 },
+        { id: "openai-1", scope_id: "batch-1", review_batch_id: "batch-1", review_batch_name: "Batch 1", task_name: "Discovery", decision_provider: "OPENAI_DECISIONS", model_key: "gpt-6-luna", status: "COMPLETED", successful_document_count: 500, document_count: 500, failed_document_count: 0 },
+        { id: "jev-2", scope_id: "batch-2", review_batch_id: "batch-2", review_batch_name: "Batch 2", task_name: "Discovery", decision_provider: "JEV", model_key: "jev-latest", status: "RUNNING", successful_document_count: 230, document_count: 500, failed_document_count: 0 },
+        { id: "openai-2", scope_id: "batch-2", review_batch_id: "batch-2", review_batch_name: "Batch 2", task_name: "Discovery", decision_provider: "OPENAI_DECISIONS", model_key: "gpt-6-luna", status: "QUEUED", successful_document_count: 0, document_count: 500, failed_document_count: 0 },
+      ] as never;
+      if (path.endsWith("/cancel-discovery-qa") && options?.method === "POST") {
+        discoveryCanceled = true;
+        return { id: "run-1", program_id: "program-1", status: "WAITING_FOR_USER" } as never;
+      }
       if (path.endsWith("/reset-discovery-qa") && options?.method === "POST") return {
         id: "run-1", program_id: "program-1", status: "WAITING_FOR_USER",
       } as never;
@@ -417,10 +429,32 @@ describe("ReviewProgramsSection", () => {
     });
     renderSection();
 
-    await userEvent.click(await screen.findByRole("button", { name: "Reset Discovery Q&A" }));
+    expect(await screen.findByText("Reviewing documents")).toBeInTheDocument();
+    expect(screen.getByText("1 of 3 batches complete · 1 running · 1 queued")).toBeInTheDocument();
+    expect(screen.getByText("1,230 of 3,000 successful")).toBeInTheDocument();
+    expect(screen.getByText("Jev 730/1,500 · OpenAI Decisions 500/1,500")).toBeInTheDocument();
+    expect(screen.getByRole("link", { name: "View batch progress" })).toHaveAttribute("href", "/app/clients/client-1/matters/matter-1/jobs/question-answering?batch_set=set-1");
+    expect(screen.getByText("Discovery Q&A").closest("li")).toHaveClass("sm:col-span-2");
+    expect(screen.queryByRole("button", { name: "Reset Discovery Q&A" })).not.toBeInTheDocument();
+    const task = screen.getByText("Discovery Q&A").closest("li");
+    expect(task).not.toBeNull();
+    await userEvent.click(within(task!).getByRole("button", { name: "Cancel Discovery Q&A" }));
     const dialog = await screen.findByRole("dialog");
-    expect(within(dialog).getByText(/archives its batch set and child batches/)).toBeInTheDocument();
-    await userEvent.click(within(dialog).getByRole("button", { name: "Reset Discovery Q&A" }));
+    expect(within(dialog).getByText(/stops the active Batch Set/)).toBeInTheDocument();
+    await userEvent.click(within(dialog).getByRole("button", { name: "Cancel Discovery Q&A" }));
+
+    await waitFor(() => expect(coreApi).toHaveBeenCalledWith(
+      "/v1/matters/matter-1/review-programs/program-1/runs/run-1/cancel-discovery-qa",
+      expect.objectContaining({ method: "POST" }),
+    ));
+    expect(await screen.findByText("Canceled")).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "Cancel Discovery Q&A" })).not.toBeInTheDocument();
+    const canceledTask = screen.getByText("Discovery Q&A").closest("li");
+    expect(canceledTask).not.toBeNull();
+    await userEvent.click(within(canceledTask!).getByRole("button", { name: "Reset Discovery Q&A" }));
+    const resetDialog = await screen.findByRole("dialog");
+    expect(within(resetDialog).getByText(/archives the canceled Discovery Q&A Batch Set/)).toBeInTheDocument();
+    await userEvent.click(within(resetDialog).getByRole("button", { name: "Reset Discovery Q&A" }));
 
     await waitFor(() => expect(coreApi).toHaveBeenCalledWith(
       "/v1/matters/matter-1/review-programs/program-1/runs/run-1/reset-discovery-qa",
@@ -454,7 +488,31 @@ describe("ReviewProgramsSection", () => {
           decision_context: {
             discovery_analysis: {
               support_status: "INSUFFICIENT",
+              batch_count: 2,
+              policy: { minimum_positive_support: 25, minimum_negative_support: 25 },
               overall: { exact_count: 31, partial_count: 2, disagreement_count: 3, incomplete_count: 1 },
+              fields: [{
+                key: "responsive",
+                display_name: "Responsiveness",
+                exact_count: 20,
+                partial_count: 0,
+                disagreement_count: 3,
+                incomplete_count: 1,
+                classes: [
+                  { value_key: "true", left_selected_count: 4, right_selected_count: 3, intersection_count: 3, union_count: 4, negative_count: 32, disagreement_count: 1, support_status: "LOW_SUPPORT" },
+                  { value_key: "false", left_selected_count: 32, right_selected_count: 33, intersection_count: 32, union_count: 33, negative_count: 3, disagreement_count: 1, support_status: "SUFFICIENT" },
+                ],
+              }, {
+                key: "issue",
+                display_name: "Issue",
+                exact_count: 11,
+                partial_count: 2,
+                disagreement_count: 0,
+                incomplete_count: 0,
+                classes: [
+                  { value_key: "coverage", left_selected_count: 3, right_selected_count: 2, intersection_count: 2, union_count: 3, negative_count: 33, disagreement_count: 1, support_status: "LOW_SUPPORT" },
+                ],
+              }],
               low_support: [
                 { field_key: "responsive", value_key: "true", positive_count: 4, negative_count: 32 },
                 { field_key: "issue", value_key: "coverage", positive_count: 3, negative_count: 33 },
@@ -477,9 +535,17 @@ describe("ReviewProgramsSection", () => {
     renderSection();
 
     expect(await screen.findByText("Insufficient")).toBeInTheDocument();
+    expect(screen.getByRole("heading", { name: "Discovery analysis" })).toBeInTheDocument();
+    expect(screen.getByText("Frozen comparison of the two pinned Q&A profiles across 2 batches.")).toBeInTheDocument();
     expect(screen.getByText("31")).toBeInTheDocument();
-    expect(screen.getByText("5")).toBeInTheDocument();
-    expect(screen.getByText("Low-support categories remain visible in the frozen analysis and require an explicit decision before classifier training.")).toBeInTheDocument();
+    expect(screen.getByText(/Minimum support per category:/)).toHaveTextContent("25 positive and 25 negative examples");
+    const responsiveness = screen.getByRole("heading", { name: "Responsiveness" }).closest("section");
+    expect(responsiveness).not.toBeNull();
+    expect(within(responsiveness!).getByRole("row", { name: /True 4 3 3 4 32 1 Low support/ })).toBeInTheDocument();
+    expect(within(responsiveness!).getByRole("row", { name: /False 32 33 32 33 3 1 Sufficient/ })).toBeInTheDocument();
+    const issue = screen.getByRole("heading", { name: "Issue" }).closest("section");
+    expect(issue).not.toBeNull();
+    expect(within(issue!).getByRole("row", { name: /Coverage 3 2 2 3 33 1 Low support/ })).toBeInTheDocument();
     await userEvent.click(screen.getByRole("button", { name: "Review more documents" }));
 
     await waitFor(() => expect(coreApi).toHaveBeenCalledWith(
@@ -513,11 +579,19 @@ describe("ReviewProgramsSection", () => {
           id: "action-1", action_type: "TRAINING_LABEL_POLICY", stage_key: "DISAGREEMENT_REVIEW", status: "OPEN",
           title: "Choose the classifier training labels", explanation: "Choose how the two Q&A results become labels.", preview_hash: "b".repeat(64),
           decision_context: {
-            discovery_analysis: { profile_run_ids: ["run-a", "run-b"], overall: { exact_count: 31, partial_count: 2, disagreement_count: 3 } },
+            discovery_analysis: {
+              profile_run_ids: ["run-a", "run-b"],
+              overall: { exact_count: 31, partial_count: 2, disagreement_count: 3 },
+              fields: [
+                { metadata_definition_id: "11111111-1111-4111-8111-111111111111", key: "responsive", display_name: "Responsiveness", partial_count: 2, disagreement_count: 3 },
+                { metadata_definition_id: "22222222-2222-4222-8222-222222222222", key: "privilege", display_name: "Privilege", partial_count: 0, disagreement_count: 2 },
+              ],
+            },
             training_label_resolution: {},
           },
           allowed_choices: [
             { key: "USE_ALL_MODEL_CODES", label: "Use all model codings", consequence: "Use both sources and exclude conflicts." },
+            { key: "USE_OVERLAPPING_VALUES", label: "Use overlapping values", consequence: "Keep only values selected by both models." },
             { key: "USE_EXACT_AGREEMENT", label: "Use exact model agreements", consequence: "Use exact matches." },
             { key: "REVIEW_DISAGREEMENTS", label: "Review model differences", consequence: "Create review batches." },
             { key: "STOP", label: "Stop program", consequence: "End this run." },
@@ -533,6 +607,13 @@ describe("ReviewProgramsSection", () => {
 
     expect(await screen.findByText("Not selected")).toBeInTheDocument();
     expect(screen.getByText("Model differences").nextElementSibling).toHaveTextContent("5");
+    expect(screen.getByText(/One consolidated ad hoc review batch will be created for each selected field/)).toBeInTheDocument();
+    expect(screen.getByRole("checkbox", { name: /Responsiveness/ })).toBeChecked();
+    expect(screen.getByRole("checkbox", { name: /Privilege/ })).toBeChecked();
+    const overlappingButton = screen.getByRole("button", { name: "Use overlapping values" });
+    expect(overlappingButton).toHaveAttribute("aria-describedby", "review-program-choice-use_overlapping_values-help");
+    expect(screen.getByText("Keep only values selected by both models.")).toHaveAttribute("role", "tooltip");
+    await userEvent.click(screen.getByRole("checkbox", { name: /Privilege/ }));
     await userEvent.click(screen.getByRole("button", { name: "Review model differences" }));
 
     await waitFor(() => expect(coreApi).toHaveBeenCalledWith(
@@ -543,10 +624,11 @@ describe("ReviewProgramsSection", () => {
     expect(JSON.parse(String(call?.[1]?.body))).toEqual({
       preview_hash: "b".repeat(64),
       choice_key: "REVIEW_DISAGREEMENTS",
+      input: { metadata_definition_ids: ["11111111-1111-4111-8111-111111111111"] },
     });
   });
 
-  it("links live ad hoc difference batches and confirms adjudication", async () => {
+  it("links live difference batches and allows partial reconciliation", async () => {
     vi.mocked(coreApi).mockImplementation(async (path, options) => {
       if (path === "/v1/review-workflow-templates") return [{
         key: "FIRST_PASS_REVIEW", version: 1, schema_version: 1, content_hash: "a".repeat(64),
@@ -564,7 +646,7 @@ describe("ReviewProgramsSection", () => {
         stage_attempts: [{ stage_key: "DISAGREEMENT_REVIEW", status: "WAITING" }],
         actions: [{
           id: "action-1", action_type: "DISAGREEMENT_REVIEW_COMPLETION", stage_key: "DISAGREEMENT_REVIEW", status: "OPEN",
-          title: "Complete the difference review", explanation: "Complete every document before continuing.", preview_hash: "b".repeat(64),
+          title: "Choose a difference reconciliation path", explanation: "Review as many differences as needed.", preview_hash: "b".repeat(64),
           decision_context: {
             discovery_analysis: { profile_run_ids: ["run-a", "run-b"], overall: { exact_count: 31, partial_count: 2, disagreement_count: 3 } },
             training_label_resolution: {
@@ -573,7 +655,11 @@ describe("ReviewProgramsSection", () => {
             },
           },
           allowed_choices: [
-            { key: "CONFIRM_ADJUDICATION", label: "Confirm difference review complete", consequence: "Freeze reviewer revisions." },
+            { key: "CONFIRM_ADJUDICATION", label: "Require complete review", consequence: "Freeze every reviewer decision." },
+            { key: "CONFIRM_PARTIAL_ADJUDICATION", label: "Use reviewed decisions", consequence: "Exclude unresolved differences." },
+            { key: "USE_OVERLAPPING_VALUES", label: "Use overlapping values", consequence: "Keep only values selected by both models." },
+            { key: "USE_EXACT_AGREEMENT", label: "Use exact model agreements", consequence: "Use exact agreements." },
+            { key: "USE_ALL_MODEL_CODES", label: "Use all model codings", consequence: "Exclude conflicts." },
             { key: "STOP", label: "Stop program", consequence: "End this run." },
           ],
         }],
@@ -589,7 +675,7 @@ describe("ReviewProgramsSection", () => {
     expect(screen.getByText("Responsive differences")).toBeInTheDocument();
     expect(screen.getByText(/1 of 2 completed/)).toBeInTheDocument();
     expect(screen.getByRole("link", { name: "Open review batch" })).toHaveAttribute("href", "/review/matters/matter-1?batch=batch-1");
-    await userEvent.click(screen.getByRole("button", { name: "Confirm difference review complete" }));
+    await userEvent.click(screen.getByRole("button", { name: "Use reviewed decisions" }));
 
     await waitFor(() => expect(coreApi).toHaveBeenCalledWith(
       "/v1/matters/matter-1/review-programs/program-1/runs/run-1/actions/action-1/resolve",
@@ -598,8 +684,58 @@ describe("ReviewProgramsSection", () => {
     const call = vi.mocked(coreApi).mock.calls.find(([path]) => path.endsWith("/actions/action-1/resolve"));
     expect(JSON.parse(String(call?.[1]?.body))).toEqual({
       preview_hash: "b".repeat(64),
-      choice_key: "CONFIRM_ADJUDICATION",
+      choice_key: "CONFIRM_PARTIAL_ADJUDICATION",
     });
+  });
+
+  it("shows policy-adjusted per-label counts before finalizing training labels", async () => {
+    vi.mocked(coreApi).mockImplementation(async (path) => {
+      if (path === "/v1/review-workflow-templates") return [{
+        key: "FIRST_PASS_REVIEW", version: 1, schema_version: 1, content_hash: "a".repeat(64),
+        name: "First Pass Review", description: "Guided review", workflow_type: "FIRST_PASS_REVIEW", phases: [],
+        stages: [{ key: "TRAINING_LABEL_FINALIZATION", name: "Finalize labels", phase_key: "TRAINING_SET", ordinal: 10, batching_policy: "NONE", requires_human_gate: true }],
+      }] as never;
+      if (path === "/v1/matters/matter-1/review-programs") return [{
+        id: "program-1", tenant_id: "tenant-1", matter_id: "matter-1", template_key: "FIRST_PASS_REVIEW",
+        template_version: 1, template_content_hash: "a".repeat(64), key: "standard-first-pass", name: "Standard first pass",
+        description: "Responsive review", status: "ACTIVE", current_run_id: "run-1", current_version: { version: 7 }, created_at: "2026-10-21T00:00:00Z",
+      }] as never;
+      if (path === "/v1/matters/matter-1/review-programs/program-1/runs") return [{
+        id: "run-1", program_id: "program-1", status: "WAITING_FOR_USER", current_stage: "TRAINING_LABEL_FINALIZATION",
+        current_stage_ordinal: 10, created_at: "2026-10-21T00:00:00Z", failure_retriable: false, failure_summary: null,
+        stage_attempts: [{ stage_key: "TRAINING_LABEL_FINALIZATION", status: "WAITING" }],
+        actions: [{
+          id: "action-1", action_type: "TRAINING_LABEL_FINALIZATION", stage_key: "TRAINING_LABEL_FINALIZATION", status: "OPEN",
+          title: "Finalize the classifier training labels", explanation: "Freeze the selected policy.", preview_hash: "b".repeat(64),
+          decision_context: {
+            discovery_analysis: { profile_run_ids: ["run-a", "run-b"], overall: { exact_count: 31, partial_count: 2, disagreement_count: 3 } },
+            training_label_resolution: { policy: "OVERLAPPING_VALUES", profile_run_ids: ["run-a", "run-b"] },
+            training_label_preview: {
+              policy: "OVERLAPPING_VALUES",
+              fields: [{
+                metadata_definition_id: "field-1", key: "issue_tag", display_name: "Issue Tag",
+                eligible_document_count: 28, excluded_document_count: 8, basis: "Values selected by both models",
+                values: [
+                  { value_key: "issue_1", value_label: "Market disruption", positive_count: 17 },
+                  { value_key: "issue_2", value_label: "Hurricane losses", positive_count: 9 },
+                ],
+              }],
+            },
+          },
+          allowed_choices: [
+            { key: "FINALIZE", label: "Finalize training labels", consequence: "Freeze this label set." },
+            { key: "STOP", label: "Stop program", consequence: "End this run." },
+          ],
+        }],
+      }] as never;
+      throw new Error(`Unexpected API request: ${path}`);
+    });
+    renderSection();
+
+    expect(await screen.findByText("Final training-label counts")).toBeInTheDocument();
+    expect(screen.getByText("28 eligible · 8 excluded")).toBeInTheDocument();
+    expect(screen.getByText("Market disruption").nextElementSibling).toHaveTextContent("17");
+    expect(screen.getByText("Hurricane losses").nextElementSibling).toHaveTextContent("9");
   });
 
   it("shows the current gate and resolves it through the coordinator endpoint", async () => {

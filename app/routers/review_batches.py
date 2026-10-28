@@ -3509,43 +3509,79 @@ def get_disagreement_review_document(
     _matter(db, matter_id, principal, "batch.review")
     batch = _batch(db, matter_id, batch_id)
     _require_batch_assignment(db, principal, batch)
-    if batch.selection_type != "COMPARISON_RESULT" or batch.source_batch_id is None:
+    if batch.selection_type != "COMPARISON_RESULT":
         raise HTTPException(status_code=404, detail="This batch has no disagreement review context")
     if db.get(ReviewBatchDocument, (batch.id, document_id)) is None:
         raise HTTPException(status_code=404, detail="Document is not in this review batch")
 
     raw_definition_id = batch.selection_definition.get("metadata_definition_id")
-    raw_sources = batch.selection_definition.get("sources")
-    if raw_definition_id is None or not isinstance(raw_sources, list) or len(raw_sources) < 2:
+    if raw_definition_id is None:
         raise HTTPException(status_code=409, detail="Disagreement source provenance is incomplete")
     try:
         definition_id = uuid.UUID(str(raw_definition_id))
-        source_options = [ReviewBatchComparisonSourceOptionRead.model_validate(item) for item in raw_sources]
-        reviewer_revisions = {
-            source.id: int(raw_source["reviewer_revision"])
-            for source, raw_source in zip(source_options, raw_sources, strict=True)
-            if source.source_type == "REVIEWER"
-        }
-    except (KeyError, TypeError, ValueError) as exc:
+    except (TypeError, ValueError) as exc:
         raise HTTPException(status_code=409, detail="Disagreement source provenance is invalid") from exc
     definition = db.get(MetadataDefinition, definition_id)
     if definition is None or definition.matter_id != matter_id:
         raise HTTPException(status_code=409, detail="The compared coding field is unavailable")
-
-    comparison = comparison_document(
-        db,
-        batch_id=batch.source_batch_id,
-        matter_document_id=document_id,
-        definition_id=definition.id,
-        source_options=source_options,
-        reviewer_revisions=reviewer_revisions,
-    )
-    if comparison is None or comparison.agreement_status not in {"PARTIAL", "DISAGREEMENT"}:
+    raw_source_batches = batch.selection_definition.get("source_batches")
+    if isinstance(raw_source_batches, list):
+        source_specs = raw_source_batches
+    elif batch.source_batch_id is not None:
+        source_specs = [{
+            "source_batch_id": str(batch.source_batch_id),
+            "sources": batch.selection_definition.get("sources"),
+        }]
+    else:
+        raise HTTPException(status_code=409, detail="Disagreement source provenance is incomplete")
+    source_batch_id: uuid.UUID | None = None
+    source_options: list[ReviewBatchComparisonSourceOptionRead] = []
+    reviewer_revisions: dict[uuid.UUID, int] = {}
+    comparison = None
+    try:
+        for source_spec in source_specs:
+            if not isinstance(source_spec, dict):
+                raise TypeError("invalid source batch")
+            candidate_source_batch_id = uuid.UUID(str(source_spec["source_batch_id"]))
+            if db.get(ReviewBatchDocument, (candidate_source_batch_id, document_id)) is None:
+                continue
+            raw_sources = source_spec.get("sources")
+            if not isinstance(raw_sources, list) or len(raw_sources) < 2:
+                raise ValueError("invalid sources")
+            candidate_options = [
+                ReviewBatchComparisonSourceOptionRead.model_validate(item) for item in raw_sources
+            ]
+            candidate_revisions = {
+                source.id: int(raw_source["reviewer_revision"])
+                for source, raw_source in zip(candidate_options, raw_sources, strict=True)
+                if source.source_type == "REVIEWER"
+            }
+            candidate_comparison = comparison_document(
+                db,
+                batch_id=candidate_source_batch_id,
+                matter_document_id=document_id,
+                definition_id=definition.id,
+                source_options=candidate_options,
+                reviewer_revisions=candidate_revisions,
+            )
+            if candidate_comparison is None or candidate_comparison.agreement_status not in {
+                "PARTIAL",
+                "DISAGREEMENT",
+            }:
+                continue
+            source_batch_id = candidate_source_batch_id
+            source_options = candidate_options
+            reviewer_revisions = candidate_revisions
+            comparison = candidate_comparison
+            break
+    except (KeyError, TypeError, ValueError) as exc:
+        raise HTTPException(status_code=409, detail="Disagreement source provenance is invalid") from exc
+    if source_batch_id is None or comparison is None:
         raise HTTPException(status_code=409, detail="The frozen disagreement could not be replayed")
 
     return ReviewBatchDisagreementDocumentRead(
         review_batch_id=batch.id,
-        source_batch_id=batch.source_batch_id,
+        source_batch_id=source_batch_id,
         matter_document_id=document_id,
         metadata_definition_id=definition.id,
         field_display_name=definition.display_name,

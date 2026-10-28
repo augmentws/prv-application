@@ -9,6 +9,7 @@ from app.analysis_task_batch_set_runs import (
     pending_child_ids,
     refresh_child,
 )
+from app.config import get_settings
 from app.database import SessionLocal
 from app.job_executions import ANALYSIS_TASK_BATCH_SET_RUN_JOB_TYPE, transition_job_execution
 from app.models import AnalysisTaskBatchSetRun
@@ -19,7 +20,9 @@ from app.workflows.classification_analysis_tasks import (
 )
 from app.workflows.fact_development import BATCH_RUN_QUEUE, RUN_QUEUE, fact_development_run
 
-PARENT_QUEUE = Queue("analysis-task-batch-set-runs", global_concurrency=2)
+_SETTINGS = get_settings()
+
+PARENT_QUEUE = Queue("analysis-task-batch-set-runs", global_concurrency=_SETTINGS.qa_batch_concurrency)
 
 
 @DBOS.step(name="prepare_analysis_task_batch_set_run", retries_allowed=True, max_attempts=3)

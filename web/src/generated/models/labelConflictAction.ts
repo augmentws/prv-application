@@ -12,5 +12,6 @@ export type LabelConflictAction = typeof LabelConflictAction[keyof typeof LabelC
 export const LabelConflictAction = {
   REQUIRE_ADJUDICATION: 'REQUIRE_ADJUDICATION',
   EXCLUDE: 'EXCLUDE',
+  INTERSECT: 'INTERSECT',
   FAIL_SNAPSHOT: 'FAIL_SNAPSHOT',
 } as const;

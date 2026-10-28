@@ -1,7 +1,7 @@
 "use client";
 
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { Ban, BookOpen, CircleHelp, Play, Plus, RefreshCw, RotateCcw, Workflow } from "lucide-react";
+import { Ban, BookOpen, CircleHelp, ListChecks, Play, Plus, RefreshCw, RotateCcw, Workflow } from "lucide-react";
 import Link from "next/link";
 import { usePathname, useRouter, useSearchParams } from "next/navigation";
 import { useEffect, useMemo, useRef, useState, type FormEvent } from "react";
@@ -17,10 +17,12 @@ import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, D
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
+import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
 import { Textarea } from "@/components/ui/textarea";
-import type { MatterDefinitionAssessmentRead, MatterDefinitionRead, MetadataDefinitionRead, ReviewProgramActionRead, ReviewProgramCreate, ReviewProgramRead, ReviewProgramRunRead, ReviewWorkflowStageRead, ReviewWorkflowTemplateRead } from "@/generated/models";
+import type { AnalysisTaskBatchSetRead, MatterDefinitionAssessmentRead, MatterDefinitionRead, MatterQuestionAnsweringJobRead, MetadataDefinitionRead, ReviewProgramActionRead, ReviewProgramCreate, ReviewProgramRead, ReviewProgramRunRead, ReviewWorkflowStageRead, ReviewWorkflowTemplateRead } from "@/generated/models";
 import { coreApi } from "@/lib/api-client";
 import { formatDate } from "@/lib/format";
+import { matterJobsHref } from "@/lib/matter-routes";
 import { cn } from "@/lib/utils";
 
 const ACTIVE_RUN_STATUSES = new Set(["QUEUED", "RUNNING", "WAITING_FOR_USER"]);
@@ -120,6 +122,14 @@ export function ReviewProgramsSection() {
     onSuccess: async (run) => { await refresh(run.program_id); toast.success("Discovery Q&A was reset. You can now start it again."); },
     onError: mutationError("Discovery Q&A could not be reset."),
   });
+  const cancelDiscoveryQA = useMutation({
+    mutationFn: ({ programId, runId }: { programId: string; runId: string }) => coreApi<ReviewProgramRunRead>(`/v1/matters/${matterId}/review-programs/${programId}/runs/${runId}/cancel-discovery-qa`, {
+      method: "POST",
+      body: JSON.stringify({ idempotency_key: crypto.randomUUID(), reason: "Canceled from the Discovery Q&A task" }),
+    }),
+    onSuccess: async (run) => { await refresh(run.program_id); toast.success("Discovery Q&A was canceled. You can review its progress and reset it when ready."); },
+    onError: mutationError("Discovery Q&A could not be canceled."),
+  });
   const resolveAction = useMutation({
     mutationFn: ({ programId, runId, action, choiceKey, reason, input }: { programId: string; runId: string; action: ReviewProgramActionRead; choiceKey: string; reason?: string; input?: Record<string, unknown> }) => coreApi<ReviewProgramRunRead>(`/v1/matters/${matterId}/review-programs/${programId}/runs/${runId}/actions/${action.id}/resolve`, {
       method: "POST",
@@ -209,10 +219,11 @@ export function ReviewProgramsSection() {
         canManage={canManage}
         loading={runs.isPending}
         error={runs.error}
-        busy={startRun.isPending || command.isPending || resetDiscoveryQA.isPending || resolveAction.isPending || setupDefinition.isPending || setupQA.isPending || setupDiscovery.isPending || setupClassifierImprovement.isPending || setupNegativePopulationQC.isPending}
+        busy={startRun.isPending || command.isPending || resetDiscoveryQA.isPending || cancelDiscoveryQA.isPending || resolveAction.isPending || setupDefinition.isPending || setupQA.isPending || setupDiscovery.isPending || setupClassifierImprovement.isPending || setupNegativePopulationQC.isPending}
         onStart={() => startRun.mutate(selectedProgram.id)}
         onCommand={(verb) => currentRun && command.mutate({ programId: selectedProgram.id, runId: currentRun.id, verb })}
         onResetDiscovery={() => currentRun && resetDiscoveryQA.mutate({ programId: selectedProgram.id, runId: currentRun.id })}
+        onCancelDiscovery={() => currentRun && cancelDiscoveryQA.mutate({ programId: selectedProgram.id, runId: currentRun.id })}
         onResolve={(action, choiceKey, reason, input) => currentRun && resolveAction.mutate({ programId: selectedProgram.id, runId: currentRun.id, action, choiceKey, reason, input })}
         onSetupDefinition={(action, payload) => currentRun && setupDefinition.mutate({ programId: selectedProgram.id, runId: currentRun.id, actionId: action.id, payload })}
         onSetupQA={(action, payload) => currentRun && setupQA.mutate({ programId: selectedProgram.id, runId: currentRun.id, actionId: action.id, payload })}
@@ -224,7 +235,7 @@ export function ReviewProgramsSection() {
   </div>;
 }
 
-function ProgramWorkspace({ clientId, matterId, program, run, stages, canManage, loading, error, busy, onStart, onCommand, onResetDiscovery, onResolve, onSetupDefinition, onSetupQA, onSetupDiscovery, onSetupClassifierImprovement, onSetupNegativePopulationQC }: {
+function ProgramWorkspace({ clientId, matterId, program, run, stages, canManage, loading, error, busy, onStart, onCommand, onResetDiscovery, onCancelDiscovery, onResolve, onSetupDefinition, onSetupQA, onSetupDiscovery, onSetupClassifierImprovement, onSetupNegativePopulationQC }: {
   clientId: string;
   matterId: string;
   program: ReviewProgramRead;
@@ -237,6 +248,7 @@ function ProgramWorkspace({ clientId, matterId, program, run, stages, canManage,
   onStart: () => void;
   onCommand: (verb: "cancel" | "retry" | "reconcile") => void;
   onResetDiscovery: () => void;
+  onCancelDiscovery: () => void;
   onResolve: (action: ReviewProgramActionRead, choiceKey: string, reason?: string, input?: Record<string, unknown>) => void;
   onSetupDefinition: (action: ReviewProgramActionRead, payload: DefinitionSetupPayload) => void;
   onSetupQA: (action: ReviewProgramActionRead, payload: QASetupPayload) => void;
@@ -271,8 +283,7 @@ function ProgramWorkspace({ clientId, matterId, program, run, stages, canManage,
         <div><CardTitle>{program.name}</CardTitle><CardDescription>{program.description || "Guided First Pass Review workflow"}</CardDescription></div>
         <div className="flex shrink-0 flex-wrap justify-end gap-2">
           {canManage && run && (["COMPLETED", "COMPLETED_WITH_ERRORS", "CANCELED"].includes(run.status) || run.status === "FAILED" && !run.failure_retriable) ? <Button size="sm" disabled={busy} onClick={onStart}><Play />Start another run</Button> : null}
-          {run && canManage && run.current_stage === "DISCOVERY_QA" && Boolean(run.progress_summary?.discovery_qa) ? <ResetDiscoveryQADialog busy={busy} onReset={onResetDiscovery} /> : null}
-          {run && canManage && ACTIVE_RUN_STATUSES.has(run.status) ? <><Button size="sm" variant="outline" disabled={busy} onClick={() => onCommand("reconcile")}><RefreshCw />Reconcile</Button><Button size="sm" variant="outline" disabled={busy} onClick={() => onCommand("cancel")}><Ban />Cancel</Button></> : null}
+          {run && canManage && ACTIVE_RUN_STATUSES.has(run.status) ? <><Button size="sm" variant="outline" disabled={busy} onClick={() => onCommand("reconcile")}><RefreshCw />Reconcile</Button><Button size="sm" variant="outline" disabled={busy} onClick={() => onCommand("cancel")}><Ban />Stop program</Button></> : null}
           {run?.status === "FAILED" && run.failure_retriable && canManage ? <Button size="sm" disabled={busy} onClick={() => onCommand("retry")}><RotateCcw />Retry</Button> : null}
         </div>
       </CardHeader>
@@ -280,8 +291,8 @@ function ProgramWorkspace({ clientId, matterId, program, run, stages, canManage,
     </Card>
     {run && currentAssessment ? <DefinitionAssessmentProgress clientId={clientId} matterId={matterId} run={run} assessment={currentAssessment} /> : null}
     {run?.status === "COMPLETED" || run?.status === "COMPLETED_WITH_ERRORS" ? <CompletedReviewProgramSummary run={run} /> : null}
-    {openAction?.action_type === "MATTER_DEFINITION_SETUP" ? <DefinitionSetupCard matterId={matterId} action={openAction} canManage={canManage} busy={busy} onSubmit={(payload) => onSetupDefinition(openAction, payload)} onStop={() => onResolve(openAction, "STOP")} /> : openAction?.action_type === "MATTER_DEFINITION_REFINEMENT" ? <DefinitionRefinementCard clientId={clientId} matterId={matterId} action={openAction} canManage={canManage} busy={busy} onResolve={(choice, input) => onResolve(openAction, choice, undefined, input)} /> : openAction?.action_type === "QA_TASK_SETUP" ? <QASetupCard matterId={matterId} action={openAction} canManage={canManage} busy={busy} onSubmit={(payload) => onSetupQA(openAction, payload)} onStop={() => onResolve(openAction, "STOP")} /> : openAction?.action_type === "DISCOVERY_QA_SETUP" ? <DiscoverySetupCard action={openAction} canManage={canManage} busy={busy} onSubmit={(payload) => onSetupDiscovery(openAction, payload)} onStop={() => onResolve(openAction, "STOP")} /> : openAction?.action_type === "CLASSIFIER_IMPROVEMENT_SETUP" ? <ClassifierImprovementSetupCard action={openAction} canManage={canManage} busy={busy} onSubmit={(payload) => onSetupClassifierImprovement(openAction, payload)} onStop={() => onResolve(openAction, "STOP")} /> : openAction?.action_type === "NEGATIVE_POPULATION_QC_SETUP" ? <NegativePopulationQCSetupCard action={openAction} canManage={canManage} busy={busy} onSubmit={(payload) => onSetupNegativePopulationQC(openAction, payload)} onStop={() => onResolve(openAction, "STOP")} /> : openAction?.action_type === "REVIEW_PROGRAM_COMPLETION" ? <CompletionDecisionCard action={openAction} canManage={canManage} busy={busy} onComplete={(reason) => onResolve(openAction, "COMPLETE", reason)} onStop={() => onResolve(openAction, "STOP")} /> : openAction ? <Card className="border-accent/60 bg-accent/5"><CardHeader><CardTitle>{openAction.title}</CardTitle><CardDescription>{openAction.explanation}</CardDescription></CardHeader><CardContent><DefinitionAssessmentSummary action={openAction} /><QAPublicationSummary action={openAction} /><IssueSupportSummary action={openAction} /><TrainingLabelSummary action={openAction} matterId={matterId} /><ClassifierReviewSummary action={openAction} /><WholeCollectionScoringSummary action={openAction} /><ClassifierPositiveCoverageSummary action={openAction} /><FinalAlignmentSummary action={openAction} /><NegativePopulationQCReport action={openAction} /><NegativePopulationQCFindingsReview action={openAction} matterId={matterId} />{openAction.stage_key === "DEFINITION_ACCEPTANCE" ? <Button asChild size="sm" variant="outline" className="mb-3"><Link href={definitionAssessmentHref(clientId, matterId, openAction)}><BookOpen />Open Matter Definition</Link></Button> : null}<div className="flex flex-wrap gap-2">{openAction.allowed_choices.map((choice, index) => {
-      return <Button key={`${choice.key}-${index}`} size="sm" variant={choice.key === "STOP" ? "destructive" : "default"} disabled={!canManage || busy} onClick={() => onResolve(openAction, choice.key)} title={choice.consequence}>{choice.label}</Button>;
+    {openAction?.action_type === "MATTER_DEFINITION_SETUP" ? <DefinitionSetupCard matterId={matterId} action={openAction} canManage={canManage} busy={busy} onSubmit={(payload) => onSetupDefinition(openAction, payload)} onStop={() => onResolve(openAction, "STOP")} /> : openAction?.action_type === "MATTER_DEFINITION_REFINEMENT" ? <DefinitionRefinementCard clientId={clientId} matterId={matterId} action={openAction} canManage={canManage} busy={busy} onResolve={(choice, input) => onResolve(openAction, choice, undefined, input)} /> : openAction?.action_type === "QA_TASK_SETUP" ? <QASetupCard matterId={matterId} action={openAction} canManage={canManage} busy={busy} onSubmit={(payload) => onSetupQA(openAction, payload)} onStop={() => onResolve(openAction, "STOP")} /> : openAction?.action_type === "DISCOVERY_QA_SETUP" ? <DiscoverySetupCard action={openAction} canManage={canManage} busy={busy} onSubmit={(payload) => onSetupDiscovery(openAction, payload)} onStop={() => onResolve(openAction, "STOP")} /> : openAction?.action_type === "CLASSIFIER_IMPROVEMENT_SETUP" ? <ClassifierImprovementSetupCard action={openAction} canManage={canManage} busy={busy} onSubmit={(payload) => onSetupClassifierImprovement(openAction, payload)} onStop={() => onResolve(openAction, "STOP")} /> : openAction?.action_type === "NEGATIVE_POPULATION_QC_SETUP" ? <NegativePopulationQCSetupCard action={openAction} canManage={canManage} busy={busy} onSubmit={(payload) => onSetupNegativePopulationQC(openAction, payload)} onStop={() => onResolve(openAction, "STOP")} /> : openAction?.action_type === "REVIEW_PROGRAM_COMPLETION" ? <CompletionDecisionCard action={openAction} canManage={canManage} busy={busy} onComplete={(reason) => onResolve(openAction, "COMPLETE", reason)} onStop={() => onResolve(openAction, "STOP")} /> : openAction?.action_type === "TRAINING_LABEL_POLICY" ? <TrainingLabelPolicyCard action={openAction} matterId={matterId} canManage={canManage} busy={busy} onResolve={(choice, input) => onResolve(openAction, choice, undefined, input)} /> : openAction ? <Card className="border-accent/60 bg-accent/5"><CardHeader><CardTitle>{openAction.title}</CardTitle><CardDescription>{openAction.explanation}</CardDescription></CardHeader><CardContent><DefinitionAssessmentSummary action={openAction} /><QAPublicationSummary action={openAction} /><IssueSupportSummary action={openAction} /><TrainingLabelSummary action={openAction} matterId={matterId} /><ClassifierReviewSummary action={openAction} /><WholeCollectionScoringSummary action={openAction} /><ClassifierPositiveCoverageSummary action={openAction} /><FinalAlignmentSummary action={openAction} /><NegativePopulationQCReport action={openAction} /><NegativePopulationQCFindingsReview action={openAction} matterId={matterId} />{openAction.stage_key === "DEFINITION_ACCEPTANCE" ? <Button asChild size="sm" variant="outline" className="mb-3"><Link href={definitionAssessmentHref(clientId, matterId, openAction)}><BookOpen />Open Matter Definition</Link></Button> : null}<div className="flex flex-wrap gap-2">{openAction.allowed_choices.map((choice, index) => {
+      return <DecisionChoiceButton key={`${choice.key}-${index}`} choice={choice} variant={choice.key === "STOP" ? "destructive" : "default"} disabled={!canManage || busy} onClick={() => onResolve(openAction, choice.key)} />;
     })}</div></CardContent></Card> : null}
     {run ? <Card><CardHeader><CardTitle>Program stages</CardTitle><CardDescription>The coordinator records every stage attempt and waits only at explicit human gates.</CardDescription></CardHeader><CardContent><ol className="grid gap-2 sm:grid-cols-2">{stages.map((stage) => {
       const attempt = isDefinitionReassessment && stage.key === "DEFINITION_ASSESSMENT"
@@ -290,10 +301,92 @@ function ProgramWorkspace({ clientId, matterId, program, run, stages, canManage,
       const containsCurrentReassessment = isDefinitionReassessment && stage.key === "DEFINITION_REFINEMENT";
       const isCurrent = (stage.key === run.current_stage && !isDefinitionReassessment) || containsCurrentReassessment;
       const upcoming = isDefinitionReassessment ? stage.ordinal > 3 : stage.ordinal > run.current_stage_ordinal;
-      return <li key={stage.key} className={cn("flex items-start gap-3 rounded-lg border p-3", isCurrent && "border-primary/50 bg-primary/5", upcoming && "opacity-55")}><span className="grid size-7 shrink-0 place-items-center rounded-full bg-muted text-xs font-semibold">{stage.ordinal}</span><div className="min-w-0 flex-1"><div className="flex items-start justify-between gap-2"><p className="text-sm font-medium">{stage.name}</p><ProgramStageTooltip stage={stage} /></div><div className="mt-1 flex flex-wrap gap-1">{attempt ? <StatusBadge status={attempt.status} /> : <Badge variant="outline">Upcoming</Badge>}<Badge variant="outline">{friendly(stage.batching_policy)}</Badge>{stage.requires_human_gate ? <Badge variant="outline">Decision</Badge> : null}</div>{containsCurrentReassessment ? <div className="mt-2 flex items-center justify-between gap-2 rounded-md border border-primary/30 bg-background/80 px-2 py-1.5"><span className="text-xs font-medium">Reassessment · Round {definitionAssessmentRound}</span><StatusBadge status={currentDefinitionAssessmentAttempt?.status ?? run.status} /></div> : null}</div></li>;
+      const isRunning = attempt?.status === "RUNNING" || (isCurrent && run.status === "RUNNING");
+      const showsDiscoveryTask = isCurrent && stage.key === "DISCOVERY_QA" && Boolean(run.progress_summary?.discovery_qa);
+      return <li key={stage.key} className={cn("flex items-start gap-3 rounded-lg border p-3", isCurrent && "border-primary/50 bg-primary/5", upcoming && "opacity-55", (isRunning || showsDiscoveryTask) && "sm:col-span-2")}><span className="grid size-7 shrink-0 place-items-center rounded-full bg-muted text-xs font-semibold">{stage.ordinal}</span><div className="min-w-0 flex-1"><div className="flex items-start justify-between gap-2"><p className="text-sm font-medium">{stage.name}</p><ProgramStageTooltip stage={stage} /></div><div className="mt-1 flex flex-wrap gap-1">{attempt ? <StatusBadge status={attempt.status} /> : <Badge variant="outline">Upcoming</Badge>}<Badge variant="outline">{friendly(stage.batching_policy)}</Badge>{stage.requires_human_gate ? <Badge variant="outline">Decision</Badge> : null}</div>{showsDiscoveryTask ? <DiscoveryQAProgress clientId={clientId} matterId={matterId} run={run} canManage={canManage} busy={busy} onCancel={onCancelDiscovery} onReset={onResetDiscovery} /> : null}{containsCurrentReassessment ? <div className="mt-2 flex items-center justify-between gap-2 rounded-md border border-primary/30 bg-background/80 px-2 py-1.5"><span className="text-xs font-medium">Reassessment · Round {definitionAssessmentRound}</span><StatusBadge status={currentDefinitionAssessmentAttempt?.status ?? run.status} /></div> : null}</div></li>;
     })}</ol></CardContent></Card> : null}
   </div>;
 }
+
+function DiscoveryQAProgress({ clientId, matterId, run, canManage, busy, onCancel, onReset }: { clientId: string; matterId: string; run: ReviewProgramRunRead; canManage: boolean; busy: boolean; onCancel: () => void; onReset: () => void }) {
+  const discovery = run.progress_summary?.discovery_qa;
+  const values = discovery && typeof discovery === "object" && !Array.isArray(discovery)
+    ? discovery as Record<string, unknown>
+    : {};
+  const batchSetId = typeof values.batch_set_id === "string" ? values.batch_set_id : "";
+  const taskId = typeof values.task_id === "string" ? values.task_id : "";
+  const batchSet = useQuery({
+    queryKey: ["analysis-task-batch-set", matterId, taskId, batchSetId],
+    queryFn: () => coreApi<AnalysisTaskBatchSetRead>(`/v1/matters/${matterId}/analysis-tasks/${taskId}/batch-sets/${batchSetId}`),
+    enabled: Boolean(taskId && batchSetId),
+    refetchInterval: (query) => ["QUEUED", "BUILDING"].includes(query.state.data?.status ?? "") ? 1_500 : false,
+  });
+  const jobs = useQuery({
+    queryKey: ["matter-question-answering-jobs", matterId, batchSetId],
+    queryFn: () => coreApi<MatterQuestionAnsweringJobRead[]>(`/v1/matters/${matterId}/analysis-tasks/question-answering-jobs?batch_set_id=${encodeURIComponent(batchSetId)}`),
+    enabled: Boolean(batchSetId),
+    refetchInterval: (query) => query.state.data?.some((job) => !TERMINAL_DISCOVERY_JOB_STATUSES.has(job.status)) ? 1_500 : false,
+  });
+  const linkedJobs = jobs.data ?? [];
+  const batches = new Map<string, MatterQuestionAnsweringJobRead[]>();
+  for (const job of linkedJobs) {
+    const key = job.review_batch_id ?? job.scope_id;
+    batches.set(key, [...(batches.get(key) ?? []), job]);
+  }
+  let completedBatches = 0;
+  let runningBatches = 0;
+  let queuedBatches = 0;
+  for (const batchJobs of batches.values()) {
+    const providers = new Set(batchJobs.map((job) => job.decision_provider));
+    if (providers.size >= 2 && batchJobs.every((job) => TERMINAL_DISCOVERY_JOB_STATUSES.has(job.status))) completedBatches += 1;
+    else if (batchJobs.some((job) => job.status === "RUNNING")) runningBatches += 1;
+    else queuedBatches += 1;
+  }
+  const totalBatches = Math.max(batchSet.data?.batch_count ?? 0, batches.size);
+  queuedBatches += Math.max(totalBatches - batches.size, 0);
+  const successful = linkedJobs.reduce((total, job) => total + job.successful_document_count, 0);
+  const materializedExpected = linkedJobs.reduce((total, job) => total + job.document_count, 0);
+  const configuredProfileCount = Array.isArray(values.execution_profile_ids)
+    ? values.execution_profile_ids.length
+    : 0;
+  const materializedProfileCount = new Set(linkedJobs.map((job) => job.decision_provider)).size;
+  const profileCount = configuredProfileCount || materializedProfileCount;
+  const populationCount = batchSet.data?.population_count ?? 0;
+  const expected = populationCount > 0 && profileCount > 0
+    ? populationCount * profileCount
+    : materializedExpected;
+  const failed = linkedJobs.reduce((total, job) => total + (job.failed_document_count ?? 0), 0);
+  const providerTotals = linkedJobs.reduce<Record<string, { successful: number; total: number }>>((totals, job) => {
+    const label = job.decision_provider === "OPENAI_DECISIONS" ? "OpenAI Decisions" : "Jev";
+    const current = totals[label] ?? { successful: 0, total: 0 };
+    totals[label] = { successful: current.successful + job.successful_document_count, total: current.total + job.document_count };
+    return totals;
+  }, {});
+  if (populationCount > 0) {
+    for (const counts of Object.values(providerTotals)) counts.total = populationCount;
+  }
+  const state = String(run.progress_summary?.discovery_qa_state ?? "RUNNING_PROFILES");
+  const activity = state === "CANCELED" ? "Canceled"
+    : !linkedJobs.length
+    ? state === "MATERIALIZING_BATCH_SET" || batchSet.data?.status === "BUILDING" ? "Preparing batch set" : "Starting linked jobs"
+    : failed > 0 && linkedJobs.every((job) => TERMINAL_DISCOVERY_JOB_STATUSES.has(job.status)) ? "Completed with errors"
+    : "Reviewing documents";
+  const jobsHref = matterJobsHref(clientId, matterId, "QUESTION_ANSWERING", { batch_set: batchSetId });
+
+  return <div className="mt-3 border-t pt-3">
+    <div className="grid gap-3 text-sm sm:grid-cols-[minmax(0,1fr)_minmax(0,1fr)_auto] sm:items-end">
+      <div><p className="text-xs text-muted-foreground">Status</p><p className="font-medium">{activity}</p>{totalBatches ? <p className="mt-1 text-xs text-muted-foreground">{completedBatches} of {totalBatches} batches complete · {runningBatches} running · {queuedBatches} queued</p> : <p className="mt-1 text-xs text-muted-foreground">Waiting for linked batch jobs to be created.</p>}</div>
+      <div><p className="text-xs text-muted-foreground">Model reviews</p><p className="font-medium tabular-nums">{successful.toLocaleString()} of {expected.toLocaleString()} successful</p><p className="mt-1 text-xs text-muted-foreground">{Object.entries(providerTotals).map(([provider, counts]) => `${provider} ${counts.successful.toLocaleString()}/${counts.total.toLocaleString()}`).join(" · ") || "No model progress yet"}{failed ? ` · ${failed.toLocaleString()} failed` : ""}</p></div>
+      <div className="flex flex-wrap justify-end gap-2">
+        <Button asChild size="sm" variant="outline"><Link href={jobsHref}><ListChecks />View batch progress</Link></Button>
+        {canManage && state === "CANCELED" ? <ResetDiscoveryQADialog busy={busy} onReset={onReset} /> : null}
+        {canManage && ["MATERIALIZING_BATCH_SET", "RUNNING_PROFILES"].includes(state) ? <CancelDiscoveryQADialog busy={busy} onCancel={onCancel} /> : null}
+      </div>
+    </div>
+  </div>;
+}
+
+const TERMINAL_DISCOVERY_JOB_STATUSES = new Set(["COMPLETED", "COMPLETED_WITH_ERRORS", "FAILED", "CANCELED"]);
 
 function ResetDiscoveryQADialog({ busy, onReset }: { busy: boolean; onReset: () => void }) {
   const [open, setOpen] = useState(false);
@@ -302,11 +395,28 @@ function ResetDiscoveryQADialog({ busy, onReset }: { busy: boolean; onReset: () 
     <DialogContent>
       <DialogHeader>
         <DialogTitle>Reset Discovery Q&amp;A?</DialogTitle>
-        <DialogDescription>This cancels active Discovery Q&amp;A processing, archives its batch set and child batches, and returns this stage to setup. Prior records remain available for audit, but their documents may be selected again.</DialogDescription>
+        <DialogDescription>This archives the canceled Discovery Q&amp;A Batch Set and child batches, then returns this stage to setup so it can be run again. Prior records remain available for audit.</DialogDescription>
       </DialogHeader>
       <DialogFooter>
         <Button type="button" variant="outline" onClick={() => setOpen(false)}>Keep current run</Button>
         <Button type="button" variant="destructive" disabled={busy} onClick={() => { setOpen(false); onReset(); }}>Reset Discovery Q&amp;A</Button>
+      </DialogFooter>
+    </DialogContent>
+  </Dialog>;
+}
+
+function CancelDiscoveryQADialog({ busy, onCancel }: { busy: boolean; onCancel: () => void }) {
+  const [open, setOpen] = useState(false);
+  return <Dialog open={open} onOpenChange={setOpen}>
+    <DialogTrigger asChild><Button size="sm" variant="outline" disabled={busy}><Ban />Cancel Discovery Q&amp;A</Button></DialogTrigger>
+    <DialogContent>
+      <DialogHeader>
+        <DialogTitle>Cancel Discovery Q&amp;A?</DialogTitle>
+        <DialogDescription>This stops the active Batch Set and its linked model jobs. The canceled work remains visible until you choose to reset the task.</DialogDescription>
+      </DialogHeader>
+      <DialogFooter>
+        <Button type="button" variant="outline" onClick={() => setOpen(false)}>Keep running</Button>
+        <Button type="button" variant="destructive" disabled={busy} onClick={() => { setOpen(false); onCancel(); }}>Cancel Discovery Q&amp;A</Button>
       </DialogFooter>
     </DialogContent>
   </Dialog>;
@@ -322,6 +432,21 @@ function ProgramStageTooltip({ stage }: { stage: ReviewWorkflowStageRead }) {
     </button>
     <span id={tooltipId} role="tooltip" className="pointer-events-none invisible absolute right-0 top-6 z-50 w-max max-w-[min(18rem,calc(100vw-2rem))] rounded-md border bg-popover px-3 py-2 text-left text-xs font-normal leading-relaxed text-popover-foreground opacity-0 shadow-md transition-opacity group-hover/stage-tooltip:visible group-hover/stage-tooltip:opacity-100 group-focus-within/stage-tooltip:visible group-focus-within/stage-tooltip:opacity-100">
       {description}
+    </span>
+  </span>;
+}
+
+function DecisionChoiceButton({ choice, disabled, onClick, variant = "default" }: {
+  choice: ReviewProgramActionRead["allowed_choices"][number];
+  disabled: boolean;
+  onClick: () => void;
+  variant?: "default" | "outline" | "destructive";
+}) {
+  const tooltipId = `review-program-choice-${choice.key.toLowerCase()}-help`;
+  return <span className="group/decision-tooltip relative inline-flex">
+    <Button size="sm" variant={variant} disabled={disabled} onClick={onClick} aria-describedby={tooltipId}>{choice.label}</Button>
+    <span id={tooltipId} role="tooltip" className="pointer-events-none invisible absolute bottom-full left-0 z-50 mb-2 w-max max-w-[min(20rem,calc(100vw-2rem))] rounded-md border bg-popover px-3 py-2 text-left text-xs font-normal leading-relaxed text-popover-foreground opacity-0 shadow-md transition-opacity group-hover/decision-tooltip:visible group-hover/decision-tooltip:opacity-100 group-focus-within/decision-tooltip:visible group-focus-within/decision-tooltip:opacity-100">
+      {choice.consequence}
     </span>
   </span>;
 }
@@ -425,8 +550,109 @@ function IssueSupportSummary({ action }: { action: ReviewProgramActionRead }) {
   const analysis = raw && typeof raw === "object" && !Array.isArray(raw) ? raw as Record<string, unknown> : {};
   const overallRaw = analysis.overall;
   const overall = overallRaw && typeof overallRaw === "object" && !Array.isArray(overallRaw) ? overallRaw as Record<string, unknown> : {};
+  const policyRaw = analysis.policy;
+  const policy = policyRaw && typeof policyRaw === "object" && !Array.isArray(policyRaw) ? policyRaw as Record<string, unknown> : {};
+  const fields = Array.isArray(analysis.fields)
+    ? analysis.fields.filter((field): field is Record<string, unknown> => Boolean(field && typeof field === "object" && !Array.isArray(field)))
+    : [];
   const lowSupport = Array.isArray(analysis.low_support) ? analysis.low_support : [];
-  return <div className="mb-4 space-y-3 rounded-lg border bg-background/70 p-3 text-sm"><div className="grid gap-2 sm:grid-cols-4"><div><p className="text-xs text-muted-foreground">Support</p><p className="font-medium">{friendly(String(analysis.support_status ?? "unknown"))}</p></div><div><p className="text-xs text-muted-foreground">Exact</p><p className="font-medium">{Number(overall.exact_count ?? 0)}</p></div><div><p className="text-xs text-muted-foreground">Differences</p><p className="font-medium">{Number(overall.partial_count ?? 0) + Number(overall.disagreement_count ?? 0)}</p></div><div><p className="text-xs text-muted-foreground">Low-support categories</p><p className="font-medium">{lowSupport.length}</p></div></div>{lowSupport.length ? <p className="text-xs text-muted-foreground">Low-support categories remain visible in the frozen analysis and require an explicit decision before classifier training.</p> : null}</div>;
+  const positiveMinimum = Number(policy.minimum_positive_support ?? 0);
+  const negativeMinimum = Number(policy.minimum_negative_support ?? 0);
+  return <div className="mb-4 space-y-4 rounded-lg border bg-background/70 p-3 text-sm">
+    <div>
+      <h3 className="font-semibold">Discovery analysis</h3>
+      <p className="text-xs text-muted-foreground">Frozen comparison of the two pinned Q&amp;A profiles across {Number(analysis.batch_count ?? 0).toLocaleString()} batches.</p>
+    </div>
+    <div className="grid gap-2 sm:grid-cols-3 lg:grid-cols-6">
+      <div><p className="text-xs text-muted-foreground">Support</p><p className="font-medium">{friendly(String(analysis.support_status ?? "unknown"))}</p></div>
+      <div><p className="text-xs text-muted-foreground">Exact</p><p className="font-medium tabular-nums">{Number(overall.exact_count ?? 0).toLocaleString()}</p></div>
+      <div><p className="text-xs text-muted-foreground">Partial</p><p className="font-medium tabular-nums">{Number(overall.partial_count ?? 0).toLocaleString()}</p></div>
+      <div><p className="text-xs text-muted-foreground">Disagreements</p><p className="font-medium tabular-nums">{Number(overall.disagreement_count ?? 0).toLocaleString()}</p></div>
+      <div><p className="text-xs text-muted-foreground">Incomplete</p><p className="font-medium tabular-nums">{Number(overall.incomplete_count ?? 0).toLocaleString()}</p></div>
+      <div><p className="text-xs text-muted-foreground">Low-support categories</p><p className="font-medium tabular-nums">{lowSupport.length.toLocaleString()}</p></div>
+    </div>
+    <div className="rounded-md border bg-muted/20 px-3 py-2 text-xs text-muted-foreground">
+      Minimum support per category: <span className="font-medium text-foreground">{positiveMinimum.toLocaleString()} positive</span> and <span className="font-medium text-foreground">{negativeMinimum.toLocaleString()} negative</span> examples. Positive means either model selected the category; negative means neither selected it in a complete comparison.
+    </div>
+    {fields.length ? <div className="space-y-4">{fields.map((field) => {
+      const classes = Array.isArray(field.classes)
+        ? field.classes.filter((item): item is Record<string, unknown> => Boolean(item && typeof item === "object" && !Array.isArray(item)))
+        : [];
+      const fieldKey = String(field.key ?? field.metadata_definition_id ?? "field");
+      return <section key={fieldKey} className="space-y-2 rounded-md border bg-background p-3">
+        <div className="flex flex-wrap items-start justify-between gap-2">
+          <div><h4 className="font-semibold">{String(field.display_name ?? friendly(fieldKey))}</h4><p className="font-mono text-[11px] text-muted-foreground">{fieldKey}</p></div>
+          <p className="text-xs tabular-nums text-muted-foreground">{Number(field.exact_count ?? 0).toLocaleString()} exact · {Number(field.partial_count ?? 0).toLocaleString()} partial · {Number(field.disagreement_count ?? 0).toLocaleString()} disagreements · {Number(field.incomplete_count ?? 0).toLocaleString()} incomplete</p>
+        </div>
+        <Table>
+          <TableHeader><TableRow><TableHead>Category</TableHead><TableHead className="text-right">Model A</TableHead><TableHead className="text-right">Model B</TableHead><TableHead className="text-right">Both</TableHead><TableHead className="text-right">Positive</TableHead><TableHead className="text-right">Negative</TableHead><TableHead className="text-right">Differences</TableHead><TableHead>Support</TableHead></TableRow></TableHeader>
+          <TableBody>{classes.map((item) => {
+            const valueKey = String(item.value_key ?? "unknown");
+            const low = String(item.support_status ?? "").toUpperCase() === "LOW_SUPPORT";
+            return <TableRow key={valueKey} className={cn(low && "bg-destructive/5")}>
+              <TableCell className="font-medium">{friendly(valueKey)}</TableCell>
+              <TableCell className="text-right tabular-nums">{Number(item.left_selected_count ?? 0).toLocaleString()}</TableCell>
+              <TableCell className="text-right tabular-nums">{Number(item.right_selected_count ?? 0).toLocaleString()}</TableCell>
+              <TableCell className="text-right tabular-nums">{Number(item.intersection_count ?? 0).toLocaleString()}</TableCell>
+              <TableCell className="text-right tabular-nums">{Number(item.union_count ?? 0).toLocaleString()}</TableCell>
+              <TableCell className="text-right tabular-nums">{Number(item.negative_count ?? 0).toLocaleString()}</TableCell>
+              <TableCell className="text-right tabular-nums">{Number(item.disagreement_count ?? 0).toLocaleString()}</TableCell>
+              <TableCell><Badge variant="outline" className={cn(low && "border-destructive/40 text-destructive")}>{low ? "Low support" : "Sufficient"}</Badge></TableCell>
+            </TableRow>;
+          })}</TableBody>
+        </Table>
+      </section>;
+    })}</div> : <p className="text-xs text-muted-foreground">Category-level discovery statistics were not recorded for this analysis.</p>}
+  </div>;
+}
+
+function TrainingLabelPolicyCard({ action, matterId, canManage, busy, onResolve }: {
+  action: ReviewProgramActionRead;
+  matterId: string;
+  canManage: boolean;
+  busy: boolean;
+  onResolve: (choice: string, input?: Record<string, unknown>) => void;
+}) {
+  const raw = action.decision_context?.discovery_analysis;
+  const analysis = raw && typeof raw === "object" && !Array.isArray(raw) ? raw as Record<string, unknown> : {};
+  const fields = Array.isArray(analysis.fields)
+    ? analysis.fields.filter((field): field is Record<string, unknown> => Boolean(field && typeof field === "object" && !Array.isArray(field)))
+    : [];
+  const reviewableFields = fields.filter((field) => {
+    const id = field.metadata_definition_id;
+    const differences = Number(field.partial_count ?? 0) + Number(field.disagreement_count ?? 0);
+    return typeof id === "string" && Boolean(id) && differences > 0;
+  });
+  const [selectedFields, setSelectedFields] = useState(() => new Set(reviewableFields.map((field) => String(field.metadata_definition_id))));
+  const reviewChoice = action.allowed_choices.find((choice) => choice.key === "REVIEW_DISAGREEMENTS");
+  const otherChoices = action.allowed_choices.filter((choice) => choice.key !== "REVIEW_DISAGREEMENTS");
+  function toggleField(id: string) {
+    setSelectedFields((current) => {
+      const next = new Set(current);
+      if (next.has(id)) next.delete(id);
+      else next.add(id);
+      return next;
+    });
+  }
+  return <Card className="border-accent/60 bg-accent/5">
+    <CardHeader><CardTitle>{action.title}</CardTitle><CardDescription>{action.explanation}</CardDescription></CardHeader>
+    <CardContent className="space-y-4">
+      <TrainingLabelSummary action={action} matterId={matterId} />
+      {reviewChoice ? <div className="space-y-3 rounded-lg border bg-background/70 p-3">
+        <div><p className="text-sm font-semibold">Fields to include in human difference review</p><p className="text-xs text-muted-foreground">One consolidated ad hoc review batch will be created for each selected field, combining disagreements from every discovery batch.</p></div>
+        {reviewableFields.length ? <div className="grid gap-2 sm:grid-cols-2">{reviewableFields.map((field) => {
+          const id = String(field.metadata_definition_id);
+          const differences = Number(field.partial_count ?? 0) + Number(field.disagreement_count ?? 0);
+          return <label key={id} className="flex cursor-pointer items-center justify-between gap-3 rounded-md border bg-background px-3 py-2 text-sm">
+            <span className="flex items-center gap-2"><input type="checkbox" checked={selectedFields.has(id)} disabled={!canManage || busy} onChange={() => toggleField(id)} /><span className="font-medium">{String(field.display_name ?? friendly(String(field.key ?? "Field")))}</span></span>
+            <span className="text-xs tabular-nums text-muted-foreground">{differences.toLocaleString()} differences</span>
+          </label>;
+        })}</div> : <p className="text-xs text-muted-foreground">No fields with model differences are available for human review.</p>}
+        <DecisionChoiceButton choice={reviewChoice} disabled={!canManage || busy || selectedFields.size === 0} onClick={() => onResolve(reviewChoice.key, { metadata_definition_ids: [...selectedFields] })} />
+      </div> : null}
+      <div className="flex flex-wrap gap-2">{otherChoices.map((choice) => <DecisionChoiceButton key={choice.key} choice={choice} variant={choice.key === "STOP" ? "destructive" : "outline"} disabled={!canManage || busy} onClick={() => onResolve(choice.key)} />)}</div>
+    </CardContent>
+  </Card>;
 }
 
 function TrainingLabelSummary({ action, matterId }: { action: ReviewProgramActionRead; matterId: string }) {
@@ -437,6 +663,11 @@ function TrainingLabelSummary({ action, matterId }: { action: ReviewProgramActio
   const overall = overallRaw && typeof overallRaw === "object" && !Array.isArray(overallRaw) ? overallRaw as Record<string, unknown> : {};
   const resolutionRaw = action.decision_context?.training_label_resolution;
   const resolution = resolutionRaw && typeof resolutionRaw === "object" && !Array.isArray(resolutionRaw) ? resolutionRaw as Record<string, unknown> : {};
+  const previewRaw = action.decision_context?.training_label_preview;
+  const preview = previewRaw && typeof previewRaw === "object" && !Array.isArray(previewRaw) ? previewRaw as Record<string, unknown> : {};
+  const previewFields = Array.isArray(preview.fields)
+    ? preview.fields.filter((field): field is Record<string, unknown> => Boolean(field && typeof field === "object" && !Array.isArray(field)))
+    : [];
   const batches = Array.isArray(resolution.difference_batches)
     ? resolution.difference_batches.filter((batch): batch is Record<string, unknown> => Boolean(batch && typeof batch === "object" && !Array.isArray(batch)))
     : [];
@@ -445,6 +676,20 @@ function TrainingLabelSummary({ action, matterId }: { action: ReviewProgramActio
   const policy = resolution.policy ? friendly(String(resolution.policy)) : "Not selected";
   return <div className="mb-4 space-y-3 rounded-lg border bg-background/70 p-3 text-sm">
     <div className="grid gap-2 sm:grid-cols-4"><div><p className="text-xs text-muted-foreground">Label policy</p><p className="font-medium">{policy}</p></div><div><p className="text-xs text-muted-foreground">Pinned model runs</p><p className="font-medium">{profileRuns.length || analyzedProfileRuns.length}</p></div><div><p className="text-xs text-muted-foreground">Exact agreements</p><p className="font-medium">{Number(overall.exact_count ?? 0)}</p></div><div><p className="text-xs text-muted-foreground">Model differences</p><p className="font-medium">{Number(overall.partial_count ?? 0) + Number(overall.disagreement_count ?? 0)}</p></div></div>
+    {action.stage_key === "TRAINING_LABEL_FINALIZATION" && previewFields.length ? <div className="space-y-3">
+      <div><p className="text-sm font-semibold">Final training-label counts</p><p className="text-xs text-muted-foreground">These policy-adjusted counts will be frozen for classifier training. A positive count is the number of retained documents carrying that coding value.</p></div>
+      {previewFields.map((field) => {
+        const values = Array.isArray(field.values)
+          ? field.values.filter((value): value is Record<string, unknown> => Boolean(value && typeof value === "object" && !Array.isArray(value)))
+          : [];
+        const eligible = typeof field.eligible_document_count === "number" ? field.eligible_document_count.toLocaleString() : "Pending recomputation";
+        const excluded = typeof field.excluded_document_count === "number" ? field.excluded_document_count.toLocaleString() : "Pending recomputation";
+        return <section key={String(field.metadata_definition_id ?? field.key)} className="space-y-2 rounded-md border bg-background p-3">
+          <div className="flex flex-wrap items-start justify-between gap-2"><div><p className="font-semibold">{String(field.display_name ?? friendly(String(field.key ?? "Field")))}</p><p className="text-xs text-muted-foreground">{String(field.basis ?? "Selected training-label policy")}</p></div><p className="text-xs tabular-nums text-muted-foreground">{eligible} eligible · {excluded} excluded</p></div>
+          <Table><TableHeader><TableRow><TableHead>Coding label</TableHead><TableHead className="text-right">Retained positive documents</TableHead></TableRow></TableHeader><TableBody>{values.map((value) => <TableRow key={String(value.value_key)}><TableCell>{String(value.value_label ?? friendly(String(value.value_key ?? "Unknown")))}</TableCell><TableCell className="text-right tabular-nums">{typeof value.positive_count === "number" ? value.positive_count.toLocaleString() : "Pending recomputation"}</TableCell></TableRow>)}</TableBody></Table>
+        </section>;
+      })}
+    </div> : null}
     {batches.length ? <div className="space-y-2"><p className="text-xs font-medium text-muted-foreground">Ad hoc difference batches</p>{batches.map((batch) => <div key={String(batch.id)} className="flex flex-wrap items-center justify-between gap-2 rounded-md border bg-background p-2"><div><p className="font-medium">{String(batch.name ?? "Difference review")}</p><p className="text-xs text-muted-foreground">{Number(batch.completed_document_count ?? 0)} of {Number(batch.document_count ?? 0)} completed · {friendly(String(batch.status ?? "queued"))}</p></div><Button asChild size="sm" variant="outline"><Link href={`/review/matters/${matterId}?batch=${String(batch.id)}`}>Open review batch</Link></Button></div>)}</div> : null}
   </div>;
 }

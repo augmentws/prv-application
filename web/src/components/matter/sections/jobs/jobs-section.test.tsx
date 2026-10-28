@@ -162,7 +162,7 @@ describe("Matter jobs", () => {
   });
 
   it("shows question-answering analysis runs as a matter job type", async () => {
-    vi.mocked(coreApi).mockImplementation(async (path) => {
+    vi.mocked(coreApi).mockImplementation(async (path, init) => {
       if (path === "/v1/jobs/ANALYSIS_TASK_BATCH_RUN/qa-run-1/failed-documents?offset=0&limit=100") return {
         items: [], total: 5, retryable_count: 5, offset: 0, limit: 100,
       } as never;
@@ -176,7 +176,8 @@ describe("Matter jobs", () => {
       if (path === "/v1/matters/matter-1/saved-searches") return [] as never;
       if (path === "/v1/matters/matter-1/topic-jobs") return [] as never;
       if (path === "/v1/matters/matter-1/bulk-tag-jobs?limit=100") return [] as never;
-      if (path === "/v1/matters/matter-1/analysis-tasks/question-answering-jobs") return [{
+      if (path === "/v1/jobs/ANALYSIS_TASK_BATCH_RUN/qa-run-2/cancel" && init?.method === "POST") return { id: "execution-2", status: "CANCELED" } as never;
+      if (path === "/v1/matters/matter-1/analysis-tasks/question-answering-jobs?batch_set_id=set-1") return [{
         id: "qa-run-1",
         review_batch_id: "batch-1",
         review_batch_name: "Privilege validation",
@@ -203,13 +204,40 @@ describe("Matter jobs", () => {
           progress_total: 5,
           available_actions: [],
         },
+      }, {
+        id: "qa-run-2",
+        review_batch_id: "batch-2",
+        review_batch_name: "Discovery batch 2",
+        matter_analysis_task_id: "task-2",
+        task_name: "Responsiveness review",
+        task_version: 1,
+        decision_provider: "JEV",
+        model_key: "jev-latest",
+        status: "RUNNING",
+        processed_document_count: 125,
+        successful_document_count: 125,
+        document_count: 500,
+        failed_document_count: 0,
+        retryable_failed_document_count: 0,
+        error_message: null,
+        started_at: "2026-10-12T12:02:00Z",
+        completed_at: null,
+        created_at: "2026-10-12T12:01:00Z",
+        updated_at: "2026-10-12T12:03:00Z",
+        execution: {
+          attempt_number: 1,
+          stage_label: "Evaluating documents",
+          progress_completed: 125,
+          progress_total: 500,
+          available_actions: ["CANCEL"],
+        },
       }] as never;
       throw new Error(`Unexpected API request: ${path}`);
     });
     const user = userEvent.setup();
 
     navigation.pathname = `${MATTER_BASE_PATH}/jobs/question-answering`;
-    renderInMatter(<JobsSection jobType="QUESTION_ANSWERING" />);
+    renderInMatter(<JobsSection jobType="QUESTION_ANSWERING" batchSetId="set-1" />);
 
     expect(await screen.findByRole("heading", { name: "Question answering" })).toBeInTheDocument();
     expect(screen.getByText("Privilege review")).toBeInTheDocument();
@@ -217,10 +245,20 @@ describe("Matter jobs", () => {
     expect(screen.getByRole("link", { name: "Privilege validation" })).toHaveAttribute("href", "/review/matters/matter-1?batch=batch-1");
     expect(screen.getByText("OpenAI Decisions")).toBeInTheDocument();
     expect(screen.getByText("495 / 500 successful")).toBeInTheDocument();
+    expect(screen.getByText("Showing linked Batch Set jobs")).toBeInTheDocument();
+    expect(screen.getByText("Only Q&A jobs created from Batch Set set-1 are shown.")).toBeInTheDocument();
+    expect(screen.getByRole("link", { name: "Show all Q&A jobs" })).toHaveAttribute("href", `${MATTER_BASE_PATH}/jobs/question-answering`);
     expect(screen.queryByText("Completed With Errors · attempt 2")).not.toBeInTheDocument();
     expect(screen.queryByText("5 documents could not be evaluated")).not.toBeInTheDocument();
-    expect(screen.getByRole("link", { name: "Open batch" })).toHaveAttribute("href", "/review/matters/matter-1?batch=batch-1");
+    expect(screen.getAllByRole("link", { name: "Open batch" })[0]).toHaveAttribute("href", "/review/matters/matter-1?batch=batch-1");
     expect(screen.getByRole("button", { name: "Review errors for Privilege review" })).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "Cancel" })).not.toBeInTheDocument();
+    await user.click(screen.getByRole("button", { name: "More actions for Responsiveness review on Discovery batch 2" }));
+    await user.click(await screen.findByRole("menuitem", { name: "Cancel" }));
+    await waitFor(() => expect(coreApi).toHaveBeenCalledWith(
+      "/v1/jobs/ANALYSIS_TASK_BATCH_RUN/qa-run-2/cancel",
+      { method: "POST" },
+    ));
     await user.click(screen.getByRole("button", { name: "More actions for Privilege review on Privilege validation" }));
     expect(await screen.findByRole("menuitem", { name: "Delete job" })).toBeInTheDocument();
     await user.click(await screen.findByRole("menuitem", { name: "View errors" }));

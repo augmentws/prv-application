@@ -4392,6 +4392,23 @@
               "format": "uuid",
               "title": "Matter Id"
             }
+          },
+          {
+            "name": "batch_set_id",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string",
+                  "format": "uuid"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Batch Set Id"
+            }
           }
         ],
         "responses": {
@@ -15332,6 +15349,162 @@
         ],
         "summary": "Cancel Program Run",
         "operationId": "cancel_program_run_v1_matters__matter_id__review_programs__program_id__runs__run_id__cancel_post",
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "matter_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid",
+              "title": "Matter Id"
+            }
+          },
+          {
+            "name": "program_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid",
+              "title": "Program Id"
+            }
+          },
+          {
+            "name": "run_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid",
+              "title": "Run Id"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ReviewProgramRunCommand"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ReviewProgramRunRead"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v1/matters/{matter_id}/review-programs/{program_id}/runs/{run_id}/reset-discovery-qa": {
+      "post": {
+        "tags": [
+          "review programs"
+        ],
+        "summary": "Reset Discovery Qa",
+        "operationId": "reset_discovery_qa_v1_matters__matter_id__review_programs__program_id__runs__run_id__reset_discovery_qa_post",
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "matter_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid",
+              "title": "Matter Id"
+            }
+          },
+          {
+            "name": "program_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid",
+              "title": "Program Id"
+            }
+          },
+          {
+            "name": "run_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid",
+              "title": "Run Id"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ReviewProgramRunCommand"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ReviewProgramRunRead"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v1/matters/{matter_id}/review-programs/{program_id}/runs/{run_id}/cancel-discovery-qa": {
+      "post": {
+        "tags": [
+          "review programs"
+        ],
+        "summary": "Cancel Discovery Qa",
+        "operationId": "cancel_discovery_qa_v1_matters__matter_id__review_programs__program_id__runs__run_id__cancel_discovery_qa_post",
         "security": [
           {
             "HTTPBearer": []
@@ -38879,6 +39052,7 @@
         "enum": [
           "REQUIRE_ADJUDICATION",
           "EXCLUDE",
+          "INTERSECT",
           "FAIL_SNAPSHOT"
         ],
         "title": "LabelConflictAction"

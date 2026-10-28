@@ -248,6 +248,9 @@ pipenv run python -m scripts.import_client emc2 --source ../EMC-2 --dry-run
 
 ## Checks
 
+Q&A workflow and provider throttling, including multi-worker behavior, is documented in
+[`docs/question-answering-throttling.md`](docs/question-answering-throttling.md).
+
 ```bash
 pipenv run ruff check .
 pipenv run pytest

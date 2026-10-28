@@ -61,6 +61,7 @@ class MissingLabelAction(StrEnum):
 class LabelConflictAction(StrEnum):
     REQUIRE_ADJUDICATION = "REQUIRE_ADJUDICATION"
     EXCLUDE = "EXCLUDE"
+    INTERSECT = "INTERSECT"
     FAIL_SNAPSHOT = "FAIL_SNAPSHOT"
 
 

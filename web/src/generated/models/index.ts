@@ -434,6 +434,7 @@ export * from './listMatterAccessUsersV1MattersMatterIdAccessUsersGetPermissionK
 export * from './listMatterDocumentsV1MattersMatterIdDocumentsGetParams';
 export * from './listNotificationsV1NotificationsGetParams';
 export * from './listNotificationsV1NotificationsGetState';
+export * from './listQuestionAnsweringJobsV1MattersMatterIdAnalysisTasksQuestionAnsweringJobsGetParams';
 export * from './listReviewBatchDocumentsV1MattersMatterIdReviewBatchesBatchIdDocumentsGetParams';
 export * from './listReviewProgramsV1MattersMatterIdReviewProgramsGetParams';
 export * from './listSearchExportArtifactsV1MattersMatterIdSearchExportsArtifactsGetParams';

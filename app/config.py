@@ -89,6 +89,10 @@ class Settings(BaseSettings):
     model_rate_limit_retry_base_seconds: float = Field(default=1.0, gt=0, le=300)
     model_rate_limit_retry_max_seconds: float = Field(default=120.0, gt=0, le=3600)
     model_rate_limit_characters_per_token: float = Field(default=3.0, ge=1, le=10)
+    # DBOS-global limits for question-answering orchestration. Provider-specific
+    # concurrency and rate limits are applied separately inside each decision engine.
+    qa_batch_concurrency: int = Field(default=2, ge=1, le=64)
+    qa_document_concurrency: int = Field(default=12, ge=1, le=256)
     typesafe_api_key: str | None = None
     typesafe_base_url: str | None = None
     typesafe_default_model: str = "jev-latest"

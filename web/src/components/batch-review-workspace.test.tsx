@@ -192,7 +192,7 @@ afterEach(() => {
 });
 
 describe("BatchReviewWorkspace", () => {
-  it("shows every selected disagreement source and saves the chosen coding", async () => {
+  it("saves and advances immediately when a disagreement source is selected", async () => {
     const user = userEvent.setup();
     const onSave = vi.fn().mockResolvedValue(undefined);
     const disagreement = {
@@ -251,8 +251,6 @@ describe("BatchReviewWorkspace", () => {
     expect(analysisSource).not.toBeNull();
     expect(within(analysisSource!).getByText("91%")).toBeInTheDocument();
     await user.click(within(analysisSource!).getByRole("button", { name: "Use this coding" }));
-    expect(within(analysisSource!).getByRole("button", { name: "Selected" })).toHaveAttribute("aria-pressed", "true");
-    await user.click(screen.getByRole("button", { name: "Save & next" }));
 
     expect(onSave).toHaveBeenCalledWith({
       matter_document_id: "document-1",

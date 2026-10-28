@@ -899,6 +899,29 @@ def _claims_json(claims: list[LabelClaim]) -> str:
     ).decode("utf-8")
 
 
+def _intersect_claims(claims: list[LabelClaim]) -> LabelClaim | None:
+    """Resolve equal-authority multi-value claims to values every source selected."""
+    if not claims:
+        return None
+    shared_values = set(claims[0].raw_value_keys)
+    for claim in claims[1:]:
+        shared_values.intersection_update(claim.raw_value_keys)
+    if not shared_values:
+        return None
+    timestamps = [claim.label_timestamp for claim in claims if claim.label_timestamp is not None]
+    observed_sets = [set(claim.observed_class_keys) for claim in claims if claim.observed_class_keys is not None]
+    shared_observed = set.intersection(*observed_sets) if observed_sets else None
+    first = claims[0]
+    return LabelClaim(
+        policy_index=first.policy_index,
+        source=first.source,
+        raw_value_keys=tuple(sorted(shared_values)),
+        source_record_ids=tuple(sorted({value for claim in claims for value in claim.source_record_ids})),
+        label_timestamp=max(timestamps) if timestamps else None,
+        observed_class_keys=tuple(sorted(shared_observed)) if shared_observed is not None else None,
+    )
+
+
 def _resolve_labels(
     *,
     document_ids: list[uuid.UUID],
@@ -910,6 +933,7 @@ def _resolve_labels(
 ) -> tuple[list[ResolvedLabel], list[str]]:
     resolved: list[ResolvedLabel] = []
     source_conflicts = 0
+    intersected_source_conflicts = 0
     target_conflicts = 0
     missing = 0
     strategy = ClassificationStrategy(configuration.classification_strategy)
@@ -965,6 +989,15 @@ def _resolve_labels(
                 continue
             shaped_signatures = {signature for _, signature, _ in shaped}
             if len(shaped_signatures) != 1:
+                if (
+                    policy.source_conflict_action == LabelConflictAction.INTERSECT
+                    and strategy == ClassificationStrategy.ONE_VS_REST
+                ):
+                    intersected = _intersect_claims(authoritative)
+                    if intersected is not None:
+                        intersected_source_conflicts += 1
+                        selections[document_id] = (intersected, claims, None, None)
+                        continue
                 source_conflicts += 1
                 selections[document_id] = (None, claims, "CONFLICTING", "SOURCE_CONFLICT")
                 continue
@@ -972,6 +1005,15 @@ def _resolve_labels(
             continue
         raw_signatures = {claim.raw_value_keys for claim in authoritative}
         if len(raw_signatures) != 1:
+            if (
+                policy.source_conflict_action == LabelConflictAction.INTERSECT
+                and strategy == ClassificationStrategy.ONE_VS_REST
+            ):
+                intersected = _intersect_claims(authoritative)
+                if intersected is not None:
+                    intersected_source_conflicts += 1
+                    selections[document_id] = (intersected, claims, None, None)
+                    continue
             source_conflicts += 1
             selections[document_id] = (None, claims, "CONFLICTING", "SOURCE_CONFLICT")
             continue
@@ -1117,6 +1159,15 @@ def _resolve_labels(
                 message="Invalid or out-of-scope target values are excluded from training",
                 count=target_conflicts,
             )
+    if intersected_source_conflicts:
+        _append_issue(
+            warnings,
+            code="SOURCE_CONFLICTS_INTERSECTED",
+            message=(
+                "Multi-value source disagreements were resolved to values selected by every authoritative source"
+            ),
+            count=intersected_source_conflicts,
+        )
     return resolved, list(class_keys)
 
 
