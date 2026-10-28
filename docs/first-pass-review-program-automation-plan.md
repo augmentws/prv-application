@@ -86,7 +86,7 @@ Matter Definition draft
 | Messaging | Child tasks report durable domain events to the Review Program coordinator. The coordinator uses the shared notification platform for human-facing attention only. Notification rows never drive workflow state. |
 | Child authority | Existing batches, task versions, runs, artifacts, classifier versions, and reviewer revisions remain authoritative. |
 | Q&A models | One shared Q&A specification is executed through two immutable model profiles against the same frozen documents. |
-| Initial target | Each first-pass program initially supports one multi-value issue-coding metadata field and a one-vs-rest classifier. Other programs in the same matter may select different fields and guidance. |
+| Initial target | Each first-pass program may select one or more Q&A destination fields as classifier targets during training-label finalization. Multi-value issue fields use one-vs-rest classification. Other Q&A fields may remain coding-only. |
 | Assessment data | Matter Definition assessment runs remain diagnostic and blinded. They are not automatically used as classifier training labels. |
 | Training sufficiency | Use the actual classification dataset and split feasibility rules, not a standalone raw-count threshold. |
 | Label policy | The user chooses union, exact agreement only, overlapping multi-value codes, or agreement plus human adjudication after seeing a preview of each option. |
@@ -855,13 +855,18 @@ After any required disagreement review completes, materialize one immutable `fir
 Validate the artifact, recompute support, and run the authoritative classifier dataset preview. If the selected
 policy is no longer feasible because of exclusions or incomplete human review, return to the issue-support gate.
 Before the user freezes the snapshot, show policy-adjusted eligible and excluded document counts for each field and
-the final retained positive-document count for every coding label.
+the final retained positive-document count for every coding label. The user must also select the coding fields that
+will become classifier targets. Freeze those field IDs in the training-label snapshot. A field included in the Q&A
+task is not automatically a classifier target: unselected fields remain available as Q&A codings and in discovery
+analysis, but the program does not create, train, evaluate, or score a classifier for them.
 
 ## 13. Phase 6 Classifier training and quality summary
 
 ### 13.1 Build
 
-Create or reuse a classifier bound to the target issue field. For a multi-value issue field, use `ONE_VS_REST`.
+For each field selected during training-label finalization, create or reuse a classifier bound to that field. For a
+multi-value issue field, use `ONE_VS_REST`. Classifier-training launch and terminal-state projection must both use
+the frozen target-field selection so an unselected or previously launched job cannot block or fail the program.
 Freeze:
 
 - the training label artifact and hash;

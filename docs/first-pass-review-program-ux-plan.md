@@ -560,7 +560,10 @@ new task-specific batch set sourced from the difference manifest.
 The finalization gate repeats the selected policy and shows its computed outcome before the labels are frozen: one
 eligible/excluded document total per coding field and one retained positive-document count per coding label. These
 counts must reflect overlap removal and completed human decisions rather than the earlier union-based discovery
-support totals.
+support totals. It also presents a **Fields to train** checkbox for every Q&A destination field. All fields are
+initially selected, but the user may clear fields that should remain Q&A codings only. The finalization action is
+disabled when no field is selected. The frozen provenance records the selected field IDs, and only those fields
+create classifiers or participate in later classifier training, evaluation, and collection scoring.
 
 ## 11. Phase 3 Train and evaluate
 

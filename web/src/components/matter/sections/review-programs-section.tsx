@@ -294,7 +294,7 @@ function ProgramWorkspace({ clientId, matterId, program, run, stages, canManage,
     </Card>
     {run && currentAssessment ? <DefinitionAssessmentProgress clientId={clientId} matterId={matterId} run={run} assessment={currentAssessment} /> : null}
     {run?.status === "COMPLETED" || run?.status === "COMPLETED_WITH_ERRORS" ? <CompletedReviewProgramSummary run={run} /> : null}
-    {openAction?.action_type === "MATTER_DEFINITION_SETUP" ? <DefinitionSetupCard matterId={matterId} action={openAction} canManage={canManage} busy={busy} onSubmit={(payload) => onSetupDefinition(openAction, payload)} onStop={() => onResolve(openAction, "STOP")} /> : openAction?.action_type === "MATTER_DEFINITION_REFINEMENT" ? <DefinitionRefinementCard clientId={clientId} matterId={matterId} action={openAction} canManage={canManage} busy={busy} onResolve={(choice, input) => onResolve(openAction, choice, undefined, input)} /> : openAction?.action_type === "QA_TASK_SETUP" ? <QASetupCard matterId={matterId} action={openAction} canManage={canManage} busy={busy} onSubmit={(payload) => onSetupQA(openAction, payload)} onStop={() => onResolve(openAction, "STOP")} /> : openAction?.action_type === "DISCOVERY_QA_SETUP" ? <DiscoverySetupCard action={openAction} canManage={canManage} busy={busy} onSubmit={(payload) => onSetupDiscovery(openAction, payload)} onStop={() => onResolve(openAction, "STOP")} /> : openAction?.action_type === "CLASSIFIER_IMPROVEMENT_SETUP" ? <ClassifierImprovementSetupCard action={openAction} canManage={canManage} busy={busy} onSubmit={(payload) => onSetupClassifierImprovement(openAction, payload)} onStop={() => onResolve(openAction, "STOP")} /> : openAction?.action_type === "NEGATIVE_POPULATION_QC_SETUP" ? <NegativePopulationQCSetupCard action={openAction} canManage={canManage} busy={busy} onSubmit={(payload) => onSetupNegativePopulationQC(openAction, payload)} onStop={() => onResolve(openAction, "STOP")} /> : openAction?.action_type === "REVIEW_PROGRAM_COMPLETION" ? <CompletionDecisionCard action={openAction} canManage={canManage} busy={busy} onComplete={(reason) => onResolve(openAction, "COMPLETE", reason)} onStop={() => onResolve(openAction, "STOP")} /> : openAction?.action_type === "TRAINING_LABEL_POLICY" ? <TrainingLabelPolicyCard action={openAction} matterId={matterId} canManage={canManage} busy={busy} onResolve={(choice, input) => onResolve(openAction, choice, undefined, input)} /> : openAction ? <Card className="border-accent/60 bg-accent/5"><CardHeader><CardTitle>{openAction.title}</CardTitle><CardDescription>{openAction.explanation}</CardDescription></CardHeader><CardContent><DefinitionAssessmentSummary action={openAction} /><QAPublicationSummary action={openAction} /><IssueSupportSummary action={openAction} /><TrainingLabelSummary action={openAction} matterId={matterId} /><ClassifierReviewSummary action={openAction} /><WholeCollectionScoringSummary action={openAction} /><ClassifierPositiveCoverageSummary action={openAction} /><FinalAlignmentSummary action={openAction} /><NegativePopulationQCReport action={openAction} /><NegativePopulationQCFindingsReview action={openAction} matterId={matterId} />{openAction.stage_key === "DEFINITION_ACCEPTANCE" ? <Button asChild size="sm" variant="outline" className="mb-3"><Link href={definitionAssessmentHref(clientId, matterId, openAction)}><BookOpen />Open Matter Definition</Link></Button> : null}<div className="flex flex-wrap gap-2">{openAction.allowed_choices.map((choice, index) => {
+    {openAction?.action_type === "MATTER_DEFINITION_SETUP" ? <DefinitionSetupCard matterId={matterId} action={openAction} canManage={canManage} busy={busy} onSubmit={(payload) => onSetupDefinition(openAction, payload)} onStop={() => onResolve(openAction, "STOP")} /> : openAction?.action_type === "MATTER_DEFINITION_REFINEMENT" ? <DefinitionRefinementCard clientId={clientId} matterId={matterId} action={openAction} canManage={canManage} busy={busy} onResolve={(choice, input) => onResolve(openAction, choice, undefined, input)} /> : openAction?.action_type === "QA_TASK_SETUP" ? <QASetupCard matterId={matterId} action={openAction} canManage={canManage} busy={busy} onSubmit={(payload) => onSetupQA(openAction, payload)} onStop={() => onResolve(openAction, "STOP")} /> : openAction?.action_type === "DISCOVERY_QA_SETUP" ? <DiscoverySetupCard action={openAction} canManage={canManage} busy={busy} onSubmit={(payload) => onSetupDiscovery(openAction, payload)} onStop={() => onResolve(openAction, "STOP")} /> : openAction?.action_type === "CLASSIFIER_IMPROVEMENT_SETUP" ? <ClassifierImprovementSetupCard action={openAction} canManage={canManage} busy={busy} onSubmit={(payload) => onSetupClassifierImprovement(openAction, payload)} onStop={() => onResolve(openAction, "STOP")} /> : openAction?.action_type === "NEGATIVE_POPULATION_QC_SETUP" ? <NegativePopulationQCSetupCard action={openAction} canManage={canManage} busy={busy} onSubmit={(payload) => onSetupNegativePopulationQC(openAction, payload)} onStop={() => onResolve(openAction, "STOP")} /> : openAction?.action_type === "REVIEW_PROGRAM_COMPLETION" ? <CompletionDecisionCard action={openAction} canManage={canManage} busy={busy} onComplete={(reason) => onResolve(openAction, "COMPLETE", reason)} onStop={() => onResolve(openAction, "STOP")} /> : openAction?.action_type === "TRAINING_LABEL_POLICY" ? <TrainingLabelPolicyCard action={openAction} matterId={matterId} canManage={canManage} busy={busy} onResolve={(choice, input) => onResolve(openAction, choice, undefined, input)} /> : openAction?.action_type === "TRAINING_LABEL_FINALIZATION" ? <TrainingLabelFinalizationCard action={openAction} matterId={matterId} canManage={canManage} busy={busy} onResolve={(choice, input) => onResolve(openAction, choice, undefined, input)} /> : openAction ? <Card className="border-accent/60 bg-accent/5"><CardHeader><CardTitle>{openAction.title}</CardTitle><CardDescription>{openAction.explanation}</CardDescription></CardHeader><CardContent><DefinitionAssessmentSummary action={openAction} /><QAPublicationSummary action={openAction} /><IssueSupportSummary action={openAction} /><TrainingLabelSummary action={openAction} matterId={matterId} /><ClassifierReviewSummary action={openAction} /><WholeCollectionScoringSummary action={openAction} /><ClassifierPositiveCoverageSummary action={openAction} /><FinalAlignmentSummary action={openAction} /><NegativePopulationQCReport action={openAction} /><NegativePopulationQCFindingsReview action={openAction} matterId={matterId} />{openAction.stage_key === "DEFINITION_ACCEPTANCE" ? <Button asChild size="sm" variant="outline" className="mb-3"><Link href={definitionAssessmentHref(clientId, matterId, openAction)}><BookOpen />Open Matter Definition</Link></Button> : null}<div className="flex flex-wrap gap-2">{openAction.allowed_choices.map((choice, index) => {
       return <DecisionChoiceButton key={`${choice.key}-${index}`} choice={choice} variant={choice.key === "STOP" ? "destructive" : "default"} disabled={!canManage || busy} onClick={() => onResolve(openAction, choice.key)} />;
     })}</div></CardContent></Card> : null}
     {run ? <Card><CardHeader><CardTitle>Program stages</CardTitle><CardDescription>The coordinator records every stage attempt and waits only at explicit human gates.</CardDescription></CardHeader><CardContent><ol className="grid gap-2 sm:grid-cols-2">{stages.map((stage) => {
@@ -685,6 +685,50 @@ function TrainingLabelPolicyCard({ action, matterId, canManage, busy, onResolve 
         <DecisionChoiceButton choice={reviewChoice} disabled={!canManage || busy || selectedFields.size === 0} onClick={() => onResolve(reviewChoice.key, { metadata_definition_ids: [...selectedFields] })} />
       </div> : null}
       <div className="flex flex-wrap gap-2">{otherChoices.map((choice) => <DecisionChoiceButton key={choice.key} choice={choice} variant={choice.key === "STOP" ? "destructive" : "outline"} disabled={!canManage || busy} onClick={() => onResolve(choice.key)} />)}</div>
+    </CardContent>
+  </Card>;
+}
+
+function TrainingLabelFinalizationCard({ action, matterId, canManage, busy, onResolve }: {
+  action: ReviewProgramActionRead;
+  matterId: string;
+  canManage: boolean;
+  busy: boolean;
+  onResolve: (choice: string, input?: Record<string, unknown>) => void;
+}) {
+  const previewRaw = action.decision_context?.training_label_preview;
+  const preview = previewRaw && typeof previewRaw === "object" && !Array.isArray(previewRaw) ? previewRaw as Record<string, unknown> : {};
+  const fields = Array.isArray(preview.fields)
+    ? preview.fields.filter((field): field is Record<string, unknown> => Boolean(field && typeof field === "object" && !Array.isArray(field) && field.metadata_definition_id))
+    : [];
+  const defaultSelection = fields.map((field) => String(field.metadata_definition_id));
+  const [selectedFields, setSelectedFields] = useState(() => new Set(defaultSelection));
+  const finalizeChoice = action.allowed_choices.find((choice) => choice.key === "FINALIZE");
+  const stopChoice = action.allowed_choices.find((choice) => choice.key === "STOP");
+  function toggleField(id: string) {
+    setSelectedFields((current) => {
+      const next = new Set(current);
+      if (next.has(id)) next.delete(id);
+      else next.add(id);
+      return next;
+    });
+  }
+  return <Card className="border-accent/60 bg-accent/5">
+    <CardHeader><CardTitle>{action.title}</CardTitle><CardDescription>{action.explanation}</CardDescription></CardHeader>
+    <CardContent className="space-y-4">
+      <TrainingLabelSummary action={action} matterId={matterId} />
+      <div className="space-y-3 rounded-lg border bg-background/70 p-3">
+        <div><p className="text-sm font-semibold">Fields to train</p><p className="text-xs text-muted-foreground">Each selected field creates its own classifier. Unselected Q&amp;A coding fields remain available as codings but will not be trained or scored by a classifier.</p></div>
+        {fields.length ? <div className="grid gap-2 sm:grid-cols-2">{fields.map((field) => {
+          const id = String(field.metadata_definition_id);
+          const name = String(field.display_name ?? friendly(String(field.key ?? "Field")));
+          return <label key={id} className="flex cursor-pointer items-center gap-2 rounded-md border bg-background px-3 py-2 text-sm"><input type="checkbox" aria-label={`Train ${name}`} checked={selectedFields.has(id)} disabled={!canManage || busy} onChange={() => toggleField(id)} /><span className="font-medium">{name}</span></label>;
+        })}</div> : <p className="text-xs text-destructive">No classifier fields are available.</p>}
+      </div>
+      <div className="flex flex-wrap gap-2">
+        {finalizeChoice ? <DecisionChoiceButton choice={finalizeChoice} disabled={!canManage || busy || selectedFields.size === 0} onClick={() => onResolve(finalizeChoice.key, { classifier_metadata_definition_ids: [...selectedFields] })} /> : null}
+        {stopChoice ? <DecisionChoiceButton choice={stopChoice} variant="destructive" disabled={!canManage || busy} onClick={() => onResolve(stopChoice.key)} /> : null}
+      </div>
     </CardContent>
   </Card>;
 }

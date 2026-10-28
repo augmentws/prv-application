@@ -577,14 +577,17 @@ def _action_contract(
         return (
             "Finalize the classifier training labels",
             (
-                "Freeze the selected label policy, source runs, human adjudication revisions, exclusions, and "
-                "accepted limitations before classifier training begins."
+                "Choose the coding fields to train, then freeze that selection with the label policy, source "
+                "runs, human adjudication revisions, exclusions, and accepted limitations."
             ),
             [
                 {
                     "key": "FINALIZE",
                     "label": "Finalize training labels",
-                    "consequence": "Create an immutable training-label provenance snapshot and begin training.",
+                    "consequence": (
+                        "Freeze the selected classifier fields and their immutable label provenance, then begin "
+                        "training only those fields."
+                    ),
                 },
                 stop,
             ],
@@ -5425,6 +5428,53 @@ def _confirm_disagreement_review(
     _advance_after_stage(db, program=program, run=run, attempt=attempt)
 
 
+def _classifier_training_definition_ids(
+    run: ReviewProgramRun,
+    *,
+    training_labels: dict[str, Any],
+    requested_ids: Any = None,
+    require_selection: bool = False,
+) -> list[uuid.UUID]:
+    accepted_task = dict((run.progress_summary or {}).get("accepted_qa_task") or {})
+    try:
+        accepted_ids = list(
+            dict.fromkeys(
+                uuid.UUID(str(value))
+                for value in accepted_task.get("destination_metadata_definition_ids", [])
+            )
+        )
+    except (TypeError, ValueError) as exc:
+        raise ReviewProgramError("Q&A destination-field provenance is invalid") from exc
+    if not accepted_ids:
+        raise ReviewProgramError("Q&A destination-field provenance is unavailable")
+
+    raw_ids = requested_ids
+    if raw_ids is None and not require_selection:
+        raw_ids = training_labels.get("classifier_metadata_definition_ids")
+        if raw_ids is None:
+            # Older snapshots used this field only for difference-review selection. Using a
+            # non-empty legacy selection prevents an in-flight retry from recreating classifiers
+            # that the reviewer explicitly left out of that review.
+            raw_ids = training_labels.get("selected_metadata_definition_ids") or None
+    if raw_ids is None:
+        if require_selection:
+            raise ReviewProgramError("Select at least one coding field for classifier training")
+        return accepted_ids
+    if not isinstance(raw_ids, list):
+        raise ReviewProgramError("Classifier training field selection is invalid")
+    try:
+        selected_ids = list(dict.fromkeys(uuid.UUID(str(value)) for value in raw_ids))
+    except (TypeError, ValueError) as exc:
+        raise ReviewProgramError("Classifier training field selection is invalid") from exc
+    if not selected_ids:
+        raise ReviewProgramError("Select at least one coding field for classifier training")
+    unknown_ids = set(selected_ids).difference(accepted_ids)
+    if unknown_ids:
+        raise ReviewProgramError("Classifier training selected a field outside the published Q&A task")
+    selected_set = set(selected_ids)
+    return [definition_id for definition_id in accepted_ids if definition_id in selected_set]
+
+
 def _finalize_training_labels(
     db: Session,
     *,
@@ -5438,9 +5488,17 @@ def _finalize_training_labels(
         raise ReviewProgramError("Training-label policy has not been selected")
     profile_runs = _completed_discovery_profile_runs(db, run=run)
     label_runs = _completed_discovery_label_runs(db, profile_runs=profile_runs)
+    resolution_input = dict((action.resolution_payload or {}).get("input") or {})
+    classifier_definition_ids = _classifier_training_definition_ids(
+        run,
+        training_labels=resolution,
+        requested_ids=resolution_input.get("classifier_metadata_definition_ids"),
+        require_selection=True,
+    )
     snapshot = {
         **resolution,
         "state": "FROZEN",
+        "classifier_metadata_definition_ids": [str(value) for value in classifier_definition_ids],
         "profile_run_ids": [str(profile_run.id) for profile_run in profile_runs],
         "label_run_ids": [str(label_run.id) for label_run in label_runs],
         "frozen_by_user_id": str(action.resolved_by_user_id),
@@ -5459,7 +5517,11 @@ def _finalize_training_labels(
     )
     run.progress_summary = {
         **run.progress_summary,
-        "training_label_resolution": {**resolution, "state": "FROZEN"},
+        "training_label_resolution": {
+            **resolution,
+            "state": "FROZEN",
+            "classifier_metadata_definition_ids": [str(value) for value in classifier_definition_ids],
+        },
         "training_labels": snapshot,
     }
     _complete_action_attempt(
@@ -7488,17 +7550,10 @@ def _launch_classifier_training(
     training_labels = dict((run.progress_summary or {}).get("training_labels") or {})
     if training_labels.get("state") != "FROZEN" or not training_labels.get("content_hash"):
         raise ReviewProgramError("Classifier training labels have not been frozen")
-    accepted_task = dict((run.progress_summary or {}).get("accepted_qa_task") or {})
-    try:
-        definition_ids = list(
-            dict.fromkeys(
-                uuid.UUID(str(value)) for value in accepted_task.get("destination_metadata_definition_ids", [])
-            )
-        )
-    except (TypeError, ValueError) as exc:
-        raise ReviewProgramError("Q&A destination-field provenance is invalid") from exc
-    if not definition_ids:
-        raise ReviewProgramError("Q&A destination-field provenance is unavailable")
+    definition_ids = _classifier_training_definition_ids(
+        run,
+        training_labels=training_labels,
+    )
     definitions_by_id = {
         definition.id: definition
         for definition in db.scalars(
@@ -7631,6 +7686,7 @@ def _launch_classifier_training(
     training_state = {
         "schema_version": 1,
         "state": "RUNNING",
+        "classifier_metadata_definition_ids": [str(value) for value in definition_ids],
         "embedding_job_id": str(embedding_job.id),
         "training_labels_content_hash": training_labels["content_hash"],
         "stage_attempt_id": str(attempt.id),
@@ -7856,7 +7912,14 @@ def project_review_program_classifier_training_terminal(
         or attempt.id != _current_stage_attempt(db, run).id
     ):
         return None
-    children = list(
+    training_labels = dict((run.progress_summary or {}).get("training_labels") or {})
+    ordered_target_definition_ids = _classifier_training_definition_ids(
+        run,
+        training_labels=training_labels,
+    )
+    target_definition_ids = set(ordered_target_definition_ids)
+    target_definition_id_strings = {str(value) for value in target_definition_ids}
+    all_children = list(
         db.scalars(
             select(ReviewProgramChild)
             .where(
@@ -7866,6 +7929,23 @@ def project_review_program_classifier_training_terminal(
             .order_by(ReviewProgramChild.created_at, ReviewProgramChild.id)
         )
     )
+    children: list[ReviewProgramChild] = []
+    linked_definition_ids: set[uuid.UUID] = set()
+    for item in all_children:
+        raw_definition_id = item.context.get("metadata_definition_id")
+        if raw_definition_id is None:
+            continue
+        try:
+            definition_id = uuid.UUID(str(raw_definition_id))
+        except (TypeError, ValueError) as exc:
+            raise ReviewProgramError(
+                "Review Program classifier-training target link is invalid"
+            ) from exc
+        if definition_id in target_definition_ids:
+            children.append(item)
+            linked_definition_ids.add(definition_id)
+    if linked_definition_ids != target_definition_ids:
+        raise ReviewProgramError("Review Program classifier-training target links are incomplete")
     jobs = [db.get(ClassificationTrainingJob, item.child_id) for item in children]
     if not jobs or any(item is None for item in jobs):
         return None
@@ -7906,6 +7986,17 @@ def project_review_program_classifier_training_terminal(
         "classifier_training": {
             **dict((run.progress_summary or {}).get("classifier_training") or {}),
             "state": "COMPLETED",
+            "classifier_metadata_definition_ids": [
+                str(value) for value in ordered_target_definition_ids
+            ],
+            "models": [
+                item
+                for item in dict(
+                    (run.progress_summary or {}).get("classifier_training") or {}
+                ).get("models", [])
+                if item.get("metadata_definition_id")
+                and str(item["metadata_definition_id"]) in target_definition_id_strings
+            ],
         },
         "classifier_results": quality,
     }

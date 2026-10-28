@@ -67,6 +67,7 @@ from app.review_programs import (
     _activate_stage_by_key,
     _alignment_status,
     _classifier_positive_class_keys,
+    _classifier_training_definition_ids,
     _wilson_interval,
     cancel_review_program_discovery_children,
     link_review_program_child,
@@ -507,6 +508,47 @@ def test_classifier_positive_class_keys_respects_binary_positive_mapping() -> No
     )
     with pytest.raises(ReviewProgramError, match="positive-class provenance"):
         _classifier_positive_class_keys(missing_mapping, ["responsive"])
+
+
+def test_classifier_training_definition_ids_use_frozen_target_selection() -> None:
+    responsiveness_id = uuid.uuid4()
+    privilege_id = uuid.uuid4()
+    issue_tag_id = uuid.uuid4()
+    run = SimpleNamespace(
+        progress_summary={
+            "accepted_qa_task": {
+                "destination_metadata_definition_ids": [
+                    str(responsiveness_id),
+                    str(privilege_id),
+                    str(issue_tag_id),
+                ]
+            }
+        }
+    )
+
+    assert _classifier_training_definition_ids(
+        run,
+        training_labels={"classifier_metadata_definition_ids": [str(issue_tag_id)]},
+    ) == [issue_tag_id]
+    assert _classifier_training_definition_ids(
+        run,
+        training_labels={"selected_metadata_definition_ids": [str(issue_tag_id)]},
+    ) == [issue_tag_id]
+    assert _classifier_training_definition_ids(
+        run,
+        training_labels={},
+    ) == [responsiveness_id, privilege_id, issue_tag_id]
+    with pytest.raises(ReviewProgramError, match="Select at least one coding field"):
+        _classifier_training_definition_ids(
+            run,
+            training_labels={},
+            require_selection=True,
+        )
+    with pytest.raises(ReviewProgramError, match="outside the published Q&A task"):
+        _classifier_training_definition_ids(
+            run,
+            training_labels={"classifier_metadata_definition_ids": [str(uuid.uuid4())]},
+        )
 
 
 def test_final_alignment_status_distinguishes_agreement_and_missing_coverage() -> None:
@@ -1907,6 +1949,7 @@ def test_synthetic_run_advances_waits_resumes_retries_reconciles_and_cancels(
         json={
             "preview_hash": finalization_action["preview_hash"],
             "choice_key": "FINALIZE",
+            "input": {"classifier_metadata_definition_ids": [str(destination_id)]},
         },
     )
     assert finalized.status_code == 200, finalized.text
@@ -2138,6 +2181,7 @@ def test_synthetic_run_advances_waits_resumes_retries_reconciles_and_cancels(
         json={
             "preview_hash": second_finalization_action["preview_hash"],
             "choice_key": "FINALIZE",
+            "input": {"classifier_metadata_definition_ids": [str(destination_id)]},
         },
     )
     assert second_finalized.status_code == 200, second_finalized.text

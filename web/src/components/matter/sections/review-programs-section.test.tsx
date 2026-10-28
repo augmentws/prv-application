@@ -767,7 +767,7 @@ describe("ReviewProgramsSection", () => {
   });
 
   it("shows policy-adjusted per-label counts before finalizing training labels", async () => {
-    vi.mocked(coreApi).mockImplementation(async (path) => {
+    vi.mocked(coreApi).mockImplementation(async (path, options) => {
       if (path === "/v1/review-workflow-templates") return [{
         key: "FIRST_PASS_REVIEW", version: 1, schema_version: 1, content_hash: "a".repeat(64),
         name: "First Pass Review", description: "Guided review", workflow_type: "FIRST_PASS_REVIEW", phases: [],
@@ -797,6 +797,13 @@ describe("ReviewProgramsSection", () => {
                   { value_key: "issue_1", value_label: "Market disruption", positive_count: 17 },
                   { value_key: "issue_2", value_label: "Hurricane losses", positive_count: 9 },
                 ],
+              }, {
+                metadata_definition_id: "field-2", key: "responsiveness", display_name: "Responsiveness",
+                eligible_document_count: 31, excluded_document_count: 5, basis: "Values selected by both models",
+                values: [
+                  { value_key: "true", value_label: "Responsive", positive_count: 20 },
+                  { value_key: "false", value_label: "Not responsive", positive_count: 11 },
+                ],
               }],
             },
           },
@@ -806,6 +813,9 @@ describe("ReviewProgramsSection", () => {
           ],
         }],
       }] as never;
+      if (path.endsWith("/actions/action-1/resolve") && options?.method === "POST") return {
+        id: "run-1", program_id: "program-1", status: "RUNNING", current_stage: "CLASSIFIER_TRAINING",
+      } as never;
       throw new Error(`Unexpected API request: ${path}`);
     });
     renderSection();
@@ -814,6 +824,22 @@ describe("ReviewProgramsSection", () => {
     expect(screen.getByText("28 eligible · 8 excluded")).toBeInTheDocument();
     expect(screen.getByText("Market disruption").nextElementSibling).toHaveTextContent("17");
     expect(screen.getByText("Hurricane losses").nextElementSibling).toHaveTextContent("9");
+    expect(screen.getByText("Fields to train")).toBeInTheDocument();
+    expect(screen.getByLabelText("Train Issue Tag")).toBeChecked();
+    expect(screen.getByLabelText("Train Responsiveness")).toBeChecked();
+    await userEvent.click(screen.getByLabelText("Train Responsiveness"));
+    await userEvent.click(screen.getByRole("button", { name: "Finalize training labels" }));
+
+    await waitFor(() => expect(coreApi).toHaveBeenCalledWith(
+      "/v1/matters/matter-1/review-programs/program-1/runs/run-1/actions/action-1/resolve",
+      expect.objectContaining({ method: "POST" }),
+    ));
+    const call = vi.mocked(coreApi).mock.calls.find(([path]) => path.endsWith("/actions/action-1/resolve"));
+    expect(JSON.parse(String(call?.[1]?.body))).toEqual({
+      preview_hash: "b".repeat(64),
+      choice_key: "FINALIZE",
+      input: { classifier_metadata_definition_ids: ["field-1"] },
+    });
   });
 
   it("shows the current gate and resolves it through the coordinator endpoint", async () => {
