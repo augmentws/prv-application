@@ -132,8 +132,9 @@ describe("ReviewProgramsSection", () => {
     expect(within(classifierStage as HTMLElement).getByText("Classifier training failed")).toBeInTheDocument();
     expect(within(classifierStage as HTMLElement).getByText("Database storage was temporarily unavailable.")).toBeInTheDocument();
     expect(within(classifierStage as HTMLElement).getByRole("button", { name: "Retry Classifier training" })).toBeInTheDocument();
+    expect(within(classifierStage as HTMLElement).queryByRole("button", { name: "Start replacement run" })).not.toBeInTheDocument();
 
-    await userEvent.click(within(classifierStage as HTMLElement).getByRole("button", { name: "Start replacement run" }));
+    await userEvent.click(screen.getByRole("button", { name: "Start replacement run" }));
     expect(screen.getByRole("heading", { name: "Start a replacement run?" })).toBeInTheDocument();
     expect(screen.getByText(/failed during Classifier Training/)).toBeInTheDocument();
     expect(screen.getByText(/Use Retry to continue the existing run/)).toBeInTheDocument();

@@ -915,7 +915,8 @@ issue does not exist.
 An active run blocks creation of another run. A failed current run remains unfinished: the normal recovery action is
 **Retry**, and the API rejects an unconfirmed replacement. If a manager intentionally starts a replacement, require a
 warning that identifies the failed stage and explains that the new run restarts setup, becomes current, and neither
-retries nor deletes the existing run. Completed and intentionally canceled runs may start again without this warning.
+retries nor deletes the existing run. Present replacement as a program-level administrative action, never as an action
+inside the failed stage. Completed and intentionally canceled runs may start again without this warning.
 
 ## 18. Responsive behavior
 
