@@ -17,6 +17,7 @@ from fastapi.testclient import TestClient
 from sqlalchemy import select
 
 from app.artifact_gateway import ChunkVectorArtifactSnapshot, CollectionItemGroupingSnapshot
+from app.classification_datasets import _run_values_statement
 from app.classification_features import (
     ClassificationFeatureSplitError,
     _assign_one_vs_rest_folds,
@@ -42,6 +43,17 @@ from app.models import (
     ReviewBatchReviewerValueRevision,
 )
 from artifact_service.models import WorkflowArtifact
+
+
+def test_run_label_value_query_is_bounded_by_batch_run_not_document_ids() -> None:
+    statement = _run_values_statement(
+        run_id=uuid.uuid4(),
+        metadata_definition_id=uuid.uuid4(),
+    )
+    compiled = statement.compile()
+
+    assert len(compiled.params) == 2
+    assert "matter_document_id IN" not in str(compiled)
 
 
 def auth(token: str) -> dict[str, str]:

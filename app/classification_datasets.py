@@ -13,6 +13,7 @@ import pyarrow.parquet as pq
 from pydantic import ValidationError
 from sqlalchemy import func, select
 from sqlalchemy.orm import Session
+from sqlalchemy.sql import Select
 
 from app.analysis_input_manifests import (
     AnalysisInputContract,
@@ -645,6 +646,24 @@ def _matter_claim(
     )
 
 
+def _run_values_statement(
+    *,
+    run_id: uuid.UUID,
+    metadata_definition_id: uuid.UUID,
+) -> Select[tuple[ReviewBatchRunValue]]:
+    return (
+        select(ReviewBatchRunValue)
+        .where(
+            ReviewBatchRunValue.review_batch_run_id == run_id,
+            ReviewBatchRunValue.metadata_definition_id == metadata_definition_id,
+        )
+        .order_by(
+            ReviewBatchRunValue.matter_document_id,
+            ReviewBatchRunValue.value_ordinal,
+        )
+    )
+
+
 def _run_claims(
     db: Session,
     *,
@@ -655,20 +674,19 @@ def _run_claims(
     source: LabelSourceSpecification,
 ) -> dict[uuid.UUID, LabelClaim]:
     rows = db.scalars(
-        select(ReviewBatchRunValue)
-        .where(
-            ReviewBatchRunValue.review_batch_run_id == run.id,
-            ReviewBatchRunValue.matter_document_id.in_(document_ids),
-            ReviewBatchRunValue.metadata_definition_id == target.metadata_definition_id,
-        )
-        .order_by(
-            ReviewBatchRunValue.matter_document_id,
-            ReviewBatchRunValue.value_ordinal,
+        _run_values_statement(
+            run_id=run.id,
+            metadata_definition_id=target.metadata_definition_id,
         )
     ).all()
+    eligible_document_ids = set(document_ids)
     grouped: dict[uuid.UUID, list[ReviewBatchRunValue]] = defaultdict(list)
     for row in rows:
-        grouped[row.matter_document_id].append(row)
+        # Run values are already bounded by the run's frozen review batch. The
+        # in-memory check preserves narrower classifier scopes without expanding
+        # the complete population into a PostgreSQL IN parameter list.
+        if row.matter_document_id in eligible_document_ids:
+            grouped[row.matter_document_id].append(row)
     observed = _observed_class_keys(run, target=target)
     claims: dict[uuid.UUID, LabelClaim] = {}
     for document_id, values in grouped.items():
