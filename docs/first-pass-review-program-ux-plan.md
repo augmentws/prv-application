@@ -885,6 +885,10 @@ workspace while a secondary report loads.
 If work is running, show the active child work, expected next transition, elapsed time, and cancel control when
 authorized. If the program is waiting for a reviewer batch, show assignment and completion progress.
 
+The administrative reconciliation control is labeled **Refresh state**. Its tooltip says that it checks pending
+events and completed work and updates the program when its recorded state is behind; it does not retry work. This is
+a state-repair action, not the normal way to advance a healthy run.
+
 ### 17.3 Partial failures
 
 Distinguish:

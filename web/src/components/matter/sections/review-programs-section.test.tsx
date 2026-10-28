@@ -224,6 +224,10 @@ describe("ReviewProgramsSection", () => {
     expect(within(initialAssessmentStage as HTMLElement).queryByText("running")).not.toBeInTheDocument();
     expect(within(refinementStage as HTMLElement).getByText("Reassessment · Round 2")).toBeInTheDocument();
     expect(within(refinementStage as HTMLElement).getByText("running")).toBeInTheDocument();
+    const refreshState = screen.getByRole("button", { name: "Refresh state" });
+    expect(refreshState).toHaveAttribute("aria-describedby", "review-program-refresh-state-help");
+    expect(screen.getByText("Checks pending events and completed work, then updates the program if its recorded state is behind. It does not retry work.")).toHaveAttribute("role", "tooltip");
+    expect(screen.queryByRole("button", { name: "Reconcile" })).not.toBeInTheDocument();
     const assessmentHelp = screen.getByRole("button", { name: "About Definition assessment" });
     expect(assessmentHelp).toHaveAttribute("aria-describedby", "review-program-stage-2-help");
     expect(screen.getByText("Test the Matter Definition against a targeted document batch and identify gaps, ambiguities, and retrieval weaknesses.")).toHaveAttribute("role", "tooltip");

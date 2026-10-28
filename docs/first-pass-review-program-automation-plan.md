@@ -395,7 +395,8 @@ Use short coordinator transitions rather than a single long-running workflow wai
 6. Create the next child job, action request, and any user-facing notification with stable idempotency keys.
 7. Mark the event processed and commit the transition atomically.
 
-Child completion, action resolution, and an administrative reconcile command all publish or recover the same typed
+Child completion, action resolution, and the administrative reconciliation command (labeled **Refresh state** in the
+UI) all publish or recover the same typed
 program event and call the same transition service. A periodic reconciler may repair a missing event or dispatch from
 authoritative child state but must not infer or fabricate user decisions.
 

@@ -285,7 +285,7 @@ function ProgramWorkspace({ clientId, matterId, program, run, stages, canManage,
       <CardHeader className="flex-row items-start justify-between gap-4">
         <div><CardTitle>{program.name}</CardTitle><CardDescription>{program.description || "Guided First Pass Review workflow"}</CardDescription></div>
         <div className="flex shrink-0 flex-wrap justify-end gap-2">
-          {run && canManage && ACTIVE_RUN_STATUSES.has(run.status) ? <><Button size="sm" variant="outline" disabled={busy} onClick={() => onCommand("reconcile")}><RefreshCw />Reconcile</Button><Button size="sm" variant="outline" disabled={busy} onClick={() => onCommand("cancel")}><Ban />Stop program</Button></> : null}
+          {run && canManage && ACTIVE_RUN_STATUSES.has(run.status) ? <><RefreshStateButton busy={busy} onClick={() => onCommand("reconcile")} /><Button size="sm" variant="outline" disabled={busy} onClick={() => onCommand("cancel")}><Ban />Stop program</Button></> : null}
           {run?.status === "FAILED" && canManage ? <ReplacementRunDialog run={run} busy={busy} onConfirm={() => onStart(true)} /> : null}
           {run && ["COMPLETED", "COMPLETED_WITH_ERRORS", "CANCELED"].includes(run.status) && canManage ? <Button size="sm" variant="outline" disabled={busy} onClick={() => onStart(false)}><Play />Start another run</Button> : null}
         </div>
@@ -310,6 +310,16 @@ function ProgramWorkspace({ clientId, matterId, program, run, stages, canManage,
       return <li key={stage.key} className={cn("flex items-start gap-3 rounded-lg border p-3", isCurrent && "border-primary/50 bg-primary/5", upcoming && "opacity-55", (isRunning || showsDiscoveryTask || showsRunFailure) && "sm:col-span-2")}><span className="grid size-7 shrink-0 place-items-center rounded-full bg-muted text-xs font-semibold">{stage.ordinal}</span><div className="min-w-0 flex-1"><div className="flex items-start justify-between gap-2"><p className="text-sm font-medium">{stage.name}</p><ProgramStageTooltip stage={stage} /></div><div className="mt-1 flex flex-wrap gap-1">{attempt ? <StatusBadge status={attempt.status} /> : <Badge variant="outline">Upcoming</Badge>}<Badge variant="outline">{friendly(stage.batching_policy)}</Badge>{stage.requires_human_gate ? <Badge variant="outline">Decision</Badge> : null}</div>{showsRunFailure ? <div className="mt-3 rounded-lg border border-destructive/30 bg-destructive/5 p-3"><p className="text-sm font-medium text-destructive">{stage.name} failed</p><p className="mt-1 text-sm text-destructive">{attempt?.error_summary || run.failure_summary || "This stage could not be completed."}</p>{canManage && run.failure_retriable ? <div className="mt-3"><Button size="sm" disabled={busy} onClick={() => onCommand("retry")}><RotateCcw />Retry {stage.name}</Button></div> : null}</div> : null}{showsDiscoveryTask ? <DiscoveryQAProgress clientId={clientId} matterId={matterId} run={run} canManage={canManage} busy={busy} onCancel={onCancelDiscovery} onReset={onResetDiscovery} /> : null}{containsCurrentReassessment ? <div className="mt-2 flex items-center justify-between gap-2 rounded-md border border-primary/30 bg-background/80 px-2 py-1.5"><span className="text-xs font-medium">Reassessment · Round {definitionAssessmentRound}</span><StatusBadge status={currentDefinitionAssessmentAttempt?.status ?? run.status} /></div> : null}</div></li>;
     })}</ol></CardContent></Card> : null}
   </div>;
+}
+
+function RefreshStateButton({ busy, onClick }: { busy: boolean; onClick: () => void }) {
+  const tooltipId = "review-program-refresh-state-help";
+  return <span className="group/refresh-state-tooltip relative inline-flex">
+    <Button size="sm" variant="outline" disabled={busy} onClick={onClick} aria-describedby={tooltipId}><RefreshCw />Refresh state</Button>
+    <span id={tooltipId} role="tooltip" className="pointer-events-none invisible absolute right-0 top-full z-50 mt-2 w-max max-w-[min(20rem,calc(100vw-2rem))] rounded-md border bg-popover px-3 py-2 text-left text-xs font-normal leading-relaxed text-popover-foreground opacity-0 shadow-md transition-opacity group-hover/refresh-state-tooltip:visible group-hover/refresh-state-tooltip:opacity-100 group-focus-within/refresh-state-tooltip:visible group-focus-within/refresh-state-tooltip:opacity-100">
+      Checks pending events and completed work, then updates the program if its recorded state is behind. It does not retry work.
+    </span>
+  </span>;
 }
 
 function ReplacementRunDialog({ run, busy, onConfirm }: { run: ReviewProgramRunRead; busy: boolean; onConfirm: () => void }) {
