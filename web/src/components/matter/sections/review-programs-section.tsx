@@ -330,6 +330,16 @@ function WholeCollectionScoringProgress({ run, openAction }: { run: ReviewProgra
   const models = Array.isArray(scoring.models)
     ? scoring.models.filter((item): item is Record<string, unknown> => Boolean(item && typeof item === "object" && !Array.isArray(item)))
     : [];
+  const preparationRaw = scoring.preparation_progress;
+  const preparation = preparationRaw && typeof preparationRaw === "object" && !Array.isArray(preparationRaw)
+    ? preparationRaw as Record<string, unknown>
+    : {};
+  const processed = Number(preparation.processed_document_count ?? 0);
+  const population = Number(preparation.population_document_count ?? 0);
+  const ready = Number(preparation.feature_ready_count ?? 0);
+  const missing = Number(preparation.feature_missing_count ?? 0);
+  const failed = Number(preparation.feature_failed_count ?? 0);
+  const percent = population > 0 ? Math.min(100, Math.max(0, (processed / population) * 100)) : 0;
   const preparing = state === "PREPARING_INPUTS";
   const waitingForDecision = !state && openAction?.action_type === "WHOLE_COLLECTION_SCORING";
   const title = preparing ? "Preparing scoring inputs"
@@ -347,6 +357,11 @@ function WholeCollectionScoringProgress({ run, openAction }: { run: ReviewProgra
     <p className="text-xs text-muted-foreground">Status</p>
     <p className="font-medium">{title}</p>
     <p className="mt-1 text-xs text-muted-foreground">{detail}</p>
+    {preparing && population > 0 ? <div className="mt-3 space-y-1.5">
+      <div className="flex items-center justify-between gap-3 text-xs"><span>{processed.toLocaleString()} of {population.toLocaleString()} document features checked</span><span className="tabular-nums">{percent.toFixed(1)}%</span></div>
+      <div className="h-2 overflow-hidden rounded-full bg-muted"><div className="h-full rounded-full bg-primary transition-[width]" style={{ width: `${percent}%` }} /></div>
+      <p className="text-xs text-muted-foreground">{ready.toLocaleString()} ready · {missing.toLocaleString()} missing/skipped · {failed.toLocaleString()} invalid</p>
+    </div> : null}
     {models.length ? <div className="mt-2 flex flex-wrap gap-2">{models.map((model, index) => <span key={String(model.classification_model_id ?? index)} className="inline-flex items-center gap-1.5 rounded-md border px-2 py-1 text-xs"><span>{String(model.field_name ?? model.field_key ?? `Classifier ${index + 1}`)}</span><StatusBadge status={String(model.status ?? (preparing ? "PREPARING_INPUTS" : "QUEUED"))} /></span>)}</div> : null}
   </div>;
 }

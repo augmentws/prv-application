@@ -5,6 +5,7 @@ import io
 import json
 import uuid
 from collections import Counter
+from collections.abc import Callable
 from datetime import datetime
 from typing import Any
 
@@ -5627,6 +5628,7 @@ def _prepare_whole_collection_scoring_snapshot(
     model_version: ClassificationModelVersion,
     embedding_job: MatterEmbeddingJob,
     actor_user_id: uuid.UUID,
+    progress_callback: Callable[[int, int, int, int, int], None] | None = None,
 ) -> ClassificationDatasetSnapshot:
     snapshot_request = ClassificationDatasetSnapshotRequest.model_validate(
         {
@@ -5660,11 +5662,24 @@ def _prepare_whole_collection_scoring_snapshot(
         and (snapshot.feature_specification or {}).get("embedding_job_id") == str(embedding_job.id)
     ):
         snapshot.status = "BUILDING"
+        if progress_callback is not None:
+            progress_callback(0, snapshot.population_count, 0, 0, 0)
         prepared_features = prepare_scoring_features(
             db,
             snapshot=snapshot,
             embedding_job_id=embedding_job.id,
             actor_user_id=actor_user_id,
+            progress_callback=(
+                lambda processed, ready, missing, failed: progress_callback(
+                    processed,
+                    snapshot.population_count,
+                    ready,
+                    missing,
+                    failed,
+                )
+                if progress_callback is not None
+                else None
+            ),
         )
         materialize_scoring_features(
             db,
@@ -5761,7 +5776,7 @@ def _materialize_whole_collection_scoring(
     created_runs: list[ClassificationScoringRun] = []
     terminal_runs: list[tuple[ClassificationScoringRun, WorkflowRun]] = []
     try:
-        for approval in approvals:
+        for model_index, approval in enumerate(approvals, start=1):
             model_id = uuid.UUID(str(approval["classification_model_id"]))
             model_version_id = uuid.UUID(str(approval["model_version_id"]))
             result_model = result_models.get(str(model_id))
@@ -5794,6 +5809,19 @@ def _materialize_whole_collection_scoring(
                 model_version=model_version,
                 embedding_job=embedding_job,
                 actor_user_id=actor_user_id,
+                progress_callback=lambda processed, total, ready, missing, failed, model=model, result_model=result_model, model_index=model_index: _record_whole_collection_scoring_preparation_progress(
+                    run_id=run.id,
+                    stage_attempt_id=attempt.id,
+                    classification_model_id=model.id,
+                    field_name=str(result_model.get("field_name") or result_model.get("field_key") or "Classifier"),
+                    model_index=model_index,
+                    model_count=len(approvals),
+                    processed=processed,
+                    total=total,
+                    ready=ready,
+                    missing=missing,
+                    failed=failed,
+                ),
             )
             prepared = prepare_scoring(
                 db,
@@ -5894,6 +5922,14 @@ def _materialize_whole_collection_scoring(
     ) as exc:
         raise ReviewProgramError(str(exc)) from exc
 
+    db.refresh(run, with_for_update=True)
+    db.refresh(attempt, with_for_update=True)
+    if (
+        run.status != "RUNNING"
+        or run.current_stage != "WHOLE_COLLECTION_SCORING"
+        or attempt.status != "RUNNING"
+    ):
+        raise ReviewProgramError("Whole-collection scoring preparation is no longer active")
     scoring_snapshot = {
         "schema_version": 1,
         "state": "RUNNING",
@@ -5932,6 +5968,73 @@ def _materialize_whole_collection_scoring(
         )
 
 
+def _record_whole_collection_scoring_preparation_progress(
+    *,
+    run_id: uuid.UUID,
+    stage_attempt_id: uuid.UUID,
+    classification_model_id: uuid.UUID,
+    field_name: str,
+    model_index: int,
+    model_count: int,
+    processed: int,
+    total: int,
+    ready: int,
+    missing: int,
+    failed: int,
+) -> None:
+    from app.database import SessionLocal
+
+    with SessionLocal() as progress_db:
+        progress_run = progress_db.scalar(
+            select(ReviewProgramRun).where(ReviewProgramRun.id == run_id).with_for_update()
+        )
+        if progress_run is None:
+            return
+        scoring = dict((progress_run.progress_summary or {}).get("whole_collection_scoring") or {})
+        if (
+            progress_run.status != "RUNNING"
+            or progress_run.current_stage != "WHOLE_COLLECTION_SCORING"
+            or scoring.get("stage_attempt_id") != str(stage_attempt_id)
+            or scoring.get("state") != "PREPARING_INPUTS"
+        ):
+            return
+        models = [dict(item) for item in scoring.get("models", []) if isinstance(item, dict)]
+        for item in models:
+            if item.get("classification_model_id") == str(classification_model_id):
+                item.update(
+                    {
+                        "status": "PREPARING_FEATURES",
+                        "processed_document_count": processed,
+                        "population_document_count": total,
+                        "feature_ready_count": ready,
+                        "feature_missing_count": missing,
+                        "feature_failed_count": failed,
+                    }
+                )
+                break
+        progress_run.progress_summary = {
+            **progress_run.progress_summary,
+            "whole_collection_scoring": {
+                **scoring,
+                "models": models,
+                "status_detail": f"Preparing features for {field_name}.",
+                "preparation_progress": {
+                    "phase": "PREPARING_FEATURES",
+                    "field_name": field_name,
+                    "model_index": model_index,
+                    "model_count": model_count,
+                    "processed_document_count": processed,
+                    "population_document_count": total,
+                    "feature_ready_count": ready,
+                    "feature_missing_count": missing,
+                    "feature_failed_count": failed,
+                    "updated_at": utcnow().isoformat(),
+                },
+            },
+        }
+        progress_db.commit()
+
+
 def prepare_review_program_whole_collection_scoring(
     review_program_run_id: uuid.UUID,
     stage_attempt_id: uuid.UUID,
@@ -5941,16 +6044,8 @@ def prepare_review_program_whole_collection_scoring(
     from app.database import SessionLocal
 
     with SessionLocal() as db:
-        run = db.scalar(
-            select(ReviewProgramRun)
-            .where(ReviewProgramRun.id == review_program_run_id)
-            .with_for_update()
-        )
-        attempt = db.scalar(
-            select(ReviewProgramStageAttempt)
-            .where(ReviewProgramStageAttempt.id == stage_attempt_id)
-            .with_for_update()
-        )
+        run = db.get(ReviewProgramRun, review_program_run_id)
+        attempt = db.get(ReviewProgramStageAttempt, stage_attempt_id)
         if run is None or attempt is None or attempt.run_id != run.id:
             raise ReviewProgramError("Whole-collection scoring preparation target is unavailable")
         scoring = dict((run.progress_summary or {}).get("whole_collection_scoring") or {})

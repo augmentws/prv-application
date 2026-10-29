@@ -1002,6 +1002,10 @@ vector object is logged and counted as a missing feature; it does not fail whole
 other documents from being scored. Database authorization and matter-scope violations remain fatal because they are
 not document-level storage failures.
 
+Whole-matter feature preparation uses bounded parallel object reads and vector pooling, configured independently by
+`CLASSIFICATION_FEATURE_LOAD_CONCURRENCY` (default `16`). Progress is committed after every 1,000 documents so the
+workspace can show checked, ready, skipped, and invalid counts while preparation is running.
+
 ## 16. Phase 9 Classifier and existing Q&A comparison
 
 After scoring completes, compare classifier predictions with all existing program Q&A results over their shared

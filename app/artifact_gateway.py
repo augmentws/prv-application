@@ -3,6 +3,7 @@ import json
 import logging
 import uuid
 from collections.abc import Callable, Iterator
+from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from typing import Any, BinaryIO
@@ -2227,21 +2228,44 @@ def load_current_chunk_vector_artifacts(
         return {}
     unique_item_ids = list(dict.fromkeys(collection_item_ids))
     settings = get_settings()
+    feature_load_concurrency = getattr(settings, "classification_feature_load_concurrency", 16)
     if settings.artifact_mode != "embedded":
-        return {
-            item_id: artifact
-            for item_id in unique_item_ids
-            if (
-                artifact := load_current_chunk_vector_artifact(
+        def load_remote(item_id: uuid.UUID) -> tuple[uuid.UUID, ChunkVectorArtifactSnapshot | None]:
+            try:
+                artifact = load_current_chunk_vector_artifact(
                     collection_item_id=item_id,
                     configuration_hash=configuration_hash,
                     actor_user_id=actor_user_id,
                     tenant_id=tenant_id,
                     client_id=client_id,
                 )
-            )
-            is not None
-        }
+            except httpx.HTTPStatusError as exc:
+                if exc.response.status_code in {401, 403}:
+                    raise
+                logger.warning(
+                    "Remote chunk vector lookup failed; skipping document collection_item_id=%s status_code=%s",
+                    item_id,
+                    exc.response.status_code,
+                )
+                return item_id, None
+            except Exception as exc:  # noqa: BLE001 - artifact availability is document-level
+                logger.warning(
+                    "Remote chunk vector lookup failed; skipping document collection_item_id=%s error_type=%s",
+                    item_id,
+                    type(exc).__name__,
+                )
+                return item_id, None
+            return item_id, artifact
+
+        with ThreadPoolExecutor(
+            max_workers=min(feature_load_concurrency, len(unique_item_ids)),
+            thread_name_prefix="classification-feature-load",
+        ) as executor:
+            return {
+                item_id: artifact
+                for item_id, artifact in executor.map(load_remote, unique_item_ids)
+                if artifact is not None
+            }
 
     snapshots: dict[uuid.UUID, ChunkVectorArtifactSnapshot] = {}
     with ArtifactSessionLocal() as db:
@@ -2284,30 +2308,45 @@ def load_current_chunk_vector_artifacts(
             {"vector_item_ids": unique_item_ids},
         ).all()
         storage = get_storage()
+        candidates: dict[uuid.UUID, list[tuple[Artifact, ContentBlob]]] = {}
         for item_id, artifact, blob in rows:
-            if item_id in snapshots:
-                continue
             metadata = artifact.artifact_metadata or {}
             if metadata.get("configuration_hash") != configuration_hash:
                 continue
-            try:
-                with storage.open(blob.bucket_name, blob.storage_key) as stream:
-                    content = stream.read()
-            except Exception as exc:  # noqa: BLE001 - storage availability is document-level
-                logger.warning(
-                    "Chunk vector blob read failed; trying older artifact "
-                    "collection_item_id=%s artifact_id=%s blob_id=%s storage_key=%s error_type=%s",
-                    item_id,
-                    artifact.id,
-                    blob.id,
-                    blob.storage_key,
-                    type(exc).__name__,
+            candidates.setdefault(item_id, []).append((artifact, blob))
+
+        def load_embedded(item_id: uuid.UUID) -> tuple[uuid.UUID, ChunkVectorArtifactSnapshot | None]:
+            for artifact, blob in candidates[item_id]:
+                try:
+                    with storage.open(blob.bucket_name, blob.storage_key) as stream:
+                        content = stream.read()
+                except Exception as exc:  # noqa: BLE001 - storage availability is document-level
+                    logger.warning(
+                        "Chunk vector blob read failed; trying older artifact "
+                        "collection_item_id=%s artifact_id=%s blob_id=%s storage_key=%s error_type=%s",
+                        item_id,
+                        artifact.id,
+                        blob.id,
+                        blob.storage_key,
+                        type(exc).__name__,
+                    )
+                    continue
+                return item_id, ChunkVectorArtifactSnapshot(
+                    artifact_id=artifact.id,
+                    content_hash=artifact.content_hash,
+                    content=content,
+                    metadata=artifact.artifact_metadata or {},
                 )
-                continue
-            snapshots[item_id] = ChunkVectorArtifactSnapshot(
-                artifact_id=artifact.id,
-                content_hash=artifact.content_hash,
-                content=content,
-                metadata=metadata,
-            )
+            return item_id, None
+
+        if candidates:
+            with ThreadPoolExecutor(
+                max_workers=min(feature_load_concurrency, len(candidates)),
+                thread_name_prefix="classification-feature-load",
+            ) as executor:
+                snapshots = {
+                    item_id: artifact
+                    for item_id, artifact in executor.map(load_embedded, candidates)
+                    if artifact is not None
+                }
     return snapshots
