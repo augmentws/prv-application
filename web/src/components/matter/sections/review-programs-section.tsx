@@ -22,7 +22,7 @@ import { Textarea } from "@/components/ui/textarea";
 import type { AnalysisTaskBatchSetRead, MatterDefinitionAssessmentRead, MatterDefinitionRead, MatterQuestionAnsweringJobRead, MetadataDefinitionRead, ReviewProgramActionRead, ReviewProgramCreate, ReviewProgramRead, ReviewProgramRunRead, ReviewWorkflowStageRead, ReviewWorkflowTemplateRead } from "@/generated/models";
 import { coreApi } from "@/lib/api-client";
 import { formatDate } from "@/lib/format";
-import { matterJobsHref } from "@/lib/matter-routes";
+import { classificationModelHref, matterJobsHref } from "@/lib/matter-routes";
 import { cn } from "@/lib/utils";
 
 const ACTIVE_RUN_STATUSES = new Set(["QUEUED", "RUNNING", "WAITING_FOR_USER"]);
@@ -294,6 +294,7 @@ function ProgramWorkspace({ clientId, matterId, program, run, stages, canManage,
     </Card>
     {run && currentAssessment ? <DefinitionAssessmentProgress clientId={clientId} matterId={matterId} run={run} assessment={currentAssessment} /> : null}
     {run?.status === "COMPLETED" || run?.status === "COMPLETED_WITH_ERRORS" ? <CompletedReviewProgramSummary run={run} /> : null}
+    {run ? <ProgramClassifierModels clientId={clientId} matterId={matterId} run={run} /> : null}
     {openAction?.action_type === "MATTER_DEFINITION_SETUP" ? <DefinitionSetupCard matterId={matterId} action={openAction} canManage={canManage} busy={busy} onSubmit={(payload) => onSetupDefinition(openAction, payload)} onStop={() => onResolve(openAction, "STOP")} /> : openAction?.action_type === "MATTER_DEFINITION_REFINEMENT" ? <DefinitionRefinementCard clientId={clientId} matterId={matterId} action={openAction} canManage={canManage} busy={busy} onResolve={(choice, input) => onResolve(openAction, choice, undefined, input)} /> : openAction?.action_type === "QA_TASK_SETUP" ? <QASetupCard matterId={matterId} action={openAction} canManage={canManage} busy={busy} onSubmit={(payload) => onSetupQA(openAction, payload)} onStop={() => onResolve(openAction, "STOP")} /> : openAction?.action_type === "DISCOVERY_QA_SETUP" ? <DiscoverySetupCard action={openAction} canManage={canManage} busy={busy} onSubmit={(payload) => onSetupDiscovery(openAction, payload)} onStop={() => onResolve(openAction, "STOP")} /> : openAction?.action_type === "CLASSIFIER_IMPROVEMENT_SETUP" ? <ClassifierImprovementSetupCard action={openAction} canManage={canManage} busy={busy} onSubmit={(payload) => onSetupClassifierImprovement(openAction, payload)} onStop={() => onResolve(openAction, "STOP")} /> : openAction?.action_type === "NEGATIVE_POPULATION_QC_SETUP" ? <NegativePopulationQCSetupCard action={openAction} canManage={canManage} busy={busy} onSubmit={(payload) => onSetupNegativePopulationQC(openAction, payload)} onStop={() => onResolve(openAction, "STOP")} /> : openAction?.action_type === "REVIEW_PROGRAM_COMPLETION" ? <CompletionDecisionCard action={openAction} canManage={canManage} busy={busy} onComplete={(reason) => onResolve(openAction, "COMPLETE", reason)} onStop={() => onResolve(openAction, "STOP")} /> : openAction?.action_type === "TRAINING_LABEL_POLICY" ? <TrainingLabelPolicyCard action={openAction} matterId={matterId} canManage={canManage} busy={busy} onResolve={(choice, input) => onResolve(openAction, choice, undefined, input)} /> : openAction?.action_type === "TRAINING_LABEL_FINALIZATION" ? <TrainingLabelFinalizationCard action={openAction} matterId={matterId} canManage={canManage} busy={busy} onResolve={(choice, input) => onResolve(openAction, choice, undefined, input)} /> : openAction ? <Card className="border-accent/60 bg-accent/5"><CardHeader><CardTitle>{openAction.title}</CardTitle><CardDescription>{openAction.explanation}</CardDescription></CardHeader><CardContent><DefinitionAssessmentSummary action={openAction} /><QAPublicationSummary action={openAction} /><IssueSupportSummary action={openAction} /><TrainingLabelSummary action={openAction} matterId={matterId} /><ClassifierReviewSummary action={openAction} /><WholeCollectionScoringSummary action={openAction} /><ClassifierPositiveCoverageSummary action={openAction} /><FinalAlignmentSummary action={openAction} /><NegativePopulationQCReport action={openAction} /><NegativePopulationQCFindingsReview action={openAction} matterId={matterId} />{openAction.stage_key === "DEFINITION_ACCEPTANCE" ? <Button asChild size="sm" variant="outline" className="mb-3"><Link href={definitionAssessmentHref(clientId, matterId, openAction)}><BookOpen />Open Matter Definition</Link></Button> : null}<div className="flex flex-wrap gap-2">{openAction.allowed_choices.map((choice, index) => {
       return <DecisionChoiceButton key={`${choice.key}-${index}`} choice={choice} variant={choice.key === "STOP" ? "destructive" : "default"} disabled={!canManage || busy} onClick={() => onResolve(openAction, choice.key)} />;
     })}</div></CardContent></Card> : null}
@@ -311,6 +312,40 @@ function ProgramWorkspace({ clientId, matterId, program, run, stages, canManage,
       return <li key={stage.key} className={cn("flex items-start gap-3 rounded-lg border p-3", isCurrent && "border-primary/50 bg-primary/5", upcoming && "opacity-55", (isRunning || showsDiscoveryTask || showsRunFailure) && "sm:col-span-2")}><span className="grid size-7 shrink-0 place-items-center rounded-full bg-muted text-xs font-semibold">{stage.ordinal}</span><div className="min-w-0 flex-1"><div className="flex items-start justify-between gap-2"><p className="text-sm font-medium">{stage.name}</p><ProgramStageTooltip stage={stage} /></div><div className="mt-1 flex flex-wrap gap-1">{attempt ? <StatusBadge status={attempt.status} /> : <Badge variant="outline">Upcoming</Badge>}<Badge variant="outline">{friendly(stage.batching_policy)}</Badge>{stage.requires_human_gate ? <Badge variant="outline">Decision</Badge> : null}</div>{showsRunFailure ? <div className="mt-3 rounded-lg border border-destructive/30 bg-destructive/5 p-3"><p className="text-sm font-medium text-destructive">{stage.name} failed</p><p className="mt-1 text-sm text-destructive">{attempt?.error_summary || run.failure_summary || "This stage could not be completed."}</p>{stage.key === "CLASSIFIER_TRAINING" && !run.failure_retriable ? <p className="mt-2 text-xs text-muted-foreground">After correcting the reported cause, retry starts a new classifier-training attempt with the same frozen labels and configuration. It does not replace the program run.</p> : null}{canManage && canRetryFailure ? <div className="mt-3"><Button size="sm" disabled={busy} onClick={() => onCommand("retry")}><RotateCcw />Retry {stage.name}</Button></div> : null}</div> : null}{showsDiscoveryTask ? <DiscoveryQAProgress clientId={clientId} matterId={matterId} run={run} canManage={canManage} busy={busy} onCancel={onCancelDiscovery} onReset={onResetDiscovery} /> : null}{containsCurrentReassessment ? <div className="mt-2 flex items-center justify-between gap-2 rounded-md border border-primary/30 bg-background/80 px-2 py-1.5"><span className="text-xs font-medium">Reassessment · Round {definitionAssessmentRound}</span><StatusBadge status={currentDefinitionAssessmentAttempt?.status ?? run.status} /></div> : null}</div></li>;
     })}</ol></CardContent></Card> : null}
   </div>;
+}
+
+function ProgramClassifierModels({ clientId, matterId, run }: { clientId: string; matterId: string; run: ReviewProgramRunRead }) {
+  const progress = run.progress_summary && typeof run.progress_summary === "object" && !Array.isArray(run.progress_summary)
+    ? run.progress_summary as Record<string, unknown>
+    : {};
+  const trainingRaw = progress.classifier_training;
+  const training = trainingRaw && typeof trainingRaw === "object" && !Array.isArray(trainingRaw) ? trainingRaw as Record<string, unknown> : {};
+  const resultsRaw = progress.classifier_results;
+  const results = resultsRaw && typeof resultsRaw === "object" && !Array.isArray(resultsRaw) ? resultsRaw as Record<string, unknown> : {};
+  const resultModels = Array.isArray(results.models) ? results.models : [];
+  const trainingModels = Array.isArray(training.models) ? training.models : [];
+  const sourceModels = resultModels.length ? resultModels : trainingModels;
+  const labelsRaw = progress.training_labels;
+  const labels = labelsRaw && typeof labelsRaw === "object" && !Array.isArray(labelsRaw) ? labelsRaw as Record<string, unknown> : {};
+  const selectedIdsRaw = Array.isArray(labels.classifier_metadata_definition_ids)
+    ? labels.classifier_metadata_definition_ids
+    : Array.isArray(labels.selected_metadata_definition_ids)
+      ? labels.selected_metadata_definition_ids
+      : [];
+  const selectedIds = new Set(selectedIdsRaw.map(String));
+  const models = [...new Map(sourceModels
+    .filter((item): item is Record<string, unknown> => Boolean(item && typeof item === "object" && !Array.isArray(item) && item.classification_model_id))
+    .filter((item) => !selectedIds.size || selectedIds.has(String(item.metadata_definition_id)))
+    .map((item) => [String(item.classification_model_id), item])).values()];
+  if (!models.length) return null;
+  return <Card>
+    <CardHeader><CardTitle>Classifier models</CardTitle><CardDescription>Models created and managed by this Review Program.</CardDescription></CardHeader>
+    <CardContent className="space-y-2">{models.map((model) => {
+      const modelId = String(model.classification_model_id);
+      const state = model.quality ?? model.status ?? results.overall_quality ?? training.state ?? "created";
+      return <div key={modelId} className="flex flex-wrap items-center justify-between gap-3 rounded-md border p-3"><div><p className="text-sm font-medium">{String(model.field_name ?? model.field_key ?? "Classifier")}</p><p className="text-xs text-muted-foreground">{friendly(String(state))}</p></div><Button asChild size="sm" variant="outline"><Link href={classificationModelHref(clientId, matterId, modelId)}>Open model</Link></Button></div>;
+    })}</CardContent>
+  </Card>;
 }
 
 function RefreshStateButton({ busy, onClick }: { busy: boolean; onClick: () => void }) {

@@ -576,6 +576,9 @@ Training set finalized → Features prepared → Validation created → Model tr
 ```
 
 Each step reports status, document coverage, exclusions, and failures. Detailed runtime logs remain in Jobs.
+Once the program has created a classifier, show its target-field name and an **Open model** link to that model's
+detail workspace. Keep the link available while training is running, after a failure, and throughout later program
+stages so model configuration, training history, versions, and evaluation artifacts remain directly accessible.
 If classifier training fails, the stage shows **Retry Classifier training**. A manager may start a new attempt after
 correcting the reported cause even when the original failure was not classified as automatically retriable. The
 retry remains in the existing program run and reuses its frozen labels and configuration; it must not direct the

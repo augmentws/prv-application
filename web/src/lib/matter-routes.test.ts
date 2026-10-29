@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 
-import { isMatterSectionPage, jobTypeFromSlug, legacyMatterJobsHref, legacyMatterTabHref, MATTER_JOB_TYPES, matterHref, matterJobsHref, matterSectionFromPath } from "@/lib/matter-routes";
+import { classificationModelHref, isMatterSectionPage, jobTypeFromSlug, legacyMatterJobsHref, legacyMatterTabHref, MATTER_JOB_TYPES, matterHref, matterJobsHref, matterSectionFromPath } from "@/lib/matter-routes";
 
 const base = "/app/clients/client-1/matters/matter-1";
 
@@ -11,6 +11,10 @@ describe("matterHref", () => {
     expect(matterHref("client-1", "matter-1", "review-programs")).toBe(`${base}/review-programs`);
     expect(matterHref("client-1", "matter-1", "jobs", { job_type: "SEARCH_EXPORTS" })).toBe(`${base}/jobs?job_type=SEARCH_EXPORTS`);
     expect(matterHref("client-1", "matter-1", "batches", new URLSearchParams())).toBe(`${base}/batches`);
+  });
+
+  it("builds classification model detail paths", () => {
+    expect(classificationModelHref("client-1", "matter-1", "model-1")).toBe(`${base}/classification-models/model-1`);
   });
 });
 

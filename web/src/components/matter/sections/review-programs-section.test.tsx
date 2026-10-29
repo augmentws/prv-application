@@ -110,7 +110,18 @@ describe("ReviewProgramsSection", () => {
         status: "FAILED",
         current_stage: "CLASSIFIER_TRAINING",
         current_stage_ordinal: 11,
-        progress_summary: {},
+        progress_summary: {
+          classifier_training: {
+            state: "FAILED",
+            models: [{
+              metadata_definition_id: "field-1",
+              field_key: "issue_tag",
+              field_name: "Issue Tag",
+              classification_model_id: "model-1",
+            }],
+          },
+          training_labels: { classifier_metadata_definition_ids: ["field-1"] },
+        },
         created_at: "2026-10-21T00:00:00Z",
         failure_retriable: false,
         failure_summary: "Database storage was temporarily unavailable.",
@@ -127,6 +138,7 @@ describe("ReviewProgramsSection", () => {
     renderSection();
 
     expect(await screen.findByText("Needs attention")).toBeInTheDocument();
+    expect(screen.getByRole("link", { name: "Open model" })).toHaveAttribute("href", "/app/clients/client-1/matters/matter-1/classification-models/model-1");
     const classifierStage = screen.getByText("Classifier training").closest("li");
     expect(classifierStage).not.toBeNull();
     expect(within(classifierStage as HTMLElement).getByText("Classifier training failed")).toBeInTheDocument();
