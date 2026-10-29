@@ -112,7 +112,7 @@ describe("ReviewProgramsSection", () => {
         current_stage_ordinal: 11,
         progress_summary: {},
         created_at: "2026-10-21T00:00:00Z",
-        failure_retriable: true,
+        failure_retriable: false,
         failure_summary: "Database storage was temporarily unavailable.",
         stage_attempts: [{ stage_key: "CLASSIFIER_TRAINING", status: "FAILED" }],
         actions: [],
@@ -131,13 +131,14 @@ describe("ReviewProgramsSection", () => {
     expect(classifierStage).not.toBeNull();
     expect(within(classifierStage as HTMLElement).getByText("Classifier training failed")).toBeInTheDocument();
     expect(within(classifierStage as HTMLElement).getByText("Database storage was temporarily unavailable.")).toBeInTheDocument();
+    expect(within(classifierStage as HTMLElement).getByText(/same frozen labels and configuration/)).toBeInTheDocument();
     expect(within(classifierStage as HTMLElement).getByRole("button", { name: "Retry Classifier training" })).toBeInTheDocument();
     expect(within(classifierStage as HTMLElement).queryByRole("button", { name: "Start replacement run" })).not.toBeInTheDocument();
 
     await userEvent.click(screen.getByRole("button", { name: "Start replacement run" }));
     expect(screen.getByRole("heading", { name: "Start a replacement run?" })).toBeInTheDocument();
     expect(screen.getByText(/failed during Classifier Training/)).toBeInTheDocument();
-    expect(screen.getByText(/Use Retry to continue the existing run/)).toBeInTheDocument();
+    expect(screen.queryByText(/Use Retry to continue the existing run/)).not.toBeInTheDocument();
     expect(vi.mocked(coreApi).mock.calls.filter(([, options]) => options?.method === "POST")).toHaveLength(0);
 
     await userEvent.click(within(screen.getByRole("dialog")).getByRole("button", { name: "Start replacement run" }));

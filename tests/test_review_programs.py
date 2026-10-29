@@ -68,6 +68,7 @@ from app.review_programs import (
     _alignment_status,
     _classifier_positive_class_keys,
     _classifier_training_definition_ids,
+    _review_program_failure_allows_retry,
     _wilson_interval,
     cancel_review_program_discovery_children,
     link_review_program_child,
@@ -549,6 +550,23 @@ def test_classifier_training_definition_ids_use_frozen_target_selection() -> Non
             run,
             training_labels={"classifier_metadata_definition_ids": [str(uuid.uuid4())]},
         )
+
+
+def test_classifier_training_can_be_manually_retried_after_cause_is_corrected() -> None:
+    assert _review_program_failure_allows_retry(
+        SimpleNamespace(
+            status="FAILED",
+            current_stage="CLASSIFIER_TRAINING",
+            failure_retriable=False,
+        )
+    )
+    assert not _review_program_failure_allows_retry(
+        SimpleNamespace(
+            status="FAILED",
+            current_stage="FINAL_ALIGNMENT",
+            failure_retriable=False,
+        )
+    )
 
 
 def test_final_alignment_status_distinguishes_agreement_and_missing_coverage() -> None:

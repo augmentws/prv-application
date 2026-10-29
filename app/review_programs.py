@@ -9535,6 +9535,12 @@ def cancel_review_program_run(
     return run
 
 
+def _review_program_failure_allows_retry(run: ReviewProgramRun) -> bool:
+    return run.status == "FAILED" and (
+        run.failure_retriable or run.current_stage == "CLASSIFIER_TRAINING"
+    )
+
+
 def retry_review_program_run(
     db: Session,
     *,
@@ -9546,11 +9552,15 @@ def retry_review_program_run(
     key = _validate_idempotency_key(idempotency_key)
     if run.status == "RUNNING" and run.progress_summary.get("last_retry_key") == key:
         return run
-    if run.status != "FAILED" or not run.failure_retriable:
+    manually_retryable_classifier_training = (
+        run.current_stage == "CLASSIFIER_TRAINING" and not run.failure_retriable
+    )
+    if not _review_program_failure_allows_retry(run):
         raise ReviewProgramError("Review Program run is not retriable")
     previous = _current_stage_attempt(db, run, for_update=True)
     next_attempt_number = previous.attempt + 1
     stage = _stage_for_run(program, run)
+    automatic_retry = run.failure_retriable
     run.status = "RUNNING"
     run.failure_code = None
     run.failure_summary = None
@@ -9580,6 +9590,8 @@ def retry_review_program_run(
             "program_id": str(program.id),
             "stage_key": stage.key,
             "attempt": next_attempt_number,
+            "automatic_retry": automatic_retry,
+            "manual_classifier_retry": manually_retryable_classifier_training,
         },
     )
     return run

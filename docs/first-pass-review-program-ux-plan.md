@@ -576,6 +576,10 @@ Training set finalized → Features prepared → Validation created → Model tr
 ```
 
 Each step reports status, document coverage, exclusions, and failures. Detailed runtime logs remain in Jobs.
+If classifier training fails, the stage shows **Retry Classifier training**. A manager may start a new attempt after
+correcting the reported cause even when the original failure was not classified as automatically retriable. The
+retry remains in the existing program run and reuses its frozen labels and configuration; it must not direct the
+user to start a replacement First Pass Review run.
 
 ### 11.2 Classifier summary
 
