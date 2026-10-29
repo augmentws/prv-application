@@ -54598,6 +54598,11 @@
             "maxLength": 500,
             "minLength": 1,
             "title": "Idempotency Key"
+          },
+          "confirm_replace_unfinished_run": {
+            "type": "boolean",
+            "title": "Confirm Replace Unfinished Run",
+            "default": false
           }
         },
         "additionalProperties": false,

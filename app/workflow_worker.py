@@ -52,6 +52,7 @@ def main() -> None:
         matter_import,
         matter_topics,
         review_batches,
+        review_programs,
         search_exports,
         search_projection,
     )

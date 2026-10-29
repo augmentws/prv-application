@@ -560,7 +560,10 @@ new task-specific batch set sourced from the difference manifest.
 The finalization gate repeats the selected policy and shows its computed outcome before the labels are frozen: one
 eligible/excluded document total per coding field and one retained positive-document count per coding label. These
 counts must reflect overlap removal and completed human decisions rather than the earlier union-based discovery
-support totals.
+support totals. It also presents a **Fields to train** checkbox for every Q&A destination field. All fields are
+initially selected, but the user may clear fields that should remain Q&A codings only. The finalization action is
+disabled when no field is selected. The frozen provenance records the selected field IDs, and only those fields
+create classifiers or participate in later classifier training, evaluation, and collection scoring.
 
 ## 11. Phase 3 Train and evaluate
 
@@ -573,6 +576,13 @@ Training set finalized → Features prepared → Validation created → Model tr
 ```
 
 Each step reports status, document coverage, exclusions, and failures. Detailed runtime logs remain in Jobs.
+Once the program has created a classifier, show its target-field name and an **Open model** link to that model's
+detail workspace. Keep the link available while training is running, after a failure, and throughout later program
+stages so model configuration, training history, versions, and evaluation artifacts remain directly accessible.
+If classifier training fails, the stage shows **Retry Classifier training**. A manager may start a new attempt after
+correcting the reported cause even when the original failure was not classified as automatically retriable. The
+retry remains in the existing program run and reuses its frozen labels and configuration; it must not direct the
+user to start a replacement First Pass Review run.
 
 ### 11.2 Classifier summary
 
@@ -885,6 +895,10 @@ workspace while a secondary report loads.
 If work is running, show the active child work, expected next transition, elapsed time, and cancel control when
 authorized. If the program is waiting for a reviewer batch, show assignment and completion progress.
 
+The administrative reconciliation control is labeled **Refresh state**. Its tooltip says that it checks pending
+events and completed work and updates the program when its recorded state is behind; it does not retry work. This is
+a state-repair action, not the normal way to advance a healthy run.
+
 ### 17.3 Partial failures
 
 Distinguish:
@@ -897,6 +911,8 @@ Distinguish:
 - report or artifact availability failure.
 
 Explain whether completed work remains valid and what retry will repeat.
+Display a stage failure and its retry control on the affected stage. The program summary may say **Needs attention**,
+but must not present a retriable classifier-training or child-task failure as though the entire First Pass Review failed.
 
 ### 17.4 Stale decisions
 
@@ -907,6 +923,14 @@ new preview. Retain the stale preview in history for audit.
 
 Use explicit language such as **No positive examples found in this round**. Do not display zero as evidence that the
 issue does not exist.
+
+### 17.6 Starting another run
+
+An active run blocks creation of another run. A failed current run remains unfinished: the normal recovery action is
+**Retry**, and the API rejects an unconfirmed replacement. If a manager intentionally starts a replacement, require a
+warning that identifies the failed stage and explains that the new run restarts setup, becomes current, and neither
+retries nor deletes the existing run. Present replacement as a program-level administrative action, never as an action
+inside the failed stage. Completed and intentionally canceled runs may start again without this warning.
 
 ## 18. Responsive behavior
 

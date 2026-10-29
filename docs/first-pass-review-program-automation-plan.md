@@ -86,7 +86,7 @@ Matter Definition draft
 | Messaging | Child tasks report durable domain events to the Review Program coordinator. The coordinator uses the shared notification platform for human-facing attention only. Notification rows never drive workflow state. |
 | Child authority | Existing batches, task versions, runs, artifacts, classifier versions, and reviewer revisions remain authoritative. |
 | Q&A models | One shared Q&A specification is executed through two immutable model profiles against the same frozen documents. |
-| Initial target | Each first-pass program initially supports one multi-value issue-coding metadata field and a one-vs-rest classifier. Other programs in the same matter may select different fields and guidance. |
+| Initial target | Each first-pass program may select one or more Q&A destination fields as classifier targets during training-label finalization. Multi-value issue fields use one-vs-rest classification. Other Q&A fields may remain coding-only. |
 | Assessment data | Matter Definition assessment runs remain diagnostic and blinded. They are not automatically used as classifier training labels. |
 | Training sufficiency | Use the actual classification dataset and split feasibility rules, not a standalone raw-count threshold. |
 | Label policy | The user chooses union, exact agreement only, overlapping multi-value codes, or agreement plus human adjudication after seeing a preview of each option. |
@@ -395,7 +395,8 @@ Use short coordinator transitions rather than a single long-running workflow wai
 6. Create the next child job, action request, and any user-facing notification with stable idempotency keys.
 7. Mark the event processed and commit the transition atomically.
 
-Child completion, action resolution, and an administrative reconcile command all publish or recover the same typed
+Child completion, action resolution, and the administrative reconciliation command (labeled **Refresh state** in the
+UI) all publish or recover the same typed
 program event and call the same transition service. A periodic reconciler may repair a missing event or dispatch from
 authoritative child state but must not infer or fabricate user decisions.
 
@@ -854,13 +855,18 @@ After any required disagreement review completes, materialize one immutable `fir
 Validate the artifact, recompute support, and run the authoritative classifier dataset preview. If the selected
 policy is no longer feasible because of exclusions or incomplete human review, return to the issue-support gate.
 Before the user freezes the snapshot, show policy-adjusted eligible and excluded document counts for each field and
-the final retained positive-document count for every coding label.
+the final retained positive-document count for every coding label. The user must also select the coding fields that
+will become classifier targets. Freeze those field IDs in the training-label snapshot. A field included in the Q&A
+task is not automatically a classifier target: unselected fields remain available as Q&A codings and in discovery
+analysis, but the program does not create, train, evaluate, or score a classifier for them.
 
 ## 13. Phase 6 Classifier training and quality summary
 
 ### 13.1 Build
 
-Create or reuse a classifier bound to the target issue field. For a multi-value issue field, use `ONE_VS_REST`.
+For each field selected during training-label finalization, create or reuse a classifier bound to that field. For a
+multi-value issue field, use `ONE_VS_REST`. Classifier-training launch and terminal-state projection must both use
+the frozen target-field selection so an unselected or previously launched job cannot block or fail the program.
 Freeze:
 
 - the training label artifact and hash;
@@ -953,6 +959,10 @@ The improvement loop ends when:
 - the configured round or resource limit is reached and the user accepts the remaining limitations; or
 - the user stops the program.
 
+When the user accepts the classifier as-is, the program records `CLASSIFIER_IMPROVEMENT` as **Skipped — not
+requested** and advances directly to whole-collection scoring. A bypassed optional stage must not remain labeled
+Upcoming.
+
 ## 15. Phase 8 Classifier acceptance and whole-collection scoring
 
 ### 15.1 Acceptance
@@ -979,9 +989,22 @@ Prompt the user with:
 - whether results will remain isolated; and
 - the later Q&A verification commitment for classifier positives.
 
-On approval, launch a whole-matter Classification Analysis Task or scoring run. The run freezes one Analysis Input
-Manifest and exact model version. Predictions remain in the immutable scoring artifact and do not update matter
-coding automatically.
+On approval, immediately commit the scoring decision and show **Preparing scoring inputs**. A durable Review Program
+preparation workflow then freezes the whole-matter dataset and feature inputs and creates the linked classifier
+scoring jobs. The API request must not synchronously materialize the matter snapshot. Once the jobs exist, show their
+per-classifier state and aggregate completion instead of a generic waiting state.
+
+Each scoring run freezes one Analysis Input Manifest and exact model version. Predictions remain in the immutable
+scoring artifact and do not update matter coding automatically.
+
+Object-storage availability is evaluated per document while materializing features. A missing or unreadable MinIO
+vector object is logged and counted as a missing feature; it does not fail whole-collection preparation or prevent
+other documents from being scored. Database authorization and matter-scope violations remain fatal because they are
+not document-level storage failures.
+
+Whole-matter feature preparation uses bounded parallel object reads and vector pooling, configured independently by
+`CLASSIFICATION_FEATURE_LOAD_CONCURRENCY` (default `16`). Progress is committed after every 1,000 documents so the
+workspace can show checked, ready, skipped, and invalid counts while preparation is running.
 
 ## 16. Phase 9 Classifier and existing Q&A comparison
 

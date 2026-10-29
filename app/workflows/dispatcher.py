@@ -113,6 +113,29 @@ def enqueue_classification_model_scoring(
     get_dbos_client().enqueue_in_transaction(db, options, scoring_run_id)
 
 
+def enqueue_review_program_scoring_preparation(
+    db: Session,
+    workflow_id: str,
+    review_program_run_id: str,
+    stage_attempt_id: str,
+) -> None:
+    settings = get_settings()
+    if not settings.dbos_enabled:
+        return
+    options: EnqueueOptions = {
+        "workflow_name": "review_program_scoring_preparation_v1",
+        "queue_name": "review-program-orchestration",
+        "workflow_id": workflow_id,
+        "application_name": settings.dbos_application_name,
+    }
+    get_dbos_client().enqueue_in_transaction(
+        db,
+        options,
+        review_program_run_id,
+        stage_attempt_id,
+    )
+
+
 def enqueue_classification_analysis_task(
     db: Session,
     workflow_id: str,

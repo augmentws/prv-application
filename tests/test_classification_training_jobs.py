@@ -2,6 +2,7 @@ import uuid
 
 from conftest import TestingSessionLocal, create_client_tenant
 from fastapi.testclient import TestClient
+from sqlalchemy.exc import OperationalError
 from test_classification_models import (
     auth,
     binary_configuration,
@@ -56,6 +57,16 @@ def test_training_job_failure_details_unwraps_step_retry_errors() -> None:
         False,
         "Class rare cannot support every fold",
     )
+
+
+def test_training_job_failure_details_marks_database_operational_errors_retriable() -> None:
+    failure = OperationalError("SELECT 1", {}, RuntimeError("shared memory exhausted"))
+
+    code, retriable, summary = training_job_failure_details(failure)
+
+    assert code == "e3q8"
+    assert retriable is True
+    assert "shared memory exhausted" in summary
 
 
 def test_training_job_is_created_before_dataset_preparation(

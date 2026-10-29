@@ -76,6 +76,93 @@ describe("ReviewProgramsSection", () => {
     ));
   });
 
+  it("warns before replacing an unfinished failed run", async () => {
+    vi.mocked(coreApi).mockImplementation(async (path, options) => {
+      if (path === "/v1/review-workflow-templates") return [{
+        key: "FIRST_PASS_REVIEW",
+        version: 1,
+        schema_version: 1,
+        content_hash: "a".repeat(64),
+        name: "First Pass Review",
+        description: "Guided review",
+        workflow_type: "FIRST_PASS_REVIEW",
+        phases: [],
+        stages: [{ key: "CLASSIFIER_TRAINING", name: "Classifier training", phase_key: "CLASSIFIER", ordinal: 11, batching_policy: "NONE", requires_human_gate: false }],
+      }] as never;
+      if (path === "/v1/matters/matter-1/review-programs") return [{
+        id: "program-1",
+        tenant_id: "tenant-1",
+        matter_id: "matter-1",
+        template_key: "FIRST_PASS_REVIEW",
+        template_version: 1,
+        template_content_hash: "a".repeat(64),
+        key: "standard-first-pass",
+        name: "Standard first pass",
+        description: "Responsive review",
+        status: "ACTIVE",
+        current_run_id: "run-failed",
+        current_version: { version: 2 },
+        created_at: "2026-10-21T00:00:00Z",
+      }] as never;
+      if (path === "/v1/matters/matter-1/review-programs/program-1/runs" && !options) return [{
+        id: "run-failed",
+        program_id: "program-1",
+        status: "FAILED",
+        current_stage: "CLASSIFIER_TRAINING",
+        current_stage_ordinal: 11,
+        progress_summary: {
+          classifier_training: {
+            state: "FAILED",
+            models: [{
+              metadata_definition_id: "field-1",
+              field_key: "issue_tag",
+              field_name: "Issue Tag",
+              classification_model_id: "model-1",
+            }],
+          },
+          training_labels: { classifier_metadata_definition_ids: ["field-1"] },
+        },
+        created_at: "2026-10-21T00:00:00Z",
+        failure_retriable: false,
+        failure_summary: "Database storage was temporarily unavailable.",
+        stage_attempts: [{ stage_key: "CLASSIFIER_TRAINING", status: "FAILED" }],
+        actions: [],
+      }] as never;
+      if (path === "/v1/matters/matter-1/review-programs/program-1/runs" && options?.method === "POST") return {
+        id: "run-replacement",
+        program_id: "program-1",
+        status: "WAITING_FOR_USER",
+      } as never;
+      throw new Error(`Unexpected API request: ${path}`);
+    });
+    renderSection();
+
+    expect(await screen.findByText("Needs attention")).toBeInTheDocument();
+    expect(screen.getByRole("link", { name: "Open model" })).toHaveAttribute("href", "/app/clients/client-1/matters/matter-1/classification-models/model-1");
+    const classifierStage = screen.getByText("Classifier training").closest("li");
+    expect(classifierStage).not.toBeNull();
+    expect(within(classifierStage as HTMLElement).getByText("Classifier training failed")).toBeInTheDocument();
+    expect(within(classifierStage as HTMLElement).getByText("Database storage was temporarily unavailable.")).toBeInTheDocument();
+    expect(within(classifierStage as HTMLElement).getByText(/same frozen labels and configuration/)).toBeInTheDocument();
+    expect(within(classifierStage as HTMLElement).getByRole("button", { name: "Retry Classifier training" })).toBeInTheDocument();
+    expect(within(classifierStage as HTMLElement).queryByRole("button", { name: "Start replacement run" })).not.toBeInTheDocument();
+
+    await userEvent.click(screen.getByRole("button", { name: "Start replacement run" }));
+    expect(screen.getByRole("heading", { name: "Start a replacement run?" })).toBeInTheDocument();
+    expect(screen.getByText(/failed during Classifier Training/)).toBeInTheDocument();
+    expect(screen.queryByText(/Use Retry to continue the existing run/)).not.toBeInTheDocument();
+    expect(vi.mocked(coreApi).mock.calls.filter(([, options]) => options?.method === "POST")).toHaveLength(0);
+
+    await userEvent.click(within(screen.getByRole("dialog")).getByRole("button", { name: "Start replacement run" }));
+    await waitFor(() => expect(coreApi).toHaveBeenCalledWith(
+      "/v1/matters/matter-1/review-programs/program-1/runs",
+      expect.objectContaining({
+        method: "POST",
+        body: expect.stringContaining('"confirm_replace_unfinished_run":true'),
+      }),
+    ));
+  });
+
   it("reports live document progress for a repeated definition assessment", async () => {
     vi.mocked(coreApi).mockImplementation(async (path) => {
       if (path === "/v1/review-workflow-templates") return [{
@@ -150,6 +237,10 @@ describe("ReviewProgramsSection", () => {
     expect(within(initialAssessmentStage as HTMLElement).queryByText("running")).not.toBeInTheDocument();
     expect(within(refinementStage as HTMLElement).getByText("Reassessment · Round 2")).toBeInTheDocument();
     expect(within(refinementStage as HTMLElement).getByText("running")).toBeInTheDocument();
+    const refreshState = screen.getByRole("button", { name: "Refresh state" });
+    expect(refreshState).toHaveAttribute("aria-describedby", "review-program-refresh-state-help");
+    expect(screen.getByText("Checks pending events and completed work, then updates the program if its recorded state is behind. It does not retry work.")).toHaveAttribute("role", "tooltip");
+    expect(screen.queryByRole("button", { name: "Reconcile" })).not.toBeInTheDocument();
     const assessmentHelp = screen.getByRole("button", { name: "About Definition assessment" });
     expect(assessmentHelp).toHaveAttribute("aria-describedby", "review-program-stage-2-help");
     expect(screen.getByText("Test the Matter Definition against a targeted document batch and identify gaps, ambiguities, and retrieval weaknesses.")).toHaveAttribute("role", "tooltip");
@@ -689,7 +780,7 @@ describe("ReviewProgramsSection", () => {
   });
 
   it("shows policy-adjusted per-label counts before finalizing training labels", async () => {
-    vi.mocked(coreApi).mockImplementation(async (path) => {
+    vi.mocked(coreApi).mockImplementation(async (path, options) => {
       if (path === "/v1/review-workflow-templates") return [{
         key: "FIRST_PASS_REVIEW", version: 1, schema_version: 1, content_hash: "a".repeat(64),
         name: "First Pass Review", description: "Guided review", workflow_type: "FIRST_PASS_REVIEW", phases: [],
@@ -719,6 +810,13 @@ describe("ReviewProgramsSection", () => {
                   { value_key: "issue_1", value_label: "Market disruption", positive_count: 17 },
                   { value_key: "issue_2", value_label: "Hurricane losses", positive_count: 9 },
                 ],
+              }, {
+                metadata_definition_id: "field-2", key: "responsiveness", display_name: "Responsiveness",
+                eligible_document_count: 31, excluded_document_count: 5, basis: "Values selected by both models",
+                values: [
+                  { value_key: "true", value_label: "Responsive", positive_count: 20 },
+                  { value_key: "false", value_label: "Not responsive", positive_count: 11 },
+                ],
               }],
             },
           },
@@ -728,6 +826,9 @@ describe("ReviewProgramsSection", () => {
           ],
         }],
       }] as never;
+      if (path.endsWith("/actions/action-1/resolve") && options?.method === "POST") return {
+        id: "run-1", program_id: "program-1", status: "RUNNING", current_stage: "CLASSIFIER_TRAINING",
+      } as never;
       throw new Error(`Unexpected API request: ${path}`);
     });
     renderSection();
@@ -736,6 +837,22 @@ describe("ReviewProgramsSection", () => {
     expect(screen.getByText("28 eligible · 8 excluded")).toBeInTheDocument();
     expect(screen.getByText("Market disruption").nextElementSibling).toHaveTextContent("17");
     expect(screen.getByText("Hurricane losses").nextElementSibling).toHaveTextContent("9");
+    expect(screen.getByText("Fields to train")).toBeInTheDocument();
+    expect(screen.getByLabelText("Train Issue Tag")).toBeChecked();
+    expect(screen.getByLabelText("Train Responsiveness")).toBeChecked();
+    await userEvent.click(screen.getByLabelText("Train Responsiveness"));
+    await userEvent.click(screen.getByRole("button", { name: "Finalize training labels" }));
+
+    await waitFor(() => expect(coreApi).toHaveBeenCalledWith(
+      "/v1/matters/matter-1/review-programs/program-1/runs/run-1/actions/action-1/resolve",
+      expect.objectContaining({ method: "POST" }),
+    ));
+    const call = vi.mocked(coreApi).mock.calls.find(([path]) => path.endsWith("/actions/action-1/resolve"));
+    expect(JSON.parse(String(call?.[1]?.body))).toEqual({
+      preview_hash: "b".repeat(64),
+      choice_key: "FINALIZE",
+      input: { classifier_metadata_definition_ids: ["field-1"] },
+    });
   });
 
   it("shows the current gate and resolves it through the coordinator endpoint", async () => {
@@ -1091,7 +1208,10 @@ describe("ReviewProgramsSection", () => {
       if (path === "/v1/review-workflow-templates") return [{
         key: "FIRST_PASS_REVIEW", version: 1, schema_version: 1, content_hash: "a".repeat(64),
         name: "First Pass Review", description: "Guided review", workflow_type: "FIRST_PASS_REVIEW", phases: [],
-        stages: [{ key: "WHOLE_COLLECTION_SCORING", name: "Whole-collection scoring", phase_key: "COLLECTION_REVIEW", ordinal: 14, batching_policy: "WHOLE_MATTER", requires_human_gate: true }],
+        stages: [
+          { key: "CLASSIFIER_IMPROVEMENT", name: "Classifier improvement", phase_key: "CLASSIFIER", ordinal: 13, batching_policy: "PARTITIONED_SET", requires_human_gate: true },
+          { key: "WHOLE_COLLECTION_SCORING", name: "Whole-collection scoring", phase_key: "COLLECTION_REVIEW", ordinal: 14, batching_policy: "WHOLE_MATTER", requires_human_gate: true },
+        ],
       }] as never;
       if (path === "/v1/matters/matter-1/review-programs") return [{
         id: "program-1", tenant_id: "tenant-1", matter_id: "matter-1", template_key: "FIRST_PASS_REVIEW",
@@ -1125,6 +1245,10 @@ describe("ReviewProgramsSection", () => {
     expect(screen.getByText("Responsive")).toBeInTheDocument();
     expect(screen.getByText("Accepted version · Acceptable")).toBeInTheDocument();
     expect(screen.getByText("Calculated at launch")).toBeInTheDocument();
+    expect(screen.getByText("Skipped")).toBeInTheDocument();
+    expect(screen.getByText("Not requested; the accepted classifiers continue directly to whole-collection scoring.")).toBeInTheDocument();
+    expect(screen.getByText("Waiting for your decision")).toBeInTheDocument();
+    expect(screen.getByText(/Scoring has not started/)).toBeInTheDocument();
     await userEvent.click(screen.getByRole("button", { name: "Score the collection" }));
 
     await waitFor(() => expect(coreApi).toHaveBeenCalledWith(

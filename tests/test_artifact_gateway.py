@@ -4,6 +4,7 @@ from io import BytesIO
 from types import SimpleNamespace
 
 import pytest
+from botocore.exceptions import ClientError
 from sqlalchemy.dialects import postgresql
 
 from app import artifact_gateway
@@ -200,3 +201,72 @@ def test_embedded_search_text_falls_back_when_preferred_blob_is_missing(monkeypa
     text = artifact_gateway._embedded_body_text(FakeDb(), item, 100_000)
 
     assert text == "Native fallback body"
+
+
+@pytest.mark.parametrize(
+    "storage_error",
+    [
+        ClientError(
+            {"Error": {"Code": "NoSuchKey", "Message": "The specified key does not exist"}},
+            "GetObject",
+        ),
+        RuntimeError("MinIO unavailable"),
+    ],
+    ids=["missing-key", "storage-unavailable"],
+)
+def test_chunk_vector_batch_treats_storage_failure_as_missing_feature(monkeypatch, storage_error) -> None:
+    missing_item_id = uuid.uuid4()
+    ready_item_id = uuid.uuid4()
+    configuration_hash = "configuration-hash"
+    tenant_id = uuid.uuid4()
+    client_id = uuid.uuid4()
+    missing_artifact = SimpleNamespace(
+        id=uuid.uuid4(),
+        content_hash="a" * 64,
+        artifact_metadata={"configuration_hash": configuration_hash},
+    )
+    ready_artifact = SimpleNamespace(
+        id=uuid.uuid4(),
+        content_hash="b" * 64,
+        artifact_metadata={"configuration_hash": configuration_hash},
+    )
+    missing_blob = SimpleNamespace(id=uuid.uuid4(), bucket_name="vectors", storage_key="missing")
+    ready_blob = SimpleNamespace(id=uuid.uuid4(), bucket_name="vectors", storage_key="ready")
+
+    class Result:
+        def all(self):
+            return [
+                (missing_item_id, missing_artifact, missing_blob),
+                (ready_item_id, ready_artifact, ready_blob),
+            ]
+
+    class FakeSession:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *_args) -> None:
+            return None
+
+        def execute(self, _statement, _parameters):
+            return Result()
+
+    class Storage:
+        def open(self, _bucket, key):
+            if key == "missing":
+                raise storage_error
+            return BytesIO(b"vector-content")
+
+    monkeypatch.setattr(artifact_gateway, "get_settings", lambda: SimpleNamespace(artifact_mode="embedded"))
+    monkeypatch.setattr(artifact_gateway, "ArtifactSessionLocal", FakeSession)
+    monkeypatch.setattr(artifact_gateway, "get_storage", lambda: Storage())
+
+    snapshots = artifact_gateway.load_current_chunk_vector_artifacts(
+        collection_item_ids=[missing_item_id, ready_item_id],
+        configuration_hash=configuration_hash,
+        actor_user_id=uuid.uuid4(),
+        tenant_id=tenant_id,
+        client_id=client_id,
+    )
+
+    assert set(snapshots) == {ready_item_id}
+    assert snapshots[ready_item_id].content == b"vector-content"

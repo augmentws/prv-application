@@ -22,7 +22,7 @@ import { Textarea } from "@/components/ui/textarea";
 import type { AnalysisTaskBatchSetRead, MatterDefinitionAssessmentRead, MatterDefinitionRead, MatterQuestionAnsweringJobRead, MetadataDefinitionRead, ReviewProgramActionRead, ReviewProgramCreate, ReviewProgramRead, ReviewProgramRunRead, ReviewWorkflowStageRead, ReviewWorkflowTemplateRead } from "@/generated/models";
 import { coreApi } from "@/lib/api-client";
 import { formatDate } from "@/lib/format";
-import { matterJobsHref } from "@/lib/matter-routes";
+import { classificationModelHref, matterJobsHref } from "@/lib/matter-routes";
 import { cn } from "@/lib/utils";
 
 const ACTIVE_RUN_STATUSES = new Set(["QUEUED", "RUNNING", "WAITING_FOR_USER"]);
@@ -99,9 +99,12 @@ export function ReviewProgramsSection() {
   }
 
   const startRun = useMutation({
-    mutationFn: (programId: string) => coreApi<ReviewProgramRunRead>(`/v1/matters/${matterId}/review-programs/${programId}/runs`, {
+    mutationFn: ({ programId, confirmReplaceUnfinishedRun = false }: { programId: string; confirmReplaceUnfinishedRun?: boolean }) => coreApi<ReviewProgramRunRead>(`/v1/matters/${matterId}/review-programs/${programId}/runs`, {
       method: "POST",
-      body: JSON.stringify({ idempotency_key: crypto.randomUUID() }),
+      body: JSON.stringify({
+        idempotency_key: crypto.randomUUID(),
+        confirm_replace_unfinished_run: confirmReplaceUnfinishedRun,
+      }),
     }),
     onSuccess: async (run) => { await refresh(run.program_id); toast.success("The guided setup is ready. Configure the Matter Definition to continue."); },
     onError: mutationError("The Review Program could not be started."),
@@ -220,7 +223,7 @@ export function ReviewProgramsSection() {
         loading={runs.isPending}
         error={runs.error}
         busy={startRun.isPending || command.isPending || resetDiscoveryQA.isPending || cancelDiscoveryQA.isPending || resolveAction.isPending || setupDefinition.isPending || setupQA.isPending || setupDiscovery.isPending || setupClassifierImprovement.isPending || setupNegativePopulationQC.isPending}
-        onStart={() => startRun.mutate(selectedProgram.id)}
+        onStart={(confirmReplaceUnfinishedRun) => startRun.mutate({ programId: selectedProgram.id, confirmReplaceUnfinishedRun })}
         onCommand={(verb) => currentRun && command.mutate({ programId: selectedProgram.id, runId: currentRun.id, verb })}
         onResetDiscovery={() => currentRun && resetDiscoveryQA.mutate({ programId: selectedProgram.id, runId: currentRun.id })}
         onCancelDiscovery={() => currentRun && cancelDiscoveryQA.mutate({ programId: selectedProgram.id, runId: currentRun.id })}
@@ -245,7 +248,7 @@ function ProgramWorkspace({ clientId, matterId, program, run, stages, canManage,
   loading: boolean;
   error: Error | null;
   busy: boolean;
-  onStart: () => void;
+  onStart: (confirmReplaceUnfinishedRun?: boolean) => void;
   onCommand: (verb: "cancel" | "retry" | "reconcile") => void;
   onResetDiscovery: () => void;
   onCancelDiscovery: () => void;
@@ -258,6 +261,12 @@ function ProgramWorkspace({ clientId, matterId, program, run, stages, canManage,
 }) {
   const openAction = run?.actions?.find((action) => action.status === "OPEN") ?? null;
   const attemptsByStage = useMemo(() => new Map(run?.stage_attempts?.map((attempt) => [attempt.stage_key, attempt]) ?? []), [run?.stage_attempts]);
+  const skippedStageKeys = useMemo(() => new Set(
+    (Array.isArray(run?.progress_summary?.skipped_stages) ? run.progress_summary.skipped_stages : [])
+      .filter((item): item is Record<string, unknown> => Boolean(item && typeof item === "object" && !Array.isArray(item)))
+      .map((item) => String(item.stage_key ?? ""))
+      .filter(Boolean),
+  ), [run?.progress_summary?.skipped_stages]);
   const definitionAssessmentRound = Number(run?.progress_summary?.definition_assessment_round ?? 1);
   const isDefinitionReassessment = run?.current_stage === "DEFINITION_ASSESSMENT" && definitionAssessmentRound > 1;
   const definitionAssessmentAttempts = run?.stage_attempts?.filter((attempt) => attempt.stage_key === "DEFINITION_ASSESSMENT") ?? [];
@@ -282,16 +291,17 @@ function ProgramWorkspace({ clientId, matterId, program, run, stages, canManage,
       <CardHeader className="flex-row items-start justify-between gap-4">
         <div><CardTitle>{program.name}</CardTitle><CardDescription>{program.description || "Guided First Pass Review workflow"}</CardDescription></div>
         <div className="flex shrink-0 flex-wrap justify-end gap-2">
-          {canManage && run && (["COMPLETED", "COMPLETED_WITH_ERRORS", "CANCELED"].includes(run.status) || run.status === "FAILED" && !run.failure_retriable) ? <Button size="sm" disabled={busy} onClick={onStart}><Play />Start another run</Button> : null}
-          {run && canManage && ACTIVE_RUN_STATUSES.has(run.status) ? <><Button size="sm" variant="outline" disabled={busy} onClick={() => onCommand("reconcile")}><RefreshCw />Reconcile</Button><Button size="sm" variant="outline" disabled={busy} onClick={() => onCommand("cancel")}><Ban />Stop program</Button></> : null}
-          {run?.status === "FAILED" && run.failure_retriable && canManage ? <Button size="sm" disabled={busy} onClick={() => onCommand("retry")}><RotateCcw />Retry</Button> : null}
+          {run && canManage && ACTIVE_RUN_STATUSES.has(run.status) ? <><RefreshStateButton busy={busy} onClick={() => onCommand("reconcile")} /><Button size="sm" variant="outline" disabled={busy} onClick={() => onCommand("cancel")}><Ban />Stop program</Button></> : null}
+          {run?.status === "FAILED" && canManage ? <ReplacementRunDialog run={run} busy={busy} onConfirm={() => onStart(true)} /> : null}
+          {run && ["COMPLETED", "COMPLETED_WITH_ERRORS", "CANCELED"].includes(run.status) && canManage ? <Button size="sm" variant="outline" disabled={busy} onClick={() => onStart(false)}><Play />Start another run</Button> : null}
         </div>
       </CardHeader>
-      {run ? <CardContent><div className="flex flex-wrap items-center gap-2"><StatusBadge status={run.status} /><Badge variant="outline">{isDefinitionReassessment ? `Definition refinement · reassessment round ${definitionAssessmentRound}` : friendly(run.current_stage)}</Badge><span className="text-xs text-muted-foreground">Started {formatDate(run.created_at)}</span></div>{run.failure_summary ? <p className="mt-3 rounded-lg border border-destructive/30 bg-destructive/5 p-3 text-sm text-destructive">{run.failure_summary}</p> : null}</CardContent> : <CardContent><div className="flex flex-wrap items-center justify-between gap-3"><div><p className="text-sm font-medium">This program has not been configured yet.</p><p className="mt-1 text-sm text-muted-foreground">Begin the guided setup to create, clone, or adopt a Matter Definition. No document analysis starts until you save the definition and choose to assess it.</p></div>{canManage ? <Button size="sm" disabled={busy} onClick={onStart}><Play />Start Setup</Button> : null}</div></CardContent>}
+      {run ? <CardContent><div className="flex flex-wrap items-center gap-2">{run.status === "FAILED" ? <Badge variant="outline" className="border-amber-500/40 text-amber-700 dark:text-amber-300">Needs attention</Badge> : <StatusBadge status={run.status} />}<Badge variant="outline">{isDefinitionReassessment ? `Definition refinement · reassessment round ${definitionAssessmentRound}` : friendly(run.current_stage)}</Badge><span className="text-xs text-muted-foreground">Started {formatDate(run.created_at)}</span></div></CardContent> : <CardContent><div className="flex flex-wrap items-center justify-between gap-3"><div><p className="text-sm font-medium">This program has not been configured yet.</p><p className="mt-1 text-sm text-muted-foreground">Begin the guided setup to create, clone, or adopt a Matter Definition. No document analysis starts until you save the definition and choose to assess it.</p></div>{canManage ? <Button size="sm" disabled={busy} onClick={() => onStart(false)}><Play />Start Setup</Button> : null}</div></CardContent>}
     </Card>
     {run && currentAssessment ? <DefinitionAssessmentProgress clientId={clientId} matterId={matterId} run={run} assessment={currentAssessment} /> : null}
     {run?.status === "COMPLETED" || run?.status === "COMPLETED_WITH_ERRORS" ? <CompletedReviewProgramSummary run={run} /> : null}
-    {openAction?.action_type === "MATTER_DEFINITION_SETUP" ? <DefinitionSetupCard matterId={matterId} action={openAction} canManage={canManage} busy={busy} onSubmit={(payload) => onSetupDefinition(openAction, payload)} onStop={() => onResolve(openAction, "STOP")} /> : openAction?.action_type === "MATTER_DEFINITION_REFINEMENT" ? <DefinitionRefinementCard clientId={clientId} matterId={matterId} action={openAction} canManage={canManage} busy={busy} onResolve={(choice, input) => onResolve(openAction, choice, undefined, input)} /> : openAction?.action_type === "QA_TASK_SETUP" ? <QASetupCard matterId={matterId} action={openAction} canManage={canManage} busy={busy} onSubmit={(payload) => onSetupQA(openAction, payload)} onStop={() => onResolve(openAction, "STOP")} /> : openAction?.action_type === "DISCOVERY_QA_SETUP" ? <DiscoverySetupCard action={openAction} canManage={canManage} busy={busy} onSubmit={(payload) => onSetupDiscovery(openAction, payload)} onStop={() => onResolve(openAction, "STOP")} /> : openAction?.action_type === "CLASSIFIER_IMPROVEMENT_SETUP" ? <ClassifierImprovementSetupCard action={openAction} canManage={canManage} busy={busy} onSubmit={(payload) => onSetupClassifierImprovement(openAction, payload)} onStop={() => onResolve(openAction, "STOP")} /> : openAction?.action_type === "NEGATIVE_POPULATION_QC_SETUP" ? <NegativePopulationQCSetupCard action={openAction} canManage={canManage} busy={busy} onSubmit={(payload) => onSetupNegativePopulationQC(openAction, payload)} onStop={() => onResolve(openAction, "STOP")} /> : openAction?.action_type === "REVIEW_PROGRAM_COMPLETION" ? <CompletionDecisionCard action={openAction} canManage={canManage} busy={busy} onComplete={(reason) => onResolve(openAction, "COMPLETE", reason)} onStop={() => onResolve(openAction, "STOP")} /> : openAction?.action_type === "TRAINING_LABEL_POLICY" ? <TrainingLabelPolicyCard action={openAction} matterId={matterId} canManage={canManage} busy={busy} onResolve={(choice, input) => onResolve(openAction, choice, undefined, input)} /> : openAction ? <Card className="border-accent/60 bg-accent/5"><CardHeader><CardTitle>{openAction.title}</CardTitle><CardDescription>{openAction.explanation}</CardDescription></CardHeader><CardContent><DefinitionAssessmentSummary action={openAction} /><QAPublicationSummary action={openAction} /><IssueSupportSummary action={openAction} /><TrainingLabelSummary action={openAction} matterId={matterId} /><ClassifierReviewSummary action={openAction} /><WholeCollectionScoringSummary action={openAction} /><ClassifierPositiveCoverageSummary action={openAction} /><FinalAlignmentSummary action={openAction} /><NegativePopulationQCReport action={openAction} /><NegativePopulationQCFindingsReview action={openAction} matterId={matterId} />{openAction.stage_key === "DEFINITION_ACCEPTANCE" ? <Button asChild size="sm" variant="outline" className="mb-3"><Link href={definitionAssessmentHref(clientId, matterId, openAction)}><BookOpen />Open Matter Definition</Link></Button> : null}<div className="flex flex-wrap gap-2">{openAction.allowed_choices.map((choice, index) => {
+    {run ? <ProgramClassifierModels clientId={clientId} matterId={matterId} run={run} /> : null}
+    {openAction?.action_type === "MATTER_DEFINITION_SETUP" ? <DefinitionSetupCard matterId={matterId} action={openAction} canManage={canManage} busy={busy} onSubmit={(payload) => onSetupDefinition(openAction, payload)} onStop={() => onResolve(openAction, "STOP")} /> : openAction?.action_type === "MATTER_DEFINITION_REFINEMENT" ? <DefinitionRefinementCard clientId={clientId} matterId={matterId} action={openAction} canManage={canManage} busy={busy} onResolve={(choice, input) => onResolve(openAction, choice, undefined, input)} /> : openAction?.action_type === "QA_TASK_SETUP" ? <QASetupCard matterId={matterId} action={openAction} canManage={canManage} busy={busy} onSubmit={(payload) => onSetupQA(openAction, payload)} onStop={() => onResolve(openAction, "STOP")} /> : openAction?.action_type === "DISCOVERY_QA_SETUP" ? <DiscoverySetupCard action={openAction} canManage={canManage} busy={busy} onSubmit={(payload) => onSetupDiscovery(openAction, payload)} onStop={() => onResolve(openAction, "STOP")} /> : openAction?.action_type === "CLASSIFIER_IMPROVEMENT_SETUP" ? <ClassifierImprovementSetupCard action={openAction} canManage={canManage} busy={busy} onSubmit={(payload) => onSetupClassifierImprovement(openAction, payload)} onStop={() => onResolve(openAction, "STOP")} /> : openAction?.action_type === "NEGATIVE_POPULATION_QC_SETUP" ? <NegativePopulationQCSetupCard action={openAction} canManage={canManage} busy={busy} onSubmit={(payload) => onSetupNegativePopulationQC(openAction, payload)} onStop={() => onResolve(openAction, "STOP")} /> : openAction?.action_type === "REVIEW_PROGRAM_COMPLETION" ? <CompletionDecisionCard action={openAction} canManage={canManage} busy={busy} onComplete={(reason) => onResolve(openAction, "COMPLETE", reason)} onStop={() => onResolve(openAction, "STOP")} /> : openAction?.action_type === "TRAINING_LABEL_POLICY" ? <TrainingLabelPolicyCard action={openAction} matterId={matterId} canManage={canManage} busy={busy} onResolve={(choice, input) => onResolve(openAction, choice, undefined, input)} /> : openAction?.action_type === "TRAINING_LABEL_FINALIZATION" ? <TrainingLabelFinalizationCard action={openAction} matterId={matterId} canManage={canManage} busy={busy} onResolve={(choice, input) => onResolve(openAction, choice, undefined, input)} /> : openAction ? <Card className="border-accent/60 bg-accent/5"><CardHeader><CardTitle>{openAction.title}</CardTitle><CardDescription>{openAction.explanation}</CardDescription></CardHeader><CardContent><DefinitionAssessmentSummary action={openAction} /><QAPublicationSummary action={openAction} /><IssueSupportSummary action={openAction} /><TrainingLabelSummary action={openAction} matterId={matterId} /><ClassifierReviewSummary action={openAction} /><WholeCollectionScoringSummary action={openAction} /><ClassifierPositiveCoverageSummary action={openAction} /><FinalAlignmentSummary action={openAction} /><NegativePopulationQCReport action={openAction} /><NegativePopulationQCFindingsReview action={openAction} matterId={matterId} />{openAction.stage_key === "DEFINITION_ACCEPTANCE" ? <Button asChild size="sm" variant="outline" className="mb-3"><Link href={definitionAssessmentHref(clientId, matterId, openAction)}><BookOpen />Open Matter Definition</Link></Button> : null}<div className="flex flex-wrap gap-2">{openAction.allowed_choices.map((choice, index) => {
       return <DecisionChoiceButton key={`${choice.key}-${index}`} choice={choice} variant={choice.key === "STOP" ? "destructive" : "default"} disabled={!canManage || busy} onClick={() => onResolve(openAction, choice.key)} />;
     })}</div></CardContent></Card> : null}
     {run ? <Card><CardHeader><CardTitle>Program stages</CardTitle><CardDescription>The coordinator records every stage attempt and waits only at explicit human gates.</CardDescription></CardHeader><CardContent><ol className="grid gap-2 sm:grid-cols-2">{stages.map((stage) => {
@@ -300,12 +310,124 @@ function ProgramWorkspace({ clientId, matterId, program, run, stages, canManage,
         : attemptsByStage.get(stage.key);
       const containsCurrentReassessment = isDefinitionReassessment && stage.key === "DEFINITION_REFINEMENT";
       const isCurrent = (stage.key === run.current_stage && !isDefinitionReassessment) || containsCurrentReassessment;
-      const upcoming = isDefinitionReassessment ? stage.ordinal > 3 : stage.ordinal > run.current_stage_ordinal;
+      const skipped = skippedStageKeys.has(stage.key)
+        || (!attempt && !isDefinitionReassessment && stage.ordinal < run.current_stage_ordinal);
+      const upcoming = !skipped && (isDefinitionReassessment ? stage.ordinal > 3 : stage.ordinal > run.current_stage_ordinal);
       const isRunning = attempt?.status === "RUNNING" || (isCurrent && run.status === "RUNNING");
+      const showsRunFailure = isCurrent && run.status === "FAILED";
+      const canRetryFailure = run.failure_retriable || stage.key === "CLASSIFIER_TRAINING";
       const showsDiscoveryTask = isCurrent && stage.key === "DISCOVERY_QA" && Boolean(run.progress_summary?.discovery_qa);
-      return <li key={stage.key} className={cn("flex items-start gap-3 rounded-lg border p-3", isCurrent && "border-primary/50 bg-primary/5", upcoming && "opacity-55", (isRunning || showsDiscoveryTask) && "sm:col-span-2")}><span className="grid size-7 shrink-0 place-items-center rounded-full bg-muted text-xs font-semibold">{stage.ordinal}</span><div className="min-w-0 flex-1"><div className="flex items-start justify-between gap-2"><p className="text-sm font-medium">{stage.name}</p><ProgramStageTooltip stage={stage} /></div><div className="mt-1 flex flex-wrap gap-1">{attempt ? <StatusBadge status={attempt.status} /> : <Badge variant="outline">Upcoming</Badge>}<Badge variant="outline">{friendly(stage.batching_policy)}</Badge>{stage.requires_human_gate ? <Badge variant="outline">Decision</Badge> : null}</div>{showsDiscoveryTask ? <DiscoveryQAProgress clientId={clientId} matterId={matterId} run={run} canManage={canManage} busy={busy} onCancel={onCancelDiscovery} onReset={onResetDiscovery} /> : null}{containsCurrentReassessment ? <div className="mt-2 flex items-center justify-between gap-2 rounded-md border border-primary/30 bg-background/80 px-2 py-1.5"><span className="text-xs font-medium">Reassessment · Round {definitionAssessmentRound}</span><StatusBadge status={currentDefinitionAssessmentAttempt?.status ?? run.status} /></div> : null}</div></li>;
+      const showsWholeCollectionScoring = isCurrent && stage.key === "WHOLE_COLLECTION_SCORING";
+      return <li key={stage.key} className={cn("flex items-start gap-3 rounded-lg border p-3", isCurrent && "border-primary/50 bg-primary/5", upcoming && "opacity-55", (isRunning || showsDiscoveryTask || showsWholeCollectionScoring || showsRunFailure) && "sm:col-span-2")}><span className="grid size-7 shrink-0 place-items-center rounded-full bg-muted text-xs font-semibold">{stage.ordinal}</span><div className="min-w-0 flex-1"><div className="flex items-start justify-between gap-2"><p className="text-sm font-medium">{stage.name}</p><ProgramStageTooltip stage={stage} /></div><div className="mt-1 flex flex-wrap gap-1">{attempt ? <StatusBadge status={attempt.status} /> : skipped ? <Badge variant="outline">Skipped</Badge> : <Badge variant="outline">Upcoming</Badge>}<Badge variant="outline">{friendly(stage.batching_policy)}</Badge>{stage.requires_human_gate && !skipped ? <Badge variant="outline">Decision</Badge> : null}</div>{skipped ? <p className="mt-2 text-xs text-muted-foreground">Not requested; the accepted classifiers continue directly to whole-collection scoring.</p> : null}{showsRunFailure ? <div className="mt-3 rounded-lg border border-destructive/30 bg-destructive/5 p-3"><p className="text-sm font-medium text-destructive">{stage.name} failed</p><p className="mt-1 text-sm text-destructive">{attempt?.error_summary || run.failure_summary || "This stage could not be completed."}</p>{stage.key === "CLASSIFIER_TRAINING" && !run.failure_retriable ? <p className="mt-2 text-xs text-muted-foreground">After correcting the reported cause, retry starts a new classifier-training attempt with the same frozen labels and configuration. It does not replace the program run.</p> : null}{canManage && canRetryFailure ? <div className="mt-3"><Button size="sm" disabled={busy} onClick={() => onCommand("retry")}><RotateCcw />Retry {stage.name}</Button></div> : null}</div> : null}{showsDiscoveryTask ? <DiscoveryQAProgress clientId={clientId} matterId={matterId} run={run} canManage={canManage} busy={busy} onCancel={onCancelDiscovery} onReset={onResetDiscovery} /> : null}{showsWholeCollectionScoring ? <WholeCollectionScoringProgress run={run} openAction={openAction} /> : null}{containsCurrentReassessment ? <div className="mt-2 flex items-center justify-between gap-2 rounded-md border border-primary/30 bg-background/80 px-2 py-1.5"><span className="text-xs font-medium">Reassessment · Round {definitionAssessmentRound}</span><StatusBadge status={currentDefinitionAssessmentAttempt?.status ?? run.status} /></div> : null}</div></li>;
     })}</ol></CardContent></Card> : null}
   </div>;
+}
+
+function WholeCollectionScoringProgress({ run, openAction }: { run: ReviewProgramRunRead; openAction: ReviewProgramActionRead | null }) {
+  const raw = run.progress_summary?.whole_collection_scoring;
+  const scoring = raw && typeof raw === "object" && !Array.isArray(raw) ? raw as Record<string, unknown> : {};
+  const state = typeof scoring.state === "string" ? scoring.state : "";
+  const models = Array.isArray(scoring.models)
+    ? scoring.models.filter((item): item is Record<string, unknown> => Boolean(item && typeof item === "object" && !Array.isArray(item)))
+    : [];
+  const preparationRaw = scoring.preparation_progress;
+  const preparation = preparationRaw && typeof preparationRaw === "object" && !Array.isArray(preparationRaw)
+    ? preparationRaw as Record<string, unknown>
+    : {};
+  const processed = Number(preparation.processed_document_count ?? 0);
+  const population = Number(preparation.population_document_count ?? 0);
+  const ready = Number(preparation.feature_ready_count ?? 0);
+  const missing = Number(preparation.feature_missing_count ?? 0);
+  const failed = Number(preparation.feature_failed_count ?? 0);
+  const percent = population > 0 ? Math.min(100, Math.max(0, (processed / population) * 100)) : 0;
+  const preparing = state === "PREPARING_INPUTS";
+  const waitingForDecision = !state && openAction?.action_type === "WHOLE_COLLECTION_SCORING";
+  const title = preparing ? "Preparing scoring inputs"
+    : waitingForDecision ? "Waiting for your decision"
+    : state === "RUNNING" ? "Scoring the whole collection"
+    : friendly(state || run.status);
+  const detail = preparing
+    ? String(scoring.status_detail ?? "The durable worker is freezing whole-matter inputs before the classifier jobs are created.")
+    : waitingForDecision
+      ? "Scoring has not started. Choose Score the collection above to create the whole-matter scoring jobs."
+      : state === "RUNNING"
+        ? `${models.filter((model) => ["COMPLETED", "COMPLETED_WITH_ERRORS"].includes(String(model.status))).length} of ${models.length} classifier jobs complete.`
+        : "The program is checking the linked classifier scoring jobs.";
+  return <div className="mt-3 border-t pt-3">
+    <p className="text-xs text-muted-foreground">Status</p>
+    <p className="font-medium">{title}</p>
+    <p className="mt-1 text-xs text-muted-foreground">{detail}</p>
+    {preparing && population > 0 ? <div className="mt-3 space-y-1.5">
+      <div className="flex items-center justify-between gap-3 text-xs"><span>{processed.toLocaleString()} of {population.toLocaleString()} document features checked</span><span className="tabular-nums">{percent.toFixed(1)}%</span></div>
+      <div className="h-2 overflow-hidden rounded-full bg-muted"><div className="h-full rounded-full bg-primary transition-[width]" style={{ width: `${percent}%` }} /></div>
+      <p className="text-xs text-muted-foreground">{ready.toLocaleString()} ready · {missing.toLocaleString()} missing/skipped · {failed.toLocaleString()} invalid</p>
+    </div> : null}
+    {models.length ? <div className="mt-2 flex flex-wrap gap-2">{models.map((model, index) => <span key={String(model.classification_model_id ?? index)} className="inline-flex items-center gap-1.5 rounded-md border px-2 py-1 text-xs"><span>{String(model.field_name ?? model.field_key ?? `Classifier ${index + 1}`)}</span><StatusBadge status={String(model.status ?? (preparing ? "PREPARING_INPUTS" : "QUEUED"))} /></span>)}</div> : null}
+  </div>;
+}
+
+function ProgramClassifierModels({ clientId, matterId, run }: { clientId: string; matterId: string; run: ReviewProgramRunRead }) {
+  const progress = run.progress_summary && typeof run.progress_summary === "object" && !Array.isArray(run.progress_summary)
+    ? run.progress_summary as Record<string, unknown>
+    : {};
+  const trainingRaw = progress.classifier_training;
+  const training = trainingRaw && typeof trainingRaw === "object" && !Array.isArray(trainingRaw) ? trainingRaw as Record<string, unknown> : {};
+  const resultsRaw = progress.classifier_results;
+  const results = resultsRaw && typeof resultsRaw === "object" && !Array.isArray(resultsRaw) ? resultsRaw as Record<string, unknown> : {};
+  const resultModels = Array.isArray(results.models) ? results.models : [];
+  const trainingModels = Array.isArray(training.models) ? training.models : [];
+  const sourceModels = resultModels.length ? resultModels : trainingModels;
+  const labelsRaw = progress.training_labels;
+  const labels = labelsRaw && typeof labelsRaw === "object" && !Array.isArray(labelsRaw) ? labelsRaw as Record<string, unknown> : {};
+  const selectedIdsRaw = Array.isArray(labels.classifier_metadata_definition_ids)
+    ? labels.classifier_metadata_definition_ids
+    : Array.isArray(labels.selected_metadata_definition_ids)
+      ? labels.selected_metadata_definition_ids
+      : [];
+  const selectedIds = new Set(selectedIdsRaw.map(String));
+  const models = [...new Map(sourceModels
+    .filter((item): item is Record<string, unknown> => Boolean(item && typeof item === "object" && !Array.isArray(item) && item.classification_model_id))
+    .filter((item) => !selectedIds.size || selectedIds.has(String(item.metadata_definition_id)))
+    .map((item) => [String(item.classification_model_id), item])).values()];
+  if (!models.length) return null;
+  return <Card>
+    <CardHeader><CardTitle>Classifier models</CardTitle><CardDescription>Models created and managed by this Review Program.</CardDescription></CardHeader>
+    <CardContent className="space-y-2">{models.map((model) => {
+      const modelId = String(model.classification_model_id);
+      const state = model.quality ?? model.status ?? results.overall_quality ?? training.state ?? "created";
+      return <div key={modelId} className="flex flex-wrap items-center justify-between gap-3 rounded-md border p-3"><div><p className="text-sm font-medium">{String(model.field_name ?? model.field_key ?? "Classifier")}</p><p className="text-xs text-muted-foreground">{friendly(String(state))}</p></div><Button asChild size="sm" variant="outline"><Link href={classificationModelHref(clientId, matterId, modelId)}>Open model</Link></Button></div>;
+    })}</CardContent>
+  </Card>;
+}
+
+function RefreshStateButton({ busy, onClick }: { busy: boolean; onClick: () => void }) {
+  const tooltipId = "review-program-refresh-state-help";
+  return <span className="group/refresh-state-tooltip relative inline-flex">
+    <Button size="sm" variant="outline" disabled={busy} onClick={onClick} aria-describedby={tooltipId}><RefreshCw />Refresh state</Button>
+    <span id={tooltipId} role="tooltip" className="pointer-events-none invisible absolute right-0 top-full z-50 mt-2 w-max max-w-[min(20rem,calc(100vw-2rem))] rounded-md border bg-popover px-3 py-2 text-left text-xs font-normal leading-relaxed text-popover-foreground opacity-0 shadow-md transition-opacity group-hover/refresh-state-tooltip:visible group-hover/refresh-state-tooltip:opacity-100 group-focus-within/refresh-state-tooltip:visible group-focus-within/refresh-state-tooltip:opacity-100">
+      Checks pending events and completed work, then updates the program if its recorded state is behind. It does not retry work.
+    </span>
+  </span>;
+}
+
+function ReplacementRunDialog({ run, busy, onConfirm }: { run: ReviewProgramRunRead; busy: boolean; onConfirm: () => void }) {
+  const [open, setOpen] = useState(false);
+  return <Dialog open={open} onOpenChange={setOpen}>
+    <DialogTrigger asChild><Button size="sm" variant="outline" disabled={busy}><Play />Start replacement run</Button></DialogTrigger>
+    <DialogContent>
+      <DialogHeader>
+        <DialogTitle>Start a replacement run?</DialogTitle>
+        <DialogDescription>
+          This program already has an unfinished run that failed during {friendly(run.current_stage)}. Starting a replacement will make a new run current; it will not retry or delete the existing run.
+        </DialogDescription>
+      </DialogHeader>
+      {run.failure_retriable ? <p className="rounded-lg border border-amber-500/40 bg-amber-500/10 p-3 text-sm">This failure is retriable. Use Retry to continue the existing run from its failed stage unless you intentionally want to restart setup.</p> : null}
+      <DialogFooter>
+        <Button type="button" variant="outline" onClick={() => setOpen(false)}>Keep existing run</Button>
+        <Button type="button" variant="destructive" disabled={busy} onClick={() => { setOpen(false); onConfirm(); }}>Start replacement run</Button>
+      </DialogFooter>
+    </DialogContent>
+  </Dialog>;
 }
 
 function DiscoveryQAProgress({ clientId, matterId, run, canManage, busy, onCancel, onReset }: { clientId: string; matterId: string; run: ReviewProgramRunRead; canManage: boolean; busy: boolean; onCancel: () => void; onReset: () => void }) {
@@ -651,6 +773,50 @@ function TrainingLabelPolicyCard({ action, matterId, canManage, busy, onResolve 
         <DecisionChoiceButton choice={reviewChoice} disabled={!canManage || busy || selectedFields.size === 0} onClick={() => onResolve(reviewChoice.key, { metadata_definition_ids: [...selectedFields] })} />
       </div> : null}
       <div className="flex flex-wrap gap-2">{otherChoices.map((choice) => <DecisionChoiceButton key={choice.key} choice={choice} variant={choice.key === "STOP" ? "destructive" : "outline"} disabled={!canManage || busy} onClick={() => onResolve(choice.key)} />)}</div>
+    </CardContent>
+  </Card>;
+}
+
+function TrainingLabelFinalizationCard({ action, matterId, canManage, busy, onResolve }: {
+  action: ReviewProgramActionRead;
+  matterId: string;
+  canManage: boolean;
+  busy: boolean;
+  onResolve: (choice: string, input?: Record<string, unknown>) => void;
+}) {
+  const previewRaw = action.decision_context?.training_label_preview;
+  const preview = previewRaw && typeof previewRaw === "object" && !Array.isArray(previewRaw) ? previewRaw as Record<string, unknown> : {};
+  const fields = Array.isArray(preview.fields)
+    ? preview.fields.filter((field): field is Record<string, unknown> => Boolean(field && typeof field === "object" && !Array.isArray(field) && field.metadata_definition_id))
+    : [];
+  const defaultSelection = fields.map((field) => String(field.metadata_definition_id));
+  const [selectedFields, setSelectedFields] = useState(() => new Set(defaultSelection));
+  const finalizeChoice = action.allowed_choices.find((choice) => choice.key === "FINALIZE");
+  const stopChoice = action.allowed_choices.find((choice) => choice.key === "STOP");
+  function toggleField(id: string) {
+    setSelectedFields((current) => {
+      const next = new Set(current);
+      if (next.has(id)) next.delete(id);
+      else next.add(id);
+      return next;
+    });
+  }
+  return <Card className="border-accent/60 bg-accent/5">
+    <CardHeader><CardTitle>{action.title}</CardTitle><CardDescription>{action.explanation}</CardDescription></CardHeader>
+    <CardContent className="space-y-4">
+      <TrainingLabelSummary action={action} matterId={matterId} />
+      <div className="space-y-3 rounded-lg border bg-background/70 p-3">
+        <div><p className="text-sm font-semibold">Fields to train</p><p className="text-xs text-muted-foreground">Each selected field creates its own classifier. Unselected Q&amp;A coding fields remain available as codings but will not be trained or scored by a classifier.</p></div>
+        {fields.length ? <div className="grid gap-2 sm:grid-cols-2">{fields.map((field) => {
+          const id = String(field.metadata_definition_id);
+          const name = String(field.display_name ?? friendly(String(field.key ?? "Field")));
+          return <label key={id} className="flex cursor-pointer items-center gap-2 rounded-md border bg-background px-3 py-2 text-sm"><input type="checkbox" aria-label={`Train ${name}`} checked={selectedFields.has(id)} disabled={!canManage || busy} onChange={() => toggleField(id)} /><span className="font-medium">{name}</span></label>;
+        })}</div> : <p className="text-xs text-destructive">No classifier fields are available.</p>}
+      </div>
+      <div className="flex flex-wrap gap-2">
+        {finalizeChoice ? <DecisionChoiceButton choice={finalizeChoice} disabled={!canManage || busy || selectedFields.size === 0} onClick={() => onResolve(finalizeChoice.key, { classifier_metadata_definition_ids: [...selectedFields] })} /> : null}
+        {stopChoice ? <DecisionChoiceButton choice={stopChoice} variant="destructive" disabled={!canManage || busy} onClick={() => onResolve(stopChoice.key)} /> : null}
+      </div>
     </CardContent>
   </Card>;
 }

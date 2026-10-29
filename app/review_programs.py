@@ -5,6 +5,7 @@ import io
 import json
 import uuid
 from collections import Counter
+from collections.abc import Callable
 from datetime import datetime
 from typing import Any
 
@@ -176,6 +177,7 @@ from app.workflows.dispatcher import (
     enqueue_classification_model_scoring,
     enqueue_classification_training_job,
     enqueue_review_batch,
+    enqueue_review_program_scoring_preparation,
 )
 from artifact_service.schemas import WorkflowArtifactLineageInput
 from artifact_service.workflow_artifact_types import ArtifactType
@@ -577,14 +579,17 @@ def _action_contract(
         return (
             "Finalize the classifier training labels",
             (
-                "Freeze the selected label policy, source runs, human adjudication revisions, exclusions, and "
-                "accepted limitations before classifier training begins."
+                "Choose the coding fields to train, then freeze that selection with the label policy, source "
+                "runs, human adjudication revisions, exclusions, and accepted limitations."
             ),
             [
                 {
                     "key": "FINALIZE",
                     "label": "Finalize training labels",
-                    "consequence": "Create an immutable training-label provenance snapshot and begin training.",
+                    "consequence": (
+                        "Freeze the selected classifier fields and their immutable label provenance, then begin "
+                        "training only those fields."
+                    ),
                 },
                 stop,
             ],
@@ -1831,6 +1836,7 @@ def start_review_program_run(
     program: ReviewProgram,
     actor: User,
     idempotency_key: str,
+    confirm_replace_unfinished_run: bool = False,
 ) -> ReviewProgramRun:
     key = _validate_idempotency_key(idempotency_key)
     deterministic_id = uuid.uuid5(program.id, f"review-program-run:{key}")
@@ -1850,6 +1856,12 @@ def start_review_program_run(
     )
     if active_run is not None:
         raise ReviewProgramError("Review Program already has an active run")
+
+    unfinished_run = db.get(ReviewProgramRun, program.current_run_id) if program.current_run_id is not None else None
+    if unfinished_run is not None and unfinished_run.status == "FAILED" and not confirm_replace_unfinished_run:
+        raise ReviewProgramError(
+            "Review Program has an unfinished failed run. Retry it when available, or explicitly confirm starting a replacement run."
+        )
 
     version = current_review_program_version(db, program)
     template = _template_for_program(program)
@@ -1889,7 +1901,15 @@ def start_review_program_run(
         action="review_program.run_started",
         target_type="review_program_run",
         target_id=run.id,
-        details={"program_id": str(program.id), "program_version_id": str(version.id)},
+        details={
+            "program_id": str(program.id),
+            "program_version_id": str(version.id),
+            "replaced_unfinished_run_id": (
+                str(unfinished_run.id)
+                if unfinished_run is not None and unfinished_run.status == "FAILED"
+                else None
+            ),
+        },
     )
     return run
 
@@ -5410,6 +5430,53 @@ def _confirm_disagreement_review(
     _advance_after_stage(db, program=program, run=run, attempt=attempt)
 
 
+def _classifier_training_definition_ids(
+    run: ReviewProgramRun,
+    *,
+    training_labels: dict[str, Any],
+    requested_ids: Any = None,
+    require_selection: bool = False,
+) -> list[uuid.UUID]:
+    accepted_task = dict((run.progress_summary or {}).get("accepted_qa_task") or {})
+    try:
+        accepted_ids = list(
+            dict.fromkeys(
+                uuid.UUID(str(value))
+                for value in accepted_task.get("destination_metadata_definition_ids", [])
+            )
+        )
+    except (TypeError, ValueError) as exc:
+        raise ReviewProgramError("Q&A destination-field provenance is invalid") from exc
+    if not accepted_ids:
+        raise ReviewProgramError("Q&A destination-field provenance is unavailable")
+
+    raw_ids = requested_ids
+    if raw_ids is None and not require_selection:
+        raw_ids = training_labels.get("classifier_metadata_definition_ids")
+        if raw_ids is None:
+            # Older snapshots used this field only for difference-review selection. Using a
+            # non-empty legacy selection prevents an in-flight retry from recreating classifiers
+            # that the reviewer explicitly left out of that review.
+            raw_ids = training_labels.get("selected_metadata_definition_ids") or None
+    if raw_ids is None:
+        if require_selection:
+            raise ReviewProgramError("Select at least one coding field for classifier training")
+        return accepted_ids
+    if not isinstance(raw_ids, list):
+        raise ReviewProgramError("Classifier training field selection is invalid")
+    try:
+        selected_ids = list(dict.fromkeys(uuid.UUID(str(value)) for value in raw_ids))
+    except (TypeError, ValueError) as exc:
+        raise ReviewProgramError("Classifier training field selection is invalid") from exc
+    if not selected_ids:
+        raise ReviewProgramError("Select at least one coding field for classifier training")
+    unknown_ids = set(selected_ids).difference(accepted_ids)
+    if unknown_ids:
+        raise ReviewProgramError("Classifier training selected a field outside the published Q&A task")
+    selected_set = set(selected_ids)
+    return [definition_id for definition_id in accepted_ids if definition_id in selected_set]
+
+
 def _finalize_training_labels(
     db: Session,
     *,
@@ -5423,9 +5490,17 @@ def _finalize_training_labels(
         raise ReviewProgramError("Training-label policy has not been selected")
     profile_runs = _completed_discovery_profile_runs(db, run=run)
     label_runs = _completed_discovery_label_runs(db, profile_runs=profile_runs)
+    resolution_input = dict((action.resolution_payload or {}).get("input") or {})
+    classifier_definition_ids = _classifier_training_definition_ids(
+        run,
+        training_labels=resolution,
+        requested_ids=resolution_input.get("classifier_metadata_definition_ids"),
+        require_selection=True,
+    )
     snapshot = {
         **resolution,
         "state": "FROZEN",
+        "classifier_metadata_definition_ids": [str(value) for value in classifier_definition_ids],
         "profile_run_ids": [str(profile_run.id) for profile_run in profile_runs],
         "label_run_ids": [str(label_run.id) for label_run in label_runs],
         "frozen_by_user_id": str(action.resolved_by_user_id),
@@ -5444,7 +5519,11 @@ def _finalize_training_labels(
     )
     run.progress_summary = {
         **run.progress_summary,
-        "training_label_resolution": {**resolution, "state": "FROZEN"},
+        "training_label_resolution": {
+            **resolution,
+            "state": "FROZEN",
+            "classifier_metadata_definition_ids": [str(value) for value in classifier_definition_ids],
+        },
         "training_labels": snapshot,
     }
     _complete_action_attempt(
@@ -5518,6 +5597,20 @@ def _accept_trained_classifiers(
         "completed_stages": completed,
         "last_completed_stage": "CLASSIFIER_REVIEW",
         "accepted_classifiers": accepted,
+        "skipped_stages": [
+            *[
+                item
+                for item in run.progress_summary.get("skipped_stages", [])
+                if not isinstance(item, dict) or item.get("stage_key") != "CLASSIFIER_IMPROVEMENT"
+            ],
+            {
+                "stage_key": "CLASSIFIER_IMPROVEMENT",
+                "reason_code": "CLASSIFIERS_ACCEPTED_AS_IS",
+                "reason": "Classifier improvement was not requested.",
+                "skipped_by_user_id": str(actor_user_id),
+                "skipped_at": action.resolved_at.isoformat() if action.resolved_at else None,
+            },
+        ],
     }
     _activate_stage_by_key(
         db,
@@ -5535,6 +5628,7 @@ def _prepare_whole_collection_scoring_snapshot(
     model_version: ClassificationModelVersion,
     embedding_job: MatterEmbeddingJob,
     actor_user_id: uuid.UUID,
+    progress_callback: Callable[[int, int, int, int, int], None] | None = None,
 ) -> ClassificationDatasetSnapshot:
     snapshot_request = ClassificationDatasetSnapshotRequest.model_validate(
         {
@@ -5568,11 +5662,24 @@ def _prepare_whole_collection_scoring_snapshot(
         and (snapshot.feature_specification or {}).get("embedding_job_id") == str(embedding_job.id)
     ):
         snapshot.status = "BUILDING"
+        if progress_callback is not None:
+            progress_callback(0, snapshot.population_count, 0, 0, 0)
         prepared_features = prepare_scoring_features(
             db,
             snapshot=snapshot,
             embedding_job_id=embedding_job.id,
             actor_user_id=actor_user_id,
+            progress_callback=(
+                lambda processed, ready, missing, failed: progress_callback(
+                    processed,
+                    snapshot.population_count,
+                    ready,
+                    missing,
+                    failed,
+                )
+                if progress_callback is not None
+                else None
+            ),
         )
         materialize_scoring_features(
             db,
@@ -5603,6 +5710,64 @@ def _launch_whole_collection_scoring(
     }
     if not approvals or len(approvals) != len(result_models):
         raise ReviewProgramError("Accepted classifier provenance is incomplete")
+    preparation_workflow_id = f"review-program-scoring-preparation:{run.id}:{attempt.id}"
+    scoring_snapshot = {
+        "schema_version": 1,
+        "state": "PREPARING_INPUTS",
+        "scope_type": "MATTER",
+        "stage_attempt_id": str(attempt.id),
+        "preparation_workflow_id": preparation_workflow_id,
+        "status_detail": "Preparing immutable whole-matter scoring inputs.",
+        "models": [
+            {
+                "classification_model_id": str(item.get("classification_model_id")),
+                "model_version_id": str(item.get("model_version_id")),
+                "field_key": result_models.get(str(item.get("classification_model_id")), {}).get("field_key"),
+                "field_name": result_models.get(str(item.get("classification_model_id")), {}).get("field_name"),
+                "status": "PREPARING_INPUTS",
+            }
+            for item in approvals
+        ],
+    }
+    attempt.status = "RUNNING"
+    attempt.started_at = attempt.started_at or utcnow()
+    attempt.result_summary = {
+        **attempt.result_summary,
+        "gate_choice": "START_SCORING",
+        "action_id": str(action.id),
+        "preparation_workflow_id": preparation_workflow_id,
+    }
+    run.status = "RUNNING"
+    run.progress_summary = {
+        **run.progress_summary,
+        "whole_collection_scoring": scoring_snapshot,
+    }
+    enqueue_review_program_scoring_preparation(
+        db,
+        preparation_workflow_id,
+        str(run.id),
+        str(attempt.id),
+    )
+
+
+def _materialize_whole_collection_scoring(
+    db: Session,
+    *,
+    program: ReviewProgram,
+    run: ReviewProgramRun,
+    attempt: ReviewProgramStageAttempt,
+    action: ReviewProgramAction,
+) -> None:
+    accepted = dict((run.progress_summary or {}).get("accepted_classifiers") or {})
+    classifier_results = dict((run.progress_summary or {}).get("classifier_results") or {})
+    approvals = [item for item in accepted.get("approvals", []) if isinstance(item, dict)]
+    result_models = {
+        str(item.get("classification_model_id")): item
+        for item in classifier_results.get("models", [])
+        if isinstance(item, dict) and item.get("classification_model_id")
+    }
+    if not approvals or len(approvals) != len(result_models):
+        raise ReviewProgramError("Accepted classifier provenance is incomplete")
     matter = db.get(Matter, program.matter_id)
     if matter is None:
         raise ReviewProgramError("Review Program matter is unavailable")
@@ -5611,7 +5776,7 @@ def _launch_whole_collection_scoring(
     created_runs: list[ClassificationScoringRun] = []
     terminal_runs: list[tuple[ClassificationScoringRun, WorkflowRun]] = []
     try:
-        for approval in approvals:
+        for model_index, approval in enumerate(approvals, start=1):
             model_id = uuid.UUID(str(approval["classification_model_id"]))
             model_version_id = uuid.UUID(str(approval["model_version_id"]))
             result_model = result_models.get(str(model_id))
@@ -5644,6 +5809,19 @@ def _launch_whole_collection_scoring(
                 model_version=model_version,
                 embedding_job=embedding_job,
                 actor_user_id=actor_user_id,
+                progress_callback=lambda processed, total, ready, missing, failed, model=model, result_model=result_model, model_index=model_index: _record_whole_collection_scoring_preparation_progress(
+                    run_id=run.id,
+                    stage_attempt_id=attempt.id,
+                    classification_model_id=model.id,
+                    field_name=str(result_model.get("field_name") or result_model.get("field_key") or "Classifier"),
+                    model_index=model_index,
+                    model_count=len(approvals),
+                    processed=processed,
+                    total=total,
+                    ready=ready,
+                    missing=missing,
+                    failed=failed,
+                ),
             )
             prepared = prepare_scoring(
                 db,
@@ -5744,6 +5922,14 @@ def _launch_whole_collection_scoring(
     ) as exc:
         raise ReviewProgramError(str(exc)) from exc
 
+    db.refresh(run, with_for_update=True)
+    db.refresh(attempt, with_for_update=True)
+    if (
+        run.status != "RUNNING"
+        or run.current_stage != "WHOLE_COLLECTION_SCORING"
+        or attempt.status != "RUNNING"
+    ):
+        raise ReviewProgramError("Whole-collection scoring preparation is no longer active")
     scoring_snapshot = {
         "schema_version": 1,
         "state": "RUNNING",
@@ -5780,6 +5966,145 @@ def _launch_whole_collection_scoring(
             workflow=workflow,
             review_program_run_id=run.id,
         )
+
+
+def _record_whole_collection_scoring_preparation_progress(
+    *,
+    run_id: uuid.UUID,
+    stage_attempt_id: uuid.UUID,
+    classification_model_id: uuid.UUID,
+    field_name: str,
+    model_index: int,
+    model_count: int,
+    processed: int,
+    total: int,
+    ready: int,
+    missing: int,
+    failed: int,
+) -> None:
+    from app.database import SessionLocal
+
+    with SessionLocal() as progress_db:
+        progress_run = progress_db.scalar(
+            select(ReviewProgramRun).where(ReviewProgramRun.id == run_id).with_for_update()
+        )
+        if progress_run is None:
+            return
+        scoring = dict((progress_run.progress_summary or {}).get("whole_collection_scoring") or {})
+        if (
+            progress_run.status != "RUNNING"
+            or progress_run.current_stage != "WHOLE_COLLECTION_SCORING"
+            or scoring.get("stage_attempt_id") != str(stage_attempt_id)
+            or scoring.get("state") != "PREPARING_INPUTS"
+        ):
+            return
+        models = [dict(item) for item in scoring.get("models", []) if isinstance(item, dict)]
+        for item in models:
+            if item.get("classification_model_id") == str(classification_model_id):
+                item.update(
+                    {
+                        "status": "PREPARING_FEATURES",
+                        "processed_document_count": processed,
+                        "population_document_count": total,
+                        "feature_ready_count": ready,
+                        "feature_missing_count": missing,
+                        "feature_failed_count": failed,
+                    }
+                )
+                break
+        progress_run.progress_summary = {
+            **progress_run.progress_summary,
+            "whole_collection_scoring": {
+                **scoring,
+                "models": models,
+                "status_detail": f"Preparing features for {field_name}.",
+                "preparation_progress": {
+                    "phase": "PREPARING_FEATURES",
+                    "field_name": field_name,
+                    "model_index": model_index,
+                    "model_count": model_count,
+                    "processed_document_count": processed,
+                    "population_document_count": total,
+                    "feature_ready_count": ready,
+                    "feature_missing_count": missing,
+                    "feature_failed_count": failed,
+                    "updated_at": utcnow().isoformat(),
+                },
+            },
+        }
+        progress_db.commit()
+
+
+def prepare_review_program_whole_collection_scoring(
+    review_program_run_id: uuid.UUID,
+    stage_attempt_id: uuid.UUID,
+) -> None:
+    """Materialize scoring inputs after the user's launch transaction has committed."""
+
+    from app.database import SessionLocal
+
+    with SessionLocal() as db:
+        run = db.get(ReviewProgramRun, review_program_run_id)
+        attempt = db.get(ReviewProgramStageAttempt, stage_attempt_id)
+        if run is None or attempt is None or attempt.run_id != run.id:
+            raise ReviewProgramError("Whole-collection scoring preparation target is unavailable")
+        scoring = dict((run.progress_summary or {}).get("whole_collection_scoring") or {})
+        if scoring.get("state") != "PREPARING_INPUTS":
+            return
+        if (
+            run.status != "RUNNING"
+            or run.current_stage != "WHOLE_COLLECTION_SCORING"
+            or attempt.status != "RUNNING"
+        ):
+            raise ReviewProgramError("Whole-collection scoring preparation is no longer active")
+        program = db.get(ReviewProgram, run.program_id)
+        action_id = attempt.result_summary.get("action_id")
+        try:
+            action = db.get(ReviewProgramAction, uuid.UUID(str(action_id))) if action_id else None
+        except ValueError:
+            action = None
+        if program is None or action is None or action.status != "RESOLVED":
+            raise ReviewProgramError("Whole-collection scoring launch provenance is unavailable")
+        _materialize_whole_collection_scoring(
+            db,
+            program=program,
+            run=run,
+            attempt=attempt,
+            action=action,
+        )
+        db.commit()
+
+
+def fail_review_program_whole_collection_scoring_preparation(
+    review_program_run_id: uuid.UUID,
+    stage_attempt_id: uuid.UUID,
+    error_summary: str,
+) -> None:
+    from app.database import SessionLocal
+
+    with SessionLocal() as db:
+        run = db.get(ReviewProgramRun, review_program_run_id)
+        attempt = db.get(ReviewProgramStageAttempt, stage_attempt_id)
+        program = db.get(ReviewProgram, run.program_id) if run is not None else None
+        if (
+            run is None
+            or attempt is None
+            or program is None
+            or attempt.run_id != run.id
+            or run.status != "RUNNING"
+            or run.current_stage != "WHOLE_COLLECTION_SCORING"
+            or attempt.status != "RUNNING"
+        ):
+            return
+        fail_review_program_stage(
+            db,
+            program=program,
+            run=run,
+            error_code="WHOLE_COLLECTION_SCORING_PREPARATION_FAILED",
+            error_summary=error_summary[:4000],
+            retriable=True,
+        )
+        db.commit()
 
 
 _QA_COVERAGE_PROFILE_PURPOSES = {
@@ -7473,17 +7798,10 @@ def _launch_classifier_training(
     training_labels = dict((run.progress_summary or {}).get("training_labels") or {})
     if training_labels.get("state") != "FROZEN" or not training_labels.get("content_hash"):
         raise ReviewProgramError("Classifier training labels have not been frozen")
-    accepted_task = dict((run.progress_summary or {}).get("accepted_qa_task") or {})
-    try:
-        definition_ids = list(
-            dict.fromkeys(
-                uuid.UUID(str(value)) for value in accepted_task.get("destination_metadata_definition_ids", [])
-            )
-        )
-    except (TypeError, ValueError) as exc:
-        raise ReviewProgramError("Q&A destination-field provenance is invalid") from exc
-    if not definition_ids:
-        raise ReviewProgramError("Q&A destination-field provenance is unavailable")
+    definition_ids = _classifier_training_definition_ids(
+        run,
+        training_labels=training_labels,
+    )
     definitions_by_id = {
         definition.id: definition
         for definition in db.scalars(
@@ -7616,6 +7934,7 @@ def _launch_classifier_training(
     training_state = {
         "schema_version": 1,
         "state": "RUNNING",
+        "classifier_metadata_definition_ids": [str(value) for value in definition_ids],
         "embedding_job_id": str(embedding_job.id),
         "training_labels_content_hash": training_labels["content_hash"],
         "stage_attempt_id": str(attempt.id),
@@ -7841,7 +8160,14 @@ def project_review_program_classifier_training_terminal(
         or attempt.id != _current_stage_attempt(db, run).id
     ):
         return None
-    children = list(
+    training_labels = dict((run.progress_summary or {}).get("training_labels") or {})
+    ordered_target_definition_ids = _classifier_training_definition_ids(
+        run,
+        training_labels=training_labels,
+    )
+    target_definition_ids = set(ordered_target_definition_ids)
+    target_definition_id_strings = {str(value) for value in target_definition_ids}
+    all_children = list(
         db.scalars(
             select(ReviewProgramChild)
             .where(
@@ -7851,6 +8177,23 @@ def project_review_program_classifier_training_terminal(
             .order_by(ReviewProgramChild.created_at, ReviewProgramChild.id)
         )
     )
+    children: list[ReviewProgramChild] = []
+    linked_definition_ids: set[uuid.UUID] = set()
+    for item in all_children:
+        raw_definition_id = item.context.get("metadata_definition_id")
+        if raw_definition_id is None:
+            continue
+        try:
+            definition_id = uuid.UUID(str(raw_definition_id))
+        except (TypeError, ValueError) as exc:
+            raise ReviewProgramError(
+                "Review Program classifier-training target link is invalid"
+            ) from exc
+        if definition_id in target_definition_ids:
+            children.append(item)
+            linked_definition_ids.add(definition_id)
+    if linked_definition_ids != target_definition_ids:
+        raise ReviewProgramError("Review Program classifier-training target links are incomplete")
     jobs = [db.get(ClassificationTrainingJob, item.child_id) for item in children]
     if not jobs or any(item is None for item in jobs):
         return None
@@ -7891,6 +8234,17 @@ def project_review_program_classifier_training_terminal(
         "classifier_training": {
             **dict((run.progress_summary or {}).get("classifier_training") or {}),
             "state": "COMPLETED",
+            "classifier_metadata_definition_ids": [
+                str(value) for value in ordered_target_definition_ids
+            ],
+            "models": [
+                item
+                for item in dict(
+                    (run.progress_summary or {}).get("classifier_training") or {}
+                ).get("models", [])
+                if item.get("metadata_definition_id")
+                and str(item["metadata_definition_id"]) in target_definition_id_strings
+            ],
         },
         "classifier_results": quality,
     }
@@ -9429,6 +9783,12 @@ def cancel_review_program_run(
     return run
 
 
+def _review_program_failure_allows_retry(run: ReviewProgramRun) -> bool:
+    return run.status == "FAILED" and (
+        run.failure_retriable or run.current_stage == "CLASSIFIER_TRAINING"
+    )
+
+
 def retry_review_program_run(
     db: Session,
     *,
@@ -9440,17 +9800,38 @@ def retry_review_program_run(
     key = _validate_idempotency_key(idempotency_key)
     if run.status == "RUNNING" and run.progress_summary.get("last_retry_key") == key:
         return run
-    if run.status != "FAILED" or not run.failure_retriable:
+    manually_retryable_classifier_training = (
+        run.current_stage == "CLASSIFIER_TRAINING" and not run.failure_retriable
+    )
+    if not _review_program_failure_allows_retry(run):
         raise ReviewProgramError("Review Program run is not retriable")
     previous = _current_stage_attempt(db, run, for_update=True)
     next_attempt_number = previous.attempt + 1
     stage = _stage_for_run(program, run)
+    automatic_retry = run.failure_retriable
+    progress = {**run.progress_summary, "last_retry_key": key}
+    if stage.key == "WHOLE_COLLECTION_SCORING":
+        previous_scoring = progress.pop("whole_collection_scoring", None)
+        if isinstance(previous_scoring, dict):
+            scoring_attempts = progress.get("whole_collection_scoring_attempts")
+            if not isinstance(scoring_attempts, list):
+                scoring_attempts = []
+            progress["whole_collection_scoring_attempts"] = [
+                *scoring_attempts,
+                {
+                    **previous_scoring,
+                    "attempt": previous.attempt,
+                    "terminal_state": "FAILED",
+                    "failure_code": run.failure_code,
+                    "failure_summary": run.failure_summary,
+                },
+            ]
     run.status = "RUNNING"
     run.failure_code = None
     run.failure_summary = None
     run.failure_retriable = False
     run.completed_at = None
-    run.progress_summary = {**run.progress_summary, "last_retry_key": key}
+    run.progress_summary = progress
     resolve_source_notifications(
         db,
         source=NotificationSource("review_program_run", run.id),
@@ -9474,6 +9855,8 @@ def retry_review_program_run(
             "program_id": str(program.id),
             "stage_key": stage.key,
             "attempt": next_attempt_number,
+            "automatic_retry": automatic_retry,
+            "manual_classifier_retry": manually_retryable_classifier_training,
         },
     )
     return run
