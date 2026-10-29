@@ -76,7 +76,6 @@ from artifact_service.workflow_artifacts import store_workflow_artifact as persi
 GROUPING_SNAPSHOT_BATCH_SIZE = 5000
 REMOTE_RELATIONSHIP_SNAPSHOT_BATCH_SIZE = 5000
 
-
 def get_collection_item_read(
     *,
     collection_item_id: uuid.UUID,
@@ -2134,30 +2133,42 @@ def load_current_chunk_vector_artifact(
                 )
                 .order_by(Artifact.created_at.desc())
             ).all()
-            artifact = next(
-                (
-                    candidate
-                    for candidate, _ in rows
-                    if (candidate.artifact_metadata or {}).get("configuration_hash")
-                    == configuration_hash
-                ),
-                None,
-            )
-            if artifact is None:
-                return None
-            if artifact.tenant_id != tenant_id or artifact.client_id != client_id:
-                raise PermissionError("Artifact is not available to this matter")
-            blob = db.get(ContentBlob, artifact.content_blob_id)
-            if blob is None:
-                raise ValueError("Chunk vector set content is unavailable")
-            with get_storage().open(blob.bucket_name, blob.storage_key) as stream:
-                content = stream.read()
-            return ChunkVectorArtifactSnapshot(
-                artifact_id=artifact.id,
-                content_hash=artifact.content_hash,
-                content=content,
-                metadata=artifact.artifact_metadata or {},
-            )
+            for artifact, _ in rows:
+                if (artifact.artifact_metadata or {}).get("configuration_hash") != configuration_hash:
+                    continue
+                if artifact.tenant_id != tenant_id or artifact.client_id != client_id:
+                    raise PermissionError("Artifact is not available to this matter")
+                blob = db.get(ContentBlob, artifact.content_blob_id)
+                if blob is None:
+                    logger.warning(
+                        "Chunk vector content blob is unavailable; trying older artifact "
+                        "collection_item_id=%s artifact_id=%s blob_id=%s",
+                        collection_item_id,
+                        artifact.id,
+                        artifact.content_blob_id,
+                    )
+                    continue
+                try:
+                    with get_storage().open(blob.bucket_name, blob.storage_key) as stream:
+                        content = stream.read()
+                except Exception as exc:  # noqa: BLE001 - storage availability is document-level
+                    logger.warning(
+                        "Chunk vector blob read failed; trying older artifact "
+                        "collection_item_id=%s artifact_id=%s blob_id=%s storage_key=%s error_type=%s",
+                        collection_item_id,
+                        artifact.id,
+                        blob.id,
+                        blob.storage_key,
+                        type(exc).__name__,
+                    )
+                    continue
+                return ChunkVectorArtifactSnapshot(
+                    artifact_id=artifact.id,
+                    content_hash=artifact.content_hash,
+                    content=content,
+                    metadata=artifact.artifact_metadata or {},
+                )
+            return None
 
     headers = _headers(actor_user_id, tenant_id, client_id)
     with httpx.Client(base_url=settings.artifact_base_url, timeout=120) as client:
@@ -2171,15 +2182,35 @@ def load_current_chunk_vector_artifact(
         ]
         if not vectors:
             return None
-        vector = vectors[0]
-        vector_response = client.get(f"/v1/artifacts/{vector['id']}/content", headers=headers)
-        vector_response.raise_for_status()
-    return ChunkVectorArtifactSnapshot(
-        artifact_id=uuid.UUID(vector["id"]),
-        content_hash=vector["sha256"],
-        content=vector_response.content,
-        metadata=vector.get("metadata") or {},
-    )
+        for vector in vectors:
+            try:
+                vector_response = client.get(f"/v1/artifacts/{vector['id']}/content", headers=headers)
+            except httpx.RequestError as exc:
+                logger.warning(
+                    "Remote chunk vector storage read failed; trying older artifact "
+                    "collection_item_id=%s artifact_id=%s error_type=%s",
+                    collection_item_id,
+                    vector["id"],
+                    type(exc).__name__,
+                )
+                continue
+            if vector_response.status_code == 404 or vector_response.status_code >= 500:
+                logger.warning(
+                    "Remote chunk vector storage read failed; trying older artifact "
+                    "collection_item_id=%s artifact_id=%s status_code=%s",
+                    collection_item_id,
+                    vector["id"],
+                    vector_response.status_code,
+                )
+                continue
+            vector_response.raise_for_status()
+            return ChunkVectorArtifactSnapshot(
+                artifact_id=uuid.UUID(vector["id"]),
+                content_hash=vector["sha256"],
+                content=vector_response.content,
+                metadata=vector.get("metadata") or {},
+            )
+    return None
 
 
 def load_current_chunk_vector_artifacts(
@@ -2259,8 +2290,20 @@ def load_current_chunk_vector_artifacts(
             metadata = artifact.artifact_metadata or {}
             if metadata.get("configuration_hash") != configuration_hash:
                 continue
-            with storage.open(blob.bucket_name, blob.storage_key) as stream:
-                content = stream.read()
+            try:
+                with storage.open(blob.bucket_name, blob.storage_key) as stream:
+                    content = stream.read()
+            except Exception as exc:  # noqa: BLE001 - storage availability is document-level
+                logger.warning(
+                    "Chunk vector blob read failed; trying older artifact "
+                    "collection_item_id=%s artifact_id=%s blob_id=%s storage_key=%s error_type=%s",
+                    item_id,
+                    artifact.id,
+                    blob.id,
+                    blob.storage_key,
+                    type(exc).__name__,
+                )
+                continue
             snapshots[item_id] = ChunkVectorArtifactSnapshot(
                 artifact_id=artifact.id,
                 content_hash=artifact.content_hash,

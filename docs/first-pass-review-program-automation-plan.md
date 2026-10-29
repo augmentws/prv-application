@@ -997,6 +997,11 @@ per-classifier state and aggregate completion instead of a generic waiting state
 Each scoring run freezes one Analysis Input Manifest and exact model version. Predictions remain in the immutable
 scoring artifact and do not update matter coding automatically.
 
+Object-storage availability is evaluated per document while materializing features. A missing or unreadable MinIO
+vector object is logged and counted as a missing feature; it does not fail whole-collection preparation or prevent
+other documents from being scored. Database authorization and matter-scope violations remain fatal because they are
+not document-level storage failures.
+
 ## 16. Phase 9 Classifier and existing Q&A comparison
 
 After scoring completes, compare classifier predictions with all existing program Q&A results over their shared

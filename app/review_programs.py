@@ -9714,12 +9714,29 @@ def retry_review_program_run(
     next_attempt_number = previous.attempt + 1
     stage = _stage_for_run(program, run)
     automatic_retry = run.failure_retriable
+    progress = {**run.progress_summary, "last_retry_key": key}
+    if stage.key == "WHOLE_COLLECTION_SCORING":
+        previous_scoring = progress.pop("whole_collection_scoring", None)
+        if isinstance(previous_scoring, dict):
+            scoring_attempts = progress.get("whole_collection_scoring_attempts")
+            if not isinstance(scoring_attempts, list):
+                scoring_attempts = []
+            progress["whole_collection_scoring_attempts"] = [
+                *scoring_attempts,
+                {
+                    **previous_scoring,
+                    "attempt": previous.attempt,
+                    "terminal_state": "FAILED",
+                    "failure_code": run.failure_code,
+                    "failure_summary": run.failure_summary,
+                },
+            ]
     run.status = "RUNNING"
     run.failure_code = None
     run.failure_summary = None
     run.failure_retriable = False
     run.completed_at = None
-    run.progress_summary = {**run.progress_summary, "last_retry_key": key}
+    run.progress_summary = progress
     resolve_source_notifications(
         db,
         source=NotificationSource("review_program_run", run.id),
