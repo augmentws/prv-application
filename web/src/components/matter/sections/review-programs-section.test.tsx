@@ -1208,7 +1208,10 @@ describe("ReviewProgramsSection", () => {
       if (path === "/v1/review-workflow-templates") return [{
         key: "FIRST_PASS_REVIEW", version: 1, schema_version: 1, content_hash: "a".repeat(64),
         name: "First Pass Review", description: "Guided review", workflow_type: "FIRST_PASS_REVIEW", phases: [],
-        stages: [{ key: "WHOLE_COLLECTION_SCORING", name: "Whole-collection scoring", phase_key: "COLLECTION_REVIEW", ordinal: 14, batching_policy: "WHOLE_MATTER", requires_human_gate: true }],
+        stages: [
+          { key: "CLASSIFIER_IMPROVEMENT", name: "Classifier improvement", phase_key: "CLASSIFIER", ordinal: 13, batching_policy: "PARTITIONED_SET", requires_human_gate: true },
+          { key: "WHOLE_COLLECTION_SCORING", name: "Whole-collection scoring", phase_key: "COLLECTION_REVIEW", ordinal: 14, batching_policy: "WHOLE_MATTER", requires_human_gate: true },
+        ],
       }] as never;
       if (path === "/v1/matters/matter-1/review-programs") return [{
         id: "program-1", tenant_id: "tenant-1", matter_id: "matter-1", template_key: "FIRST_PASS_REVIEW",
@@ -1242,6 +1245,10 @@ describe("ReviewProgramsSection", () => {
     expect(screen.getByText("Responsive")).toBeInTheDocument();
     expect(screen.getByText("Accepted version · Acceptable")).toBeInTheDocument();
     expect(screen.getByText("Calculated at launch")).toBeInTheDocument();
+    expect(screen.getByText("Skipped")).toBeInTheDocument();
+    expect(screen.getByText("Not requested; the accepted classifiers continue directly to whole-collection scoring.")).toBeInTheDocument();
+    expect(screen.getByText("Waiting for your decision")).toBeInTheDocument();
+    expect(screen.getByText(/Scoring has not started/)).toBeInTheDocument();
     await userEvent.click(screen.getByRole("button", { name: "Score the collection" }));
 
     await waitFor(() => expect(coreApi).toHaveBeenCalledWith(

@@ -959,6 +959,10 @@ The improvement loop ends when:
 - the configured round or resource limit is reached and the user accepts the remaining limitations; or
 - the user stops the program.
 
+When the user accepts the classifier as-is, the program records `CLASSIFIER_IMPROVEMENT` as **Skipped — not
+requested** and advances directly to whole-collection scoring. A bypassed optional stage must not remain labeled
+Upcoming.
+
 ## 15. Phase 8 Classifier acceptance and whole-collection scoring
 
 ### 15.1 Acceptance
@@ -985,9 +989,13 @@ Prompt the user with:
 - whether results will remain isolated; and
 - the later Q&A verification commitment for classifier positives.
 
-On approval, launch a whole-matter Classification Analysis Task or scoring run. The run freezes one Analysis Input
-Manifest and exact model version. Predictions remain in the immutable scoring artifact and do not update matter
-coding automatically.
+On approval, immediately commit the scoring decision and show **Preparing scoring inputs**. A durable Review Program
+preparation workflow then freezes the whole-matter dataset and feature inputs and creates the linked classifier
+scoring jobs. The API request must not synchronously materialize the matter snapshot. Once the jobs exist, show their
+per-classifier state and aggregate completion instead of a generic waiting state.
+
+Each scoring run freezes one Analysis Input Manifest and exact model version. Predictions remain in the immutable
+scoring artifact and do not update matter coding automatically.
 
 ## 16. Phase 9 Classifier and existing Q&A comparison
 

@@ -2252,6 +2252,9 @@ def test_synthetic_run_advances_waits_resumes_retries_reconciles_and_cancels(
     assert accepted_classifiers.status_code == 200, accepted_classifiers.text
     assert accepted_classifiers.json()["current_stage"] == "WHOLE_COLLECTION_SCORING"
     assert len(accepted_classifiers.json()["progress_summary"]["accepted_classifiers"]["approvals"]) == 1
+    skipped_stages = accepted_classifiers.json()["progress_summary"]["skipped_stages"]
+    assert skipped_stages[-1]["stage_key"] == "CLASSIFIER_IMPROVEMENT"
+    assert skipped_stages[-1]["reason_code"] == "CLASSIFIERS_ACCEPTED_AS_IS"
     scoring_action = next(action for action in accepted_classifiers.json()["actions"] if action["status"] == "OPEN")
     assert scoring_action["action_type"] == "WHOLE_COLLECTION_SCORING"
     assert [choice["key"] for choice in scoring_action["allowed_choices"]] == [
@@ -2260,6 +2263,20 @@ def test_synthetic_run_advances_waits_resumes_retries_reconciles_and_cancels(
     ]
     assert scoring_action["decision_context"]["scoring_plan"]["model_count"] == 1
     assert scoring_action["decision_context"]["scoring_plan"]["models"][0]["field_name"] == ("Responsive")
+
+    started_scoring = client.post(
+        f"{runs_url}/{run_id}/actions/{scoring_action['id']}/resolve",
+        headers=auth(token),
+        json={
+            "preview_hash": scoring_action["preview_hash"],
+            "choice_key": "START_SCORING",
+        },
+    )
+    assert started_scoring.status_code == 200, started_scoring.text
+    assert started_scoring.json()["status"] == "RUNNING"
+    scoring_progress = started_scoring.json()["progress_summary"]["whole_collection_scoring"]
+    assert scoring_progress["state"] == "PREPARING_INPUTS"
+    assert scoring_progress["status_detail"] == "Preparing immutable whole-matter scoring inputs."
 
     canceled = client.post(
         f"{runs_url}/{run_id}/cancel",

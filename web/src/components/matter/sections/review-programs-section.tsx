@@ -261,6 +261,12 @@ function ProgramWorkspace({ clientId, matterId, program, run, stages, canManage,
 }) {
   const openAction = run?.actions?.find((action) => action.status === "OPEN") ?? null;
   const attemptsByStage = useMemo(() => new Map(run?.stage_attempts?.map((attempt) => [attempt.stage_key, attempt]) ?? []), [run?.stage_attempts]);
+  const skippedStageKeys = useMemo(() => new Set(
+    (Array.isArray(run?.progress_summary?.skipped_stages) ? run.progress_summary.skipped_stages : [])
+      .filter((item): item is Record<string, unknown> => Boolean(item && typeof item === "object" && !Array.isArray(item)))
+      .map((item) => String(item.stage_key ?? ""))
+      .filter(Boolean),
+  ), [run?.progress_summary?.skipped_stages]);
   const definitionAssessmentRound = Number(run?.progress_summary?.definition_assessment_round ?? 1);
   const isDefinitionReassessment = run?.current_stage === "DEFINITION_ASSESSMENT" && definitionAssessmentRound > 1;
   const definitionAssessmentAttempts = run?.stage_attempts?.filter((attempt) => attempt.stage_key === "DEFINITION_ASSESSMENT") ?? [];
@@ -304,13 +310,44 @@ function ProgramWorkspace({ clientId, matterId, program, run, stages, canManage,
         : attemptsByStage.get(stage.key);
       const containsCurrentReassessment = isDefinitionReassessment && stage.key === "DEFINITION_REFINEMENT";
       const isCurrent = (stage.key === run.current_stage && !isDefinitionReassessment) || containsCurrentReassessment;
-      const upcoming = isDefinitionReassessment ? stage.ordinal > 3 : stage.ordinal > run.current_stage_ordinal;
+      const skipped = skippedStageKeys.has(stage.key)
+        || (!attempt && !isDefinitionReassessment && stage.ordinal < run.current_stage_ordinal);
+      const upcoming = !skipped && (isDefinitionReassessment ? stage.ordinal > 3 : stage.ordinal > run.current_stage_ordinal);
       const isRunning = attempt?.status === "RUNNING" || (isCurrent && run.status === "RUNNING");
       const showsRunFailure = isCurrent && run.status === "FAILED";
       const canRetryFailure = run.failure_retriable || stage.key === "CLASSIFIER_TRAINING";
       const showsDiscoveryTask = isCurrent && stage.key === "DISCOVERY_QA" && Boolean(run.progress_summary?.discovery_qa);
-      return <li key={stage.key} className={cn("flex items-start gap-3 rounded-lg border p-3", isCurrent && "border-primary/50 bg-primary/5", upcoming && "opacity-55", (isRunning || showsDiscoveryTask || showsRunFailure) && "sm:col-span-2")}><span className="grid size-7 shrink-0 place-items-center rounded-full bg-muted text-xs font-semibold">{stage.ordinal}</span><div className="min-w-0 flex-1"><div className="flex items-start justify-between gap-2"><p className="text-sm font-medium">{stage.name}</p><ProgramStageTooltip stage={stage} /></div><div className="mt-1 flex flex-wrap gap-1">{attempt ? <StatusBadge status={attempt.status} /> : <Badge variant="outline">Upcoming</Badge>}<Badge variant="outline">{friendly(stage.batching_policy)}</Badge>{stage.requires_human_gate ? <Badge variant="outline">Decision</Badge> : null}</div>{showsRunFailure ? <div className="mt-3 rounded-lg border border-destructive/30 bg-destructive/5 p-3"><p className="text-sm font-medium text-destructive">{stage.name} failed</p><p className="mt-1 text-sm text-destructive">{attempt?.error_summary || run.failure_summary || "This stage could not be completed."}</p>{stage.key === "CLASSIFIER_TRAINING" && !run.failure_retriable ? <p className="mt-2 text-xs text-muted-foreground">After correcting the reported cause, retry starts a new classifier-training attempt with the same frozen labels and configuration. It does not replace the program run.</p> : null}{canManage && canRetryFailure ? <div className="mt-3"><Button size="sm" disabled={busy} onClick={() => onCommand("retry")}><RotateCcw />Retry {stage.name}</Button></div> : null}</div> : null}{showsDiscoveryTask ? <DiscoveryQAProgress clientId={clientId} matterId={matterId} run={run} canManage={canManage} busy={busy} onCancel={onCancelDiscovery} onReset={onResetDiscovery} /> : null}{containsCurrentReassessment ? <div className="mt-2 flex items-center justify-between gap-2 rounded-md border border-primary/30 bg-background/80 px-2 py-1.5"><span className="text-xs font-medium">Reassessment · Round {definitionAssessmentRound}</span><StatusBadge status={currentDefinitionAssessmentAttempt?.status ?? run.status} /></div> : null}</div></li>;
+      const showsWholeCollectionScoring = isCurrent && stage.key === "WHOLE_COLLECTION_SCORING";
+      return <li key={stage.key} className={cn("flex items-start gap-3 rounded-lg border p-3", isCurrent && "border-primary/50 bg-primary/5", upcoming && "opacity-55", (isRunning || showsDiscoveryTask || showsWholeCollectionScoring || showsRunFailure) && "sm:col-span-2")}><span className="grid size-7 shrink-0 place-items-center rounded-full bg-muted text-xs font-semibold">{stage.ordinal}</span><div className="min-w-0 flex-1"><div className="flex items-start justify-between gap-2"><p className="text-sm font-medium">{stage.name}</p><ProgramStageTooltip stage={stage} /></div><div className="mt-1 flex flex-wrap gap-1">{attempt ? <StatusBadge status={attempt.status} /> : skipped ? <Badge variant="outline">Skipped</Badge> : <Badge variant="outline">Upcoming</Badge>}<Badge variant="outline">{friendly(stage.batching_policy)}</Badge>{stage.requires_human_gate && !skipped ? <Badge variant="outline">Decision</Badge> : null}</div>{skipped ? <p className="mt-2 text-xs text-muted-foreground">Not requested; the accepted classifiers continue directly to whole-collection scoring.</p> : null}{showsRunFailure ? <div className="mt-3 rounded-lg border border-destructive/30 bg-destructive/5 p-3"><p className="text-sm font-medium text-destructive">{stage.name} failed</p><p className="mt-1 text-sm text-destructive">{attempt?.error_summary || run.failure_summary || "This stage could not be completed."}</p>{stage.key === "CLASSIFIER_TRAINING" && !run.failure_retriable ? <p className="mt-2 text-xs text-muted-foreground">After correcting the reported cause, retry starts a new classifier-training attempt with the same frozen labels and configuration. It does not replace the program run.</p> : null}{canManage && canRetryFailure ? <div className="mt-3"><Button size="sm" disabled={busy} onClick={() => onCommand("retry")}><RotateCcw />Retry {stage.name}</Button></div> : null}</div> : null}{showsDiscoveryTask ? <DiscoveryQAProgress clientId={clientId} matterId={matterId} run={run} canManage={canManage} busy={busy} onCancel={onCancelDiscovery} onReset={onResetDiscovery} /> : null}{showsWholeCollectionScoring ? <WholeCollectionScoringProgress run={run} openAction={openAction} /> : null}{containsCurrentReassessment ? <div className="mt-2 flex items-center justify-between gap-2 rounded-md border border-primary/30 bg-background/80 px-2 py-1.5"><span className="text-xs font-medium">Reassessment · Round {definitionAssessmentRound}</span><StatusBadge status={currentDefinitionAssessmentAttempt?.status ?? run.status} /></div> : null}</div></li>;
     })}</ol></CardContent></Card> : null}
+  </div>;
+}
+
+function WholeCollectionScoringProgress({ run, openAction }: { run: ReviewProgramRunRead; openAction: ReviewProgramActionRead | null }) {
+  const raw = run.progress_summary?.whole_collection_scoring;
+  const scoring = raw && typeof raw === "object" && !Array.isArray(raw) ? raw as Record<string, unknown> : {};
+  const state = typeof scoring.state === "string" ? scoring.state : "";
+  const models = Array.isArray(scoring.models)
+    ? scoring.models.filter((item): item is Record<string, unknown> => Boolean(item && typeof item === "object" && !Array.isArray(item)))
+    : [];
+  const preparing = state === "PREPARING_INPUTS";
+  const waitingForDecision = !state && openAction?.action_type === "WHOLE_COLLECTION_SCORING";
+  const title = preparing ? "Preparing scoring inputs"
+    : waitingForDecision ? "Waiting for your decision"
+    : state === "RUNNING" ? "Scoring the whole collection"
+    : friendly(state || run.status);
+  const detail = preparing
+    ? String(scoring.status_detail ?? "The durable worker is freezing whole-matter inputs before the classifier jobs are created.")
+    : waitingForDecision
+      ? "Scoring has not started. Choose Score the collection above to create the whole-matter scoring jobs."
+      : state === "RUNNING"
+        ? `${models.filter((model) => ["COMPLETED", "COMPLETED_WITH_ERRORS"].includes(String(model.status))).length} of ${models.length} classifier jobs complete.`
+        : "The program is checking the linked classifier scoring jobs.";
+  return <div className="mt-3 border-t pt-3">
+    <p className="text-xs text-muted-foreground">Status</p>
+    <p className="font-medium">{title}</p>
+    <p className="mt-1 text-xs text-muted-foreground">{detail}</p>
+    {models.length ? <div className="mt-2 flex flex-wrap gap-2">{models.map((model, index) => <span key={String(model.classification_model_id ?? index)} className="inline-flex items-center gap-1.5 rounded-md border px-2 py-1 text-xs"><span>{String(model.field_name ?? model.field_key ?? `Classifier ${index + 1}`)}</span><StatusBadge status={String(model.status ?? (preparing ? "PREPARING_INPUTS" : "QUEUED"))} /></span>)}</div> : null}
   </div>;
 }
 

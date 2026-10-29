@@ -176,6 +176,7 @@ from app.workflows.dispatcher import (
     enqueue_classification_model_scoring,
     enqueue_classification_training_job,
     enqueue_review_batch,
+    enqueue_review_program_scoring_preparation,
 )
 from artifact_service.schemas import WorkflowArtifactLineageInput
 from artifact_service.workflow_artifact_types import ArtifactType
@@ -5595,6 +5596,20 @@ def _accept_trained_classifiers(
         "completed_stages": completed,
         "last_completed_stage": "CLASSIFIER_REVIEW",
         "accepted_classifiers": accepted,
+        "skipped_stages": [
+            *[
+                item
+                for item in run.progress_summary.get("skipped_stages", [])
+                if not isinstance(item, dict) or item.get("stage_key") != "CLASSIFIER_IMPROVEMENT"
+            ],
+            {
+                "stage_key": "CLASSIFIER_IMPROVEMENT",
+                "reason_code": "CLASSIFIERS_ACCEPTED_AS_IS",
+                "reason": "Classifier improvement was not requested.",
+                "skipped_by_user_id": str(actor_user_id),
+                "skipped_at": action.resolved_at.isoformat() if action.resolved_at else None,
+            },
+        ],
     }
     _activate_stage_by_key(
         db,
@@ -5663,6 +5678,64 @@ def _prepare_whole_collection_scoring_snapshot(
 
 
 def _launch_whole_collection_scoring(
+    db: Session,
+    *,
+    program: ReviewProgram,
+    run: ReviewProgramRun,
+    attempt: ReviewProgramStageAttempt,
+    action: ReviewProgramAction,
+) -> None:
+    accepted = dict((run.progress_summary or {}).get("accepted_classifiers") or {})
+    classifier_results = dict((run.progress_summary or {}).get("classifier_results") or {})
+    approvals = [item for item in accepted.get("approvals", []) if isinstance(item, dict)]
+    result_models = {
+        str(item.get("classification_model_id")): item
+        for item in classifier_results.get("models", [])
+        if isinstance(item, dict) and item.get("classification_model_id")
+    }
+    if not approvals or len(approvals) != len(result_models):
+        raise ReviewProgramError("Accepted classifier provenance is incomplete")
+    preparation_workflow_id = f"review-program-scoring-preparation:{run.id}:{attempt.id}"
+    scoring_snapshot = {
+        "schema_version": 1,
+        "state": "PREPARING_INPUTS",
+        "scope_type": "MATTER",
+        "stage_attempt_id": str(attempt.id),
+        "preparation_workflow_id": preparation_workflow_id,
+        "status_detail": "Preparing immutable whole-matter scoring inputs.",
+        "models": [
+            {
+                "classification_model_id": str(item.get("classification_model_id")),
+                "model_version_id": str(item.get("model_version_id")),
+                "field_key": result_models.get(str(item.get("classification_model_id")), {}).get("field_key"),
+                "field_name": result_models.get(str(item.get("classification_model_id")), {}).get("field_name"),
+                "status": "PREPARING_INPUTS",
+            }
+            for item in approvals
+        ],
+    }
+    attempt.status = "RUNNING"
+    attempt.started_at = attempt.started_at or utcnow()
+    attempt.result_summary = {
+        **attempt.result_summary,
+        "gate_choice": "START_SCORING",
+        "action_id": str(action.id),
+        "preparation_workflow_id": preparation_workflow_id,
+    }
+    run.status = "RUNNING"
+    run.progress_summary = {
+        **run.progress_summary,
+        "whole_collection_scoring": scoring_snapshot,
+    }
+    enqueue_review_program_scoring_preparation(
+        db,
+        preparation_workflow_id,
+        str(run.id),
+        str(attempt.id),
+    )
+
+
+def _materialize_whole_collection_scoring(
     db: Session,
     *,
     program: ReviewProgram,
@@ -5857,6 +5930,86 @@ def _launch_whole_collection_scoring(
             workflow=workflow,
             review_program_run_id=run.id,
         )
+
+
+def prepare_review_program_whole_collection_scoring(
+    review_program_run_id: uuid.UUID,
+    stage_attempt_id: uuid.UUID,
+) -> None:
+    """Materialize scoring inputs after the user's launch transaction has committed."""
+
+    from app.database import SessionLocal
+
+    with SessionLocal() as db:
+        run = db.scalar(
+            select(ReviewProgramRun)
+            .where(ReviewProgramRun.id == review_program_run_id)
+            .with_for_update()
+        )
+        attempt = db.scalar(
+            select(ReviewProgramStageAttempt)
+            .where(ReviewProgramStageAttempt.id == stage_attempt_id)
+            .with_for_update()
+        )
+        if run is None or attempt is None or attempt.run_id != run.id:
+            raise ReviewProgramError("Whole-collection scoring preparation target is unavailable")
+        scoring = dict((run.progress_summary or {}).get("whole_collection_scoring") or {})
+        if scoring.get("state") != "PREPARING_INPUTS":
+            return
+        if (
+            run.status != "RUNNING"
+            or run.current_stage != "WHOLE_COLLECTION_SCORING"
+            or attempt.status != "RUNNING"
+        ):
+            raise ReviewProgramError("Whole-collection scoring preparation is no longer active")
+        program = db.get(ReviewProgram, run.program_id)
+        action_id = attempt.result_summary.get("action_id")
+        try:
+            action = db.get(ReviewProgramAction, uuid.UUID(str(action_id))) if action_id else None
+        except ValueError:
+            action = None
+        if program is None or action is None or action.status != "RESOLVED":
+            raise ReviewProgramError("Whole-collection scoring launch provenance is unavailable")
+        _materialize_whole_collection_scoring(
+            db,
+            program=program,
+            run=run,
+            attempt=attempt,
+            action=action,
+        )
+        db.commit()
+
+
+def fail_review_program_whole_collection_scoring_preparation(
+    review_program_run_id: uuid.UUID,
+    stage_attempt_id: uuid.UUID,
+    error_summary: str,
+) -> None:
+    from app.database import SessionLocal
+
+    with SessionLocal() as db:
+        run = db.get(ReviewProgramRun, review_program_run_id)
+        attempt = db.get(ReviewProgramStageAttempt, stage_attempt_id)
+        program = db.get(ReviewProgram, run.program_id) if run is not None else None
+        if (
+            run is None
+            or attempt is None
+            or program is None
+            or attempt.run_id != run.id
+            or run.status != "RUNNING"
+            or run.current_stage != "WHOLE_COLLECTION_SCORING"
+            or attempt.status != "RUNNING"
+        ):
+            return
+        fail_review_program_stage(
+            db,
+            program=program,
+            run=run,
+            error_code="WHOLE_COLLECTION_SCORING_PREPARATION_FAILED",
+            error_summary=error_summary[:4000],
+            retriable=True,
+        )
+        db.commit()
 
 
 _QA_COVERAGE_PROFILE_PURPOSES = {
