@@ -5002,6 +5002,7 @@ class ReviewProgramRunStart(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     idempotency_key: str = Field(min_length=1, max_length=500)
+    confirm_replace_unfinished_run: bool = False
 
 
 class ReviewProgramRunCommand(BaseModel):

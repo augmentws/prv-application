@@ -39,6 +39,11 @@ export function matterHref(clientId: string, matterId: string, section: MatterSe
   return `/app/clients/${clientId}/matters/${matterId}${SECTION_PATHS[section]}${query ? `?${query}` : ""}`;
 }
 
+/** One classification model's detail workspace. */
+export function classificationModelHref(clientId: string, matterId: string, modelId: string) {
+  return `/app/clients/${clientId}/matters/${matterId}/classification-models/${modelId}`;
+}
+
 export type MatterJobType = "BULK_TAGGING" | "DOCUMENT_EMBEDDINGS" | "TOPIC_CLUSTERING" | "DOCUMENT_IMPORTS" | "QUESTION_ANSWERING" | "CLASSIFICATION_ANALYSIS" | "SEARCH_EXPORTS";
 
 /** Every job type, in menu order, with its route slug. */

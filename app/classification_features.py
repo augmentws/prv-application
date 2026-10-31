@@ -6,6 +6,7 @@ import tempfile
 import uuid
 from collections import Counter, defaultdict
 from collections.abc import Callable, Iterable, Iterator
+from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from typing import Any, BinaryIO
@@ -28,6 +29,7 @@ from app.artifact_gateway import (
 )
 from app.audit import record_audit
 from app.classification_datasets import ClassificationDatasetConflictError
+from app.config import get_settings
 from app.models import (
     AnalysisInputManifest,
     ClassificationDatasetSnapshot,
@@ -362,56 +364,57 @@ def _iter_feature_row_batches(
             tenant_id=snapshot.tenant_id,
             client_id=client_id,
         )
-        for source, collection_item_id in zip(sources, item_ids, strict=True):
+        def build_row(
+            values: tuple[dict[str, Any], uuid.UUID],
+            batch_artifacts: dict[uuid.UUID, ChunkVectorArtifactSnapshot] = artifacts,
+        ) -> FeatureRow:
+            source, collection_item_id = values
             document_id = uuid.UUID(source["matter_document_id"])
             try:
-                artifact = artifacts.get(collection_item_id)
+                artifact = batch_artifacts.get(collection_item_id)
                 if artifact is None:
-                    rows.append(
-                        FeatureRow(
-                            document_id,
-                            collection_item_id,
-                            source["scope_ordinal"],
-                            "MISSING",
-                            "CHUNK_VECTOR_SET_NOT_FOUND",
-                            None,
-                            None,
-                            0,
-                            None,
-                        )
-                    )
-                    status_counts["MISSING"] += 1
-                    continue
-                vector, chunk_count = _pool_vector_artifact(artifact, job=job, contract=contract)
-                rows.append(
-                    FeatureRow(
+                    return FeatureRow(
                         document_id,
                         collection_item_id,
                         source["scope_ordinal"],
-                        "READY",
-                        None,
-                        artifact.artifact_id,
-                        artifact.content_hash,
-                        chunk_count,
-                        vector,
-                    )
-                )
-                status_counts["READY"] += 1
-            except Exception:  # noqa: BLE001 - row-level failures are data, not job crashes
-                rows.append(
-                    FeatureRow(
-                        document_id,
-                        collection_item_id,
-                        source["scope_ordinal"],
-                        "FAILED",
-                        "CHUNK_VECTOR_SET_INVALID",
+                        "MISSING",
+                        "CHUNK_VECTOR_SET_NOT_FOUND",
                         None,
                         None,
                         0,
                         None,
                     )
+                vector, chunk_count = _pool_vector_artifact(artifact, job=job, contract=contract)
+                return FeatureRow(
+                    document_id,
+                    collection_item_id,
+                    source["scope_ordinal"],
+                    "READY",
+                    None,
+                    artifact.artifact_id,
+                    artifact.content_hash,
+                    chunk_count,
+                    vector,
                 )
-                status_counts["FAILED"] += 1
+            except Exception:  # noqa: BLE001 - row-level failures are data, not job crashes
+                return FeatureRow(
+                    document_id,
+                    collection_item_id,
+                    source["scope_ordinal"],
+                    "FAILED",
+                    "CHUNK_VECTOR_SET_INVALID",
+                    None,
+                    None,
+                    0,
+                    None,
+                )
+
+        with ThreadPoolExecutor(
+            max_workers=min(get_settings().classification_feature_load_concurrency, len(sources)),
+            thread_name_prefix="classification-feature-pool",
+        ) as executor:
+            rows = list(executor.map(build_row, zip(sources, item_ids, strict=True)))
+        status_counts.update(row.status for row in rows)
         processed += len(rows)
         yield (
             rows,

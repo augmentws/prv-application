@@ -2,6 +2,7 @@ import uuid
 from datetime import datetime, timezone
 
 from sqlalchemy import select
+from sqlalchemy.exc import OperationalError
 from sqlalchemy.orm import Session
 
 from app.audit import record_audit
@@ -721,6 +722,9 @@ def training_job_failure_details(exc: Exception) -> tuple[str, bool, str]:
                 return training_job_failure_details(nested)
     if isinstance(exc, ClassificationTrainingJobError):
         return exc.code, False, str(exc)
+    if isinstance(exc, OperationalError):
+        code = getattr(exc, "code", None)
+        return code if isinstance(code, str) and code else "DATABASE_OPERATION_FAILED", True, str(exc)
     code = getattr(exc, "code", None)
     if isinstance(code, str) and code:
         return code, False, str(exc)

@@ -282,6 +282,7 @@ def start_program_run(
             program=program,
             actor=principal.user,
             idempotency_key=payload.idempotency_key,
+            confirm_replace_unfinished_run=payload.confirm_replace_unfinished_run,
         )
         db.commit()
     except ReviewProgramError as exc:

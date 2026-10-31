@@ -12,4 +12,5 @@ export interface ReviewProgramRunStart {
      * @maxLength 500
      */
   idempotency_key: string;
+  confirm_replace_unfinished_run?: boolean;
 }

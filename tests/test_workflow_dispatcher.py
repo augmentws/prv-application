@@ -92,6 +92,35 @@ def test_classification_scoring_uses_transactional_versioned_workflow(monkeypatc
     dbos_client.enqueue_in_transaction.assert_called_once_with(db, options, "run-id")
 
 
+def test_review_program_scoring_preparation_uses_transactional_workflow(monkeypatch) -> None:
+    settings = SimpleNamespace(
+        dbos_enabled=True,
+        dbos_application_name="test-application",
+    )
+    dbos_client = Mock()
+    db = Mock()
+    monkeypatch.setattr(dispatcher, "get_settings", lambda: settings)
+    monkeypatch.setattr(dispatcher, "get_dbos_client", lambda: dbos_client)
+
+    dispatcher.enqueue_review_program_scoring_preparation(
+        db,
+        "review-program-scoring-preparation:run-id:attempt-id",
+        "run-id",
+        "attempt-id",
+    )
+
+    options = dbos_client.enqueue_in_transaction.call_args.args[1]
+    assert options["workflow_name"] == "review_program_scoring_preparation_v1"
+    assert options["queue_name"] == "review-program-orchestration"
+    assert options["workflow_id"] == "review-program-scoring-preparation:run-id:attempt-id"
+    dbos_client.enqueue_in_transaction.assert_called_once_with(
+        db,
+        options,
+        "run-id",
+        "attempt-id",
+    )
+
+
 def test_classification_projection_uses_transactional_versioned_workflow(monkeypatch) -> None:
     settings = SimpleNamespace(
         dbos_enabled=True,

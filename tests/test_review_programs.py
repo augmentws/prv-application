@@ -67,6 +67,8 @@ from app.review_programs import (
     _activate_stage_by_key,
     _alignment_status,
     _classifier_positive_class_keys,
+    _classifier_training_definition_ids,
+    _review_program_failure_allows_retry,
     _wilson_interval,
     cancel_review_program_discovery_children,
     link_review_program_child,
@@ -509,6 +511,64 @@ def test_classifier_positive_class_keys_respects_binary_positive_mapping() -> No
         _classifier_positive_class_keys(missing_mapping, ["responsive"])
 
 
+def test_classifier_training_definition_ids_use_frozen_target_selection() -> None:
+    responsiveness_id = uuid.uuid4()
+    privilege_id = uuid.uuid4()
+    issue_tag_id = uuid.uuid4()
+    run = SimpleNamespace(
+        progress_summary={
+            "accepted_qa_task": {
+                "destination_metadata_definition_ids": [
+                    str(responsiveness_id),
+                    str(privilege_id),
+                    str(issue_tag_id),
+                ]
+            }
+        }
+    )
+
+    assert _classifier_training_definition_ids(
+        run,
+        training_labels={"classifier_metadata_definition_ids": [str(issue_tag_id)]},
+    ) == [issue_tag_id]
+    assert _classifier_training_definition_ids(
+        run,
+        training_labels={"selected_metadata_definition_ids": [str(issue_tag_id)]},
+    ) == [issue_tag_id]
+    assert _classifier_training_definition_ids(
+        run,
+        training_labels={},
+    ) == [responsiveness_id, privilege_id, issue_tag_id]
+    with pytest.raises(ReviewProgramError, match="Select at least one coding field"):
+        _classifier_training_definition_ids(
+            run,
+            training_labels={},
+            require_selection=True,
+        )
+    with pytest.raises(ReviewProgramError, match="outside the published Q&A task"):
+        _classifier_training_definition_ids(
+            run,
+            training_labels={"classifier_metadata_definition_ids": [str(uuid.uuid4())]},
+        )
+
+
+def test_classifier_training_can_be_manually_retried_after_cause_is_corrected() -> None:
+    assert _review_program_failure_allows_retry(
+        SimpleNamespace(
+            status="FAILED",
+            current_stage="CLASSIFIER_TRAINING",
+            failure_retriable=False,
+        )
+    )
+    assert not _review_program_failure_allows_retry(
+        SimpleNamespace(
+            status="FAILED",
+            current_stage="FINAL_ALIGNMENT",
+            failure_retriable=False,
+        )
+    )
+
+
 def test_final_alignment_status_distinguishes_agreement_and_missing_coverage() -> None:
     responsive = {"responsive:true"}
     privilege = {"privilege:true"}
@@ -665,6 +725,61 @@ def test_completion_freezes_report_and_closes_run(
     assert report.json()["report"]["completion"]["publication_effect"] == "NONE"
 
 
+def test_starting_replacement_run_requires_confirmation_for_failed_current_run(
+    client: TestClient,
+    root_token: str,
+) -> None:
+    _, _, matter, token = review_program_workspace(client, root_token)
+    create_response = client.post(
+        f"/v1/matters/{matter['id']}/review-programs",
+        headers=auth(token),
+        json={"key": "replacement-guard", "name": "Replacement guard"},
+    )
+    assert create_response.status_code == 201, create_response.text
+    program_id = create_response.json()["id"]
+    runs_url = f"/v1/matters/{matter['id']}/review-programs/{program_id}/runs"
+    started = client.post(
+        runs_url,
+        headers=auth(token),
+        json={"idempotency_key": "original-run"},
+    )
+    assert started.status_code == 201, started.text
+
+    with TestingSessionLocal() as db:
+        run = db.get(ReviewProgramRun, uuid.UUID(started.json()["id"]))
+        assert run is not None
+        run.status = "FAILED"
+        run.failure_retriable = True
+        run.failure_summary = "Temporary infrastructure failure"
+        db.commit()
+
+    blocked = client.post(
+        runs_url,
+        headers=auth(token),
+        json={"idempotency_key": "replacement-run"},
+    )
+    assert blocked.status_code == 409, blocked.text
+    assert "unfinished failed run" in blocked.json()["error"]["message"]
+
+    replacement = client.post(
+        runs_url,
+        headers=auth(token),
+        json={
+            "idempotency_key": "replacement-run",
+            "confirm_replace_unfinished_run": True,
+        },
+    )
+    assert replacement.status_code == 201, replacement.text
+    assert replacement.json()["id"] != started.json()["id"]
+
+    with TestingSessionLocal() as db:
+        program = db.get(ReviewProgram, uuid.UUID(program_id))
+        original = db.get(ReviewProgramRun, uuid.UUID(started.json()["id"]))
+        assert program is not None and original is not None
+        assert program.current_run_id == uuid.UUID(replacement.json()["id"])
+        assert original.status == "FAILED"
+
+
 def test_synthetic_run_advances_waits_resumes_retries_reconciles_and_cancels(
     client: TestClient,
     root_token: str,
@@ -707,7 +822,10 @@ def test_synthetic_run_advances_waits_resumes_retries_reconciles_and_cancels(
     competing_start = client.post(
         runs_url,
         headers=auth(token),
-        json={"idempotency_key": "different-run"},
+        json={
+            "idempotency_key": "different-run",
+            "confirm_replace_unfinished_run": True,
+        },
     )
     assert competing_start.status_code == 409
 
@@ -1849,6 +1967,7 @@ def test_synthetic_run_advances_waits_resumes_retries_reconciles_and_cancels(
         json={
             "preview_hash": finalization_action["preview_hash"],
             "choice_key": "FINALIZE",
+            "input": {"classifier_metadata_definition_ids": [str(destination_id)]},
         },
     )
     assert finalized.status_code == 200, finalized.text
@@ -2080,6 +2199,7 @@ def test_synthetic_run_advances_waits_resumes_retries_reconciles_and_cancels(
         json={
             "preview_hash": second_finalization_action["preview_hash"],
             "choice_key": "FINALIZE",
+            "input": {"classifier_metadata_definition_ids": [str(destination_id)]},
         },
     )
     assert second_finalized.status_code == 200, second_finalized.text
@@ -2132,6 +2252,9 @@ def test_synthetic_run_advances_waits_resumes_retries_reconciles_and_cancels(
     assert accepted_classifiers.status_code == 200, accepted_classifiers.text
     assert accepted_classifiers.json()["current_stage"] == "WHOLE_COLLECTION_SCORING"
     assert len(accepted_classifiers.json()["progress_summary"]["accepted_classifiers"]["approvals"]) == 1
+    skipped_stages = accepted_classifiers.json()["progress_summary"]["skipped_stages"]
+    assert skipped_stages[-1]["stage_key"] == "CLASSIFIER_IMPROVEMENT"
+    assert skipped_stages[-1]["reason_code"] == "CLASSIFIERS_ACCEPTED_AS_IS"
     scoring_action = next(action for action in accepted_classifiers.json()["actions"] if action["status"] == "OPEN")
     assert scoring_action["action_type"] == "WHOLE_COLLECTION_SCORING"
     assert [choice["key"] for choice in scoring_action["allowed_choices"]] == [
@@ -2140,6 +2263,20 @@ def test_synthetic_run_advances_waits_resumes_retries_reconciles_and_cancels(
     ]
     assert scoring_action["decision_context"]["scoring_plan"]["model_count"] == 1
     assert scoring_action["decision_context"]["scoring_plan"]["models"][0]["field_name"] == ("Responsive")
+
+    started_scoring = client.post(
+        f"{runs_url}/{run_id}/actions/{scoring_action['id']}/resolve",
+        headers=auth(token),
+        json={
+            "preview_hash": scoring_action["preview_hash"],
+            "choice_key": "START_SCORING",
+        },
+    )
+    assert started_scoring.status_code == 200, started_scoring.text
+    assert started_scoring.json()["status"] == "RUNNING"
+    scoring_progress = started_scoring.json()["progress_summary"]["whole_collection_scoring"]
+    assert scoring_progress["state"] == "PREPARING_INPUTS"
+    assert scoring_progress["status_detail"] == "Preparing immutable whole-matter scoring inputs."
 
     canceled = client.post(
         f"{runs_url}/{run_id}/cancel",

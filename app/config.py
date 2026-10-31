@@ -27,6 +27,7 @@ class Settings(BaseSettings):
     classification_service_token: str = Field(min_length=16)
     classification_request_timeout_seconds: float = Field(default=120.0, gt=0, le=3600)
     classification_max_concurrency: int = Field(default=2, ge=1, le=64)
+    classification_feature_load_concurrency: int = Field(default=16, ge=1, le=64)
     classification_runtime_image_digest: str = Field(default="development-runtime", min_length=1, max_length=500)
     classification_source_revision: str = Field(default="development", min_length=1, max_length=255)
     classification_package_max_bytes: int = Field(
