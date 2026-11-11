@@ -14,7 +14,7 @@ import { subtabClass } from "@/components/matter/sections/subtabs";
 import { MATTER_JOB_TYPES, type MatterJobType, matterJobsHref } from "@/lib/matter-routes";
 
 /** One job type's page; the job types are links so each has its own URL and Back works between them. */
-export function JobsSection({ jobType, selectedJobId, batchSetId }: { jobType: MatterJobType; selectedJobId?: string; batchSetId?: string }) {
+export function JobsSection({ jobType, selectedJobId, batchSetId, reviewBatchId }: { jobType: MatterJobType; selectedJobId?: string; batchSetId?: string; reviewBatchId?: string }) {
   const { clientId, matterId } = useMatter();
 
   return <div className="space-y-6">
@@ -34,7 +34,7 @@ export function JobsSection({ jobType, selectedJobId, batchSetId }: { jobType: M
       : jobType === "DOCUMENT_EMBEDDINGS" ? <EmbeddingJobs />
       : jobType === "TOPIC_CLUSTERING" ? <TopicJobs />
       : jobType === "DOCUMENT_IMPORTS" ? <ImportJobs selectedJobId={selectedJobId} />
-      : jobType === "QUESTION_ANSWERING" ? <QuestionAnsweringJobs batchSetId={batchSetId} />
+      : jobType === "QUESTION_ANSWERING" ? <QuestionAnsweringJobs batchSetId={batchSetId} reviewBatchId={reviewBatchId} />
       : jobType === "CLASSIFICATION_ANALYSIS" ? <ClassificationAnalysisJobs selectedJobId={selectedJobId} />
       : <SearchExportJobs />}
   </div>;

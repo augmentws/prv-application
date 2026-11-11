@@ -164,7 +164,7 @@ def complete_review_batch_execution(
     if execution is None:
         return None
     total = execution.progress_total
-    return transition_job_execution(
+    workflow = transition_job_execution(
         db,
         job_type=REVIEW_BATCH_MATERIALIZATION_JOB_TYPE,
         job_id=batch_id,
@@ -181,6 +181,17 @@ def complete_review_batch_execution(
         failure_summary=search_error,
         failure_retriable=bool(search_error),
     )
+    if workflow.notification_policy == "PARENT_MANAGED":
+        from app.review_programs import project_review_program_classifier_positive_coverage_batch_terminal
+
+        batch = db.get(ReviewBatch, batch_id)
+        if batch is not None:
+            project_review_program_classifier_positive_coverage_batch_terminal(
+                db,
+                batch=batch,
+                workflow=workflow,
+            )
+    return workflow
 
 
 def fail_review_batch_execution(
@@ -191,7 +202,7 @@ def fail_review_batch_execution(
     execution = _active_execution(db, batch_id)
     if execution is None:
         return None
-    return transition_job_execution(
+    workflow = transition_job_execution(
         db,
         job_type=REVIEW_BATCH_MATERIALIZATION_JOB_TYPE,
         job_id=batch_id,
@@ -201,6 +212,17 @@ def fail_review_batch_execution(
         failure_summary=str(error),
         failure_retriable=True,
     )
+    if workflow.notification_policy == "PARENT_MANAGED":
+        from app.review_programs import project_review_program_classifier_positive_coverage_batch_terminal
+
+        batch = db.get(ReviewBatch, batch_id)
+        if batch is not None:
+            project_review_program_classifier_positive_coverage_batch_terminal(
+                db,
+                batch=batch,
+                workflow=workflow,
+            )
+    return workflow
 
 
 def _stable_key(document_id: uuid.UUID, seed: str) -> bytes:

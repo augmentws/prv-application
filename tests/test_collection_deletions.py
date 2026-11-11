@@ -6,6 +6,7 @@ from fastapi.testclient import TestClient
 from sqlalchemy import func, select
 
 from app.models import MatterDocument, MatterDocumentImportJob
+from app.workflows.collection_deletion import delete_search_projections
 from artifact_service.deletion import (
     complete_deletion,
     delete_blob_batch,
@@ -235,3 +236,53 @@ def test_collection_deletion_is_blocked_by_matter_documents_and_active_imports(
     blocked = client.delete(f"/v1/collections/{collection_id}", headers=auth(root_token))
     assert blocked.status_code == 409
     assert "matter document" in blocked.json()["error"]["message"]
+
+
+def test_collection_deletion_removes_stale_opensearch_projections(
+    client: TestClient,
+    root_token: str,
+    root_admin,
+    monkeypatch,
+) -> None:
+    tenant_id = create_client_tenant(client, root_token)
+    client_id, _ = setup_client_scope(client, root_token, tenant_id)
+    collection = client.post(
+        f"/v1/tenants/{tenant_id}/clients/{client_id}/collections",
+        headers=auth(root_token),
+        json={"name": "Stale search projection", "description": None},
+    )
+    assert collection.status_code == 201, collection.text
+    collection_id = collection.json()["id"]
+    deletion = client.delete(f"/v1/collections/{collection_id}", headers=auth(root_token))
+    assert deletion.status_code == 202, deletion.text
+
+    calls: list[tuple[str, dict]] = []
+
+    class FakeOpenSearchClient:
+        def __init__(self, _settings) -> None:
+            pass
+
+        def resolve_indices(self, pattern: str) -> list[str]:
+            assert "-matter-*-documents-v*" in pattern
+            return ["matter-one-v000001", "matter-two-v000003"]
+
+        def delete_by_query(self, index: str, query: dict) -> int:
+            calls.append((index, query))
+            return 1
+
+        def close(self) -> None:
+            pass
+
+    monkeypatch.setattr(
+        "app.workflows.collection_deletion.ArtifactSessionLocal",
+        ArtifactTestingSessionLocal,
+    )
+    monkeypatch.setattr(
+        "app.workflows.collection_deletion.OpenSearchClient",
+        FakeOpenSearchClient,
+    )
+    assert delete_search_projections(deletion.json()["id"]) == 2
+    assert calls == [
+        ("matter-one-v000001", {"term": {"source_collection_id": collection_id}}),
+        ("matter-two-v000003", {"term": {"source_collection_id": collection_id}}),
+    ]

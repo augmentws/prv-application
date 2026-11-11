@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import copy
 import json
 import math
 import random
@@ -9,6 +10,7 @@ import time
 from collections.abc import Awaitable, Callable, Mapping
 from contextlib import AbstractAsyncContextManager
 from datetime import UTC, datetime
+from functools import lru_cache
 from typing import Any, Protocol, cast
 
 from typesafe_sdk import (
@@ -36,6 +38,7 @@ from app.decision_engine import (
     ScoreDecisionAnswer,
 )
 from app.decision_specifications import ChoiceDecisionQuestion, NoulDecisionQuestion, ScoreDecisionQuestion
+from app.document_evidence import build_document_map_plan, segment_paragraphs
 from app.model_rate_limits import ProviderModelRateLimiter
 from app.openai_decision_engine import OpenAIDecisionsEngine
 
@@ -53,6 +56,9 @@ class _SystemOneClient(Protocol):
 
 
 ClientFactory = Callable[..., AbstractAsyncContextManager[_SystemOneClient]]
+
+_DOCUMENT_WINDOW_HEADROOM_CHARACTERS = 256
+_MINIMUM_DOCUMENT_WINDOW_CHARACTERS = 512
 
 
 def _default_client_factory(**kwargs: Any) -> AbstractAsyncContextManager[_SystemOneClient]:
@@ -171,9 +177,9 @@ def _provider_metadata(response: Any) -> dict[str, Any]:
     return metadata
 
 
-def _estimated_input_tokens(request: DecisionRequest, characters_per_token: float) -> int:
-    payload = {
-        "state": request.state,
+def _decision_payload(request: DecisionRequest, *, state: Any | None = None) -> dict[str, Any]:
+    return {
+        "state": request.state if state is None else state,
         "questions": {
             key: question.model_dump(
                 mode="json",
@@ -183,7 +189,214 @@ def _estimated_input_tokens(request: DecisionRequest, characters_per_token: floa
             for key, question in request.questions.items()
         },
     }
-    return max(1, math.ceil(len(json.dumps(payload, ensure_ascii=False, default=str)) / characters_per_token))
+
+
+def _payload_characters(request: DecisionRequest, *, state: Any | None = None) -> int:
+    return len(json.dumps(_decision_payload(request, state=state), ensure_ascii=False, default=str))
+
+
+@lru_cache(maxsize=16)
+def _token_encoding(model: str) -> Any:
+    import tiktoken
+
+    try:
+        return tiktoken.encoding_for_model(model)
+    except KeyError:
+        return tiktoken.get_encoding("o200k_base")
+
+
+def _payload_tokens(request: DecisionRequest, *, state: Any | None = None) -> int:
+    serialized = json.dumps(_decision_payload(request, state=state), ensure_ascii=False, default=str)
+    try:
+        return max(1, len(_token_encoding(request.model_key or "jev-latest").encode(serialized)))
+    except (ImportError, ValueError):
+        return max(1, math.ceil(len(serialized) / 3))
+
+
+def _estimated_input_tokens(
+    request: DecisionRequest,
+    characters_per_token: float,
+    *,
+    state: Any | None = None,
+) -> int:
+    return max(1, math.ceil(_payload_characters(request, state=state) / characters_per_token))
+
+
+def _document_text(state: Any) -> tuple[str, str] | None:
+    if not isinstance(state, dict) or not isinstance(state.get("document"), dict):
+        return None
+    document = state["document"]
+    paragraphs = document.get("paragraphs")
+    if isinstance(paragraphs, list):
+        texts = [item.get("text") for item in paragraphs if isinstance(item, dict)]
+        usable = [value for value in texts if isinstance(value, str) and value]
+        if usable:
+            return "paragraphs", "\n\n".join(usable)
+    text = document.get("text")
+    if isinstance(text, str) and text:
+        return "text", text
+    return None
+
+
+def _window_states(
+    request: DecisionRequest,
+    *,
+    target_characters: int,
+    target_tokens: int | None = None,
+    maximum_windows: int,
+) -> list[Any]:
+    source = _document_text(request.state)
+    if source is None:
+        return []
+    _, source_text = source
+    empty_state = copy.deepcopy(request.state)
+    empty_document = empty_state["document"]
+    # Some state contracts request both text and paragraphs. They are two representations of
+    # the same document, so leaving either full representation in the otherwise-empty state
+    # makes it look like fixed prompt overhead and can collapse the other representation into
+    # hundreds of tiny windows. Window every representation that is present together.
+    has_text = isinstance(empty_document.get("text"), str)
+    has_paragraphs = isinstance(empty_document.get("paragraphs"), list)
+    if has_text:
+        empty_document["text"] = ""
+    if has_paragraphs:
+        empty_document["paragraphs"] = []
+    fixed_characters = _payload_characters(request, state=empty_state)
+    representation_count = int(has_text) + int(has_paragraphs)
+    document_budget = max(
+        _MINIMUM_DOCUMENT_WINDOW_CHARACTERS,
+        (
+            target_characters
+            - fixed_characters
+            - _DOCUMENT_WINDOW_HEADROOM_CHARACTERS
+        )
+        // max(1, representation_count),
+    )
+    if target_tokens is not None and _payload_tokens(request, state=empty_state) >= target_tokens:
+        raise DecisionEngineProviderError(
+            "Jev request guidance and questions exceed the configured token target before document text is added",
+            provider="typesafe",
+            code="FIXED_REQUEST_TOKEN_LIMIT_EXCEEDED",
+            retryable=False,
+        )
+    paragraph_map = segment_paragraphs(source_text)
+    while True:
+        plan = build_document_map_plan(
+            paragraph_map,
+            max_characters=document_budget,
+            overlap_segments=1,
+        )
+        if len(plan.windows) > maximum_windows:
+            raise DecisionEngineProviderError(
+                f"Jev document requires {len(plan.windows)} windows, exceeding the configured maximum of {maximum_windows}",
+                provider="typesafe",
+                code="DOCUMENT_WINDOW_LIMIT_EXCEEDED",
+                retryable=False,
+            )
+        states: list[Any] = []
+        for window in plan.windows:
+            state = copy.deepcopy(request.state)
+            document = state["document"]
+            if has_paragraphs:
+                document["paragraphs"] = [
+                    {
+                        "paragraph_id": segment.paragraph_id,
+                        "text": segment.text,
+                        "part": segment.part,
+                        "part_count": segment.part_count,
+                        "char_start": segment.char_start,
+                        "char_end": segment.char_end,
+                    }
+                    for segment in window.segments
+                ]
+            if has_text:
+                document["text"] = window.text
+            states.append(state)
+        maximum_tokens = max((_payload_tokens(request, state=state) for state in states), default=0)
+        if target_tokens is None or maximum_tokens <= target_tokens:
+            return [] if len(states) <= 1 else states
+        if document_budget <= _MINIMUM_DOCUMENT_WINDOW_CHARACTERS:
+            raise DecisionEngineProviderError(
+                f"Jev document cannot fit the configured {target_tokens}-token request target",
+                provider="typesafe",
+                code="DOCUMENT_TOKEN_LIMIT_EXCEEDED",
+                retryable=False,
+            )
+        scaled_budget = int(document_budget * target_tokens / maximum_tokens * 0.9)
+        document_budget = max(
+            _MINIMUM_DOCUMENT_WINDOW_CHARACTERS,
+            min(document_budget - 1, scaled_budget),
+        )
+
+
+def _minimum_window_target_characters(request: DecisionRequest) -> int:
+    empty_state = copy.deepcopy(request.state)
+    document = empty_state.get("document") if isinstance(empty_state, dict) else None
+    if isinstance(document, dict):
+        has_text = isinstance(document.get("text"), str)
+        has_paragraphs = isinstance(document.get("paragraphs"), list)
+        if has_text:
+            document["text"] = ""
+        if has_paragraphs:
+            document["paragraphs"] = []
+    else:
+        has_text = False
+        has_paragraphs = False
+    return (
+        _payload_characters(request, state=empty_state)
+        + _DOCUMENT_WINDOW_HEADROOM_CHARACTERS
+        + _MINIMUM_DOCUMENT_WINDOW_CHARACTERS * max(1, int(has_text) + int(has_paragraphs))
+    )
+
+
+def _minimum_window_target_tokens(request: DecisionRequest) -> int:
+    empty_state = copy.deepcopy(request.state)
+    document = empty_state.get("document") if isinstance(empty_state, dict) else None
+    if isinstance(document, dict):
+        if isinstance(document.get("text"), str):
+            document["text"] = ""
+        if isinstance(document.get("paragraphs"), list):
+            document["paragraphs"] = []
+    return _payload_tokens(request, state=empty_state) + 256
+
+
+def _is_max_tokens_error(exc: DecisionEngineProviderError) -> bool:
+    return exc.code == "HTTP_400" and "max_tokens_exceeded" in str(exc).lower()
+
+
+def _aggregate_window_answers(
+    request: DecisionRequest,
+    envelopes: list[DecisionEnvelope],
+) -> dict[str, DecisionAnswer]:
+    combined: dict[str, DecisionAnswer] = {}
+    for key, question in request.questions.items():
+        answers = [envelope.answers[key] for envelope in envelopes]
+        operator = question.aggregation.operator
+        if isinstance(answers[0], NoulDecisionAnswer):
+            nouls = cast(list[NoulDecisionAnswer], answers)
+            value = (
+                min(answer.noul for answer in nouls)
+                if operator == "ALL_WINDOWS"
+                else max(answer.noul for answer in nouls)
+            )
+            combined[key] = NoulDecisionAnswer(type="noul", noul=value)
+        elif isinstance(answers[0], ChoiceDecisionAnswer):
+            choices = cast(list[ChoiceDecisionAnswer], answers)
+            if operator == "ALL_WINDOWS":
+                selected = min(choices, key=lambda answer: (answer.confidence, answer.probabilities[answer.choice]))
+            else:
+                selected = max(choices, key=lambda answer: (answer.confidence, answer.probabilities[answer.choice]))
+            combined[key] = selected
+        else:
+            scores = cast(list[ScoreDecisionAnswer], answers)
+            if operator == "ALL_WINDOWS":
+                selected_score = min(scores, key=lambda answer: (answer.score, answer.confidence))
+            elif operator == "HIGHEST_CONFIDENCE_CHOICE":
+                selected_score = max(scores, key=lambda answer: answer.confidence)
+            else:
+                selected_score = max(scores, key=lambda answer: (answer.score, answer.confidence))
+            combined[key] = selected_score
+    return combined
 
 
 class TypeSafeJevDecisionEngine:
@@ -223,16 +436,142 @@ class TypeSafeJevDecisionEngine:
                 code="NOT_CONFIGURED",
                 retryable=False,
             )
+        target_characters = self._settings.typesafe_request_target_characters
+        target_tokens = self._settings.typesafe_request_target_tokens
+        states = (
+            _window_states(
+                request,
+                target_characters=target_characters,
+                target_tokens=target_tokens,
+                maximum_windows=self._settings.typesafe_max_document_windows,
+            )
+            if (
+                _payload_characters(request) > target_characters
+                or _payload_tokens(request) > target_tokens
+            )
+            else []
+        )
+        if not states:
+            try:
+                return await self._evaluate_once(request)
+            except DecisionEngineProviderError as exc:
+                if not _is_max_tokens_error(exc):
+                    raise
+                target_characters = max(
+                    _minimum_window_target_characters(request),
+                    _payload_characters(request) // 2,
+                )
+                target_tokens = max(
+                    _minimum_window_target_tokens(request),
+                    _payload_tokens(request) // 2,
+                )
+                states = _window_states(
+                    request,
+                    target_characters=target_characters,
+                    target_tokens=target_tokens,
+                    maximum_windows=self._settings.typesafe_max_document_windows,
+                )
+                if not states:
+                    raise
+
+        started_at = self._now()
+        started_monotonic = self._monotonic()
+        envelopes: list[DecisionEnvelope] = []
+        for state in states:
+            envelopes.extend(
+                await self._evaluate_window_state(
+                    request,
+                    state=state,
+                    target_characters=target_characters,
+                    target_tokens=target_tokens,
+                )
+            )
+            if len(envelopes) > self._settings.typesafe_max_document_windows:
+                raise DecisionEngineProviderError(
+                    "Jev document refinement exceeded the configured document-window limit",
+                    provider=self.provider,
+                    code="DOCUMENT_WINDOW_LIMIT_EXCEEDED",
+                    retryable=False,
+                )
+
+        completed_at = self._now()
+        request_ids = [envelope.provider_request_id for envelope in envelopes if envelope.provider_request_id]
+        return DecisionEnvelope(
+            answers=_aggregate_window_answers(request, envelopes),
+            provider=self.provider,
+            model=envelopes[0].model,
+            provider_request_id=request_ids[-1] if request_ids else None,
+            usage=DecisionUsage(
+                request_count=sum(envelope.usage.request_count for envelope in envelopes),
+                input_tokens=sum(envelope.usage.input_tokens for envelope in envelopes),
+                output_tokens=sum(envelope.usage.output_tokens for envelope in envelopes),
+            ),
+            latency_ms=max(0, round((self._monotonic() - started_monotonic) * 1000)),
+            started_at=started_at,
+            completed_at=completed_at,
+            attempts=sum(envelope.attempts for envelope in envelopes),
+            provider_metadata={
+                "windowed": True,
+                "window_count": len(envelopes),
+                "document_window_target_characters": target_characters,
+                "document_window_target_tokens": target_tokens,
+                "provider_request_ids": request_ids,
+                "aggregation_version": "document-window-v1",
+            },
+        )
+
+    async def _evaluate_window_state(
+        self,
+        request: DecisionRequest,
+        *,
+        state: Any,
+        target_characters: int,
+        target_tokens: int,
+    ) -> list[DecisionEnvelope]:
+        window_request = request.model_copy(update={"state": state})
+        try:
+            return [await self._evaluate_once(window_request)]
+        except DecisionEngineProviderError as exc:
+            if not _is_max_tokens_error(exc):
+                raise
+            refined_target = max(
+                _minimum_window_target_characters(window_request),
+                target_characters // 2,
+            )
+            refined_target_tokens = max(
+                _minimum_window_target_tokens(window_request),
+                target_tokens // 2,
+            )
+            if refined_target >= target_characters and refined_target_tokens >= target_tokens:
+                raise
+            refined_states = _window_states(
+                window_request,
+                target_characters=refined_target,
+                target_tokens=refined_target_tokens,
+                maximum_windows=self._settings.typesafe_max_document_windows,
+            )
+            if not refined_states:
+                raise
+            envelopes: list[DecisionEnvelope] = []
+            for refined_state in refined_states:
+                envelopes.extend(
+                    await self._evaluate_window_state(
+                        request,
+                        state=refined_state,
+                        target_characters=refined_target,
+                        target_tokens=refined_target_tokens,
+                    )
+                )
+            return envelopes
+
+    async def _evaluate_once(self, request: DecisionRequest) -> DecisionEnvelope:
         model = request.model_key or self._settings.typesafe_default_model
         timeout = float(request.limits.get("timeout_seconds", self._settings.typesafe_timeout_seconds))
         timeout = min(max(timeout, 0.1), self._settings.typesafe_timeout_seconds)
         requested_retries = int(request.limits.get("max_retries", self._settings.typesafe_max_retries))
         max_retries = min(max(requested_retries, 0), self._settings.typesafe_max_retries)
         questions = {key: _question_payload(question) for key, question in request.questions.items()}
-        estimated_tokens = _estimated_input_tokens(
-            request,
-            self._settings.model_rate_limit_characters_per_token,
-        )
+        estimated_tokens = _payload_tokens(request)
         started_at = self._now()
         started_monotonic = self._monotonic()
         response: Any = None
@@ -362,6 +701,9 @@ def _shared_registry_key(settings: Settings) -> tuple[object, ...]:
         settings.typesafe_max_retries,
         settings.typesafe_retry_base_seconds,
         settings.typesafe_retry_max_seconds,
+        settings.typesafe_request_target_characters,
+        settings.typesafe_request_target_tokens,
+        settings.typesafe_max_document_windows,
         settings.openai_api_key,
         settings.openai_base_url,
         settings.openai_decisions_timeout_seconds,

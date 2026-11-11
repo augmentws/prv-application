@@ -23,6 +23,7 @@ from app.analysis_input_manifests import (
     prepare_analysis_input_manifest,
     publish_analysis_input_manifest,
 )
+from app.analysis_task_batch import queue_analysis_task_batch
 from app.analysis_task_batch_set_runs import (
     AnalysisTaskBatchSetRunError,
     cancel_batch_set_run,
@@ -88,6 +89,7 @@ from app.config import get_settings
 from app.document_metadata import event_value
 from app.embeddings.configuration import canonical_hash
 from app.job_executions import (
+    ANALYSIS_TASK_BATCH_RUN_JOB_TYPE,
     CLASSIFICATION_SCORING_RUN_JOB_TYPE,
     CLASSIFICATION_TRAINING_JOB_TYPE,
     REVIEW_BATCH_MATERIALIZATION_JOB_TYPE,
@@ -133,6 +135,7 @@ from app.models import (
     ReviewBatchReviewerCoding,
     ReviewBatchReviewerDocument,
     ReviewBatchRun,
+    ReviewBatchRunDocument,
     ReviewDecisionResult,
     ReviewProgram,
     ReviewProgramAction,
@@ -172,11 +175,13 @@ from app.schemas import (
 )
 from app.search.client import OpenSearchError
 from app.workflows.dispatcher import (
+    enqueue_analysis_task_batch,
     enqueue_analysis_task_batch_set,
     enqueue_analysis_task_batch_set_run,
     enqueue_classification_model_scoring,
     enqueue_classification_training_job,
     enqueue_review_batch,
+    enqueue_review_program_negative_qc_inventory,
     enqueue_review_program_scoring_preparation,
 )
 from artifact_service.schemas import WorkflowArtifactLineageInput
@@ -219,6 +224,13 @@ def _stage_for_run(program: ReviewProgram, run: ReviewProgramRun) -> ReviewWorkf
     if stage.key != run.current_stage or stage.ordinal != run.current_stage_ordinal:
         raise ReviewProgramError("Review Program run stage does not match its template")
     return stage
+
+
+def _effective_stage_batching_policy(stage: ReviewWorkflowStageSpec) -> BatchingPolicy:
+    """Return the corrected runtime policy for stages pinned by older templates."""
+    if stage.key in {"CLASSIFIER_POSITIVE_COVERAGE", "NO_CODE_QC"}:
+        return "AD_HOC_BATCH"
+    return stage.batching_policy
 
 
 def _current_stage_attempt(
@@ -659,16 +671,16 @@ def _action_contract(
         return (
             "Verify classifier-positive documents with both Q&A reviewers",
             (
-                "Build a frozen manifest of classifier-positive documents that do not already have successful, "
-                "current-content results from both pinned Q&A profiles, then run the existing task-specific "
-                "batch workflow over that population. Classifier predictions are not included in the Q&A prompt."
+                "Creates a batch of classifier-positive documents that have not been coded by either of the Q&A "
+                "models, then runs the Q&A tasks on the batch."
             ),
             [
                 {
                     "key": "RUN_COVERAGE",
                     "label": "Run dual-Q&A coverage",
                     "consequence": (
-                        "Freeze the uncovered classifier-positive population and run both pinned Q&A profiles."
+                        "Freeze the uncovered classifier-positive population and run only the missing pinned "
+                        "Q&A profile for each document."
                     ),
                 },
                 stop,
@@ -731,15 +743,14 @@ def _action_contract(
         return (
             "Configure Negative-population QC",
             (
-                "Review and adjust the random-audit, near-threshold, cohort-control, and mandatory-review sample "
-                "sizes. The selected documents will be frozen into one task-specific set and reviewed blindly by "
-                "both pinned Q&A profiles."
+                "Review the calculated no-code populations, choose which QC procedures are worth running, and "
+                "configure only the selected samples. Zero-count procedures cannot be launched."
             ),
             [
                 {
                     "key": "START_QC",
-                    "label": "Start Negative-population QC",
-                    "consequence": "Freeze the QC population and run both Q&A profiles.",
+                    "label": "Start selected QC procedures",
+                    "consequence": "Freeze the selected populations and their inventory provenance.",
                 },
                 stop,
             ],
@@ -1289,7 +1300,8 @@ def _classifier_positive_coverage_stage_context(*, run: ReviewProgramRun) -> dic
             "required_profile_count": len(profile_ids),
             "required_profile_ids": profile_ids,
             "maximum_candidate_model_document_count": int(aggregate.get("scored_document_count") or 0),
-            "batching_policy": "PARTITIONED_SET",
+            "default_minimum_confidence": 0.5,
+            "batching_policy": "AD_HOC_BATCH",
             "result_policy": "ISOLATED",
         },
     }
@@ -1307,6 +1319,9 @@ def _negative_population_qc_stage_context(
     )
     return {
         "final_alignment": dict((run.progress_summary or {}).get("final_alignment") or {}),
+        "negative_population_qc_inventory": dict(
+            (run.progress_summary or {}).get("negative_population_qc_inventory") or {}
+        ),
         "negative_population_qc": dict((run.progress_summary or {}).get("negative_population_qc") or {}),
         "defaults": policy,
     }
@@ -1483,7 +1498,7 @@ def _create_stage_attempt(
         input_snapshot={
             "schema_version": 1,
             "program_version_id": str(run.current_program_version_id),
-            "batching_policy": stage.batching_policy,
+            "batching_policy": _effective_stage_batching_policy(stage),
         },
         policy_hashes={
             "template_content_hash": template.content_hash,
@@ -1726,7 +1741,6 @@ def _starting_configuration(
             "near_threshold_sample_size": 100,
             "cohort_control_sample_size": 50,
             "mandatory_review_limit": 100,
-            "target_batch_size": 100,
             "keep_families_together": True,
         },
     }
@@ -2124,7 +2138,10 @@ def setup_review_program_qa_task(
             decision_provider="JEV",
             definition_markdown=revision.content_markdown,
             destination_metadata_definition_ids=destination_metadata_definition_ids,
-            scope_policy={"allowed_modes": ["PARTITIONED_SET"], "default_mode": "PARTITIONED_SET"},
+            scope_policy={
+                "allowed_modes": ["PARTITIONED_SET", "AD_HOC_BATCH"],
+                "default_mode": "PARTITIONED_SET",
+            },
         )
         task_version.source_provenance = {
             **task_version.source_provenance,
@@ -2501,6 +2518,7 @@ def _build_review_program_completion_report(
     final_alignment = dict(progress.get("final_alignment") or {})
     report = {
         "schema_version": 1,
+        "calculation_version": 2,
         "report_type": "FIRST_PASS_REVIEW_COMPLETION",
         "program": {
             "id": str(program.id),
@@ -3053,6 +3071,7 @@ def _accepted_qa_task_snapshot(
             {
                 "id": str(profile.id),
                 "key": profile.key,
+                "name": profile.name,
                 "decision_provider": profile.decision_provider,
                 "model_key": profile.model_key,
                 "resolved_model": profile.resolved_model,
@@ -4128,6 +4147,57 @@ def process_review_program_event(
                 attempt=attempt,
                 action=action,
             )
+        elif (
+            action.action_type == "CLASSIFIER_POSITIVE_COVERAGE_ERRORS"
+            and choice == "RETRY_FAILED_DOCUMENTS"
+        ):
+            _retry_classifier_positive_coverage_from_action(
+                db,
+                program=program,
+                run=run,
+                attempt=attempt,
+                action=action,
+            )
+        elif (
+            action.action_type == "CLASSIFIER_POSITIVE_COVERAGE_ERRORS"
+            and choice == "ACCEPT_UNRESOLVED_DOCUMENTS"
+        ):
+            progress = dict((run.progress_summary or {}).get("classifier_positive_coverage") or {})
+            progress.update(
+                {
+                    "accepted_unresolved_documents": True,
+                    "accepted_unresolved_document_count": int(
+                        progress.get("unresolved_document_count") or 0
+                    ),
+                    "accepted_unresolved_document_rate": float(
+                        progress.get("unresolved_document_rate") or 0.0
+                    ),
+                    "accepted_by_user_id": str(
+                        action.resolved_by_user_id or run.initiated_by_user_id
+                    ),
+                    "accepted_at": action.resolved_at.isoformat() if action.resolved_at else None,
+                    "state": "COMPLETED_WITH_ERRORS",
+                }
+            )
+            run.status = "RUNNING"
+            attempt.status = "RUNNING"
+            attempt.result_summary = {
+                **attempt.result_summary,
+                "gate_choice": choice,
+                "action_id": str(action.id),
+            }
+            run.progress_summary = {
+                **run.progress_summary,
+                "classifier_positive_coverage_state": "COMPLETED_WITH_ERRORS",
+                "classifier_positive_coverage": progress,
+            }
+            _finalize_classifier_positive_coverage(
+                db,
+                program=program,
+                run=run,
+                attempt=attempt,
+                progress=progress,
+            )
         elif action.stage_key == "NO_CODE_QC" and choice == "REVIEW_QC_FINDINGS":
             _start_negative_population_qc_findings_review(
                 db,
@@ -4580,6 +4650,11 @@ def project_review_program_discovery_batch_set_terminal(
                 configuration={
                     "max_concurrency": get_settings().qa_batch_concurrency,
                     "result_policy": "ISOLATED",
+                    "document_execution_policy": (
+                        {"mode": "REUSE_CURRENT_PROFILE_RESULTS"}
+                        if stage_key == "CLASSIFIER_POSITIVE_COVERAGE"
+                        else None
+                    ),
                 },
                 idempotency_key=(f"review-program:{run.id}:{idempotency_scope}:{attempt.attempt}:profile:{profile.id}"),
                 actor_user_id=run.initiated_by_user_id,
@@ -4821,6 +4896,23 @@ def _discovery_alignment_snapshot(
         for value in field["classes"]
         if value["support_status"] == "LOW_SUPPORT"
     ]
+    source_batch_set_ids = {
+        batch_id: left_parent.analysis_task_batch_set_id
+        for left_parent, _right_parent, _left_children, _right_children, batch_ids in paired_children
+        for batch_id in batch_ids
+    }
+    source_batches = {
+        batch.id: batch
+        for batch in db.scalars(
+            select(ReviewBatch).where(ReviewBatch.id.in_(list(source_batch_set_ids)))
+        )
+    }
+    profile_records = {
+        profile_id: profile
+        for profile_id in execution_metrics
+        if profile_id is not None
+        and (profile := db.get(AnalysisTaskExecutionProfile, profile_id)) is not None
+    }
     return {
         "schema_version": 1,
         "policy": {
@@ -4829,9 +4921,25 @@ def _discovery_alignment_snapshot(
             "minimum_negative_support": minimum_negative_support,
         },
         "profile_run_ids": [str(item.id) for item in profile_runs],
+        "source_batches": [
+            {
+                "id": str(batch_id),
+                "batch_set_id": str(source_batch_set_ids[batch_id]),
+                "name": source_batches[batch_id].name if batch_id in source_batches else "Discovery batch",
+                "document_count": source_batches[batch_id].document_count if batch_id in source_batches else None,
+            }
+            for batch_id in sorted(source_batch_set_ids, key=str)
+        ],
         "execution_profiles": [
             {
                 "execution_profile_id": str(profile_id),
+                "name": profile_records[profile_id].name if profile_id in profile_records else None,
+                "decision_provider": (
+                    profile_records[profile_id].decision_provider if profile_id in profile_records else None
+                ),
+                "resolved_model": (
+                    profile_records[profile_id].resolved_model if profile_id in profile_records else None
+                ),
                 "request_count": metrics["request_count"],
                 "input_tokens": metrics["input_tokens"],
                 "cached_input_tokens": metrics["cached_input_tokens"],
@@ -6114,6 +6222,41 @@ _QA_COVERAGE_PROFILE_PURPOSES = {
     "NEGATIVE_POPULATION_QC_QA_PROFILE",
 }
 
+_QA_USABLE_CODING_RESULT_STATUSES = ("COMPLETED", "PARTIAL")
+
+
+def _is_usable_qa_coding_result(result: ReviewDecisionResult) -> bool:
+    """Return whether a result contains a complete, reusable coding decision.
+
+    A PARTIAL analysis-task result can still contain every typed answer and all
+    materialized recommendations. In that case only conditional evidence
+    localization was incomplete, so rerunning the coding model would duplicate
+    an existing decision.
+    """
+
+    if result.status == "COMPLETED":
+        return True
+    return (
+        result.status == "PARTIAL"
+        and result.coverage.get("input_complete") is True
+        and result.coverage.get("question_complete") is True
+    )
+
+
+def _current_usable_qa_results(
+    document_results: dict[uuid.UUID, ReviewDecisionResult],
+    *,
+    expected_source_hash: str | None,
+) -> dict[uuid.UUID, ReviewDecisionResult]:
+    if expected_source_hash is None:
+        return {}
+    return {
+        profile_id: result
+        for profile_id, result in document_results.items()
+        if result.source_content_hash == expected_source_hash
+        and _is_usable_qa_coding_result(result)
+    }
+
 
 def _classifier_positive_class_keys(
     configuration: ClassificationModelConfiguration,
@@ -6216,25 +6359,24 @@ def _classifier_positive_documents(
     return positives, scoring_runs
 
 
-def _program_qa_results_by_profile(
+def _program_qa_result_run_profile_map(
     db: Session,
     *,
     run: ReviewProgramRun,
     task_version_id: uuid.UUID,
     profile_ids: set[uuid.UUID],
-    completed_only: bool = True,
-) -> dict[uuid.UUID, dict[uuid.UUID, ReviewDecisionResult]]:
+    purposes: set[str] | None = None,
+) -> dict[uuid.UUID, uuid.UUID]:
+    selected_purposes = purposes if purposes is not None else _QA_COVERAGE_PROFILE_PURPOSES
     linked_run_ids = list(
         db.scalars(
             select(ReviewProgramChild.child_id).where(
                 ReviewProgramChild.run_id == run.id,
-                ReviewProgramChild.purpose.in_(_QA_COVERAGE_PROFILE_PURPOSES),
+                ReviewProgramChild.purpose.in_(selected_purposes),
                 ReviewProgramChild.child_type == "ANALYSIS_TASK_BATCH_SET_RUN",
             )
         )
     )
-    if not linked_run_ids:
-        return {}
     profile_runs = list(
         db.scalars(
             select(AnalysisTaskBatchSetRun)
@@ -6246,7 +6388,7 @@ def _program_qa_results_by_profile(
             .order_by(AnalysisTaskBatchSetRun.created_at, AnalysisTaskBatchSetRun.id)
         )
     )
-    by_document: dict[uuid.UUID, dict[uuid.UUID, ReviewDecisionResult]] = {}
+    run_profile_map: dict[uuid.UUID, uuid.UUID] = {}
     for profile_run in profile_runs:
         if profile_run.execution_profile_id is None:
             continue
@@ -6258,17 +6400,75 @@ def _program_qa_results_by_profile(
                 )
             )
         )
-        if not label_run_ids:
-            continue
-        statement = select(ReviewDecisionResult).where(
-            ReviewDecisionResult.review_batch_run_id.in_(label_run_ids),
-            ReviewDecisionResult.matter_analysis_task_version_id == task_version_id,
+        run_profile_map.update(
+            {
+                label_run_id: profile_run.execution_profile_id
+                for label_run_id in label_run_ids
+                if label_run_id is not None
+            }
         )
-        if completed_only:
-            statement = statement.where(ReviewDecisionResult.status == "COMPLETED")
-        results = db.scalars(statement.order_by(ReviewDecisionResult.created_at, ReviewDecisionResult.id))
-        for result in results:
-            by_document.setdefault(result.matter_document_id, {})[profile_run.execution_profile_id] = result
+
+    direct_children = list(
+        db.scalars(
+            select(ReviewProgramChild)
+            .where(
+                ReviewProgramChild.run_id == run.id,
+                ReviewProgramChild.purpose.in_(selected_purposes),
+                ReviewProgramChild.child_type == "REVIEW_BATCH_RUN",
+            )
+            .order_by(ReviewProgramChild.created_at, ReviewProgramChild.id)
+        )
+    )
+    for child in direct_children:
+        review_run = db.get(ReviewBatchRun, child.child_id)
+        if review_run is None:
+            continue
+        snapshot = review_run.configuration_snapshot or {}
+        try:
+            direct_task_version_id = uuid.UUID(str(snapshot.get("task_version_id")))
+            profile_id = uuid.UUID(str(snapshot.get("execution_profile_id")))
+        except (TypeError, ValueError):
+            continue
+        if direct_task_version_id != task_version_id or profile_id not in profile_ids:
+            continue
+        run_profile_map[review_run.id] = profile_id
+    return run_profile_map
+
+
+def _program_qa_results_by_profile(
+    db: Session,
+    *,
+    run: ReviewProgramRun,
+    task_version_id: uuid.UUID,
+    profile_ids: set[uuid.UUID],
+    usable_coding_only: bool = True,
+    purposes: set[str] | None = None,
+) -> dict[uuid.UUID, dict[uuid.UUID, ReviewDecisionResult]]:
+    run_profile_map = _program_qa_result_run_profile_map(
+        db,
+        run=run,
+        task_version_id=task_version_id,
+        profile_ids=profile_ids,
+        purposes=purposes,
+    )
+    if not run_profile_map:
+        return {}
+    statement = select(ReviewDecisionResult).where(
+        ReviewDecisionResult.review_batch_run_id.in_(list(run_profile_map)),
+        ReviewDecisionResult.matter_analysis_task_version_id == task_version_id,
+    )
+    if usable_coding_only:
+        statement = statement.where(
+            ReviewDecisionResult.status.in_(_QA_USABLE_CODING_RESULT_STATUSES)
+        )
+    by_document: dict[uuid.UUID, dict[uuid.UUID, ReviewDecisionResult]] = {}
+    for result in db.scalars(
+        statement.order_by(ReviewDecisionResult.created_at, ReviewDecisionResult.id)
+    ):
+        if usable_coding_only and not _is_usable_qa_coding_result(result):
+            continue
+        profile_id = run_profile_map[result.review_batch_run_id]
+        by_document.setdefault(result.matter_document_id, {})[profile_id] = result
     return by_document
 
 
@@ -6282,6 +6482,20 @@ def _coverage_confidence_band(value: float | None) -> str:
     return "LOW"
 
 
+def _classifier_positive_coverage_minimum_confidence(value: Any) -> float:
+    if isinstance(value, bool):
+        raise ReviewProgramError("Classifier-positive coverage confidence must be a number from 0 to 1")
+    try:
+        minimum = float(value)
+    except (TypeError, ValueError) as exc:
+        raise ReviewProgramError(
+            "Classifier-positive coverage confidence must be a number from 0 to 1"
+        ) from exc
+    if minimum < 0 or minimum > 1:
+        raise ReviewProgramError("Classifier-positive coverage confidence must be a number from 0 to 1")
+    return minimum
+
+
 def _prepare_classifier_positive_coverage(
     db: Session,
     *,
@@ -6289,6 +6503,7 @@ def _prepare_classifier_positive_coverage(
     run: ReviewProgramRun,
     attempt: ReviewProgramStageAttempt,
     actor_user_id: uuid.UUID,
+    minimum_confidence: float,
 ) -> tuple[AnalysisInputManifest, dict[str, Any]]:
     matter = db.get(Matter, program.matter_id)
     if matter is None:
@@ -6301,6 +6516,20 @@ def _prepare_classifier_positive_coverage(
         matter=matter,
         actor_user_id=actor_user_id,
     )
+    classifier_positive_document_count = len(positives)
+    below_minimum_confidence_count = 0
+    unavailable_confidence_count = 0
+    filtered_positives: dict[uuid.UUID, dict[str, Any]] = {}
+    for document_id, prediction in positives.items():
+        confidence = prediction.get("maximum_probability")
+        if confidence is None:
+            unavailable_confidence_count += 1
+            continue
+        if float(confidence) < minimum_confidence:
+            below_minimum_confidence_count += 1
+            continue
+        filtered_positives[document_id] = prediction
+    positives = filtered_positives
     documents_by_id = {
         document.id: document
         for document in db.scalars(
@@ -6428,6 +6657,7 @@ def _prepare_classifier_positive_coverage(
             "task_version_id": str(task_version.id),
             "required_profile_ids": [str(profile.id) for profile in profiles],
             "scoring_run_ids": [str(item.id) for item in scoring_runs],
+            "minimum_confidence": minimum_confidence,
             "policy_version": "review-program-classifier-positive-coverage-v1",
         },
     )
@@ -6473,12 +6703,16 @@ def _prepare_classifier_positive_coverage(
             for profile in profiles
         ],
         "scoring_run_ids": [str(item.id) for item in scoring_runs],
+        "minimum_confidence": minimum_confidence,
+        "classifier_positive_document_count": classifier_positive_document_count,
         "positive_document_count": len(positives),
+        "below_minimum_confidence_document_count": below_minimum_confidence_count,
+        "unavailable_confidence_document_count": unavailable_confidence_count,
         "already_covered_document_count": already_covered_count,
         "uncovered_document_count": len(uncovered_documents),
         "stale_or_partial_document_count": stale_source_count,
         "source_unavailable_document_count": source_unavailable_count,
-        "estimated_qa_request_count": len(uncovered_documents) * len(profiles),
+        "estimated_qa_request_count": sum(missing_profile_counts.values()),
         "input_manifest_id": str(manifest.id),
         "input_manifest_content_hash": manifest.artifact_content_hash,
         "by_issue": [
@@ -6505,83 +6739,145 @@ def _launch_classifier_positive_coverage(
     action: ReviewProgramAction,
 ) -> None:
     actor_user_id = action.resolved_by_user_id or run.initiated_by_user_id
+    resolution_input = dict((action.resolution_payload or {}).get("input") or {})
+    minimum_confidence = _classifier_positive_coverage_minimum_confidence(
+        resolution_input.get("minimum_confidence", 0.5)
+    )
     attempt.status = "RUNNING"
     run.status = "RUNNING"
+    original_population_count = _classifier_positive_coverage_population_count(
+        run.progress_summary or {}
+    )
     manifest, coverage = _prepare_classifier_positive_coverage(
         db,
         program=program,
         run=run,
         attempt=attempt,
         actor_user_id=actor_user_id,
+        minimum_confidence=minimum_confidence,
+    )
+    coverage["coverage_population_document_count"] = (
+        original_population_count or int(coverage["uncovered_document_count"])
     )
     matter = db.get(Matter, program.matter_id)
-    task, task_version, profiles = _qa_task_records(db, run)
+    _task, task_version, profiles = _qa_task_records(db, run)
     if matter is None:
         raise ReviewProgramError("Review Program matter is unavailable")
-    policy = dict(
-        current_review_program_version(db, program).configuration_snapshot.get("classifier_positive_coverage_policy")
-        or {}
-    )
-    batch_set = None
+    batch = None
     if coverage["uncovered_document_count"]:
         try:
-            batch_set = create_batch_set(
-                db,
-                matter=matter,
-                task=task,
-                task_version=task_version,
-                name=f"{program.name} · classifier-positive Q&A coverage"[:200],
-                description=("Frozen classifier-positive population lacking current results from both Q&A profiles."),
-                population_source_type="INPUT_MANIFEST",
-                source_review_batch_id=None,
-                input_manifest_id=manifest.id,
-                search=None,
-                saved_search_id=None,
-                saved_search_name=None,
-                saved_search_updated_at=None,
-                target_batch_size=int(policy.get("target_batch_size", 100)),
-                keep_together=(["FAMILY"] if bool(policy.get("keep_families_together", True)) else []),
-                random_seed=str(run.id),
+            manifest_rows = AnalysisInputManifestReader(
+                manifest,
                 actor_user_id=actor_user_id,
-                notification_parent_type="REVIEW_PROGRAM_RUN",
-                notification_parent_id=run.id,
-            )
-        except AnalysisTaskBatchSetError as exc:
+            ).rows(0, manifest.item_count)
+            document_ids = [uuid.UUID(str(row["matter_document_id"])) for row in manifest_rows]
+        except (AnalysisInputManifestError, KeyError, TypeError, ValueError) as exc:
             raise ReviewProgramError(str(exc)) from exc
-        batch_set.selection_definition = {
-            **batch_set.selection_definition,
-            "review_program": {
-                "program_id": str(program.id),
-                "run_id": str(run.id),
+        if len(document_ids) > 100_000:
+            raise ReviewProgramError(
+                "Classifier-positive coverage exceeds the 100,000-document ad hoc batch limit"
+            )
+        destination_ids = [
+            uuid.UUID(str(value)) for value in task_version.destination_metadata_definition_ids or []
+        ]
+        definitions = {
+            definition.id: definition
+            for definition in db.scalars(
+                select(MetadataDefinition).where(
+                    MetadataDefinition.matter_id == matter.id,
+                    MetadataDefinition.id.in_(destination_ids),
+                )
+            )
+        }
+        batch_id = uuid.uuid4()
+        batch = ReviewBatch(
+            id=batch_id,
+            matter_id=matter.id,
+            name=f"{program.name} · classifier-positive Q&A coverage"[:200],
+            description=(
+                "Ad hoc classifier-positive population lacking current results from both Q&A profiles."
+            ),
+            selection_type="EXPLICIT_DOCUMENTS",
+            selection_definition={
+                "type": "EXPLICIT_DOCUMENTS",
+                "review_program_id": str(program.id),
+                "review_program_run_id": str(run.id),
                 "stage_attempt_id": str(attempt.id),
+                "batching_policy": "AD_HOC_BATCH",
+                "purpose": "CLASSIFIER_POSITIVE_QA_COVERAGE",
+                "input_manifest_id": str(manifest.id),
+                "document_ids": [str(document_id) for document_id in document_ids],
+                "candidate_count": len(document_ids),
                 "task_version_id": str(task_version.id),
                 "profile_ids": [str(profile.id) for profile in profiles],
-                "coverage_policy_version": coverage["policy_version"],
+                "minimum_confidence": coverage["minimum_confidence"],
                 "scoring_run_ids": coverage["scoring_run_ids"],
             },
-        }
+            source_batch_id=None,
+            reviewer_value_visibility="OWN_VALUES",
+            status="QUEUED",
+            search_status="NOT_CONFIGURED",
+            workflow_id=f"review-batch:{batch_id}",
+            created_by_user_id=actor_user_id,
+        )
+        db.add(batch)
+        db.flush()
+        group = ReviewBatchCodingGroup(
+            review_batch_id=batch.id,
+            source_metadata_group_id=None,
+            display_name="Classifier-positive Q&A coverage",
+            description="Coding fields evaluated by both pinned Q&A profiles.",
+            sort_order=0,
+        )
+        db.add(group)
+        db.flush()
+        for ordinal, definition_id in enumerate(destination_ids):
+            definition = definitions.get(definition_id)
+            if definition is None:
+                raise ReviewProgramError("A Q&A destination field is unavailable")
+            db.add(
+                ReviewBatchCodingField(
+                    review_batch_coding_group_id=group.id,
+                    metadata_definition_id=definition.id,
+                    sort_order=ordinal,
+                    definition_snapshot={
+                        "key": definition.key,
+                        "display_name": definition.display_name,
+                        "description": definition.description,
+                        "type": definition.type,
+                        "cardinality": definition.cardinality,
+                        "allowed_values": definition.allowed_values,
+                    },
+                )
+            )
+        execution = create_review_batch_execution(
+            db,
+            batch,
+            initiated_by_user_id=actor_user_id,
+            notification_parent_type="REVIEW_PROGRAM_RUN",
+            notification_parent_id=run.id,
+        )
         link_review_program_child(
             db,
             program=program,
             run=run,
             stage_attempt=attempt,
-            purpose="CLASSIFIER_POSITIVE_COVERAGE_POPULATION",
-            child_type="ANALYSIS_TASK_BATCH_SET",
-            child_id=batch_set.id,
-            derivation_key=f"classifier-positive-coverage-batch-set:{attempt.id}",
-            batching_policy="PARTITIONED_SET",
+            purpose="CLASSIFIER_POSITIVE_COVERAGE_BATCH",
+            child_type="REVIEW_BATCH",
+            child_id=batch.id,
+            derivation_key=f"classifier-positive-coverage-batch:{attempt.id}",
+            batching_policy="AD_HOC_BATCH",
             context={
                 "input_manifest_id": str(manifest.id),
                 "population_count": coverage["uncovered_document_count"],
                 "positive_document_count": coverage["positive_document_count"],
+                "minimum_confidence": coverage["minimum_confidence"],
                 "already_covered_document_count": coverage["already_covered_document_count"],
             },
         )
-        coverage["batch_set_id"] = str(batch_set.id)
-        coverage["target_batch_size"] = batch_set.target_batch_size
-        coverage["keep_families_together"] = bool(policy.get("keep_families_together", True))
-        coverage["batch_set_run_ids"] = []
-        coverage["state"] = "MATERIALIZING_BATCH_SET"
+        coverage["review_batch_id"] = str(batch.id)
+        coverage["review_batch_run_ids"] = []
+        coverage["state"] = "MATERIALIZING_AD_HOC_BATCH"
     version = _create_review_program_version(
         db,
         program=program,
@@ -6594,6 +6890,7 @@ def _launch_classifier_positive_coverage(
             "classifier_positive_coverage_policy_hash": canonical_hash(
                 {
                     "policy_version": coverage["policy_version"],
+                    "minimum_confidence": coverage["minimum_confidence"],
                     "required_profiles": coverage["required_profiles"],
                 }
             ),
@@ -6612,7 +6909,7 @@ def _launch_classifier_positive_coverage(
         "program_version_id": str(version.id),
         "input_manifest_id": str(manifest.id),
     }
-    if batch_set is None:
+    if batch is None:
         _complete_action_attempt(
             attempt,
             action,
@@ -6623,7 +6920,7 @@ def _launch_classifier_positive_coverage(
         )
         _advance_after_stage(db, program=program, run=run, attempt=attempt)
         return
-    enqueue_analysis_task_batch_set(db, batch_set.workflow_id, str(batch_set.id))
+    enqueue_review_batch(db, execution.dbos_workflow_id, str(batch.id))
 
 
 def _alignment_value_key(value: Any) -> str:
@@ -6743,6 +7040,7 @@ def _classifier_alignment_predictions(
     run: ReviewProgramRun,
     matter: Matter,
     actor_user_id: uuid.UUID,
+    field_keys: set[str] | None = None,
 ) -> tuple[dict[uuid.UUID, dict[str, Any]], list[ClassificationScoringRun], set[str]]:
     scoring = dict((run.progress_summary or {}).get("whole_collection_scoring") or {})
     model_states = [item for item in scoring.get("models", []) if isinstance(item, dict)]
@@ -6750,6 +7048,8 @@ def _classifier_alignment_predictions(
     scoring_runs: list[ClassificationScoringRun] = []
     issue_universe: set[str] = set()
     for model_state in model_states:
+        if field_keys is not None and model_state.get("field_key") not in field_keys:
+            continue
         try:
             scoring_run = db.get(ClassificationScoringRun, uuid.UUID(str(model_state["scoring_run_id"])))
         except (KeyError, TypeError, ValueError) as exc:
@@ -6789,16 +7089,32 @@ def _classifier_alignment_predictions(
                     "issues": set(),
                     "maximum_probability": None,
                     "maximum_candidate_probability": None,
+                    "closest_negative_margin": None,
                     "statuses": [],
                     "abstained": False,
+                    "field_results": {},
                 },
             )
             prediction["statuses"].append(row.result_status)
             prediction["abstained"] = bool(prediction["abstained"] or row.abstained)
+            field_results = prediction["field_results"]
+            field_prediction = field_results.setdefault(
+                field_key,
+                {
+                    "issues": set(),
+                    "maximum_candidate_probability": None,
+                    "closest_negative_margin": None,
+                    "statuses": [],
+                    "abstained": False,
+                },
+            )
+            field_prediction["statuses"].append(row.result_status)
+            field_prediction["abstained"] = bool(field_prediction["abstained"] or row.abstained)
             if row.result_status != "SUCCESS" or row.abstained:
                 continue
             positive_keys = _classifier_positive_class_keys(configuration, list(row.predicted_class_keys))
             prediction["issues"].update(f"{field_key}:{class_key}" for class_key in positive_keys)
+            field_prediction["issues"].update(positive_keys)
             candidate_keys = (
                 [(configuration.binary_mapping or {}).get("positive_class_key")]
                 if configuration.classification_strategy == "BINARY"
@@ -6818,6 +7134,49 @@ def _classifier_alignment_predictions(
                     candidate_probability
                     if current_candidate is None
                     else max(float(current_candidate), candidate_probability)
+                )
+                current_field_candidate = field_prediction["maximum_candidate_probability"]
+                field_prediction["maximum_candidate_probability"] = (
+                    candidate_probability
+                    if current_field_candidate is None
+                    else max(float(current_field_candidate), candidate_probability)
+                )
+            policy = configuration.prediction_resolution_policy or {}
+            if configuration.classification_strategy == "BINARY":
+                threshold_by_key = {
+                    str((configuration.binary_mapping or {}).get("positive_class_key")): policy.get(
+                        "binary_positive_threshold"
+                    )
+                }
+            elif configuration.classification_strategy == "ONE_VS_REST":
+                threshold_by_key = dict(policy.get("one_vs_rest_thresholds") or {})
+            else:
+                threshold_by_key = {}
+            negative_margins = [
+                float(threshold_by_key[class_key])
+                - float(row.probabilities[probability_ordinals[class_key]])
+                for class_key in candidate_keys
+                if isinstance(class_key, str)
+                and class_key in threshold_by_key
+                and threshold_by_key[class_key] is not None
+                and class_key in probability_ordinals
+                and probability_ordinals[class_key] < len(row.probabilities)
+                and float(row.probabilities[probability_ordinals[class_key]])
+                < float(threshold_by_key[class_key])
+            ]
+            if negative_margins:
+                closest_margin = min(negative_margins)
+                current_margin = prediction["closest_negative_margin"]
+                prediction["closest_negative_margin"] = (
+                    closest_margin
+                    if current_margin is None
+                    else min(float(current_margin), closest_margin)
+                )
+                current_field_margin = field_prediction["closest_negative_margin"]
+                field_prediction["closest_negative_margin"] = (
+                    closest_margin
+                    if current_field_margin is None
+                    else min(float(current_field_margin), closest_margin)
                 )
             selected_probabilities = [
                 float(row.probabilities[probability_ordinals[class_key]])
@@ -6867,12 +7226,125 @@ def _launch_final_alignment_report(
         )
 
 
+def _final_alignment_source_status(
+    *,
+    source_hash: str | None,
+    document_results: dict[uuid.UUID, ReviewDecisionResult],
+    current_results: dict[uuid.UUID, ReviewDecisionResult],
+    required_profile_count: int,
+) -> str:
+    if source_hash is None:
+        return "SOURCE_UNAVAILABLE"
+    if len(current_results) == required_profile_count:
+        return "CURRENT"
+    if any(result.source_content_hash != source_hash for result in document_results.values()):
+        return "SOURCE_VERSION_MISMATCH"
+    if document_results:
+        return "PARTIAL_OR_MISSING_PROFILE"
+    return "MISSING_QA"
+
+
+def _final_alignment_population_ids(
+    classifier_predictions: dict[uuid.UUID, dict[str, Any]],
+    *,
+    minimum_confidence: float,
+) -> set[uuid.UUID]:
+    return {
+        document_id
+        for document_id, prediction in classifier_predictions.items()
+        if prediction.get("issues")
+        and prediction.get("maximum_probability") is not None
+        and float(prediction["maximum_probability"]) >= minimum_confidence
+    }
+
+
+_FINAL_ALIGNMENT_POPULATION_SCOPE = "CLASSIFIER_POSITIVE_AT_OR_ABOVE_COVERAGE_THRESHOLD"
+
+
+def _final_alignment_report_requires_recalculation(run: ReviewProgramRun) -> bool:
+    report = dict((run.progress_summary or {}).get("final_alignment") or {})
+    return bool(report) and report.get("population_scope") != _FINAL_ALIGNMENT_POPULATION_SCOPE
+
+
+def recalculate_historical_final_alignment(
+    db: Session,
+    *,
+    program: ReviewProgram,
+    run: ReviewProgramRun,
+) -> bool:
+    """Upgrade the one historical broad-population report without replaying the program stage."""
+
+    if not _final_alignment_report_requires_recalculation(run):
+        return False
+    final_stage = next(
+        (stage for stage in _template_for_program(program).stages if stage.key == "FINAL_ALIGNMENT"),
+        None,
+    )
+    if final_stage is None:
+        raise ReviewProgramError("Review Program template has no Final coding alignment stage")
+    prior_attempts = list(
+        db.scalars(
+            select(ReviewProgramStageAttempt)
+            .where(
+                ReviewProgramStageAttempt.run_id == run.id,
+                ReviewProgramStageAttempt.stage_key == "FINAL_ALIGNMENT",
+            )
+            .order_by(ReviewProgramStageAttempt.attempt)
+        )
+    )
+    attempt_number = max((item.attempt for item in prior_attempts), default=0) + 1
+    attempt = ReviewProgramStageAttempt(
+        run_id=run.id,
+        stage_key="FINAL_ALIGNMENT",
+        stage_ordinal=final_stage.ordinal,
+        attempt=attempt_number,
+        status="RUNNING",
+        idempotency_key=f"run:{run.id}:stage:FINAL_ALIGNMENT:policy-v2-recalculation",
+        input_snapshot={
+            "schema_version": 1,
+            "reason": "FINAL_ALIGNMENT_POLICY_UPGRADE",
+            "replaces_population_scope": dict(
+                (run.progress_summary or {}).get("final_alignment") or {}
+            ).get("population_scope"),
+        },
+        policy_hashes={
+            "template_content_hash": _template_for_program(program).content_hash,
+            "program_configuration_hash": run.frozen_configuration_hash,
+        },
+        started_at=utcnow(),
+    )
+    db.add(attempt)
+    db.flush()
+    _build_final_alignment_report(
+        db,
+        program=program,
+        run=run,
+        attempt=attempt,
+        complete_stage=False,
+    )
+    record_audit(
+        db,
+        tenant_id=program.tenant_id,
+        actor_user_id=run.initiated_by_user_id,
+        action="review_program.final_alignment_recalculated",
+        target_type="review_program_run",
+        target_id=run.id,
+        details={
+            "program_id": str(program.id),
+            "stage_attempt_id": str(attempt.id),
+            "population_scope": _FINAL_ALIGNMENT_POPULATION_SCOPE,
+        },
+    )
+    return True
+
+
 def _build_final_alignment_report(
     db: Session,
     *,
     program: ReviewProgram,
     run: ReviewProgramRun,
     attempt: ReviewProgramStageAttempt,
+    complete_stage: bool = True,
 ) -> None:
     matter = db.get(Matter, program.matter_id)
     if matter is None:
@@ -6907,14 +7379,18 @@ def _build_final_alignment_report(
         run=run,
         definitions=definitions,
     )
-    classifier_positive_ids = {
+    coverage_summary = dict((run.progress_summary or {}).get("classifier_positive_coverage") or {})
+    minimum_confidence = _classifier_positive_coverage_minimum_confidence(
+        coverage_summary.get("minimum_confidence")
+        if coverage_summary.get("minimum_confidence") is not None
+        else 0.5
+    )
+    unthresholded_classifier_positive_ids = {
         document_id for document_id, prediction in classifier_predictions.items() if prediction["issues"]
     }
-    population_ids = (
-        classifier_positive_ids
-        | set(results_by_document)
-        | _program_reviewed_document_ids(db, run=run)
-        | set(human_by_document)
+    population_ids = _final_alignment_population_ids(
+        classifier_predictions,
+        minimum_confidence=minimum_confidence,
     )
     documents_by_id = {
         item.id: item
@@ -6986,14 +7462,12 @@ def _build_final_alignment_report(
         if family_id is not None:
             family_ids.add(family_id)
             family_document_count += 1
-        if source_hash is None:
-            source_status = "SOURCE_UNAVAILABLE"
-        elif len(current_results) == len(profiles):
-            source_status = "CURRENT"
-        elif document_results:
-            source_status = "STALE_OR_PARTIAL"
-        else:
-            source_status = "MISSING_QA"
+        source_status = _final_alignment_source_status(
+            source_hash=source_hash,
+            document_results=document_results,
+            current_results=current_results,
+            required_profile_count=len(profiles),
+        )
         source_counts[source_status] += 1
         result_run_ids = {result.review_batch_run_id for result in document_results.values()}
         training_overlap = bool(result_run_ids.intersection(training_run_ids))
@@ -7097,8 +7571,8 @@ def _build_final_alignment_report(
         )
     contract = AnalysisInputContract(
         key="review-program.final-alignment",
-        version=1,
-        resolver_version="review-program-final-alignment-v1",
+        version=2,
+        resolver_version="review-program-final-alignment-v2",
         extension_fields=[
             AnalysisInputExtensionField(name="classifier_issue_keys", type="STRING", nullable=False),
             AnalysisInputExtensionField(name="profile_a_issue_keys", type="STRING", nullable=False),
@@ -7118,7 +7592,9 @@ def _build_final_alignment_report(
             "stage_attempt_id": str(attempt.id),
             "task_version_id": str(task_version.id),
             "profile_ids": [str(profile.id) for profile in profiles],
-            "policy_version": "review-program-final-alignment-v1",
+            "policy_version": "review-program-final-alignment-v2",
+            "population_scope": _FINAL_ALIGNMENT_POPULATION_SCOPE,
+            "minimum_confidence": minimum_confidence,
         },
     )
     prepared = prepare_analysis_input_manifest(
@@ -7156,14 +7632,30 @@ def _build_final_alignment_report(
     )
     scoring_summary = dict((run.progress_summary or {}).get("whole_collection_scoring") or {})
     report = {
-        "schema_version": 1,
+        "schema_version": 2,
         "state": "COMPLETED",
-        "policy_version": "review-program-final-alignment-v1",
+        "policy_version": "review-program-final-alignment-v2",
+        "population_scope": _FINAL_ALIGNMENT_POPULATION_SCOPE,
+        "minimum_confidence": minimum_confidence,
         "population_document_count": len(population_ids),
-        "classifier_positive_document_count": len(classifier_positive_ids),
+        "classifier_positive_document_count": len(population_ids),
+        "unthresholded_classifier_positive_document_count": len(
+            unthresholded_classifier_positive_ids
+        ),
         "classifier_scoring_counts": dict(scoring_summary.get("aggregate_model_document_counts") or {}),
         "alignment_counts": dict(sorted(alignment_counts.items())),
         "source_coverage_counts": dict(sorted(source_counts.items())),
+        "qa_coverage_policy": {
+            "minimum_confidence": coverage_summary.get("minimum_confidence"),
+            "selected_document_count": coverage_summary.get("positive_document_count"),
+            "original_uncovered_document_count": coverage_summary.get(
+                "coverage_population_document_count"
+            ),
+            "remaining_unresolved_document_count": coverage_summary.get(
+                "remaining_uncovered_document_count",
+                coverage_summary.get("unresolved_document_count"),
+            ),
+        },
         "label_authority_counts": dict(sorted(authority_counts.items())),
         "human_alignment_counts": dict(sorted(human_alignment_counts.items())),
         "confidence_band_counts": dict(sorted(confidence_counts.items())),
@@ -7218,13 +7710,18 @@ def _build_final_alignment_report(
         "final_alignment_state": "COMPLETED",
         "final_alignment": report,
     }
-    complete_review_program_stage(
-        db,
-        program=program,
-        run=run,
-        result_summary=report,
-        idempotency_key=f"final-alignment-terminal:{attempt.id}",
-    )
+    if complete_stage:
+        complete_review_program_stage(
+            db,
+            program=program,
+            run=run,
+            result_summary=report,
+            idempotency_key=f"final-alignment-terminal:{attempt.id}",
+        )
+    else:
+        attempt.status = "COMPLETED"
+        attempt.result_summary = report
+        attempt.completed_at = utcnow()
 
 
 def _deterministic_qc_order(document_id: uuid.UUID, *, seed: str) -> str:
@@ -7260,6 +7757,574 @@ def _qc_cohort_sample(
     return selected
 
 
+_NEGATIVE_QC_NEAR_THRESHOLD_BAND = 0.10
+_NEGATIVE_QC_DATABASE_PAGE_SIZE = 10_000
+_NEGATIVE_QC_PROCEDURES = {
+    "RANDOM_AUDIT",
+    "NEAR_THRESHOLD",
+    "RECORD_TYPE_CONTROL",
+    "PROCESSING_EXCEPTIONS",
+}
+
+
+def _negative_population_qc_inventory(
+    db: Session,
+    *,
+    program: ReviewProgram,
+    run: ReviewProgramRun,
+    attempt: ReviewProgramStageAttempt,
+    actor_user_id: uuid.UUID,
+) -> tuple[AnalysisInputManifest, dict[str, Any]]:
+    existing_summary = dict(
+        (run.progress_summary or {}).get("negative_population_qc_inventory") or {}
+    )
+    existing_manifest_id = existing_summary.get("input_manifest_id")
+    if existing_summary.get("state") == "READY" and existing_manifest_id:
+        try:
+            existing_manifest = db.get(
+                AnalysisInputManifest,
+                uuid.UUID(str(existing_manifest_id)),
+            )
+        except (TypeError, ValueError):
+            existing_manifest = None
+        if (
+            existing_manifest is not None
+            and existing_manifest.manifest_status == "FINALIZED"
+            and existing_manifest.artifact_content_hash
+            == existing_summary.get("input_manifest_content_hash")
+        ):
+            return existing_manifest, existing_summary
+
+    matter = db.get(Matter, program.matter_id)
+    if matter is None:
+        raise ReviewProgramError("Review Program matter is unavailable")
+    _task, task_version, profiles = _qa_task_records(db, run)
+    try:
+        predictions, scoring_runs, issue_universe = _classifier_alignment_predictions(
+            db,
+            program=program,
+            run=run,
+            matter=matter,
+            actor_user_id=actor_user_id,
+        )
+    except (ClassificationScoringError, PermissionError, ValueError) as exc:
+        raise ReviewProgramError(
+            f"Negative-population classifier results are unavailable: {exc}"
+        ) from exc
+    document_ids = set(predictions)
+    ordered_document_ids = sorted(document_ids, key=str)
+    documents_by_id: dict[uuid.UUID, MatterDocument] = {}
+    for offset in range(
+        0,
+        len(ordered_document_ids),
+        _NEGATIVE_QC_DATABASE_PAGE_SIZE,
+    ):
+        page = ordered_document_ids[
+            offset : offset + _NEGATIVE_QC_DATABASE_PAGE_SIZE
+        ]
+        documents_by_id.update(
+            {
+                item.id: item
+                for item in db.scalars(
+                    select(MatterDocument).where(
+                        MatterDocument.matter_id == matter.id,
+                        MatterDocument.id.in_(page),
+                    )
+                )
+            }
+        )
+    if len(documents_by_id) != len(document_ids):
+        raise ReviewProgramError(
+            "Negative-population scoring frame contains documents outside the matter"
+        )
+    try:
+        source_snapshots = get_collection_item_analysis_input_snapshots(
+            item_ids=[item.collection_item_id for item in documents_by_id.values()],
+            actor_user_id=actor_user_id,
+            tenant_id=program.tenant_id,
+            client_id=matter.client_id,
+        )
+    except (httpx.HTTPError, PermissionError, ValueError) as exc:
+        raise ReviewProgramError(
+            f"Negative-population source content is unavailable: {exc}"
+        ) from exc
+    profile_ids = {profile.id for profile in profiles}
+    results_by_document = _program_qa_results_by_profile(
+        db,
+        run=run,
+        task_version_id=task_version.id,
+        profile_ids=profile_ids,
+        usable_coding_only=False,
+    )
+    definitions = {
+        item.id: item
+        for item in db.scalars(
+            select(MetadataDefinition).where(
+                MetadataDefinition.matter_id == matter.id,
+                MetadataDefinition.id.in_(
+                    [
+                        uuid.UUID(str(value))
+                        for value in task_version.destination_metadata_definition_ids or []
+                    ]
+                ),
+            )
+        )
+    }
+    human_by_document, adjudication_sources = _human_adjudicated_issue_keys(
+        db,
+        run=run,
+        definitions=definitions,
+    )
+    reviewed_ids = _program_reviewed_document_ids(db, run=run)
+    procedure_counts = Counter()
+    exception_reason_counts = Counter()
+    record_type_counts = Counter()
+    excluded_positive_count = 0
+    manifest_documents: list[AnalysisInputDocument] = []
+    model_count = len(scoring_runs)
+    for document_id in sorted(document_ids, key=str):
+        prediction = predictions[document_id]
+        document = documents_by_id[document_id]
+        snapshot = source_snapshots.get(document.collection_item_id)
+        source = snapshot.text_source if snapshot is not None else None
+        source_hash = source.content_hash if source is not None else None
+        reasons: list[str] = []
+        statuses = list(prediction.get("statuses") or [])
+        if len(statuses) != model_count or any(status != "SUCCESS" for status in statuses):
+            reasons.append("CLASSIFIER_INCOMPLETE_OR_FAILED")
+        if prediction.get("abstained"):
+            reasons.append("CLASSIFIER_ABSTAINED")
+        if source_hash is None:
+            reasons.append("SOURCE_UNAVAILABLE")
+        document_results = results_by_document.get(document_id, {})
+        current_results = _current_usable_qa_results(
+            document_results,
+            expected_source_hash=source_hash,
+        )
+        if document_results and len(current_results) != len(document_results):
+            reasons.append("QA_FAILED_PARTIAL_OR_SOURCE_MISMATCH")
+        if document_id in reviewed_ids and len(current_results) != len(profiles):
+            reasons.append("PRIOR_QA_COVERAGE_INCOMPLETE")
+        qa_issues = (
+            set().union(
+                *(
+                    _decision_result_issue_keys(result).intersection(issue_universe)
+                    for result in current_results.values()
+                )
+            )
+            if current_results
+            else set()
+        )
+        human_issues = human_by_document.get(document_id, set()).intersection(issue_universe)
+        classifier_issues = set(prediction.get("issues") or set())
+        has_positive_coding = bool(classifier_issues or qa_issues or human_issues)
+        if has_positive_coding:
+            excluded_positive_count += 1
+        reasons = sorted(set(reasons))
+        ordinary_eligible = not has_positive_coding and not reasons
+        closest_margin = prediction.get("closest_negative_margin")
+        near_threshold_eligible = bool(
+            ordinary_eligible
+            and closest_margin is not None
+            and 0 <= float(closest_margin) <= _NEGATIVE_QC_NEAR_THRESHOLD_BAND
+        )
+        exception_eligible = bool(
+            not has_positive_coding and reasons and source_hash is not None
+        )
+        source_remediation = bool(
+            not has_positive_coding and "SOURCE_UNAVAILABLE" in reasons
+        )
+        record_type = snapshot.record_type if snapshot is not None else "UNAVAILABLE"
+        if ordinary_eligible:
+            procedure_counts["RANDOM_AUDIT"] += 1
+            procedure_counts["RECORD_TYPE_CONTROL"] += 1
+            record_type_counts[record_type] += 1
+        if near_threshold_eligible:
+            procedure_counts["NEAR_THRESHOLD"] += 1
+        if exception_eligible:
+            procedure_counts["PROCESSING_EXCEPTIONS"] += 1
+        if source_remediation:
+            procedure_counts["SOURCE_REMEDIATION"] += 1
+        if exception_eligible:
+            for reason in reasons:
+                exception_reason_counts[reason] += 1
+        manifest_documents.append(
+            AnalysisInputDocument(
+                matter_document_id=document_id,
+                collection_item_id=document.collection_item_id,
+                source_collection_id=document.source_collection_id,
+                scope_ordinal=len(manifest_documents) + 1,
+                source_artifact_id=source.artifact_id if source is not None else None,
+                source_content_hash=source_hash,
+                resolved_inputs=(
+                    {
+                        "text_source": {
+                            "role": source.role,
+                            "media_type": source.media_type,
+                            "original_filename": source.original_filename,
+                            "byte_length": source.byte_length,
+                            "record_type": record_type,
+                        }
+                    }
+                    if source is not None
+                    else {}
+                ),
+                extensions={
+                    "ordinary_no_code_eligible": ordinary_eligible,
+                    "near_threshold_eligible": near_threshold_eligible,
+                    "record_type_control_eligible": ordinary_eligible,
+                    "processing_exception_eligible": exception_eligible,
+                    "source_remediation_required": source_remediation,
+                    "classifier_risk_score": prediction.get(
+                        "maximum_candidate_probability"
+                    ),
+                    "closest_negative_margin": closest_margin,
+                    "classifier_issue_keys": json.dumps(
+                        sorted(classifier_issues), separators=(",", ":")
+                    ),
+                    "qa_issue_keys": json.dumps(sorted(qa_issues), separators=(",", ":")),
+                    "human_issue_keys": json.dumps(
+                        sorted(human_issues), separators=(",", ":")
+                    ),
+                    "exception_reasons": json.dumps(reasons, separators=(",", ":")),
+                    "record_type": record_type,
+                    "family_id": (
+                        str(snapshot.family_id)
+                        if snapshot is not None and snapshot.family_id
+                        else None
+                    ),
+                },
+            )
+        )
+    contract = AnalysisInputContract(
+        key="review-program.negative-population-qc-inventory",
+        version=1,
+        resolver_version="review-program-negative-population-qc-inventory-v1",
+        extension_fields=[
+            AnalysisInputExtensionField(
+                name="ordinary_no_code_eligible", type="BOOLEAN", nullable=False
+            ),
+            AnalysisInputExtensionField(
+                name="near_threshold_eligible", type="BOOLEAN", nullable=False
+            ),
+            AnalysisInputExtensionField(
+                name="record_type_control_eligible", type="BOOLEAN", nullable=False
+            ),
+            AnalysisInputExtensionField(
+                name="processing_exception_eligible", type="BOOLEAN", nullable=False
+            ),
+            AnalysisInputExtensionField(
+                name="source_remediation_required", type="BOOLEAN", nullable=False
+            ),
+            AnalysisInputExtensionField(name="classifier_risk_score", type="FLOAT64"),
+            AnalysisInputExtensionField(name="closest_negative_margin", type="FLOAT64"),
+            AnalysisInputExtensionField(
+                name="classifier_issue_keys", type="STRING", nullable=False
+            ),
+            AnalysisInputExtensionField(name="qa_issue_keys", type="STRING", nullable=False),
+            AnalysisInputExtensionField(name="human_issue_keys", type="STRING", nullable=False),
+            AnalysisInputExtensionField(
+                name="exception_reasons", type="STRING", nullable=False
+            ),
+            AnalysisInputExtensionField(name="record_type", type="STRING", nullable=False),
+            AnalysisInputExtensionField(name="family_id", type="STRING"),
+        ],
+        options={
+            "review_program_id": str(program.id),
+            "review_program_run_id": str(run.id),
+            "stage_attempt_id": str(attempt.id),
+            "policy_version": "review-program-negative-population-qc-inventory-v1",
+            "near_threshold_band": _NEGATIVE_QC_NEAR_THRESHOLD_BAND,
+            "task_version_id": str(task_version.id),
+            "profile_ids": [str(profile.id) for profile in profiles],
+        },
+    )
+    try:
+        prepared = prepare_analysis_input_manifest(
+            manifest_documents,
+            contract=contract,
+            scope_type="REVIEW_PROGRAM_STAGE",
+            scope_id=attempt.id,
+        )
+        manifest, _ = publish_analysis_input_manifest(
+            db,
+            prepared=prepared,
+            tenant_id=program.tenant_id,
+            client_id=matter.client_id,
+            matter_id=matter.id,
+            owner_type="REVIEW_PROGRAM_NEGATIVE_QC_INVENTORY",
+            owner_id=attempt.id,
+            producer_kind="CORE",
+            producer_run_id=run.id,
+            actor_user_id=actor_user_id,
+            lineage=[
+                WorkflowArtifactLineageInput(
+                    source_kind="WORKFLOW_ARTIFACT",
+                    source_artifact_id=scoring_run.prediction_artifact_id,
+                )
+                for scoring_run in scoring_runs
+                if scoring_run.prediction_artifact_id is not None
+            ],
+        )
+    except AnalysisInputManifestError as exc:
+        raise ReviewProgramError(str(exc)) from exc
+    summary = {
+        "schema_version": 1,
+        "state": "READY",
+        "policy_version": "review-program-negative-population-qc-inventory-v1",
+        "stage_attempt_id": str(attempt.id),
+        "input_manifest_id": str(manifest.id),
+        "input_manifest_content_hash": manifest.artifact_content_hash,
+        "scoring_population_document_count": len(document_ids),
+        "excluded_positive_document_count": excluded_positive_count,
+        "near_threshold_band": _NEGATIVE_QC_NEAR_THRESHOLD_BAND,
+        "procedures": {
+            "RANDOM_AUDIT": {
+                "available_count": procedure_counts["RANDOM_AUDIT"],
+                "execution_route": "DUAL_QA",
+            },
+            "NEAR_THRESHOLD": {
+                "available_count": procedure_counts["NEAR_THRESHOLD"],
+                "execution_route": "HUMAN_REVIEW",
+            },
+            "RECORD_TYPE_CONTROL": {
+                "available_count": procedure_counts["RECORD_TYPE_CONTROL"],
+                "execution_route": "HUMAN_REVIEW",
+                "record_type_counts": dict(sorted(record_type_counts.items())),
+            },
+            "PROCESSING_EXCEPTIONS": {
+                "available_count": procedure_counts["PROCESSING_EXCEPTIONS"],
+                "execution_route": "RETRY_OR_HUMAN_REVIEW",
+                "reason_counts": dict(sorted(exception_reason_counts.items())),
+                "source_remediation_count": procedure_counts["SOURCE_REMEDIATION"],
+            },
+        },
+        "overlaps": {
+            "RANDOM_AUDIT_AND_NEAR_THRESHOLD": procedure_counts["NEAR_THRESHOLD"],
+            "RANDOM_AUDIT_AND_RECORD_TYPE_CONTROL": procedure_counts[
+                "RECORD_TYPE_CONTROL"
+            ],
+        },
+        "scoring_run_ids": [str(item.id) for item in scoring_runs],
+        "task_version_id": str(task_version.id),
+        "profile_ids": [str(profile.id) for profile in profiles],
+        "adjudication_sources": adjudication_sources,
+        "created_at": utcnow().isoformat(),
+    }
+    link_review_program_child(
+        db,
+        program=program,
+        run=run,
+        stage_attempt=attempt,
+        purpose="NEGATIVE_POPULATION_QC_INVENTORY",
+        child_type="ANALYSIS_INPUT_MANIFEST",
+        child_id=manifest.id,
+        derivation_key=f"negative-population-qc-inventory:{attempt.id}",
+        batching_policy="AD_HOC_BATCH",
+        context={
+            "input_manifest_content_hash": manifest.artifact_content_hash,
+            "population_count": len(document_ids),
+            "procedure_counts": dict(procedure_counts),
+        },
+    )
+    version = _create_review_program_version(
+        db,
+        program=program,
+        run=run,
+        actor_user_id=actor_user_id,
+        configuration_stage="NO_CODE_QC",
+        configuration_updates={"negative_population_qc_inventory": summary},
+        source_hash_updates={
+            "negative_population_qc_inventory_hash": manifest.artifact_content_hash
+        },
+    )
+    summary["program_version_id"] = str(version.id)
+    run.progress_summary = {
+        **run.progress_summary,
+        "negative_population_qc_inventory": summary,
+    }
+    return manifest, summary
+
+
+def prepare_review_program_negative_population_qc_inventory(
+    db: Session,
+    *,
+    program: ReviewProgram,
+    run: ReviewProgramRun,
+    action_id: uuid.UUID,
+    actor: User,
+    preview_hash: str,
+) -> dict[str, Any]:
+    action = db.scalar(
+        select(ReviewProgramAction)
+        .where(
+            ReviewProgramAction.id == action_id,
+            ReviewProgramAction.run_id == run.id,
+        )
+        .with_for_update()
+    )
+    if (
+        action is None
+        or action.action_type != "NEGATIVE_POPULATION_QC_SETUP"
+        or action.stage_key != "NO_CODE_QC"
+        or action.status != "OPEN"
+        or run.pending_action_id != action.id
+    ):
+        raise ReviewProgramError("Negative-population QC setup action is unavailable")
+    if action.preview_hash != preview_hash:
+        raise ReviewProgramError("Negative-population QC preview is stale")
+    attempt = _current_stage_attempt(db, run, for_update=True)
+    existing = dict(
+        (run.progress_summary or {}).get("negative_population_qc_inventory") or {}
+    )
+    if existing.get("state") == "READY":
+        return existing
+    if (
+        existing.get("state") == "PREPARING"
+        and existing.get("stage_attempt_id") in {None, str(attempt.id)}
+    ):
+        return existing
+    preparation_attempt = int(existing.get("preparation_attempt") or 0) + 1
+    workflow_id = (
+        f"review-program-negative-qc-inventory:{run.id}:{attempt.id}:{preparation_attempt}"
+    )
+    summary = {
+        "schema_version": 1,
+        "state": "PREPARING",
+        "policy_version": "review-program-negative-population-qc-inventory-v1",
+        "stage_attempt_id": str(attempt.id),
+        "preparation_attempt": preparation_attempt,
+        "preparation_workflow_id": workflow_id,
+        "requested_by_user_id": str(actor.id),
+        "requested_at": utcnow().isoformat(),
+    }
+    run.progress_summary = {
+        **run.progress_summary,
+        "negative_population_qc_inventory": summary,
+    }
+    enqueue_review_program_negative_qc_inventory(
+        db,
+        workflow_id,
+        str(run.id),
+        str(attempt.id),
+    )
+    record_audit(
+        db,
+        tenant_id=program.tenant_id,
+        actor_user_id=actor.id,
+        action="review_program.negative_population_qc_inventory_requested",
+        target_type="review_program_run",
+        target_id=run.id,
+        details={
+            "program_id": str(program.id),
+            "stage_attempt_id": str(attempt.id),
+            "preparation_workflow_id": workflow_id,
+        },
+    )
+    return summary
+
+
+def materialize_review_program_negative_population_qc_inventory(
+    review_program_run_id: uuid.UUID,
+    stage_attempt_id: uuid.UUID,
+) -> None:
+    from app.database import SessionLocal
+
+    with SessionLocal() as db:
+        run = db.get(ReviewProgramRun, review_program_run_id)
+        attempt = db.get(ReviewProgramStageAttempt, stage_attempt_id)
+        program = db.get(ReviewProgram, run.program_id) if run is not None else None
+        if (
+            run is None
+            or attempt is None
+            or program is None
+            or attempt.run_id != run.id
+            or run.current_stage != "NO_CODE_QC"
+            or run.pending_action_id is None
+        ):
+            return
+        current_attempt = _current_stage_attempt(db, run)
+        if current_attempt.id != attempt.id:
+            return
+        inventory = dict(
+            (run.progress_summary or {}).get("negative_population_qc_inventory") or {}
+        )
+        if inventory.get("state") == "READY":
+            return
+        if inventory.get("state") != "PREPARING":
+            return
+        if inventory.get("stage_attempt_id") not in {None, str(attempt.id)}:
+            return
+        try:
+            actor_user_id = uuid.UUID(str(inventory["requested_by_user_id"]))
+        except (KeyError, TypeError, ValueError) as exc:
+            raise ReviewProgramError(
+                "Negative-population QC inventory request provenance is invalid"
+            ) from exc
+        _manifest, summary = _negative_population_qc_inventory(
+            db,
+            program=program,
+            run=run,
+            attempt=attempt,
+            actor_user_id=actor_user_id,
+        )
+        record_audit(
+            db,
+            tenant_id=program.tenant_id,
+            actor_user_id=actor_user_id,
+            action="review_program.negative_population_qc_inventory_prepared",
+            target_type="review_program_run",
+            target_id=run.id,
+            details={
+                "program_id": str(program.id),
+                "input_manifest_id": summary["input_manifest_id"],
+                "input_manifest_content_hash": summary[
+                    "input_manifest_content_hash"
+                ],
+            },
+        )
+        db.commit()
+
+
+def fail_review_program_negative_population_qc_inventory(
+    review_program_run_id: uuid.UUID,
+    stage_attempt_id: uuid.UUID,
+    error_summary: str,
+) -> None:
+    from app.database import SessionLocal
+
+    with SessionLocal() as db:
+        run = db.get(ReviewProgramRun, review_program_run_id)
+        attempt = db.get(ReviewProgramStageAttempt, stage_attempt_id)
+        if (
+            run is None
+            or attempt is None
+            or attempt.run_id != run.id
+            or run.current_stage != "NO_CODE_QC"
+        ):
+            return
+        if _current_stage_attempt(db, run).id != attempt.id:
+            return
+        inventory = dict(
+            (run.progress_summary or {}).get("negative_population_qc_inventory") or {}
+        )
+        if (
+            inventory.get("state") != "PREPARING"
+            or inventory.get("stage_attempt_id") not in {None, str(attempt.id)}
+        ):
+            return
+        run.progress_summary = {
+            **run.progress_summary,
+            "negative_population_qc_inventory": {
+                **inventory,
+                "state": "FAILED",
+                "error_summary": error_summary[:4000],
+                "failed_at": utcnow().isoformat(),
+            },
+        }
+        db.commit()
+
+
 def setup_review_program_negative_population_qc(
     db: Session,
     *,
@@ -7268,11 +8333,13 @@ def setup_review_program_negative_population_qc(
     action_id: uuid.UUID,
     actor: User,
     preview_hash: str,
+    inventory_content_hash: str,
+    selected_procedures: list[str],
+    selected_record_types: list[str],
     random_sample_size: int,
     near_threshold_sample_size: int,
     cohort_control_sample_size: int,
     mandatory_review_limit: int,
-    target_batch_size: int,
     keep_families_together: bool,
 ) -> None:
     action = db.scalar(
@@ -7293,177 +8360,173 @@ def setup_review_program_negative_population_qc(
     matter = db.get(Matter, program.matter_id)
     if matter is None:
         raise ReviewProgramError("Review Program matter is unavailable")
-    task, task_version, profiles = _qa_task_records(db, run)
+    _task, task_version, profiles = _qa_task_records(db, run)
     attempt = _current_stage_attempt(db, run, for_update=True)
-    try:
-        predictions, scoring_runs, issue_universe = _classifier_alignment_predictions(
-            db,
-            program=program,
-            run=run,
-            matter=matter,
-            actor_user_id=actor.id,
-        )
-    except (ClassificationScoringError, PermissionError, ValueError) as exc:
-        raise ReviewProgramError(f"Negative-population classifier results are unavailable: {exc}") from exc
-    document_ids = set(predictions)
-    documents_by_id = {
-        item.id: item
-        for item in db.scalars(
-            select(MatterDocument).where(
-                MatterDocument.matter_id == matter.id,
-                MatterDocument.id.in_(list(document_ids)),
-            )
-        )
-    }
-    if len(documents_by_id) != len(document_ids):
-        raise ReviewProgramError("Negative-population scoring frame contains documents outside the matter")
-    try:
-        source_snapshots = get_collection_item_analysis_input_snapshots(
-            item_ids=[item.collection_item_id for item in documents_by_id.values()],
-            actor_user_id=actor.id,
-            tenant_id=program.tenant_id,
-            client_id=matter.client_id,
-        )
-    except (httpx.HTTPError, PermissionError, ValueError) as exc:
-        raise ReviewProgramError(f"Negative-population source content is unavailable: {exc}") from exc
-    profile_ids = {profile.id for profile in profiles}
-    results_by_document = _program_qa_results_by_profile(
-        db,
-        run=run,
-        task_version_id=task_version.id,
-        profile_ids=profile_ids,
-        completed_only=False,
+    selected_procedure_set = set(selected_procedures)
+    if not selected_procedure_set or not selected_procedure_set.issubset(
+        _NEGATIVE_QC_PROCEDURES
+    ):
+        raise ReviewProgramError("Select at least one available Negative-population QC procedure")
+    inventory = dict(
+        (run.progress_summary or {}).get("negative_population_qc_inventory") or {}
     )
-    definitions = {
-        item.id: item
-        for item in db.scalars(
-            select(MetadataDefinition).where(
-                MetadataDefinition.matter_id == matter.id,
-                MetadataDefinition.id.in_(
-                    [uuid.UUID(str(value)) for value in task_version.destination_metadata_definition_ids or []]
-                ),
-            )
+    if inventory.get("state") != "READY":
+        raise ReviewProgramError("Calculate the Negative-population QC populations before starting QC")
+    if inventory.get("input_manifest_content_hash") != inventory_content_hash:
+        raise ReviewProgramError("The Negative-population QC inventory has changed; review it again")
+    try:
+        inventory_manifest = db.get(
+            AnalysisInputManifest,
+            uuid.UUID(str(inventory["input_manifest_id"])),
         )
+        if inventory_manifest is None:
+            raise ReviewProgramError("Negative-population QC inventory manifest is unavailable")
+        inventory_rows = AnalysisInputManifestReader(
+            inventory_manifest,
+            actor_user_id=actor.id,
+        ).rows(0, inventory_manifest.item_count)
+    except (AnalysisInputManifestError, KeyError, TypeError, ValueError) as exc:
+        raise ReviewProgramError(f"Negative-population QC inventory is unavailable: {exc}") from exc
+    procedures = dict(inventory.get("procedures") or {})
+    requested_sizes = {
+        "RANDOM_AUDIT": random_sample_size,
+        "NEAR_THRESHOLD": near_threshold_sample_size,
+        "RECORD_TYPE_CONTROL": cohort_control_sample_size,
+        "PROCESSING_EXCEPTIONS": mandatory_review_limit,
     }
-    human_by_document, _ = _human_adjudicated_issue_keys(db, run=run, definitions=definitions)
-    reviewed_ids = _program_reviewed_document_ids(db, run=run)
-    eligible: list[uuid.UUID] = []
-    mandatory: dict[uuid.UUID, list[str]] = {}
-    excluded_positive_count = 0
-    model_count = len(scoring_runs)
-    for document_id in sorted(document_ids, key=str):
-        prediction = predictions[document_id]
-        document = documents_by_id[document_id]
-        snapshot = source_snapshots.get(document.collection_item_id)
-        source = snapshot.text_source if snapshot is not None else None
-        source_hash = source.content_hash if source is not None else None
-        reasons: list[str] = []
-        statuses = list(prediction.get("statuses") or [])
-        if len(statuses) != model_count or any(status != "SUCCESS" for status in statuses):
-            reasons.append("CLASSIFIER_INCOMPLETE_OR_FAILED")
-        if prediction.get("abstained"):
-            reasons.append("CLASSIFIER_ABSTAINED")
-        if source_hash is None:
-            reasons.append("SOURCE_UNAVAILABLE")
-        document_results = results_by_document.get(document_id, {})
-        current_completed_results = {
-            profile_id: result
-            for profile_id, result in document_results.items()
-            if result.status == "COMPLETED" and source_hash is not None and result.source_content_hash == source_hash
-        }
-        if document_results and len(current_completed_results) != len(document_results):
-            reasons.append("QA_FAILED_PARTIAL_OR_STALE")
-        if document_id in reviewed_ids and len(current_completed_results) != len(profiles):
-            reasons.append("PRIOR_QA_COVERAGE_INCOMPLETE")
-        q_and_a_issues = set().union(
-            *(
-                _decision_result_issue_keys(result).intersection(issue_universe)
-                for result in current_completed_results.values()
+    for procedure in _NEGATIVE_QC_PROCEDURES:
+        requested = requested_sizes[procedure] if procedure in selected_procedure_set else 0
+        available = int(dict(procedures.get(procedure) or {}).get("available_count") or 0)
+        if procedure in selected_procedure_set and available == 0:
+            raise ReviewProgramError(f"{procedure.replace('_', ' ').title()} has no eligible documents")
+        if requested < 1 and procedure in selected_procedure_set:
+            raise ReviewProgramError(f"{procedure.replace('_', ' ').title()} requires a sample size")
+        if requested > available:
+            raise ReviewProgramError(
+                f"{procedure.replace('_', ' ').title()} requested {requested} documents but only "
+                f"{available} are available"
             )
-        ) if current_completed_results else set()
-        human_issues = human_by_document.get(document_id, set()).intersection(issue_universe)
-        if prediction["issues"] or q_and_a_issues or human_issues:
-            excluded_positive_count += 1
-            continue
-        if reasons:
-            mandatory[document_id] = sorted(set(reasons))
-        else:
-            eligible.append(document_id)
+    rows_by_id = {
+        uuid.UUID(str(row["matter_document_id"])): row for row in inventory_rows
+    }
+    ordinary_ids = [
+        document_id
+        for document_id, row in rows_by_id.items()
+        if row.get("ordinary_no_code_eligible") is True
+    ]
+    mandatory = {
+        document_id: list(json.loads(str(row.get("exception_reasons") or "[]")))
+        for document_id, row in rows_by_id.items()
+        if row.get("processing_exception_eligible") is True
+    }
 
     seed = str(run.id)
-    random_order = sorted(eligible, key=lambda value: _deterministic_qc_order(value, seed=seed))
-    random_ids = random_order[:random_sample_size]
-    selected = set(random_ids)
-    remaining = [value for value in eligible if value not in selected]
+    random_order = sorted(
+        ordinary_ids,
+        key=lambda value: _deterministic_qc_order(value, seed=seed),
+    )
+    random_ids = (
+        random_order[:random_sample_size]
+        if "RANDOM_AUDIT" in selected_procedure_set
+        else []
+    )
     near_threshold_ids = sorted(
-        remaining,
+        [
+            value
+            for value in ordinary_ids
+            if rows_by_id[value].get("near_threshold_eligible") is True
+        ],
         key=lambda value: (
-            -(float(predictions[value].get("maximum_candidate_probability"))
-              if predictions[value].get("maximum_candidate_probability") is not None else -1.0),
+            float(rows_by_id[value].get("closest_negative_margin") or 1.0),
             str(value),
         ),
-    )[:near_threshold_sample_size]
-    selected.update(near_threshold_ids)
-    remaining = [value for value in remaining if value not in selected]
-    cohort_ids = _qc_cohort_sample(
-        sorted(remaining, key=str),
-        snapshots=source_snapshots,
-        documents_by_id=documents_by_id,
-        limit=cohort_control_sample_size,
-    )
-    selected.update(cohort_ids)
-    reviewable_mandatory_ids = [
-        document_id
-        for document_id in mandatory
-        if (
-            (snapshot := source_snapshots.get(documents_by_id[document_id].collection_item_id))
-            is not None
-            and snapshot.text_source is not None
-        )
+    )[:near_threshold_sample_size] if "NEAR_THRESHOLD" in selected_procedure_set else []
+    selected_record_type_set = set(selected_record_types)
+    record_candidates = [
+        value
+        for value in ordinary_ids
+        if not selected_record_type_set
+        or str(rows_by_id[value].get("record_type") or "UNAVAILABLE")
+        in selected_record_type_set
     ]
+    by_record_type: dict[str, list[uuid.UUID]] = {}
+    for document_id in sorted(record_candidates, key=str):
+        record_type = str(rows_by_id[document_id].get("record_type") or "UNAVAILABLE")
+        by_record_type.setdefault(record_type, []).append(document_id)
+    cohort_ids: list[uuid.UUID] = []
+    active_record_types = sorted(by_record_type)
+    while active_record_types and len(cohort_ids) < cohort_control_sample_size:
+        next_record_types: list[str] = []
+        for record_type in active_record_types:
+            values = by_record_type[record_type]
+            if values and len(cohort_ids) < cohort_control_sample_size:
+                cohort_ids.append(values.pop(0))
+            if values:
+                next_record_types.append(record_type)
+        active_record_types = next_record_types
+    if "RECORD_TYPE_CONTROL" not in selected_procedure_set:
+        cohort_ids = []
+    elif len(cohort_ids) < cohort_control_sample_size:
+        raise ReviewProgramError(
+            "The selected record types contain only "
+            f"{len(cohort_ids)} eligible documents; reduce the requested sample size"
+        )
     mandatory_ids = sorted(
-        reviewable_mandatory_ids,
+        mandatory,
         key=lambda value: (mandatory[value], _deterministic_qc_order(value, seed=f"{seed}:mandatory")),
-    )[:mandatory_review_limit]
+    )[:mandatory_review_limit] if "PROCESSING_EXCEPTIONS" in selected_procedure_set else []
+    inclusion_reasons: dict[uuid.UUID, set[str]] = {}
+    for procedure, values in (
+        ("RANDOM_AUDIT", random_ids),
+        ("NEAR_THRESHOLD", near_threshold_ids),
+        ("RECORD_TYPE_CONTROL", cohort_ids),
+        ("PROCESSING_EXCEPTIONS", mandatory_ids),
+    ):
+        for document_id in values:
+            inclusion_reasons.setdefault(document_id, set()).add(procedure)
+    lane_priority = (
+        ("RANDOM_AUDIT", "RANDOM_AUDIT"),
+        ("NEAR_THRESHOLD", "NEAR_THRESHOLD"),
+        ("RECORD_TYPE_CONTROL", "COHORT_CONTROL"),
+        ("PROCESSING_EXCEPTIONS", "MANDATORY_REVIEW"),
+    )
     lane_by_document = {
-        **{value: "RANDOM_AUDIT" for value in random_ids},
-        **{value: "NEAR_THRESHOLD" for value in near_threshold_ids},
-        **{value: "COHORT_CONTROL" for value in cohort_ids},
-        **{value: "MANDATORY_REVIEW" for value in mandatory_ids},
+        document_id: next(
+            lane
+            for procedure, lane in lane_priority
+            if procedure in reasons
+        )
+        for document_id, reasons in inclusion_reasons.items()
     }
     if not lane_by_document:
         raise ReviewProgramError("The Negative-population QC plan selected no documents")
-    random_inclusion_probability = min(1.0, len(random_ids) / len(eligible)) if eligible else None
+    random_inclusion_probability = (
+        min(1.0, len(random_ids) / len(ordinary_ids)) if ordinary_ids else None
+    )
     manifest_documents: list[AnalysisInputDocument] = []
     for document_id in sorted(lane_by_document, key=lambda value: (lane_by_document[value], str(value))):
-        document = documents_by_id[document_id]
-        snapshot = source_snapshots.get(document.collection_item_id)
-        source = snapshot.text_source if snapshot is not None else None
+        row = rows_by_id[document_id]
         lane = lane_by_document[document_id]
         manifest_documents.append(
             AnalysisInputDocument(
                 matter_document_id=document_id,
-                collection_item_id=document.collection_item_id,
-                source_collection_id=document.source_collection_id,
+                collection_item_id=uuid.UUID(str(row["collection_item_id"])),
+                source_collection_id=uuid.UUID(str(row["source_collection_id"])),
                 scope_ordinal=len(manifest_documents) + 1,
-                source_artifact_id=source.artifact_id if source is not None else None,
-                source_content_hash=source.content_hash if source is not None else None,
-                resolved_inputs=(
-                    {
-                        "text_source": {
-                            "role": source.role,
-                            "media_type": source.media_type,
-                            "original_filename": source.original_filename,
-                            "byte_length": source.byte_length,
-                            "record_type": snapshot.record_type,
-                        }
-                    }
-                    if source is not None and snapshot is not None
-                    else {}
+                source_artifact_id=(
+                    uuid.UUID(str(row["source_artifact_id"]))
+                    if row.get("source_artifact_id")
+                    else None
                 ),
+                source_content_hash=row.get("source_content_hash"),
+                resolved_inputs=dict(row.get("resolved_inputs") or {}),
+                artifact_references=list(row.get("artifact_references") or []),
                 extensions={
                     "selection_lane": lane,
-                    "classifier_risk_score": predictions[document_id].get("maximum_candidate_probability"),
+                    "selection_reasons": json.dumps(
+                        sorted(inclusion_reasons[document_id]), separators=(",", ":")
+                    ),
+                    "classifier_risk_score": row.get("classifier_risk_score"),
                     "random_inclusion_probability": (
                         random_inclusion_probability if lane == "RANDOM_AUDIT" else None
                     ),
@@ -7473,8 +8536,8 @@ def setup_review_program_negative_population_qc(
                         else None
                     ),
                     "mandatory_reasons": json.dumps(mandatory.get(document_id, []), separators=(",", ":")),
-                    "record_type": snapshot.record_type if snapshot is not None else "UNAVAILABLE",
-                    "family_id": str(snapshot.family_id) if snapshot is not None and snapshot.family_id else None,
+                    "record_type": str(row.get("record_type") or "UNAVAILABLE"),
+                    "family_id": row.get("family_id"),
                 },
             )
         )
@@ -7484,6 +8547,7 @@ def setup_review_program_negative_population_qc(
         resolver_version="review-program-negative-population-qc-v1",
         extension_fields=[
             AnalysisInputExtensionField(name="selection_lane", type="STRING", nullable=False),
+            AnalysisInputExtensionField(name="selection_reasons", type="STRING", nullable=False),
             AnalysisInputExtensionField(name="classifier_risk_score", type="FLOAT64", nullable=True),
             AnalysisInputExtensionField(name="random_inclusion_probability", type="FLOAT64", nullable=True),
             AnalysisInputExtensionField(name="sampling_weight", type="FLOAT64", nullable=True),
@@ -7499,6 +8563,10 @@ def setup_review_program_negative_population_qc(
             "profile_ids": [str(profile.id) for profile in profiles],
             "policy_version": "review-program-negative-population-qc-v1",
             "random_seed": seed,
+            "inventory_manifest_id": str(inventory_manifest.id),
+            "inventory_manifest_content_hash": inventory_content_hash,
+            "selected_procedures": sorted(selected_procedure_set),
+            "selected_record_types": sorted(selected_record_type_set),
         },
     )
     try:
@@ -7510,9 +8578,7 @@ def setup_review_program_negative_population_qc(
         )
     except AnalysisInputManifestError as exc:
         raise ReviewProgramError(str(exc)) from exc
-    lineage_ids = [
-        item.prediction_artifact_id for item in scoring_runs if item.prediction_artifact_id is not None
-    ]
+    lineage_ids = [inventory_manifest.artifact_id] if inventory_manifest.artifact_id else []
     final_manifest_id = ((run.progress_summary or {}).get("final_alignment") or {}).get("manifest_id")
     final_manifest = (
         db.get(AnalysisInputManifest, uuid.UUID(str(final_manifest_id))) if final_manifest_id else None
@@ -7540,81 +8606,154 @@ def setup_review_program_negative_population_qc(
         )
     except AnalysisInputManifestError as exc:
         raise ReviewProgramError(str(exc)) from exc
-    try:
-        batch_set = create_batch_set(
-            db,
-            matter=matter,
-            task=task,
-            task_version=task_version,
-            name=f"{program.name} · Negative-population QC"[:200],
-            description="Frozen random, targeted, and mandatory Negative-population QC sample.",
-            population_source_type="INPUT_MANIFEST",
-            source_review_batch_id=None,
-            input_manifest_id=manifest.id,
-            search=None,
-            saved_search_id=None,
-            saved_search_name=None,
-            saved_search_updated_at=None,
-            target_batch_size=target_batch_size,
-            keep_together=["FAMILY"] if keep_families_together else [],
-            random_seed=seed,
-            actor_user_id=actor.id,
-            notification_parent_type="REVIEW_PROGRAM_RUN",
-            notification_parent_id=run.id,
+    if len(manifest_documents) > 100_000:
+        raise ReviewProgramError(
+            "Negative-population QC exceeds the 100,000-document ad hoc batch limit"
         )
-    except AnalysisTaskBatchSetError as exc:
-        raise ReviewProgramError(str(exc)) from exc
-    batch_set.selection_definition = {
-        **batch_set.selection_definition,
-        "review_program": {
-            "program_id": str(program.id),
-            "run_id": str(run.id),
+    destination_ids = [
+        uuid.UUID(str(value))
+        for value in task_version.destination_metadata_definition_ids or []
+    ]
+    definitions = {
+        definition.id: definition
+        for definition in db.scalars(
+            select(MetadataDefinition).where(
+                MetadataDefinition.matter_id == matter.id,
+                MetadataDefinition.id.in_(destination_ids),
+            )
+        )
+    }
+    batch_id = uuid.uuid4()
+    batch = ReviewBatch(
+        id=batch_id,
+        matter_id=matter.id,
+        name=f"{program.name} · Negative-population QC"[:200],
+        description=(
+            "Ad hoc frozen random, targeted, and exception Negative-population QC sample."
+        ),
+        selection_type="EXPLICIT_DOCUMENTS",
+        selection_definition={
+            "type": "EXPLICIT_DOCUMENTS",
+            "review_program_id": str(program.id),
+            "review_program_run_id": str(run.id),
             "stage_attempt_id": str(attempt.id),
+            "batching_policy": "AD_HOC_BATCH",
+            "purpose": "NEGATIVE_POPULATION_QC",
+            "input_manifest_id": str(manifest.id),
+            "document_ids": [
+                str(document.matter_document_id) for document in manifest_documents
+            ],
+            "candidate_count": len(manifest_documents),
             "task_version_id": str(task_version.id),
             "profile_ids": [str(profile.id) for profile in profiles],
             "policy_version": "review-program-negative-population-qc-v1",
+            "keep_selected_families_together": keep_families_together,
         },
-    }
+        source_batch_id=None,
+        reviewer_value_visibility="OWN_VALUES",
+        status="QUEUED",
+        search_status="NOT_CONFIGURED",
+        workflow_id=f"review-batch:{batch_id}",
+        created_by_user_id=actor.id,
+    )
+    db.add(batch)
+    db.flush()
+    group = ReviewBatchCodingGroup(
+        review_batch_id=batch.id,
+        source_metadata_group_id=None,
+        display_name="Negative-population QC",
+        description="Coding fields evaluated by both pinned Q&A profiles.",
+        sort_order=0,
+    )
+    db.add(group)
+    db.flush()
+    for ordinal, definition_id in enumerate(destination_ids):
+        definition = definitions.get(definition_id)
+        if definition is None:
+            raise ReviewProgramError("A Q&A destination field is unavailable")
+        db.add(
+            ReviewBatchCodingField(
+                review_batch_coding_group_id=group.id,
+                metadata_definition_id=definition.id,
+                sort_order=ordinal,
+                definition_snapshot={
+                    "key": definition.key,
+                    "display_name": definition.display_name,
+                    "description": definition.description,
+                    "type": definition.type,
+                    "cardinality": definition.cardinality,
+                    "allowed_values": definition.allowed_values,
+                },
+            )
+        )
+    create_review_batch_execution(
+        db,
+        batch,
+        initiated_by_user_id=actor.id,
+        notification_parent_type="REVIEW_PROGRAM_RUN",
+        notification_parent_id=run.id,
+    )
     link_review_program_child(
         db,
         program=program,
         run=run,
         stage_attempt=attempt,
-        purpose="NEGATIVE_POPULATION_QC_POPULATION",
-        child_type="ANALYSIS_TASK_BATCH_SET",
-        child_id=batch_set.id,
-        derivation_key=f"negative-population-qc-batch-set:{attempt.id}",
-        batching_policy="PARTITIONED_SET",
+        purpose="NEGATIVE_POPULATION_QC_BATCH",
+        child_type="REVIEW_BATCH",
+        child_id=batch.id,
+        derivation_key=f"negative-population-qc-batch:{attempt.id}",
+        batching_policy="AD_HOC_BATCH",
         context={
             "input_manifest_id": str(manifest.id),
             "population_count": len(manifest_documents),
-            "random_frame_count": len(eligible),
+            "random_frame_count": len(ordinary_ids),
             "mandatory_queue_count": len(mandatory),
+            "inventory_manifest_id": str(inventory_manifest.id),
+            "selected_procedures": sorted(selected_procedure_set),
         },
     )
     lane_counts = Counter(lane_by_document.values())
     qc = {
         "schema_version": 1,
-        "state": "MATERIALIZING_BATCH_SET",
+        "state": "MATERIALIZING_AD_HOC_BATCH",
         "policy_version": "review-program-negative-population-qc-v1",
         "input_manifest_id": str(manifest.id),
         "input_manifest_content_hash": manifest.artifact_content_hash,
-        "batch_set_id": str(batch_set.id),
-        "batch_set_run_ids": [],
+        "review_batch_id": str(batch.id),
+        "review_batch_run_ids": [],
         "task_version_id": str(task_version.id),
         "profile_ids": [str(profile.id) for profile in profiles],
-        "scoring_run_ids": [str(item.id) for item in scoring_runs],
-        "scoring_population_document_count": len(document_ids),
-        "eligible_negative_frame_count": len(eligible),
-        "excluded_positive_document_count": excluded_positive_count,
+        "scoring_run_ids": list(inventory.get("scoring_run_ids") or []),
+        "scoring_population_document_count": int(
+            inventory.get("scoring_population_document_count") or 0
+        ),
+        "eligible_negative_frame_count": len(ordinary_ids),
+        "excluded_positive_document_count": int(
+            inventory.get("excluded_positive_document_count") or 0
+        ),
         "mandatory_queue_count": len(mandatory),
-        "mandatory_automated_reviewable_count": len(reviewable_mandatory_ids),
-        "mandatory_unreviewable_count": len(mandatory) - len(reviewable_mandatory_ids),
+        "mandatory_automated_reviewable_count": len(mandatory),
+        "mandatory_unreviewable_count": int(
+            dict(procedures.get("PROCESSING_EXCEPTIONS") or {}).get(
+                "source_remediation_count"
+            )
+            or 0
+        ),
         "selected_document_count": len(manifest_documents),
         "selection_lane_counts": dict(sorted(lane_counts.items())),
+        "procedure_selection_counts": {
+            "RANDOM_AUDIT": len(random_ids),
+            "NEAR_THRESHOLD": len(near_threshold_ids),
+            "RECORD_TYPE_CONTROL": len(cohort_ids),
+            "PROCESSING_EXCEPTIONS": len(mandatory_ids),
+        },
+        "selected_procedures": sorted(selected_procedure_set),
+        "selected_record_types": sorted(selected_record_type_set),
+        "inventory_manifest_id": str(inventory_manifest.id),
+        "inventory_manifest_content_hash": inventory_content_hash,
         "random_inclusion_probability": random_inclusion_probability,
         "random_seed": seed,
-        "target_batch_size": target_batch_size,
+        "batching_policy": "AD_HOC_BATCH",
         "keep_families_together": keep_families_together,
     }
     version = _create_review_program_version(
@@ -7625,11 +8764,15 @@ def setup_review_program_negative_population_qc(
         configuration_stage="NO_CODE_QC",
         configuration_updates={
             "negative_population_qc_policy": {
+                "selected_procedures": sorted(selected_procedure_set),
+                "selected_record_types": sorted(selected_record_type_set),
+                "inventory_manifest_id": str(inventory_manifest.id),
+                "inventory_manifest_content_hash": inventory_content_hash,
                 "random_sample_size": random_sample_size,
                 "near_threshold_sample_size": near_threshold_sample_size,
                 "cohort_control_sample_size": cohort_control_sample_size,
                 "mandatory_review_limit": mandatory_review_limit,
-                "target_batch_size": target_batch_size,
+                "batching_policy": "AD_HOC_BATCH",
                 "keep_families_together": keep_families_together,
             },
             "negative_population_qc": qc,
@@ -7652,12 +8795,15 @@ def setup_review_program_negative_population_qc(
         choice_key="START_QC",
         reason="Negative-population QC sampling plan accepted",
         input_payload={
+            "inventory_manifest_id": str(inventory_manifest.id),
+            "inventory_manifest_content_hash": inventory_content_hash,
             "input_manifest_id": str(manifest.id),
-            "batch_set_id": str(batch_set.id),
+            "review_batch_id": str(batch.id),
             "selected_document_count": len(manifest_documents),
+            "selected_procedures": sorted(selected_procedure_set),
         },
     )
-    enqueue_analysis_task_batch_set(db, batch_set.workflow_id, str(batch_set.id))
+    enqueue_review_batch(db, batch.workflow_id, str(batch.id))
 
 
 def _classifier_training_embedding_job(
@@ -8472,9 +9618,16 @@ def _finalize_classifier_positive_coverage(
             for profile in profiles:
                 if profile.id in missing_profile_ids:
                     missing_profile_counts[profile.key] += 1
+    accepted_unresolved = bool(progress.get("accepted_unresolved_documents"))
     summary = {
         **progress,
-        "state": "COMPLETED" if not unresolved_document_count else "INCOMPLETE",
+        "state": (
+            "COMPLETED_WITH_ERRORS"
+            if unresolved_document_count and accepted_unresolved
+            else "COMPLETED"
+            if not unresolved_document_count
+            else "INCOMPLETE"
+        ),
         "covered_by_coverage_run_document_count": manifest.item_count - unresolved_document_count,
         "remaining_uncovered_document_count": unresolved_document_count,
         "remaining_stale_or_partial_document_count": stale_document_count,
@@ -8485,7 +9638,7 @@ def _finalize_classifier_positive_coverage(
         "classifier_positive_coverage_state": summary["state"],
         "classifier_positive_coverage": summary,
     }
-    if unresolved_document_count:
+    if unresolved_document_count and not accepted_unresolved:
         return fail_review_program_stage(
             db,
             program=program,
@@ -8520,6 +9673,227 @@ def _finalize_classifier_positive_coverage(
     )
 
 
+_CLASSIFIER_POSITIVE_COVERAGE_FAILURE_TOLERANCE = 0.005
+_NEGATIVE_POPULATION_QC_FAILURE_TOLERANCE = 0.005
+
+
+def _classifier_positive_coverage_population_count(progress_summary: dict[str, Any]) -> int:
+    """Return the initial uncovered population, not the latest retry population."""
+
+    candidates: list[dict[str, Any]] = []
+    current = progress_summary.get("classifier_positive_coverage")
+    if isinstance(current, dict):
+        candidates.append(current)
+    history = progress_summary.get("classifier_positive_coverage_attempts")
+    if isinstance(history, list):
+        candidates.extend(item for item in history if isinstance(item, dict))
+    explicit = [
+        int(item.get("coverage_population_document_count") or 0)
+        for item in candidates
+        if item.get("coverage_population_document_count") is not None
+    ]
+    if explicit:
+        return max(explicit)
+    return max((int(item.get("uncovered_document_count") or 0) for item in candidates), default=0)
+
+
+def _classifier_positive_coverage_failure_is_tolerable(
+    *,
+    unresolved_document_count: int,
+    population_document_count: int,
+) -> bool:
+    return (
+        unresolved_document_count > 0
+        and population_document_count > 0
+        and unresolved_document_count / population_document_count
+        < _CLASSIFIER_POSITIVE_COVERAGE_FAILURE_TOLERANCE
+    )
+
+
+def _negative_population_qc_failure_is_tolerable(
+    *,
+    unresolved_document_count: int,
+    population_document_count: int,
+) -> bool:
+    return (
+        unresolved_document_count > 0
+        and population_document_count > 0
+        and unresolved_document_count / population_document_count
+        < _NEGATIVE_POPULATION_QC_FAILURE_TOLERANCE
+    )
+
+
+def _create_classifier_positive_coverage_error_action(
+    db: Session,
+    *,
+    program: ReviewProgram,
+    run: ReviewProgramRun,
+    attempt: ReviewProgramStageAttempt,
+    progress: dict[str, Any],
+) -> ReviewProgramAction:
+    existing = db.get(ReviewProgramAction, run.pending_action_id) if run.pending_action_id else None
+    if existing is not None and existing.status == "OPEN":
+        return existing
+    population = int(progress.get("coverage_population_document_count") or 0)
+    unresolved = int(progress.get("unresolved_document_count") or 0)
+    failure_rate = float(progress.get("unresolved_document_rate") or 0.0)
+    choices = [
+        {
+            "key": "RETRY_FAILED_DOCUMENTS",
+            "label": "Retry failed documents",
+            "consequence": (
+                "Create a replacement ad hoc batch containing only documents that still lack a current result "
+                "from one or both pinned Q&A profiles."
+            ),
+        },
+        {
+            "key": "ACCEPT_UNRESOLVED_DOCUMENTS",
+            "label": "Accept unresolved documents",
+            "consequence": (
+                "Record the unresolved documents as an accepted limitation and continue the Review Program."
+            ),
+        },
+        {
+            "key": "STOP",
+            "label": "Stop program",
+            "consequence": "Cancel this run while preserving its history and completed work.",
+        },
+    ]
+    decision_context = {
+        "schema_version": 1,
+        "program_version_id": str(run.current_program_version_id),
+        "stage_key": "CLASSIFIER_POSITIVE_COVERAGE",
+        "stage_attempt_id": str(attempt.id),
+        "classifier_positive_coverage_errors": progress,
+    }
+    action = ReviewProgramAction(
+        run_id=run.id,
+        stage_attempt_id=attempt.id,
+        stage_key="CLASSIFIER_POSITIVE_COVERAGE",
+        action_type="CLASSIFIER_POSITIVE_COVERAGE_ERRORS",
+        title="Resolve incomplete classifier-positive Q&A coverage",
+        explanation=(
+            f"{unresolved:,} of {population:,} documents ({failure_rate:.2%}) remain unresolved. "
+            "Because this is below the 0.5% tolerance, the stage completed with errors instead of failing."
+        ),
+        decision_context=decision_context,
+        preview_hash=canonical_hash({"context": decision_context, "choices": choices}),
+        allowed_choices=choices,
+        status="OPEN",
+        authorization_context={"permission": "review_program.manage", "matter_id": str(program.matter_id)},
+    )
+    db.add(action)
+    db.flush()
+    run.pending_action_id = action.id
+    run.status = "WAITING_FOR_USER"
+    attempt.status = "WAITING"
+    route = _notification_route(db, program, run)
+    publish_notification(
+        db,
+        type_key="review_program.action_required",
+        scope=ResourceRef.matter(program.matter_id),
+        source=NotificationSource("review_program_action", action.id),
+        audiences=(PermissionAudience("review_program.manage"),),
+        template_data={"program_name": _notification_program_name(program), "action_title": action.title},
+        route_params={**route, "action_id": str(action.id)},
+        idempotency_key=f"review-program-action:{action.id}",
+        created_by_kind="WORKFLOW",
+    )
+    return action
+
+
+def _reconcile_tolerable_classifier_positive_coverage_failure(
+    db: Session,
+    *,
+    program: ReviewProgram,
+    run: ReviewProgramRun,
+) -> bool:
+    """Apply the document-level tolerance to a run failed under the former policy."""
+
+    if (
+        run.status != "FAILED"
+        or run.current_stage != "CLASSIFIER_POSITIVE_COVERAGE"
+        or run.failure_code
+        not in {
+            "CLASSIFIER_POSITIVE_COVERAGE_QA_PROFILE_FAILED",
+            "CLASSIFIER_POSITIVE_COVERAGE_INCOMPLETE",
+        }
+    ):
+        return False
+    attempt = _current_stage_attempt(db, run, for_update=True)
+    profile_run_ids = list(
+        db.scalars(
+            select(ReviewProgramChild.child_id).where(
+                ReviewProgramChild.run_id == run.id,
+                ReviewProgramChild.stage_attempt_id == attempt.id,
+                ReviewProgramChild.purpose == "CLASSIFIER_POSITIVE_COVERAGE_QA_PROFILE",
+                ReviewProgramChild.child_type == "REVIEW_BATCH_RUN",
+                ReviewProgramChild.status != "ARCHIVED",
+            )
+        )
+    )
+    if not profile_run_ids:
+        return False
+    unresolved_document_ids = set(
+        db.scalars(
+            select(ReviewBatchRunDocument.matter_document_id).where(
+                ReviewBatchRunDocument.review_batch_run_id.in_(profile_run_ids),
+                ReviewBatchRunDocument.status == "FAILED",
+            )
+        )
+    )
+    population_document_count = _classifier_positive_coverage_population_count(
+        run.progress_summary or {}
+    )
+    if not _classifier_positive_coverage_failure_is_tolerable(
+        unresolved_document_count=len(unresolved_document_ids),
+        population_document_count=population_document_count,
+    ):
+        return False
+    progress = dict((run.progress_summary or {}).get("classifier_positive_coverage") or {})
+    profile_totals = _classifier_positive_coverage_profile_totals(db, run=run)
+    progress.update(
+        {
+            "coverage_population_document_count": population_document_count,
+            "unresolved_document_count": len(unresolved_document_ids),
+            "unresolved_document_rate": len(unresolved_document_ids) / population_document_count,
+            "failure_tolerance": _CLASSIFIER_POSITIVE_COVERAGE_FAILURE_TOLERANCE,
+            "unresolved_document_ids": [
+                str(value) for value in sorted(unresolved_document_ids, key=str)
+            ],
+            **({"profile_runs": profile_totals} if profile_totals else {}),
+            "state": "COMPLETED_WITH_ERRORS",
+        }
+    )
+    run.status = "RUNNING"
+    run.failure_code = None
+    run.failure_summary = None
+    run.failure_retriable = False
+    run.completed_at = None
+    run.progress_summary = {
+        **run.progress_summary,
+        "classifier_positive_coverage_state": "COMPLETED_WITH_ERRORS",
+        "classifier_positive_coverage": progress,
+    }
+    attempt.status = "RUNNING"
+    attempt.error_code = None
+    attempt.error_summary = None
+    attempt.completed_at = None
+    resolve_source_notifications(
+        db,
+        source=NotificationSource("review_program_run", run.id),
+        resolution_code="RECONCILED_WITH_TOLERANCE",
+    )
+    _create_classifier_positive_coverage_error_action(
+        db,
+        program=program,
+        run=run,
+        attempt=attempt,
+        progress=progress,
+    )
+    return True
+
+
 def _wilson_interval(successes: int, total: int, *, z: float = 1.959963984540054) -> tuple[float, float] | None:
     if total <= 0:
         return None
@@ -8552,7 +9926,7 @@ def _negative_population_qc_findings_document_ids(
         run=run,
         task_version_id=task_version.id,
         profile_ids={profile.id for profile in profiles},
-        completed_only=False,
+        usable_coding_only=False,
     )
     selected: list[uuid.UUID] = []
     for row in rows:
@@ -8561,13 +9935,10 @@ def _negative_population_qc_findings_document_ids(
         except (KeyError, TypeError, ValueError) as exc:
             raise ReviewProgramError("Negative-population QC manifest is invalid") from exc
         expected_hash = row.get("source_content_hash")
-        current = {
-            profile_id: result
-            for profile_id, result in results_by_document.get(document_id, {}).items()
-            if result.status == "COMPLETED"
-            and expected_hash is not None
-            and result.source_content_hash == expected_hash
-        }
+        current = _current_usable_qa_results(
+            results_by_document.get(document_id, {}),
+            expected_source_hash=expected_hash,
+        )
         if len(current) != len(profiles):
             selected.append(document_id)
             continue
@@ -8863,7 +10234,7 @@ def _finalize_negative_population_qc(
         run=run,
         task_version_id=task_version.id,
         profile_ids=profile_ids,
-        completed_only=False,
+        usable_coding_only=False,
     )
     matter = db.get(Matter, program.matter_id)
     if matter is None:
@@ -8889,13 +10260,10 @@ def _finalize_negative_population_qc(
         counts["sampled"] += 1
         expected_source_hash = row.get("source_content_hash")
         document_results = results_by_document.get(document_id, {})
-        current = {
-            profile_id: result
-            for profile_id, result in document_results.items()
-            if result.status == "COMPLETED"
-            and expected_source_hash is not None
-            and result.source_content_hash == expected_source_hash
-        }
+        current = _current_usable_qa_results(
+            document_results,
+            expected_source_hash=expected_source_hash,
+        )
         if len(current) != len(profiles):
             counts["unresolved"] += 1
             overall["unresolved"] += 1
@@ -8948,11 +10316,23 @@ def _finalize_negative_population_qc(
     }
     report = {
         "schema_version": 1,
-        "state": "COMPLETED",
+        "state": (
+            progress.get("state")
+            if progress.get("state") in {"COMPLETED", "COMPLETED_WITH_ERRORS"}
+            else "COMPLETED"
+        ),
         "policy_version": "review-program-negative-population-qc-report-v1",
         "selected_document_count": manifest.item_count,
         "resolved_document_count": overall["resolved"],
         "unresolved_document_count": overall["unresolved"],
+        "profile_failure_document_count": int(
+            progress.get("unresolved_document_count") or 0
+        ),
+        "profile_failure_document_rate": progress.get("unresolved_document_rate"),
+        "profile_failure_tolerance": progress.get("failure_tolerance"),
+        "profile_failure_document_ids": list(
+            progress.get("unresolved_document_ids") or []
+        ),
         "positive_document_count": overall["positive"],
         "exact_q_and_a_count": overall["exact"],
         "partial_q_and_a_count": overall["partial"],
@@ -8977,8 +10357,9 @@ def _finalize_negative_population_qc(
         "representative_positive_document_ids": representative_positive_document_ids,
         "input_manifest_id": str(manifest.id),
         "input_manifest_content_hash": manifest.artifact_content_hash,
-        "batch_set_id": progress.get("batch_set_id"),
-        "batch_set_run_ids": progress.get("batch_set_run_ids", []),
+        "review_batch_id": progress.get("review_batch_id"),
+        "review_batch_run_ids": progress.get("review_batch_run_ids", []),
+        "batching_policy": progress.get("batching_policy", "AD_HOC_BATCH"),
         "profile_runs": progress.get("profile_runs", []),
         "limitations": [
             "Only the random-audit lane supports a collection-level miss-rate estimate.",
@@ -9010,6 +10391,567 @@ def _finalize_negative_population_qc(
         attempt=attempt,
         stage=_stage_for_run(program, run),
         template=_template_for_program(program),
+    )
+
+
+def project_review_program_classifier_positive_coverage_batch_terminal(
+    db: Session,
+    *,
+    batch: ReviewBatch,
+    workflow: WorkflowRun,
+) -> ReviewProgramEvent | None:
+    if (
+        workflow.notification_policy != "PARENT_MANAGED"
+        or workflow.notification_parent_type != "REVIEW_PROGRAM_RUN"
+        or workflow.notification_parent_id is None
+    ):
+        return None
+    child = db.scalar(
+        select(ReviewProgramChild).where(
+            ReviewProgramChild.run_id == workflow.notification_parent_id,
+            ReviewProgramChild.purpose.in_(
+                [
+                    "CLASSIFIER_POSITIVE_COVERAGE_BATCH",
+                    "NEGATIVE_POPULATION_QC_BATCH",
+                ]
+            ),
+            ReviewProgramChild.child_type == "REVIEW_BATCH",
+            ReviewProgramChild.child_id == batch.id,
+        )
+    )
+    if child is None or child.status == "ARCHIVED":
+        return None
+    child.status = batch.status
+    child.context = {
+        **child.context,
+        "workflow_status": workflow.status,
+        "document_count": batch.document_count,
+        "error_message": batch.error_message,
+    }
+    run = db.get(ReviewProgramRun, child.run_id)
+    attempt = db.get(ReviewProgramStageAttempt, child.stage_attempt_id)
+    program = db.get(ReviewProgram, run.program_id) if run is not None else None
+    if run is None or attempt is None or program is None:
+        raise ReviewProgramError("Review Program ad hoc Q&A batch link is incomplete")
+    stage_by_purpose = {
+        "CLASSIFIER_POSITIVE_COVERAGE_BATCH": {
+            "stage_key": "CLASSIFIER_POSITIVE_COVERAGE",
+            "progress_key": "classifier_positive_coverage",
+            "profile_purpose": "CLASSIFIER_POSITIVE_COVERAGE_QA_PROFILE",
+            "idempotency_scope": "classifier-positive-coverage",
+            "reuse_current_results": True,
+        },
+        "NEGATIVE_POPULATION_QC_BATCH": {
+            "stage_key": "NO_CODE_QC",
+            "progress_key": "negative_population_qc",
+            "profile_purpose": "NEGATIVE_POPULATION_QC_QA_PROFILE",
+            "idempotency_scope": "negative-population-qc",
+            "reuse_current_results": False,
+        },
+    }
+    stage = stage_by_purpose[child.purpose]
+    stage_key = str(stage["stage_key"])
+    progress_key = str(stage["progress_key"])
+    profile_purpose = str(stage["profile_purpose"])
+    idempotency_scope = str(stage["idempotency_scope"])
+    if (
+        run.status in TERMINAL_RUN_STATUSES
+        or run.current_stage != stage_key
+        or attempt.id != _current_stage_attempt(db, run).id
+    ):
+        return None
+    if workflow.status in {"FAILED", "CANCELED"} or batch.status != "READY":
+        run.status = "RUNNING"
+        attempt.status = "RUNNING"
+        return fail_review_program_stage(
+            db,
+            program=program,
+            run=run,
+            error_code=f"{stage_key}_BATCH_{workflow.status}",
+            error_summary=batch.error_message
+            or f"{stage_key.replace('_', ' ').title()} batch could not be prepared",
+            retriable=True,
+        )
+    if workflow.status not in {"COMPLETED", "COMPLETED_WITH_ERRORS"}:
+        return None
+
+    task, task_version, profiles = _qa_task_records(db, run)
+    matter = db.get(Matter, program.matter_id)
+    if matter is None:
+        raise ReviewProgramError("Review Program matter is unavailable")
+    progress = dict((run.progress_summary or {}).get(progress_key) or {})
+    manifest_id = progress.get("input_manifest_id")
+    launched_runs: list[ReviewBatchRun] = []
+    try:
+        for profile in profiles:
+            profile_workflow, review_run = queue_analysis_task_batch(
+                db,
+                matter=matter,
+                batch=batch,
+                task=task,
+                task_version=task_version,
+                initiated_by_user_id=run.initiated_by_user_id,
+                execution_profile=profile,
+                dispatch=False,
+                notification_parent_type="REVIEW_PROGRAM_RUN",
+                notification_parent_id=run.id,
+                document_execution_policy=(
+                    {
+                        "mode": "REUSE_CURRENT_PROFILE_RESULTS",
+                        "input_manifest_id": manifest_id,
+                    }
+                    if stage["reuse_current_results"]
+                    else None
+                ),
+            )
+            launched_runs.append(review_run)
+            link_review_program_child(
+                db,
+                program=program,
+                run=run,
+                stage_attempt=attempt,
+                purpose=profile_purpose,
+                child_type="REVIEW_BATCH_RUN",
+                child_id=review_run.id,
+                derivation_key=(
+                    f"{idempotency_scope}-profile-run:{attempt.id}:{profile.id}"
+                ),
+                batching_policy="AD_HOC_BATCH",
+                context={
+                    "review_batch_id": str(batch.id),
+                    "execution_profile_id": str(profile.id),
+                    "execution_profile_key": profile.key,
+                    "workflow_run_id": str(profile_workflow.id),
+                },
+            )
+    except MatterAnalysisTaskError as exc:
+        for launched_run in launched_runs:
+            cancel_job_execution(
+                db,
+                job_type=ANALYSIS_TASK_BATCH_RUN_JOB_TYPE,
+                job_id=launched_run.id,
+                actor_user_id=run.initiated_by_user_id,
+            )
+        run.status = "RUNNING"
+        attempt.status = "RUNNING"
+        return fail_review_program_stage(
+            db,
+            program=program,
+            run=run,
+            error_code=f"{stage_key}_LAUNCH_FAILED",
+            error_summary=str(exc),
+            retriable=True,
+        )
+    progress["review_batch_run_ids"] = [str(item.id) for item in launched_runs]
+    progress["state"] = "RUNNING_PROFILES"
+    run.progress_summary = {
+        **run.progress_summary,
+        f"{progress_key}_state": "RUNNING_PROFILES",
+        progress_key: progress,
+    }
+    for review_run in launched_runs:
+        enqueue_analysis_task_batch(db, review_run.dbos_workflow_id, str(review_run.current_workflow_run_id))
+    return None
+
+
+def _classifier_positive_coverage_profile_totals(
+    db: Session,
+    *,
+    run: ReviewProgramRun,
+) -> list[dict[str, Any]]:
+    """Summarize final unique-document outcomes across every coverage attempt."""
+
+    run_ids = list(
+        db.scalars(
+            select(ReviewProgramChild.child_id).where(
+                ReviewProgramChild.run_id == run.id,
+                ReviewProgramChild.purpose == "CLASSIFIER_POSITIVE_COVERAGE_QA_PROFILE",
+                ReviewProgramChild.child_type == "REVIEW_BATCH_RUN",
+            )
+        )
+    )
+    if not run_ids:
+        return []
+    review_runs = list(
+        db.scalars(
+            select(ReviewBatchRun)
+            .where(ReviewBatchRun.id.in_(run_ids))
+            .order_by(ReviewBatchRun.created_at, ReviewBatchRun.id)
+        )
+    )
+    profile_by_run: dict[uuid.UUID, str] = {}
+    profile_metadata: dict[str, dict[str, Any]] = {}
+    run_count_by_profile = Counter()
+    for item in review_runs:
+        snapshot = item.configuration_snapshot or {}
+        profile = snapshot.get("execution_profile") or {}
+        profile_id = str(snapshot.get("execution_profile_id") or profile.get("id") or "")
+        if not profile_id:
+            continue
+        profile_by_run[item.id] = profile_id
+        run_count_by_profile[profile_id] += 1
+        profile_metadata[profile_id] = {
+            "id": f"profile:{profile_id}",
+            "execution_profile_id": profile_id,
+            "profile_key": profile.get("key"),
+            "model_name": profile.get("resolved_model")
+            or profile.get("model_key")
+            or snapshot.get("model_key"),
+        }
+    if not profile_by_run:
+        return []
+    status_rank = {"FAILED": 1, "SKIPPED": 2, "COMPLETED": 3}
+    outcomes: dict[tuple[str, uuid.UUID], tuple[str, str | None]] = {}
+    for run_id, document_id, status, failure_code in db.execute(
+        select(
+            ReviewBatchRunDocument.review_batch_run_id,
+            ReviewBatchRunDocument.matter_document_id,
+            ReviewBatchRunDocument.status,
+            ReviewBatchRunDocument.failure_code,
+        ).where(ReviewBatchRunDocument.review_batch_run_id.in_(list(profile_by_run)))
+    ):
+        profile_id = profile_by_run.get(run_id)
+        if profile_id is None or status not in status_rank:
+            continue
+        key = (profile_id, document_id)
+        previous = outcomes.get(key)
+        if previous is None or status_rank[status] > status_rank[previous[0]]:
+            outcomes[key] = (status, failure_code)
+    summaries: list[dict[str, Any]] = []
+    for profile_id, metadata in sorted(
+        profile_metadata.items(),
+        key=lambda item: str(item[1].get("profile_key") or item[1].get("model_name") or item[0]),
+    ):
+        profile_outcomes = [value for (key, _document_id), value in outcomes.items() if key == profile_id]
+        counts = Counter(status for status, _failure_code in profile_outcomes)
+        failure_counts = Counter(
+            str(failure_code or "ANALYSIS_DOCUMENT_FAILURE")
+            for status, failure_code in profile_outcomes
+            if status == "FAILED"
+        )
+        summaries.append(
+            {
+                **metadata,
+                "run_count": run_count_by_profile[profile_id],
+                "status": "COMPLETED_WITH_ERRORS" if counts["FAILED"] else "COMPLETED",
+                "completed_document_count": counts["COMPLETED"],
+                "reused_document_count": counts["SKIPPED"],
+                "failed_document_count": counts["FAILED"],
+                "failure_counts": dict(sorted(failure_counts.items())),
+                "processed_document_count": sum(counts.values()),
+            }
+        )
+    return summaries
+
+
+def project_review_program_classifier_positive_coverage_run_terminal(
+    db: Session,
+    *,
+    review_run: ReviewBatchRun,
+    workflow: WorkflowRun,
+) -> ReviewProgramEvent | None:
+    if (
+        workflow.notification_policy != "PARENT_MANAGED"
+        or workflow.notification_parent_type != "REVIEW_PROGRAM_RUN"
+        or workflow.notification_parent_id is None
+    ):
+        return None
+    child = db.scalar(
+        select(ReviewProgramChild).where(
+            ReviewProgramChild.run_id == workflow.notification_parent_id,
+            ReviewProgramChild.purpose.in_(
+                [
+                    "CLASSIFIER_POSITIVE_COVERAGE_QA_PROFILE",
+                    "NEGATIVE_POPULATION_QC_QA_PROFILE",
+                ]
+            ),
+            ReviewProgramChild.child_type == "REVIEW_BATCH_RUN",
+            ReviewProgramChild.child_id == review_run.id,
+        )
+    )
+    if child is None or child.status == "ARCHIVED":
+        return None
+    child.status = review_run.status
+    child.context = {
+        **child.context,
+        "workflow_status": workflow.status,
+        "processed_document_count": review_run.processed_document_count,
+        "failure_summary": workflow.failure_summary,
+    }
+    run = db.get(ReviewProgramRun, child.run_id)
+    attempt = db.get(ReviewProgramStageAttempt, child.stage_attempt_id)
+    program = db.get(ReviewProgram, run.program_id) if run is not None else None
+    if run is None or attempt is None or program is None:
+        raise ReviewProgramError("Review Program ad hoc Q&A profile link is incomplete")
+    negative_population_qc = child.purpose == "NEGATIVE_POPULATION_QC_QA_PROFILE"
+    stage_key = "NO_CODE_QC" if negative_population_qc else "CLASSIFIER_POSITIVE_COVERAGE"
+    profile_purpose = child.purpose
+    if (
+        run.current_stage != stage_key
+        or attempt.id != _current_stage_attempt(db, run).id
+    ):
+        return None
+    if attempt.status in {"COMPLETED", "WAITING"}:
+        return None
+    if attempt.status == "FAILED" and not negative_population_qc:
+        return None
+    profile_children = list(
+        db.scalars(
+            select(ReviewProgramChild)
+            .where(
+                ReviewProgramChild.run_id == run.id,
+                ReviewProgramChild.stage_attempt_id == attempt.id,
+                ReviewProgramChild.purpose == profile_purpose,
+                ReviewProgramChild.child_type == "REVIEW_BATCH_RUN",
+            )
+            .order_by(ReviewProgramChild.created_at, ReviewProgramChild.id)
+        )
+    )
+    profile_runs = [db.get(ReviewBatchRun, item.child_id) for item in profile_children]
+    if len(profile_runs) != 2 or any(item is None for item in profile_runs):
+        return None
+    resolved_runs = [item for item in profile_runs if item is not None]
+    terminal = {"COMPLETED", "COMPLETED_WITH_ERRORS", "FAILED", "CANCELED"}
+    if any(item.status not in terminal for item in resolved_runs):
+        return None
+    profile_run_summaries: list[dict[str, Any]] = []
+    for item in resolved_runs:
+        status_counts = {
+            status: int(count)
+            for status, count in db.execute(
+                select(ReviewBatchRunDocument.status, func.count())
+                .where(ReviewBatchRunDocument.review_batch_run_id == item.id)
+                .group_by(ReviewBatchRunDocument.status)
+            ).all()
+        }
+        failure_counts = {
+            str(code or "ANALYSIS_DOCUMENT_FAILURE"): int(count)
+            for code, count in db.execute(
+                select(ReviewBatchRunDocument.failure_code, func.count())
+                .where(
+                    ReviewBatchRunDocument.review_batch_run_id == item.id,
+                    ReviewBatchRunDocument.status == "FAILED",
+                )
+                .group_by(ReviewBatchRunDocument.failure_code)
+            ).all()
+        }
+        profile = item.configuration_snapshot.get("execution_profile") or {}
+        profile_run_summaries.append(
+            {
+                "id": str(item.id),
+                "execution_profile_id": item.configuration_snapshot.get("execution_profile_id"),
+                "profile_key": profile.get("key"),
+                "model_name": profile.get("resolved_model")
+                or profile.get("model_key")
+                or item.configuration_snapshot.get("model_key"),
+                "status": item.status,
+                "completed_document_count": status_counts.get("COMPLETED", 0),
+                "reused_document_count": status_counts.get("SKIPPED", 0),
+                "failed_document_count": status_counts.get("FAILED", 0),
+                "failure_counts": failure_counts,
+                "processed_document_count": item.processed_document_count,
+            }
+        )
+    if negative_population_qc:
+        progress = dict((run.progress_summary or {}).get("negative_population_qc") or {})
+        progress["profile_runs"] = profile_run_summaries
+        failed_document_ids = set(
+            db.scalars(
+                select(ReviewBatchRunDocument.matter_document_id).where(
+                    ReviewBatchRunDocument.review_batch_run_id.in_(
+                        [item.id for item in resolved_runs]
+                    ),
+                    ReviewBatchRunDocument.status == "FAILED",
+                )
+            )
+        )
+        population_document_count = int(progress.get("selected_document_count") or 0)
+        unresolved_document_count = len(failed_document_ids)
+        unresolved_document_rate = (
+            unresolved_document_count / population_document_count
+            if population_document_count
+            else 0.0
+        )
+        has_failed_profile = any(
+            item.status != "COMPLETED"
+            or summary["failed_document_count"] > 0
+            for item, summary in zip(resolved_runs, profile_run_summaries, strict=True)
+        )
+        tolerable = bool(
+            has_failed_profile
+            and all(item.status != "CANCELED" for item in resolved_runs)
+            and all(item.status not in {"FAILED"} for item in resolved_runs)
+            and _negative_population_qc_failure_is_tolerable(
+                unresolved_document_count=unresolved_document_count,
+                population_document_count=population_document_count,
+            )
+        )
+        progress.update(
+            {
+                "unresolved_document_count": unresolved_document_count,
+                "unresolved_document_rate": unresolved_document_rate,
+                "failure_tolerance": _NEGATIVE_POPULATION_QC_FAILURE_TOLERANCE,
+                "unresolved_document_ids": [
+                    str(value) for value in sorted(failed_document_ids, key=str)
+                ],
+            }
+        )
+        if has_failed_profile and not tolerable:
+            run.progress_summary = {
+                **run.progress_summary,
+                "negative_population_qc_state": "FAILED",
+                "negative_population_qc": {**progress, "state": "FAILED"},
+            }
+            if attempt.status == "FAILED":
+                run.status = "FAILED"
+                run.failure_code = attempt.error_code
+                run.failure_summary = attempt.error_summary
+                run.failure_retriable = True
+                return None
+            details = []
+            for summary in profile_run_summaries:
+                failure_detail = ", ".join(
+                    f"{code}: {count}"
+                    for code, count in sorted(summary["failure_counts"].items())
+                )
+                details.append(
+                    f"{summary['model_name'] or summary['profile_key'] or 'Q&A profile'}: "
+                    f"{summary['completed_document_count']} completed, "
+                    f"{summary['failed_document_count']} failed"
+                    + (f" ({failure_detail})" if failure_detail else "")
+                )
+            run.status = "RUNNING"
+            attempt.status = "RUNNING"
+            return fail_review_program_stage(
+                db,
+                program=program,
+                run=run,
+                error_code="NEGATIVE_POPULATION_QC_QA_PROFILE_FAILED",
+                error_summary="Negative-population QC Q&A was incomplete. "
+                + "; ".join(details),
+                retriable=True,
+            )
+        if attempt.status == "FAILED":
+            run.status = "RUNNING"
+            run.failure_code = None
+            run.failure_summary = None
+            run.failure_retriable = False
+            run.completed_at = None
+            attempt.status = "RUNNING"
+            attempt.error_code = None
+            attempt.error_summary = None
+            attempt.completed_at = None
+            resolve_source_notifications(
+                db,
+                source=NotificationSource("review_program_run", run.id),
+                resolution_code="RECOVERED",
+            )
+        progress["state"] = "COMPLETED_WITH_ERRORS" if tolerable else "COMPLETED"
+        run.progress_summary = {
+            **run.progress_summary,
+            "negative_population_qc_state": progress["state"],
+            "negative_population_qc": progress,
+        }
+        _finalize_negative_population_qc(
+            db,
+            program=program,
+            run=run,
+            attempt=attempt,
+            progress=progress,
+        )
+        return None
+    progress = dict((run.progress_summary or {}).get("classifier_positive_coverage") or {})
+    progress["latest_profile_runs"] = profile_run_summaries
+    progress["profile_runs"] = (
+        _classifier_positive_coverage_profile_totals(db, run=run) or profile_run_summaries
+    )
+    if any(item.status != "COMPLETED" for item in resolved_runs):
+        unresolved_document_ids = set(
+            db.scalars(
+                select(ReviewBatchRunDocument.matter_document_id).where(
+                    ReviewBatchRunDocument.review_batch_run_id.in_(
+                        [item.id for item in resolved_runs]
+                    ),
+                    ReviewBatchRunDocument.status == "FAILED",
+                )
+            )
+        )
+        population_document_count = _classifier_positive_coverage_population_count(
+            run.progress_summary or {}
+        )
+        unresolved_document_count = len(unresolved_document_ids)
+        unresolved_document_rate = (
+            unresolved_document_count / population_document_count
+            if population_document_count
+            else 0.0
+        )
+        tolerable = (
+            all(item.status != "CANCELED" for item in resolved_runs)
+            and _classifier_positive_coverage_failure_is_tolerable(
+                unresolved_document_count=unresolved_document_count,
+                population_document_count=population_document_count,
+            )
+        )
+        progress.update(
+            {
+                "coverage_population_document_count": population_document_count,
+                "unresolved_document_count": unresolved_document_count,
+                "unresolved_document_rate": unresolved_document_rate,
+                "failure_tolerance": _CLASSIFIER_POSITIVE_COVERAGE_FAILURE_TOLERANCE,
+                "unresolved_document_ids": [
+                    str(value) for value in sorted(unresolved_document_ids, key=str)
+                ],
+                "state": "COMPLETED_WITH_ERRORS" if tolerable else "FAILED",
+            }
+        )
+        run.progress_summary = {
+            **run.progress_summary,
+            "classifier_positive_coverage_state": progress["state"],
+            "classifier_positive_coverage": progress,
+        }
+        details = []
+        for summary in profile_run_summaries:
+            failure_detail = ", ".join(
+                f"{code}: {count}" for code, count in sorted(summary["failure_counts"].items())
+            )
+            details.append(
+                f"{summary['model_name'] or summary['profile_key'] or 'Q&A profile'}: "
+                f"{summary['completed_document_count']} completed, "
+                f"{summary['reused_document_count']} reused, "
+                f"{summary['failed_document_count']} failed"
+                + (f" ({failure_detail})" if failure_detail else "")
+            )
+        if tolerable:
+            _create_classifier_positive_coverage_error_action(
+                db,
+                program=program,
+                run=run,
+                attempt=attempt,
+                progress=progress,
+            )
+            return None
+        run.status = "RUNNING"
+        attempt.status = "RUNNING"
+        return fail_review_program_stage(
+            db,
+            program=program,
+            run=run,
+            error_code="CLASSIFIER_POSITIVE_COVERAGE_QA_PROFILE_FAILED",
+            error_summary="Classifier-positive coverage Q&A was incomplete. " + "; ".join(details),
+            retriable=True,
+        )
+    progress["state"] = "COMPLETED"
+    run.progress_summary = {
+        **run.progress_summary,
+        "classifier_positive_coverage_state": "COMPLETED",
+        "classifier_positive_coverage": progress,
+    }
+    return _finalize_classifier_positive_coverage(
+        db,
+        program=program,
+        run=run,
+        attempt=attempt,
+        progress=progress,
     )
 
 
@@ -9322,9 +11264,13 @@ def resolve_review_program_action(
     if (
         action.action_type == "NEGATIVE_POPULATION_QC_SETUP"
         and choice_key != "STOP"
-        and not input_payload.get("batch_set_id")
+        and not input_payload.get("review_batch_id")
     ):
         raise ReviewProgramError("Use the Negative-population QC setup command for this choice")
+    if action.action_type == "CLASSIFIER_POSITIVE_COVERAGE" and choice_key == "RUN_COVERAGE":
+        _classifier_positive_coverage_minimum_confidence(
+            input_payload.get("minimum_confidence", 0.5)
+        )
     now = utcnow()
     action.status = "RESOLVED"
     action.resolution_payload = {"choice_key": choice_key, "input": input_payload}
@@ -9789,6 +11735,232 @@ def _review_program_failure_allows_retry(run: ReviewProgramRun) -> bool:
     )
 
 
+def _resume_negative_population_qc_launch_failure(
+    db: Session,
+    *,
+    program: ReviewProgram,
+    run: ReviewProgramRun,
+) -> bool:
+    """Resume profile launch against an already-materialized QC batch."""
+
+    if (
+        run.status != "FAILED"
+        or run.current_stage != "NO_CODE_QC"
+        or run.failure_code != "NO_CODE_QC_LAUNCH_FAILED"
+    ):
+        return False
+    attempt = _current_stage_attempt(db, run, for_update=True)
+    batch_child = db.scalar(
+        select(ReviewProgramChild).where(
+            ReviewProgramChild.run_id == run.id,
+            ReviewProgramChild.stage_attempt_id == attempt.id,
+            ReviewProgramChild.purpose == "NEGATIVE_POPULATION_QC_BATCH",
+            ReviewProgramChild.child_type == "REVIEW_BATCH",
+            ReviewProgramChild.status != "ARCHIVED",
+        )
+    )
+    if batch_child is None:
+        return False
+    profile_child_exists = db.scalar(
+        select(ReviewProgramChild.id).where(
+            ReviewProgramChild.run_id == run.id,
+            ReviewProgramChild.stage_attempt_id == attempt.id,
+            ReviewProgramChild.purpose == "NEGATIVE_POPULATION_QC_QA_PROFILE",
+            ReviewProgramChild.status != "ARCHIVED",
+        )
+    )
+    if profile_child_exists is not None:
+        return False
+    batch = db.get(ReviewBatch, batch_child.child_id)
+    workflow = (
+        current_job_execution(
+            db,
+            job_type=REVIEW_BATCH_MATERIALIZATION_JOB_TYPE,
+            job_id=batch.id,
+        )
+        if batch is not None
+        else None
+    )
+    if (
+        batch is None
+        or batch.status != "READY"
+        or workflow is None
+        or workflow.status not in {"COMPLETED", "COMPLETED_WITH_ERRORS"}
+    ):
+        return False
+    run.status = "RUNNING"
+    run.failure_code = None
+    run.failure_summary = None
+    run.failure_retriable = False
+    run.completed_at = None
+    attempt.status = "RUNNING"
+    attempt.error_code = None
+    attempt.error_summary = None
+    attempt.completed_at = None
+    resolve_source_notifications(
+        db,
+        source=NotificationSource("review_program_run", run.id),
+        resolution_code="RETRIED",
+    )
+    project_review_program_classifier_positive_coverage_batch_terminal(
+        db,
+        batch=batch,
+        workflow=workflow,
+    )
+    return True
+
+
+def _archive_classifier_positive_coverage_children_for_retry(
+    db: Session,
+    *,
+    run: ReviewProgramRun,
+) -> list[uuid.UUID]:
+    """Retain failed-attempt provenance without leaving replacement batches active."""
+
+    now = utcnow()
+    children = list(
+        db.scalars(
+            select(ReviewProgramChild).where(
+                ReviewProgramChild.run_id == run.id,
+                ReviewProgramChild.purpose.in_(
+                    {
+                        "CLASSIFIER_POSITIVE_COVERAGE_BATCH",
+                        "CLASSIFIER_POSITIVE_COVERAGE_QA_PROFILE",
+                    }
+                ),
+                ReviewProgramChild.status != "ARCHIVED",
+            )
+        )
+    )
+    archived_batch_ids: list[uuid.UUID] = []
+    for child in children:
+        if child.child_type == "REVIEW_BATCH":
+            batch = db.get(ReviewBatch, child.child_id)
+            if batch is not None and batch.status != "ARCHIVED":
+                batch.status = "ARCHIVED"
+                batch.completed_at = batch.completed_at or now
+                archived_batch_ids.append(batch.id)
+        child.status = "ARCHIVED"
+        child.context = {
+            **(child.context or {}),
+            "archived_at": now.isoformat(),
+            "archive_reason": "CLASSIFIER_POSITIVE_COVERAGE_RETRY",
+        }
+    return archived_batch_ids
+
+
+def _retry_classifier_positive_coverage_from_action(
+    db: Session,
+    *,
+    program: ReviewProgram,
+    run: ReviewProgramRun,
+    attempt: ReviewProgramStageAttempt,
+    action: ReviewProgramAction,
+) -> None:
+    """Start a replacement attempt directly from the completed-with-errors gate."""
+
+    progress_summary = dict(run.progress_summary or {})
+    previous_coverage = progress_summary.pop("classifier_positive_coverage", None)
+    archived_batch_ids = _archive_classifier_positive_coverage_children_for_retry(db, run=run)
+    coverage_attempts = progress_summary.get("classifier_positive_coverage_attempts")
+    if not isinstance(coverage_attempts, list):
+        coverage_attempts = []
+    progress_summary["classifier_positive_coverage_attempts"] = [
+        *coverage_attempts,
+        {
+            **(previous_coverage if isinstance(previous_coverage, dict) else {}),
+            "attempt": attempt.attempt,
+            "terminal_state": "COMPLETED_WITH_ERRORS",
+            "resolution": "RETRY_FAILED_DOCUMENTS",
+            "archived_review_batch_ids": [str(value) for value in archived_batch_ids],
+        },
+    ]
+    progress_summary["classifier_positive_coverage_state"] = "RETRYING"
+    attempt.status = "COMPLETED"
+    attempt.completed_at = action.resolved_at
+    attempt.result_summary = {
+        **attempt.result_summary,
+        "gate_choice": "RETRY_FAILED_DOCUMENTS",
+        "action_id": str(action.id),
+        "classifier_positive_coverage": previous_coverage or {},
+    }
+    run.status = "RUNNING"
+    run.failure_code = None
+    run.failure_summary = None
+    run.failure_retriable = False
+    run.progress_summary = progress_summary
+    _create_stage_attempt(
+        db,
+        program=program,
+        run=run,
+        stage=_stage_for_run(program, run),
+        attempt_number=attempt.attempt + 1,
+    )
+    actor = db.get(User, action.resolved_by_user_id or run.initiated_by_user_id)
+    if actor is None:
+        raise ReviewProgramError("Coverage retry actor is unavailable")
+    _resume_classifier_positive_coverage_retry(
+        db,
+        program=program,
+        run=run,
+        actor=actor,
+    )
+
+
+def _classifier_positive_coverage_retry_input(progress: dict[str, Any]) -> dict[str, Any]:
+    current = progress.get("classifier_positive_coverage")
+    candidates = [current] if isinstance(current, dict) else []
+    history = progress.get("classifier_positive_coverage_attempts")
+    if isinstance(history, list):
+        candidates.extend(item for item in reversed(history) if isinstance(item, dict))
+    for candidate in candidates:
+        if candidate.get("minimum_confidence") is not None:
+            return {
+                "minimum_confidence": _classifier_positive_coverage_minimum_confidence(
+                    candidate["minimum_confidence"]
+                )
+            }
+    return {"minimum_confidence": 0.5}
+
+
+def _resume_classifier_positive_coverage_retry(
+    db: Session,
+    *,
+    program: ReviewProgram,
+    run: ReviewProgramRun,
+    actor: User,
+) -> bool:
+    """Carry the already-approved coverage choice into a replacement attempt."""
+
+    if (
+        run.current_stage != "CLASSIFIER_POSITIVE_COVERAGE"
+        or run.status != "WAITING_FOR_USER"
+        or (run.progress_summary or {}).get("classifier_positive_coverage_state") != "RETRYING"
+        or run.pending_action_id is None
+    ):
+        return False
+    action = db.get(ReviewProgramAction, run.pending_action_id)
+    if (
+        action is None
+        or action.status != "OPEN"
+        or action.stage_key != "CLASSIFIER_POSITIVE_COVERAGE"
+        or action.action_type != "CLASSIFIER_POSITIVE_COVERAGE"
+    ):
+        return False
+    resolve_review_program_action(
+        db,
+        program=program,
+        run=run,
+        action_id=action.id,
+        actor=actor,
+        preview_hash=action.preview_hash,
+        choice_key="RUN_COVERAGE",
+        reason="Automatically continuing the previously approved coverage run after retry",
+        input_payload=_classifier_positive_coverage_retry_input(run.progress_summary or {}),
+    )
+    return True
+
+
 def retry_review_program_run(
     db: Session,
     *,
@@ -9799,6 +11971,26 @@ def retry_review_program_run(
 ) -> ReviewProgramRun:
     key = _validate_idempotency_key(idempotency_key)
     if run.status == "RUNNING" and run.progress_summary.get("last_retry_key") == key:
+        return run
+    if _resume_negative_population_qc_launch_failure(
+        db,
+        program=program,
+        run=run,
+    ):
+        run.progress_summary = {**run.progress_summary, "last_retry_key": key}
+        record_audit(
+            db,
+            tenant_id=program.tenant_id,
+            actor_user_id=actor.id,
+            action="review_program.run_retried",
+            target_type="review_program_run",
+            target_id=run.id,
+            details={
+                "program_id": str(program.id),
+                "stage_key": run.current_stage,
+                "reused_review_batch": True,
+            },
+        )
         return run
     manually_retryable_classifier_training = (
         run.current_stage == "CLASSIFIER_TRAINING" and not run.failure_retriable
@@ -9826,6 +12018,27 @@ def retry_review_program_run(
                     "failure_summary": run.failure_summary,
                 },
             ]
+    elif stage.key == "CLASSIFIER_POSITIVE_COVERAGE":
+        previous_coverage = progress.pop("classifier_positive_coverage", None)
+        archived_batch_ids = _archive_classifier_positive_coverage_children_for_retry(
+            db,
+            run=run,
+        )
+        coverage_attempts = progress.get("classifier_positive_coverage_attempts")
+        if not isinstance(coverage_attempts, list):
+            coverage_attempts = []
+        progress["classifier_positive_coverage_attempts"] = [
+            *coverage_attempts,
+            {
+                **(previous_coverage if isinstance(previous_coverage, dict) else {}),
+                "attempt": previous.attempt,
+                "terminal_state": "FAILED",
+                "failure_code": run.failure_code,
+                "failure_summary": run.failure_summary,
+                "archived_review_batch_ids": [str(value) for value in archived_batch_ids],
+            },
+        ]
+        progress["classifier_positive_coverage_state"] = "RETRYING"
     run.status = "RUNNING"
     run.failure_code = None
     run.failure_summary = None
@@ -9844,6 +12057,13 @@ def retry_review_program_run(
         stage=stage,
         attempt_number=next_attempt_number,
     )
+    if stage.key == "CLASSIFIER_POSITIVE_COVERAGE":
+        _resume_classifier_positive_coverage_retry(
+            db,
+            program=program,
+            run=run,
+            actor=actor,
+        )
     record_audit(
         db,
         tenant_id=program.tenant_id,
@@ -9869,6 +12089,52 @@ def reconcile_review_program_run(
     run: ReviewProgramRun,
     actor: User,
 ) -> ReviewProgramRun:
+    recalculate_historical_final_alignment(db, program=program, run=run)
+    negative_qc = dict((run.progress_summary or {}).get("negative_population_qc") or {})
+    negative_qc_report = dict(negative_qc.get("report") or {})
+    if (
+        run.status == "WAITING_FOR_USER"
+        and run.current_stage == "NO_CODE_QC"
+        and negative_qc.get("state") == "REPORT_READY"
+        and int(negative_qc_report.get("calculation_version") or 1) < 2
+    ):
+        attempt = _current_stage_attempt(db, run, for_update=True)
+        open_action = db.get(ReviewProgramAction, run.pending_action_id) if run.pending_action_id else None
+        if open_action is not None and open_action.status == "OPEN":
+            now = utcnow()
+            open_action.status = "SUPERSEDED"
+            open_action.resolution_reason = "Superseded by corrected Negative-population QC calculation"
+            open_action.resolved_by_user_id = actor.id
+            open_action.resolved_at = now
+            resolve_source_notifications(
+                db,
+                source=NotificationSource("review_program_action", open_action.id),
+                resolution_code="SUPERSEDED",
+                resolved_at=now,
+            )
+        run.pending_action_id = None
+        run.status = "RUNNING"
+        attempt.status = "RUNNING"
+        attempt.completed_at = None
+        db.flush()
+        _finalize_negative_population_qc(
+            db,
+            program=program,
+            run=run,
+            attempt=attempt,
+            progress={key: value for key, value in negative_qc.items() if key != "report"},
+        )
+    _resume_negative_population_qc_launch_failure(
+        db,
+        program=program,
+        run=run,
+    )
+    _resume_classifier_positive_coverage_retry(
+        db,
+        program=program,
+        run=run,
+        actor=actor,
+    )
     pending_events = list(
         db.scalars(
             select(ReviewProgramEvent)
@@ -9881,6 +12147,11 @@ def reconcile_review_program_run(
     )
     for event in pending_events:
         process_review_program_event(db, event=event)
+    _reconcile_tolerable_classifier_positive_coverage_failure(
+        db,
+        program=program,
+        run=run,
+    )
     if (
         run.status == "WAITING_FOR_USER"
         and run.current_stage == "DEFINITION_ACCEPTANCE"
@@ -9961,6 +12232,42 @@ def reconcile_review_program_run(
                     workflow=workflow,
                     review_program_run_id=run.id,
                 )
+    if run.status in {"RUNNING", "FAILED"} and run.current_stage == "NO_CODE_QC":
+        current_attempt = _current_stage_attempt(db, run, for_update=True)
+        profile_children = list(
+            db.scalars(
+                select(ReviewProgramChild).where(
+                    ReviewProgramChild.stage_attempt_id == current_attempt.id,
+                    ReviewProgramChild.purpose == "NEGATIVE_POPULATION_QC_QA_PROFILE",
+                    ReviewProgramChild.child_type == "REVIEW_BATCH_RUN",
+                    ReviewProgramChild.status != "ARCHIVED",
+                )
+            )
+        )
+        if len(profile_children) == 2:
+            for child in profile_children:
+                review_run = db.get(ReviewBatchRun, child.child_id)
+                workflow = (
+                    current_job_execution(
+                        db,
+                        job_type=ANALYSIS_TASK_BATCH_RUN_JOB_TYPE,
+                        job_id=review_run.id,
+                    )
+                    if review_run is not None
+                    else None
+                )
+                if (
+                    review_run is not None
+                    and workflow is not None
+                    and review_run.status
+                    in {"COMPLETED", "COMPLETED_WITH_ERRORS", "FAILED", "CANCELED"}
+                ):
+                    project_review_program_classifier_positive_coverage_run_terminal(
+                        db,
+                        review_run=review_run,
+                        workflow=workflow,
+                    )
+                    break
     if run.status in {"RUNNING", "FAILED"}:
         attempt = _current_stage_attempt(db, run, for_update=True)
         if attempt.status == "COMPLETED":
@@ -10017,7 +12324,7 @@ def link_review_program_child(
     derivation_key = _validate_idempotency_key(derivation_key)
     if stage_attempt.run_id != run.id or stage_attempt.stage_key != run.current_stage:
         raise ReviewProgramError("Review Program child stage is stale")
-    expected = _stage_for_run(program, run).batching_policy
+    expected = _effective_stage_batching_policy(_stage_for_run(program, run))
     if batching_policy != expected:
         raise ReviewProgramError(f"Review Program stage requires {expected} batching, not {batching_policy}")
     existing = db.scalar(
@@ -10087,4 +12394,14 @@ def review_program_action_decision_context(
                 context.update(_definition_stage_context(db, program=program, run=run))
         elif action.stage_key in {"DISAGREEMENT_REVIEW", "TRAINING_LABEL_FINALIZATION"}:
             context.update(_training_label_stage_context(db, run=run))
+        elif action.stage_key == "NO_CODE_QC":
+            program = db.get(ReviewProgram, run.program_id)
+            if program is not None:
+                context.update(_negative_population_qc_stage_context(db, program=program, run=run))
+        elif action.action_type == "CLASSIFIER_POSITIVE_COVERAGE_ERRORS":
+            errors = dict(context.get("classifier_positive_coverage_errors") or {})
+            totals = _classifier_positive_coverage_profile_totals(db, run=run)
+            if totals:
+                errors["profile_runs"] = totals
+            context["classifier_positive_coverage_errors"] = errors
     return context

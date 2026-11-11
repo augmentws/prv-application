@@ -67,9 +67,11 @@ Select **Statistics** from the Batches table or the batch review header. Statist
 
 ### Compare coding
 
-Select one coding field and two to six result sets from the same frozen batch. Each human reviewer appears exactly once, using that reviewer's current coding. A JEV, agent, or classifier source appears only after it has successfully completed and produced coding for the selected field. Failed, canceled, queued, running, zero-value, playground, and legacy assessment workflow records are not offered as analysis sources. Changing the field does not silently substitute a different result set.
+Select one coding field and two to six result sets from the same frozen batch. Each human reviewer appears exactly once, using that reviewer's current coding. A JEV or agent source appears only after it has successfully completed and produced coding for the selected field. Failed, canceled, queued, running, zero-value, playground, and legacy assessment workflow records are not offered as ready analysis sources. Changing the field does not silently substitute a different result set.
 
-Analysis sources use the current Analysis Task name resolved from the run's pinned task identity. A creation-time snapshot name is used only for legacy runs that cannot be linked to an Analysis Task.
+Completed whole-matter classifier scoring is shown as **Available** when its target field belongs to the batch. Selecting that source prepares and caches classifier coding only for the current batch. While preparation runs, the source shows **Preparing** and comparison waits. The preparation reuses the existing predictions: it does not score documents again, publish values to matter metadata, change the batch's active search coding, or synchronize classifier values to OpenSearch. Reopening the comparison reuses the same immutable batch projection. A failed preparation remains visible and can be selected again to retry.
+
+Analysis sources executed by a decision model use the pinned model name as their comparison label, so multiple profiles of the same Analysis Task remain distinguishable in the agreement tables. The current Analysis Task name, published version, and provider remain visible as source details and in the source tooltip. Legacy workflow runs without a pinned model use the current Analysis Task name resolved from the run's pinned task identity; a creation-time snapshot name is used only when the task can no longer be resolved.
 
 The comparison contains these sections:
 
@@ -177,7 +179,9 @@ An active question-answering Analysis Task run can be canceled from the batch An
 
 The matter Jobs table reports cumulative successful documents against the complete frozen batch population. Retrying selected failures creates a smaller execution attempt, but that attempt does not replace the run's batch-wide progress denominator or erase results completed by earlier attempts.
 
-If a document exceeds `ANALYSIS_TASK_DECISION_MAX_CHARACTERS`, its failure is recorded as `ANALYSIS_DOCUMENT_INPUT_TOO_LARGE` with the measured and configured character counts. The worker does not immediately repeat the same request under an unchanged limit. After an administrator raises the limit and reloads the worker configuration, the failed-document dialog permits a selective retry.
+JEV question-answering requests larger than `TYPESAFE_REQUEST_TARGET_CHARACTERS` are evaluated as paragraph-aligned document windows. Every window receives the complete frozen question set and decision context; only the document content is partitioned. Window answers are combined using each question's published aggregation operator, and the recorded provider metadata includes the window count and provider request IDs. The worker never silently truncates document text. `TYPESAFE_MAX_DOCUMENT_WINDOWS` is a safety gate for pathological documents.
+
+For decision providers without document windowing, a document exceeding `ANALYSIS_TASK_DECISION_MAX_CHARACTERS` is recorded as `ANALYSIS_DOCUMENT_INPUT_TOO_LARGE` with the measured and configured character counts.
 
 A published Analysis Task can be run from the batch **Analysis** panel. If the panel already shows an earlier run, select **Run new task** to open the complete published-task picker; **Run again** intentionally selects the task used by that historical run. The picker shows the published version and decision provider, and its detail card shows the pinned model before launch. The run pins that exact task version and stores an immutable Decision Result for each document. Published task versions cannot be edited. Select **Create draft revision** in the task workspace to start a new version with the same definition, then regenerate or edit its Decision Specification before publishing it.
 

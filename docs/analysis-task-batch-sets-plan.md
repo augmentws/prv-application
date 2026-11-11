@@ -641,10 +641,10 @@ Review Workflow Templates declare `AD_HOC_BATCH`, `PARTITIONED_SET`, or `WHOLE_M
 an Analysis Task. A Review Program coordinator must pass the declared mode through the normal task-version scope
 validation; it cannot select a mode implicitly or downgrade a stage to ad hoc execution.
 
-The First Pass Review template uses `PARTITIONED_SET` for initial discovery Q&A, supplemental and improvement Q&A,
-classifier-positive Q&A coverage, and no-code QC Q&A. Matter Definition assessment and comparison-derived difference
-or disagreement review remain ordinary `AD_HOC_BATCH` Review Batches because they are diagnostic or human-review
-populations rather than automated task campaigns. Whole-collection classifier scoring uses `WHOLE_MATTER`.
+The First Pass Review template uses `PARTITIONED_SET` for initial discovery Q&A and supplemental and improvement
+Q&A. Matter Definition assessment, comparison-derived difference review, classifier-positive Q&A coverage, and
+Negative-population QC use ordinary `AD_HOC_BATCH` Review Batches because they are diagnostic, human-review, or
+deliberately overlapping populations. Whole-collection classifier scoring uses `WHOLE_MATTER`.
 
 ### 18.1 Immutable input-manifest population
 
@@ -686,7 +686,8 @@ membership.
 - Preview and creation reject a missing, inaccessible, cross-matter, mutable, malformed, or hash-mismatched manifest.
 - Stable manifest and allocation inputs reproduce identical child membership and hashes.
 - Every manifest document occurs in exactly one managed child.
-- First-pass discovery, supplemental, coverage, and QC task runs reject ad hoc batches.
+- First-pass discovery and supplemental task runs reject ad hoc batches; classifier-positive coverage and
+  Negative-population QC require their program-owned ad hoc batches.
 - First-pass assessment and difference-review batches remain ordinary overlapping batches.
 - A future Review Workflow Template can declare a different valid per-stage policy without changing the Batch Set
   domain model.

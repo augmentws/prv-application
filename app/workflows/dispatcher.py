@@ -136,6 +136,29 @@ def enqueue_review_program_scoring_preparation(
     )
 
 
+def enqueue_review_program_negative_qc_inventory(
+    db: Session,
+    workflow_id: str,
+    review_program_run_id: str,
+    stage_attempt_id: str,
+) -> None:
+    settings = get_settings()
+    if not settings.dbos_enabled:
+        return
+    options: EnqueueOptions = {
+        "workflow_name": "review_program_negative_qc_inventory_v1",
+        "queue_name": "review-program-orchestration",
+        "workflow_id": workflow_id,
+        "application_name": settings.dbos_application_name,
+    }
+    get_dbos_client().enqueue_in_transaction(
+        db,
+        options,
+        review_program_run_id,
+        stage_attempt_id,
+    )
+
+
 def enqueue_classification_analysis_task(
     db: Session,
     workflow_id: str,
@@ -560,6 +583,19 @@ def enqueue_collection_deletion(workflow_id: str, job_id: str) -> None:
     options: EnqueueOptions = {
         "workflow_name": "collection_deletion",
         "queue_name": "collection-deletions",
+        "workflow_id": workflow_id,
+        "application_name": settings.dbos_application_name,
+    }
+    get_dbos_client().enqueue(options, job_id)
+
+
+def enqueue_matter_deletion(workflow_id: str, job_id: str) -> None:
+    settings = get_settings()
+    if not settings.dbos_enabled:
+        return
+    options: EnqueueOptions = {
+        "workflow_name": "matter_deletion",
+        "queue_name": "matter-deletions",
         "workflow_id": workflow_id,
         "application_name": settings.dbos_application_name,
     }

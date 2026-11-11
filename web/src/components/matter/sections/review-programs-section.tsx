@@ -1,13 +1,14 @@
 "use client";
 
-import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { Ban, BookOpen, CircleHelp, ListChecks, Play, Plus, RefreshCw, RotateCcw, Workflow } from "lucide-react";
+import { useMutation, useQueries, useQuery, useQueryClient } from "@tanstack/react-query";
+import { ArrowLeft, ArrowRight, Ban, BarChart3, BookOpen, CircleHelp, GitCompareArrows, ListChecks, Play, Plus, Presentation, RefreshCw, RotateCcw, Workflow, X } from "lucide-react";
 import Link from "next/link";
 import { usePathname, useRouter, useSearchParams } from "next/navigation";
 import { useEffect, useMemo, useRef, useState, type FormEvent } from "react";
 import { toast } from "sonner";
 
 import { useMatter } from "@/components/matter/matter-context";
+import { DecisionSpecificationView } from "@/components/decision-specification-view";
 import { QueryError, TableLoading } from "@/components/query-state";
 import { StatusBadge } from "@/components/status-badge";
 import { Badge } from "@/components/ui/badge";
@@ -19,13 +20,41 @@ import { Label } from "@/components/ui/label";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
 import { Textarea } from "@/components/ui/textarea";
-import type { AnalysisTaskBatchSetRead, MatterDefinitionAssessmentRead, MatterDefinitionRead, MatterQuestionAnsweringJobRead, MetadataDefinitionRead, ReviewProgramActionRead, ReviewProgramCreate, ReviewProgramRead, ReviewProgramRunRead, ReviewWorkflowStageRead, ReviewWorkflowTemplateRead } from "@/generated/models";
+import type { AnalysisTaskBatchSetRead, AnalysisTaskBatchSetRunRead, MatterAnalysisTaskVersionRead, MatterDefinitionAssessmentQuestionRead, MatterDefinitionAssessmentRead, MatterDefinitionRead, MatterQuestionAnsweringJobRead, MetadataDefinitionRead, ReviewProgramActionRead, ReviewProgramCreate, ReviewProgramRead, ReviewProgramRunRead, ReviewProgramStageAttemptRead, ReviewWorkflowStageRead, ReviewWorkflowTemplateRead } from "@/generated/models";
 import { coreApi } from "@/lib/api-client";
-import { formatDate } from "@/lib/format";
-import { classificationModelHref, matterJobsHref } from "@/lib/matter-routes";
+import { formatDate, formatDateTime } from "@/lib/format";
+import { classificationModelHref, classificationScoringRunHref, matterJobsHref, reviewProgramFinalAlignmentHref, reviewProgramQAPopulationStatisticsHref } from "@/lib/matter-routes";
 import { cn } from "@/lib/utils";
 
 const ACTIVE_RUN_STATUSES = new Set(["QUEUED", "RUNNING", "WAITING_FOR_USER"]);
+const ACTIONABLE_RUN_STATUSES = new Set([...ACTIVE_RUN_STATUSES, "FAILED"]);
+
+function preferredReviewProgramRun(
+  runs: ReviewProgramRunRead[],
+  currentRunId: string | null | undefined,
+): ReviewProgramRunRead | null {
+  const current = currentRunId ? runs.find((run) => run.id === currentRunId) : null;
+  if (current) return current;
+  return [...runs].sort((left, right) => {
+    const rank = (run: ReviewProgramRunRead) => ACTIONABLE_RUN_STATUSES.has(run.status)
+      ? 0
+      : ["COMPLETED", "COMPLETED_WITH_ERRORS"].includes(run.status)
+        ? 1
+        : 2;
+    const rankDifference = rank(left) - rank(right);
+    if (rankDifference) return rankDifference;
+    const stageDifference = Number(right.current_stage_ordinal ?? 0) - Number(left.current_stage_ordinal ?? 0);
+    if (stageDifference) return stageDifference;
+    return new Date(right.created_at).getTime() - new Date(left.created_at).getTime();
+  })[0] ?? null;
+}
+
+function effectiveStageBatchingPolicy(stage: ReviewWorkflowStageRead): string {
+  if (stage.key === "CLASSIFIER_POSITIVE_COVERAGE" || stage.key === "NO_CODE_QC") {
+    return "AD_HOC_BATCH";
+  }
+  return stage.batching_policy;
+}
 
 const PROGRAM_STAGE_HELP: Record<string, string> = {
   MATTER_DEFINITION: "Define the review scope, issues, responsive criteria, and guidance that control the rest of the program.",
@@ -42,7 +71,7 @@ const PROGRAM_STAGE_HELP: Record<string, string> = {
   CLASSIFIER_REVIEW: "Review classifier quality by issue and decide whether to accept the model or improve weak categories.",
   CLASSIFIER_IMPROVEMENT: "Retrieve and review additional targeted documents for weak categories, then retrain the classifier.",
   WHOLE_COLLECTION_SCORING: "Apply the accepted classifier across the entire matter collection.",
-  CLASSIFIER_POSITIVE_COVERAGE: "Run Q&A review on classifier-positive documents that have not already received Q&A coding.",
+  CLASSIFIER_POSITIVE_COVERAGE: "Creates a batch of classifier-positive documents that have not been coded by either Q&A model, runs both Q&A tasks, and shows how their issue codings compare with the classifier.",
   FINAL_ALIGNMENT: "Compare the final Q&A and classifier codings and summarize agreement, differences, and coverage.",
   NO_CODE_QC: "Sample documents with no issue codes to check the negative population for missed responsive material.",
   COMPLETION: "Freeze the final reports and provenance, record completion, and close the First Pass Review run.",
@@ -71,8 +100,15 @@ export function ReviewProgramsSection() {
     enabled: Boolean(selectedProgram),
     refetchInterval: (query) => query.state.data?.some((run) => ACTIVE_RUN_STATUSES.has(run.status)) ? 5_000 : false,
   });
-  const currentRun = runs.data?.find((run) => run.id === selectedProgram?.current_run_id) ?? runs.data?.[0] ?? null;
-  const template = templates.data?.find((item) => item.key === selectedProgram?.template_key) ?? null;
+  const replayMode = searchParams.get("view") === "replay";
+  const requestedRunId = searchParams.get("run");
+  const liveRun = preferredReviewProgramRun(runs.data ?? [], selectedProgram?.current_run_id);
+  const currentRun = replayMode
+    ? runs.data?.find((run) => run.id === requestedRunId) ?? liveRun
+    : liveRun;
+  const template = templates.data?.find((item) =>
+    item.key === selectedProgram?.template_key && item.version === selectedProgram.template_version,
+  ) ?? templates.data?.find((item) => item.key === selectedProgram?.template_key) ?? null;
   const carriedForwardAcceptanceRuns = useRef(new Set<string>());
 
   useEffect(() => {
@@ -86,6 +122,46 @@ export function ReviewProgramsSection() {
   function selectProgram(programId: string) {
     const params = new URLSearchParams(searchParams.toString());
     params.set("program", programId);
+    params.delete("run");
+    params.delete("view");
+    params.delete("stage");
+    params.delete("attempt");
+    router.replace(`${pathname}?${params.toString()}`, { scroll: false });
+  }
+
+  function presentRun(run: ReviewProgramRunRead) {
+    const params = new URLSearchParams(searchParams.toString());
+    const orderedStages = [...(template?.stages ?? [])].sort((left, right) => left.ordinal - right.ordinal);
+    const firstStage = orderedStages.find((stage) =>
+      run.stage_attempts?.some((attempt) => attempt.stage_key === stage.key)
+      || run.actions?.some((action) => action.stage_key === stage.key),
+    );
+    const firstAttempt = firstStage
+      ? run.stage_attempts?.filter((attempt) => attempt.stage_key === firstStage.key).sort((left, right) => left.attempt - right.attempt)[0]
+      : undefined;
+    params.set("program", run.program_id);
+    params.set("run", run.id);
+    params.set("view", "replay");
+    if (firstStage) params.set("stage", firstStage.key);
+    if (firstAttempt) params.set("attempt", firstAttempt.id);
+    router.replace(`${pathname}?${params.toString()}`, { scroll: false });
+  }
+
+  function updateReplayLocation(stageKey: string, attemptId?: string) {
+    const params = new URLSearchParams(searchParams.toString());
+    params.set("view", "replay");
+    params.set("stage", stageKey);
+    if (attemptId) params.set("attempt", attemptId);
+    else params.delete("attempt");
+    router.replace(`${pathname}?${params.toString()}`, { scroll: false });
+  }
+
+  function exitReplay() {
+    const params = new URLSearchParams(searchParams.toString());
+    params.delete("run");
+    params.delete("view");
+    params.delete("stage");
+    params.delete("attempt");
     router.replace(`${pathname}?${params.toString()}`, { scroll: false });
   }
 
@@ -181,6 +257,14 @@ export function ReviewProgramsSection() {
     onSuccess: async (run) => { await refresh(run.program_id); toast.success("Negative-population QC has started."); },
     onError: mutationError("Negative-population QC could not be started."),
   });
+  const prepareNegativePopulationQCInventory = useMutation({
+    mutationFn: ({ programId, runId, action }: { programId: string; runId: string; action: ReviewProgramActionRead }) => coreApi<ReviewProgramRunRead>(`/v1/matters/${matterId}/review-programs/${programId}/runs/${runId}/actions/${action.id}/negative-population-qc-inventory`, {
+      method: "POST",
+      body: JSON.stringify({ preview_hash: action.preview_hash }),
+    }),
+    onSuccess: async (run) => { await refresh(run.program_id); toast.success("QC population calculation has started."); },
+    onError: mutationError("QC populations could not be calculated."),
+  });
 
   useEffect(() => {
     const hasRecordedFinalAcceptance = Boolean(currentRun?.progress_summary?.final_unassessed_refinement);
@@ -213,7 +297,17 @@ export function ReviewProgramsSection() {
           <p className="mt-3 text-xs text-muted-foreground">Version {program.current_version?.version ?? 1} · created {formatDate(program.created_at)}</p>
         </button>)}
       </div>
-      {selectedProgram ? <ProgramWorkspace
+      {selectedProgram && replayMode && currentRun ? <ReviewProgramReplay
+        clientId={clientId}
+        matterId={matterId}
+        program={selectedProgram}
+        run={currentRun}
+        stages={template?.stages ?? []}
+        selectedStageKey={searchParams.get("stage")}
+        selectedAttemptId={searchParams.get("attempt")}
+        onNavigate={updateReplayLocation}
+        onExit={exitReplay}
+      /> : selectedProgram ? <ProgramWorkspace
         clientId={clientId}
         matterId={matterId}
         program={selectedProgram}
@@ -222,7 +316,7 @@ export function ReviewProgramsSection() {
         canManage={canManage}
         loading={runs.isPending}
         error={runs.error}
-        busy={startRun.isPending || command.isPending || resetDiscoveryQA.isPending || cancelDiscoveryQA.isPending || resolveAction.isPending || setupDefinition.isPending || setupQA.isPending || setupDiscovery.isPending || setupClassifierImprovement.isPending || setupNegativePopulationQC.isPending}
+        busy={startRun.isPending || command.isPending || resetDiscoveryQA.isPending || cancelDiscoveryQA.isPending || resolveAction.isPending || setupDefinition.isPending || setupQA.isPending || setupDiscovery.isPending || setupClassifierImprovement.isPending || setupNegativePopulationQC.isPending || prepareNegativePopulationQCInventory.isPending}
         onStart={(confirmReplaceUnfinishedRun) => startRun.mutate({ programId: selectedProgram.id, confirmReplaceUnfinishedRun })}
         onCommand={(verb) => currentRun && command.mutate({ programId: selectedProgram.id, runId: currentRun.id, verb })}
         onResetDiscovery={() => currentRun && resetDiscoveryQA.mutate({ programId: selectedProgram.id, runId: currentRun.id })}
@@ -233,12 +327,14 @@ export function ReviewProgramsSection() {
         onSetupDiscovery={(action, payload) => currentRun && setupDiscovery.mutate({ programId: selectedProgram.id, runId: currentRun.id, actionId: action.id, payload })}
         onSetupClassifierImprovement={(action, payload) => currentRun && setupClassifierImprovement.mutate({ programId: selectedProgram.id, runId: currentRun.id, actionId: action.id, payload })}
         onSetupNegativePopulationQC={(action, payload) => currentRun && setupNegativePopulationQC.mutate({ programId: selectedProgram.id, runId: currentRun.id, actionId: action.id, payload })}
+        onPrepareNegativePopulationQCInventory={(action) => currentRun && prepareNegativePopulationQCInventory.mutate({ programId: selectedProgram.id, runId: currentRun.id, action })}
+        onPresent={() => currentRun && presentRun(currentRun)}
       /> : null}
     </div>}
   </div>;
 }
 
-function ProgramWorkspace({ clientId, matterId, program, run, stages, canManage, loading, error, busy, onStart, onCommand, onResetDiscovery, onCancelDiscovery, onResolve, onSetupDefinition, onSetupQA, onSetupDiscovery, onSetupClassifierImprovement, onSetupNegativePopulationQC }: {
+function ProgramWorkspace({ clientId, matterId, program, run, stages, canManage, loading, error, busy, onStart, onCommand, onResetDiscovery, onCancelDiscovery, onResolve, onSetupDefinition, onSetupQA, onSetupDiscovery, onSetupClassifierImprovement, onSetupNegativePopulationQC, onPrepareNegativePopulationQCInventory, onPresent }: {
   clientId: string;
   matterId: string;
   program: ReviewProgramRead;
@@ -258,6 +354,8 @@ function ProgramWorkspace({ clientId, matterId, program, run, stages, canManage,
   onSetupDiscovery: (action: ReviewProgramActionRead, payload: DiscoverySetupPayload) => void;
   onSetupClassifierImprovement: (action: ReviewProgramActionRead, payload: ClassifierImprovementSetupPayload) => void;
   onSetupNegativePopulationQC: (action: ReviewProgramActionRead, payload: NegativePopulationQCSetupPayload) => void;
+  onPrepareNegativePopulationQCInventory: (action: ReviewProgramActionRead) => void;
+  onPresent: () => void;
 }) {
   const openAction = run?.actions?.find((action) => action.status === "OPEN") ?? null;
   const attemptsByStage = useMemo(() => new Map(run?.stage_attempts?.map((attempt) => [attempt.stage_key, attempt]) ?? []), [run?.stage_attempts]);
@@ -266,7 +364,7 @@ function ProgramWorkspace({ clientId, matterId, program, run, stages, canManage,
       .filter((item): item is Record<string, unknown> => Boolean(item && typeof item === "object" && !Array.isArray(item)))
       .map((item) => String(item.stage_key ?? ""))
       .filter(Boolean),
-  ), [run?.progress_summary?.skipped_stages]);
+  ), [run]);
   const definitionAssessmentRound = Number(run?.progress_summary?.definition_assessment_round ?? 1);
   const isDefinitionReassessment = run?.current_stage === "DEFINITION_ASSESSMENT" && definitionAssessmentRound > 1;
   const definitionAssessmentAttempts = run?.stage_attempts?.filter((attempt) => attempt.stage_key === "DEFINITION_ASSESSMENT") ?? [];
@@ -291,6 +389,7 @@ function ProgramWorkspace({ clientId, matterId, program, run, stages, canManage,
       <CardHeader className="flex-row items-start justify-between gap-4">
         <div><CardTitle>{program.name}</CardTitle><CardDescription>{program.description || "Guided First Pass Review workflow"}</CardDescription></div>
         <div className="flex shrink-0 flex-wrap justify-end gap-2">
+          {run?.stage_attempts?.length ? <Button size="sm" variant="outline" onClick={onPresent}><Presentation />Present run</Button> : null}
           {run && canManage && ACTIVE_RUN_STATUSES.has(run.status) ? <><RefreshStateButton busy={busy} onClick={() => onCommand("reconcile")} /><Button size="sm" variant="outline" disabled={busy} onClick={() => onCommand("cancel")}><Ban />Stop program</Button></> : null}
           {run?.status === "FAILED" && canManage ? <ReplacementRunDialog run={run} busy={busy} onConfirm={() => onStart(true)} /> : null}
           {run && ["COMPLETED", "COMPLETED_WITH_ERRORS", "CANCELED"].includes(run.status) && canManage ? <Button size="sm" variant="outline" disabled={busy} onClick={() => onStart(false)}><Play />Start another run</Button> : null}
@@ -301,7 +400,7 @@ function ProgramWorkspace({ clientId, matterId, program, run, stages, canManage,
     {run && currentAssessment ? <DefinitionAssessmentProgress clientId={clientId} matterId={matterId} run={run} assessment={currentAssessment} /> : null}
     {run?.status === "COMPLETED" || run?.status === "COMPLETED_WITH_ERRORS" ? <CompletedReviewProgramSummary run={run} /> : null}
     {run ? <ProgramClassifierModels clientId={clientId} matterId={matterId} run={run} /> : null}
-    {openAction?.action_type === "MATTER_DEFINITION_SETUP" ? <DefinitionSetupCard matterId={matterId} action={openAction} canManage={canManage} busy={busy} onSubmit={(payload) => onSetupDefinition(openAction, payload)} onStop={() => onResolve(openAction, "STOP")} /> : openAction?.action_type === "MATTER_DEFINITION_REFINEMENT" ? <DefinitionRefinementCard clientId={clientId} matterId={matterId} action={openAction} canManage={canManage} busy={busy} onResolve={(choice, input) => onResolve(openAction, choice, undefined, input)} /> : openAction?.action_type === "QA_TASK_SETUP" ? <QASetupCard matterId={matterId} action={openAction} canManage={canManage} busy={busy} onSubmit={(payload) => onSetupQA(openAction, payload)} onStop={() => onResolve(openAction, "STOP")} /> : openAction?.action_type === "DISCOVERY_QA_SETUP" ? <DiscoverySetupCard action={openAction} canManage={canManage} busy={busy} onSubmit={(payload) => onSetupDiscovery(openAction, payload)} onStop={() => onResolve(openAction, "STOP")} /> : openAction?.action_type === "CLASSIFIER_IMPROVEMENT_SETUP" ? <ClassifierImprovementSetupCard action={openAction} canManage={canManage} busy={busy} onSubmit={(payload) => onSetupClassifierImprovement(openAction, payload)} onStop={() => onResolve(openAction, "STOP")} /> : openAction?.action_type === "NEGATIVE_POPULATION_QC_SETUP" ? <NegativePopulationQCSetupCard action={openAction} canManage={canManage} busy={busy} onSubmit={(payload) => onSetupNegativePopulationQC(openAction, payload)} onStop={() => onResolve(openAction, "STOP")} /> : openAction?.action_type === "REVIEW_PROGRAM_COMPLETION" ? <CompletionDecisionCard action={openAction} canManage={canManage} busy={busy} onComplete={(reason) => onResolve(openAction, "COMPLETE", reason)} onStop={() => onResolve(openAction, "STOP")} /> : openAction?.action_type === "TRAINING_LABEL_POLICY" ? <TrainingLabelPolicyCard action={openAction} matterId={matterId} canManage={canManage} busy={busy} onResolve={(choice, input) => onResolve(openAction, choice, undefined, input)} /> : openAction?.action_type === "TRAINING_LABEL_FINALIZATION" ? <TrainingLabelFinalizationCard action={openAction} matterId={matterId} canManage={canManage} busy={busy} onResolve={(choice, input) => onResolve(openAction, choice, undefined, input)} /> : openAction ? <Card className="border-accent/60 bg-accent/5"><CardHeader><CardTitle>{openAction.title}</CardTitle><CardDescription>{openAction.explanation}</CardDescription></CardHeader><CardContent><DefinitionAssessmentSummary action={openAction} /><QAPublicationSummary action={openAction} /><IssueSupportSummary action={openAction} /><TrainingLabelSummary action={openAction} matterId={matterId} /><ClassifierReviewSummary action={openAction} /><WholeCollectionScoringSummary action={openAction} /><ClassifierPositiveCoverageSummary action={openAction} /><FinalAlignmentSummary action={openAction} /><NegativePopulationQCReport action={openAction} /><NegativePopulationQCFindingsReview action={openAction} matterId={matterId} />{openAction.stage_key === "DEFINITION_ACCEPTANCE" ? <Button asChild size="sm" variant="outline" className="mb-3"><Link href={definitionAssessmentHref(clientId, matterId, openAction)}><BookOpen />Open Matter Definition</Link></Button> : null}<div className="flex flex-wrap gap-2">{openAction.allowed_choices.map((choice, index) => {
+    {openAction?.action_type === "MATTER_DEFINITION_SETUP" ? <DefinitionSetupCard matterId={matterId} action={openAction} canManage={canManage} busy={busy} onSubmit={(payload) => onSetupDefinition(openAction, payload)} onStop={() => onResolve(openAction, "STOP")} /> : openAction?.action_type === "MATTER_DEFINITION_REFINEMENT" ? <DefinitionRefinementCard clientId={clientId} matterId={matterId} action={openAction} canManage={canManage} busy={busy} onResolve={(choice, input) => onResolve(openAction, choice, undefined, input)} /> : openAction?.action_type === "QA_TASK_SETUP" ? <QASetupCard matterId={matterId} action={openAction} canManage={canManage} busy={busy} onSubmit={(payload) => onSetupQA(openAction, payload)} onStop={() => onResolve(openAction, "STOP")} /> : openAction?.action_type === "DISCOVERY_QA_SETUP" ? <DiscoverySetupCard action={openAction} canManage={canManage} busy={busy} onSubmit={(payload) => onSetupDiscovery(openAction, payload)} onStop={() => onResolve(openAction, "STOP")} /> : openAction?.action_type === "CLASSIFIER_IMPROVEMENT_SETUP" ? <ClassifierImprovementSetupCard action={openAction} canManage={canManage} busy={busy} onSubmit={(payload) => onSetupClassifierImprovement(openAction, payload)} onStop={() => onResolve(openAction, "STOP")} /> : openAction?.action_type === "NEGATIVE_POPULATION_QC_SETUP" ? <NegativePopulationQCSetupCard key={`${openAction.id}:${String((openAction.decision_context?.negative_population_qc_inventory as { input_manifest_content_hash?: string } | undefined)?.input_manifest_content_hash ?? "pending")}`} action={openAction} run={run} clientId={clientId} matterId={matterId} canManage={canManage} busy={busy} onPrepareInventory={() => onPrepareNegativePopulationQCInventory(openAction)} onSubmit={(payload) => onSetupNegativePopulationQC(openAction, payload)} onStop={() => onResolve(openAction, "STOP")} /> : openAction?.action_type === "CLASSIFIER_POSITIVE_COVERAGE" ? <ClassifierPositiveCoverageDecisionCard action={openAction} canManage={canManage} busy={busy} onSubmit={(minimumConfidence) => onResolve(openAction, "RUN_COVERAGE", undefined, { minimum_confidence: minimumConfidence })} onStop={() => onResolve(openAction, "STOP")} /> : openAction?.action_type === "REVIEW_PROGRAM_COMPLETION" ? <CompletionDecisionCard action={openAction} canManage={canManage} busy={busy} onComplete={(reason) => onResolve(openAction, "COMPLETE", reason)} onStop={() => onResolve(openAction, "STOP")} /> : openAction?.action_type === "TRAINING_LABEL_POLICY" ? <TrainingLabelPolicyCard action={openAction} matterId={matterId} canManage={canManage} busy={busy} onResolve={(choice, input) => onResolve(openAction, choice, undefined, input)} /> : openAction?.action_type === "TRAINING_LABEL_FINALIZATION" ? <TrainingLabelFinalizationCard action={openAction} matterId={matterId} canManage={canManage} busy={busy} onResolve={(choice, input) => onResolve(openAction, choice, undefined, input)} /> : openAction ? <Card className="border-accent/60 bg-accent/5"><CardHeader><CardTitle>{openAction.title}</CardTitle><CardDescription>{openAction.explanation}</CardDescription></CardHeader><CardContent><DefinitionAssessmentSummary action={openAction} /><QAPublicationSummary action={openAction} /><IssueSupportSummary action={openAction} matterId={matterId} run={run} /><TrainingLabelSummary action={openAction} matterId={matterId} /><ClassifierReviewSummary action={openAction} /><WholeCollectionScoringSummary action={openAction} /><ClassifierPositiveCoverageSummary action={openAction} /><FinalAlignmentSummary action={openAction} run={run} clientId={clientId} matterId={matterId} /><NegativePopulationQCReport action={openAction} matterId={matterId} /><NegativePopulationQCFindingsReview action={openAction} matterId={matterId} />{openAction.stage_key === "DEFINITION_ACCEPTANCE" ? <Button asChild size="sm" variant="outline" className="mb-3"><Link href={definitionAssessmentHref(clientId, matterId, openAction)}><BookOpen />Open Matter Definition</Link></Button> : null}<div className="flex flex-wrap gap-2">{openAction.allowed_choices.map((choice, index) => {
       return <DecisionChoiceButton key={`${choice.key}-${index}`} choice={choice} variant={choice.key === "STOP" ? "destructive" : "default"} disabled={!canManage || busy} onClick={() => onResolve(openAction, choice.key)} />;
     })}</div></CardContent></Card> : null}
     {run ? <Card><CardHeader><CardTitle>Program stages</CardTitle><CardDescription>The coordinator records every stage attempt and waits only at explicit human gates.</CardDescription></CardHeader><CardContent><ol className="grid gap-2 sm:grid-cols-2">{stages.map((stage) => {
@@ -313,13 +412,451 @@ function ProgramWorkspace({ clientId, matterId, program, run, stages, canManage,
       const skipped = skippedStageKeys.has(stage.key)
         || (!attempt && !isDefinitionReassessment && stage.ordinal < run.current_stage_ordinal);
       const upcoming = !skipped && (isDefinitionReassessment ? stage.ordinal > 3 : stage.ordinal > run.current_stage_ordinal);
-      const isRunning = attempt?.status === "RUNNING" || (isCurrent && run.status === "RUNNING");
+      const isRunning = attempt?.status === "RUNNING" || (isCurrent && run.status === "RUNNING" && attempt?.status !== "FAILED");
       const showsRunFailure = isCurrent && run.status === "FAILED";
+      const showsAttemptFailure = isCurrent && attempt?.status === "FAILED";
+      const showsStageFailure = showsRunFailure || showsAttemptFailure;
       const canRetryFailure = run.failure_retriable || stage.key === "CLASSIFIER_TRAINING";
       const showsDiscoveryTask = isCurrent && stage.key === "DISCOVERY_QA" && Boolean(run.progress_summary?.discovery_qa);
       const showsWholeCollectionScoring = isCurrent && stage.key === "WHOLE_COLLECTION_SCORING";
-      return <li key={stage.key} className={cn("flex items-start gap-3 rounded-lg border p-3", isCurrent && "border-primary/50 bg-primary/5", upcoming && "opacity-55", (isRunning || showsDiscoveryTask || showsWholeCollectionScoring || showsRunFailure) && "sm:col-span-2")}><span className="grid size-7 shrink-0 place-items-center rounded-full bg-muted text-xs font-semibold">{stage.ordinal}</span><div className="min-w-0 flex-1"><div className="flex items-start justify-between gap-2"><p className="text-sm font-medium">{stage.name}</p><ProgramStageTooltip stage={stage} /></div><div className="mt-1 flex flex-wrap gap-1">{attempt ? <StatusBadge status={attempt.status} /> : skipped ? <Badge variant="outline">Skipped</Badge> : <Badge variant="outline">Upcoming</Badge>}<Badge variant="outline">{friendly(stage.batching_policy)}</Badge>{stage.requires_human_gate && !skipped ? <Badge variant="outline">Decision</Badge> : null}</div>{skipped ? <p className="mt-2 text-xs text-muted-foreground">Not requested; the accepted classifiers continue directly to whole-collection scoring.</p> : null}{showsRunFailure ? <div className="mt-3 rounded-lg border border-destructive/30 bg-destructive/5 p-3"><p className="text-sm font-medium text-destructive">{stage.name} failed</p><p className="mt-1 text-sm text-destructive">{attempt?.error_summary || run.failure_summary || "This stage could not be completed."}</p>{stage.key === "CLASSIFIER_TRAINING" && !run.failure_retriable ? <p className="mt-2 text-xs text-muted-foreground">After correcting the reported cause, retry starts a new classifier-training attempt with the same frozen labels and configuration. It does not replace the program run.</p> : null}{canManage && canRetryFailure ? <div className="mt-3"><Button size="sm" disabled={busy} onClick={() => onCommand("retry")}><RotateCcw />Retry {stage.name}</Button></div> : null}</div> : null}{showsDiscoveryTask ? <DiscoveryQAProgress clientId={clientId} matterId={matterId} run={run} canManage={canManage} busy={busy} onCancel={onCancelDiscovery} onReset={onResetDiscovery} /> : null}{showsWholeCollectionScoring ? <WholeCollectionScoringProgress run={run} openAction={openAction} /> : null}{containsCurrentReassessment ? <div className="mt-2 flex items-center justify-between gap-2 rounded-md border border-primary/30 bg-background/80 px-2 py-1.5"><span className="text-xs font-medium">Reassessment · Round {definitionAssessmentRound}</span><StatusBadge status={currentDefinitionAssessmentAttempt?.status ?? run.status} /></div> : null}</div></li>;
+      const showsClassifierPositiveCoverage = isCurrent && stage.key === "CLASSIFIER_POSITIVE_COVERAGE" && Boolean(run.progress_summary?.classifier_positive_coverage);
+      return <li key={stage.key} className={cn("flex items-start gap-3 rounded-lg border p-3", isCurrent && "border-primary/50 bg-primary/5", upcoming && "opacity-55", (isRunning || showsDiscoveryTask || showsWholeCollectionScoring || showsClassifierPositiveCoverage || showsStageFailure) && "sm:col-span-2")}>
+        <span className="grid size-7 shrink-0 place-items-center rounded-full bg-muted text-xs font-semibold">{stage.ordinal}</span>
+        <div className="min-w-0 flex-1">
+          <div className="flex items-start justify-between gap-2"><p className="text-sm font-medium">{stage.name}</p><ProgramStageTooltip stage={stage} /></div>
+          <div className="mt-1 flex flex-wrap gap-1">{attempt ? <StatusBadge status={attempt.status} /> : skipped ? <Badge variant="outline">Skipped</Badge> : <Badge variant="outline">Upcoming</Badge>}<Badge variant="outline">{friendly(effectiveStageBatchingPolicy(stage))}</Badge>{stage.requires_human_gate && !skipped ? <Badge variant="outline">Decision</Badge> : null}</div>
+          {skipped ? <p className="mt-2 text-xs text-muted-foreground">Not requested; the accepted classifiers continue directly to whole-collection scoring.</p> : null}
+          {showsStageFailure ? <div className="mt-3 rounded-lg border border-destructive/30 bg-destructive/5 p-3">
+            <p className="text-sm font-medium text-destructive">{stage.name} failed</p>
+            <p className="mt-1 text-sm text-destructive">{attempt?.error_summary || run.failure_summary || "This stage could not be completed."}</p>
+            {stage.key === "NO_CODE_QC" ? <NegativePopulationQCFailureSummary run={run} matterId={matterId} /> : null}
+            {stage.key === "CLASSIFIER_TRAINING" && !run.failure_retriable ? <p className="mt-2 text-xs text-muted-foreground">After correcting the reported cause, retry starts a new classifier-training attempt with the same frozen labels and configuration. It does not replace the program run.</p> : null}
+            {canManage ? <div className="mt-3 flex flex-wrap gap-2">
+              {stage.key === "CLASSIFIER_POSITIVE_COVERAGE" || stage.key === "NO_CODE_QC" ? <RefreshStateButton busy={busy} onClick={() => onCommand("reconcile")} /> : null}
+              {canRetryFailure ? <Button size="sm" disabled={busy} onClick={() => onCommand("retry")}><RotateCcw />Retry {stage.name}</Button> : null}
+            </div> : null}
+          </div> : null}
+          {showsDiscoveryTask ? <DiscoveryQAProgress clientId={clientId} matterId={matterId} run={run} canManage={canManage} busy={busy} onCancel={onCancelDiscovery} onReset={onResetDiscovery} /> : null}
+          {showsWholeCollectionScoring ? <WholeCollectionScoringProgress run={run} openAction={openAction} /> : null}
+          {showsClassifierPositiveCoverage ? <ClassifierPositiveCoverageProgress clientId={clientId} matterId={matterId} run={run} openAction={openAction} /> : null}
+          {containsCurrentReassessment ? <div className="mt-2 flex items-center justify-between gap-2 rounded-md border border-primary/30 bg-background/80 px-2 py-1.5"><span className="text-xs font-medium">Reassessment · Round {definitionAssessmentRound}</span><StatusBadge status={currentDefinitionAssessmentAttempt?.status ?? run.status} /></div> : null}
+        </div>
+      </li>;
     })}</ol></CardContent></Card> : null}
+  </div>;
+}
+
+function ReviewProgramReplay({ clientId, matterId, program, run, stages, selectedStageKey, selectedAttemptId, onNavigate, onExit }: {
+  clientId: string;
+  matterId: string;
+  program: ReviewProgramRead;
+  run: ReviewProgramRunRead;
+  stages: ReviewWorkflowStageRead[];
+  selectedStageKey: string | null;
+  selectedAttemptId: string | null;
+  onNavigate: (stageKey: string, attemptId?: string) => void;
+  onExit: () => void;
+}) {
+  const replayableStages = [...stages]
+    .sort((left, right) => left.ordinal - right.ordinal)
+    .filter((stage) =>
+      run.stage_attempts?.some((attempt) => attempt.stage_key === stage.key)
+      || run.actions?.some((action) => action.stage_key === stage.key),
+    );
+  const selectedStage = replayableStages.find((stage) => stage.key === selectedStageKey)
+    ?? replayableStages[0];
+  if (!selectedStage) {
+    return <Card><CardHeader><CardTitle>No replayable stages</CardTitle><CardDescription>This run has not recorded a stage attempt or decision yet.</CardDescription></CardHeader><CardContent><Button variant="outline" onClick={onExit}><X />Return to live workspace</Button></CardContent></Card>;
+  }
+  const attempts = (run.stage_attempts ?? [])
+    .filter((attempt) => attempt.stage_key === selectedStage.key)
+    .sort((left, right) => left.attempt - right.attempt);
+  const selectedAttempt = attempts.find((attempt) => attempt.id === selectedAttemptId)
+    ?? [...attempts].reverse().find((attempt) => attempt.status === "COMPLETED")
+    ?? attempts.at(-1)
+    ?? null;
+  const actions = (run.actions ?? []).filter((action) =>
+    action.stage_key === selectedStage.key
+    && (!selectedAttempt || action.stage_attempt_id == null || action.stage_attempt_id === selectedAttempt.id),
+  );
+  const recordedActions = actions.filter((action) => {
+    if (action.status !== "RESOLVED") return false;
+    const payload = action.resolution_payload;
+    return Boolean(payload && typeof payload === "object" && !Array.isArray(payload) && typeof payload.choice_key === "string");
+  });
+  const stageIndex = replayableStages.findIndex((stage) => stage.key === selectedStage.key);
+  const previousStage = replayableStages[stageIndex - 1];
+  const nextStage = replayableStages[stageIndex + 1];
+  const originalQATaskRaw = selectedAttempt?.result_summary?.accepted_qa_task;
+  const originalQATask = originalQATaskRaw && typeof originalQATaskRaw === "object" && !Array.isArray(originalQATaskRaw)
+    ? originalQATaskRaw as Record<string, unknown>
+    : {};
+  const finalQATaskRaw = run.progress_summary?.accepted_qa_task;
+  const finalQATask = finalQATaskRaw && typeof finalQATaskRaw === "object" && !Array.isArray(finalQATaskRaw)
+    ? finalQATaskRaw as Record<string, unknown>
+    : originalQATask;
+  const originalQATaskVersion = Number(originalQATask.version ?? 0);
+  const finalQATaskVersion = Number(finalQATask.version ?? originalQATaskVersion);
+  const qaTaskVersionCount = originalQATaskVersion && finalQATaskVersion && originalQATaskVersion !== finalQATaskVersion ? 2 : 1;
+  const recordedResultSummary = selectedAttempt ? recordedStageResultSummary(run, selectedAttempt) : {};
+  const navigateToStage = (stage: ReviewWorkflowStageRead) => {
+    const stageAttempts = (run.stage_attempts ?? [])
+      .filter((attempt) => attempt.stage_key === stage.key)
+      .sort((left, right) => left.attempt - right.attempt);
+    const preferred = [...stageAttempts].reverse().find((attempt) => attempt.status === "COMPLETED")
+      ?? stageAttempts.at(-1);
+    onNavigate(stage.key, preferred?.id);
+  };
+
+  return <div className="space-y-4">
+    <Card className="border-sky-500/40 bg-sky-500/5">
+      <CardHeader className="flex-row items-start justify-between gap-4">
+        <div><div className="mb-2 flex flex-wrap items-center gap-2"><Badge variant="active">Demo replay</Badge><Badge variant="outline">Read only</Badge><StatusBadge status={run.status} /></div><CardTitle>{program.name}</CardTitle><CardDescription>Presenting recorded stages and decisions from run {run.id}. Nothing in replay can change the source run or start new work.</CardDescription></div>
+        <Button size="sm" variant="outline" onClick={onExit}><X />Exit replay</Button>
+      </CardHeader>
+    </Card>
+
+    <Card>
+      <CardHeader><CardTitle>Presentation position</CardTitle><CardDescription>Choose a recorded stage and, when applicable, the attempt or round to present.</CardDescription></CardHeader>
+      <CardContent className="grid gap-4 sm:grid-cols-[minmax(0,1fr)_minmax(12rem,0.45fr)_auto] sm:items-end">
+        <div className="space-y-2"><Label htmlFor="replay-stage">Stage</Label><Select value={selectedStage.key} onValueChange={(stageKey) => {
+          const stage = replayableStages.find((item) => item.key === stageKey);
+          if (stage) navigateToStage(stage);
+        }}><SelectTrigger id="replay-stage"><SelectValue /></SelectTrigger><SelectContent>{replayableStages.map((stage) => <SelectItem key={stage.key} value={stage.key}>{stage.ordinal}. {stage.name}</SelectItem>)}</SelectContent></Select></div>
+        <div className="space-y-2">{selectedStage.key === "QA_TASK_SETUP" && attempts.length === 1 ? <><Label>Task configurations</Label><div className="flex h-9 items-center rounded-md border px-3 text-sm">{qaTaskVersionCount} {qaTaskVersionCount === 1 ? "version" : "versions"}{finalQATaskVersion ? ` · final version ${finalQATaskVersion}` : ""}</div></> : <><Label htmlFor="replay-attempt">Attempt</Label>{attempts.length ? <Select value={selectedAttempt?.id} onValueChange={(attemptId) => onNavigate(selectedStage.key, attemptId)}><SelectTrigger id="replay-attempt"><SelectValue /></SelectTrigger><SelectContent>{attempts.map((attempt) => <SelectItem key={attempt.id} value={attempt.id}>Attempt {attempt.attempt} · {friendly(attempt.status)}</SelectItem>)}</SelectContent></Select> : <div className="flex h-9 items-center rounded-md border px-3 text-sm text-muted-foreground">Decision only</div>}</>}</div>
+        <p className="pb-2 text-sm tabular-nums text-muted-foreground">Stage {stageIndex + 1} of {replayableStages.length}</p>
+      </CardContent>
+    </Card>
+
+    <Card>
+      <CardHeader><div className="flex flex-wrap items-center gap-2"><Badge variant="outline">Stage {selectedStage.ordinal}</Badge>{selectedAttempt ? <StatusBadge status={selectedAttempt.status} /> : null}{selectedAttempt && attempts.length > 1 ? <Badge variant="outline">Attempt {selectedAttempt.attempt}</Badge> : null}</div><CardTitle>{selectedStage.name}</CardTitle><CardDescription>{PROGRAM_STAGE_HELP[selectedStage.key] ?? `Recorded ${friendly(selectedStage.key)} activity.`}</CardDescription></CardHeader>
+      <CardContent className="space-y-4">
+        {selectedAttempt?.error_summary ? <div className="rounded-lg border border-destructive/30 bg-destructive/5 p-3"><p className="text-sm font-medium text-destructive">Attempt did not complete</p><p className="mt-1 text-sm text-destructive">{selectedAttempt.error_summary}</p>{selectedAttempt.error_code ? <p className="mt-2 font-mono text-xs text-muted-foreground">{selectedAttempt.error_code}</p> : null}{run.status === "FAILED" && run.failure_retriable && selectedAttempt.stage_key === run.current_stage ? <div className="mt-3 flex flex-wrap items-center gap-3"><p className="text-xs text-muted-foreground">Replay is read only. Return to the live run to retry this stage.</p><Button size="sm" variant="outline" onClick={onExit}><RotateCcw />Exit replay to retry</Button></div> : null}</div> : null}
+        <div className="grid gap-3 text-sm sm:grid-cols-2 xl:grid-cols-4"><div className="rounded-lg border bg-background/70 p-3"><p className="text-xs text-muted-foreground">Started</p><p className="font-medium">{selectedAttempt?.started_at ? formatDateTime(selectedAttempt.started_at) : "Not recorded"}</p></div><div className="rounded-lg border bg-background/70 p-3"><p className="text-xs text-muted-foreground">Ended</p><p className="font-medium">{selectedAttempt?.completed_at ? formatDateTime(selectedAttempt.completed_at) : "Not completed"}</p></div><div className="rounded-lg border bg-background/70 p-3"><p className="text-xs text-muted-foreground">Elapsed</p><p className="font-medium">{formatElapsed(selectedAttempt?.started_at, selectedAttempt?.completed_at)}</p></div><div className="rounded-lg border bg-background/70 p-3"><p className="text-xs text-muted-foreground">Batching</p><p className="font-medium">{friendly(effectiveStageBatchingPolicy(selectedStage))}</p></div></div>
+        {selectedStage.key === "DEFINITION_ASSESSMENT" && selectedAttempt ? <DefinitionAssessmentReplay clientId={clientId} matterId={matterId} attempt={selectedAttempt} /> : null}
+        {selectedStage.key === "QA_TASK_SETUP" && selectedAttempt ? <QATaskSetupReplay matterId={matterId} run={run} attempt={selectedAttempt} /> : null}
+        {selectedStage.key === "DISCOVERY_QA" && selectedAttempt ? <DiscoveryQAReplay clientId={clientId} matterId={matterId} run={run} attempt={selectedAttempt} /> : null}
+        {selectedStage.key === "DISCOVERY_ANALYSIS" && selectedAttempt ? <DiscoveryAnalysisReplay matterId={matterId} run={run} attempt={selectedAttempt} /> : null}
+        {selectedStage.key === "WHOLE_COLLECTION_SCORING" && selectedAttempt ? <WholeCollectionScoringReplay clientId={clientId} matterId={matterId} attempt={selectedAttempt} /> : null}
+        {(selectedStage.key === "CLASSIFIER_POSITIVE_COVERAGE" || selectedStage.key === "FINAL_ALIGNMENT") && selectedAttempt ? <ClassifierPositiveCoverageComparisonReplay clientId={clientId} matterId={matterId} run={run} /> : null}
+        {selectedAttempt && (Object.keys(selectedAttempt.input_snapshot ?? {}).length || Object.keys(recordedResultSummary).length) ? <details className="rounded-lg border bg-background/70 p-3"><summary className="cursor-pointer text-sm font-medium">{selectedStage.key === "DISCOVERY_QA" ? "Technical stage record (JSON)" : "Recorded stage data"}</summary><div className="mt-3 grid gap-3 lg:grid-cols-2">{Object.keys(selectedAttempt.input_snapshot ?? {}).length ? <ReplayJsonBlock title="Inputs" value={selectedAttempt.input_snapshot} /> : null}{Object.keys(recordedResultSummary).length ? <ReplayJsonBlock title={selectedStage.key === "QA_TASK_SETUP" ? "Final results and setup history" : "Results"} value={recordedResultSummary} /> : null}</div></details> : null}
+      </CardContent>
+    </Card>
+
+    <Card>
+      <CardHeader><CardTitle>Recorded outcome</CardTitle><CardDescription>{recordedActions.length ? "Only the actions taken in this run are shown." : "This stage did not record a completed action for the selected attempt."}</CardDescription></CardHeader>
+      <CardContent className="space-y-4">{recordedActions.length ? recordedActions.map((action) => <ReplayAction key={action.id} action={action} clientId={clientId} matterId={matterId} run={run} showStageSummary={selectedStage.key !== "QA_TASK_SETUP"} />) : <p className="text-sm text-muted-foreground">No completed action was recorded.</p>}</CardContent>
+    </Card>
+
+    <div className="flex flex-wrap items-center justify-between gap-3">
+      <Button variant="outline" disabled={!previousStage} onClick={() => previousStage && navigateToStage(previousStage)}><ArrowLeft />Previous stage</Button>
+      <Button variant="outline" disabled={!nextStage} onClick={() => nextStage && navigateToStage(nextStage)}>Next stage<ArrowRight /></Button>
+    </div>
+  </div>;
+}
+
+function ReplayAction({ action, clientId, matterId, run, showStageSummary = true }: { action: ReviewProgramActionRead; clientId: string; matterId: string; run: ReviewProgramRunRead; showStageSummary?: boolean }) {
+  const resolution = action.resolution_payload && typeof action.resolution_payload === "object" && !Array.isArray(action.resolution_payload)
+    ? action.resolution_payload as Record<string, unknown>
+    : {};
+  const selectedChoiceKey = typeof resolution.choice_key === "string" ? resolution.choice_key : "";
+  const selectedChoice = action.allowed_choices.find((choice) => choice.key === selectedChoiceKey);
+  return <div className="space-y-4 rounded-lg border bg-background/70 p-4">
+    {selectedChoice ? <div className="rounded-lg border border-primary/40 bg-primary/5 p-3 ring-1 ring-primary/10"><div className="flex items-start justify-between gap-2"><p className="font-medium">{selectedChoice.label}</p><Badge variant="active">Completed</Badge></div><p className="mt-1 text-sm text-muted-foreground">{selectedChoice.consequence}</p></div> : <div><div className="flex flex-wrap items-center gap-2"><p className="font-medium">{action.title}</p><Badge variant="outline">{friendly(action.status)}</Badge></div>{action.status === "OPEN" ? <p className="mt-1 text-sm text-muted-foreground">{action.explanation}</p> : null}</div>}
+    {showStageSummary ? <><DefinitionAssessmentSummary action={action} /><QAPublicationSummary action={action} /><IssueSupportSummary action={action} matterId={matterId} run={run} /><ClassifierReviewSummary action={action} />{action.stage_key !== "WHOLE_COLLECTION_SCORING" ? <WholeCollectionScoringSummary action={action} /> : null}<ClassifierPositiveCoverageSummary action={action} /><FinalAlignmentSummary action={action} run={run} clientId={clientId} matterId={matterId} /><NegativePopulationQCReport action={action} matterId={matterId} /></> : null}
+    {action.status === "OPEN" ? <p className="rounded-lg border border-amber-500/40 bg-amber-500/10 p-3 text-sm">This decision is still open in the source run. Replay cannot resolve it.</p> : null}
+    {action.resolution_reason && showStageSummary ? <div className="rounded-lg border p-3 text-sm"><p className="text-xs text-muted-foreground">Recorded rationale</p><p className="mt-1">{action.resolution_reason}</p></div> : null}
+    {action.resolved_at ? <p className="text-xs text-muted-foreground">Resolved {formatDate(action.resolved_at)}{action.resolved_by_user_id ? ` · user ${action.resolved_by_user_id}` : ""}</p> : null}
+  </div>;
+}
+
+function recordedStageResultSummary(run: ReviewProgramRunRead, attempt: ReviewProgramStageAttemptRead): Record<string, unknown> {
+  const result = attempt.result_summary ?? {};
+  if (attempt.stage_key !== "QA_TASK_SETUP") return result;
+  const originalRaw = result.accepted_qa_task;
+  const original = originalRaw && typeof originalRaw === "object" && !Array.isArray(originalRaw)
+    ? originalRaw as Record<string, unknown>
+    : {};
+  const finalRaw = run.progress_summary?.accepted_qa_task;
+  const final = finalRaw && typeof finalRaw === "object" && !Array.isArray(finalRaw)
+    ? finalRaw as Record<string, unknown>
+    : original;
+  if (!Object.keys(final).length) return result;
+  return {
+    ...result,
+    accepted_qa_task: final,
+    original_stage_accepted_qa_task: original,
+    qa_task_repin: run.progress_summary?.qa_task_repin ?? null,
+  };
+}
+
+function ReplayJsonBlock({ title, value }: { title: string; value: unknown }) {
+  const serialized = JSON.stringify(value, null, 2);
+  const display = serialized.length > 12_000 ? `${serialized.slice(0, 12_000)}\n…` : serialized;
+  return <div className="min-w-0"><p className="mb-2 text-xs font-medium text-muted-foreground">{title}</p><pre className="max-h-80 overflow-auto whitespace-pre-wrap break-words rounded-md bg-muted p-3 text-xs">{display}</pre></div>;
+}
+
+function DefinitionAssessmentReplay({ clientId, matterId, attempt }: {
+  clientId: string;
+  matterId: string;
+  attempt: ReviewProgramStageAttemptRead;
+}) {
+  const assessmentId = typeof attempt.input_snapshot?.assessment_id === "string"
+    ? attempt.input_snapshot.assessment_id
+    : "";
+  const assessment = useQuery({
+    queryKey: ["definition-assessment-replay", matterId, assessmentId],
+    queryFn: () => coreApi<MatterDefinitionAssessmentRead>(`/v1/matters/${matterId}/definition-assessments/${assessmentId}`),
+    enabled: Boolean(assessmentId),
+  });
+  const questions = useQuery({
+    queryKey: ["definition-assessment-replay-questions", matterId, assessmentId],
+    queryFn: () => coreApi<MatterDefinitionAssessmentQuestionRead[]>(`/v1/matters/${matterId}/definition-assessments/${assessmentId}/questions`),
+    enabled: Boolean(assessmentId),
+  });
+  if (!assessmentId) return <div className="rounded-lg border border-amber-500/40 bg-amber-500/10 p-3 text-sm">This historical attempt does not contain an assessment identifier, so its questions cannot be reconstructed.</div>;
+  if (assessment.isPending || questions.isPending) return <div className="rounded-lg border p-3 text-sm text-muted-foreground">Loading assessment questions and recorded results…</div>;
+  if (assessment.error || questions.error || !assessment.data) return <div className="rounded-lg border border-destructive/30 bg-destructive/5 p-3 text-sm text-destructive">The assessment questions or recorded results are unavailable.</div>;
+
+  const result = assessment.data;
+  const definitionId = typeof attempt.input_snapshot?.matter_definition_id === "string"
+    ? attempt.input_snapshot.matter_definition_id
+    : result.guidance_id ?? "";
+  const baseParams = new URLSearchParams();
+  if (definitionId) baseParams.set("guidance", definitionId);
+  baseParams.set("assessment", assessmentId);
+  const assessmentHref = `/app/clients/${clientId}/matters/${matterId}/definition?${baseParams.toString()}`;
+  const diffParams = new URLSearchParams(baseParams);
+  diffParams.set("compare_from", result.matter_definition_revision_id);
+  if (result.refined_matter_definition_revision_id) diffParams.set("compare_to", result.refined_matter_definition_revision_id);
+  const diffHref = `/app/clients/${clientId}/matters/${matterId}/definition?${diffParams.toString()}`;
+  const synthesis = result.synthesis_result && typeof result.synthesis_result === "object" && !Array.isArray(result.synthesis_result)
+    ? result.synthesis_result as Record<string, unknown>
+    : {};
+
+  return <section className="space-y-4 rounded-lg border bg-background/70 p-4" aria-label={`Definition assessment ${attempt.attempt} recorded results`}>
+    <div className="flex flex-wrap items-start justify-between gap-3"><div><p className="font-medium">Definition assessment round {attempt.attempt}</p><p className="mt-1 text-sm text-muted-foreground">Questions and answers are loaded from the retained assessment record.</p></div><div className="flex flex-wrap gap-2"><Button asChild size="sm" variant="outline"><Link href={assessmentHref}><BookOpen />Open assessment</Link></Button>{result.refined_matter_definition_revision_id ? <Button asChild size="sm" variant="outline"><Link href={diffHref} target="_blank" rel="noopener noreferrer" title="Open the definition comparison in a new tab and keep this replay stage open"><GitCompareArrows />View definition changes</Link></Button> : null}</div></div>
+    <div className="grid gap-2 text-sm sm:grid-cols-4"><div className="rounded-md border p-3"><p className="text-xs text-muted-foreground">Result</p><p className="font-medium">{friendly(result.status)}</p></div><div className="rounded-md border p-3"><p className="text-xs text-muted-foreground">Documents</p><p className="font-medium">{result.summarized_count.toLocaleString()} summarized · {result.failed_count.toLocaleString()} failed</p></div><div className="rounded-md border p-3"><p className="text-xs text-muted-foreground">Synthesis</p><p className="font-medium">{friendly(String(synthesis.status ?? "unavailable"))}</p></div><div className="rounded-md border p-3"><p className="text-xs text-muted-foreground">Definition change</p><p className="font-medium">{result.refined_matter_definition_revision_id ? "Revision created" : "No revision created"}</p></div></div>
+    <div><p className="mb-2 text-sm font-medium">Assessment questions</p>{questions.data?.length ? <div className="space-y-2">{questions.data.map((question, index) => <div key={question.id} className="rounded-lg border p-3"><div className="flex flex-wrap items-start justify-between gap-2"><p className="text-sm font-medium">{index + 1}. {question.question}</p><div className="flex flex-wrap gap-1"><Badge variant="outline">{friendly(question.priority)}</Badge>{question.blocking ? <Badge variant="accent">Blocking</Badge> : null}<StatusBadge status={question.status} /></div></div>{question.rationale ? <p className="mt-2 text-xs text-muted-foreground">{question.rationale}</p> : null}<div className="mt-3 rounded-md bg-muted/50 p-3 text-sm"><p className="text-xs font-medium text-muted-foreground">Recorded result</p>{question.status === "ANSWERED" ? <p className="mt-1 whitespace-pre-wrap">{question.answer}</p> : question.status === "DISMISSED" ? <p className="mt-1 text-muted-foreground">Question dismissed without an answer.</p> : <p className="mt-1 text-muted-foreground">No answer was recorded.</p>}{question.answered_at ? <p className="mt-2 text-xs text-muted-foreground">Recorded {formatDate(question.answered_at)}</p> : null}</div></div>)}</div> : <p className="rounded-md border p-3 text-sm text-muted-foreground">This assessment completed without generating clarification questions.</p>}</div>
+  </section>;
+}
+
+function QATaskSetupReplay({ matterId, run, attempt }: {
+  matterId: string;
+  run: ReviewProgramRunRead;
+  attempt: ReviewProgramStageAttemptRead;
+}) {
+  const originalRaw = attempt.result_summary?.accepted_qa_task;
+  const original = originalRaw && typeof originalRaw === "object" && !Array.isArray(originalRaw)
+    ? originalRaw as Record<string, unknown>
+    : {};
+  const finalRaw = run.progress_summary?.accepted_qa_task;
+  const final = finalRaw && typeof finalRaw === "object" && !Array.isArray(finalRaw)
+    ? finalRaw as Record<string, unknown>
+    : original;
+  const taskId = typeof final.task_id === "string"
+    ? final.task_id
+    : typeof original.task_id === "string" ? original.task_id : "";
+  const originalVersionId = typeof original.task_version_id === "string" ? original.task_version_id : "";
+  const finalVersionId = typeof final.task_version_id === "string" ? final.task_version_id : originalVersionId;
+  const finalVersionNumber = Number(final.version ?? 0);
+  const [selectedVersionId, setSelectedVersionId] = useState(finalVersionId);
+  const versions = useQuery({
+    queryKey: ["analysis-task-versions", matterId, taskId, "review-program-replay"],
+    queryFn: () => coreApi<MatterAnalysisTaskVersionRead[]>(`/v1/matters/${matterId}/analysis-tasks/${taskId}/versions`),
+    enabled: Boolean(taskId),
+  });
+  const definitions = useQuery({
+    queryKey: ["metadata-definitions", matterId],
+    queryFn: () => coreApi<MetadataDefinitionRead[]>(`/v1/matters/${matterId}/metadata-definitions`),
+    enabled: Boolean(taskId),
+  });
+  if (!taskId) return <div className="rounded-lg border border-amber-500/40 bg-amber-500/10 p-3 text-sm">This historical attempt does not identify the generated Q&amp;A task.</div>;
+  if (versions.isPending || definitions.isPending) return <div className="rounded-lg border p-3 text-sm text-muted-foreground">Loading retained Q&amp;A task versions…</div>;
+  if (versions.error || definitions.error) return <div className="rounded-lg border border-destructive/30 bg-destructive/5 p-3 text-sm text-destructive">The retained Q&amp;A task configuration history is unavailable.</div>;
+
+  const byId = new Map((definitions.data ?? []).map((definition) => [definition.id, definition]));
+  const relevant = (versions.data ?? [])
+    .filter((version) => finalVersionNumber ? version.version <= finalVersionNumber : version.id === originalVersionId || version.id === finalVersionId)
+    .sort((left, right) => {
+      if (left.id === finalVersionId && right.id !== finalVersionId) return -1;
+      if (right.id === finalVersionId && left.id !== finalVersionId) return 1;
+      return right.version - left.version;
+    });
+  const selectedVersion = relevant.find((version) => version.id === selectedVersionId)
+    ?? relevant.find((version) => version.id === finalVersionId)
+    ?? relevant[0];
+  const changedAfterStage = Boolean(originalVersionId && finalVersionId && originalVersionId !== finalVersionId);
+  return <section className="space-y-3 rounded-lg border bg-background/70 p-4" aria-label="Q&A task configuration history">
+    <div><p className="font-medium">Q&amp;A task configuration history</p><p className="mt-1 text-sm text-muted-foreground">The final task used by the program is shown by default. Select an earlier retained version to review its prior configuration.</p></div>
+    {changedAfterStage ? <div className="rounded-md border border-amber-500/40 bg-amber-500/10 p-3 text-sm"><p className="font-medium">The task changed after the original Stage 5 publication.</p><p className="mt-1 text-muted-foreground">The final accepted task version below superseded the original setup and is the version used by the program.</p></div> : null}
+    {relevant.length > 1 ? <div className="max-w-sm space-y-2"><Label htmlFor="replay-qa-task-version">Task version</Label><Select value={selectedVersion?.id} onValueChange={setSelectedVersionId}><SelectTrigger id="replay-qa-task-version"><SelectValue /></SelectTrigger><SelectContent>{relevant.map((version) => <SelectItem key={version.id} value={version.id}>Version {version.version}{version.id === finalVersionId ? " · Final used by program" : version.id === originalVersionId ? " · Original Stage 5 setup" : " · Earlier version"}</SelectItem>)}</SelectContent></Select></div> : null}
+    {selectedVersion ? (() => {
+      const isOriginal = selectedVersion.id === originalVersionId;
+      const isFinal = selectedVersion.id === finalVersionId;
+      const fieldIds = selectedVersion.destination_metadata_definition_ids ?? [];
+      const specification = selectedVersion.decision_specification && typeof selectedVersion.decision_specification === "object"
+        ? selectedVersion.decision_specification as unknown as Record<string, unknown>
+        : {};
+      const questions = specification.questions && typeof specification.questions === "object" && !Array.isArray(specification.questions)
+        ? Object.keys(specification.questions as Record<string, unknown>).length
+        : 0;
+      const policy = specification.decision_policy && typeof specification.decision_policy === "object" && !Array.isArray(specification.decision_policy)
+        ? specification.decision_policy as Record<string, unknown>
+        : {};
+      const recommendations = policy.recommendations && typeof policy.recommendations === "object" && !Array.isArray(policy.recommendations)
+        ? Object.keys(policy.recommendations as Record<string, unknown>).length
+        : 0;
+      return <div key={selectedVersion.id} className={cn("rounded-lg border p-3", isFinal && "border-primary bg-primary/5 ring-1 ring-primary/20")}><div className="flex flex-wrap items-center justify-between gap-2"><div><p className="font-medium">{isFinal ? "Final task used by program" : "Earlier task setup"}</p><p className="text-xs text-muted-foreground">Task version {selectedVersion.version}</p></div><div className="flex flex-wrap gap-1">{isOriginal && !isFinal ? <Badge variant="outline">Original Stage 5 setup</Badge> : null}{isFinal ? <Badge variant="active">Final version used</Badge> : null}<StatusBadge status={selectedVersion.status} /></div></div><div className="mt-3 grid gap-2 text-sm sm:grid-cols-2"><div><p className="text-xs text-muted-foreground">Questions</p><p className="font-medium">{countLabel(questions, "question")}</p></div><div><p className="text-xs text-muted-foreground">Recommendations</p><p className="font-medium">{countLabel(recommendations, "recommendation")}</p></div></div><p className="mt-3 text-xs font-medium text-muted-foreground">Coding fields</p><div className="mt-1 flex flex-wrap gap-1.5">{fieldIds.length ? fieldIds.map((fieldId) => { const definition = byId.get(fieldId); return <Badge key={fieldId} variant="outline">{definition?.display_name ?? definition?.key ?? fieldId}</Badge>; }) : <span className="text-sm text-muted-foreground">No coding fields recorded.</span>}</div>{selectedVersion.decision_specification ? <details className="mt-3 rounded-md border bg-background/70 p-3" open={isFinal}><summary className="cursor-pointer text-sm font-medium">Decision prompt</summary><div className="mt-3"><DecisionSpecificationView specification={selectedVersion.decision_specification} /></div></details> : null}<p className="mt-3 text-xs text-muted-foreground">Published {selectedVersion.published_at ? formatDate(selectedVersion.published_at) : "not recorded"} · compilation {friendly(selectedVersion.compilation_status)}</p></div>;
+    })() : <p className="rounded-md border p-3 text-sm text-muted-foreground">No retained task versions match the final program pin.</p>}
+  </section>;
+}
+
+function DiscoveryQAReplay({ clientId, matterId, run, attempt }: {
+  clientId: string;
+  matterId: string;
+  run: ReviewProgramRunRead;
+  attempt: ReviewProgramStageAttemptRead;
+}) {
+  const runRaw = run.progress_summary?.discovery_qa;
+  const runValues = runRaw && typeof runRaw === "object" && !Array.isArray(runRaw) ? runRaw as Record<string, unknown> : {};
+  const resultRaw = attempt.result_summary?.discovery_qa;
+  const resultValues = resultRaw && typeof resultRaw === "object" && !Array.isArray(resultRaw) ? resultRaw as Record<string, unknown> : {};
+  const values = { ...runValues, ...resultValues };
+  const batchSetId = typeof values.batch_set_id === "string" ? values.batch_set_id : "";
+  const taskId = typeof values.task_id === "string" ? values.task_id : "";
+  const batchSet = useQuery({
+    queryKey: ["analysis-task-batch-set", matterId, taskId, batchSetId, "review-program-replay"],
+    queryFn: () => coreApi<AnalysisTaskBatchSetRead>(`/v1/matters/${matterId}/analysis-tasks/${taskId}/batch-sets/${batchSetId}`),
+    enabled: Boolean(taskId && batchSetId),
+  });
+  const jobs = useQuery({
+    queryKey: ["matter-question-answering-jobs", matterId, batchSetId, "review-program-replay"],
+    queryFn: () => coreApi<MatterQuestionAnsweringJobRead[]>(`/v1/matters/${matterId}/analysis-tasks/question-answering-jobs?batch_set_id=${encodeURIComponent(batchSetId)}`),
+    enabled: Boolean(batchSetId),
+  });
+  const linkedJobs = jobs.data ?? [];
+  const providerTotals = linkedJobs.reduce<Record<string, { successful: number; failed: number; total: number; statuses: Set<string>; model: string; startedAt: string | null; endedAt: string | null }>>((totals, job) => {
+    const label = job.decision_provider === "OPENAI_DECISIONS" ? "OpenAI Decisions" : "Jev";
+    const current = totals[label] ?? { successful: 0, failed: 0, total: 0, statuses: new Set<string>(), model: job.model_key, startedAt: null, endedAt: null };
+    current.successful += job.successful_document_count;
+    current.failed += job.failed_document_count ?? 0;
+    current.total += job.document_count;
+    current.statuses.add(job.status);
+    if (job.started_at && (!current.startedAt || Date.parse(job.started_at) < Date.parse(current.startedAt))) current.startedAt = job.started_at;
+    if (job.completed_at && (!current.endedAt || Date.parse(job.completed_at) > Date.parse(current.endedAt))) current.endedAt = job.completed_at;
+    totals[label] = current;
+    return totals;
+  }, {});
+  const selectedCount = Number(values.selected_document_count ?? batchSet.data?.population_count ?? 0);
+  const targetCount = Number(values.target_document_count ?? selectedCount);
+  const batchCount = batchSet.data?.batch_count ?? 0;
+  const batchSize = Number(values.target_batch_size ?? batchSet.data?.target_batch_size ?? 0);
+  const finalTaskRaw = run.progress_summary?.accepted_qa_task;
+  const finalTask = finalTaskRaw && typeof finalTaskRaw === "object" && !Array.isArray(finalTaskRaw) ? finalTaskRaw as Record<string, unknown> : {};
+  const taskVersion = Number(finalTask.version ?? 0);
+  const jobsHref = matterJobsHref(clientId, matterId, "QUESTION_ANSWERING", { batch_set: batchSetId });
+  const loading = Boolean(taskId && batchSetId) && (batchSet.isPending || jobs.isPending);
+  const loadError = batchSet.error ?? jobs.error;
+
+  return <section className="space-y-4 rounded-lg border bg-background/70 p-4" aria-label="Discovery Q&A recorded results">
+    <div className="flex flex-wrap items-start justify-between gap-3"><div><p className="font-medium">Discovery Q&amp;A execution</p><p className="mt-1 text-sm text-muted-foreground">One frozen population was divided into task-specific batches and reviewed by both pinned model profiles.</p></div>{batchSetId ? <Button asChild size="sm" variant="outline"><Link href={jobsHref}><ListChecks />View linked jobs</Link></Button> : null}</div>
+    {loading ? <p className="rounded-md border p-3 text-sm text-muted-foreground">Loading the retained Batch Set and model runs…</p> : loadError ? <p className="rounded-md border border-destructive/30 bg-destructive/5 p-3 text-sm text-destructive">The retained Batch Set or linked model jobs could not be loaded. The frozen stage record remains available below.</p> : <>
+      <div className="grid gap-2 text-sm sm:grid-cols-2 lg:grid-cols-5">
+        <div className="rounded-md border p-3"><p className="text-xs text-muted-foreground">Population</p><p className="font-medium">{selectedCount.toLocaleString()} selected</p><p className="text-xs text-muted-foreground">Target {targetCount.toLocaleString()}{targetCount > selectedCount ? ` · ${(targetCount - selectedCount).toLocaleString()} short` : ""}</p></div>
+        <div className="rounded-md border p-3"><p className="text-xs text-muted-foreground">Batch Set</p><p className="font-medium">{batchCount.toLocaleString()} {batchCount === 1 ? "batch" : "batches"}</p><p className="text-xs text-muted-foreground">Up to {batchSize.toLocaleString()} documents each</p></div>
+        <div className="rounded-md border p-3"><p className="text-xs text-muted-foreground">Families</p><p className="font-medium">{values.keep_families_together ? "Kept together" : "Not expanded"}</p></div>
+        <div className="rounded-md border p-3"><p className="text-xs text-muted-foreground">Q&amp;A task</p><p className="font-medium">{taskVersion ? `Version ${taskVersion}` : "Recorded task"}</p><p className="text-xs text-muted-foreground">Final program pin</p></div>
+        <div className="rounded-md border p-3"><p className="text-xs text-muted-foreground">Result</p><p className="font-medium">{friendly(attempt.status)}</p><p className="text-xs text-muted-foreground">{batchSet.data ? `Batch Set ${friendly(batchSet.data.status)}` : "Batch Set retained"}</p></div>
+      </div>
+      <div>
+        <div className="mb-2 flex items-center justify-between gap-2"><p className="text-sm font-medium">Model execution</p><Badge variant="outline">{Object.keys(providerTotals).length} profiles</Badge></div>
+        {Object.keys(providerTotals).length ? <Table><TableHeader><TableRow><TableHead>Model profile</TableHead><TableHead>Model</TableHead><TableHead>Status</TableHead><TableHead>Started</TableHead><TableHead>Ended</TableHead><TableHead>Elapsed</TableHead><TableHead className="text-right">Successful</TableHead><TableHead className="text-right">Failed</TableHead><TableHead className="text-right">Expected</TableHead></TableRow></TableHeader><TableBody>{Object.entries(providerTotals).map(([provider, counts]) => {
+          const status = counts.statuses.size === 1 ? [...counts.statuses][0] : counts.statuses.has("FAILED") ? "COMPLETED_WITH_ERRORS" : "COMPLETED";
+          return <TableRow key={provider}><TableCell className="font-medium">{provider}</TableCell><TableCell>{counts.model}</TableCell><TableCell><StatusBadge status={status} /></TableCell><TableCell className="whitespace-nowrap text-xs">{counts.startedAt ? formatDateTime(counts.startedAt) : "Not recorded"}</TableCell><TableCell className="whitespace-nowrap text-xs">{counts.endedAt ? formatDateTime(counts.endedAt) : "Not completed"}</TableCell><TableCell className="whitespace-nowrap tabular-nums">{formatElapsed(counts.startedAt, counts.endedAt)}</TableCell><TableCell className="text-right tabular-nums">{counts.successful.toLocaleString()}</TableCell><TableCell className="text-right tabular-nums">{counts.failed.toLocaleString()}</TableCell><TableCell className="text-right tabular-nums">{counts.total.toLocaleString()}</TableCell></TableRow>;
+        })}</TableBody></Table> : <p className="rounded-md border p-3 text-sm text-muted-foreground">No linked model jobs were retained for this Batch Set.</p>}
+      </div>
+    </>}
+  </section>;
+}
+
+function ClassifierPositiveCoverageProgress({ clientId, matterId, run, openAction }: { clientId: string; matterId: string; run: ReviewProgramRunRead; openAction: ReviewProgramActionRead | null }) {
+  const raw = run.progress_summary?.classifier_positive_coverage;
+  const coverage = raw && typeof raw === "object" && !Array.isArray(raw) ? raw as Record<string, unknown> : {};
+  const reviewBatchId = typeof coverage.review_batch_id === "string" ? coverage.review_batch_id : "";
+  const jobs = useQuery({
+    queryKey: ["matter-question-answering-jobs", matterId, "review-batch", reviewBatchId],
+    queryFn: () => coreApi<MatterQuestionAnsweringJobRead[]>(`/v1/matters/${matterId}/analysis-tasks/question-answering-jobs?review_batch_id=${encodeURIComponent(reviewBatchId)}`),
+    enabled: Boolean(reviewBatchId),
+    refetchInterval: (query) => query.state.data?.some((job) => !TERMINAL_DISCOVERY_JOB_STATUSES.has(job.status)) ? 1_500 : false,
+  });
+  const linkedJobs = jobs.data ?? [];
+  const currentBatchPopulation = Number(coverage.uncovered_document_count ?? 0);
+  const population = Number(coverage.coverage_population_document_count ?? currentBatchPopulation);
+  const errorContextRaw = openAction?.action_type === "CLASSIFIER_POSITIVE_COVERAGE_ERRORS"
+    ? openAction.decision_context?.classifier_positive_coverage_errors
+    : null;
+  const errorContext = errorContextRaw && typeof errorContextRaw === "object" && !Array.isArray(errorContextRaw) ? errorContextRaw as Record<string, unknown> : {};
+  const cumulativeProfiles = Array.isArray(errorContext.profile_runs)
+    ? errorContext.profile_runs.filter((item): item is Record<string, unknown> => Boolean(item && typeof item === "object" && !Array.isArray(item)))
+    : [];
+  const useCumulative = cumulativeProfiles.length > 0;
+  const expectedReviews = useCumulative
+    ? cumulativeProfiles.reduce((total, profile) => total + Number(profile.processed_document_count ?? 0), 0)
+    : linkedJobs.length
+    ? linkedJobs.reduce((total, job) => total + job.document_count, 0)
+    : currentBatchPopulation * Number(Array.isArray(coverage.required_profiles) ? coverage.required_profiles.length : 2);
+  const successful = useCumulative
+    ? cumulativeProfiles.reduce((total, profile) => total + Number(profile.completed_document_count ?? 0), 0)
+    : linkedJobs.reduce((total, job) => total + job.successful_document_count, 0);
+  const failed = useCumulative
+    ? cumulativeProfiles.reduce((total, profile) => total + Number(profile.failed_document_count ?? 0), 0)
+    : linkedJobs.reduce((total, job) => total + (job.failed_document_count ?? 0), 0);
+  const processed = useCumulative
+    ? expectedReviews
+    : linkedJobs.reduce((total, job) => total + job.processed_document_count, 0);
+  const reused = useCumulative
+    ? cumulativeProfiles.reduce((total, profile) => total + Number(profile.reused_document_count ?? 0), 0)
+    : Math.max(0, processed - successful - failed);
+  const resolved = successful + reused;
+  const state = String(run.progress_summary?.classifier_positive_coverage_state ?? coverage.state ?? "");
+  const allTerminal = linkedJobs.length > 0 && linkedJobs.every((job) => TERMINAL_DISCOVERY_JOB_STATUSES.has(job.status));
+  const activity = state === "COMPLETED_WITH_ERRORS" ? "Completed with errors"
+    : state === "MATERIALIZING_AD_HOC_BATCH" ? "Preparing ad hoc batch"
+    : !linkedJobs.length ? "Starting linked model reviews"
+    : failed > 0 && allTerminal ? "Completed with errors"
+    : allTerminal ? "Model reviews complete"
+    : "Reviewing classifier-positive documents";
+  const jobsHref = matterJobsHref(clientId, matterId, "QUESTION_ANSWERING", { review_batch: reviewBatchId });
+  const providerRows = useCumulative ? cumulativeProfiles.map((profile) => ({
+    id: String(profile.id ?? profile.execution_profile_id),
+    label: String(profile.model_name ?? profile.profile_key ?? "Q&A model"),
+    status: String(profile.status ?? "COMPLETED"),
+    successful: Number(profile.completed_document_count ?? 0),
+    reused: Number(profile.reused_document_count ?? 0),
+    failed: Number(profile.failed_document_count ?? 0),
+    total: Number(profile.processed_document_count ?? 0),
+  })) : linkedJobs.map((job) => {
+    const jobFailed = job.failed_document_count ?? 0;
+    const jobReused = Math.max(0, job.processed_document_count - job.successful_document_count - jobFailed);
+    return {
+      id: job.id,
+      label: job.model_key,
+      status: job.status,
+      successful: job.successful_document_count,
+      reused: jobReused,
+      failed: jobFailed,
+      total: job.document_count,
+    };
+  });
+
+  return <div className="mt-3 border-t pt-3">
+    <div className="grid gap-3 text-sm sm:grid-cols-[minmax(0,1fr)_minmax(0,1fr)_auto] sm:items-end">
+      <div><p className="text-xs text-muted-foreground">Status</p><p className="font-medium">{activity}</p><p className="mt-1 text-xs text-muted-foreground">{currentBatchPopulation.toLocaleString()} documents in this coverage attempt · {population.toLocaleString()} in the original coverage population · {Number(coverage.already_covered_document_count ?? 0).toLocaleString()} already covered before this attempt</p></div>
+      <div><p className="text-xs text-muted-foreground">Model reviews</p><p className="font-medium tabular-nums">{resolved.toLocaleString()} of {expectedReviews.toLocaleString()} resolved</p><p className="mt-1 text-xs text-muted-foreground">{successful.toLocaleString()} newly successful · {reused.toLocaleString()} existing results reused{failed ? ` · ${failed.toLocaleString()} failed` : ""}</p></div>
+      <div className="flex justify-end">{reviewBatchId ? <Button asChild size="sm" variant="outline"><Link href={jobsHref}><ListChecks />View coverage jobs</Link></Button> : null}</div>
+    </div>
+    {providerRows.length ? <div className="mt-3 grid gap-2 sm:grid-cols-2">{providerRows.map((provider) => <div key={provider.id} className="rounded-md border bg-background/70 p-2"><div className="flex items-center justify-between gap-2"><p className="text-xs font-medium">{provider.label}</p><StatusBadge status={provider.status} /></div><p className="mt-1 text-xs tabular-nums text-muted-foreground">{(provider.successful + provider.reused).toLocaleString()}/{provider.total.toLocaleString()} resolved · {provider.successful.toLocaleString()} new · {provider.reused.toLocaleString()} reused{provider.failed ? ` · ${provider.failed.toLocaleString()} failed` : ""}</p></div>)}</div> : <p className="mt-2 text-xs text-muted-foreground">The two Q&amp;A jobs will appear after the ad hoc batch is ready.</p>}
   </div>;
 }
 
@@ -547,7 +1084,7 @@ function CancelDiscoveryQADialog({ busy, onCancel }: { busy: boolean; onCancel: 
 function ProgramStageTooltip({ stage }: { stage: ReviewWorkflowStageRead }) {
   const tooltipId = `review-program-stage-${stage.ordinal}-help`;
   const description = PROGRAM_STAGE_HELP[stage.key]
-    ?? `${stage.name} is a ${friendly(stage.batching_policy)} stage${stage.requires_human_gate ? " that requires a user decision" : ""}.`;
+    ?? `${stage.name} is a ${friendly(effectiveStageBatchingPolicy(stage))} stage${stage.requires_human_gate ? " that requires a user decision" : ""}.`;
   return <span className="group/stage-tooltip relative inline-flex shrink-0">
     <button type="button" className="rounded-sm text-muted-foreground outline-none hover:text-foreground focus-visible:ring-2 focus-visible:ring-ring" aria-label={`About ${stage.name}`} aria-describedby={tooltipId}>
       <CircleHelp className="size-4" aria-hidden="true" />
@@ -666,10 +1203,94 @@ function QAPublicationSummary({ action }: { action: ReviewProgramActionRead }) {
   return <div className="mb-4 space-y-3 rounded-lg border bg-background/70 p-3 text-sm"><div className="grid gap-2 sm:grid-cols-3"><div><p className="text-xs text-muted-foreground">Task</p><p className="font-medium">{String(taskValues.name ?? "Generated Q&A task")}</p></div><div><p className="text-xs text-muted-foreground">Questions</p><p className="font-medium">{Number(progress.question_count ?? 0)} questions · {Number(progress.recommendation_count ?? 0)} recommendations</p></div><div><p className="text-xs text-muted-foreground">Validation</p><p className="font-medium">{Number(progress.warning_count ?? 0)} warnings · {Number(progress.omission_count ?? 0)} omissions</p></div></div><div><p className="mb-1 text-xs text-muted-foreground">Pinned execution profiles</p><div className="flex flex-wrap gap-2">{profileValues.map((profile) => <Badge key={String(profile.id)} variant="outline">{String(profile.name)} · {String(profile.resolved_model)}</Badge>)}</div></div></div>;
 }
 
-function IssueSupportSummary({ action }: { action: ReviewProgramActionRead }) {
+function IssueSupportSummary({ action, matterId, run }: { action: ReviewProgramActionRead; matterId: string; run: ReviewProgramRunRead | null }) {
   if (action.stage_key !== "ISSUE_SUPPORT_DECISION") return null;
   const raw = action.decision_context?.discovery_analysis;
   const analysis = raw && typeof raw === "object" && !Array.isArray(raw) ? raw as Record<string, unknown> : {};
+  return <DiscoveryAnalysisSummary analysis={analysis} matterId={matterId} run={run} />;
+}
+
+function DiscoveryAnalysisReplay({ matterId, run, attempt }: { matterId: string; run: ReviewProgramRunRead; attempt: ReviewProgramStageAttemptRead }) {
+  const nested = attempt.result_summary?.discovery_analysis;
+  const analysis = nested && typeof nested === "object" && !Array.isArray(nested)
+    ? nested as Record<string, unknown>
+    : attempt.result_summary ?? {};
+  return <DiscoveryAnalysisSummary analysis={analysis} matterId={matterId} run={run} />;
+}
+
+function WholeCollectionScoringReplay({ clientId, matterId, attempt }: { clientId: string; matterId: string; attempt: ReviewProgramStageAttemptRead }) {
+  const nested = attempt.result_summary?.whole_collection_scoring;
+  const result = nested && typeof nested === "object" && !Array.isArray(nested)
+    ? nested as Record<string, unknown>
+    : attempt.result_summary ?? {};
+  const models = Array.isArray(result.models)
+    ? result.models.filter((item): item is Record<string, unknown> => Boolean(item && typeof item === "object" && !Array.isArray(item)))
+    : [];
+  const aggregateRaw = result.aggregate_model_document_counts;
+  const aggregate = aggregateRaw && typeof aggregateRaw === "object" && !Array.isArray(aggregateRaw)
+    ? aggregateRaw as Record<string, unknown>
+    : {};
+  if (!models.length) return <div className="rounded-lg border bg-background/70 p-4 text-sm text-muted-foreground">This attempt did not produce a whole-matter scoring result. Select a completed attempt to review its outcome.</div>;
+  return <div className="space-y-4 rounded-lg border bg-background/70 p-4">
+    <div><p className="font-semibold">Whole-matter scoring outcome</p><p className="text-sm text-muted-foreground">Review the population totals, then open each classifier’s prediction distributions and threshold analysis.</p></div>
+    <div className="grid gap-2 text-sm sm:grid-cols-2 xl:grid-cols-5">
+      <div className="rounded-md border p-3"><p className="text-xs text-muted-foreground">Population</p><p className="font-medium tabular-nums">{Number(result.collection_document_count ?? aggregate.population_document_count ?? 0).toLocaleString()}</p></div>
+      <div className="rounded-md border p-3"><p className="text-xs text-muted-foreground">Scored</p><p className="font-medium tabular-nums">{Number(aggregate.scored_document_count ?? 0).toLocaleString()}</p></div>
+      <div className="rounded-md border p-3"><p className="text-xs text-muted-foreground">Abstained</p><p className="font-medium tabular-nums">{Number(aggregate.abstained_document_count ?? 0).toLocaleString()}</p></div>
+      <div className="rounded-md border p-3"><p className="text-xs text-muted-foreground">Excluded</p><p className="font-medium tabular-nums">{Number(aggregate.excluded_document_count ?? 0).toLocaleString()}</p></div>
+      <div className="rounded-md border p-3"><p className="text-xs text-muted-foreground">Failed</p><p className="font-medium tabular-nums">{Number(aggregate.failed_document_count ?? 0).toLocaleString()}</p></div>
+    </div>
+    <div className="space-y-2">{models.map((model, index) => {
+      const modelId = String(model.classification_model_id ?? "");
+      const scoringRunId = String(model.scoring_run_id ?? "");
+      return <div key={scoringRunId || modelId || index} className="flex flex-wrap items-center justify-between gap-3 rounded-md border p-3">
+        <div><div className="flex flex-wrap items-center gap-2"><p className="font-medium">{String(model.field_name ?? model.field_key ?? `Classifier ${index + 1}`)}</p><StatusBadge status={String(model.status ?? result.state ?? "COMPLETED")} /></div><p className="mt-1 text-xs text-muted-foreground">{Number(model.scored_document_count ?? 0).toLocaleString()} scored · {Number(model.abstained_document_count ?? 0).toLocaleString()} abstained · {Number(model.excluded_document_count ?? 0).toLocaleString()} excluded · {Number(model.failed_document_count ?? 0).toLocaleString()} failed</p></div>
+        {modelId && scoringRunId ? <Button asChild size="sm" variant="outline"><Link href={classificationScoringRunHref(clientId, matterId, modelId, scoringRunId)} target="_blank" rel="noopener noreferrer"><BarChart3 />View scoring results</Link></Button> : null}
+      </div>;
+    })}</div>
+  </div>;
+}
+
+function DiscoveryAnalysisSources({ analysis, matterId, run }: { analysis: Record<string, unknown>; matterId: string; run: ReviewProgramRunRead | null }) {
+  const recordedSources = Array.isArray(analysis.source_batches)
+    ? analysis.source_batches.filter((item): item is Record<string, unknown> => Boolean(item && typeof item === "object" && !Array.isArray(item) && typeof (item as Record<string, unknown>).id === "string"))
+    : [];
+  const profileRunIds = Array.isArray(analysis.profile_run_ids)
+    ? new Set(analysis.profile_run_ids.filter((value): value is string => typeof value === "string"))
+    : new Set<string>();
+  const discoveryBatchSets = (run?.stage_attempts ?? []).flatMap((stageAttempt) => {
+    if (stageAttempt.stage_key !== "DISCOVERY_QA") return [];
+    const nested = stageAttempt.result_summary?.discovery_qa;
+    const values = nested && typeof nested === "object" && !Array.isArray(nested) ? nested as Record<string, unknown> : stageAttempt.result_summary ?? {};
+    const taskId = typeof values.task_id === "string" ? values.task_id : "";
+    const batchSetId = typeof values.batch_set_id === "string" ? values.batch_set_id : "";
+    return taskId && batchSetId ? [{ taskId, batchSetId }] : [];
+  }).filter((value, index, values) => values.findIndex((other) => other.batchSetId === value.batchSetId) === index);
+  const legacyQueries = useQueries({
+    queries: discoveryBatchSets.map(({ taskId, batchSetId }) => ({
+      queryKey: ["analysis-task-batch-set-runs", matterId, taskId, batchSetId, "discovery-analysis-sources"],
+      queryFn: () => coreApi<AnalysisTaskBatchSetRunRead[]>(`/v1/matters/${matterId}/analysis-tasks/${taskId}/batch-sets/${batchSetId}/runs`),
+      enabled: recordedSources.length === 0 && profileRunIds.size > 0,
+    })),
+  });
+  const derivedBatchIds = [...new Set(legacyQueries.flatMap((query) => (query.data ?? [])
+    .filter((profileRun) => profileRunIds.has(profileRun.id))
+    .flatMap((profileRun) => profileRun.children ?? [])
+    .map((child) => child.review_batch_id)))];
+  const sources = recordedSources.length ? recordedSources : derivedBatchIds.map((id, index) => ({ id, name: `Discovery batch ${index + 1}` }));
+  const loading = recordedSources.length === 0 && legacyQueries.some((query) => query.isPending);
+
+  return <div className="space-y-2 rounded-md border bg-muted/20 p-3">
+    <div><p className="text-sm font-semibold">Source analysis data</p><p className="text-xs text-muted-foreground">Open the retained coding comparison and document matrix for each batch included in this analysis.</p></div>
+    {loading ? <p className="text-xs text-muted-foreground">Loading source batches…</p> : sources.length ? <div className="flex flex-wrap gap-2">{sources.map((source, index) => {
+      const id = String(source.id);
+      const documentCount = "document_count" in source && typeof source.document_count === "number" ? source.document_count : null;
+      return <Button key={id} asChild size="sm" variant="outline"><Link href={`/review/matters/${matterId}/batches/${id}/statistics`} target="_blank" rel="noopener noreferrer"><ListChecks />{String(source.name ?? `Discovery batch ${index + 1}`)}{documentCount != null ? ` · ${documentCount.toLocaleString()} documents` : ""}</Link></Button>;
+    })}</div> : <p className="text-xs text-muted-foreground">Source-batch links were not retained for this historical analysis.</p>}
+  </div>;
+}
+
+function DiscoveryAnalysisSummary({ analysis, matterId, run }: { analysis: Record<string, unknown>; matterId: string; run: ReviewProgramRunRead | null }) {
   const overallRaw = analysis.overall;
   const overall = overallRaw && typeof overallRaw === "object" && !Array.isArray(overallRaw) ? overallRaw as Record<string, unknown> : {};
   const policyRaw = analysis.policy;
@@ -680,6 +1301,31 @@ function IssueSupportSummary({ action }: { action: ReviewProgramActionRead }) {
   const lowSupport = Array.isArray(analysis.low_support) ? analysis.low_support : [];
   const positiveMinimum = Number(policy.minimum_positive_support ?? 0);
   const negativeMinimum = Number(policy.minimum_negative_support ?? 0);
+  const analyzedProfiles = Array.isArray(analysis.execution_profiles)
+    ? analysis.execution_profiles.filter((item): item is Record<string, unknown> => Boolean(item && typeof item === "object" && !Array.isArray(item)))
+    : [];
+  const acceptedTaskRaw = run?.progress_summary?.accepted_qa_task;
+  const acceptedTask = acceptedTaskRaw && typeof acceptedTaskRaw === "object" && !Array.isArray(acceptedTaskRaw) ? acceptedTaskRaw as Record<string, unknown> : {};
+  const acceptedProfiles = Array.isArray(acceptedTask.execution_profiles)
+    ? acceptedTask.execution_profiles.filter((item): item is Record<string, unknown> => Boolean(item && typeof item === "object" && !Array.isArray(item)))
+    : [];
+  const acceptedById = new Map(acceptedProfiles.map((profile) => [String(profile.id ?? ""), profile]));
+  const orderedProfiles = analyzedProfiles.length
+    ? analyzedProfiles
+    : [...acceptedProfiles].sort((left, right) => String(left.id ?? "").localeCompare(String(right.id ?? "")));
+  const modelLabels = [0, 1].map((index) => {
+    const analyzed = orderedProfiles[index] ?? {};
+    const accepted = acceptedById.get(String(analyzed.execution_profile_id ?? analyzed.id ?? "")) ?? {};
+    return String(
+      analyzed.resolved_model
+      ?? accepted.resolved_model
+      ?? analyzed.name
+      ?? accepted.name
+      ?? analyzed.model_key
+      ?? accepted.model_key
+      ?? friendly(String(analyzed.decision_provider ?? accepted.decision_provider ?? `Pinned model ${index + 1}`)),
+    );
+  });
   return <div className="mb-4 space-y-4 rounded-lg border bg-background/70 p-3 text-sm">
     <div>
       <h3 className="font-semibold">Discovery analysis</h3>
@@ -696,6 +1342,7 @@ function IssueSupportSummary({ action }: { action: ReviewProgramActionRead }) {
     <div className="rounded-md border bg-muted/20 px-3 py-2 text-xs text-muted-foreground">
       Minimum support per category: <span className="font-medium text-foreground">{positiveMinimum.toLocaleString()} positive</span> and <span className="font-medium text-foreground">{negativeMinimum.toLocaleString()} negative</span> examples. Positive means either model selected the category; negative means neither selected it in a complete comparison.
     </div>
+    <DiscoveryAnalysisSources analysis={analysis} matterId={matterId} run={run} />
     {fields.length ? <div className="space-y-4">{fields.map((field) => {
       const classes = Array.isArray(field.classes)
         ? field.classes.filter((item): item is Record<string, unknown> => Boolean(item && typeof item === "object" && !Array.isArray(item)))
@@ -707,7 +1354,7 @@ function IssueSupportSummary({ action }: { action: ReviewProgramActionRead }) {
           <p className="text-xs tabular-nums text-muted-foreground">{Number(field.exact_count ?? 0).toLocaleString()} exact · {Number(field.partial_count ?? 0).toLocaleString()} partial · {Number(field.disagreement_count ?? 0).toLocaleString()} disagreements · {Number(field.incomplete_count ?? 0).toLocaleString()} incomplete</p>
         </div>
         <Table>
-          <TableHeader><TableRow><TableHead>Category</TableHead><TableHead className="text-right">Model A</TableHead><TableHead className="text-right">Model B</TableHead><TableHead className="text-right">Both</TableHead><TableHead className="text-right">Positive</TableHead><TableHead className="text-right">Negative</TableHead><TableHead className="text-right">Differences</TableHead><TableHead>Support</TableHead></TableRow></TableHeader>
+          <TableHeader><TableRow><TableHead>Category</TableHead><TableHead className="text-right">{modelLabels[0]}</TableHead><TableHead className="text-right">{modelLabels[1]}</TableHead><TableHead className="text-right">Both</TableHead><TableHead className="text-right">Positive</TableHead><TableHead className="text-right">Negative</TableHead><TableHead className="text-right">Differences</TableHead><TableHead>Support</TableHead></TableRow></TableHeader>
           <TableBody>{classes.map((item) => {
             const valueKey = String(item.value_key ?? "unknown");
             const low = String(item.support_status ?? "").toUpperCase() === "LOW_SUPPORT";
@@ -899,72 +1546,278 @@ function WholeCollectionScoringSummary({ action }: { action: ReviewProgramAction
 
 function ClassifierPositiveCoverageSummary({ action }: { action: ReviewProgramActionRead }) {
   if (action.stage_key !== "CLASSIFIER_POSITIVE_COVERAGE") return null;
+  const errorsRaw = action.decision_context?.classifier_positive_coverage_errors;
+  const errors = errorsRaw && typeof errorsRaw === "object" && !Array.isArray(errorsRaw) ? errorsRaw as Record<string, unknown> : null;
+  if (errors) {
+    const population = Number(errors.coverage_population_document_count ?? 0);
+    const unresolved = Number(errors.unresolved_document_count ?? 0);
+    const rate = Number(errors.unresolved_document_rate ?? 0);
+    const tolerance = Number(errors.failure_tolerance ?? 0.005);
+    const profiles = Array.isArray(errors.profile_runs)
+      ? errors.profile_runs.filter((item): item is Record<string, unknown> => Boolean(item && typeof item === "object" && !Array.isArray(item)))
+      : [];
+    return <div className="mb-4 space-y-3 rounded-lg border border-amber-500/40 bg-amber-500/5 p-3 text-sm">
+      <div className="grid gap-2 sm:grid-cols-4"><div><p className="text-xs text-muted-foreground">Original population</p><p className="font-medium">{population.toLocaleString()}</p></div><div><p className="text-xs text-muted-foreground">Unresolved documents</p><p className="font-medium">{unresolved.toLocaleString()}</p></div><div><p className="text-xs text-muted-foreground">Failure rate</p><p className="font-medium">{(rate * 100).toFixed(2)}%</p></div><div><p className="text-xs text-muted-foreground">Tolerance</p><p className="font-medium">Less than {(tolerance * 100).toFixed(1)}%</p></div></div>
+      {profiles.length ? <div className="space-y-2">{profiles.map((profile) => <div key={String(profile.id ?? profile.execution_profile_id)} className="flex flex-wrap items-center justify-between gap-2 rounded-md border bg-background p-2"><div><p className="font-medium">{String(profile.model_name ?? profile.profile_key ?? "Q&A model")}</p><p className="text-xs text-muted-foreground">{Number(profile.completed_document_count ?? 0).toLocaleString()} completed · {Number(profile.reused_document_count ?? 0).toLocaleString()} reused · {Number(profile.failed_document_count ?? 0).toLocaleString()} failed{Number(profile.run_count ?? 0) > 1 ? ` across ${Number(profile.run_count).toLocaleString()} runs` : ""}</p></div><StatusBadge status={String(profile.status ?? "COMPLETED_WITH_ERRORS")} /></div>)}</div> : null}
+      <p className="text-xs text-muted-foreground">Retry creates a replacement batch for only the unresolved documents. Accepting records them as a limitation and continues without treating request fragments as additional failed documents.</p>
+    </div>;
+  }
   const raw = action.decision_context?.coverage_plan;
   const plan = raw && typeof raw === "object" && !Array.isArray(raw) ? raw as Record<string, unknown> : {};
   return <div className="mb-4 space-y-3 rounded-lg border bg-background/70 p-3 text-sm">
-    <div className="grid gap-2 sm:grid-cols-3"><div><p className="text-xs text-muted-foreground">Required reviewers</p><p className="font-medium">{Number(plan.required_profile_count ?? 0)}</p></div><div><p className="text-xs text-muted-foreground">Candidate ceiling</p><p className="font-medium">{Number(plan.maximum_candidate_model_document_count ?? 0)}</p></div><div><p className="text-xs text-muted-foreground">Batching</p><p className="font-medium">Task-specific set</p></div></div>
+    <div className="grid gap-2 sm:grid-cols-3"><div><p className="text-xs text-muted-foreground">Required reviewers</p><p className="font-medium">{Number(plan.required_profile_count ?? 0)}</p></div><div><p className="text-xs text-muted-foreground">Candidate ceiling</p><p className="font-medium">{Number(plan.maximum_candidate_model_document_count ?? 0)}</p></div><div><p className="text-xs text-muted-foreground">Batching</p><p className="font-medium">Ad hoc batch</p></div></div>
     <p className="text-xs text-muted-foreground">The exact population is calculated from successful, non-abstained positive predictions and current-content Q&A results when you start coverage. Existing documents reviewed by both pinned profiles are excluded.</p>
   </div>;
 }
 
-function FinalAlignmentSummary({ action }: { action: ReviewProgramActionRead }) {
-  if (action.stage_key !== "NO_CODE_QC") return null;
-  const raw = action.decision_context?.final_alignment;
+function ClassifierPositiveCoverageDecisionCard({ action, canManage, busy, onSubmit, onStop }: {
+  action: ReviewProgramActionRead;
+  canManage: boolean;
+  busy: boolean;
+  onSubmit: (minimumConfidence: number) => void;
+  onStop: () => void;
+}) {
+  const raw = action.decision_context?.coverage_plan;
+  const plan = raw && typeof raw === "object" && !Array.isArray(raw) ? raw as Record<string, unknown> : {};
+  const initial = Number(plan.default_minimum_confidence ?? 0.5) * 100;
+  const [minimumConfidence, setMinimumConfidence] = useState(String(initial));
+  const submit = (event: FormEvent) => {
+    event.preventDefault();
+    const percentage = Number(minimumConfidence);
+    if (!Number.isFinite(percentage) || percentage < 0 || percentage > 100) {
+      toast.error("Minimum classifier confidence must be between 0% and 100%.");
+      return;
+    }
+    onSubmit(percentage / 100);
+  };
+  return <Card className="border-accent/60 bg-accent/5"><CardHeader><CardTitle>{action.title}</CardTitle><CardDescription>{action.explanation}</CardDescription></CardHeader><CardContent><form className="space-y-4" onSubmit={submit}><WholeCollectionScoringSummary action={action} /><ClassifierPositiveCoverageSummary action={action} /><div className="max-w-sm space-y-2"><Label htmlFor="coverage-minimum-confidence">Minimum classifier confidence %</Label><Input id="coverage-minimum-confidence" type="number" min={0} max={100} step={1} value={minimumConfidence} onChange={(event) => setMinimumConfidence(event.target.value)} required disabled={!canManage || busy} /><p className="text-xs text-muted-foreground">A document is eligible when at least one positive classifier score meets this inclusive threshold. This controls Q&A coverage only; it does not change saved classifier codings.</p></div><div className="flex flex-wrap gap-2"><Button type="submit" disabled={!canManage || busy}>{busy ? "Starting…" : "Run dual-Q&A coverage"}</Button><Button type="button" variant="destructive" disabled={!canManage || busy} onClick={onStop}>Stop program</Button></div></form></CardContent></Card>;
+}
+
+function ClassifierPositiveCoverageComparisonReplay({ run, clientId, matterId }: { run: ReviewProgramRunRead; clientId: string; matterId: string }) {
+  const raw = run.progress_summary?.final_alignment;
   const report = raw && typeof raw === "object" && !Array.isArray(raw) ? raw as Record<string, unknown> : {};
+  if (!Object.keys(report).length) return null;
+  return <FinalAlignmentResults report={report} run={run} clientId={clientId} matterId={matterId} title="Classifier and decision-model comparison" showIssueBreakdown />;
+}
+
+function reviewProgramQAModelNames(run: ReviewProgramRunRead | null): [string, string] {
+  const taskRaw = run?.progress_summary?.accepted_qa_task;
+  const task = taskRaw && typeof taskRaw === "object" && !Array.isArray(taskRaw) ? taskRaw as Record<string, unknown> : {};
+  const profiles = Array.isArray(task.execution_profiles)
+    ? task.execution_profiles.filter((item): item is Record<string, unknown> => Boolean(item && typeof item === "object" && !Array.isArray(item)))
+    : [];
+  const names = profiles.slice(0, 2).map((profile) => String(profile.resolved_model ?? profile.model_key ?? profile.key ?? "Q&A model"));
+  return [names[0] ?? "Q&A model 1", names[1] ?? "Q&A model 2"];
+}
+
+function FinalAlignmentResults({ report, run, clientId, matterId, title, showIssueBreakdown = false }: {
+  report: Record<string, unknown>;
+  run: ReviewProgramRunRead | null;
+  clientId: string;
+  matterId: string;
+  title?: string;
+  showIssueBreakdown?: boolean;
+}) {
   const alignmentRaw = report.alignment_counts;
   const alignment = alignmentRaw && typeof alignmentRaw === "object" && !Array.isArray(alignmentRaw) ? alignmentRaw as Record<string, unknown> : {};
   const sourceRaw = report.source_coverage_counts;
   const source = sourceRaw && typeof sourceRaw === "object" && !Array.isArray(sourceRaw) ? sourceRaw as Record<string, unknown> : {};
-  const issues = Array.isArray(report.issues) ? report.issues : [];
+  const coveragePolicyRaw = report.qa_coverage_policy;
+  const coveragePolicy = coveragePolicyRaw && typeof coveragePolicyRaw === "object" && !Array.isArray(coveragePolicyRaw) ? coveragePolicyRaw as Record<string, unknown> : {};
+  const liveCoverageRaw = run?.progress_summary?.classifier_positive_coverage;
+  const liveCoverage = liveCoverageRaw && typeof liveCoverageRaw === "object" && !Array.isArray(liveCoverageRaw) ? liveCoverageRaw as Record<string, unknown> : {};
+  const issues = Array.isArray(report.issues)
+    ? report.issues.filter((item): item is Record<string, unknown> => Boolean(item && typeof item === "object" && !Array.isArray(item)))
+    : [];
+  const [profileAName, profileBName] = reviewProgramQAModelNames(run);
+  const currentQACount = Number(source.CURRENT ?? 0);
+  const incompleteProfileCount = Number(source.PARTIAL_OR_MISSING_PROFILE ?? 0) + Number(source.STALE_OR_PARTIAL ?? 0);
+  const sourceMismatchCount = Number(source.SOURCE_VERSION_MISMATCH ?? 0);
+  const missingQACount = Number(source.MISSING_QA ?? 0);
+  const sourceUnavailableCount = Number(source.SOURCE_UNAVAILABLE ?? 0);
+  const selectedCoverageCount = Number(coveragePolicy.selected_document_count ?? liveCoverage.positive_document_count ?? 0);
+  const minimumConfidence = typeof report.minimum_confidence === "number"
+    ? report.minimum_confidence
+    : typeof coveragePolicy.minimum_confidence === "number"
+      ? coveragePolicy.minimum_confidence
+      : typeof liveCoverage.minimum_confidence === "number" ? liveCoverage.minimum_confidence : null;
+  const thresholdScoped = report.population_scope === "CLASSIFIER_POSITIVE_AT_OR_ABOVE_COVERAGE_THRESHOLD";
+  const exactAllCount = Number(alignment.EXACT_ALL ?? 0);
+  const qaPairExactCount = Number(alignment.QA_PAIR_EXACT ?? 0);
+  const partialOverlapCount = Number(alignment.PARTIAL ?? 0);
+  const noSharedCodingCount = Number(alignment.DISAGREEMENT ?? 0);
+  const incompleteComparisonCount = Number(alignment.INCOMPLETE ?? 0);
+  if (!thresholdScoped) {
+    return <div className="mb-4 space-y-3 rounded-lg border bg-background/70 p-3 text-sm">
+      <div><p className="text-xs text-muted-foreground">Classifier-positive documents at or above {minimumConfidence != null ? `${(minimumConfidence * 100).toFixed(0)}%` : "the selected threshold"}</p><p className="font-medium">{selectedCoverageCount.toLocaleString()}</p></div>
+      {run ? <Button asChild type="button" size="sm" variant="outline"><Link href={reviewProgramQAPopulationStatisticsHref(clientId, matterId, run.program_id, run.id)} target="_blank" rel="noopener noreferrer"><ListChecks />View Q&amp;A population statistics</Link></Button> : null}
+    </div>;
+  }
   return <div className="mb-4 space-y-3 rounded-lg border bg-background/70 p-3 text-sm">
-    <div className="grid gap-2 sm:grid-cols-4"><div><p className="text-xs text-muted-foreground">Aligned population</p><p className="font-medium">{Number(report.population_document_count ?? 0)}</p></div><div><p className="text-xs text-muted-foreground">All-source exact</p><p className="font-medium">{Number(alignment.EXACT_ALL ?? 0)}</p></div><div><p className="text-xs text-muted-foreground">Disputed or partial</p><p className="font-medium">{Number(alignment.PARTIAL ?? 0) + Number(alignment.DISAGREEMENT ?? 0)}</p></div><div><p className="text-xs text-muted-foreground">Issue assignments</p><p className="font-medium">{issues.length}</p></div></div>
-    <p className="text-xs text-muted-foreground">{Number(source.CURRENT ?? 0)} documents have current-source results from both Q&A profiles; {Number(source.STALE_OR_PARTIAL ?? 0) + Number(source.MISSING_QA ?? 0) + Number(source.SOURCE_UNAVAILABLE ?? 0)} are stale, partial, missing, or source-unavailable. Agreement is consistency evidence, not accuracy.</p>
+    {title ? <div><div className="flex items-center gap-2"><BarChart3 className="size-4 text-muted-foreground" /><p className="font-medium">{title}</p></div><p className="mt-1 text-xs text-muted-foreground">Classifier predictions are compared with {profileAName} and {profileBName} across the classifier-positive population selected in Step 15.</p></div> : null}
+    <div className="grid gap-2 sm:grid-cols-2 lg:grid-cols-4">
+      <div><p className="text-xs text-muted-foreground">{thresholdScoped ? `Classifier-positive documents at or above ${minimumConfidence != null ? `${(minimumConfidence * 100).toFixed(0)}%` : "the selected threshold"}` : "Documents included in this historical report"}</p><p className="font-medium">{Number(report.population_document_count ?? 0).toLocaleString()}</p></div>
+      <div><p className="text-xs text-muted-foreground">Classifier and both Q&amp;A models exactly agree</p><p className="font-medium">{exactAllCount.toLocaleString()}</p></div>
+      <div><p className="text-xs text-muted-foreground">Both Q&amp;A models agree; classifier differs</p><p className="font-medium">{qaPairExactCount.toLocaleString()}</p></div>
+      <div><p className="text-xs text-muted-foreground">Some coding values overlap</p><p className="font-medium">{partialOverlapCount.toLocaleString()}</p></div>
+      <div><p className="text-xs text-muted-foreground">No coding values overlap</p><p className="font-medium">{noSharedCodingCount.toLocaleString()}</p></div>
+      <div><p className="text-xs text-muted-foreground">Missing one or both Q&amp;A results</p><p className="font-medium">{incompleteComparisonCount.toLocaleString()}</p></div>
+      <div><p className="text-xs text-muted-foreground">Issue categories compared</p><p className="font-medium">{issues.length.toLocaleString()}</p></div>
+    </div>
+    <div className="grid gap-2 sm:grid-cols-2 lg:grid-cols-5"><div className="rounded-md border p-2"><p className="text-xs text-muted-foreground">Both Q&amp;A profiles complete</p><p className="font-medium">{currentQACount.toLocaleString()}</p></div><div className="rounded-md border p-2"><p className="text-xs text-muted-foreground">Incomplete dual-profile Q&amp;A</p><p className="font-medium">{incompleteProfileCount.toLocaleString()}</p></div><div className="rounded-md border p-2"><p className="text-xs text-muted-foreground">No Q&amp;A result</p><p className="font-medium">{missingQACount.toLocaleString()}</p></div><div className="rounded-md border p-2"><p className="text-xs text-muted-foreground">Source unavailable</p><p className="font-medium">{sourceUnavailableCount.toLocaleString()}</p></div><div className="rounded-md border p-2"><p className="text-xs text-muted-foreground">Source-version mismatch</p><p className="font-medium">{sourceMismatchCount.toLocaleString()}</p></div></div>
+    {showIssueBreakdown && issues.length ? <div className="space-y-2"><p className="font-medium">Issue-level comparison</p><div className="overflow-x-auto rounded-md border"><Table><TableHeader><TableRow><TableHead>Issue</TableHead><TableHead className="text-right">Classifier</TableHead><TableHead className="text-right">{profileAName}</TableHead><TableHead className="text-right">{profileBName}</TableHead><TableHead className="text-right">Both decision models</TableHead><TableHead className="text-right">All three</TableHead></TableRow></TableHeader><TableBody>{issues.map((issue) => {
+      const issueKey = String(issue.issue_key ?? "Issue");
+      const issueLabel = friendly(issueKey.includes(":") ? issueKey.split(":").at(-1)! : issueKey);
+      return <TableRow key={issueKey}><TableCell className="font-medium">{issueLabel}</TableCell><TableCell className="text-right tabular-nums">{Number(issue.classifier ?? 0).toLocaleString()}</TableCell><TableCell className="text-right tabular-nums">{Number(issue.profile_a ?? 0).toLocaleString()}</TableCell><TableCell className="text-right tabular-nums">{Number(issue.profile_b ?? 0).toLocaleString()}</TableCell><TableCell className="text-right tabular-nums">{Number(issue.qa_pair ?? 0).toLocaleString()}</TableCell><TableCell className="text-right tabular-nums">{Number(issue.all_three ?? 0).toLocaleString()}</TableCell></TableRow>;
+    })}</TableBody></Table></div></div> : null}
+    <p className="text-xs text-muted-foreground">{thresholdScoped ? `This report uses the same confidence threshold selected for classifier-positive Q&A coverage${selectedCoverageCount ? `, which selected ${selectedCoverageCount.toLocaleString()} documents` : ""}. “No Q&A result” means a selected document still lacks a usable result.` : `This historical report used the earlier broad population rule, so its population and agreement counts are not limited to the selected confidence threshold. “No Q&A result” can include documents outside the selected classifier-positive Q&A coverage policy${selectedCoverageCount ? `, which selected ${selectedCoverageCount.toLocaleString()} documents${minimumConfidence != null ? ` at or above ${(minimumConfidence * 100).toFixed(0)}% confidence` : ""}` : ""}.`} A source-version mismatch is reported separately and should be treated as an exception. Agreement measures consistency, not accuracy.</p>
+    {run ? <div className="flex flex-wrap gap-2"><Button asChild type="button" size="sm" variant="outline"><Link href={reviewProgramFinalAlignmentHref(clientId, matterId, run.program_id, run.id)} target="_blank" rel="noopener noreferrer"><GitCompareArrows />View full comparison</Link></Button><Button asChild type="button" size="sm" variant="outline"><Link href={reviewProgramQAPopulationStatisticsHref(clientId, matterId, run.program_id, run.id)} target="_blank" rel="noopener noreferrer"><ListChecks />View Q&amp;A population statistics</Link></Button></div> : null}
   </div>;
+}
+
+function FinalAlignmentSummary({ action, run, clientId, matterId }: { action: ReviewProgramActionRead; run: ReviewProgramRunRead | null; clientId: string; matterId: string }) {
+  if (action.stage_key !== "NO_CODE_QC") return null;
+  const raw = action.decision_context?.final_alignment;
+  const report = raw && typeof raw === "object" && !Array.isArray(raw) ? raw as Record<string, unknown> : {};
+  return <FinalAlignmentResults report={report} run={run} clientId={clientId} matterId={matterId} />;
 }
 
 interface NegativePopulationQCSetupPayload {
   preview_hash: string;
+  inventory_content_hash: string;
+  selected_procedures: NegativePopulationQCProcedure[];
+  selected_record_types: string[];
   random_sample_size: number;
   near_threshold_sample_size: number;
   cohort_control_sample_size: number;
   mandatory_review_limit: number;
-  target_batch_size: number;
   keep_families_together: boolean;
 }
 
-function NegativePopulationQCSetupCard({ action, canManage, busy, onSubmit, onStop }: {
+type NegativePopulationQCProcedure = "RANDOM_AUDIT" | "NEAR_THRESHOLD" | "RECORD_TYPE_CONTROL" | "PROCESSING_EXCEPTIONS";
+
+const NEGATIVE_QC_CARDS: Array<{
+  key: NegativePopulationQCProcedure;
+  title: string;
+  description: string;
+  route: string;
+  inputId: string;
+}> = [
+  { key: "RANDOM_AUDIT", title: "Random negative audit", description: "A representative sample of ordinary no-code documents. Only this procedure supports a population-level observed-positive estimate.", route: "Dual Q&A", inputId: "qc-random" },
+  { key: "NEAR_THRESHOLD", title: "High-risk no-code review", description: "Documents whose closest positive classifier score falls within the configured band below its decision threshold.", route: "Targeted review", inputId: "qc-threshold" },
+  { key: "RECORD_TYPE_CONTROL", title: "Record-type control review", description: "Ordinary no-code documents grouped by record type, allowing controls for available document cohorts.", route: "Targeted review", inputId: "qc-cohort" },
+  { key: "PROCESSING_EXCEPTIONS", title: "Processing-exception review", description: "Reviewable no-code documents with classifier, Q&A, abstention, or coverage exceptions. Source-unavailable documents remain remediation work.", route: "Exception resolution", inputId: "qc-mandatory" },
+];
+
+function NegativePopulationQCSetupCard({ action, run, clientId, matterId, canManage, busy, onPrepareInventory, onSubmit, onStop }: {
   action: ReviewProgramActionRead;
+  run: ReviewProgramRunRead | null;
+  clientId: string;
+  matterId: string;
   canManage: boolean;
   busy: boolean;
+  onPrepareInventory: () => void;
   onSubmit: (payload: NegativePopulationQCSetupPayload) => void;
   onStop: () => void;
 }) {
   const defaultsRaw = action.decision_context?.defaults;
   const defaults = defaultsRaw && typeof defaultsRaw === "object" && !Array.isArray(defaultsRaw) ? defaultsRaw as Record<string, unknown> : {};
-  const [randomSample, setRandomSample] = useState(String(defaults.random_sample_size ?? 200));
+  const inventoryRaw = action.decision_context?.negative_population_qc_inventory;
+  const inventory = inventoryRaw && typeof inventoryRaw === "object" && !Array.isArray(inventoryRaw) ? inventoryRaw as Record<string, unknown> : {};
+  const proceduresRaw = inventory.procedures;
+  const procedures = proceduresRaw && typeof proceduresRaw === "object" && !Array.isArray(proceduresRaw) ? proceduresRaw as Record<string, unknown> : {};
+  const inventoryReady = inventory.state === "READY" && typeof inventory.input_manifest_content_hash === "string";
+  const initialRandomAvailable = Number((procedures.RANDOM_AUDIT as Record<string, unknown> | undefined)?.available_count ?? 0);
+  const [randomSample, setRandomSample] = useState(String(Math.min(Number(defaults.random_sample_size ?? 200), initialRandomAvailable || Number(defaults.random_sample_size ?? 200))));
   const [nearThreshold, setNearThreshold] = useState(String(defaults.near_threshold_sample_size ?? 100));
   const [cohortControl, setCohortControl] = useState(String(defaults.cohort_control_sample_size ?? 50));
   const [mandatoryLimit, setMandatoryLimit] = useState(String(defaults.mandatory_review_limit ?? 100));
-  const [batchSize, setBatchSize] = useState(String(defaults.target_batch_size ?? 100));
   const [keepFamilies, setKeepFamilies] = useState(Boolean(defaults.keep_families_together ?? true));
+  const [selectedProcedures, setSelectedProcedures] = useState<Set<NegativePopulationQCProcedure>>(() => new Set(initialRandomAvailable > 0 ? ["RANDOM_AUDIT"] : []));
+  const [selectedRecordTypes, setSelectedRecordTypes] = useState<Set<string>>(new Set());
+  const inventoryRequested = useRef(false);
+
+  useEffect(() => {
+    if (!inventoryReady && canManage && !busy && !inventoryRequested.current) {
+      inventoryRequested.current = true;
+      onPrepareInventory();
+    }
+  }, [busy, canManage, inventoryReady, onPrepareInventory]);
+
+  const sampleValues: Record<NegativePopulationQCProcedure, string> = {
+    RANDOM_AUDIT: randomSample,
+    NEAR_THRESHOLD: nearThreshold,
+    RECORD_TYPE_CONTROL: cohortControl,
+    PROCESSING_EXCEPTIONS: mandatoryLimit,
+  };
+  const sampleSetters: Record<NegativePopulationQCProcedure, (value: string) => void> = {
+    RANDOM_AUDIT: setRandomSample,
+    NEAR_THRESHOLD: setNearThreshold,
+    RECORD_TYPE_CONTROL: setCohortControl,
+    PROCESSING_EXCEPTIONS: setMandatoryLimit,
+  };
+  function procedureDetail(key: NegativePopulationQCProcedure): Record<string, unknown> {
+    const value = procedures[key];
+    return value && typeof value === "object" && !Array.isArray(value) ? value as Record<string, unknown> : {};
+  }
+  function toggleProcedure(key: NegativePopulationQCProcedure) {
+    const next = new Set(selectedProcedures);
+    if (next.has(key)) next.delete(key); else next.add(key);
+    setSelectedProcedures(next);
+    if (key === "RECORD_TYPE_CONTROL" && next.has(key) && selectedRecordTypes.size === 0) {
+      const counts = procedureDetail(key).record_type_counts;
+      if (counts && typeof counts === "object" && !Array.isArray(counts)) setSelectedRecordTypes(new Set(Object.keys(counts)));
+    }
+  }
   function submit(event: FormEvent) {
     event.preventDefault();
-    const values = [randomSample, nearThreshold, cohortControl, mandatoryLimit, batchSize].map(Number);
-    if (!values.every(Number.isInteger) || values.slice(0, 4).some((value) => value < 0) || values[4] < 1 || values.slice(0, 4).reduce((sum, value) => sum + value, 0) < 1) return;
+    const values = [randomSample, nearThreshold, cohortControl, mandatoryLimit].map(Number);
+    if (!inventoryReady || selectedProcedures.size === 0 || !values.every(Number.isInteger) || values.some((value) => value < 0)) return;
     onSubmit({
       preview_hash: action.preview_hash,
-      random_sample_size: values[0],
-      near_threshold_sample_size: values[1],
-      cohort_control_sample_size: values[2],
-      mandatory_review_limit: values[3],
-      target_batch_size: values[4],
+      inventory_content_hash: String(inventory.input_manifest_content_hash),
+      selected_procedures: [...selectedProcedures],
+      selected_record_types: selectedProcedures.has("RECORD_TYPE_CONTROL") ? [...selectedRecordTypes] : [],
+      random_sample_size: selectedProcedures.has("RANDOM_AUDIT") ? values[0] : 0,
+      near_threshold_sample_size: selectedProcedures.has("NEAR_THRESHOLD") ? values[1] : 0,
+      cohort_control_sample_size: selectedProcedures.has("RECORD_TYPE_CONTROL") ? values[2] : 0,
+      mandatory_review_limit: selectedProcedures.has("PROCESSING_EXCEPTIONS") ? values[3] : 0,
       keep_families_together: keepFamilies,
     });
   }
-  return <Card className="border-accent/60 bg-accent/5"><CardHeader><CardTitle>{action.title}</CardTitle><CardDescription>{action.explanation}</CardDescription></CardHeader><CardContent><form className="space-y-4" onSubmit={submit}><FinalAlignmentSummary action={action} /><div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-5"><div className="space-y-2"><Label htmlFor="qc-random">Random audit</Label><Input id="qc-random" type="number" min={0} max={25000} value={randomSample} onChange={(event) => setRandomSample(event.target.value)} /></div><div className="space-y-2"><Label htmlFor="qc-threshold">Near threshold</Label><Input id="qc-threshold" type="number" min={0} max={25000} value={nearThreshold} onChange={(event) => setNearThreshold(event.target.value)} /></div><div className="space-y-2"><Label htmlFor="qc-cohort">Cohort controls</Label><Input id="qc-cohort" type="number" min={0} max={25000} value={cohortControl} onChange={(event) => setCohortControl(event.target.value)} /></div><div className="space-y-2"><Label htmlFor="qc-mandatory">Mandatory review cap</Label><Input id="qc-mandatory" type="number" min={0} max={25000} value={mandatoryLimit} onChange={(event) => setMandatoryLimit(event.target.value)} /></div><div className="space-y-2"><Label htmlFor="qc-batch-size">Documents per batch</Label><Input id="qc-batch-size" type="number" min={1} max={10000} value={batchSize} onChange={(event) => setBatchSize(event.target.value)} /></div></div><label className="flex items-center gap-2 text-sm"><input type="checkbox" checked={keepFamilies} onChange={(event) => setKeepFamilies(event.target.checked)} disabled={!canManage || busy} />Keep document families together</label><div className="rounded-lg border bg-background/70 p-3 text-xs text-muted-foreground"><p>The random audit is the only lane used for a collection-level miss-rate estimate. Near-threshold and cohort controls report discovery yield only. Failed, abstained, and stale documents with usable source content enter the mandatory-review lane; source-unavailable documents remain separately counted for manual resolution.</p></div><div className="flex flex-wrap gap-2"><Button type="submit" disabled={!canManage || busy}>{busy ? "Starting…" : "Start Negative-population QC"}</Button><Button type="button" variant="destructive" disabled={!canManage || busy} onClick={onStop}>Stop program</Button></div></form></CardContent></Card>;
+  return <Card className="border-accent/60 bg-accent/5">
+    <CardHeader><CardTitle>{action.title}</CardTitle><CardDescription>Choose only the QC procedures that are useful for the frozen populations calculated below.</CardDescription></CardHeader>
+    <CardContent><form className="space-y-4" onSubmit={submit}>
+      <FinalAlignmentSummary action={action} run={run} clientId={clientId} matterId={matterId} />
+      {!inventoryReady ? <div className="rounded-lg border bg-background/70 p-4"><p className="font-medium">{inventory.state === "FAILED" ? "QC population calculation failed" : "Calculating QC populations…"}</p><p className="mt-1 text-sm text-muted-foreground">{inventory.state === "FAILED" ? String(inventory.error_summary ?? "The inventory could not be prepared. Retry after correcting the reported problem.") : "The inventory evaluates classifier results, existing Q&A and human coding, source availability, thresholds, record types, and processing exceptions. No model calls are made."}</p><Button type="button" size="sm" variant="outline" className="mt-3" disabled={!canManage || busy || inventory.state === "PREPARING"} onClick={onPrepareInventory}><RefreshCw />{inventory.state === "FAILED" ? "Retry calculation" : "Calculate populations"}</Button></div> : <>
+        <div className="grid gap-4 lg:grid-cols-2">{NEGATIVE_QC_CARDS.map((card) => {
+          const detail = procedureDetail(card.key);
+          const available = Number(detail.available_count ?? 0);
+          const selected = selectedProcedures.has(card.key);
+          const disabled = available === 0;
+          const recordTypeCountsRaw = detail.record_type_counts;
+          const recordTypeCounts = recordTypeCountsRaw && typeof recordTypeCountsRaw === "object" && !Array.isArray(recordTypeCountsRaw) ? recordTypeCountsRaw as Record<string, unknown> : {};
+          const reasonCountsRaw = detail.reason_counts;
+          const reasonCounts = reasonCountsRaw && typeof reasonCountsRaw === "object" && !Array.isArray(reasonCountsRaw) ? reasonCountsRaw as Record<string, unknown> : {};
+          const remediationCount = Number(detail.source_remediation_count ?? 0);
+          return <div key={card.key} className={cn("rounded-lg border bg-background/70 p-4", selected && "border-primary ring-1 ring-primary/20", disabled && "opacity-65")}>
+            <label className="flex items-start gap-3"><input type="checkbox" className="mt-1" checked={selected} disabled={disabled || !canManage || busy} onChange={() => toggleProcedure(card.key)} /><span className="min-w-0 flex-1"><span className="flex flex-wrap items-center justify-between gap-2"><span className="font-semibold">{card.title}</span><Badge variant={available ? "accent" : "outline"}>{available.toLocaleString()} available</Badge></span><span className="mt-1 block text-xs text-muted-foreground">{card.description}</span><span className="mt-2 block text-xs font-medium">Route: {card.route}</span></span></label>
+            {selected ? <div className="mt-3 space-y-2"><Label htmlFor={card.inputId}>Documents to select</Label><Input id={card.inputId} type="number" min={1} max={Math.min(25000, available)} value={sampleValues[card.key]} onChange={(event) => sampleSetters[card.key](event.target.value)} /></div> : null}
+            {card.key === "RECORD_TYPE_CONTROL" && Object.keys(recordTypeCounts).length ? <div className="mt-3 flex flex-wrap gap-2">{Object.entries(recordTypeCounts).map(([recordType, count]) => selected ? <label key={recordType} className="flex items-center gap-1 rounded-md border px-2 py-1 text-xs"><input type="checkbox" checked={selectedRecordTypes.has(recordType)} onChange={() => { const next = new Set(selectedRecordTypes); if (next.has(recordType)) next.delete(recordType); else next.add(recordType); setSelectedRecordTypes(next); }} />{recordType} ({Number(count).toLocaleString()})</label> : <Badge key={recordType} variant="outline">{recordType}: {Number(count).toLocaleString()}</Badge>)}</div> : null}
+            {card.key === "PROCESSING_EXCEPTIONS" && Object.keys(reasonCounts).length ? <div className="mt-3 flex flex-wrap gap-2">{Object.entries(reasonCounts).map(([reason, count]) => <Badge key={reason} variant="outline">{reason.replaceAll("_", " ").toLowerCase()}: {Number(count).toLocaleString()}</Badge>)}</div> : null}
+            {card.key === "PROCESSING_EXCEPTIONS" && remediationCount > 0 ? <p className="mt-2 text-xs text-amber-700 dark:text-amber-300">{remediationCount.toLocaleString()} additional source-unavailable documents require remediation and cannot be reviewed.</p> : null}
+            {disabled ? <p className="mt-2 text-xs text-muted-foreground">This procedure is unavailable because the frozen inventory contains no eligible documents.</p> : null}
+          </div>;
+        })}</div>
+        <div className="rounded-lg border bg-background/70 p-3 text-xs text-muted-foreground"><p>Population inventory: {Number(inventory.scoring_population_document_count ?? 0).toLocaleString()} documents in the frozen classifier population · {Number(inventory.excluded_positive_document_count ?? 0).toLocaleString()} excluded from negative QC because classifier, Q&amp;A, or human coding is positive. Near-threshold means within {Math.round(Number(inventory.near_threshold_band ?? 0) * 100)} percentage points below an applicable classifier threshold.</p></div>
+        <label className="flex items-center gap-2 text-sm"><input type="checkbox" checked={keepFamilies} onChange={(event) => setKeepFamilies(event.target.checked)} disabled={!canManage || busy} />Keep document families together</label>
+      </>}
+      <div className="flex flex-wrap gap-2"><Button type="submit" disabled={!inventoryReady || selectedProcedures.size === 0 || !canManage || busy}>{busy ? "Working…" : "Start selected QC procedures"}</Button><Button type="button" variant="destructive" disabled={!canManage || busy} onClick={onStop}>Stop program</Button></div>
+    </form></CardContent>
+  </Card>;
 }
 
-function NegativePopulationQCReport({ action }: { action: ReviewProgramActionRead }) {
+function NegativePopulationQCReport({ action, matterId }: { action: ReviewProgramActionRead; matterId: string }) {
   if (action.action_type !== "NEGATIVE_POPULATION_QC_REPORT") return null;
   const qcRaw = action.decision_context?.negative_population_qc;
   const qc = qcRaw && typeof qcRaw === "object" && !Array.isArray(qcRaw) ? qcRaw as Record<string, unknown> : {};
@@ -973,7 +1826,42 @@ function NegativePopulationQCReport({ action }: { action: ReviewProgramActionRea
   const estimateRaw = report.random_audit_estimate;
   const estimate = estimateRaw && typeof estimateRaw === "object" && !Array.isArray(estimateRaw) ? estimateRaw as Record<string, unknown> : {};
   const rate = typeof estimate.observed_positive_rate === "number" ? `${(estimate.observed_positive_rate * 100).toFixed(1)}%` : "Unavailable";
-  return <div className="mb-4 space-y-3 rounded-lg border bg-background/70 p-3 text-sm"><div className="grid gap-2 sm:grid-cols-5"><div><p className="text-xs text-muted-foreground">QC documents</p><p className="font-medium">{Number(report.selected_document_count ?? 0)}</p></div><div><p className="text-xs text-muted-foreground">New positives</p><p className="font-medium">{Number(report.positive_document_count ?? 0)}</p></div><div><p className="text-xs text-muted-foreground">Random-audit rate</p><p className="font-medium">{rate}</p></div><div><p className="text-xs text-muted-foreground">Unresolved runs</p><p className="font-medium">{Number(report.unresolved_document_count ?? 0)}</p></div><div><p className="text-xs text-muted-foreground">Manual resolution</p><p className="font-medium">{Number(report.mandatory_unreviewable_count ?? 0)}</p></div></div><p className="text-xs text-muted-foreground">Only the random-audit lane supports a population estimate. Targeted-lane yield identifies risk but is not a collection-wide error rate.</p></div>;
+  const randomPositiveCount = Number(estimate.positive_count ?? 0);
+  const randomResolvedCount = Number(estimate.resolved_count ?? 0);
+  const reviewBatchId = String(qc.review_batch_id ?? report.review_batch_id ?? "");
+  return <div className="mb-4 space-y-3 rounded-lg border bg-background/70 p-3 text-sm"><div className="grid gap-2 sm:grid-cols-5"><div><p className="text-xs text-muted-foreground">QC documents</p><p className="font-medium">{Number(report.selected_document_count ?? 0)}</p></div><div><p className="text-xs text-muted-foreground">New positives · all lanes</p><p className="font-medium">{Number(report.positive_document_count ?? 0)}</p></div><div><p className="text-xs text-muted-foreground">Random-audit rate</p><p className="font-medium">{rate}</p>{randomResolvedCount ? <p className="text-xs text-muted-foreground">{randomPositiveCount} of {randomResolvedCount} resolved random documents</p> : null}</div><div><p className="text-xs text-muted-foreground">Unresolved documents</p><p className="font-medium">{Number(report.unresolved_document_count ?? 0)}</p></div><div><p className="text-xs text-muted-foreground">Manual resolution</p><p className="font-medium">{Number(report.mandatory_unreviewable_count ?? 0)}</p></div></div><p className="text-xs text-muted-foreground">Only the random-audit lane supports a population estimate. Targeted-lane yield identifies risk but is not a collection-wide error rate.</p>{reviewBatchId ? <Button asChild size="sm" variant="outline"><Link href={`/review/matters/${matterId}/batches/${reviewBatchId}/statistics`} target="_blank" rel="noopener noreferrer"><BarChart3 />View batch statistics</Link></Button> : null}</div>;
+}
+
+function NegativePopulationQCFailureSummary({ run, matterId }: { run: ReviewProgramRunRead; matterId: string }) {
+  const qcRaw = run.progress_summary?.negative_population_qc;
+  const qc = qcRaw && typeof qcRaw === "object" && !Array.isArray(qcRaw) ? qcRaw as Record<string, unknown> : {};
+  const profileRuns = Array.isArray(qc.profile_runs)
+    ? qc.profile_runs.filter((item): item is Record<string, unknown> => Boolean(item && typeof item === "object" && !Array.isArray(item)))
+    : [];
+  const selectedCount = Number(qc.selected_document_count ?? 0);
+  const failedCount = qc.unresolved_document_count == null
+    ? profileRuns.reduce((total, profile) => total + Number(profile.failed_document_count ?? 0), 0)
+    : Number(qc.unresolved_document_count);
+  const failureRate = selectedCount > 0 ? failedCount / selectedCount : null;
+  const tolerance = Number(qc.failure_tolerance ?? 0.005);
+  const reviewBatchId = String(qc.review_batch_id ?? "");
+  if (!selectedCount && !profileRuns.length) return null;
+  return <div className="mt-3 space-y-3 rounded-md border border-border/70 bg-background/80 p-3 text-foreground">
+    <div className="grid gap-2 sm:grid-cols-3">
+      <div><p className="text-xs text-muted-foreground">QC population</p><p className="font-medium">{selectedCount.toLocaleString()} documents</p></div>
+      <div><p className="text-xs text-muted-foreground">Unresolved profile results</p><p className="font-medium">{failedCount.toLocaleString()}{failureRate == null ? "" : ` · ${(failureRate * 100).toFixed(2)}%`}</p></div>
+      <div><p className="text-xs text-muted-foreground">Completion tolerance</p><p className="font-medium">Less than {(tolerance * 100).toFixed(1)}%</p></div>
+    </div>
+    {profileRuns.length ? <div className="space-y-2">{profileRuns.map((profile, index) => {
+      const failuresRaw = profile.failure_counts;
+      const failures = failuresRaw && typeof failuresRaw === "object" && !Array.isArray(failuresRaw) ? failuresRaw as Record<string, unknown> : {};
+      return <div key={String(profile.id ?? index)} className="flex flex-wrap items-center justify-between gap-2 rounded-md border px-3 py-2 text-xs">
+        <div><p className="font-medium">{String(profile.model_name ?? profile.profile_key ?? "Q&A profile")}</p><p className="text-muted-foreground">{Number(profile.completed_document_count ?? 0)} completed · {Number(profile.reused_document_count ?? 0)} reused · {Number(profile.failed_document_count ?? 0)} failed</p>{Object.keys(failures).length ? <p className="mt-1 text-muted-foreground">{Object.entries(failures).map(([code, count]) => `${friendly(code)}: ${Number(count)}`).join(" · ")}</p> : null}</div>
+        <StatusBadge status={String(profile.status ?? "UNKNOWN")} />
+      </div>;
+    })}</div> : null}
+    <div className="flex flex-wrap items-center justify-between gap-2"><p className="text-xs text-muted-foreground">The completed Q&amp;A results are preserved. Refresh state re-evaluates these recorded results and does not rerun either model.</p>{reviewBatchId ? <Button asChild size="sm" variant="outline"><Link href={`/review/matters/${matterId}/batches/${reviewBatchId}/statistics`} target="_blank" rel="noopener noreferrer"><BarChart3 />View batch statistics</Link></Button> : null}</div>
+  </div>;
 }
 
 function NegativePopulationQCFindingsReview({ action, matterId }: { action: ReviewProgramActionRead; matterId: string }) {
@@ -1238,6 +2126,26 @@ function friendly(value: string) {
 
 function formatMetric(value: unknown) {
   return typeof value === "number" && Number.isFinite(value) ? value.toFixed(2) : "—";
+}
+
+function countLabel(count: number, singular: string) {
+  return `${count.toLocaleString()} ${count === 1 ? singular : `${singular}s`}`;
+}
+
+function formatElapsed(start: string | null | undefined, end: string | null | undefined) {
+  if (!start) return "Not recorded";
+  if (!end) return "In progress";
+  const milliseconds = Date.parse(end) - Date.parse(start);
+  if (!Number.isFinite(milliseconds) || milliseconds < 0) return "Unavailable";
+  let seconds = Math.floor(milliseconds / 1000);
+  const days = Math.floor(seconds / 86_400);
+  seconds %= 86_400;
+  const hours = Math.floor(seconds / 3_600);
+  seconds %= 3_600;
+  const minutes = Math.floor(seconds / 60);
+  seconds %= 60;
+  const parts = [days ? `${days}d` : "", hours ? `${hours}h` : "", minutes ? `${minutes}m` : "", seconds || (!days && !hours && !minutes) ? `${seconds}s` : ""].filter(Boolean);
+  return parts.join(" ");
 }
 
 function slug(value: string) {

@@ -29,14 +29,20 @@ const version = {
   decision_provider: "JEV",
   decision_model: null,
   decision_specification: {
+    decision_context: {
+      summary: "Determine whether the document requests or provides confidential legal advice.",
+      inclusion_criteria: ["Requests for or communications of legal advice."],
+    },
     questions: {
       "privilege.legal_advice": {
         type: "noul",
         instructions: "Does the document request or provide legal advice?",
+        criteria: { true: "Legal advice is present.", false: "Legal advice is not present." },
         source_refs: [{ task_version_id: "version-1", excerpt_hash: "b".repeat(64) }],
         aggregation: { operator: "ANY_WINDOW" },
       },
     },
+    decision_policy: { recommendations: { privilege: { operator: "MAPPED_VALUE" } } },
     state_contract: { builder_version: "document-review-state-v1", required_paths: ["document.text"] },
   },
   specification_content_hash: "c".repeat(64),
@@ -99,6 +105,30 @@ const task = {
 } as const;
 
 describe("AnalysisTasksPanel", () => {
+  it("shows prompt-relevant Decision Specification content in HTML and preserves the full JSON", async () => {
+    vi.mocked(coreApi).mockImplementation(async (path) => {
+      if (path === "/v1/matters/matter-1/analysis-tasks") return [task] as never;
+      if (path === "/v1/matters/matter-1/metadata-definitions") return [destinationDefinition] as never;
+      if (path === "/v1/matters/matter-1/classification-models") return [] as never;
+      if (path === "/v1/matters/matter-1/analysis-tasks/task-1/versions") return [version] as never;
+      if (path === "/v1/matters/matter-1/review-batches") return [] as never;
+      throw new Error(`Unexpected API request: ${path}`);
+    });
+    const client = new QueryClient({ defaultOptions: { queries: { retry: false }, mutations: { retry: false } } });
+    render(<QueryClientProvider client={client}><AnalysisTasksPanel matterId="matter-1" /></QueryClientProvider>);
+
+    expect(await screen.findByLabelText("Decision prompt preview")).toBeInTheDocument();
+    expect(screen.getByText("Determine whether the document requests or provides confidential legal advice.")).toBeInTheDocument();
+    expect(screen.getByText("Does the document request or provide legal advice?")).toBeInTheDocument();
+    expect(screen.getByText("Legal advice is present.")).toBeInTheDocument();
+    expect(screen.queryByText("Builder Version")).not.toBeInTheDocument();
+    expect(screen.queryByText("Source Refs")).not.toBeInTheDocument();
+
+    await userEvent.click(screen.getByRole("tab", { name: "JSON view" }));
+    expect(screen.getByLabelText("Decision Specification JSON")).toHaveTextContent('"state_contract"');
+    expect(screen.getByLabelText("Decision Specification JSON")).toHaveTextContent('"source_refs"');
+  });
+
   it("shows compilation stages, destination coverage, and validation repairs", async () => {
     const generatingVersion = {
       ...version,

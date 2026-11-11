@@ -88,6 +88,12 @@ def test_database_url_override_is_used_as_given(monkeypatch: pytest.MonkeyPatch)
     assert Settings(_env_file=None).database_url == "sqlite+pysqlite:///:memory:"
 
 
+def test_artifact_storage_connection_pool_is_configurable(monkeypatch: pytest.MonkeyPatch) -> None:
+    _set_env(monkeypatch, ARTIFACT_STORAGE_MAX_POOL_CONNECTIONS="48")
+
+    assert ArtifactSettings(_env_file=None).storage_max_pool_connections == 48
+
+
 def test_unset_app_env_defaults_to_production(monkeypatch: pytest.MonkeyPatch) -> None:
     _set_env(monkeypatch, APP_ENV=None, JWT_SECRET="development-only-change-me-please")
 

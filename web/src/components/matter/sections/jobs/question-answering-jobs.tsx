@@ -21,13 +21,19 @@ import { coreApi } from "@/lib/api-client";
 import { formatDate } from "@/lib/format";
 import { matterHref, matterJobsHref } from "@/lib/matter-routes";
 
-export function QuestionAnsweringJobs({ batchSetId }: { batchSetId?: string }) {
+export function QuestionAnsweringJobs({ batchSetId, reviewBatchId }: { batchSetId?: string; reviewBatchId?: string }) {
   const { clientId, matterId, permissionKeys } = useMatter();
   const queryClient = useQueryClient();
   const canDeleteJobs = permissionKeys.has("job.delete");
   const questionAnsweringJobs = useQuery({
-    queryKey: ["matter-question-answering-jobs", matterId, batchSetId ?? "all"],
-    queryFn: () => coreApi<MatterQuestionAnsweringJobRead[]>(`/v1/matters/${matterId}/analysis-tasks/question-answering-jobs${batchSetId ? `?batch_set_id=${encodeURIComponent(batchSetId)}` : ""}`),
+    queryKey: ["matter-question-answering-jobs", matterId, batchSetId ?? "all", reviewBatchId ?? "all"],
+    queryFn: () => {
+      const params = new URLSearchParams();
+      if (batchSetId) params.set("batch_set_id", batchSetId);
+      if (reviewBatchId) params.set("review_batch_id", reviewBatchId);
+      const query = params.toString();
+      return coreApi<MatterQuestionAnsweringJobRead[]>(`/v1/matters/${matterId}/analysis-tasks/question-answering-jobs${query ? `?${query}` : ""}`);
+    },
     refetchInterval: (query) => query.state.data?.some((run) => !TERMINAL_JOB_STATUSES.includes(run.status)) ? 1500 : false,
   });
   const deleteJob = useDeleteJob(["matter-question-answering-jobs", matterId]);
@@ -62,7 +68,7 @@ export function QuestionAnsweringJobs({ batchSetId }: { batchSetId?: string }) {
   if (questionAnsweringJobs.error) return <QueryError message={questionAnsweringJobs.error.message} />;
   return <section className="space-y-4">
     <div className="flex flex-wrap items-start justify-between gap-3"><div><h2 className="flex items-center gap-2 text-lg font-semibold"><Sparkles className="size-5 text-primary" />Question answering</h2><p className="text-sm text-muted-foreground">Question-answering Analysis Task runs across frozen review batches or native whole-matter manifests. Results remain isolated until explicitly published.</p></div><Button asChild variant="outline"><Link href={matterHref(clientId, matterId, "analysis")}><FileSearch />Analysis tasks</Link></Button></div>
-    {batchSetId ? <div className="flex flex-wrap items-center justify-between gap-3 rounded-lg border border-primary/30 bg-primary/5 p-3"><div><p className="text-sm font-medium">Showing linked Batch Set jobs</p><p className="text-xs text-muted-foreground">Only Q&amp;A jobs created from Batch Set {batchSetId} are shown.</p></div><Button asChild size="sm" variant="outline"><Link href={matterJobsHref(clientId, matterId, "QUESTION_ANSWERING")}>Show all Q&amp;A jobs</Link></Button></div> : null}
+    {batchSetId || reviewBatchId ? <div className="flex flex-wrap items-center justify-between gap-3 rounded-lg border border-primary/30 bg-primary/5 p-3"><div><p className="text-sm font-medium">{batchSetId ? "Showing linked Batch Set jobs" : "Showing linked Review Batch jobs"}</p><p className="text-xs text-muted-foreground">{batchSetId ? `Only Q&A jobs created from Batch Set ${batchSetId} are shown.` : `Only Q&A jobs created for Review Batch ${reviewBatchId} are shown.`}</p></div><Button asChild size="sm" variant="outline"><Link href={matterJobsHref(clientId, matterId, "QUESTION_ANSWERING")}>Show all Q&amp;A jobs</Link></Button></div> : null}
     <DataTable columns={columns} data={questionAnsweringJobs.data} emptyMessage="No question-answering jobs have been started for this matter." />
   </section>;
 }

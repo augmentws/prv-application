@@ -15,6 +15,9 @@ Q&A uses two orchestration limits and a separate provider policy:
 | `TYPESAFE_CONCURRENCY` | `4` | Worker process | Limits simultaneous JEV requests in one worker process. |
 | `TYPESAFE_REQUESTS_PER_MINUTE` | `15` | Worker process and model | Sliding-window JEV request limit. |
 | `TYPESAFE_INPUT_TOKENS_PER_MINUTE` | `200000` | Worker process and model | Sliding-window estimated JEV input-token limit. |
+| `TYPESAFE_REQUEST_TARGET_CHARACTERS` | `60000` | JEV request | Document-window requests are planned below this approximate serialized request size. When both text and paragraph representations are present, they are windowed together and share this budget. A provider `max_tokens_exceeded` response triggers progressively smaller document-only windows. |
+| `TYPESAFE_REQUEST_TARGET_TOKENS` | `8000` | JEV request | Token-aware ceiling applied in addition to the character target. The worker uses the model tokenizer when known and a documented fallback encoding otherwise, so OCR text, control-heavy text, and other token-dense documents are partitioned before the provider rejects them. |
+| `TYPESAFE_MAX_DOCUMENT_WINDOWS` | `128` | Document | Safety limit on the total number of JEV document windows, including provider-triggered refinement. |
 | `OPENAI_DECISIONS_CONCURRENCY` | `4` | Worker process | Limits simultaneous OpenAI Decisions requests in one worker process. |
 | `OPENAI_DECISIONS_REQUESTS_PER_MINUTE` | `60` | Worker process and model | Sliding-window OpenAI Decisions request limit. |
 | `OPENAI_DECISIONS_INPUT_TOKENS_PER_MINUTE` | `500000` | Worker process and model | Sliding-window estimated OpenAI Decisions input-token limit. |

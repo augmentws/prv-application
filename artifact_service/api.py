@@ -88,6 +88,8 @@ from artifact_service.schemas import (
     TextProcessingRule,
     WorkflowArtifactLineageRead,
     WorkflowArtifactRead,
+    WorkflowArtifactScopeDeletionRead,
+    WorkflowArtifactScopeDeletionRequest,
     WorkflowArtifactScopeKind,
     WorkflowArtifactUploadMetadata,
     WorkflowArtifactUploadResponse,
@@ -121,6 +123,8 @@ from artifact_service.workflow_artifact_types import ArtifactType
 from artifact_service.workflow_artifacts import (
     WorkflowArtifactConflictError,
     WorkflowArtifactError,
+    count_workflow_artifacts_for_scopes,
+    delete_workflow_artifact_scope_batch,
     find_matching_workflow_artifact,
     find_workflow_artifact,
     stage_workflow_upload,
@@ -1839,6 +1843,63 @@ def build_router(
         return StreamingResponse(iter_file(content), media_type=artifact.media_type, headers=headers)
 
     if expose_internal_deletion_control:
+
+        @router.post(
+            "/internal/workflow-artifacts:count-scopes",
+            response_model=WorkflowArtifactScopeDeletionRead,
+            include_in_schema=False,
+        )
+        def count_internal_workflow_artifact_scopes(
+            payload: WorkflowArtifactScopeDeletionRequest,
+            principal: ArtifactPrincipal = Depends(principal_dependency),
+            db: Session = Depends(get_artifact_db),
+        ) -> WorkflowArtifactScopeDeletionRead:
+            require_client(principal, payload.tenant_id, payload.client_id)
+            matched = count_workflow_artifacts_for_scopes(
+                db,
+                tenant_id=payload.tenant_id,
+                client_id=payload.client_id,
+                scopes=payload.scopes,
+            )
+            return WorkflowArtifactScopeDeletionRead(
+                matched_artifact_count=matched,
+                deleted_artifact_count=0,
+                deleted_blob_count=0,
+                has_more=matched > 0,
+            )
+
+        @router.post(
+            "/internal/workflow-artifacts:delete-scopes",
+            response_model=WorkflowArtifactScopeDeletionRead,
+            include_in_schema=False,
+        )
+        def delete_internal_workflow_artifact_scopes(
+            payload: WorkflowArtifactScopeDeletionRequest,
+            principal: ArtifactPrincipal = Depends(principal_dependency),
+            db: Session = Depends(get_artifact_db),
+            storage: BlobStorage = Depends(get_storage),
+        ) -> WorkflowArtifactScopeDeletionRead:
+            require_client(principal, payload.tenant_id, payload.client_id)
+            matched = count_workflow_artifacts_for_scopes(
+                db,
+                tenant_id=payload.tenant_id,
+                client_id=payload.client_id,
+                scopes=payload.scopes,
+            )
+            result = delete_workflow_artifact_scope_batch(
+                db,
+                storage,
+                tenant_id=payload.tenant_id,
+                client_id=payload.client_id,
+                scopes=payload.scopes,
+                batch_size=payload.batch_size,
+            )
+            return WorkflowArtifactScopeDeletionRead(
+                matched_artifact_count=matched,
+                deleted_artifact_count=int(result["deleted_artifact_count"]),
+                deleted_blob_count=int(result["deleted_blob_count"]),
+                has_more=bool(result["has_more"]),
+            )
 
         @router.post(
             "/internal/collections/{collection_id}/deletions",

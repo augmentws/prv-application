@@ -8,4 +8,5 @@
 
 export type ListQuestionAnsweringJobsV1MattersMatterIdAnalysisTasksQuestionAnsweringJobsGetParams = {
 batch_set_id?: string | null;
+review_batch_id?: string | null;
 };

@@ -208,6 +208,37 @@ def test_review_batch_delete_archives_without_removing_history(
         assert audit.details["soft_delete"] is True
 
 
+def test_review_batch_list_supports_explicit_document_batches(
+    client: TestClient,
+    root_token: str,
+    root_admin,
+) -> None:
+    matter_id = create_matter(client, root_token, create_client_tenant(client, root_token))
+    with TestingSessionLocal() as db:
+        batch = ReviewBatch(
+            matter_id=uuid.UUID(matter_id),
+            name="Explicit workflow batch",
+            selection_type="EXPLICIT_DOCUMENTS",
+            selection_definition={
+                "type": "EXPLICIT_DOCUMENTS",
+                "batching_policy": "AD_HOC_BATCH",
+            },
+            reviewer_value_visibility="OWN_VALUES",
+            status="READY",
+            search_status="NOT_CONFIGURED",
+            workflow_id=f"test-explicit-batch:{uuid.uuid4()}",
+            document_count=0,
+            created_by_user_id=root_admin.id,
+        )
+        db.add(batch)
+        db.commit()
+
+    response = client.get(f"/v1/matters/{matter_id}/review-batches", headers=auth(root_token))
+
+    assert response.status_code == 200, response.text
+    assert response.json()[0]["selection_type"] == "EXPLICIT_DOCUMENTS"
+
+
 def test_random_assessment_batch_samples_full_persisted_candidate_pool(
     client: TestClient,
     root_token: str,
@@ -618,6 +649,9 @@ def test_batch_membership_group_snapshot_runs_and_comparison(
                 "mode": "BATCH",
                 "task_id": str(comparison_task.id),
                 "task_name": "Stale comparison task name",
+                "task_version": 1,
+                "decision_provider": "OPENAI_DECISIONS",
+                "model_key": "gpt-6-luna",
             },
             initiated_by_user_id=root_admin.id,
             processed_document_count=1,
@@ -700,9 +734,11 @@ def test_batch_membership_group_snapshot_runs_and_comparison(
         reviewer_coding.json()["id"],
         analysis_source_id,
     }
-    assert next(
+    analysis_source_option = next(
         item for item in comparison_options.json()["sources"] if item["id"] == analysis_source_id
-    )["label"] == "Current comparison task"
+    )
+    assert analysis_source_option["label"] == "gpt-6-luna"
+    assert analysis_source_option["detail"] == "Current comparison task · Published v1 · OpenAI Decisions"
     assert any(
         item["id"] == str(definition_id) and item["display_name"] == "Key document"
         for item in comparison_options.json()["fields"]

@@ -26,6 +26,7 @@ from app.classification_projections import (
     create_classifier_projection_run,
     execute_classifier_projection,
     fail_classifier_projection,
+    retry_classifier_projection,
 )
 from app.config import Settings, get_settings
 from app.database import get_db
@@ -48,6 +49,9 @@ from app.models import (
     BatchTopic,
     BatchTopicAssignment,
     BatchTopicTaxonomy,
+    ClassificationDatasetSnapshot,
+    ClassificationModel,
+    ClassificationModelVersion,
     ClassificationScoringRun,
     JobArchive,
     Matter,
@@ -168,7 +172,12 @@ from app.search.operations import create_search_operation
 from app.search.query import batch_coding_filter, batch_topic_filter
 from app.search.service import sync_review_batch_search
 from app.search_exports import create_search_export_job
-from app.workflows.dispatcher import enqueue_review_batch, enqueue_search_export, get_dbos_client
+from app.workflows.dispatcher import (
+    enqueue_classification_projection,
+    enqueue_review_batch,
+    enqueue_search_export,
+    get_dbos_client,
+)
 from classification_service.hashing import canonical_value_hash
 
 router = APIRouter(prefix="/v1/matters/{matter_id}/review-batches", tags=["review batches"])
@@ -961,10 +970,12 @@ def archive_review_batch(
             detail="Cancel the active batch build before deleting the batch",
         )
     active_run = db.scalar(
-        select(ReviewBatchRun.id).where(
+        select(ReviewBatchRun.id)
+        .where(
             ReviewBatchRun.review_batch_id == batch.id,
             ReviewBatchRun.status.in_(("QUEUED", "RUNNING")),
-        ).limit(1)
+        )
+        .limit(1)
     )
     if active_run is not None:
         raise HTTPException(
@@ -1537,9 +1548,7 @@ def list_review_batch_documents(
         coding = db.get(ReviewBatchReviewerCoding, reviewer_coding_id)
         if coding is None or coding.review_batch_id != batch.id:
             raise HTTPException(status_code=404, detail="Reviewer coding not found")
-        if coding.reviewer_user_id != principal.user.id and not _can_manage_batch_assignment(
-            db, principal, matter_id
-        ):
+        if coding.reviewer_user_id != principal.user.id and not _can_manage_batch_assignment(db, principal, matter_id):
             raise HTTPException(status_code=403, detail="Reviewer coding belongs to another user")
         status_column = ReviewBatchReviewerDocument.status
         statement = statement.outerjoin(
@@ -2677,7 +2686,9 @@ def get_review_batch_document_coding(
     if batch.reviewer_value_visibility == "ALL_REVIEWER_VALUES":
         other_rows = db.execute(
             select(ReviewBatchReviewerValue, ReviewBatchReviewerCoding, User)
-            .join(ReviewBatchReviewerCoding, ReviewBatchReviewerCoding.id == ReviewBatchReviewerValue.reviewer_coding_id)
+            .join(
+                ReviewBatchReviewerCoding, ReviewBatchReviewerCoding.id == ReviewBatchReviewerValue.reviewer_coding_id
+            )
             .join(User, User.id == ReviewBatchReviewerCoding.reviewer_user_id)
             .where(
                 ReviewBatchReviewerCoding.review_batch_id == batch.id,
@@ -2809,8 +2820,7 @@ def review_batch_document_coding_history(
         .join(
             ReviewBatchReviewerRevision,
             and_(
-                ReviewBatchReviewerRevision.reviewer_coding_id
-                == ReviewBatchReviewerFieldRevision.reviewer_coding_id,
+                ReviewBatchReviewerRevision.reviewer_coding_id == ReviewBatchReviewerFieldRevision.reviewer_coding_id,
                 ReviewBatchReviewerRevision.revision == ReviewBatchReviewerFieldRevision.revision,
             ),
         )
@@ -3177,27 +3187,39 @@ def _comparison_run_option(
     user: User | None,
     metadata_definition_ids: list[uuid.UUID],
     task_name: str | None = None,
+    classifier_name: str | None = None,
+    classifier_version: int | None = None,
 ) -> ReviewBatchComparisonSourceOptionRead:
     configuration = run.configuration_snapshot or {}
     if run.run_type == "WORKFLOW":
-        label = task_name or str(configuration.get("task_name") or "Analysis task")
+        task_label = task_name or str(configuration.get("task_name") or "Analysis task")
         version = configuration.get("task_version")
         provider = configuration.get("decision_provider")
         model = configuration.get("model_key")
+        # A task can be executed once per pinned model profile. The task name is
+        # therefore context, not a unique source identity, when comparing those
+        # result sets side by side.
+        label = str(model) if model else task_label
         detail = (
             " · ".join(
                 part
                 for part in [
+                    task_label if model else None,
                     f"Published v{version}" if version is not None else None,
-                    str(provider).replace("_", " ").title() if provider else None,
-                    str(model) if model else None,
+                    (
+                        "OpenAI Decisions"
+                        if provider == "OPENAI_DECISIONS"
+                        else str(provider).replace("_", " ").title()
+                        if provider
+                        else None
+                    ),
                 ]
                 if part
             )
             or None
         )
     elif run.run_type == "CLASSIFIER":
-        label = task_name or "Classifier projection"
+        label = classifier_name or task_name or "Classifier projection"
         model_version_id = configuration.get("model_version_id")
         minimum = configuration.get("minimum_confidence")
         maximum = configuration.get("maximum_confidence")
@@ -3210,6 +3232,7 @@ def _comparison_run_option(
             " · ".join(
                 part
                 for part in [
+                    f"Model v{classifier_version}" if classifier_version is not None else None,
                     f"model {str(model_version_id)[:8]}" if model_version_id else None,
                     confidence,
                 ]
@@ -3231,6 +3254,14 @@ def _comparison_run_option(
         run_type=run.run_type,
         purpose=run.purpose,
         status=run.status,
+        preparation_status=(
+            "READY"
+            if run.status in {"COMPLETED", "COMPLETED_WITH_ERRORS"}
+            else "PREPARING"
+            if run.status in {"QUEUED", "RUNNING"}
+            else "FAILED"
+        ),
+        classification_scoring_run_id=run.classification_scoring_run_id,
         label=label,
         detail=detail,
         metadata_definition_ids=metadata_definition_ids,
@@ -3285,7 +3316,27 @@ def _comparison_run_options(
         for run, _user in rows
         if run.run_type == "CLASSIFIER" and run.classification_scoring_run_id is not None
     }
+    classifier_identity_by_scoring_id: dict[uuid.UUID, tuple[str, int]] = {}
     if classifier_scoring_run_ids:
+        classifier_identity_by_scoring_id = {
+            scoring_run_id: (model_name, version_number)
+            for scoring_run_id, model_name, version_number in db.execute(
+                select(
+                    ClassificationScoringRun.id,
+                    ClassificationModel.name,
+                    ClassificationModelVersion.version_number,
+                )
+                .join(
+                    ClassificationModel,
+                    ClassificationModel.id == ClassificationScoringRun.classification_model_id,
+                )
+                .join(
+                    ClassificationModelVersion,
+                    ClassificationModelVersion.id == ClassificationScoringRun.model_version_id,
+                )
+                .where(ClassificationScoringRun.id.in_(classifier_scoring_run_ids))
+            )
+        }
         classifier_task_names = {
             scoring_run_id: task_name
             for scoring_run_id, task_name in db.execute(
@@ -3297,9 +3348,7 @@ def _comparison_run_options(
                     MatterAnalysisTask,
                     MatterAnalysisTask.id == MatterAnalysisTaskRun.matter_analysis_task_id,
                 )
-                .where(
-                    MatterAnalysisTaskRun.classification_scoring_run_id.in_(classifier_scoring_run_ids)
-                )
+                .where(MatterAnalysisTaskRun.classification_scoring_run_id.in_(classifier_scoring_run_ids))
             )
             if scoring_run_id is not None
         }
@@ -3321,13 +3370,26 @@ def _comparison_run_options(
         .distinct()
     ):
         field_ids[run_id].append(definition_id)
+    for run, _user in rows:
+        if run.run_type != "CLASSIFIER" or field_ids[run.id]:
+            continue
+        raw_definition_id = (run.configuration_snapshot or {}).get("target_metadata_definition_id")
+        if raw_definition_id is None:
+            continue
+        try:
+            field_ids[run.id].append(uuid.UUID(str(raw_definition_id)))
+        except ValueError:
+            logger.warning("Classifier comparison run %s has an invalid target field id", run.id)
     latest_classifier_run_by_scoring_id: dict[uuid.UUID, uuid.UUID] = {}
     if selector_only:
         for run, _user in rows:
             if (
                 run.run_type == "CLASSIFIER"
                 and run.classification_scoring_run_id is not None
-                and run.status in {"COMPLETED", "COMPLETED_WITH_ERRORS"}
+                and (
+                    run.status in {"COMPLETED", "COMPLETED_WITH_ERRORS"}
+                    or (run.configuration_snapshot or {}).get("projection_mode") == "COMPARISON_ONLY"
+                )
             ):
                 latest_classifier_run_by_scoring_id.setdefault(run.classification_scoring_run_id, run.id)
     options: dict[uuid.UUID, ReviewBatchComparisonSourceOptionRead] = {
@@ -3336,11 +3398,25 @@ def _comparison_run_options(
             user,
             sorted(field_ids[run.id], key=str),
             task_name=task_names_by_run_id.get(run.id),
+            classifier_name=(
+                classifier_identity_by_scoring_id.get(run.classification_scoring_run_id, (None, None))[0]
+                if run.classification_scoring_run_id is not None
+                else None
+            ),
+            classifier_version=(
+                classifier_identity_by_scoring_id.get(run.classification_scoring_run_id, (None, None))[1]
+                if run.classification_scoring_run_id is not None
+                else None
+            ),
         )
         for run, user in rows
         if not selector_only
         or (
-            run.status in {"COMPLETED", "COMPLETED_WITH_ERRORS"}
+            (
+                run.status in {"COMPLETED", "COMPLETED_WITH_ERRORS"}
+                or run.run_type == "CLASSIFIER"
+                and (run.configuration_snapshot or {}).get("projection_mode") == "COMPARISON_ONLY"
+            )
             and bool(field_ids[run.id])
             and (run.run_type != "WORKFLOW" or (run.configuration_snapshot or {}).get("mode") == "BATCH")
             and (
@@ -3386,6 +3462,77 @@ def _comparison_run_options(
     return [options[source_id] for source_id in source_ids]
 
 
+def _available_classifier_comparison_sources(
+    db: Session,
+    *,
+    batch: ReviewBatch,
+    metadata_definition_ids: set[uuid.UUID],
+) -> list[ReviewBatchComparisonSourceOptionRead]:
+    existing_comparison_scoring_ids = {
+        run.classification_scoring_run_id
+        for run in db.scalars(
+            select(ReviewBatchRun).where(
+                ReviewBatchRun.review_batch_id == batch.id,
+                ReviewBatchRun.run_type == "CLASSIFIER",
+            )
+        )
+        if run.classification_scoring_run_id is not None
+        and (run.configuration_snapshot or {}).get("projection_mode") == "COMPARISON_ONLY"
+    }
+    if not metadata_definition_ids:
+        return []
+    rows = db.execute(
+        select(
+            ClassificationScoringRun,
+            ClassificationModel.name,
+            ClassificationModel.target_metadata_definition_id,
+            ClassificationModelVersion.version_number,
+        )
+        .join(
+            ClassificationModel,
+            ClassificationModel.id == ClassificationScoringRun.classification_model_id,
+        )
+        .join(
+            ClassificationModelVersion,
+            ClassificationModelVersion.id == ClassificationScoringRun.model_version_id,
+        )
+        .join(
+            ClassificationDatasetSnapshot,
+            ClassificationDatasetSnapshot.id == ClassificationScoringRun.dataset_snapshot_id,
+        )
+        .where(
+            ClassificationScoringRun.matter_id == batch.matter_id,
+            ClassificationScoringRun.status.in_({"COMPLETED", "COMPLETED_WITH_ERRORS"}),
+            ClassificationScoringRun.prediction_artifact_id.is_not(None),
+            ClassificationScoringRun.prediction_content_hash.is_not(None),
+            ClassificationModel.target_metadata_definition_id.in_(metadata_definition_ids),
+            ClassificationDatasetSnapshot.scope_type == "MATTER",
+            ClassificationDatasetSnapshot.scope_id == batch.matter_id,
+        )
+        .order_by(ClassificationScoringRun.created_at.desc())
+    ).all()
+    return [
+        ReviewBatchComparisonSourceOptionRead(
+            id=uuid.uuid5(scoring_run.id, f"comparison-source:{batch.id}"),
+            source_type="SCORING_RUN",
+            run_type="CLASSIFIER",
+            purpose="CANDIDATE",
+            status=scoring_run.status,
+            preparation_status="AVAILABLE",
+            classification_scoring_run_id=scoring_run.id,
+            label=model_name,
+            detail=(
+                f"Model v{version_number} · Whole matter · "
+                f"{scoring_run.scored_document_count:,} scored · prepare when selected"
+            ),
+            metadata_definition_ids=[target_definition_id],
+            created_at=scoring_run.created_at,
+        )
+        for scoring_run, model_name, target_definition_id, version_number in rows
+        if scoring_run.id not in existing_comparison_scoring_ids
+    ]
+
+
 def _comparison_definition(db: Session, matter_id: uuid.UUID, definition_id: uuid.UUID) -> MetadataDefinition:
     definition = db.scalar(
         select(MetadataDefinition).where(
@@ -3410,8 +3557,7 @@ def _pinned_disagreement_selection(
     list[uuid.UUID],
 ]:
     eligible_options = {
-        source.id: source
-        for source in _comparison_run_options(db, batch_id=batch.id, selector_only=True)
+        source.id: source for source in _comparison_run_options(db, batch_id=batch.id, selector_only=True)
     }
     missing = [source_id for source_id in source_ids if source_id not in eligible_options]
     if missing:
@@ -3528,10 +3674,12 @@ def get_disagreement_review_document(
     if isinstance(raw_source_batches, list):
         source_specs = raw_source_batches
     elif batch.source_batch_id is not None:
-        source_specs = [{
-            "source_batch_id": str(batch.source_batch_id),
-            "sources": batch.selection_definition.get("sources"),
-        }]
+        source_specs = [
+            {
+                "source_batch_id": str(batch.source_batch_id),
+                "sources": batch.selection_definition.get("sources"),
+            }
+        ]
     else:
         raise HTTPException(status_code=409, detail="Disagreement source provenance is incomplete")
     source_batch_id: uuid.UUID | None = None
@@ -3548,9 +3696,7 @@ def get_disagreement_review_document(
             raw_sources = source_spec.get("sources")
             if not isinstance(raw_sources, list) or len(raw_sources) < 2:
                 raise ValueError("invalid sources")
-            candidate_options = [
-                ReviewBatchComparisonSourceOptionRead.model_validate(item) for item in raw_sources
-            ]
+            candidate_options = [ReviewBatchComparisonSourceOptionRead.model_validate(item) for item in raw_sources]
             candidate_revisions = {
                 source.id: int(raw_source["reviewer_revision"])
                 for source, raw_source in zip(candidate_options, raw_sources, strict=True)
@@ -3600,8 +3746,7 @@ def get_disagreement_review_document(
                 state=comparison.sources[source.id].state,
                 values=list(comparison.sources[source.id].values),
                 display_values=[
-                    _disagreement_display_value(definition, value)
-                    for value in comparison.sources[source.id].values
+                    _disagreement_display_value(definition, value) for value in comparison.sources[source.id].values
                 ],
                 top_confidence=comparison.sources[source.id].top_confidence,
             )
@@ -3645,7 +3790,14 @@ def get_review_batch_comparison_options(
     )
     return ReviewBatchComparisonOptionsRead(
         review_batch_id=batch.id,
-        sources=_comparison_run_options(db, batch_id=batch.id, selector_only=True),
+        sources=[
+            *_comparison_run_options(db, batch_id=batch.id, selector_only=True),
+            *_available_classifier_comparison_sources(
+                db,
+                batch=batch,
+                metadata_definition_ids={definition.id for definition in definitions},
+            ),
+        ],
         fields=[
             ReviewBatchComparisonFieldOptionRead(
                 id=definition.id,
@@ -3657,6 +3809,117 @@ def get_review_batch_comparison_options(
             )
             for definition in definitions
         ],
+    )
+
+
+@router.post(
+    "/{batch_id}/coding-comparison/classifier-sources/{scoring_run_id}/prepare",
+    response_model=ReviewBatchComparisonSourceOptionRead,
+    status_code=202,
+)
+def prepare_review_batch_classifier_comparison_source(
+    matter_id: uuid.UUID,
+    batch_id: uuid.UUID,
+    scoring_run_id: uuid.UUID,
+    principal: Principal = Depends(get_principal),
+    db: Session = Depends(get_db),
+) -> ReviewBatchComparisonSourceOptionRead:
+    matter = _matter(db, matter_id, principal, "batch.view")
+    batch = _batch(db, matter_id, batch_id)
+    _require_batch_assignment(db, principal, batch)
+    scoring_run = db.scalar(
+        select(ClassificationScoringRun)
+        .join(
+            ClassificationDatasetSnapshot,
+            ClassificationDatasetSnapshot.id == ClassificationScoringRun.dataset_snapshot_id,
+        )
+        .where(
+            ClassificationScoringRun.id == scoring_run_id,
+            ClassificationScoringRun.matter_id == matter.id,
+            ClassificationScoringRun.status.in_({"COMPLETED", "COMPLETED_WITH_ERRORS"}),
+            ClassificationScoringRun.prediction_artifact_id.is_not(None),
+            ClassificationScoringRun.prediction_content_hash.is_not(None),
+            ClassificationDatasetSnapshot.scope_type == "MATTER",
+            ClassificationDatasetSnapshot.scope_id == matter.id,
+        )
+    )
+    if scoring_run is None:
+        raise HTTPException(status_code=404, detail="Completed whole-matter classifier coding is unavailable")
+    existing = next(
+        (
+            run
+            for run in db.scalars(
+                select(ReviewBatchRun)
+                .where(
+                    ReviewBatchRun.review_batch_id == batch.id,
+                    ReviewBatchRun.run_type == "CLASSIFIER",
+                    ReviewBatchRun.classification_scoring_run_id == scoring_run.id,
+                )
+                .order_by(ReviewBatchRun.created_at.desc())
+            )
+            if (run.configuration_snapshot or {}).get("projection_mode") == "COMPARISON_ONLY"
+        ),
+        None,
+    )
+    try:
+        if existing is not None and existing.status == "FAILED":
+            execution = retry_classifier_projection(db, run=existing, actor_user_id=principal.user.id)
+            enqueue_classification_projection(db, execution.dbos_workflow_id, str(existing.id))
+            run = existing
+        elif existing is not None and existing.status == "CANCELED":
+            raise ClassificationProjectionError("Canceled classifier comparison preparation cannot be resumed")
+        elif existing is not None:
+            run = existing
+        else:
+            run, _created = create_classifier_projection_run(
+                db,
+                matter=matter,
+                batch=batch,
+                payload=ReviewBatchClassifierRunCreate(
+                    classification_scoring_run_id=scoring_run.id,
+                    minimum_confidence=0,
+                    maximum_confidence=None,
+                    selected_class_keys=[],
+                    idempotency_key=f"comparison:{batch.id}:{scoring_run.id}",
+                ),
+                actor_user_id=principal.user.id,
+                comparison_only=True,
+            )
+        db.commit()
+        db.refresh(run)
+    except ClassificationProjectionError as exc:
+        db.rollback()
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+    except IntegrityError as exc:
+        db.rollback()
+        run = next(
+            (
+                candidate
+                for candidate in db.scalars(
+                    select(ReviewBatchRun)
+                    .where(
+                        ReviewBatchRun.review_batch_id == batch.id,
+                        ReviewBatchRun.run_type == "CLASSIFIER",
+                        ReviewBatchRun.classification_scoring_run_id == scoring_run.id,
+                    )
+                    .order_by(ReviewBatchRun.created_at.desc())
+                )
+                if (candidate.configuration_snapshot or {}).get("projection_mode") == "COMPARISON_ONLY"
+            ),
+            None,
+        )
+        if run is None:
+            raise HTTPException(
+                status_code=409,
+                detail="Classifier comparison preparation conflicted with another request",
+            ) from exc
+    definition_id = uuid.UUID(str(run.configuration_snapshot["target_metadata_definition_id"]))
+    return _comparison_run_option(
+        run,
+        None,
+        [definition_id],
+        classifier_name=scoring_run.classification_model.name,
+        classifier_version=scoring_run.model_version.version_number,
     )
 
 
@@ -3673,6 +3936,8 @@ def compare_review_batch_coding(
     _require_batch_assignment(db, principal, batch)
     definition = _comparison_definition(db, matter_id, payload.metadata_definition_id)
     source_options = _comparison_run_options(db, batch_id=batch.id, source_ids=payload.source_ids)
+    if any(source.preparation_status != "READY" for source in source_options):
+        raise HTTPException(status_code=409, detail="Selected classifier coding is still being prepared")
     return build_coding_comparison(
         db,
         batch_id=batch.id,
@@ -3832,6 +4097,8 @@ def export_review_batch_coding_comparison(
         raise HTTPException(status_code=422, detail="Each comparison source may be selected only once")
     definition = _comparison_definition(db, matter_id, metadata_definition_id)
     source_options = _comparison_run_options(db, batch_id=batch.id, source_ids=source_id)
+    if any(source.preparation_status != "READY" for source in source_options):
+        raise HTTPException(status_code=409, detail="Selected classifier coding is still being prepared")
     content, media_type, filename = export_coding_comparison(
         db,
         batch_id=batch.id,

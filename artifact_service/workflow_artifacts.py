@@ -7,15 +7,20 @@ import zipfile
 from collections.abc import Iterable
 from typing import BinaryIO
 
-from sqlalchemy import select
+from sqlalchemy import delete, func, or_, select
 from sqlalchemy.orm import Session
 
 from artifact_service.models import (
     Artifact,
+    ContentBlob,
     WorkflowArtifact,
     WorkflowArtifactLineage,
 )
-from artifact_service.schemas import WorkflowArtifactLineageInput, WorkflowArtifactUploadMetadata
+from artifact_service.schemas import (
+    WorkflowArtifactLineageInput,
+    WorkflowArtifactScopeDelete,
+    WorkflowArtifactUploadMetadata,
+)
 from artifact_service.service import get_or_create_blob, require_tenant_storage
 from artifact_service.storage import BlobStorage
 from artifact_service.workflow_artifact_types import ArtifactType
@@ -71,6 +76,126 @@ class WorkflowArtifactError(ValueError):
 
 class WorkflowArtifactConflictError(WorkflowArtifactError):
     pass
+
+
+def _scope_predicate(scopes: Iterable[WorkflowArtifactScopeDelete]):
+    values = list(scopes)
+    if not values:
+        raise WorkflowArtifactError("At least one workflow artifact scope is required")
+    return or_(
+        *(
+            (WorkflowArtifact.core_scope_kind == scope.core_scope_kind)
+            & (WorkflowArtifact.core_scope_id == scope.core_scope_id)
+            for scope in values
+        )
+    )
+
+
+def count_workflow_artifacts_for_scopes(
+    db: Session,
+    *,
+    tenant_id: uuid.UUID,
+    client_id: uuid.UUID,
+    scopes: Iterable[WorkflowArtifactScopeDelete],
+) -> int:
+    return int(
+        db.scalar(
+            select(func.count())
+            .select_from(WorkflowArtifact)
+            .where(
+                WorkflowArtifact.tenant_id == tenant_id,
+                WorkflowArtifact.client_id == client_id,
+                _scope_predicate(scopes),
+            )
+        )
+        or 0
+    )
+
+
+def delete_workflow_artifact_scope_batch(
+    db: Session,
+    storage: BlobStorage,
+    *,
+    tenant_id: uuid.UUID,
+    client_id: uuid.UUID,
+    scopes: Iterable[WorkflowArtifactScopeDelete],
+    batch_size: int = 250,
+) -> dict[str, int | bool]:
+    """Permanently remove one bounded batch of Core-owned workflow artifacts.
+
+    Evidence and collection-item artifacts are intentionally outside this API. A
+    content blob is removed only when neither artifact namespace still references
+    it. Object deletion happens before commit and is safe to retry because the
+    storage contract's delete operation is idempotent.
+    """
+
+    predicate = _scope_predicate(scopes)
+    records = list(
+        db.scalars(
+            select(WorkflowArtifact)
+            .where(
+                WorkflowArtifact.tenant_id == tenant_id,
+                WorkflowArtifact.client_id == client_id,
+                predicate,
+            )
+            .order_by(WorkflowArtifact.id)
+            .limit(batch_size)
+        )
+    )
+    if not records:
+        return {
+            "matched_artifact_count": 0,
+            "deleted_artifact_count": 0,
+            "deleted_blob_count": 0,
+            "has_more": False,
+        }
+
+    artifact_ids = [record.id for record in records]
+    blob_ids = {record.content_blob_id for record in records}
+    db.execute(
+        delete(WorkflowArtifactLineage).where(
+            or_(
+                WorkflowArtifactLineage.workflow_artifact_id.in_(artifact_ids),
+                WorkflowArtifactLineage.source_workflow_artifact_id.in_(artifact_ids),
+            )
+        )
+    )
+    db.execute(delete(WorkflowArtifact).where(WorkflowArtifact.id.in_(artifact_ids)))
+    db.flush()
+
+    deleted_blob_count = 0
+    for blob_id in blob_ids:
+        regular_reference = db.scalar(
+            select(Artifact.id).where(Artifact.content_blob_id == blob_id).limit(1)
+        )
+        workflow_reference = db.scalar(
+            select(WorkflowArtifact.id).where(WorkflowArtifact.content_blob_id == blob_id).limit(1)
+        )
+        if regular_reference is not None or workflow_reference is not None:
+            continue
+        blob = db.get(ContentBlob, blob_id)
+        if blob is None:
+            continue
+        storage.delete(blob.bucket_name, blob.storage_key)
+        db.delete(blob)
+        deleted_blob_count += 1
+    db.commit()
+
+    has_more = db.scalar(
+        select(WorkflowArtifact.id)
+        .where(
+            WorkflowArtifact.tenant_id == tenant_id,
+            WorkflowArtifact.client_id == client_id,
+            predicate,
+        )
+        .limit(1)
+    ) is not None
+    return {
+        "matched_artifact_count": len(records),
+        "deleted_artifact_count": len(records),
+        "deleted_blob_count": deleted_blob_count,
+        "has_more": has_more,
+    }
 
 
 def allowed_media_types(artifact_type: ArtifactType) -> set[str]:

@@ -30,6 +30,7 @@ class ArtifactSettings(BaseSettings):
     storage_access_key: str = Field(min_length=1)
     storage_secret_key: str = Field(min_length=1)
     storage_region: str = "us-east-1"
+    storage_max_pool_connections: int = Field(default=32, ge=1, le=256)
     bucket_prefix: str = "pv-artifacts"
     bucket_suffix_length: int = Field(default=10, ge=8, le=32)
     upload_max_bytes: int = Field(default=2 * 1024**3, ge=1024 * 1024, le=20 * 1024**3)

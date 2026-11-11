@@ -60,7 +60,17 @@ afterEach(() => {
   vi.clearAllMocks();
 });
 
-function renderPanel({ initialGuidanceId, initialAssessmentId }: { initialGuidanceId?: string; initialAssessmentId?: string } = {}) {
+function renderPanel({
+  initialGuidanceId,
+  initialAssessmentId,
+  initialCompareFromRevisionId,
+  initialCompareToRevisionId,
+}: {
+  initialGuidanceId?: string;
+  initialAssessmentId?: string;
+  initialCompareFromRevisionId?: string;
+  initialCompareToRevisionId?: string;
+} = {}) {
   const client = new QueryClient({ defaultOptions: { queries: { retry: false }, mutations: { retry: false } } });
   return render(
     <QueryClientProvider client={client}>
@@ -68,12 +78,49 @@ function renderPanel({ initialGuidanceId, initialAssessmentId }: { initialGuidan
         matterId="matter-1"
         initialGuidanceId={initialGuidanceId}
         initialAssessmentId={initialAssessmentId}
+        initialCompareFromRevisionId={initialCompareFromRevisionId}
+        initialCompareToRevisionId={initialCompareToRevisionId}
       />
     </QueryClientProvider>,
   );
 }
 
 describe("MatterDefinitionPanel", () => {
+  it("opens the exact retained before-and-after revisions from an assessment replay link", async () => {
+    const refinedRevision = {
+      ...definition.revision,
+      id: "revision-2",
+      revision: 2,
+      content_markdown: "# Revised privilege guidance\n\nExclude legal advice and attorney work product.",
+      based_on_revision: 1,
+    };
+    const refinedDefinition = {
+      ...definition,
+      current_revision: 2,
+      published_revision: 2,
+      revision: refinedRevision,
+    };
+    vi.mocked(coreApi).mockImplementation(async (path) => {
+      if (path === "/v1/matters/matter-1/guidance") return [refinedDefinition] as never;
+      if (path === "/v1/matters/matter-1/guidance/definition-1/revisions") return [refinedRevision, definition.revision] as never;
+      if (path === "/v1/matters/matter-1/agents") return [] as never;
+      if (path === "/v1/matters/matter-1/agent-conversations?workflow_type=MATTER_DEFINITION_SETUP&guidance_id=definition-1") return [] as never;
+      throw new Error(`Unexpected API request: ${path}`);
+    });
+
+    renderPanel({
+      initialGuidanceId: "definition-1",
+      initialCompareFromRevisionId: "revision-1",
+      initialCompareToRevisionId: "revision-2",
+    });
+
+    const dialog = await screen.findByRole("dialog", { name: "Changes from revision 1 to revision 2" });
+    const diff = within(dialog).getByRole("region", { name: "Revision 1 to Revision 2 diff" });
+    expect(diff.querySelector("del[data-diff='delete']")).toHaveClass("text-destructive");
+    expect(diff.querySelector("ins[data-diff='insert']")).toHaveClass("text-success");
+    expect(within(dialog).queryByRole("button", { name: "Continue to publish" })).not.toBeInTheDocument();
+  });
+
   it("creates first guidance from an imported file without showing a false published state", async () => {
     const imported = {
       ...definition,

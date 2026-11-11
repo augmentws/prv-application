@@ -120,6 +120,8 @@ describe("Matter jobs", () => {
       if (path === "/v1/matters/matter-1/saved-searches") return [] as never;
       if (path === "/v1/matters/matter-1/topic-jobs") return [] as never;
       if (path === "/v1/matters/matter-1/bulk-tag-jobs?limit=100") return [] as never;
+      if (path === "/v1/matters/matter-1/classification-models") return [] as never;
+      if (path === "/v1/matters/matter-1/classification-models/scoring-runs") return [] as never;
       if (path === "/v1/matters/matter-1/analysis-tasks") return [{ id: "task-1", name: "Whole matter classifier", task_type: "CLASSIFICATION" }] as never;
       if (path === "/v1/matters/matter-1/analysis-tasks/task-1/runs") return [{
         id: "run-1",
@@ -159,6 +161,63 @@ describe("Matter jobs", () => {
       "/v1/jobs/CLASSIFICATION_ANALYSIS_TASK/run-1/retry",
       { method: "POST" },
     ));
+  });
+
+  it("shows Review Program classifier scoring runs with classification jobs", async () => {
+    vi.mocked(coreApi).mockImplementation(async (path) => {
+      if (path === "/v1/clients/client-1") return { id: "client-1", tenant_id: "tenant-1", name: "Client" } as never;
+      if (path === "/v1/matters/matter-1") return MATTER as never;
+      if (path === "/v1/authorization/effective?resource_type=MATTER&resource_id=matter-1") return { resource_type: "MATTER", resource_id: "matter-1", authorization_revision: 1, permission_keys: ["job.delete"] } as never;
+      if (path === "/v1/matters/matter-1/metadata-definitions") return [] as never;
+      if (path === "/v1/matters/matter-1/metadata-groups") return [] as never;
+      if (path === "/v1/matters/matter-1/document-imports") return [] as never;
+      if (path === "/v1/matters/matter-1/embedding-jobs") return [] as never;
+      if (path === "/v1/matters/matter-1/saved-searches") return [] as never;
+      if (path === "/v1/matters/matter-1/topic-jobs") return [] as never;
+      if (path === "/v1/matters/matter-1/bulk-tag-jobs?limit=100") return [] as never;
+      if (path === "/v1/matters/matter-1/analysis-tasks") return [] as never;
+      if (path === "/v1/matters/matter-1/classification-models") return [{ id: "model-1", name: "Issue classifier" }] as never;
+      if (path === "/v1/matters/matter-1/classification-models/scoring-runs") return [{
+        id: "scoring-run-1",
+        classification_model_id: "model-1",
+        model_version_id: "version-1",
+        dataset_scope_type: "MATTER",
+        dataset_scope_id: "matter-1",
+        status: "COMPLETED",
+        current_stage: "COMPLETED",
+        progress_completed: 4,
+        progress_total: 4,
+        population_document_count: 100,
+        scored_document_count: 98,
+        abstained_document_count: 1,
+        excluded_document_count: 1,
+        failed_document_count: 0,
+        failure_summary: null,
+        failure_retriable: false,
+        created_at: "2026-10-09T13:00:00Z",
+        execution: {
+          attempt_number: 1,
+          stage_label: "Completed",
+          progress_completed: 4,
+          progress_total: 4,
+          failure_summary: null,
+          notification_parent_type: "REVIEW_PROGRAM_RUN",
+          available_actions: [],
+        },
+      }] as never;
+      throw new Error(`Unexpected API request: ${path}`);
+    });
+
+    navigation.pathname = `${MATTER_BASE_PATH}/jobs/classification-analysis`;
+    renderInMatter(<JobsSection jobType="CLASSIFICATION_ANALYSIS" />);
+
+    expect(await screen.findByText("Issue classifier scoring")).toBeInTheDocument();
+    expect(screen.getByText("Review Program · Whole matter")).toBeInTheDocument();
+    expect(screen.getByText("98 of 100 documents scored")).toBeInTheDocument();
+    expect(screen.getByRole("link", { name: "View job" })).toHaveAttribute(
+      "href",
+      "/app/clients/client-1/matters/matter-1/classification-models/model-1/scoring-runs/scoring-run-1",
+    );
   });
 
   it("shows question-answering analysis runs as a matter job type", async () => {
@@ -278,6 +337,8 @@ describe("Matter jobs", () => {
       if (path === "/v1/matters/matter-1/saved-searches") return [] as never;
       if (path === "/v1/matters/matter-1/topic-jobs") return [] as never;
       if (path === "/v1/matters/matter-1/bulk-tag-jobs?limit=100") return [] as never;
+      if (path === "/v1/matters/matter-1/classification-models") return [] as never;
+      if (path === "/v1/matters/matter-1/classification-models/scoring-runs") return [] as never;
       if (path === "/v1/matters/matter-1/analysis-tasks") return [{ id: "task-1", name: "Issue classifier", task_type: "CLASSIFICATION" }] as never;
       if (path === "/v1/matters/matter-1/analysis-tasks/task-1/runs") return [{
         id: "run-1",

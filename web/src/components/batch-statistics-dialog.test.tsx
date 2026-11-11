@@ -23,6 +23,7 @@ describe("BatchStatisticsPage", () => {
         { id: "human-1", source_type: "REVIEWER", run_type: null, purpose: null, status: null, label: "Ada Reviewer", detail: "ada@example.com", metadata_definition_ids: ["field-1"], created_at: "2026-10-08T12:00:00Z" },
         { id: "jev-1", source_type: "RUN", run_type: "WORKFLOW", purpose: "REVIEW", status: "COMPLETED", label: "Matter assessment", detail: "Published v2", metadata_definition_ids: ["field-1"], created_at: "2026-10-08T13:00:00Z" },
         { id: "jev-failed", source_type: "RUN", run_type: "WORKFLOW", purpose: "REVIEW", status: "FAILED", label: "Failed assessment", detail: "Published v1", metadata_definition_ids: ["field-1"], created_at: "2026-10-08T11:00:00Z" },
+        { id: "classifier-available", source_type: "SCORING_RUN", run_type: "CLASSIFIER", purpose: "CANDIDATE", status: "COMPLETED", preparation_status: "AVAILABLE", classification_scoring_run_id: "scoring-1", label: "Responsiveness classifier", detail: "Model v1 · Whole matter · prepare when selected", metadata_definition_ids: ["field-1"], created_at: "2026-10-08T14:00:00Z" },
       ],
     };
     const comparison: ReviewBatchCodingComparisonRead = {
@@ -49,6 +50,7 @@ describe("BatchStatisticsPage", () => {
       if (path.endsWith("/statistics")) return { review_batch_id: "batch-1", document_count: 2, can_promote: false, reviewers: [] } as never;
       if (path.endsWith("/coding-comparison/review-batches/preview")) return { source_batch_id: "batch-1", metadata_definition_id: "field-1", field_display_name: "Responsiveness", candidate_count: 1, sources: [] } as never;
       if (path.endsWith("/coding-comparison/review-batches") && init?.method === "POST") return { id: "batch-disagreements", name: "Responsiveness disagreements", status: "QUEUED", document_count: 0, selection_definition: { candidate_count: 1 } } as never;
+      if (path.endsWith("/coding-comparison/classifier-sources/scoring-1/prepare") && init?.method === "POST") return { ...options.sources[3], id: "classifier-preparing", source_type: "RUN", preparation_status: "PREPARING" } as never;
       return comparison as never;
     });
     const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
@@ -86,6 +88,16 @@ describe("BatchStatisticsPage", () => {
       },
     ));
     expect(await screen.findByRole("link", { name: "Open review batch" })).toHaveAttribute("href", "/review/matters/matter-1?batch=batch-disagreements");
+    expect(coreApi).not.toHaveBeenCalledWith(
+      expect.stringContaining("classifier-sources/scoring-1/prepare"),
+      expect.anything(),
+    );
+    await user.click(screen.getAllByRole("button", { name: "Close" })[0]);
+    await user.click(screen.getByRole("button", { name: /Responsiveness classifier/ }));
+    await waitFor(() => expect(coreApi).toHaveBeenCalledWith(
+      "/v1/matters/matter-1/review-batches/batch-1/coding-comparison/classifier-sources/scoring-1/prepare",
+      { method: "POST" },
+    ));
   });
 
   it("shows per-reviewer field counts and confirms matter promotion", async () => {

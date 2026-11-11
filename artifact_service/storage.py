@@ -20,6 +20,8 @@ class BlobStorage(Protocol):
 
     def delete(self, bucket_name: str, storage_key: str) -> None: ...
 
+    def delete_many(self, bucket_name: str, storage_keys: list[str]) -> None: ...
+
 
 class S3BlobStorage:
     def __init__(self) -> None:
@@ -30,7 +32,11 @@ class S3BlobStorage:
             aws_access_key_id=settings.storage_access_key,
             aws_secret_access_key=settings.storage_secret_key,
             region_name=settings.storage_region,
-            config=Config(signature_version="s3v4", s3={"addressing_style": "path"}),
+            config=Config(
+                signature_version="s3v4",
+                max_pool_connections=settings.storage_max_pool_connections,
+                s3={"addressing_style": "path"},
+            ),
         )
 
     def ensure_bucket(self, bucket_name: str) -> None:
@@ -55,6 +61,26 @@ class S3BlobStorage:
         # S3 DeleteObject is idempotent, which makes retries safe after a worker crash.
         self.client.delete_object(Bucket=bucket_name, Key=storage_key)
 
+    def delete_many(self, bucket_name: str, storage_keys: list[str]) -> None:
+        for offset in range(0, len(storage_keys), 1_000):
+            keys = storage_keys[offset : offset + 1_000]
+            if not keys:
+                continue
+            response = self.client.delete_objects(
+                Bucket=bucket_name,
+                Delete={
+                    "Objects": [{"Key": key} for key in keys],
+                    "Quiet": True,
+                },
+            )
+            errors = response.get("Errors", [])
+            if errors:
+                summary = ", ".join(
+                    f"{error.get('Key', '<unknown>')}: {error.get('Code', 'UnknownError')}"
+                    for error in errors[:10]
+                )
+                raise RuntimeError(f"S3 failed to delete {len(errors)} object(s): {summary}")
+
 
 class MemoryBlobStorage:
     def __init__(self) -> None:
@@ -78,6 +104,11 @@ class MemoryBlobStorage:
 
     def delete(self, bucket_name: str, storage_key: str) -> None:
         self.buckets.get(bucket_name, {}).pop(storage_key, None)
+
+    def delete_many(self, bucket_name: str, storage_keys: list[str]) -> None:
+        bucket = self.buckets.get(bucket_name, {})
+        for storage_key in storage_keys:
+            bucket.pop(storage_key, None)
 
 
 @lru_cache

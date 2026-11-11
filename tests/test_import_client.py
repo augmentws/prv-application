@@ -13,11 +13,17 @@ from pathlib import Path
 import httpx
 import pytest
 
+from scripts.import_client.__main__ import dry_run
 from scripts.import_client.adapters import emc2
 from scripts.import_client.adapters.athome4_loadfile import Athome4LoadfileAdapter
 from scripts.import_client.adapters.base import DatasetAdapter
 from scripts.import_client.adapters.emc2 import Emc2Adapter
 from scripts.import_client.adapters.enron_csv import EnronCsvAdapter
+from scripts.import_client.adapters.industrydocuments import (
+    LOADFILE_COLUMNS,
+    IndustryDocumentsLoadfileAdapter,
+    MalformedLoadfileWarning,
+)
 from scripts.import_client.adapters.jeb_bush_inventory import (
     JebBushInventoryAdapter,
     MissingInventorySourceWarning,
@@ -328,6 +334,238 @@ def test_enron_adapter_tolerates_malformed_recipient_headers(tmp_path: Path) -> 
         ".casaudoumecq\\@enron.com",
         "louise.kitchen\\@enron.com",
         ".costa\\@enron.com",
+    ]
+
+
+def _write_industrydocuments_loadfile(
+    path: Path,
+    rows: list[dict[str, str]],
+    *,
+    head_banner: bool = False,
+) -> None:
+    with path.open("w", newline="", encoding="utf-8") as handle:
+        if head_banner:
+            handle.write("==> San_Francisco_Walgreens_Litigation_Documents.csv <==\n")
+        writer = csv.DictWriter(
+            handle,
+            fieldnames=LOADFILE_COLUMNS,
+            delimiter="|",
+            quotechar='"',
+            quoting=csv.QUOTE_ALL,
+        )
+        writer.writeheader()
+        writer.writerows(rows)
+
+
+def test_industrydocuments_adapter_maps_ocr_metadata_and_head_banner(tmp_path: Path) -> None:
+    source = tmp_path / "head.csv"
+    empty_row = dict.fromkeys(LOADFILE_COLUMNS, " ")
+    email_row = {
+        **empty_row,
+        "id": "kzbx0257",
+        "tid": "wfg72k00",
+        "type": "email",
+        "title": "FW: Opana at Walgreens",
+        "author": "Weber, Mike",
+        "recipient": "Brassil, J P, Jackson,Ronald",
+        "copied": "Romaine,Larry",
+        "collection_name": "San Francisco Walgreens Litigation Documents",
+        "document_date": "Wed Nov 15 16:00:00 PST 2006",
+        "datesent": "2006 November 16",
+        "timesent": "17:53:39",
+        "filename": "P-26357_00001.pdf",
+        "filepath": "Plaintiff trial exhibits/P-26357_00001.pdf",
+        "ocr_text": "From: Weber, Mike\nSubject: Opana\n\nOCR body | preserved",
+    }
+    empty_ocr_row = {
+        **empty_row,
+        "id": "ltvx0257",
+        "tid": "lvf72k00",
+        "type": "spreadsheet",
+        "title": "Inventory",
+        "collection_name": "San Francisco Walgreens Litigation Documents",
+        "document_date": (
+            "Thu Jan 24 16:00:00 PST 2019, Mon May 09 17:00:00 PDT 2022"
+        ),
+        "filename": "P-22977_00001.pdf",
+        "ocr_text": " ",
+    }
+    _write_industrydocuments_loadfile(
+        source,
+        [email_row, empty_ocr_row],
+        head_banner=True,
+    )
+
+    adapter = IndustryDocumentsLoadfileAdapter(source)
+    container = next(iter(adapter.source_containers()))
+    items = list(BaseImporter.iter_preprocessed_items(adapter, container))
+
+    assert len(items) == 2
+    email_item, missing_item = items
+    assert email_item.source_item_id == "industrydocuments:kzbx0257"
+    assert email_item.record_type == "EMAIL"
+    assert email_item.original_filename == "P-26357_00001.pdf"
+    assert email_item.media_type == "text/plain"
+    assert email_item.content.decode() == email_row["ocr_text"]
+    assert email_item.processing_status == "READY"
+    assert email_item.email is not None
+    assert email_item.email.sender == "Weber, Mike"
+    assert email_item.email.subject == "FW: Opana at Walgreens"
+    assert email_item.email.sent_at is not None
+    assert email_item.email.sent_at.isoformat() == "2006-11-17T01:53:39+00:00"
+    assert email_item.unmapped_metadata["CONTROL_NUMBER"] == "kzbx0257"
+    assert email_item.unmapped_metadata["recipient"] == "Brassil, J P, Jackson,Ronald"
+    assert "ocr_text" not in email_item.unmapped_metadata
+    assert email_item.raw_metadata["content_representation"] == "OCR_TEXT_FROM_LOADFILE"
+    assert email_item.raw_metadata["native_file_available"] is False
+
+    assert missing_item.record_type == "FILE"
+    assert missing_item.content == b""
+    assert missing_item.processing_status == "METADATA_INCOMPLETE"
+    assert missing_item.source_created_at is None
+    assert missing_item.raw_metadata["content_representation"] == "NO_CONTENT_IN_LOADFILE"
+
+
+def test_industrydocuments_adapter_accepts_large_ocr_fields(tmp_path: Path) -> None:
+    source = tmp_path / "loadfile.csv"
+    row = dict.fromkeys(LOADFILE_COLUMNS, " ")
+    row.update(
+        {
+            "id": "abcdefgh",
+            "tid": "ijklmnop",
+            "type": "document",
+            "collection_name": "San Francisco Walgreens Litigation Documents",
+            "ocr_text": "x" * (csv.field_size_limit() + 1),
+        }
+    )
+    _write_industrydocuments_loadfile(source, [row])
+
+    adapter = IndustryDocumentsLoadfileAdapter(source)
+    container = next(iter(adapter.source_containers()))
+    items = list(BaseImporter.iter_preprocessed_items(adapter, container))
+
+    assert len(items) == 1
+    assert items[0].content.decode() == row["ocr_text"]
+
+
+def test_industrydocuments_adapter_loads_csv_directory_in_natural_order(
+    tmp_path: Path,
+) -> None:
+    source = tmp_path / "loadfiles"
+    source.mkdir()
+    base_row = dict.fromkeys(LOADFILE_COLUMNS, " ")
+    row_two = {
+        **base_row,
+        "id": "document-two",
+        "type": "document",
+        "filename": "two.pdf",
+        "ocr_text": "second file",
+    }
+    row_ten = {
+        **base_row,
+        "id": "document-ten",
+        "type": "document",
+        "filename": "ten.pdf",
+        "ocr_text": "tenth file",
+    }
+    _write_industrydocuments_loadfile(source / "documents_10.csv", [row_ten])
+    _write_industrydocuments_loadfile(source / "documents_2.CSV", [row_two])
+    (source / "notes.txt").write_text("ignored")
+
+    adapter = IndustryDocumentsLoadfileAdapter(source)
+    containers = list(adapter.source_containers())
+    items = [
+        item
+        for container in containers
+        for item in BaseImporter.iter_preprocessed_items(adapter, container)
+    ]
+
+    assert [container.path.name for container in containers] == [
+        "documents_2.CSV",
+        "documents_10.csv",
+    ]
+    assert [item.source_item_id for item in items] == [
+        "industrydocuments:document-two",
+        "industrydocuments:document-ten",
+    ]
+    assert [item.raw_metadata["loadfile"] for item in items] == [
+        "documents_2.CSV",
+        "documents_10.csv",
+    ]
+
+
+def test_industrydocuments_adapter_rejects_empty_csv_directory(
+    tmp_path: Path,
+) -> None:
+    source = tmp_path / "loadfiles"
+    source.mkdir()
+
+    with pytest.raises(ValueError, match="contains no CSV files"):
+        IndustryDocumentsLoadfileAdapter(source)
+
+
+def test_industrydocuments_adapter_rejects_duplicate_ids(tmp_path: Path) -> None:
+    source = tmp_path / "loadfile.csv"
+    row = dict.fromkeys(LOADFILE_COLUMNS, " ")
+    row.update(
+        {
+            "id": "abcdefgh",
+            "tid": "ijklmnop",
+            "type": "document",
+            "collection_name": "San Francisco Walgreens Litigation Documents",
+            "ocr_text": "text",
+        }
+    )
+    _write_industrydocuments_loadfile(source, [row, row])
+
+    adapter = IndustryDocumentsLoadfileAdapter(source)
+    container = next(iter(adapter.source_containers()))
+
+    with pytest.raises(ValueError, match="Duplicate id at load-file row 3"):
+        list(BaseImporter.iter_preprocessed_items(adapter, container))
+
+
+def test_industrydocuments_adapter_identifies_malformed_csv_source(
+    tmp_path: Path,
+) -> None:
+    source = tmp_path / "truncated.csv"
+    row = dict.fromkeys(LOADFILE_COLUMNS, " ")
+    row.update({"id": "complete", "type": "email", "ocr_text": "complete"})
+    _write_industrydocuments_loadfile(source, [row])
+    with source.open("a", encoding="utf-8") as handle:
+        handle.write('"truncated record without a closing quote')
+
+    adapter = IndustryDocumentsLoadfileAdapter(source)
+    container = next(iter(adapter.source_containers()))
+
+    with pytest.raises(
+        ValueError,
+        match=r"Malformed CSV in .*truncated\.csv after 1 complete records",
+    ):
+        list(BaseImporter.iter_preprocessed_items(adapter, container))
+
+
+def test_industrydocuments_adapter_can_skip_malformed_terminal_record(
+    tmp_path: Path,
+) -> None:
+    source = tmp_path / "truncated.csv"
+    row = dict.fromkeys(LOADFILE_COLUMNS, " ")
+    row.update({"id": "complete", "type": "email", "ocr_text": "complete"})
+    _write_industrydocuments_loadfile(source, [row])
+    with source.open("a", encoding="utf-8") as handle:
+        handle.write('"truncated record without a closing quote')
+
+    adapter = IndustryDocumentsLoadfileAdapter(
+        source,
+        skip_malformed_records=True,
+    )
+    container = next(iter(adapter.source_containers()))
+
+    with pytest.warns(MalformedLoadfileWarning, match="skipped incomplete record"):
+        items = list(BaseImporter.iter_preprocessed_items(adapter, container))
+
+    assert [item.source_item_id for item in items] == [
+        "industrydocuments:complete"
     ]
 
 
@@ -691,6 +929,70 @@ class ParallelContainerAdapter(DatasetAdapter):
         yield ImportItem("source", "second", "FILE", "second.txt", b"second", (custodian,))
 
 
+class MixedMimeContainerAdapter(DatasetAdapter):
+    dataset_name = "mixed-mime-test"
+    default_collection_name = "Mixed MIME test"
+
+    def __init__(self, source: Path) -> None:
+        self.source = source
+
+    def source_containers(self):
+        yield SourceContainer("source", self.source, "text/plain", "source.txt")
+
+    def custom_items(self, source_container):
+        custodian = CustodianSpec("Custodian")
+        yield ImportItem(
+            "source",
+            "macro",
+            "FILE",
+            "workbook.xlsm",
+            b"flattened spreadsheet OCR",
+            (custodian,),
+            media_type="text/plain",
+        )
+        yield ImportItem(
+            "source",
+            "pdf",
+            "FILE",
+            "document.pdf",
+            b"pdf OCR",
+            (custodian,),
+            media_type="text/plain",
+        )
+
+
+class MixedRecordTypeContainerAdapter(DatasetAdapter):
+    dataset_name = "mixed-record-type-test"
+    default_collection_name = "Mixed record type test"
+
+    def __init__(self, source: Path) -> None:
+        self.source = source
+
+    def source_containers(self):
+        yield SourceContainer("source", self.source, "text/plain", "source.txt")
+
+    def custom_items(self, source_container):
+        custodian = CustodianSpec("Custodian")
+        yield ImportItem(
+            "source",
+            "email",
+            "EMAIL",
+            "message.eml",
+            b"message",
+            (custodian,),
+            media_type="message/rfc822",
+        )
+        yield ImportItem(
+            "source",
+            "file",
+            "FILE",
+            "document.pdf",
+            b"document",
+            (custodian,),
+            media_type="application/pdf",
+        )
+
+
 class DirtyEmailContainerAdapter(DatasetAdapter):
     dataset_name = "dirty-email-test"
     default_collection_name = "Dirty email test"
@@ -728,6 +1030,7 @@ class DirtyEmailContainerAdapter(DatasetAdapter):
 class FakeApi:
     def __init__(self) -> None:
         self.item_metadata = []
+        self.source_containers_uploaded = 0
 
     def ensure_storage(self, tenant_id, tenant_slug):
         return {"tenant_id": tenant_id, "tenant_slug_snapshot": tenant_slug}
@@ -746,6 +1049,7 @@ class FakeApi:
 
     def upload_source_container(self, collection_id, filename, content, media_type, original_source_path):
         assert content.read() == b"container"
+        self.source_containers_uploaded += 1
         return {"artifact": {"id": "source-artifact"}}
 
     def upload_item(self, collection_id, filename, content, media_type, metadata):
@@ -786,13 +1090,16 @@ def test_base_importer_links_children_to_uploaded_parent(tmp_path: Path) -> None
         tenant_slug="root",
         client_id="client",
         collection_name="Collection",
+        store_source_containers=True,
         workers=4,
     )
 
     report = importer.run(SingleContainerAdapter(source))
 
     assert report.items_created == 2
+    assert report.containers_uploaded == 1
     assert report.bytes_submitted == 11
+    assert api.source_containers_uploaded == 1
     assert api.item_metadata[0]["source_container_artifact_id"] == "source-artifact"
     assert api.item_metadata[1]["parent_collection_item_id"] == "item-1"
 
@@ -813,8 +1120,99 @@ def test_base_importer_uploads_independent_items_concurrently(tmp_path: Path) ->
     report = importer.run(ParallelContainerAdapter(source))
 
     assert report.items_created == 2
+    assert report.containers_uploaded == 0
     assert report.bytes_submitted == 11
+    assert api.source_containers_uploaded == 0
+    assert all(
+        metadata["source_container_artifact_id"] is None
+        for metadata in api.item_metadata
+    )
     assert api.maximum_active_uploads == 2
+
+
+def test_base_importer_excludes_original_mime_type_before_limit(tmp_path: Path) -> None:
+    source = tmp_path / "source.txt"
+    source.write_bytes(b"container")
+    api = FakeApi()
+    importer = BaseImporter(
+        api,  # type: ignore[arg-type]
+        tenant_id="tenant",
+        tenant_slug="root",
+        client_id="client",
+        collection_name="Collection",
+        exclude_mime_types=("APPLICATION/VND.MS-EXCEL*",),
+    )
+
+    report = importer.run(MixedMimeContainerAdapter(source), limit=1)
+
+    assert report.items_created == 1
+    assert report.items_excluded == 1
+    assert report.excluded_by_mime_type == {
+        "application/vnd.ms-excel.sheet.macroenabled.12": 1,
+    }
+    assert api.item_metadata[0]["source_item_id"] == "pdf"
+
+
+def test_dry_run_reports_excluded_original_mime_types(tmp_path: Path) -> None:
+    source = tmp_path / "source.txt"
+    source.write_bytes(b"container")
+
+    report = dry_run(
+        MixedMimeContainerAdapter(source),
+        None,
+        include_attachments=True,
+        exclude_mime_types=("application/vnd.ms-excel*",),
+    )
+
+    assert report["items"] == 1
+    assert report["items_excluded"] == 1
+    assert report["excluded_by_mime_type"] == {
+        "application/vnd.ms-excel.sheet.macroenabled.12": 1,
+    }
+
+
+def test_base_importer_includes_only_selected_record_type(tmp_path: Path) -> None:
+    source = tmp_path / "source.txt"
+    source.write_bytes(b"container")
+    api = FakeApi()
+    importer = BaseImporter(
+        api,  # type: ignore[arg-type]
+        tenant_id="tenant",
+        tenant_slug="root",
+        client_id="client",
+        collection_name="Collection",
+        include_record_types=("email",),
+    )
+
+    report = importer.run(MixedRecordTypeContainerAdapter(source))
+
+    assert report.items_created == 1
+    assert report.items_excluded == 1
+    assert report.excluded_by_record_type == {"FILE": 1}
+    assert api.item_metadata[0]["source_item_id"] == "email"
+
+
+def test_dry_run_reports_filtered_upload_size_in_decimal_gb(tmp_path: Path) -> None:
+    source = tmp_path / "source.txt"
+    source.write_bytes(b"container")
+
+    report = dry_run(
+        MixedRecordTypeContainerAdapter(source),
+        None,
+        include_attachments=True,
+        include_record_types=("EMAIL",),
+        store_source_containers=True,
+    )
+
+    assert report["items"] == 1
+    assert report["items_excluded"] == 1
+    assert report["excluded_by_record_type"] == {"FILE": 1}
+    assert report["record_types"] == {"EMAIL": 1}
+    assert report["item_bytes"] == len(b"message")
+    assert report["item_gb"] == len(b"message") / 1_000_000_000
+    assert report["source_container_upload_bytes"] == len(b"container")
+    assert report["total_upload_bytes"] == len(b"messagecontainer")
+    assert report["total_upload_gb"] == len(b"messagecontainer") / 1_000_000_000
 
 
 def test_base_importer_warns_and_uploads_dirty_email_metadata(tmp_path: Path) -> None:

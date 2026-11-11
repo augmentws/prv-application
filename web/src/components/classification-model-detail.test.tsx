@@ -314,6 +314,10 @@ describe("ClassificationModelDetail", () => {
 
     render(<QueryClientProvider client={client}><ClassificationModelDetail clientId="client-1" matterId="matter-1" modelId="model-1" /></QueryClientProvider>);
 
+    expect(await screen.findByRole("link", { name: "View results" })).toHaveAttribute(
+      "href",
+      "/app/clients/client-1/matters/matter-1/classification-models/model-1/scoring-runs/score-1",
+    );
     await user.click(await screen.findByRole("button", { name: "Create projection" }));
     await user.click(screen.getByRole("combobox", { name: "Review batch" }));
     await user.click(screen.getByRole("option", { name: /All matter review/ }));

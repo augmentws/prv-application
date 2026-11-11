@@ -52,6 +52,9 @@ from artifact_service.schemas import (
     CollectionSelectionCreate,
     TenantStorageRead,
     WorkflowArtifactLineageInput,
+    WorkflowArtifactScopeDelete,
+    WorkflowArtifactScopeDeletionRead,
+    WorkflowArtifactScopeDeletionRequest,
     WorkflowArtifactUploadMetadata,
 )
 from artifact_service.selections import (
@@ -65,6 +68,8 @@ from artifact_service.service import ensure_tenant_storage
 from artifact_service.storage import BlobStorage, get_storage
 from artifact_service.workflow_artifact_types import ArtifactType
 from artifact_service.workflow_artifacts import (
+    count_workflow_artifacts_for_scopes,
+    delete_workflow_artifact_scope_batch,
     find_matching_workflow_artifact,
     find_workflow_artifact,
     stage_workflow_upload,
@@ -76,6 +81,96 @@ from artifact_service.workflow_artifacts import store_workflow_artifact as persi
 
 GROUPING_SNAPSHOT_BATCH_SIZE = 5000
 REMOTE_RELATIONSHIP_SNAPSHOT_BATCH_SIZE = 5000
+
+
+def count_workflow_artifacts_in_scopes(
+    *,
+    actor_user_id: uuid.UUID,
+    tenant_id: uuid.UUID,
+    client_id: uuid.UUID,
+    scopes: list[WorkflowArtifactScopeDelete],
+    artifact_db: Session | None = None,
+) -> int:
+    settings = get_settings()
+    if settings.artifact_mode == "embedded":
+        if artifact_db is not None:
+            return count_workflow_artifacts_for_scopes(
+                artifact_db,
+                tenant_id=tenant_id,
+                client_id=client_id,
+                scopes=scopes,
+            )
+        with ArtifactSessionLocal() as db:
+            return count_workflow_artifacts_for_scopes(
+                db,
+                tenant_id=tenant_id,
+                client_id=client_id,
+                scopes=scopes,
+            )
+    payload = WorkflowArtifactScopeDeletionRequest(
+        tenant_id=tenant_id,
+        client_id=client_id,
+        scopes=scopes,
+    )
+    with httpx.Client(base_url=settings.artifact_base_url, timeout=120) as client:
+        response = client.post(
+            "/v1/internal/workflow-artifacts:count-scopes",
+            headers=_headers(actor_user_id, tenant_id, client_id),
+            json=payload.model_dump(mode="json"),
+        )
+    if response.status_code == 403:
+        raise PermissionError("Workflow artifacts are not available to this matter")
+    response.raise_for_status()
+    return WorkflowArtifactScopeDeletionRead.model_validate(response.json()).matched_artifact_count
+
+
+def delete_workflow_artifacts_in_scopes(
+    *,
+    actor_user_id: uuid.UUID,
+    tenant_id: uuid.UUID,
+    client_id: uuid.UUID,
+    scopes: list[WorkflowArtifactScopeDelete],
+    batch_size: int = 250,
+) -> WorkflowArtifactScopeDeletionRead:
+    settings = get_settings()
+    if settings.artifact_mode == "embedded":
+        with ArtifactSessionLocal() as db:
+            matched = count_workflow_artifacts_for_scopes(
+                db,
+                tenant_id=tenant_id,
+                client_id=client_id,
+                scopes=scopes,
+            )
+            result = delete_workflow_artifact_scope_batch(
+                db,
+                get_storage(),
+                tenant_id=tenant_id,
+                client_id=client_id,
+                scopes=scopes,
+                batch_size=batch_size,
+            )
+            return WorkflowArtifactScopeDeletionRead(
+                matched_artifact_count=matched,
+                deleted_artifact_count=int(result["deleted_artifact_count"]),
+                deleted_blob_count=int(result["deleted_blob_count"]),
+                has_more=bool(result["has_more"]),
+            )
+    payload = WorkflowArtifactScopeDeletionRequest(
+        tenant_id=tenant_id,
+        client_id=client_id,
+        scopes=scopes,
+        batch_size=batch_size,
+    )
+    with httpx.Client(base_url=settings.artifact_base_url, timeout=120) as client:
+        response = client.post(
+            "/v1/internal/workflow-artifacts:delete-scopes",
+            headers=_headers(actor_user_id, tenant_id, client_id),
+            json=payload.model_dump(mode="json"),
+        )
+    if response.status_code == 403:
+        raise PermissionError("Workflow artifacts are not available to this matter")
+    response.raise_for_status()
+    return WorkflowArtifactScopeDeletionRead.model_validate(response.json())
 
 def get_collection_item_read(
     *,

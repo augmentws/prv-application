@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 
-import { classificationModelHref, isMatterSectionPage, jobTypeFromSlug, legacyMatterJobsHref, legacyMatterTabHref, MATTER_JOB_TYPES, matterHref, matterJobsHref, matterSectionFromPath } from "@/lib/matter-routes";
+import { classificationModelHref, classificationScoringRunHref, isMatterSectionPage, jobTypeFromSlug, legacyMatterJobsHref, legacyMatterTabHref, MATTER_JOB_TYPES, matterHref, matterJobsHref, matterSectionFromPath, reviewProgramFinalAlignmentHref, reviewProgramQAPopulationStatisticsHref } from "@/lib/matter-routes";
 
 const base = "/app/clients/client-1/matters/matter-1";
 
@@ -15,6 +15,15 @@ describe("matterHref", () => {
 
   it("builds classification model detail paths", () => {
     expect(classificationModelHref("client-1", "matter-1", "model-1")).toBe(`${base}/classification-models/model-1`);
+    expect(classificationScoringRunHref("client-1", "matter-1", "model-1", "scoring-1")).toBe(`${base}/classification-models/model-1/scoring-runs/scoring-1`);
+  });
+
+  it("builds the Review Program Q&A statistics path", () => {
+    expect(reviewProgramQAPopulationStatisticsHref("client-1", "matter-1", "program-1", "run-1")).toBe(`${base}/review-programs/program-1/runs/run-1/qa-statistics`);
+  });
+
+  it("builds the Review Program final-alignment path", () => {
+    expect(reviewProgramFinalAlignmentHref("client-1", "matter-1", "program-1", "run-1")).toBe(`${base}/review-programs/program-1/runs/run-1/final-alignment`);
   });
 });
 

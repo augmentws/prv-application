@@ -87,6 +87,26 @@ def _batch_has_target(db: Session, batch_id: uuid.UUID, definition_id: uuid.UUID
     )
 
 
+def _batch_has_comparison_target(db: Session, batch_id: uuid.UUID, definition_id: uuid.UUID) -> bool:
+    if _batch_has_target(db, batch_id, definition_id):
+        return True
+    return (
+        db.scalar(
+            select(ReviewBatchRunValue.review_batch_run_id)
+            .join(
+                ReviewBatchRun,
+                ReviewBatchRun.id == ReviewBatchRunValue.review_batch_run_id,
+            )
+            .where(
+                ReviewBatchRun.review_batch_id == batch_id,
+                ReviewBatchRunValue.metadata_definition_id == definition_id,
+            )
+            .limit(1)
+        )
+        is not None
+    )
+
+
 def _projection_derivation(
     *,
     batch_id: uuid.UUID,
@@ -94,21 +114,23 @@ def _projection_derivation(
     target_definition_id: uuid.UUID,
     ordered_class_keys: list[str],
     payload: ReviewBatchClassifierRunCreate,
+    comparison_only: bool = False,
 ) -> str:
-    return canonical_value_hash(
-        {
-            "contract_version": PROJECTION_CONTRACT_VERSION,
-            "review_batch_id": str(batch_id),
-            "classification_scoring_run_id": str(scoring_run.id),
-            "prediction_content_hash": scoring_run.prediction_content_hash,
-            "target_metadata_definition_id": str(target_definition_id),
-            "ordered_class_keys": ordered_class_keys,
-            "selected_class_keys": payload.selected_class_keys,
-            "minimum_confidence": payload.minimum_confidence,
-            "maximum_confidence": payload.maximum_confidence,
-            "confidence_interval": "LOWER_INCLUSIVE_UPPER_EXCLUSIVE",
-        }
-    )
+    identity = {
+        "contract_version": PROJECTION_CONTRACT_VERSION,
+        "review_batch_id": str(batch_id),
+        "classification_scoring_run_id": str(scoring_run.id),
+        "prediction_content_hash": scoring_run.prediction_content_hash,
+        "target_metadata_definition_id": str(target_definition_id),
+        "ordered_class_keys": ordered_class_keys,
+        "selected_class_keys": payload.selected_class_keys,
+        "minimum_confidence": payload.minimum_confidence,
+        "maximum_confidence": payload.maximum_confidence,
+        "confidence_interval": "LOWER_INCLUSIVE_UPPER_EXCLUSIVE",
+    }
+    if comparison_only:
+        identity["projection_mode"] = "COMPARISON_ONLY"
+    return canonical_value_hash(identity)
 
 
 def _class_value_map(
@@ -144,6 +166,7 @@ def create_classifier_projection_run(
     actor_user_id: uuid.UUID,
     allow_pending_batch: bool = False,
     enqueue: bool = True,
+    comparison_only: bool = False,
 ) -> tuple[ReviewBatchRun, bool]:
     scoring_run = db.get(ClassificationScoringRun, payload.classification_scoring_run_id)
     if scoring_run is None or scoring_run.matter_id != matter.id:
@@ -152,8 +175,10 @@ def create_classifier_projection_run(
         raise ClassificationProjectionError("Classification scoring must complete before projection")
     if scoring_run.prediction_artifact_id is None or scoring_run.prediction_content_hash is None:
         raise ClassificationProjectionError("Classification scoring output is unavailable")
-    if not allow_pending_batch and (batch.status != "READY" or batch.search_status != "READY"):
-        raise ClassificationProjectionError("Review batch and its search projection must be ready")
+    if not allow_pending_batch and batch.status != "READY":
+        raise ClassificationProjectionError("Review batch must be ready")
+    if not comparison_only and not allow_pending_batch and batch.search_status != "READY":
+        raise ClassificationProjectionError("Review batch search projection must be ready")
     if allow_pending_batch and batch.status not in {"QUEUED", "BUILDING", "READY"}:
         raise ClassificationProjectionError("Review batch is not available for classifier projection")
     if batch.matter_id != matter.id:
@@ -166,7 +191,16 @@ def create_classifier_projection_run(
         raise ClassificationProjectionError("Unknown selected classifier classes: " + ", ".join(sorted(unknown)))
     definition = _target_definition(db, scoring_run)
     class_value_map = _class_value_map(scoring_run, ordered_class_keys)
-    if not _batch_has_target(db, batch.id, definition.id):
+    target_is_available = (
+        _batch_has_comparison_target(db, batch.id, definition.id)
+        if comparison_only
+        else _batch_has_target(db, batch.id, definition.id)
+    )
+    if not target_is_available:
+        if comparison_only:
+            raise ClassificationProjectionError(
+                "The classifier target field is not available in this batch's comparison sources"
+            )
         raise ClassificationProjectionError("The classifier target field is not in this batch's coding configuration")
 
     derivation_key = _projection_derivation(
@@ -175,6 +209,7 @@ def create_classifier_projection_run(
         target_definition_id=definition.id,
         ordered_class_keys=ordered_class_keys,
         payload=payload,
+        comparison_only=comparison_only,
     )
     existing = db.scalar(
         select(ReviewBatchRun).where(
@@ -227,6 +262,7 @@ def create_classifier_projection_run(
             "maximum_confidence": payload.maximum_confidence,
             "confidence_interval": "LOWER_INCLUSIVE_UPPER_EXCLUSIVE",
             "prediction_resolution_policy_hash": scoring_run.scoring_policy_hash,
+            "projection_mode": "COMPARISON_ONLY" if comparison_only else "SEARCH_AND_COMPARISON",
         },
         initiated_by_user_id=actor_user_id,
         dbos_workflow_id=f"classification-prediction-project:{run_id}",
@@ -270,6 +306,7 @@ def create_classifier_projection_run(
             "maximum_confidence": payload.maximum_confidence,
             "selected_class_keys": list(payload.selected_class_keys),
             "derivation_key": derivation_key,
+            "projection_mode": "COMPARISON_ONLY" if comparison_only else "SEARCH_AND_COMPARISON",
         },
     )
     if enqueue:
@@ -433,9 +470,7 @@ def classification_projection_document_ids(db: Session, batch: ReviewBatch) -> l
                 )
             )
         if len(verified) != len(document_ids):
-            raise ClassificationProjectionError(
-                "Prediction artifact contains documents outside the destination matter"
-            )
+            raise ClassificationProjectionError("Prediction artifact contains documents outside the destination matter")
         return document_ids
     finally:
         artifact_file.close()
@@ -458,9 +493,13 @@ def execute_classifier_projection(db: Session, run_id: uuid.UUID) -> None:
     if matter is None or actor is None:
         raise ClassificationProjectionError("Classifier projection authorization context is unavailable")
     resource = ResourceRef.matter(matter.id)
-    if not user_can(db, actor, "classification.score", resource) or not user_can(
-        db, actor, "batch.configure", resource
-    ):
+    comparison_only = run.configuration_snapshot.get("projection_mode") == "COMPARISON_ONLY"
+    authorized = (
+        user_can(db, actor, "batch.view", resource)
+        if comparison_only
+        else user_can(db, actor, "classification.score", resource) and user_can(db, actor, "batch.configure", resource)
+    )
+    if not authorized:
         raise ClassificationProjectionError("Classifier projection creator is no longer authorized")
     if scoring_run.status not in {"COMPLETED", "COMPLETED_WITH_ERRORS"}:
         raise ClassificationProjectionError("Classification scoring run is no longer complete")
@@ -633,6 +672,23 @@ def execute_classifier_projection(db: Session, run_id: uuid.UUID) -> None:
             progress_total=batch.document_count,
             progress=summary.copy(),
         )
+
+        if comparison_only:
+            record_audit(
+                db,
+                tenant_id=scoring_run.tenant_id,
+                actor_user_id=run.initiated_by_user_id,
+                action="classification.comparison_projection.completed",
+                target_type="review_batch_run",
+                target_id=run.id,
+                details={
+                    "review_batch_id": str(batch.id),
+                    "classification_scoring_run_id": str(scoring_run.id),
+                    "result_summary": summary,
+                },
+            )
+            db.commit()
+            return
 
         selection = db.scalar(
             select(ReviewBatchSearchCodingRun)

@@ -32,7 +32,9 @@ from app.models import (
     ReviewBatchRun,
     ReviewBatchRunDocument,
     ReviewBatchRunValue,
+    ReviewBatchSearchCodingProjection,
     ReviewBatchSearchCodingRun,
+    SearchProjectionOperation,
     WorkflowRun,
 )
 from classification_service.schemas import ArtifactReference, ArtifactType, ClassificationScoringResult
@@ -171,6 +173,13 @@ def test_scoring_pins_previewed_version_across_activation_change(
     assert launched["created"] is True
     assert launched["scoring_run"]["model_version_id"] == str(first_version_id)
 
+    matter_runs_response = client.get(
+        f"/v1/matters/{matter['id']}/classification-models/scoring-runs",
+        headers=auth(root_token),
+    )
+    assert matter_runs_response.status_code == 200, matter_runs_response.text
+    assert [item["id"] for item in matter_runs_response.json()] == [launched["scoring_run"]["id"]]
+
     second_version_id = second_candidate(client, root_token, matter, model, first_version_id)
     approve(client, root_token, matter["id"], model["id"], second_version_id)
     promote(
@@ -241,10 +250,7 @@ def test_scoring_launch_is_idempotent_and_cancelable(
     assert repeated.json()["scoring_run"]["id"] == launched.json()["scoring_run"]["id"]
 
     run_id = launched.json()["scoring_run"]["id"]
-    retirement_path = (
-        f"/v1/matters/{matter['id']}/classification-models/{model['id']}"
-        f"/versions/{version_id}/retire"
-    )
+    retirement_path = f"/v1/matters/{matter['id']}/classification-models/{model['id']}/versions/{version_id}/retire"
     blocked_retirement = client.post(
         retirement_path,
         headers=auth(root_token),
@@ -443,9 +449,7 @@ def test_scoring_preview_blocks_incompatible_feature_contract(
     )
     assert response.status_code == 200
     assert response.json()["can_launch"] is False
-    assert {issue["code"] for issue in response.json()["blocking_errors"]} == {
-        "FEATURE_CONTRACT_MISMATCH"
-    }
+    assert {issue["code"] for issue in response.json()["blocking_errors"]} == {"FEATURE_CONTRACT_MISMATCH"}
 
 
 def test_completed_scoring_run_exposes_bounded_verified_prediction_preview(
@@ -651,18 +655,51 @@ def test_completed_scoring_artifact_projects_one_confidence_window_into_batch_co
         )
         db.add(group)
         db.flush()
+        coding_group_id = group.id
+        target_definition_id = registry.target_metadata_definition_id
+        target_definition_snapshot = {
+            "key": registry.target_metadata_definition.key,
+            "display_name": registry.target_metadata_definition.display_name,
+            "type": registry.target_metadata_definition.type,
+            "cardinality": registry.target_metadata_definition.cardinality,
+            "allowed_values": registry.target_metadata_definition.allowed_values,
+        }
+        workflow = WorkflowRun(
+            tenant_id=root_admin.tenant_id,
+            matter_id=uuid.UUID(matter["id"]),
+            workflow_key="existing_q_and_a_results",
+            code_version="1",
+            dbos_workflow_id=f"existing-q-and-a-results:{uuid.uuid4()}",
+            status="COMPLETED",
+            input_snapshot={},
+            binding_snapshot={},
+            configuration_snapshot={},
+            progress={},
+            initiated_by_user_id=root_admin.id,
+        )
+        db.add(workflow)
+        db.flush()
+        qa_run = ReviewBatchRun(
+            review_batch_id=batch.id,
+            run_type="WORKFLOW",
+            purpose="REVIEW",
+            status="COMPLETED",
+            result_policy="ISOLATED",
+            workflow_run_record_id=workflow.id,
+            configuration_snapshot={"task_name": "Existing Q&A"},
+            result_summary={"processed_document_count": 1},
+            initiated_by_user_id=root_admin.id,
+            processed_document_count=1,
+        )
+        db.add(qa_run)
+        db.flush()
         db.add(
-            ReviewBatchCodingField(
-                review_batch_coding_group_id=group.id,
-                metadata_definition_id=registry.target_metadata_definition_id,
-                sort_order=0,
-                definition_snapshot={
-                    "key": registry.target_metadata_definition.key,
-                    "display_name": registry.target_metadata_definition.display_name,
-                    "type": registry.target_metadata_definition.type,
-                    "cardinality": registry.target_metadata_definition.cardinality,
-                    "allowed_values": registry.target_metadata_definition.allowed_values,
-                },
+            ReviewBatchRunValue(
+                review_batch_run_id=qa_run.id,
+                matter_document_id=document_ids[0],
+                metadata_definition_id=target_definition_id,
+                value_ordinal=0,
+                value_text="responsive",
             )
         )
         db.commit()
@@ -732,6 +769,71 @@ def test_completed_scoring_artifact_projects_one_confidence_window_into_batch_co
         return len(prediction_content)
 
     monkeypatch.setattr("app.classification_projections.copy_workflow_artifact_content", copy_prediction)
+
+    available_options = client.get(
+        f"/v1/matters/{matter['id']}/review-batches/{batch_id}/comparison-options",
+        headers=auth(root_token),
+    )
+    assert available_options.status_code == 200, available_options.text
+    available_classifier = next(
+        source
+        for source in available_options.json()["sources"]
+        if source["source_type"] == "SCORING_RUN" and source["classification_scoring_run_id"] == str(scoring_run_id)
+    )
+    assert available_classifier["preparation_status"] == "AVAILABLE"
+    assert available_classifier["metadata_definition_ids"] == [model["target_metadata_definition_id"]]
+
+    prepared_response = client.post(
+        f"/v1/matters/{matter['id']}/review-batches/{batch_id}"
+        f"/coding-comparison/classifier-sources/{scoring_run_id}/prepare",
+        headers=auth(root_token),
+    )
+    assert prepared_response.status_code == 202, prepared_response.text
+    prepared = prepared_response.json()
+    comparison_projection_id = uuid.UUID(prepared["id"])
+    assert prepared["source_type"] == "RUN"
+    assert prepared["preparation_status"] == "PREPARING"
+    with TestingSessionLocal() as db:
+        execute_classifier_projection(db, comparison_projection_id)
+    with TestingSessionLocal() as db:
+        comparison_projection = db.get(ReviewBatchRun, comparison_projection_id)
+        assert comparison_projection is not None
+        assert comparison_projection.status == "COMPLETED"
+        assert comparison_projection.configuration_snapshot["projection_mode"] == "COMPARISON_ONLY"
+        assert db.get(ReviewBatchSearchCodingRun, batch_id) is None
+        assert db.get(ReviewBatchSearchCodingProjection, (batch_id, comparison_projection_id)) is None
+        assert all(
+            operation.payload.get("run_id") != str(comparison_projection_id)
+            for operation in db.scalars(
+                select(SearchProjectionOperation).where(SearchProjectionOperation.kind == "BATCH_CODING_SYNC")
+            )
+        )
+    prepared_options = client.get(
+        f"/v1/matters/{matter['id']}/review-batches/{batch_id}/comparison-options",
+        headers=auth(root_token),
+    )
+    assert prepared_options.status_code == 200, prepared_options.text
+    assert not any(
+        source["source_type"] == "SCORING_RUN" and source["classification_scoring_run_id"] == str(scoring_run_id)
+        for source in prepared_options.json()["sources"]
+    )
+    prepared_source = next(
+        source for source in prepared_options.json()["sources"] if source["id"] == str(comparison_projection_id)
+    )
+    assert prepared_source["preparation_status"] == "READY"
+    assert prepared_source["label"] == model["name"]
+
+    with TestingSessionLocal() as db:
+        db.add(
+            ReviewBatchCodingField(
+                review_batch_coding_group_id=coding_group_id,
+                metadata_definition_id=target_definition_id,
+                sort_order=0,
+                definition_snapshot=target_definition_snapshot,
+            )
+        )
+        db.commit()
+
     projection_response = client.post(
         f"/v1/matters/{matter['id']}/review-batches/{batch_id}/classifier-runs",
         headers=auth(root_token),
@@ -760,9 +862,7 @@ def test_completed_scoring_artifact_projects_one_confidence_window_into_batch_co
         assert run.result_summary["no_value_document_count"] == 1
         assert run.result_summary["below_window_count"] == 1
         values = list(
-            db.query(ReviewBatchRunValue)
-            .filter(ReviewBatchRunValue.review_batch_run_id == projection_run_id)
-            .all()
+            db.query(ReviewBatchRunValue).filter(ReviewBatchRunValue.review_batch_run_id == projection_run_id).all()
         )
         assert len(values) == 1
         assert values[0].matter_document_id == document_ids[0]
@@ -818,9 +918,7 @@ def test_completed_scoring_artifact_projects_one_confidence_window_into_batch_co
     )
     assert comparison_options.status_code == 200, comparison_options.text
     classifier_source_ids = {
-        uuid.UUID(source["id"])
-        for source in comparison_options.json()["sources"]
-        if source["run_type"] == "CLASSIFIER"
+        uuid.UUID(source["id"]) for source in comparison_options.json()["sources"] if source["run_type"] == "CLASSIFIER"
     }
     assert classifier_source_ids == {projection_run_id}
     assert legacy_projection_id not in classifier_source_ids
@@ -917,9 +1015,7 @@ def test_completed_scoring_artifact_projects_one_confidence_window_into_batch_co
     with TestingSessionLocal() as db:
         derived_batch = db.get(ReviewBatch, derived_batch_id)
         assert derived_batch is not None
-        derived_projection_id = uuid.UUID(
-            derived_batch.selection_definition["classification_projection_run_id"]
-        )
+        derived_projection_id = uuid.UUID(derived_batch.selection_definition["classification_projection_run_id"])
         derived_projection = db.get(ReviewBatchRun, derived_projection_id)
         assert derived_projection is not None
         assert derived_projection.status == "COMPLETED"

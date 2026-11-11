@@ -73,10 +73,14 @@ export function MatterDefinitionPanel({
   matterId,
   initialGuidanceId = "",
   initialAssessmentId = "",
+  initialCompareFromRevisionId = "",
+  initialCompareToRevisionId = "",
 }: {
   matterId: string;
   initialGuidanceId?: string;
   initialAssessmentId?: string;
+  initialCompareFromRevisionId?: string;
+  initialCompareToRevisionId?: string;
 }) {
   const queryClient = useQueryClient();
   const [selectedGuidanceId, setSelectedGuidanceId] = useState(initialGuidanceId);
@@ -95,6 +99,9 @@ export function MatterDefinitionPanel({
   const [historyOpen, setHistoryOpen] = useState(false);
   const [selectedRevisionNumber, setSelectedRevisionNumber] = useState<number | null>(null);
   const [compareOpen, setCompareOpen] = useState(false);
+  const [historicalDiffOpen, setHistoricalDiffOpen] = useState(
+    Boolean(initialCompareFromRevisionId && initialCompareToRevisionId),
+  );
   const [toolHeaderElement, setToolHeaderElement] = useState<HTMLDivElement | null>(null);
   const sidePanelId = useId();
   const chatStream = useAgentChatStream({ matterId, workflowType: "MATTER_DEFINITION_SETUP" });
@@ -160,6 +167,12 @@ export function MatterDefinitionPanel({
     ?? (definition.data?.published_revision !== currentRevision ? definition.data?.published_revision : null);
   const comparisonBaseRevision = revisions.data?.find(
     (revision) => revision.revision === comparisonBaseRevisionNumber,
+  ) ?? null;
+  const historicalDiffFrom = revisions.data?.find(
+    (revision) => revision.id === initialCompareFromRevisionId,
+  ) ?? null;
+  const historicalDiffTo = revisions.data?.find(
+    (revision) => revision.id === initialCompareToRevisionId,
   ) ?? null;
   const draft = draftEdit?.content ?? definition.data?.revision.content_markdown ?? "";
   const displayedContent = selectedRevision?.content_markdown ?? draft;
@@ -904,6 +917,40 @@ export function MatterDefinitionPanel({
           </DialogFooter>
         </DialogContent>
       </Dialog>
+
+      <Dialog open={historicalDiffOpen} onOpenChange={setHistoricalDiffOpen}>
+        <DialogContent className="flex h-[min(52rem,90vh)] max-w-6xl flex-col overflow-hidden">
+          <DialogHeader className="shrink-0">
+            <DialogTitle>
+              {historicalDiffFrom && historicalDiffTo
+                ? `Changes from revision ${historicalDiffFrom.revision} to revision ${historicalDiffTo.revision}`
+                : "Assessment revision changes"}
+            </DialogTitle>
+            <DialogDescription>
+              This is the retained before-and-after comparison for the selected Definition Assessment run. Removed text is red and added text is green.
+            </DialogDescription>
+          </DialogHeader>
+          {revisions.isPending ? (
+            <p className="grid flex-1 place-items-center text-sm text-muted-foreground">Loading retained revisions…</p>
+          ) : historicalDiffFrom && historicalDiffTo ? (
+            <MatterDefinitionDiff
+              previous={historicalDiffFrom}
+              currentContent={historicalDiffTo.content_markdown}
+              currentRevision={historicalDiffTo.revision}
+              currentIsUnsaved={false}
+              currentLabelOverride={`Revision ${historicalDiffTo.revision}`}
+              modal
+            />
+          ) : (
+            <p className="grid flex-1 place-items-center text-sm text-muted-foreground">
+              One or both retained revisions are unavailable for this assessment.
+            </p>
+          )}
+          <DialogFooter className="shrink-0">
+            <Button type="button" variant="outline" onClick={() => setHistoricalDiffOpen(false)}>Close</Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
     </div>
   );
 }
@@ -913,17 +960,19 @@ function MatterDefinitionDiff({
   currentContent,
   currentRevision,
   currentIsUnsaved,
+  currentLabelOverride,
   modal = false,
 }: {
   previous: MatterDefinitionRevisionRead;
   currentContent: string;
   currentRevision: number | null;
   currentIsUnsaved: boolean;
+  currentLabelOverride?: string;
   modal?: boolean;
 }) {
-  const currentLabel = currentIsUnsaved
+  const currentLabel = currentLabelOverride ?? (currentIsUnsaved
     ? `Unsaved current draft${currentRevision ? ` based on r${currentRevision}` : ""}`
-    : `Current draft${currentRevision ? ` r${currentRevision}` : ""}`;
+    : `Current draft${currentRevision ? ` r${currentRevision}` : ""}`);
   const identical = previous.content_markdown === currentContent;
   const differences = useMemo(() => {
     const matcher = new DiffMatchPatch();

@@ -236,6 +236,7 @@ def launch_child(db: Session, child_id: uuid.UUID) -> LaunchedChild:
             notification_parent_id=(
                 parent_execution.notification_parent_id if parent_execution is not None else None
             ),
+            document_execution_policy=config.get("document_execution_policy"),
         )
         run_type = "QUESTION_ANSWERING"
         workflow_record_id = workflow.id

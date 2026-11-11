@@ -12,6 +12,8 @@ from sqlalchemy import delete, func, select
 from sqlalchemy.orm import Session
 
 from app.analysis_task_batch import (
+    _allows_review_program_coverage_ad_hoc,
+    _profile_reused_document_ids,
     complete_analysis_task_batch,
     fail_analysis_task_batch_document,
     prepare_analysis_task_batch,
@@ -33,6 +35,7 @@ from app.analysis_task_skills import ensure_standard_analysis_task_skills
 from app.analysis_tasks import MatterAnalysisTaskConflict
 from app.artifact_gateway import AnalysisInputItemSnapshot, TextSourceReference, WorkflowArtifactReference
 from app.decision_engine import DecisionEngineRegistry, DecisionEnvelope
+from app.job_executions import ANALYSIS_TASK_BATCH_RUN_JOB_TYPE, current_job_execution
 from app.models import (
     AnalysisInputManifest,
     DocumentMetadataCurrent,
@@ -92,6 +95,168 @@ class _FakeDecisionEngine:
                 "attempts": 1,
             }
         )
+
+
+def test_current_job_execution_uses_non_fk_blocking_transition_lock() -> None:
+    class CapturingSession:
+        statement = None
+
+        def scalar(self, statement):
+            self.statement = statement
+
+    db = CapturingSession()
+    current_job_execution(
+        db,  # type: ignore[arg-type]
+        job_type=ANALYSIS_TASK_BATCH_RUN_JOB_TYPE,
+        job_id=uuid.uuid4(),
+        for_update=True,
+    )
+
+    assert db.statement is not None
+    assert db.statement._for_update_arg.key_share is True
+
+
+def test_legacy_review_program_task_allows_only_pinned_coverage_ad_hoc_scope() -> None:
+    task_version_id = uuid.uuid4()
+    manifest_id = str(uuid.uuid4())
+    parent_id = uuid.uuid4()
+    program_id = uuid.uuid4()
+    review_program_run = SimpleNamespace(
+        id=parent_id,
+        program_id=program_id,
+        progress_summary={"qa_task_setup": {"task_version_id": str(task_version_id)}},
+    )
+    batch = SimpleNamespace(
+        selection_definition={
+            "review_program_id": str(program_id),
+            "review_program_run_id": str(parent_id),
+            "batching_policy": "AD_HOC_BATCH",
+            "purpose": "CLASSIFIER_POSITIVE_QA_COVERAGE",
+            "task_version_id": str(task_version_id),
+            "input_manifest_id": manifest_id,
+        }
+    )
+    task_version = SimpleNamespace(
+        id=task_version_id,
+        source_provenance={"origin": "USER_EDIT"},
+    )
+    execution_policy = {
+        "mode": "REUSE_CURRENT_PROFILE_RESULTS",
+        "input_manifest_id": manifest_id,
+    }
+
+    assert _allows_review_program_coverage_ad_hoc(
+        review_program_run=review_program_run,
+        batch=batch,
+        task_version=task_version,
+        notification_parent_type="REVIEW_PROGRAM_RUN",
+        notification_parent_id=parent_id,
+        execution_policy=execution_policy,
+    )
+    assert not _allows_review_program_coverage_ad_hoc(
+        review_program_run=review_program_run,
+        batch=batch,
+        task_version=task_version,
+        notification_parent_type=None,
+        notification_parent_id=None,
+        execution_policy=execution_policy,
+    )
+
+    qc_batch = SimpleNamespace(
+        selection_definition={
+            "program_id": str(program_id),
+            "review_program_run_id": str(parent_id),
+            "batching_policy": "AD_HOC_BATCH",
+            "purpose": "NEGATIVE_POPULATION_QC",
+            "task_version_id": str(task_version_id),
+            "input_manifest_id": manifest_id,
+        }
+    )
+    assert _allows_review_program_coverage_ad_hoc(
+        review_program_run=review_program_run,
+        batch=qc_batch,
+        task_version=task_version,
+        notification_parent_type="REVIEW_PROGRAM_RUN",
+        notification_parent_id=parent_id,
+        execution_policy={},
+    )
+    qc_batch.selection_definition["review_program_id"] = qc_batch.selection_definition.pop(
+        "program_id"
+    )
+    assert _allows_review_program_coverage_ad_hoc(
+        review_program_run=review_program_run,
+        batch=qc_batch,
+        task_version=task_version,
+        notification_parent_type="REVIEW_PROGRAM_RUN",
+        notification_parent_id=parent_id,
+        execution_policy={},
+    )
+    assert not _allows_review_program_coverage_ad_hoc(
+        review_program_run=review_program_run,
+        batch=batch,
+        task_version=task_version,
+        notification_parent_type="REVIEW_PROGRAM_RUN",
+        notification_parent_id=parent_id,
+        execution_policy={**execution_policy, "input_manifest_id": str(uuid.uuid4())},
+    )
+    assert not _allows_review_program_coverage_ad_hoc(
+        review_program_run=SimpleNamespace(
+            id=parent_id,
+            program_id=program_id,
+            progress_summary={"qa_task_setup": {"task_version_id": str(uuid.uuid4())}},
+        ),
+        batch=batch,
+        task_version=task_version,
+        notification_parent_type="REVIEW_PROGRAM_RUN",
+        notification_parent_id=parent_id,
+        execution_policy=execution_policy,
+    )
+
+
+def test_profile_result_reuse_uses_frozen_missing_profile_keys(monkeypatch) -> None:
+    profile_key = "reviewer-a"
+    reused_document_id = uuid.uuid4()
+    missing_document_id = uuid.uuid4()
+    outside_child_id = uuid.uuid4()
+    manifest = SimpleNamespace(
+        input_contract={
+            "key": "review-program.classifier-positive-coverage",
+            "version": 1,
+        },
+        item_count=3,
+    )
+
+    class CoverageReader:
+        def __init__(self, frozen_manifest, *, actor_user_id):
+            assert frozen_manifest is manifest
+            assert actor_user_id == root_admin_id
+
+        def rows(self, start, count):
+            assert (start, count) == (0, 3)
+            return [
+                {
+                    "matter_document_id": str(reused_document_id),
+                    "missing_profile_keys": '["reviewer-b"]',
+                },
+                {
+                    "matter_document_id": str(missing_document_id),
+                    "missing_profile_keys": '["reviewer-a"]',
+                },
+                {
+                    "matter_document_id": str(outside_child_id),
+                    "missing_profile_keys": "[]",
+                },
+            ]
+
+    root_admin_id = uuid.uuid4()
+    monkeypatch.setattr("app.analysis_task_batch.AnalysisInputManifestReader", CoverageReader)
+
+    assert _profile_reused_document_ids(
+        manifest,
+        actor_user_id=root_admin_id,
+        execution_profile_key=profile_key,
+        candidate_document_ids={reused_document_id, missing_document_id},
+    ) == {reused_document_id}
 
 
 def _bootstrap_skills(db: Session, root_admin) -> None:
@@ -945,6 +1110,24 @@ def test_published_analysis_task_runs_against_every_document_in_batch(
     assert jobs[0]["successful_document_count"] == 0
     assert jobs[0]["document_count"] == 2
     assert jobs[0]["execution"] == execution_response.json()["current_execution"]
+    filtered_jobs = client.get(
+        (
+            f"/v1/matters/{matter_id}/analysis-tasks/question-answering-jobs"
+            f"?review_batch_id={batch_id}"
+        ),
+        headers=auth(token),
+    )
+    assert filtered_jobs.status_code == 200, filtered_jobs.text
+    assert [job["id"] for job in filtered_jobs.json()] == [queued_data["id"]]
+    unrelated_jobs = client.get(
+        (
+            f"/v1/matters/{matter_id}/analysis-tasks/question-answering-jobs"
+            f"?review_batch_id={uuid.uuid4()}"
+        ),
+        headers=auth(token),
+    )
+    assert unrelated_jobs.status_code == 200, unrelated_jobs.text
+    assert unrelated_jobs.json() == []
 
     monkeypatch.setattr(
         "app.analysis_task_playground.get_preferred_text_source",

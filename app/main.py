@@ -26,6 +26,7 @@ from app.routers import (
     managed_skills,
     matter_definition_assessments,
     matter_definitions,
+    matter_deletions,
     matter_embeddings,
     matter_entities,
     matter_imports,
@@ -90,6 +91,7 @@ app.include_router(tenants.router)
 app.include_router(clients.router)
 app.include_router(collection_deletions.router)
 app.include_router(matters.router)
+app.include_router(matter_deletions.router)
 app.include_router(analysis_tasks.router)
 app.include_router(matter_definitions.router)
 app.include_router(matter_imports.router)

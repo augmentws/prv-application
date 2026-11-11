@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import uuid
 
 import httpx
@@ -10,6 +11,7 @@ from app.analysis_input_manifests import (
     AnalysisInputContract,
     AnalysisInputDocument,
     AnalysisInputManifestError,
+    AnalysisInputManifestReader,
     prepare_analysis_input_manifest,
     publish_analysis_input_manifest,
 )
@@ -27,6 +29,7 @@ from app.job_executions import (
     transition_job_execution,
 )
 from app.models import (
+    AnalysisInputManifest,
     AnalysisTaskBatchSet,
     AnalysisTaskExecutionProfile,
     Matter,
@@ -39,6 +42,7 @@ from app.models import (
     ReviewBatchRun,
     ReviewBatchRunDocument,
     ReviewDecisionResult,
+    ReviewProgramRun,
     WorkflowRun,
     WorkflowStepRun,
     utcnow,
@@ -56,6 +60,100 @@ QUESTION_ANSWERING_INPUT_OWNER_TYPE = "REVIEW_BATCH_RUN"
 QUESTION_ANSWERING_INPUT_CONTRACT_KEY = "question-answering.population"
 QUESTION_ANSWERING_INPUT_CONTRACT_VERSION = 1
 QUESTION_ANSWERING_INPUT_RESOLVER_VERSION = "question-answering-population-resolver-v1"
+REUSE_CURRENT_PROFILE_RESULTS_MODE = "REUSE_CURRENT_PROFILE_RESULTS"
+
+
+def _allows_review_program_coverage_ad_hoc(
+    *,
+    review_program_run: ReviewProgramRun | None,
+    batch: ReviewBatch,
+    task_version: MatterAnalysisTaskVersion,
+    notification_parent_type: str | None,
+    notification_parent_id: uuid.UUID | None,
+    execution_policy: dict,
+) -> bool:
+    """Allow corrected overlapping program scopes for task versions published by older templates."""
+
+    selection = batch.selection_definition or {}
+    qa_task_setup = (
+        (review_program_run.progress_summary or {}).get("qa_task_setup")
+        if review_program_run is not None
+        else None
+    )
+    common = bool(
+        notification_parent_type == "REVIEW_PROGRAM_RUN"
+        and notification_parent_id is not None
+        and review_program_run is not None
+        and review_program_run.id == notification_parent_id
+        and selection.get("review_program_run_id") == str(review_program_run.id)
+        and (
+            selection.get("review_program_id") or selection.get("program_id")
+        )
+        == str(review_program_run.program_id)
+        and selection.get("batching_policy") == "AD_HOC_BATCH"
+        and selection.get("task_version_id") == str(task_version.id)
+        and isinstance(qa_task_setup, dict)
+        and qa_task_setup.get("task_version_id") == str(task_version.id)
+    )
+    if not common:
+        return False
+    if selection.get("purpose") == "CLASSIFIER_POSITIVE_QA_COVERAGE":
+        return bool(
+            execution_policy.get("mode") == REUSE_CURRENT_PROFILE_RESULTS_MODE
+            and selection.get("input_manifest_id")
+            == execution_policy.get("input_manifest_id")
+        )
+    return bool(
+        selection.get("purpose") == "NEGATIVE_POPULATION_QC"
+        and not execution_policy
+        and selection.get("input_manifest_id")
+    )
+
+
+def _profile_reused_document_ids(
+    manifest: AnalysisInputManifest,
+    *,
+    actor_user_id: uuid.UUID,
+    execution_profile_key: str,
+    candidate_document_ids: set[uuid.UUID],
+) -> set[uuid.UUID]:
+    """Return frozen population documents that already had this profile's current result."""
+
+    if (
+        manifest.input_contract.get("key") != "review-program.classifier-positive-coverage"
+        or manifest.input_contract.get("version") != 1
+    ):
+        raise MatterAnalysisTaskConflict(
+            "Current-profile result reuse requires a classifier-positive coverage manifest"
+        )
+    try:
+        rows = AnalysisInputManifestReader(
+            manifest,
+            actor_user_id=actor_user_id,
+        ).rows(0, manifest.item_count)
+    except AnalysisInputManifestError as exc:
+        raise MatterAnalysisTaskConflict(
+            "Classifier-positive coverage manifest is unavailable for result reuse"
+        ) from exc
+
+    reused: set[uuid.UUID] = set()
+    for row in rows:
+        try:
+            document_id = uuid.UUID(str(row["matter_document_id"]))
+            missing_profile_keys = json.loads(str(row["missing_profile_keys"]))
+        except (KeyError, TypeError, ValueError) as exc:
+            raise MatterAnalysisTaskConflict(
+                "Classifier-positive coverage manifest has invalid profile reuse metadata"
+            ) from exc
+        if not isinstance(missing_profile_keys, list) or not all(
+            isinstance(value, str) for value in missing_profile_keys
+        ):
+            raise MatterAnalysisTaskConflict(
+                "Classifier-positive coverage manifest has invalid profile reuse metadata"
+            )
+        if document_id in candidate_document_ids and execution_profile_key not in missing_profile_keys:
+            reused.add(document_id)
+    return reused
 
 
 def queue_analysis_task_batch(
@@ -70,6 +168,7 @@ def queue_analysis_task_batch(
     dispatch: bool = True,
     notification_parent_type: str | None = None,
     notification_parent_id: uuid.UUID | None = None,
+    document_execution_policy: dict | None = None,
 ) -> tuple[WorkflowRun, ReviewBatchRun]:
     if (notification_parent_type is None) != (notification_parent_id is None):
         raise MatterAnalysisTaskConflict(
@@ -79,6 +178,12 @@ def queue_analysis_task_batch(
         raise MatterAnalysisTaskConflict("A ready review batch is required")
     if task.matter_id != matter.id or task_version.matter_analysis_task_id != task.id:
         raise MatterAnalysisTaskConflict("Analysis task version does not belong to this matter")
+    execution_policy = dict(document_execution_policy or {})
+    review_program_run = (
+        db.get(ReviewProgramRun, notification_parent_id)
+        if notification_parent_type == "REVIEW_PROGRAM_RUN" and notification_parent_id is not None
+        else None
+    )
     batch_set = None
     if batch.analysis_task_batch_set_id is not None:
         batch_set = db.get(AnalysisTaskBatchSet, batch.analysis_task_batch_set_id)
@@ -88,7 +193,18 @@ def queue_analysis_task_batch(
             or batch_set.matter_analysis_task_version_id != task_version.id
         ):
             raise MatterAnalysisTaskConflict("Managed batch must run with its Batch Set's pinned task version")
-    elif "AD_HOC_BATCH" not in (task_version.scope_policy or {}).get("allowed_modes", ["AD_HOC_BATCH"]):
+    elif (
+        "AD_HOC_BATCH"
+        not in (task_version.scope_policy or {}).get("allowed_modes", ["AD_HOC_BATCH"])
+        and not _allows_review_program_coverage_ad_hoc(
+            review_program_run=review_program_run,
+            batch=batch,
+            task_version=task_version,
+            notification_parent_type=notification_parent_type,
+            notification_parent_id=notification_parent_id,
+            execution_policy=execution_policy,
+        )
+    ):
         raise MatterAnalysisTaskConflict("This task version does not allow ad hoc batch execution")
     allowed_version_statuses = {"PUBLISHED", "RETIRED"} if batch_set is not None else {"PUBLISHED"}
     if task_version.status not in allowed_version_statuses or task_version.compilation_status != "READY":
@@ -155,6 +271,32 @@ def queue_analysis_task_batch(
         if execution_profile is not None
         else None
     )
+    reuse_document_ids: set[uuid.UUID] = set()
+    if execution_policy:
+        if execution_policy.get("mode") != REUSE_CURRENT_PROFILE_RESULTS_MODE:
+            raise MatterAnalysisTaskConflict("Unsupported analysis task document execution policy")
+        raw_manifest_id = execution_policy.get("input_manifest_id")
+        if raw_manifest_id is None and batch_set is not None:
+            raw_manifest_id = batch_set.input_manifest_id
+        try:
+            reuse_manifest_id = uuid.UUID(str(raw_manifest_id))
+        except (TypeError, ValueError) as exc:
+            raise MatterAnalysisTaskConflict(
+                "Current-profile result reuse requires a pinned coverage manifest"
+            ) from exc
+        if execution_profile is None:
+            raise MatterAnalysisTaskConflict(
+                "Current-profile result reuse requires a pinned execution profile"
+            )
+        manifest = db.get(AnalysisInputManifest, reuse_manifest_id)
+        if manifest is None:
+            raise MatterAnalysisTaskConflict("Coverage input manifest is unavailable for result reuse")
+        reuse_document_ids = _profile_reused_document_ids(
+            manifest,
+            actor_user_id=initiated_by_user_id,
+            execution_profile_key=execution_profile.key,
+            candidate_document_ids={document.matter_document_id for document in documents},
+        )
     destination_ids = [uuid.UUID(value) for value in (task_version.destination_metadata_definition_ids or [])]
     destination_definitions = {
         definition.id: definition
@@ -216,6 +358,8 @@ def queue_analysis_task_batch(
             "decision_provider": decision_provider,
             "execution_profile": profile_snapshot,
             "result_policy": "ISOLATED",
+            "document_execution_policy": execution_policy or None,
+            "reused_document_count": len(reuse_document_ids),
         },
         progress={"stage": "QUEUED", "total": len(documents), "completed": 0, "failed": 0},
         initiated_by_user_id=initiated_by_user_id,
@@ -262,6 +406,8 @@ def queue_analysis_task_batch(
             "execution_profile_id": profile_id,
             "execution_profile": profile_snapshot,
             "destination_fields": destination_fields,
+            "document_execution_policy": execution_policy or None,
+            "reused_document_count": len(reuse_document_ids),
         },
         initiated_by_user_id=initiated_by_user_id,
         dbos_workflow_id=workflow_id,
@@ -273,8 +419,25 @@ def queue_analysis_task_batch(
             ReviewBatchRunDocument(
                 review_batch_run_id=review_run.id,
                 matter_document_id=document.matter_document_id,
-                status="QUEUED",
+                status=(
+                    "SKIPPED"
+                    if document.matter_document_id in reuse_document_ids
+                    else "QUEUED"
+                ),
                 last_workflow_run_id=workflow.id,
+                failure_code=(
+                    "CURRENT_PROFILE_RESULT_REUSED"
+                    if document.matter_document_id in reuse_document_ids
+                    else None
+                ),
+                failure_message=(
+                    "A matching current result already exists for this pinned execution profile."
+                    if document.matter_document_id in reuse_document_ids
+                    else None
+                ),
+                completed_at=(
+                    utcnow() if document.matter_document_id in reuse_document_ids else None
+                ),
             )
             for document in documents
         ]
@@ -588,17 +751,37 @@ def prepare_analysis_task_batch(db: Session, workflow_run_id: uuid.UUID) -> list
             .order_by(ordering)
         )
     )
-    if not document_ids:
+    skipped = int(
+        db.scalar(
+            select(func.count())
+            .select_from(ReviewBatchRunDocument)
+            .where(
+                ReviewBatchRunDocument.review_batch_run_id == review_run.id,
+                ReviewBatchRunDocument.last_workflow_run_id == workflow_run_id,
+                ReviewBatchRunDocument.status == "SKIPPED",
+            )
+        )
+        or 0
+    )
+    if not document_ids and not skipped:
         raise MatterAnalysisTaskConflict("Analysis task batch run has no documents")
+    initial_progress = {
+        "stage": "EVALUATING",
+        "total": step.total_count,
+        "completed": 0,
+        "failed": 0,
+    }
+    if skipped:
+        initial_progress["skipped"] = skipped
     transition_job_execution(
         db,
         job_type=ANALYSIS_TASK_BATCH_RUN_JOB_TYPE,
         job_id=review_run.id,
         status="RUNNING",
         current_stage="EVALUATING",
-        progress_completed=0,
-        progress_total=len(document_ids),
-        progress={"stage": "EVALUATING", "total": len(document_ids), "completed": 0, "failed": 0},
+        progress_completed=skipped,
+        progress_total=step.total_count,
+        progress=initial_progress,
     )
     now = utcnow()
     step.status = "RUNNING"
@@ -756,7 +939,7 @@ def complete_analysis_task_batch(db: Session, workflow_run_id: uuid.UUID) -> Non
         failure_summary = f"{remaining_failed} documents could not be evaluated"
         if retryable_failed:
             failure_summary += f"; {retryable_failed} can be retried"
-    transition_job_execution(
+    terminal_workflow = transition_job_execution(
         db,
         job_type=ANALYSIS_TASK_BATCH_RUN_JOB_TYPE,
         job_id=review_run.id,
@@ -773,6 +956,14 @@ def complete_analysis_task_batch(db: Session, workflow_run_id: uuid.UUID) -> Non
     if progress["failed"]:
         step.error_message = f"{progress['failed']} documents failed during this attempt"
     refresh_workflow_execution_usage(db, workflow.id)
+    if terminal_workflow.notification_policy == "PARENT_MANAGED":
+        from app.review_programs import project_review_program_classifier_positive_coverage_run_terminal
+
+        project_review_program_classifier_positive_coverage_run_terminal(
+            db,
+            review_run=review_run,
+            workflow=terminal_workflow,
+        )
     db.commit()
 
 
@@ -890,14 +1081,29 @@ def cancel_analysis_task_batch_run(
         raise MatterAnalysisTaskConflict("Analysis task batch run not found")
 
     now = utcnow()
-    db.execute(
-        update(ReviewBatchRunDocument)
-        .where(
-            ReviewBatchRunDocument.review_batch_run_id == review_run_id,
-            ReviewBatchRunDocument.status.in_(("QUEUED", "IN_PROGRESS")),
+    # Do not wait for documents whose provider calls are already in flight.
+    # The canceled execution prevents queued document workflows from starting;
+    # already-running calls may finish and retain their valid immutable result.
+    cancellable_document_ids = list(
+        db.scalars(
+            select(ReviewBatchRunDocument.matter_document_id)
+            .where(
+                ReviewBatchRunDocument.review_batch_run_id == review_run_id,
+                ReviewBatchRunDocument.status.in_(("QUEUED", "IN_PROGRESS")),
+            )
+            .with_for_update(skip_locked=True)
         )
-        .values(status="SKIPPED", completed_at=now, updated_at=now)
     )
+    for offset in range(0, len(cancellable_document_ids), 5000):
+        document_ids = cancellable_document_ids[offset : offset + 5000]
+        db.execute(
+            update(ReviewBatchRunDocument)
+            .where(
+                ReviewBatchRunDocument.review_batch_run_id == review_run_id,
+                ReviewBatchRunDocument.matter_document_id.in_(document_ids),
+            )
+            .values(status="SKIPPED", completed_at=now, updated_at=now)
+        )
     db.flush()
     counts = dict(
         db.execute(
@@ -933,6 +1139,14 @@ def cancel_analysis_task_batch_run(
         step.completed_count = completed + skipped
         step.failed_count = failed
         step.completed_at = step.completed_at or now
+    if canceled and execution.notification_policy == "PARENT_MANAGED":
+        from app.review_programs import project_review_program_classifier_positive_coverage_run_terminal
+
+        project_review_program_classifier_positive_coverage_run_terminal(
+            db,
+            review_run=review_run,
+            workflow=execution,
+        )
     return execution, canceled
 
 
@@ -941,7 +1155,7 @@ def fail_analysis_task_batch(db: Session, workflow_run_id: uuid.UUID, message: s
     if workflow.status in {"COMPLETED", "COMPLETED_WITH_ERRORS", "FAILED", "CANCELED"}:
         return
     now = utcnow()
-    transition_job_execution(
+    terminal_workflow = transition_job_execution(
         db,
         job_type=ANALYSIS_TASK_BATCH_RUN_JOB_TYPE,
         job_id=review_run.id,
@@ -967,6 +1181,14 @@ def fail_analysis_task_batch(db: Session, workflow_run_id: uuid.UUID, message: s
         run_document.failure_message = message[:4000]
         run_document.failure_retriable = True
         run_document.completed_at = now
+    if terminal_workflow.notification_policy == "PARENT_MANAGED":
+        from app.review_programs import project_review_program_classifier_positive_coverage_run_terminal
+
+        project_review_program_classifier_positive_coverage_run_terminal(
+            db,
+            review_run=review_run,
+            workflow=terminal_workflow,
+        )
     db.commit()
 
 

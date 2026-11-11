@@ -89,6 +89,20 @@ class OpenSearchClient:
             if exc.status_code != 404:
                 raise
 
+    def delete_by_query(self, index: str, query: dict[str, Any]) -> int:
+        try:
+            result = self._request(
+                "POST",
+                f"/{index}/_delete_by_query",
+                params={"conflicts": "proceed", "refresh": "true"},
+                json={"query": query},
+            )
+        except OpenSearchError as exc:
+            if exc.status_code == 404:
+                return 0
+            raise
+        return int(result.get("deleted", 0))
+
     def resolve_indices(self, pattern: str) -> list[str]:
         try:
             result = self._request("GET", f"/_resolve/index/{pattern}", params={"expand_wildcards": "all"})

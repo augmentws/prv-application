@@ -5,6 +5,7 @@
  * Phase-one Core API for authentication, hierarchical tenants, clients, matters, and matter metadata definitions.
  * OpenAPI spec version: 0.1.0
  */
+import type { ReviewBatchComparisonSourceOptionReadPreparationStatus } from './reviewBatchComparisonSourceOptionReadPreparationStatus';
 import type { ReviewBatchComparisonSourceOptionReadPurpose } from './reviewBatchComparisonSourceOptionReadPurpose';
 import type { ReviewBatchComparisonSourceOptionReadRunType } from './reviewBatchComparisonSourceOptionReadRunType';
 import type { ReviewBatchComparisonSourceOptionReadSourceType } from './reviewBatchComparisonSourceOptionReadSourceType';
@@ -16,6 +17,8 @@ export interface ReviewBatchComparisonSourceOptionRead {
   run_type?: ReviewBatchComparisonSourceOptionReadRunType;
   purpose?: ReviewBatchComparisonSourceOptionReadPurpose;
   status?: ReviewBatchComparisonSourceOptionReadStatus;
+  preparation_status?: ReviewBatchComparisonSourceOptionReadPreparationStatus;
+  classification_scoring_run_id?: string | null;
   label: string;
   detail: string | null;
   metadata_definition_ids: string[];

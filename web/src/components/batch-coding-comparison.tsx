@@ -40,6 +40,7 @@ import { cn } from "@/lib/utils";
 
 const PAGE_SIZE = 50;
 const RUN_COLORS = ["#38bdf8", "#f59e0b", "#34d399", "#f472b6", "#a78bfa", "#fb7185"];
+type CodingComparisonStatistics = Pick<ReviewBatchCodingComparisonRead, "sources" | "source_summaries" | "pairwise_agreements" | "multi_source_agreement">;
 
 function percent(value: number | null | undefined) {
   return value == null ? "—" : `${Math.round(value * 100)}%`;
@@ -51,7 +52,11 @@ function shortLabel(value: string) {
 
 function runTitle(source: ReviewBatchComparisonSourceOptionRead) {
   const type = source.source_type === "REVIEWER" ? "reviewer" : source.run_type?.toLowerCase() ?? "evaluation";
-  return `${source.label} · ${type} · ${formatDate(source.created_at)}`;
+  return [source.label, source.detail, type, formatDate(source.created_at)].filter(Boolean).join(" · ");
+}
+
+function preparationStatus(source: ReviewBatchComparisonSourceOptionRead) {
+  return source.preparation_status ?? "READY";
 }
 
 function agreementClass(value: number | null | undefined) {
@@ -79,7 +84,7 @@ function JaccardHelp() {
   );
 }
 
-function ComparisonCountsChart({ comparison }: { comparison: ReviewBatchCodingComparisonRead }) {
+export function ComparisonCountsChart({ comparison }: { comparison: CodingComparisonStatistics }) {
   const runMap = new Map(comparison.sources.map((source) => [source.id, source]));
   const chartData = useMemo(() => {
     const rows = new Map<string, Record<string, string | number>>();
@@ -116,7 +121,7 @@ function ComparisonCountsChart({ comparison }: { comparison: ReviewBatchCodingCo
   </section>;
 }
 
-function PairwiseAgreement({ comparison }: { comparison: ReviewBatchCodingComparisonRead }) {
+export function PairwiseAgreement({ comparison }: { comparison: CodingComparisonStatistics }) {
   const runMap = new Map(comparison.sources.map((source) => [source.id, source]));
   const valueLabels = new Map(comparison.source_summaries.flatMap((summary) => summary.value_counts.map((value) => [value.value_key, value.display_label] as const)));
   valueLabels.set("__NO_VALUE__", "No value");
@@ -150,7 +155,7 @@ function PairwiseAgreement({ comparison }: { comparison: ReviewBatchCodingCompar
   </section>;
 }
 
-function MultiSourceOverlap({ comparison }: { comparison: ReviewBatchCodingComparisonRead }) {
+export function MultiSourceOverlap({ comparison }: { comparison: CodingComparisonStatistics }) {
   const sourceMap = new Map(comparison.sources.map((source) => [source.id, source]));
   const agreement = comparison.multi_source_agreement;
 
@@ -202,20 +207,31 @@ export function BatchCodingComparison({ matterId, batchId, active }: { matterId:
     queryKey: ["review-batch-comparison-options", matterId, batchId],
     queryFn: () => coreApi<ReviewBatchComparisonOptionsRead>(`/v1/matters/${matterId}/review-batches/${batchId}/comparison-options`),
     enabled: active,
+    refetchInterval: (query) => query.state.data?.sources.some((source) => preparationStatus(source) === "PREPARING") ? 2_000 : false,
   });
   const effectiveFieldId = fieldId || options.data?.fields[0]?.id || "";
   const visibleSources = (options.data?.sources ?? []).filter((source) => (
     source.source_type === "REVIEWER"
     || (
-      ["COMPLETED", "COMPLETED_WITH_ERRORS"].includes(source.status ?? "")
+      (
+        preparationStatus(source) !== "READY"
+        || ["COMPLETED", "COMPLETED_WITH_ERRORS"].includes(source.status ?? "")
+      )
       && source.metadata_definition_ids.includes(effectiveFieldId)
     )
   )) ?? [];
-  const completedSources = visibleSources.filter((source) => source.source_type === "REVIEWER" || ["COMPLETED", "COMPLETED_WITH_ERRORS"].includes(source.status ?? ""));
-  const defaultSourceIds = (completedSources.length >= 2 ? completedSources : visibleSources).slice(0, 2).map((source) => source.id);
+  const completedSources = visibleSources.filter((source) => (
+    preparationStatus(source) === "READY"
+    && (source.source_type === "REVIEWER" || ["COMPLETED", "COMPLETED_WITH_ERRORS"].includes(source.status ?? ""))
+  ));
+  const defaultSourceIds = completedSources.slice(0, 2).map((source) => source.id);
   const effectiveSourceIds = selectedSourceIds ?? defaultSourceIds;
+  const selectedSourcesReady = effectiveSourceIds.every((sourceId) => {
+    const source = visibleSources.find((item) => item.id === sourceId);
+    return source !== undefined && preparationStatus(source) === "READY";
+  });
 
-  const request: ReviewBatchComparisonRequest | null = effectiveFieldId && effectiveSourceIds.length >= 2 ? {
+  const request: ReviewBatchComparisonRequest | null = effectiveFieldId && effectiveSourceIds.length >= 2 && selectedSourcesReady ? {
     metadata_definition_id: effectiveFieldId,
     source_ids: effectiveSourceIds,
     row_filter: rowFilter,
@@ -250,11 +266,31 @@ export function BatchCodingComparison({ matterId, batchId, active }: { matterId:
     onError: (error) => toast.error(error instanceof Error ? error.message : "The disagreement batch could not be created."),
   });
 
-  const toggleRun = (sourceId: string) => {
+  const prepareClassifierSource = useMutation({
+    mutationFn: (source: ReviewBatchComparisonSourceOptionRead) => {
+      if (!source.classification_scoring_run_id) throw new Error("Classifier scoring provenance is unavailable.");
+      return coreApi<ReviewBatchComparisonSourceOptionRead>(`/v1/matters/${matterId}/review-batches/${batchId}/coding-comparison/classifier-sources/${source.classification_scoring_run_id}/prepare`, { method: "POST" });
+    },
+    onSuccess: (prepared, source) => {
+      setSelectedSourceIds((current) => {
+        const selected = current ?? effectiveSourceIds;
+        return [...selected.filter((id) => id !== source.id && id !== prepared.id), prepared.id];
+      });
+      void queryClient.invalidateQueries({ queryKey: ["review-batch-comparison-options", matterId, batchId] });
+      toast.success("Classifier coding is being prepared for this batch.");
+    },
+    onError: (error) => toast.error(error instanceof Error ? error.message : "Classifier coding could not be prepared."),
+  });
+
+  const toggleRun = (source: ReviewBatchComparisonSourceOptionRead) => {
     setOffset(0);
+    if (["AVAILABLE", "FAILED"].includes(preparationStatus(source))) {
+      prepareClassifierSource.mutate(source);
+      return;
+    }
     setSelectedSourceIds((current) => {
       const selected = current ?? effectiveSourceIds;
-      return selected.includes(sourceId) ? selected.filter((id) => id !== sourceId) : selected.length < 6 ? [...selected, sourceId] : selected;
+      return selected.includes(source.id) ? selected.filter((id) => id !== source.id) : selected.length < 6 ? [...selected, source.id] : selected;
     });
   };
   const exportUrl = (format: "csv" | "parquet") => {
@@ -276,9 +312,10 @@ export function BatchCodingComparison({ matterId, batchId, active }: { matterId:
     <section className="rounded-lg border p-4">
       <div className="grid gap-4 lg:grid-cols-[minmax(14rem,0.7fr)_minmax(0,1.3fr)]">
         <label className="space-y-1.5 text-sm font-medium">Coding field<Select value={effectiveFieldId} onValueChange={(value) => { setFieldId(value); setOffset(0); }}><SelectTrigger aria-label="Comparison coding field"><SelectValue placeholder="Select a field" /></SelectTrigger><SelectContent>{options.data.fields.map((field) => <SelectItem key={field.id} value={field.id}>{field.display_name} · {field.cardinality.toLowerCase()}</SelectItem>)}</SelectContent></Select></label>
-        <div><p className="text-sm font-medium">Reviewers and completed analysis runs</p><p className="mb-2 text-xs text-muted-foreground">Select 2–6 coding sources. Unfinished, unsuccessful, and zero-value analysis runs are hidden.</p><div className="grid gap-2 sm:grid-cols-2">{visibleSources.map((source) => { const selected = effectiveSourceIds.includes(source.id); const sourceType = source.source_type === "REVIEWER" ? "reviewer" : source.run_type?.toLowerCase() ?? "evaluation"; const sourceStatus = source.source_type === "REVIEWER" ? "current coding" : source.status?.toLowerCase().replaceAll("_", " "); return <button key={source.id} type="button" onClick={() => toggleRun(source.id)} className={cn("flex min-w-0 items-start gap-2 rounded-md border px-3 py-2 text-left text-sm", selected ? "border-primary bg-primary/10" : "hover:bg-muted/50", !selected && effectiveSourceIds.length >= 6 && "cursor-not-allowed opacity-60")} title={runTitle(source)}><span className={cn("mt-0.5 flex size-4 shrink-0 items-center justify-center rounded border", selected && "border-primary bg-primary text-primary-foreground")}>{selected ? <Check className="size-3" /> : null}</span><span className="min-w-0"><span className="block truncate font-medium">{source.label}</span><span className="block truncate text-xs text-muted-foreground">{sourceType} · {sourceStatus}{source.detail ? ` · ${source.detail}` : ""}</span></span></button>; })}</div></div>
+        <div><p className="text-sm font-medium">Reviewers and completed analysis runs</p><p className="mb-2 text-xs text-muted-foreground">Select 2–6 coding sources. Whole-matter classifier coding is prepared for this batch only when selected.</p><div className="grid gap-2 sm:grid-cols-2">{visibleSources.map((source) => { const selected = effectiveSourceIds.includes(source.id); const sourcePreparation = preparationStatus(source); const sourceType = source.source_type === "REVIEWER" ? "reviewer" : source.run_type?.toLowerCase() ?? "evaluation"; const sourceStatus = source.source_type === "REVIEWER" ? "current coding" : sourcePreparation === "AVAILABLE" ? "available" : sourcePreparation === "PREPARING" ? "preparing" : sourcePreparation === "FAILED" ? "preparation failed · select to retry" : source.status?.toLowerCase().replaceAll("_", " "); const preparingThisSource = prepareClassifierSource.isPending && prepareClassifierSource.variables?.id === source.id; return <button key={source.id} type="button" onClick={() => toggleRun(source)} disabled={preparingThisSource || (!selected && effectiveSourceIds.length >= 6)} className={cn("flex min-w-0 items-start gap-2 rounded-md border px-3 py-2 text-left text-sm", selected ? "border-primary bg-primary/10" : "hover:bg-muted/50", (preparingThisSource || (!selected && effectiveSourceIds.length >= 6)) && "cursor-not-allowed opacity-60")} title={runTitle(source)}><span className={cn("mt-0.5 flex size-4 shrink-0 items-center justify-center rounded border", selected && "border-primary bg-primary text-primary-foreground")}>{preparingThisSource || sourcePreparation === "PREPARING" ? <LoaderCircle className="size-3 animate-spin" /> : selected ? <Check className="size-3" /> : null}</span><span className="min-w-0"><span className="block truncate font-medium">{source.label}</span><span className="block truncate text-xs text-muted-foreground">{sourceType} · {sourceStatus}{source.detail ? ` · ${source.detail}` : ""}</span></span></button>; })}</div></div>
       </div>
       {effectiveSourceIds.length < 2 ? <p className="mt-3 text-sm text-amber-600">Select at least two result sets to compare.</p> : null}
+      {effectiveSourceIds.length >= 2 && !selectedSourcesReady ? <p className="mt-3 flex items-center gap-2 text-sm text-muted-foreground"><LoaderCircle className="size-4 animate-spin" />Preparing selected classifier coding for this batch…</p> : null}
     </section>
 
     {comparison.isPending && request ? <div className="flex items-center justify-center gap-2 rounded-lg border p-12 text-sm text-muted-foreground"><LoaderCircle className="animate-spin" />Comparing coding across the frozen batch…</div> : null}

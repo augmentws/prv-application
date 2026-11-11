@@ -37,6 +37,12 @@ A matter opens on its **Overview**, which shows the current document count and t
 
 When reusable templates are available, the **Configuration** choice in the creation dialog can use one instead of the standard profile. See [Matter templates and cloning](/docs/matter-templates).
 
+### Delete a matter
+
+Client administrators can permanently delete a matter from the **Matters** table. Select **Delete Matter**, then type the exact matter name to enable **Delete permanently**. Priv-View refuses to queue the deletion while document imports, search operations, or other durable matter workflows are active.
+
+Deletion removes every physical OpenSearch generation for the matter, matter-scoped workflow artifacts and their unshared object-store blobs, and then the complete Core matter record. Source collections, collection items, native evidence, and collection-owned derived artifacts remain available for other matters. While the durable workflow runs, the Status column shows its current stage and the available artifact or document count. The client page refreshes deletion status every 30 seconds; refresh the page to check immediately. A failed deletion retains its error and can resume from the failed stage without recreating already-removed data.
+
 ## Moving around a matter
 
 When you open a matter, the sidebar shows that matter's menu instead of the workspace links. The menu groups the matter's sections by the work they support:

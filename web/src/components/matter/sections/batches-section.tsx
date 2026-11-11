@@ -189,5 +189,11 @@ function batchSelectionLabel(batch: ReviewBatchRead) {
   if (batch.selection_type === "TASK_BATCH_PARTITION") {
     return batch.batch_set_ordinal == null ? "Task partition" : `Task partition · ${batch.batch_set_ordinal}`;
   }
+  if (batch.selection_type === "EXPLICIT_DOCUMENTS") {
+    const purpose = batch.selection_definition.purpose;
+    if (purpose === "CLASSIFIER_POSITIVE_QA_COVERAGE") return "Classifier-positive Q&A coverage";
+    if (purpose === "NEGATIVE_POPULATION_QC_FINDINGS") return "Negative-population QC findings";
+    return "Explicit document selection";
+  }
   return { ALL_MATTER: "All matter documents", SEARCH_QUERY: "Keyword search", RANDOM_MATTER: "Random matter sample", RANDOM_BATCH: "Random batch sample", RANDOM_ASSESSMENT: "Random assessment-candidate sample", DEFINITION_ASSESSMENT: "Matter Definition assessment" }[batch.selection_type];
 }

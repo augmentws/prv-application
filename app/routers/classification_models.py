@@ -86,6 +86,7 @@ from app.classification_training_jobs import (
 from app.config import get_settings
 from app.database import get_db
 from app.dependencies import Principal, can_admin_matter, get_principal
+from app.job_archives import job_not_archived
 from app.job_executions import (
     CLASSIFICATION_SCORING_RUN_JOB_TYPE,
     cancel_job_execution,
@@ -578,6 +579,28 @@ def list_classification_models(
         .order_by(ClassificationModel.created_at, ClassificationModel.id)
     ).all()
     return [model_read(model) for model in models]
+
+
+@router.get("/scoring-runs", response_model=list[ClassificationScoringRunRead])
+def list_matter_classification_scoring_runs(
+    matter_id: uuid.UUID,
+    principal: Principal = Depends(get_principal),
+    db: Session = Depends(get_db),
+) -> list[ClassificationScoringRunRead]:
+    get_authorized_matter(db, principal, matter_id)
+    runs = db.scalars(
+        select(ClassificationScoringRun)
+        .where(
+            ClassificationScoringRun.matter_id == matter_id,
+            job_not_archived(CLASSIFICATION_SCORING_RUN_JOB_TYPE, ClassificationScoringRun.id),
+        )
+        .options(
+            selectinload(ClassificationScoringRun.dataset_snapshot),
+            selectinload(ClassificationScoringRun.current_workflow_run),
+        )
+        .order_by(ClassificationScoringRun.created_at.desc(), ClassificationScoringRun.id.desc())
+    ).all()
+    return [scoring_run_read(run) for run in runs]
 
 
 @router.post(

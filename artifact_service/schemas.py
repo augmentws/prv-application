@@ -599,6 +599,25 @@ WorkflowArtifactProducerKind = Literal["CORE", "CLASSIFICATION_WORKER", "CLASSIF
 WorkflowArtifactLineageSourceKind = Literal["WORKFLOW_ARTIFACT", "ARTIFACT"]
 
 
+class WorkflowArtifactScopeDelete(BaseModel):
+    core_scope_kind: WorkflowArtifactScopeKind
+    core_scope_id: uuid.UUID
+
+
+class WorkflowArtifactScopeDeletionRequest(BaseModel):
+    tenant_id: uuid.UUID
+    client_id: uuid.UUID
+    scopes: list[WorkflowArtifactScopeDelete] = Field(min_length=1, max_length=10_000)
+    batch_size: int = Field(default=250, ge=1, le=1_000)
+
+
+class WorkflowArtifactScopeDeletionRead(BaseModel):
+    matched_artifact_count: int = Field(ge=0)
+    deleted_artifact_count: int = Field(ge=0)
+    deleted_blob_count: int = Field(ge=0)
+    has_more: bool
+
+
 class WorkflowArtifactLineageInput(BaseModel):
     model_config = ConfigDict(extra="forbid")
 

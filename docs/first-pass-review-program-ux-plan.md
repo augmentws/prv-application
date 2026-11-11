@@ -11,6 +11,7 @@ Related plans:
 - `docs/statistical-classification-backend-implementation-plan.md`
 - `docs/analysis-task-batch-sets-plan.md`
 - `docs/classification-coding-projection-implementation-plan.md`
+- `docs/review-program-demo-replay-plan.md`
 
 ## 1. Product outcome
 
@@ -285,7 +286,7 @@ The First Pass Review template uses this guided creation map:
 | Develop the training set | Destination mappings, shared Q&A Decision Specification, required Q&A Analysis Task, two execution profiles, retrieval plan, discovery batch sets, and comparison | Task-specific partitioned sets; ad hoc difference batches only | Field and values, generated questions, model profiles, retrieval scope, issue sufficiency, and label policy |
 | Train and evaluate | Resolved training-label artifact, classifier configuration, dataset preview, build, evaluation, and improvement retrieval plan | Task-specific sets for any supplemental Q&A | Label source, weak categories, additional review, classifier acceptance, and activation |
 | Review the collection | Whole-collection Classification Analysis Task, scoring run, Q&A coverage manifest, Analysis Task Batch Set, and final comparison | Whole matter for classifier; task-specific sets for Q&A coverage; ad hoc difference review | Collection scope, prediction policy, uncovered classifier positives, Q&A coverage, and final disagreements |
-| Quality control and complete | No-code sampling manifest, QC Analysis Task Batch Set, blind dual-Q&A runs, QC report, and completion artifact | Task-specific partitioned set; ad hoc difference review if needed | Sample design, QC findings, remediation, accepted limitations, and completion |
+| Quality control and complete | No-code sampling manifest, ad hoc QC batch, blind dual-Q&A runs, QC report, and completion artifact | Ad hoc QC and difference review batches | Sample design, QC findings, remediation, accepted limitations, and completion |
 
 ### 6.5 Template defaults and advanced settings
 
@@ -375,9 +376,11 @@ Use explicit badges in history and child links:
 
 - **Task-specific set** for `PARTITIONED_SET` work;
 - **Assessment · Ad hoc** for Matter Definition assessment batches; and
-- **Differences review · Ad hoc** for comparison-derived human-review batches.
+- **Differences review · Ad hoc** for comparison-derived human-review batches; and
+- **Negative-population QC · Ad hoc** for the frozen overlapping QC sample.
 
-Do not present discovery, supplemental Q&A, classifier-positive coverage, or QC as ordinary ad hoc batches. The
+Do not present discovery or supplemental Q&A as ordinary ad hoc batches. Classifier-positive coverage and
+Negative-population QC are deliberately overlapping ad hoc populations. The
 workspace should make an unexpected ad hoc task run visible as a policy violation rather than treating it as another
 successful program child.
 
@@ -687,7 +690,8 @@ confidence, cohort, and profile.
 
 Choices:
 
-- Run both Q&A reviewers on every uncovered classifier-positive document.
+- Select a minimum classifier-confidence percentage and run the missing Q&A reviewers on every uncovered
+  classifier-positive document at or above that threshold.
 - Use a narrower documented coverage policy.
 - Stop before completion.
 
@@ -695,33 +699,88 @@ The default is full dual-Q&A coverage. A narrowed policy requires a reason and b
 
 ### 12.5 Coverage execution
 
-Show one parent progress view for the Analysis Task Batch Set:
+Show one parent progress view for the ad hoc coverage batch and its linked Q&A profile runs:
 
 - total and completed child batches;
 - documents covered by both profiles;
+- profile-specific evaluations and current results reused without another model call;
 - profile-specific failures;
-- retryable child batches;
+- retryable failed documents;
 - usage; and
 - remaining coverage.
 
 Users may open a child batch or job, but ordinary monitoring should not require visiting every child record.
+
+After coverage finishes, Step 15 also shows the frozen classifier-versus-decision-model outcome for the selected
+classifier-positive population. The stage summary names both pinned Q&A models, reports exact three-source agreement,
+Q&A-pair agreement where the classifier differs, partial overlap, full disagreement, and incomplete comparisons, and
+includes the same counts by issue. A linked full-results page exposes the retained document-level classifier and Q&A
+codings. Step 16 remains the durable final-alignment artifact and provenance boundary; users do not have to leave Step
+15 to understand the result produced by the coverage work.
+
+Coverage completion is evaluated at the document level, never by the number of internal model-request windows. If
+fewer than 0.5% of the original frozen coverage population remains unresolved after both profile runs terminate,
+show the stage as **Completed with errors** and require one of these recorded decisions:
+
+- **Retry failed documents** creates a replacement ad hoc batch containing only documents still missing a current
+  result from one or both pinned profiles.
+- **Accept unresolved documents** records the documents and failure rate as an accepted limitation and continues.
+- **Stop program** preserves the run history and cancels the program.
+
+At or above the 0.5% threshold, retain the hard failure and ordinary retry behavior. Retry attempts must continue to
+use the initial frozen coverage population as the denominator; a small retry batch must not make the reported failure
+rate appear larger. Per-model completed, reused, and failed counts must also cover every attempt in the stage. Count
+each document once per profile, with a later successful result taking precedence over an earlier failure; do not show
+only the final retry batch.
 
 ### 12.6 Final alignment
 
 Show three-source combinations among Q&A profile A, Q&A profile B, and the classifier. Make human-adjudicated results
 a distinct higher-authority source where present.
 
+The final-alignment population is the classifier-positive population at or above the confidence threshold the user
+selected for classifier-positive dual-Q&A coverage. Do not broaden this population to every classifier-positive
+document or every document reviewed earlier in the program.
+
+Report Q&A coverage with separate, plain-language counts for:
+
+- documents with complete results from both pinned Q&A profiles;
+- documents with only one profile result or an incomplete result;
+- documents with no Q&A result, including documents outside the selected classifier-positive coverage policy;
+- documents whose current source is unavailable; and
+- documents whose saved Q&A result references a different source-content hash.
+
+Do not describe the combined population as "stale, partial, or missing." A source-version mismatch is a distinct,
+exceptional condition and must not be inferred merely because one Q&A profile is missing or incomplete. Show the
+classifier-positive coverage threshold and selected-document count when those values were recorded.
+
 Primary cohorts include:
 
 - all three agree;
 - Q&A models agree and classifier differs;
-- classifier agrees with one Q&A model;
-- classifier only;
-- Q&A only;
+- at least one coding value overlaps across sources;
+- no coding values overlap across sources;
 - Q&A models disagree; and
 - incomplete or failed coverage.
 
 Offer reproducible cohort and disagreement batches. Do not silently resolve these results into final matter coding.
+
+The stage summary must also open a dedicated **Q&A population statistics** page in a new browser tab. This is a
+stable, deep-linkable analysis workspace rather than a modal, so the Review Program remains open while the user
+explores and compares sources. The population is the union of
+unique documents with a usable result from either pinned Q&A profile across the Review Program's discovery,
+classifier-improvement, and classifier-positive coverage work. It is not limited to the classifier-positive alignment
+threshold and must not double-count documents that appeared in more than one task-specific or ad hoc batch.
+
+Both pinned Q&A models are selected by default. When available for the selected field, the page must also let the
+user add the accepted classifier result and recorded human-review decisions as comparison sources without changing
+the underlying Q&A population.
+
+For each coding field, show the same statistical concepts used by batch coding comparison: per-source evaluated and
+missing counts, distinct-document coding counts per value, exact set agreement, mean Jaccard similarity, the
+single-value confusion matrix when applicable, and per-value overlap. Use resolved model names rather than Model A
+and Model B. A document-level matrix may be offered as a secondary drill-down, but it is not the primary statistics
+view.
 
 ## 13. Phase 5 Quality control and complete
 
@@ -729,6 +788,20 @@ Offer reproducible cohort and disagreement batches. Do not silently resolve thes
 
 Explain that QC examines documents with no selected issue while keeping uncertain, failed, partial, stale, and
 mandatory-review documents outside the ordinary no-code population.
+
+The setup form uses four document-count inputs:
+
+- **Random audit documents**: a uniform random sample from the ordinary no-code population. This is the only lane
+  used for a collection-wide miss-rate estimate.
+- **High-risk no-code documents**: remaining no-code documents with the highest positive-class probabilities. This
+  is a targeted classifier-risk sample, not a statistically representative sample.
+- **Record-type control documents**: a round-robin sample across available record types, selected after the random
+  and high-risk lanes, to expose record-type-specific failures.
+- **Exception-review documents**: the maximum number of source-reviewable no-code documents with classifier
+  failures, abstentions, or incomplete prior Q&A. Source-unavailable exceptions remain separately reported.
+
+Do not ask the user for a batch size. Create one QC batch for plans of 10,000 documents or fewer and partition larger
+plans automatically into batches of at most 10,000 documents.
 
 Show separate sampling lanes:
 
@@ -1255,7 +1328,8 @@ Deliverables:
 
 - Whole-collection preview, launch, and coverage summary.
 - Existing-Q&A comparison.
-- Classifier-positive Q&A coverage decision and task-specific batch-set progress.
+- Classifier-positive Q&A coverage decision and overlapping ad hoc batch progress, including the frozen population,
+  per-profile resolved/new/reused/failed counts, and a link to the Jobs view filtered to the coverage batch.
 - Final three-source alignment report and cohort actions.
 
 Exit criteria:

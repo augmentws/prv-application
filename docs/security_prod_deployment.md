@@ -117,6 +117,7 @@ Required controls:
 - Decide whether bucket versioning, object locking, retention rules, or replication are required by client contracts or litigation obligations. Do not enable irreversible retention without a reviewed lifecycle design.
 - Back up or replicate object data independently of the database backup. A database-only restore cannot recover document bodies.
 - Monitor disk capacity, drive health, failed requests, healing activity, credential use, certificate expiry, and replication/backup lag.
+- Size `ARTIFACT_STORAGE_MAX_POOL_CONNECTIONS` for each Artifact Service process above its highest concurrent object workload, and include every API and worker process when estimating aggregate MinIO connections.
 - Test an Artifact restore by retrieving and hash-verifying representative native, extracted-text, Parquet, and export artifacts.
 
 The current private-network MinIO data bind mount at `/home/petefc/augment.ws/prv-data/minio-data` provides persistence on that host but is not, by itself, production backup or high availability.
