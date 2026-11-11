@@ -10,6 +10,7 @@ from pathlib import Path
 
 from scripts.import_client.adapters import (
     Athome4LoadfileAdapter,
+    EdrmEnronV2Adapter,
     Emc2Adapter,
     EnronCsvAdapter,
     IndustryDocumentsLoadfileAdapter,
@@ -37,6 +38,7 @@ def build_parser() -> argparse.ArgumentParser:
         "adapter",
         choices=(
             "athome4-loadfile",
+            "edrm-enron-v2",
             "enron-csv",
             "emc2",
             "industrydocuments",
@@ -114,6 +116,8 @@ def build_parser() -> argparse.ArgumentParser:
 def create_adapter(args: argparse.Namespace) -> DatasetAdapter:
     if args.adapter == "athome4-loadfile":
         return Athome4LoadfileAdapter(args.source)
+    if args.adapter == "edrm-enron-v2":
+        return EdrmEnronV2Adapter(args.source)
     if args.adapter == "enron-csv":
         return EnronCsvAdapter(args.source)
     if args.adapter == "emc2":
@@ -152,7 +156,7 @@ def dry_run(
     for container in adapter.source_containers():
         excluded_parent_ids: set[str] = set()
         container_count += 1
-        container_bytes += container.path.stat().st_size
+        container_bytes += adapter.source_container_size(container)
         for item in BaseImporter.iter_preprocessed_items(
             adapter,
             container,

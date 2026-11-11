@@ -15,6 +15,7 @@ class DatasetAdapter(ABC):
     dataset_name: str
     default_collection_name: str
     expand_email_attachments = True
+    store_source_containers_supported = True
 
     @abstractmethod
     def source_containers(self) -> Iterable[SourceContainer]:
@@ -24,6 +25,10 @@ class DatasetAdapter(ABC):
         """Yield raw items only for a source shape the base importer cannot enumerate."""
         del source_container
         return ()
+
+    def source_container_size(self, source_container: SourceContainer) -> int:
+        """Return bytes represented by a source container for dry-run reporting."""
+        return source_container.path.stat().st_size
 
     def custodians_for(
         self,

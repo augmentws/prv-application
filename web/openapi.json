@@ -7954,6 +7954,64 @@
         }
       }
     },
+    "/v1/matters/{matter_id}/document-metadata-imports": {
+      "post": {
+        "tags": [
+          "matter document imports"
+        ],
+        "summary": "Import Matter Document Metadata",
+        "operationId": "import_matter_document_metadata_v1_matters__matter_id__document_metadata_imports_post",
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "matter_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid",
+              "title": "Matter Id"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/MatterDocumentMetadataImportCreate"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/MatterDocumentMetadataImportRead"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/v1/matters/{matter_id}/documents/count": {
       "get": {
         "tags": [
@@ -23095,6 +23153,64 @@
         }
       }
     },
+    "/v1/collections/{collection_id}/items/resolve-source-ids": {
+      "post": {
+        "tags": [
+          "artifacts"
+        ],
+        "summary": "Resolve Collection Item Source Ids",
+        "operationId": "resolve_collection_item_source_ids_v1_collections__collection_id__items_resolve_source_ids_post",
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "collection_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid",
+              "title": "Collection Id"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/CollectionItemSourceIdResolveRequest"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/CollectionItemSourceIdResolveResponse"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/v1/collection-items/{collection_item_id}": {
       "get": {
         "tags": [
@@ -35206,6 +35322,69 @@
         ],
         "title": "CollectionItemSearchResponse"
       },
+      "CollectionItemSourceIdResolution": {
+        "properties": {
+          "source_item_id": {
+            "type": "string",
+            "title": "Source Item Id"
+          },
+          "collection_item_id": {
+            "type": "string",
+            "format": "uuid",
+            "title": "Collection Item Id"
+          }
+        },
+        "type": "object",
+        "required": [
+          "source_item_id",
+          "collection_item_id"
+        ],
+        "title": "CollectionItemSourceIdResolution"
+      },
+      "CollectionItemSourceIdResolveRequest": {
+        "properties": {
+          "source_item_ids": {
+            "items": {
+              "type": "string",
+              "maxLength": 500,
+              "minLength": 1
+            },
+            "type": "array",
+            "maxItems": 5000,
+            "minItems": 1,
+            "title": "Source Item Ids"
+          }
+        },
+        "type": "object",
+        "required": [
+          "source_item_ids"
+        ],
+        "title": "CollectionItemSourceIdResolveRequest"
+      },
+      "CollectionItemSourceIdResolveResponse": {
+        "properties": {
+          "items": {
+            "items": {
+              "$ref": "#/components/schemas/CollectionItemSourceIdResolution"
+            },
+            "type": "array",
+            "title": "Items"
+          },
+          "missing_source_item_ids": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array",
+            "title": "Missing Source Item Ids"
+          }
+        },
+        "type": "object",
+        "required": [
+          "items",
+          "missing_source_item_ids"
+        ],
+        "title": "CollectionItemSourceIdResolveResponse"
+      },
       "CollectionItemUploadResponse": {
         "properties": {
           "item": {
@@ -43083,6 +43262,109 @@
           "updated_at"
         ],
         "title": "MatterDocumentImportRead"
+      },
+      "MatterDocumentMetadataImportCreate": {
+        "properties": {
+          "metadata_definition_id": {
+            "type": "string",
+            "format": "uuid",
+            "title": "Metadata Definition Id"
+          },
+          "items": {
+            "items": {
+              "$ref": "#/components/schemas/MatterDocumentMetadataImportItem"
+            },
+            "type": "array",
+            "maxItems": 1000,
+            "minItems": 1,
+            "title": "Items"
+          }
+        },
+        "type": "object",
+        "required": [
+          "metadata_definition_id",
+          "items"
+        ],
+        "title": "MatterDocumentMetadataImportCreate"
+      },
+      "MatterDocumentMetadataImportItem": {
+        "properties": {
+          "collection_item_id": {
+            "type": "string",
+            "format": "uuid",
+            "title": "Collection Item Id"
+          },
+          "value": {
+            "title": "Value"
+          }
+        },
+        "type": "object",
+        "required": [
+          "collection_item_id",
+          "value"
+        ],
+        "title": "MatterDocumentMetadataImportItem"
+      },
+      "MatterDocumentMetadataImportRead": {
+        "properties": {
+          "requested_count": {
+            "type": "integer",
+            "minimum": 1.0,
+            "title": "Requested Count"
+          },
+          "matched_document_count": {
+            "type": "integer",
+            "minimum": 0.0,
+            "title": "Matched Document Count"
+          },
+          "created_event_count": {
+            "type": "integer",
+            "minimum": 0.0,
+            "title": "Created Event Count"
+          },
+          "existing_event_count": {
+            "type": "integer",
+            "minimum": 0.0,
+            "title": "Existing Event Count"
+          },
+          "missing_collection_item_ids": {
+            "items": {
+              "type": "string",
+              "format": "uuid"
+            },
+            "type": "array",
+            "title": "Missing Collection Item Ids"
+          },
+          "warnings": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array",
+            "title": "Warnings"
+          },
+          "search_operation_id": {
+            "anyOf": [
+              {
+                "type": "string",
+                "format": "uuid"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Search Operation Id"
+          }
+        },
+        "type": "object",
+        "required": [
+          "requested_count",
+          "matched_document_count",
+          "created_event_count",
+          "existing_event_count",
+          "missing_collection_item_ids",
+          "warnings"
+        ],
+        "title": "MatterDocumentMetadataImportRead"
       },
       "MatterDocumentRead": {
         "properties": {

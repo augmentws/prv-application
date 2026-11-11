@@ -366,6 +366,27 @@ class CollectionItemRead(BaseModel):
     created_at: datetime
 
 
+class CollectionItemSourceIdResolveRequest(BaseModel):
+    source_item_ids: list[SourceItemId] = Field(min_length=1, max_length=5000)
+
+    @field_validator("source_item_ids")
+    @classmethod
+    def validate_unique_source_item_ids(cls, values: list[str]) -> list[str]:
+        if len(values) != len(set(values)):
+            raise ValueError("source_item_ids must be unique")
+        return values
+
+
+class CollectionItemSourceIdResolution(BaseModel):
+    source_item_id: str
+    collection_item_id: uuid.UUID
+
+
+class CollectionItemSourceIdResolveResponse(BaseModel):
+    items: list[CollectionItemSourceIdResolution]
+    missing_source_item_ids: list[str]
+
+
 class CollectionItemGroupingSnapshotsRequest(BaseModel):
     model_config = ConfigDict(extra="forbid")
 

@@ -660,6 +660,37 @@ class MatterDocumentRead(ORMModel):
     created_at: datetime
 
 
+class MatterDocumentMetadataImportItem(BaseModel):
+    collection_item_id: uuid.UUID
+    value: Any
+
+
+class MatterDocumentMetadataImportCreate(BaseModel):
+    metadata_definition_id: uuid.UUID
+    items: list[MatterDocumentMetadataImportItem] = Field(min_length=1, max_length=1000)
+
+    @field_validator("items")
+    @classmethod
+    def validate_unique_collection_items(
+        cls,
+        values: list[MatterDocumentMetadataImportItem],
+    ) -> list[MatterDocumentMetadataImportItem]:
+        item_ids = [item.collection_item_id for item in values]
+        if len(item_ids) != len(set(item_ids)):
+            raise ValueError("Each collection_item_id may appear only once")
+        return values
+
+
+class MatterDocumentMetadataImportRead(BaseModel):
+    requested_count: int = Field(ge=1)
+    matched_document_count: int = Field(ge=0)
+    created_event_count: int = Field(ge=0)
+    existing_event_count: int = Field(ge=0)
+    missing_collection_item_ids: list[uuid.UUID]
+    warnings: list[str]
+    search_operation_id: uuid.UUID | None = None
+
+
 class MatterOverviewCounts(BaseModel):
     document_count: int = Field(ge=0)
     custodian_count: int = Field(ge=0)

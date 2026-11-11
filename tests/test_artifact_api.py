@@ -349,6 +349,25 @@ def test_individual_email_upload_with_source_container(client: TestClient, root_
     assert query_response.status_code == 200, query_response.text
     assert [item["source_item_id"] for item in query_response.json()] == ["allen-p/_sent_mail/1."]
 
+    missing_source_id = "3.9999999.MISSING"
+    resolve_response = client.post(
+        f"/v1/collections/{collection_id}/items/resolve-source-ids",
+        headers=auth(root_token),
+        json={
+            "source_item_ids": [metadata["source_item_id"], missing_source_id]
+        },
+    )
+    assert resolve_response.status_code == 200, resolve_response.text
+    assert resolve_response.json() == {
+        "items": [
+            {
+                "source_item_id": metadata["source_item_id"],
+                "collection_item_id": payload["item"]["id"],
+            }
+        ],
+        "missing_source_item_ids": [missing_source_id],
+    }
+
     retry_response = client.post(
         f"/v1/collections/{collection_id}/items:upload",
         headers=auth(root_token),

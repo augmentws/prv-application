@@ -465,6 +465,23 @@ def test_matter_publication_creates_idempotent_imported_metadata_labels(
         },
     )
     assert single_definition_response.status_code == 201, single_definition_response.text
+    qrels_definition_response = client.post(
+        f"/v1/matters/{matter['id']}/metadata-definitions",
+        headers=headers,
+        json={
+            "key": "trec_topic_304_judgment",
+            "display_name": "TREC Topic 304 Judgment",
+            "type": "ENUM",
+            "cardinality": "SINGLE",
+            "allowed_values": [
+                {"key": "relevant", "label": "Relevant"},
+                {"key": "not_relevant", "label": "Not relevant"},
+            ],
+            "facetable": True,
+        },
+    )
+    assert qrels_definition_response.status_code == 201, qrels_definition_response.text
+    qrels_definition = qrels_definition_response.json()
     client.post(
         f"/v1/tenants/{tenant_id}/artifact-storage/ensure",
         json={"tenant_slug": "root"},
@@ -571,6 +588,38 @@ def test_matter_publication_creates_idempotent_imported_metadata_labels(
     assert second.added_count == 0
     assert second.duplicate_count == 1
     assert second.imported_label_event_count == 0
+
+    missing_item_id = uuid.uuid4()
+    qrels_import = client.post(
+        f"/v1/matters/{matter['id']}/document-metadata-imports",
+        headers=headers,
+        json={
+            "metadata_definition_id": qrels_definition["id"],
+            "items": [
+                {"collection_item_id": str(item_id), "value": "relevant"},
+                {"collection_item_id": str(missing_item_id), "value": "not_relevant"},
+            ],
+        },
+    )
+    assert qrels_import.status_code == 200, qrels_import.text
+    assert qrels_import.json()["matched_document_count"] == 1
+    assert qrels_import.json()["created_event_count"] == 1
+    assert qrels_import.json()["existing_event_count"] == 0
+    assert qrels_import.json()["missing_collection_item_ids"] == [str(missing_item_id)]
+
+    qrels_retry = client.post(
+        f"/v1/matters/{matter['id']}/document-metadata-imports",
+        headers=headers,
+        json={
+            "metadata_definition_id": qrels_definition["id"],
+            "items": [
+                {"collection_item_id": str(item_id), "value": "relevant"},
+            ],
+        },
+    )
+    assert qrels_retry.status_code == 200, qrels_retry.text
+    assert qrels_retry.json()["created_event_count"] == 0
+    assert qrels_retry.json()["existing_event_count"] == 1
     with TestingSessionLocal() as db:
         assert db.scalar(
             select(func.count()).select_from(MetadataEvent).where(

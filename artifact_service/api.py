@@ -58,6 +58,9 @@ from artifact_service.schemas import (
     CollectionItemRelationshipSnapshot,
     CollectionItemRelationshipSnapshotsRequest,
     CollectionItemSearchResponse,
+    CollectionItemSourceIdResolution,
+    CollectionItemSourceIdResolveRequest,
+    CollectionItemSourceIdResolveResponse,
     CollectionItemUploadMetadata,
     CollectionItemUploadResponse,
     CollectionRead,
@@ -1452,6 +1455,42 @@ def build_router(
                 query = query.where(Artifact.byte_length <= max_size)
         items = list(db.scalars(query.order_by(CollectionItem.created_at, CollectionItem.id).offset(offset).limit(limit)))
         return [_item_read(db, item) for item in items]
+
+    @router.post(
+        "/collections/{collection_id}/items/resolve-source-ids",
+        response_model=CollectionItemSourceIdResolveResponse,
+    )
+    def resolve_collection_item_source_ids(
+        collection_id: uuid.UUID,
+        payload: CollectionItemSourceIdResolveRequest,
+        principal: ArtifactPrincipal = Depends(principal_dependency),
+        db: Session = Depends(get_artifact_db),
+    ) -> CollectionItemSourceIdResolveResponse:
+        collection = _get_collection(db, collection_id, principal)
+        resolved = {
+            item.source_item_id: item.id
+            for item in db.scalars(
+                select(CollectionItem).where(
+                    CollectionItem.collection_id == collection.id,
+                    CollectionItem.source_item_id.in_(payload.source_item_ids),
+                )
+            )
+        }
+        return CollectionItemSourceIdResolveResponse(
+            items=[
+                CollectionItemSourceIdResolution(
+                    source_item_id=source_item_id,
+                    collection_item_id=resolved[source_item_id],
+                )
+                for source_item_id in payload.source_item_ids
+                if source_item_id in resolved
+            ],
+            missing_source_item_ids=[
+                source_item_id
+                for source_item_id in payload.source_item_ids
+                if source_item_id not in resolved
+            ],
+        )
 
     @router.get("/collection-items/{collection_item_id}", response_model=CollectionItemRead)
     def get_collection_item(
