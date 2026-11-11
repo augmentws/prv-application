@@ -455,6 +455,7 @@ def list_analysis_tasks(
 def list_question_answering_jobs(
     matter_id: uuid.UUID,
     batch_set_id: uuid.UUID | None = None,
+    review_batch_id: uuid.UUID | None = None,
     principal: Principal = Depends(get_principal),
     db: Session = Depends(get_db),
 ) -> list[MatterQuestionAnsweringJobRead]:
@@ -466,6 +467,8 @@ def list_question_answering_jobs(
     ]
     if batch_set_id is not None:
         filters.append(ReviewBatchRun.analysis_task_batch_set_id == batch_set_id)
+    if review_batch_id is not None:
+        filters.append(ReviewBatchRun.review_batch_id == review_batch_id)
     rows = db.execute(
         select(ReviewBatchRun, ReviewBatch)
         .outerjoin(ReviewBatch, ReviewBatch.id == ReviewBatchRun.review_batch_id)

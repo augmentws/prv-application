@@ -2,6 +2,18 @@ export function formatDate(value: string) {
   return new Intl.DateTimeFormat(undefined, { month: "short", day: "numeric", year: "numeric" }).format(new Date(value));
 }
 
+export function formatDateTime(value: string) {
+  return new Intl.DateTimeFormat(undefined, {
+    month: "short",
+    day: "numeric",
+    year: "numeric",
+    hour: "numeric",
+    minute: "2-digit",
+    second: "2-digit",
+    timeZoneName: "short",
+  }).format(new Date(value));
+}
+
 export function formatBytes(value: number) {
   if (value < 1024) return `${value} B`;
   const units = ["KB", "MB", "GB", "TB"];

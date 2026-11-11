@@ -5,12 +5,11 @@
  * Phase-one Core API for authentication, hierarchical tenants, clients, matters, and matter metadata definitions.
  * OpenAPI spec version: 0.1.0
  */
-import type { MatterReadStatus } from './matterReadStatus';
 
 export interface MatterRead {
   id: string;
   client_id: string;
   name: string;
-  status: MatterReadStatus;
+  status: 'ACTIVE' | 'SUSPENDED' | 'ARCHIVED' | 'DELETING';
   created_at: string;
 }

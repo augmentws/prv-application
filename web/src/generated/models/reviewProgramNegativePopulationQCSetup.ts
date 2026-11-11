@@ -5,6 +5,7 @@
  * Phase-one Core API for authentication, hierarchical tenants, clients, matters, and matter metadata definitions.
  * OpenAPI spec version: 0.1.0
  */
+import type { ReviewProgramNegativePopulationQCSetupSelectedProceduresItem } from './reviewProgramNegativePopulationQCSetupSelectedProceduresItem';
 
 export interface ReviewProgramNegativePopulationQCSetup {
   /**
@@ -12,6 +13,18 @@ export interface ReviewProgramNegativePopulationQCSetup {
      * @maxLength 64
      */
   preview_hash: string;
+  /**
+     * @minLength 64
+     * @maxLength 64
+     */
+  inventory_content_hash: string;
+  /**
+     * @minItems 1
+     * @maxItems 4
+     */
+  selected_procedures: ReviewProgramNegativePopulationQCSetupSelectedProceduresItem[];
+  /** @maxItems 100 */
+  selected_record_types?: string[];
   /**
      * @minimum 0
      * @maximum 25000
@@ -32,10 +45,5 @@ export interface ReviewProgramNegativePopulationQCSetup {
      * @maximum 25000
      */
   mandatory_review_limit?: number;
-  /**
-     * @minimum 1
-     * @maximum 10000
-     */
-  target_batch_size?: number;
   keep_families_together?: boolean;
 }

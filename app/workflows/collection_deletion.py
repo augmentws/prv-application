@@ -4,7 +4,9 @@ import uuid
 from dbos import DBOS, Queue
 
 from app.collection_deletions import collection_deletion_blockers
+from app.config import get_settings
 from app.database import SessionLocal
+from app.search.client import OpenSearchClient
 from artifact_service.database import ArtifactSessionLocal
 from artifact_service.deletion import (
     complete_deletion,
@@ -38,6 +40,31 @@ def validate(job_id: str) -> None:
         blockers = collection_deletion_blockers(db, collection_id)
     if blockers.blocked:
         raise ValueError(blockers.message())
+
+
+@DBOS.step(name="delete_collection_search_projections", retries_allowed=True, max_attempts=10)
+def delete_search_projections(job_id: str) -> int:
+    settings = get_settings()
+    if not settings.search_enabled:
+        return 0
+    with ArtifactSessionLocal() as artifact_db:
+        job = artifact_db.get(CollectionDeletionJob, uuid.UUID(job_id))
+        if job is None:
+            raise ValueError("Collection deletion job not found")
+        collection_id = job.collection_id
+    client = OpenSearchClient(settings)
+    try:
+        index_pattern = f"{settings.opensearch_index_prefix}-matter-*-documents-v*"
+        indexes = client.resolve_indices(index_pattern)
+        return sum(
+            client.delete_by_query(
+                index_name,
+                {"term": {"source_collection_id": str(collection_id)}},
+            )
+            for index_name in indexes
+        )
+    finally:
+        client.close()
 
 
 @DBOS.step(name="prepare_collection_deletion", retries_allowed=True, max_attempts=5)
@@ -81,6 +108,7 @@ def collection_deletion(job_id: str) -> None:
     logger.info("Starting collection deletion job_id=%s", job_id)
     try:
         validate(job_id)
+        delete_search_projections(job_id)
         prepare(job_id)
         while True:
             result = delete_items(job_id)

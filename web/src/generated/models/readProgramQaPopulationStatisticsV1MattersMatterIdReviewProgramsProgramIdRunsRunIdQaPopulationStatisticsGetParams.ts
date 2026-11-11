@@ -6,11 +6,8 @@
  * OpenAPI spec version: 0.1.0
  */
 
-export type MatterReadStatus = typeof MatterReadStatus[keyof typeof MatterReadStatus];
-
-
-export const MatterReadStatus = {
-  ACTIVE: 'ACTIVE',
-  SUSPENDED: 'SUSPENDED',
-  ARCHIVED: 'ARCHIVED',
-} as const;
+export type ReadProgramQaPopulationStatisticsV1MattersMatterIdReviewProgramsProgramIdRunsRunIdQaPopulationStatisticsGetParams = {
+metadata_definition_id?: string | null;
+include_classifier?: boolean;
+include_human?: boolean;
+};

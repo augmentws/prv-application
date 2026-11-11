@@ -1,7 +1,7 @@
 "use client";
 
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { ArrowLeft, Ban, BrainCircuit, Layers3, LoaderCircle, RotateCcw } from "lucide-react";
+import { ArrowLeft, Ban, BarChart3, BrainCircuit, Layers3, LoaderCircle, RotateCcw } from "lucide-react";
 import Link from "next/link";
 import { useEffect, useState } from "react";
 import { toast } from "sonner";
@@ -31,7 +31,7 @@ import type {
 } from "@/generated/models";
 import { coreApi } from "@/lib/api-client";
 import { formatDate } from "@/lib/format";
-import { matterHref } from "@/lib/matter-routes";
+import { classificationScoringRunHref, matterHref } from "@/lib/matter-routes";
 
 function shortId(value: string) {
   return value.slice(0, 8);
@@ -414,7 +414,7 @@ export function ClassificationModelDetail({
           {scoringRuns.data.length ? <div className="space-y-2">{scoringRuns.data.map((run) => <div key={run.id} className="rounded-lg border p-3">
             <div className="flex flex-wrap items-start justify-between gap-3">
               <div><p className="font-medium">Scoring run {shortId(run.id)}</p><p className="mt-1 text-xs text-muted-foreground">Model version {versions.data.find((version) => version.id === run.model_version_id)?.version_number ?? shortId(run.model_version_id)} · {run.population_document_count.toLocaleString()} documents · {formatDate(run.created_at)}</p></div>
-              <div className="flex items-center gap-2"><Badge variant="outline">{run.status}</Badge>{run.execution?.available_actions.includes("CANCEL") ? <Button size="sm" variant="outline" disabled={cancelScoringRun.isPending} onClick={() => cancelScoringRun.mutate(run.id)}><Ban />Cancel</Button> : run.execution?.available_actions.includes("RETRY") ? <Button size="sm" variant="outline" disabled={retryScoringRun.isPending} onClick={() => retryScoringRun.mutate(run.id)}><RotateCcw />Retry</Button> : ["COMPLETED", "COMPLETED_WITH_ERRORS"].includes(run.status) ? <Button size="sm" variant="outline" onClick={() => openProjection(run)}><Layers3 />Create projection</Button> : null}</div>
+              <div className="flex flex-wrap items-center justify-end gap-2"><Badge variant="outline">{run.status}</Badge>{run.execution?.available_actions.includes("CANCEL") ? <Button size="sm" variant="outline" disabled={cancelScoringRun.isPending} onClick={() => cancelScoringRun.mutate(run.id)}><Ban />Cancel</Button> : run.execution?.available_actions.includes("RETRY") ? <Button size="sm" variant="outline" disabled={retryScoringRun.isPending} onClick={() => retryScoringRun.mutate(run.id)}><RotateCcw />Retry</Button> : ["COMPLETED", "COMPLETED_WITH_ERRORS"].includes(run.status) ? <><Button asChild size="sm" variant="outline"><Link href={classificationScoringRunHref(clientId, matterId, modelId, run.id)}><BarChart3 />View results</Link></Button><Button size="sm" variant="outline" onClick={() => openProjection(run)}><Layers3 />Create projection</Button></> : null}</div>
             </div>
             <p className="mt-2 text-xs text-muted-foreground">{run.execution ? `${run.execution.stage_label} · attempt ${run.execution.attempt_number} · ` : ""}{run.scored_document_count.toLocaleString()} scored · {run.abstained_document_count.toLocaleString()} abstained · {run.excluded_document_count.toLocaleString()} excluded · {run.failed_document_count.toLocaleString()} failed</p>
             {run.failure_summary ? <p className="mt-2 text-sm text-destructive">{run.failure_summary}</p> : null}

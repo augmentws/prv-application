@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import hashlib
 import json
-from dataclasses import asdict, dataclass
+from dataclasses import asdict, dataclass, replace
 from typing import Literal
 
 BatchingPolicy = Literal["NONE", "AD_HOC_BATCH", "PARTITIONED_SET", "WHOLE_MATTER"]
@@ -54,7 +54,7 @@ class ReviewWorkflowTemplateSpec:
         return hashlib.sha256(payload.encode("utf-8")).hexdigest()
 
 
-FIRST_PASS_REVIEW = ReviewWorkflowTemplateSpec(
+FIRST_PASS_REVIEW_V1 = ReviewWorkflowTemplateSpec(
     key="FIRST_PASS_REVIEW",
     version=1,
     schema_version=1,
@@ -120,6 +120,35 @@ FIRST_PASS_REVIEW = ReviewWorkflowTemplateSpec(
 )
 
 
+FIRST_PASS_REVIEW_V2 = replace(
+    FIRST_PASS_REVIEW_V1,
+    version=2,
+    stages=tuple(
+        replace(stage, batching_policy="AD_HOC_BATCH")
+        if stage.key == "CLASSIFIER_POSITIVE_COVERAGE"
+        else stage
+        for stage in FIRST_PASS_REVIEW_V1.stages
+    ),
+)
+
+
+FIRST_PASS_REVIEW = replace(
+    FIRST_PASS_REVIEW_V2,
+    version=3,
+    stages=tuple(
+        replace(stage, batching_policy="AD_HOC_BATCH")
+        if stage.key == "NO_CODE_QC"
+        else stage
+        for stage in FIRST_PASS_REVIEW_V2.stages
+    ),
+)
+
+
+REVIEW_WORKFLOW_TEMPLATE_VERSIONS = {
+    (FIRST_PASS_REVIEW_V1.key, FIRST_PASS_REVIEW_V1.version): FIRST_PASS_REVIEW_V1,
+    (FIRST_PASS_REVIEW_V2.key, FIRST_PASS_REVIEW_V2.version): FIRST_PASS_REVIEW_V2,
+    (FIRST_PASS_REVIEW.key, FIRST_PASS_REVIEW.version): FIRST_PASS_REVIEW,
+}
 REVIEW_WORKFLOW_TEMPLATES = {FIRST_PASS_REVIEW.key: FIRST_PASS_REVIEW}
 
 
@@ -128,14 +157,18 @@ class ReviewWorkflowTemplateError(ValueError):
 
 
 def get_review_workflow_template(key: str, *, version: int | None = None) -> ReviewWorkflowTemplateSpec:
-    template = REVIEW_WORKFLOW_TEMPLATES.get(key)
-    if template is None or (version is not None and version != template.version):
+    template = (
+        REVIEW_WORKFLOW_TEMPLATES.get(key)
+        if version is None
+        else REVIEW_WORKFLOW_TEMPLATE_VERSIONS.get((key, version))
+    )
+    if template is None:
         raise ReviewWorkflowTemplateError("Review Workflow Template not found")
     return template
 
 
 def validate_review_workflow_templates() -> None:
-    for template in REVIEW_WORKFLOW_TEMPLATES.values():
+    for template in REVIEW_WORKFLOW_TEMPLATE_VERSIONS.values():
         phase_keys = {phase.key for phase in template.phases}
         if len(phase_keys) != len(template.phases):
             raise RuntimeError(f"Review Workflow Template {template.key} has duplicate phase keys")
@@ -150,11 +183,14 @@ def validate_review_workflow_templates() -> None:
             raise RuntimeError(f"Review Workflow Template {template.key} references an unknown phase")
 
         ad_hoc_stages = {stage.key for stage in template.stages if stage.batching_policy == "AD_HOC_BATCH"}
-        if template.key == "FIRST_PASS_REVIEW" and ad_hoc_stages != {
+        expected_ad_hoc_stages = {
             "DEFINITION_ASSESSMENT",
             "DISAGREEMENT_REVIEW",
-        }:
-            raise RuntimeError("First Pass Review permits ad hoc batches only for assessment and difference review")
+            *({"CLASSIFIER_POSITIVE_COVERAGE"} if template.version >= 2 else set()),
+            *({"NO_CODE_QC"} if template.version >= 3 else set()),
+        }
+        if template.key == "FIRST_PASS_REVIEW" and ad_hoc_stages != expected_ad_hoc_stages:
+            raise RuntimeError("First Pass Review has an invalid ad hoc batching contract")
 
 
 validate_review_workflow_templates()

@@ -4260,6 +4260,196 @@
             }
           }
         }
+      },
+      "delete": {
+        "tags": [
+          "matter deletions"
+        ],
+        "summary": "Delete Matter",
+        "operationId": "delete_matter_v1_matters__matter_id__delete",
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "matter_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid",
+              "title": "Matter Id"
+            }
+          }
+        ],
+        "responses": {
+          "202": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/MatterDeletionJobRead"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v1/matters/{matter_id}/deletion": {
+      "get": {
+        "tags": [
+          "matter deletions"
+        ],
+        "summary": "Get Matter Deletion",
+        "operationId": "get_matter_deletion_v1_matters__matter_id__deletion_get",
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "matter_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid",
+              "title": "Matter Id"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/MatterDeletionJobRead"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v1/matter-deletions/{job_id}": {
+      "get": {
+        "tags": [
+          "matter deletions"
+        ],
+        "summary": "Get Matter Deletion Job",
+        "operationId": "get_matter_deletion_job_v1_matter_deletions__job_id__get",
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "job_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid",
+              "title": "Job Id"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/MatterDeletionJobRead"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v1/matter-deletions/{job_id}/retry": {
+      "post": {
+        "tags": [
+          "matter deletions"
+        ],
+        "summary": "Retry Matter Deletion",
+        "operationId": "retry_matter_deletion_v1_matter_deletions__job_id__retry_post",
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "job_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid",
+              "title": "Job Id"
+            }
+          }
+        ],
+        "responses": {
+          "202": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/MatterDeletionJobRead"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
       }
     },
     "/v1/matters/{matter_id}/analysis-tasks": {
@@ -4408,6 +4598,23 @@
                 }
               ],
               "title": "Batch Set Id"
+            }
+          },
+          {
+            "name": "review_batch_id",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string",
+                  "format": "uuid"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Review Batch Id"
             }
           }
         ],
@@ -14024,6 +14231,74 @@
         }
       }
     },
+    "/v1/matters/{matter_id}/review-batches/{batch_id}/coding-comparison/classifier-sources/{scoring_run_id}/prepare": {
+      "post": {
+        "tags": [
+          "review batches"
+        ],
+        "summary": "Prepare Review Batch Classifier Comparison Source",
+        "operationId": "prepare_review_batch_classifier_comparison_source_v1_matters__matter_id__review_batches__batch_id__coding_comparison_classifier_sources__scoring_run_id__prepare_post",
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "matter_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid",
+              "title": "Matter Id"
+            }
+          },
+          {
+            "name": "batch_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid",
+              "title": "Batch Id"
+            }
+          },
+          {
+            "name": "scoring_run_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid",
+              "title": "Scoring Run Id"
+            }
+          }
+        ],
+        "responses": {
+          "202": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ReviewBatchComparisonSourceOptionRead"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/v1/matters/{matter_id}/review-batches/{batch_id}/coding-comparison": {
       "post": {
         "tags": [
@@ -14814,6 +15089,199 @@
         }
       }
     },
+    "/v1/matters/{matter_id}/review-programs/{program_id}/runs/{run_id}/final-alignment": {
+      "get": {
+        "tags": [
+          "review programs"
+        ],
+        "summary": "Read Program Final Alignment",
+        "operationId": "read_program_final_alignment_v1_matters__matter_id__review_programs__program_id__runs__run_id__final_alignment_get",
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "matter_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid",
+              "title": "Matter Id"
+            }
+          },
+          {
+            "name": "program_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid",
+              "title": "Program Id"
+            }
+          },
+          {
+            "name": "run_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid",
+              "title": "Run Id"
+            }
+          },
+          {
+            "name": "offset",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "integer",
+              "default": 0,
+              "title": "Offset"
+            }
+          },
+          {
+            "name": "limit",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "integer",
+              "default": 50,
+              "title": "Limit"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ReviewProgramFinalAlignmentPageRead"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v1/matters/{matter_id}/review-programs/{program_id}/runs/{run_id}/qa-population-statistics": {
+      "get": {
+        "tags": [
+          "review programs"
+        ],
+        "summary": "Read Program Qa Population Statistics",
+        "operationId": "read_program_qa_population_statistics_v1_matters__matter_id__review_programs__program_id__runs__run_id__qa_population_statistics_get",
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "matter_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid",
+              "title": "Matter Id"
+            }
+          },
+          {
+            "name": "program_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid",
+              "title": "Program Id"
+            }
+          },
+          {
+            "name": "run_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid",
+              "title": "Run Id"
+            }
+          },
+          {
+            "name": "metadata_definition_id",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string",
+                  "format": "uuid"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Metadata Definition Id"
+            }
+          },
+          {
+            "name": "include_classifier",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "boolean",
+              "default": false,
+              "title": "Include Classifier"
+            }
+          },
+          {
+            "name": "include_human",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "boolean",
+              "default": false,
+              "title": "Include Human"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ReviewProgramQAPopulationStatisticsRead"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/v1/matters/{matter_id}/review-programs/{program_id}/runs/{run_id}/actions/{action_id}/resolve": {
       "post": {
         "tags": [
@@ -15232,6 +15700,94 @@
         },
         "responses": {
           "202": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ReviewProgramRunRead"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v1/matters/{matter_id}/review-programs/{program_id}/runs/{run_id}/actions/{action_id}/negative-population-qc-inventory": {
+      "post": {
+        "tags": [
+          "review programs"
+        ],
+        "summary": "Prepare Program Negative Population Qc Inventory",
+        "operationId": "prepare_program_negative_population_qc_inventory_v1_matters__matter_id__review_programs__program_id__runs__run_id__actions__action_id__negative_population_qc_inventory_post",
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "matter_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid",
+              "title": "Matter Id"
+            }
+          },
+          {
+            "name": "program_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid",
+              "title": "Program Id"
+            }
+          },
+          {
+            "name": "run_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid",
+              "title": "Run Id"
+            }
+          },
+          {
+            "name": "action_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid",
+              "title": "Action Id"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ReviewProgramNegativePopulationQCInventoryPrepare"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
             "description": "Successful Response",
             "content": {
               "application/json": {
@@ -23142,6 +23698,58 @@
                     "$ref": "#/components/schemas/ClassificationModelRead"
                   },
                   "title": "Response List Classification Models V1 Matters  Matter Id  Classification Models Get"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v1/matters/{matter_id}/classification-models/scoring-runs": {
+      "get": {
+        "tags": [
+          "classification models"
+        ],
+        "summary": "List Matter Classification Scoring Runs",
+        "operationId": "list_matter_classification_scoring_runs_v1_matters__matter_id__classification_models_scoring_runs_get",
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "matter_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid",
+              "title": "Matter Id"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "array",
+                  "items": {
+                    "$ref": "#/components/schemas/ClassificationScoringRunRead"
+                  },
+                  "title": "Response List Matter Classification Scoring Runs V1 Matters  Matter Id  Classification Models Scoring Runs Get"
                 }
               }
             }
@@ -42087,6 +42695,148 @@
         "type": "object",
         "title": "MatterDefinitionUpdate"
       },
+      "MatterDeletionJobRead": {
+        "properties": {
+          "id": {
+            "type": "string",
+            "format": "uuid",
+            "title": "Id"
+          },
+          "matter_id": {
+            "type": "string",
+            "format": "uuid",
+            "title": "Matter Id"
+          },
+          "tenant_id": {
+            "type": "string",
+            "format": "uuid",
+            "title": "Tenant Id"
+          },
+          "client_id": {
+            "type": "string",
+            "format": "uuid",
+            "title": "Client Id"
+          },
+          "matter_name": {
+            "type": "string",
+            "title": "Matter Name"
+          },
+          "status": {
+            "type": "string",
+            "enum": [
+              "QUEUED",
+              "VALIDATING",
+              "DELETING_SEARCH",
+              "DELETING_ARTIFACTS",
+              "DELETING_DATABASE_ROWS",
+              "COMPLETED",
+              "FAILED"
+            ],
+            "title": "Status"
+          },
+          "workflow_id": {
+            "type": "string",
+            "title": "Workflow Id"
+          },
+          "attempt_count": {
+            "type": "integer",
+            "title": "Attempt Count"
+          },
+          "document_count": {
+            "type": "integer",
+            "title": "Document Count"
+          },
+          "artifact_count": {
+            "type": "integer",
+            "title": "Artifact Count"
+          },
+          "deleted_index_count": {
+            "type": "integer",
+            "title": "Deleted Index Count"
+          },
+          "deleted_artifact_count": {
+            "type": "integer",
+            "title": "Deleted Artifact Count"
+          },
+          "deleted_blob_count": {
+            "type": "integer",
+            "title": "Deleted Blob Count"
+          },
+          "error_message": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Error Message"
+          },
+          "requested_by_user_id": {
+            "type": "string",
+            "format": "uuid",
+            "title": "Requested By User Id"
+          },
+          "started_at": {
+            "anyOf": [
+              {
+                "type": "string",
+                "format": "date-time"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Started At"
+          },
+          "completed_at": {
+            "anyOf": [
+              {
+                "type": "string",
+                "format": "date-time"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Completed At"
+          },
+          "created_at": {
+            "type": "string",
+            "format": "date-time",
+            "title": "Created At"
+          },
+          "updated_at": {
+            "type": "string",
+            "format": "date-time",
+            "title": "Updated At"
+          }
+        },
+        "type": "object",
+        "required": [
+          "id",
+          "matter_id",
+          "tenant_id",
+          "client_id",
+          "matter_name",
+          "status",
+          "workflow_id",
+          "attempt_count",
+          "document_count",
+          "artifact_count",
+          "deleted_index_count",
+          "deleted_artifact_count",
+          "deleted_blob_count",
+          "error_message",
+          "requested_by_user_id",
+          "started_at",
+          "completed_at",
+          "created_at",
+          "updated_at"
+        ],
+        "title": "MatterDeletionJobRead"
+      },
       "MatterDocumentFactRead": {
         "properties": {
           "fact": {
@@ -45446,11 +46196,19 @@
             "title": "Name"
           },
           "status": {
-            "type": "string",
-            "enum": [
-              "ACTIVE",
-              "SUSPENDED",
-              "ARCHIVED"
+            "anyOf": [
+              {
+                "type": "string",
+                "enum": [
+                  "ACTIVE",
+                  "SUSPENDED",
+                  "ARCHIVED"
+                ]
+              },
+              {
+                "type": "string",
+                "const": "DELETING"
+              }
             ],
             "title": "Status"
           },
@@ -50184,7 +50942,8 @@
             "type": "string",
             "enum": [
               "REVIEWER",
-              "RUN"
+              "RUN",
+              "SCORING_RUN"
             ],
             "title": "Source Type"
           },
@@ -50239,6 +50998,29 @@
               }
             ],
             "title": "Status"
+          },
+          "preparation_status": {
+            "type": "string",
+            "enum": [
+              "READY",
+              "AVAILABLE",
+              "PREPARING",
+              "FAILED"
+            ],
+            "title": "Preparation Status",
+            "default": "READY"
+          },
+          "classification_scoring_run_id": {
+            "anyOf": [
+              {
+                "type": "string",
+                "format": "uuid"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Classification Scoring Run Id"
           },
           "label": {
             "type": "string",
@@ -51407,7 +52189,8 @@
               "DEFINITION_ASSESSMENT",
               "CLASSIFICATION_PREDICTIONS",
               "COMPARISON_RESULT",
-              "TASK_BATCH_PARTITION"
+              "TASK_BATCH_PARTITION",
+              "EXPLICIT_DOCUMENTS"
             ],
             "title": "Selection Type"
           },
@@ -54081,6 +54864,239 @@
         ],
         "title": "ReviewProgramEventRead"
       },
+      "ReviewProgramFinalAlignmentCodingRead": {
+        "properties": {
+          "key": {
+            "type": "string",
+            "title": "Key"
+          },
+          "label": {
+            "type": "string",
+            "title": "Label"
+          }
+        },
+        "type": "object",
+        "required": [
+          "key",
+          "label"
+        ],
+        "title": "ReviewProgramFinalAlignmentCodingRead"
+      },
+      "ReviewProgramFinalAlignmentPageRead": {
+        "properties": {
+          "manifest_id": {
+            "type": "string",
+            "format": "uuid",
+            "title": "Manifest Id"
+          },
+          "artifact_id": {
+            "type": "string",
+            "format": "uuid",
+            "title": "Artifact Id"
+          },
+          "manifest_content_hash": {
+            "type": "string",
+            "title": "Manifest Content Hash"
+          },
+          "population_scope": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Population Scope"
+          },
+          "minimum_confidence": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Minimum Confidence"
+          },
+          "profile_a_name": {
+            "type": "string",
+            "title": "Profile A Name"
+          },
+          "profile_b_name": {
+            "type": "string",
+            "title": "Profile B Name"
+          },
+          "total": {
+            "type": "integer",
+            "title": "Total"
+          },
+          "offset": {
+            "type": "integer",
+            "title": "Offset"
+          },
+          "limit": {
+            "type": "integer",
+            "title": "Limit"
+          },
+          "items": {
+            "items": {
+              "$ref": "#/components/schemas/ReviewProgramFinalAlignmentRowRead"
+            },
+            "type": "array",
+            "title": "Items"
+          }
+        },
+        "type": "object",
+        "required": [
+          "manifest_id",
+          "artifact_id",
+          "manifest_content_hash",
+          "population_scope",
+          "minimum_confidence",
+          "profile_a_name",
+          "profile_b_name",
+          "total",
+          "offset",
+          "limit",
+          "items"
+        ],
+        "title": "ReviewProgramFinalAlignmentPageRead"
+      },
+      "ReviewProgramFinalAlignmentRowRead": {
+        "properties": {
+          "matter_document_id": {
+            "type": "string",
+            "format": "uuid",
+            "title": "Matter Document Id"
+          },
+          "collection_item_id": {
+            "type": "string",
+            "format": "uuid",
+            "title": "Collection Item Id"
+          },
+          "scope_ordinal": {
+            "type": "integer",
+            "title": "Scope Ordinal"
+          },
+          "filename": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Filename"
+          },
+          "input_status": {
+            "type": "string",
+            "title": "Input Status"
+          },
+          "classifier_codings": {
+            "items": {
+              "$ref": "#/components/schemas/ReviewProgramFinalAlignmentCodingRead"
+            },
+            "type": "array",
+            "title": "Classifier Codings"
+          },
+          "profile_a_codings": {
+            "items": {
+              "$ref": "#/components/schemas/ReviewProgramFinalAlignmentCodingRead"
+            },
+            "type": "array",
+            "title": "Profile A Codings"
+          },
+          "profile_b_codings": {
+            "items": {
+              "$ref": "#/components/schemas/ReviewProgramFinalAlignmentCodingRead"
+            },
+            "type": "array",
+            "title": "Profile B Codings"
+          },
+          "human_codings": {
+            "items": {
+              "$ref": "#/components/schemas/ReviewProgramFinalAlignmentCodingRead"
+            },
+            "type": "array",
+            "title": "Human Codings"
+          },
+          "alignment_status": {
+            "type": "string",
+            "title": "Alignment Status"
+          },
+          "source_status": {
+            "type": "string",
+            "title": "Source Status"
+          },
+          "confidence_band": {
+            "type": "string",
+            "title": "Confidence Band"
+          },
+          "training_overlap": {
+            "type": "boolean",
+            "title": "Training Overlap"
+          },
+          "label_authority": {
+            "type": "string",
+            "title": "Label Authority"
+          },
+          "family_id": {
+            "anyOf": [
+              {
+                "type": "string",
+                "format": "uuid"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Family Id"
+          },
+          "record_type": {
+            "type": "string",
+            "title": "Record Type"
+          }
+        },
+        "type": "object",
+        "required": [
+          "matter_document_id",
+          "collection_item_id",
+          "scope_ordinal",
+          "filename",
+          "input_status",
+          "classifier_codings",
+          "profile_a_codings",
+          "profile_b_codings",
+          "human_codings",
+          "alignment_status",
+          "source_status",
+          "confidence_band",
+          "training_overlap",
+          "label_authority",
+          "family_id",
+          "record_type"
+        ],
+        "title": "ReviewProgramFinalAlignmentRowRead"
+      },
+      "ReviewProgramNegativePopulationQCInventoryPrepare": {
+        "properties": {
+          "preview_hash": {
+            "type": "string",
+            "maxLength": 64,
+            "minLength": 64,
+            "title": "Preview Hash"
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "preview_hash"
+        ],
+        "title": "ReviewProgramNegativePopulationQCInventoryPrepare"
+      },
       "ReviewProgramNegativePopulationQCSetup": {
         "properties": {
           "preview_hash": {
@@ -54088,6 +55104,35 @@
             "maxLength": 64,
             "minLength": 64,
             "title": "Preview Hash"
+          },
+          "inventory_content_hash": {
+            "type": "string",
+            "maxLength": 64,
+            "minLength": 64,
+            "title": "Inventory Content Hash"
+          },
+          "selected_procedures": {
+            "items": {
+              "type": "string",
+              "enum": [
+                "RANDOM_AUDIT",
+                "NEAR_THRESHOLD",
+                "RECORD_TYPE_CONTROL",
+                "PROCESSING_EXCEPTIONS"
+              ]
+            },
+            "type": "array",
+            "maxItems": 4,
+            "minItems": 1,
+            "title": "Selected Procedures"
+          },
+          "selected_record_types": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array",
+            "maxItems": 100,
+            "title": "Selected Record Types"
           },
           "random_sample_size": {
             "type": "integer",
@@ -54117,13 +55162,6 @@
             "title": "Mandatory Review Limit",
             "default": 100
           },
-          "target_batch_size": {
-            "type": "integer",
-            "maximum": 10000.0,
-            "minimum": 1.0,
-            "title": "Target Batch Size",
-            "default": 100
-          },
           "keep_families_together": {
             "type": "boolean",
             "title": "Keep Families Together",
@@ -54133,9 +55171,99 @@
         "additionalProperties": false,
         "type": "object",
         "required": [
-          "preview_hash"
+          "preview_hash",
+          "inventory_content_hash",
+          "selected_procedures"
         ],
         "title": "ReviewProgramNegativePopulationQCSetup"
+      },
+      "ReviewProgramQAPopulationStatisticsRead": {
+        "properties": {
+          "run_id": {
+            "type": "string",
+            "format": "uuid",
+            "title": "Run Id"
+          },
+          "task_version_id": {
+            "type": "string",
+            "format": "uuid",
+            "title": "Task Version Id"
+          },
+          "document_count": {
+            "type": "integer",
+            "minimum": 0.0,
+            "title": "Document Count"
+          },
+          "both_profiles_document_count": {
+            "type": "integer",
+            "minimum": 0.0,
+            "title": "Both Profiles Document Count"
+          },
+          "one_profile_document_count": {
+            "type": "integer",
+            "minimum": 0.0,
+            "title": "One Profile Document Count"
+          },
+          "fields": {
+            "items": {
+              "$ref": "#/components/schemas/ReviewBatchComparisonFieldOptionRead"
+            },
+            "type": "array",
+            "title": "Fields"
+          },
+          "selected_metadata_definition_id": {
+            "type": "string",
+            "format": "uuid",
+            "title": "Selected Metadata Definition Id"
+          },
+          "available_sources": {
+            "items": {
+              "$ref": "#/components/schemas/ReviewBatchComparisonSourceOptionRead"
+            },
+            "type": "array",
+            "title": "Available Sources"
+          },
+          "sources": {
+            "items": {
+              "$ref": "#/components/schemas/ReviewBatchComparisonSourceOptionRead"
+            },
+            "type": "array",
+            "title": "Sources"
+          },
+          "source_summaries": {
+            "items": {
+              "$ref": "#/components/schemas/ReviewBatchComparisonSourceSummaryRead"
+            },
+            "type": "array",
+            "title": "Source Summaries"
+          },
+          "multi_source_agreement": {
+            "$ref": "#/components/schemas/ReviewBatchMultiSourceAgreementRead"
+          },
+          "pairwise_agreements": {
+            "items": {
+              "$ref": "#/components/schemas/ReviewBatchPairwiseAgreementRead"
+            },
+            "type": "array",
+            "title": "Pairwise Agreements"
+          }
+        },
+        "type": "object",
+        "required": [
+          "run_id",
+          "task_version_id",
+          "document_count",
+          "both_profiles_document_count",
+          "one_profile_document_count",
+          "fields",
+          "selected_metadata_definition_id",
+          "available_sources",
+          "sources",
+          "source_summaries",
+          "multi_source_agreement",
+          "pairwise_agreements"
+        ],
+        "title": "ReviewProgramQAPopulationStatisticsRead"
       },
       "ReviewProgramQASetup": {
         "properties": {

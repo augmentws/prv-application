@@ -529,8 +529,9 @@ def execute_analysis_task_document(
         state,
         required_paths=specification.state_contract.required_paths,
     )
+    engine_key = str(workflow.configuration_snapshot.get("engine_key") or "jev")
     state_characters = len(json.dumps(state, ensure_ascii=False, separators=(",", ":")))
-    if state_characters > settings.analysis_task_decision_max_characters:
+    if engine_key != "jev" and state_characters > settings.analysis_task_decision_max_characters:
         raise MatterAnalysisTaskInputTooLarge(
             actual_characters=state_characters,
             maximum_characters=settings.analysis_task_decision_max_characters,
@@ -568,7 +569,6 @@ def execute_analysis_task_document(
         scope_id=document.id,
         request_input=request_input,
     )
-    engine_key = str(workflow.configuration_snapshot.get("engine_key") or "jev")
     model_key = str(workflow.configuration_snapshot.get("model_key") or skill_version.model_key)
     execution_profile = workflow.configuration_snapshot.get("execution_profile") or {}
     profile_model_policy = execution_profile.get("model_policy") or {}

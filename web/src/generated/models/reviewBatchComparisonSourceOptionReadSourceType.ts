@@ -12,4 +12,5 @@ export type ReviewBatchComparisonSourceOptionReadSourceType = typeof ReviewBatch
 export const ReviewBatchComparisonSourceOptionReadSourceType = {
   REVIEWER: 'REVIEWER',
   RUN: 'RUN',
+  SCORING_RUN: 'SCORING_RUN',
 } as const;

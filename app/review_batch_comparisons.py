@@ -4,7 +4,7 @@ import itertools
 import json
 import uuid
 from collections import Counter, defaultdict
-from collections.abc import Iterator
+from collections.abc import Iterable, Iterator
 from dataclasses import dataclass, field
 from datetime import date, datetime
 from typing import Any
@@ -317,6 +317,7 @@ def build_coding_comparison(
     request: ReviewBatchComparisonRequest,
     source_options: list[ReviewBatchComparisonSourceOptionRead],
     document_count: int,
+    comparison_documents: Iterable[ComparisonDocument] | None = None,
 ) -> ReviewBatchCodingComparisonRead:
     labels = _value_labels(definition)
     source_ids = request.source_ids
@@ -327,12 +328,17 @@ def build_coding_comparison(
     filtered_count = 0
     page_documents: list[ReviewBatchComparisonDocumentRead] = []
 
-    for document in iter_comparison_documents(
-        db,
-        batch_id=batch_id,
-        definition_id=definition.id,
-        source_options=source_options,
-    ):
+    documents = (
+        comparison_documents
+        if comparison_documents is not None
+        else iter_comparison_documents(
+            db,
+            batch_id=batch_id,
+            definition_id=definition.id,
+            source_options=source_options,
+        )
+    )
+    for document in documents:
         for source_id, source in document.sources.items():
             state_counts[source_id][source.state] += 1
             if source.state == "EVALUATED":

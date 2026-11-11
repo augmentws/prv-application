@@ -334,7 +334,11 @@ class Artifact(ArtifactBase):
     client_id: Mapped[uuid.UUID] = mapped_column(Uuid, index=True)
     artifact_class: Mapped[str] = mapped_column(String(30))
     artifact_type: Mapped[str] = mapped_column(String(40))
-    content_blob_id: Mapped[uuid.UUID] = mapped_column(Uuid, ForeignKey("content_blob.id", ondelete="RESTRICT"))
+    content_blob_id: Mapped[uuid.UUID] = mapped_column(
+        Uuid,
+        ForeignKey("content_blob.id", ondelete="RESTRICT"),
+        index=True,
+    )
     content_hash: Mapped[str] = mapped_column(String(64), index=True)
     media_type: Mapped[str] = mapped_column(String(255))
     byte_length: Mapped[int] = mapped_column(BigInteger)
@@ -406,7 +410,10 @@ class ArtifactLineage(ArtifactBase):
         Uuid, ForeignKey("artifact.id", ondelete="CASCADE"), primary_key=True
     )
     source_artifact_id: Mapped[uuid.UUID] = mapped_column(
-        Uuid, ForeignKey("artifact.id", ondelete="RESTRICT"), primary_key=True
+        Uuid,
+        ForeignKey("artifact.id", ondelete="RESTRICT"),
+        primary_key=True,
+        index=True,
     )
     relationship: Mapped[str] = mapped_column(String(40))
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)

@@ -4,7 +4,9 @@ import uuid
 from dbos import DBOS, Queue
 
 from app.review_programs import (
+    fail_review_program_negative_population_qc_inventory,
     fail_review_program_whole_collection_scoring_preparation,
+    materialize_review_program_negative_population_qc_inventory,
     prepare_review_program_whole_collection_scoring,
 )
 
@@ -47,4 +49,60 @@ def review_program_scoring_preparation(review_program_run_id: str, stage_attempt
             stage_attempt_id,
         )
         fail_scoring_preparation(review_program_run_id, stage_attempt_id, str(exc))
+        raise
+
+
+@DBOS.step(
+    name="materialize_review_program_negative_population_qc_inventory",
+    retries_allowed=True,
+    interval_seconds=2,
+    backoff_rate=2,
+    max_attempts=3,
+)
+def prepare_negative_qc_inventory(
+    review_program_run_id: str,
+    stage_attempt_id: str,
+) -> None:
+    materialize_review_program_negative_population_qc_inventory(
+        uuid.UUID(review_program_run_id),
+        uuid.UUID(stage_attempt_id),
+    )
+
+
+@DBOS.step(
+    name="fail_review_program_negative_population_qc_inventory",
+    retries_allowed=True,
+    max_attempts=3,
+)
+def fail_negative_qc_inventory(
+    review_program_run_id: str,
+    stage_attempt_id: str,
+    error_summary: str,
+) -> None:
+    fail_review_program_negative_population_qc_inventory(
+        uuid.UUID(review_program_run_id),
+        uuid.UUID(stage_attempt_id),
+        error_summary,
+    )
+
+
+@DBOS.workflow(name="review_program_negative_qc_inventory_v1")
+def review_program_negative_qc_inventory(
+    review_program_run_id: str,
+    stage_attempt_id: str,
+) -> None:
+    try:
+        prepare_negative_qc_inventory(review_program_run_id, stage_attempt_id)
+    except Exception as exc:
+        logger.exception(
+            "Review Program Negative-population QC inventory failed "
+            "review_program_run_id=%s stage_attempt_id=%s",
+            review_program_run_id,
+            stage_attempt_id,
+        )
+        fail_negative_qc_inventory(
+            review_program_run_id,
+            stage_attempt_id,
+            str(exc),
+        )
         raise

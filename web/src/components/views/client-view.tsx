@@ -8,20 +8,23 @@ import { useCallback, useMemo, type ReactNode } from "react";
 import { toast } from "sonner";
 
 import { DataTable } from "@/components/data-table";
+import { CollectionDeletionStatus, MatterDeletionStatus } from "@/components/deletion-job-status";
 import { CreateCollectionDialog, type CreateCollectionValues } from "@/components/forms/create-collection-dialog";
 import { DeleteCollectionDialog } from "@/components/forms/delete-collection-dialog";
+import { DeleteMatterDialog } from "@/components/forms/delete-matter-dialog";
 import { CreateMatterDialog, type CreateMatterValues } from "@/components/forms/create-matter-dialog";
 import { PageHeader } from "@/components/page-header";
 import { QueryError, TableLoading } from "@/components/query-state";
 import { StatusBadge } from "@/components/status-badge";
 import { Button } from "@/components/ui/button";
-import type { ClientRead, CollectionDeletionJobRead, CollectionRead, EffectivePermissionsRead, MatterRead, MatterTemplateRead, TenantRead } from "@/generated/models";
+import type { ClientRead, CollectionDeletionJobRead, CollectionRead, EffectivePermissionsRead, MatterDeletionJobRead, MatterRead, MatterTemplateRead, TenantRead } from "@/generated/models";
 import { coreApi } from "@/lib/api-client";
 import { collectionHref } from "@/lib/collection-routes";
 import { formatDate } from "@/lib/format";
 
 /** One width per column, shared by the Collections and Matters tables so their columns line up. */
-const COLUMN_SIZES = { name: 400, status: 160, created: 180, open: 140, delete: 52 } as const;
+const COLUMN_SIZES = { name: 400, status: 260, created: 180, open: 140, delete: 52 } as const;
+const DELETION_POLL_INTERVAL_MS = 30_000;
 
 export function ClientView({ clientId }: { clientId: string }) {
   const queryClient = useQueryClient();
@@ -35,13 +38,17 @@ export function ClientView({ clientId }: { clientId: string }) {
   const canCreateCollection = permissionKeys.has("collection.create");
   const canConfigureClient = permissionKeys.has("client.configure");
   const showCollectionDelete = canViewCollections && canConfigureClient;
-  const matters = useQuery({ queryKey: ["matters", clientId], queryFn: () => coreApi<MatterRead[]>(`/v1/clients/${clientId}/matters`) });
+  const matters = useQuery({
+    queryKey: ["matters", clientId],
+    queryFn: () => coreApi<MatterRead[]>(`/v1/clients/${clientId}/matters`),
+    refetchInterval: (query) => query.state.data?.some((matter) => matter.status === "DELETING") ? DELETION_POLL_INTERVAL_MS : false,
+  });
   const templates = useQuery({ queryKey: ["matter-templates", clientId], queryFn: () => coreApi<MatterTemplateRead[]>(`/v1/clients/${clientId}/matter-templates`), enabled: canConfigureClient });
   const collections = useQuery({
     queryKey: ["collections", client.data?.tenant_id, clientId],
     queryFn: () => coreApi<CollectionRead[]>(`/v1/tenants/${client.data!.tenant_id}/clients/${clientId}/collections`),
     enabled: Boolean(client.data) && canViewCollections,
-    refetchInterval: (query) => query.state.data?.some((collection) => collection.status === "DELETING") ? 2_000 : false,
+    refetchInterval: (query) => query.state.data?.some((collection) => collection.status === "DELETING") ? DELETION_POLL_INTERVAL_MS : false,
   });
   const matterMutation = useMutation({
     mutationFn: (values: CreateMatterValues) => coreApi<MatterRead>(`/v1/clients/${clientId}/matters`, { method: "POST", body: JSON.stringify(values) }),
@@ -70,16 +77,29 @@ export function ClientView({ clientId }: { clientId: string }) {
     },
   });
   const deleteCollection = useCallback((collectionId: string) => queueCollectionDeletion(collectionId).then(() => undefined), [queueCollectionDeletion]);
+  const { mutateAsync: queueMatterDeletion } = useMutation({
+    mutationFn: (matterId: string) => coreApi<MatterDeletionJobRead>(`/v1/matters/${matterId}`, { method: "DELETE" }),
+    onSuccess: (job) => {
+      void queryClient.invalidateQueries({ queryKey: ["matters", clientId] });
+      toast.success(`Deletion of ${job.matter_name} was queued.`);
+    },
+  });
+  const deleteMatter = useCallback((matterId: string) => queueMatterDeletion(matterId).then(() => undefined), [queueMatterDeletion]);
   const createMatter = useCallback((values: CreateMatterValues) => matterMutation.mutateAsync(values).then(() => undefined), [matterMutation]);
   const createCollection = useCallback((values: CreateCollectionValues) => collectionMutation.mutateAsync(values).then(() => undefined), [collectionMutation]);
   const matterColumns = useMemo<ColumnDef<MatterRead>[]>(() => [
     { accessorKey: "name", header: "Matter", size: COLUMN_SIZES.name, cell: ({ row }) => <MatterDestinationLink className="font-semibold text-primary hover:underline" clientId={clientId} matter={row.original}>{row.original.name}</MatterDestinationLink> },
-    { accessorKey: "status", header: "Status", size: COLUMN_SIZES.status, cell: ({ row }) => <StatusBadge status={row.original.status} /> },
+    { accessorKey: "status", header: "Status", size: COLUMN_SIZES.status, cell: ({ row }) => row.original.status === "DELETING" && canConfigureClient ? <MatterDeletionStatus matterId={row.original.id} /> : <StatusBadge status={row.original.status} /> },
     { accessorKey: "created_at", header: "Created", size: COLUMN_SIZES.created, cell: ({ row }) => <span className="text-muted-foreground">{formatDate(row.original.created_at)}</span> },
     { id: "open", header: "", size: COLUMN_SIZES.open, cell: ({ row }) => <Button asChild variant="ghost" size="sm"><MatterDestinationLink clientId={clientId} matter={row.original}>Open <ArrowRight /></MatterDestinationLink></Button> },
-    // Matches the Collections table's delete column so both tables' columns line up.
-    ...(showCollectionDelete ? [{ id: "delete-spacer", header: "", size: COLUMN_SIZES.delete, enableResizing: false, cell: () => null } satisfies ColumnDef<MatterRead>] : []),
-  ], [clientId, showCollectionDelete]);
+    ...(canConfigureClient ? [{
+      id: "delete",
+      header: () => <span className="sr-only">Delete</span>,
+      size: COLUMN_SIZES.delete,
+      enableResizing: false,
+      cell: ({ row }) => row.original.status === "DELETING" ? null : <DeleteMatterDialog matterName={row.original.name} onDelete={() => deleteMatter(row.original.id)} />,
+    } satisfies ColumnDef<MatterRead>] : []),
+  ], [canConfigureClient, clientId, deleteMatter]);
   const collectionColumns = useMemo<ColumnDef<CollectionRead>[]>(() => [
     {
       accessorKey: "name",
@@ -92,7 +112,7 @@ export function ClientView({ clientId }: { clientId: string }) {
         </div>
       ),
     },
-    { accessorKey: "status", header: "Status", size: COLUMN_SIZES.status, cell: ({ row }) => <StatusBadge status={row.original.status} /> },
+    { accessorKey: "status", header: "Status", size: COLUMN_SIZES.status, cell: ({ row }) => row.original.status === "DELETING" && showCollectionDelete ? <CollectionDeletionStatus collectionId={row.original.id} /> : <StatusBadge status={row.original.status} /> },
     { accessorKey: "created_at", header: "Created", size: COLUMN_SIZES.created, cell: ({ row }) => <span className="text-muted-foreground">{formatDate(row.original.created_at)}</span> },
     { id: "open", header: "", size: COLUMN_SIZES.open, cell: ({ row }) => <Button asChild variant="ghost" size="sm"><Link href={collectionHref(clientId, row.original.id)}>Open <ArrowRight /></Link></Button> },
     ...(showCollectionDelete ? [{

@@ -66,18 +66,43 @@ from app.review_programs import (
     _action_contract,
     _activate_stage_by_key,
     _alignment_status,
+    _archive_classifier_positive_coverage_children_for_retry,
     _classifier_positive_class_keys,
+    _classifier_positive_coverage_failure_is_tolerable,
+    _classifier_positive_coverage_minimum_confidence,
+    _classifier_positive_coverage_population_count,
+    _classifier_positive_coverage_retry_input,
     _classifier_training_definition_ids,
+    _current_usable_qa_results,
+    _final_alignment_population_ids,
+    _final_alignment_report_requires_recalculation,
+    _final_alignment_source_status,
+    _is_usable_qa_coding_result,
+    _negative_population_qc_failure_is_tolerable,
+    _resume_classifier_positive_coverage_retry,
+    _resume_negative_population_qc_launch_failure,
     _review_program_failure_allows_retry,
     _wilson_interval,
     cancel_review_program_discovery_children,
     link_review_program_child,
+    materialize_review_program_negative_population_qc_inventory,
     project_review_program_classifier_scoring_terminal,
     project_review_program_classifier_training_terminal,
     project_review_program_qa_compilation_terminal,
 )
-from app.review_workflow_templates import FIRST_PASS_REVIEW, get_review_workflow_template
+from app.review_workflow_templates import (
+    FIRST_PASS_REVIEW,
+    FIRST_PASS_REVIEW_V1,
+    get_review_workflow_template,
+)
 from app.reviewer_coding import ReviewerFieldReplacement, append_reviewer_coding_revision
+from app.routers.review_programs import (
+    _alignment_codings,
+    _classifier_population_source_value,
+    _human_population_source_value,
+    _qa_result_field_values,
+)
+from app.schemas import ReviewProgramNegativePopulationQCSetup
 from app.standard_skills import ensure_standard_assessment_skills
 from tests.test_review_batches import add_documents
 
@@ -252,6 +277,8 @@ def test_first_pass_template_contract_locks_batching_policy() -> None:
     assert {stage.key for stage in template.stages if stage.batching_policy == "AD_HOC_BATCH"} == {
         "DEFINITION_ASSESSMENT",
         "DISAGREEMENT_REVIEW",
+        "CLASSIFIER_POSITIVE_COVERAGE",
+        "NO_CODE_QC",
     }
     assert {stage.key for stage in template.stages if stage.batching_policy == "WHOLE_MATTER"} == {
         "WHOLE_COLLECTION_SCORING"
@@ -259,6 +286,11 @@ def test_first_pass_template_contract_locks_batching_policy() -> None:
     discovery = next(stage for stage in template.stages if stage.key == "DISCOVERY_QA")
     assert discovery.batching_policy == "PARTITIONED_SET"
     assert discovery.requires_human_gate is True
+    legacy = get_review_workflow_template("FIRST_PASS_REVIEW", version=1)
+    assert legacy is FIRST_PASS_REVIEW_V1
+    assert next(
+        stage for stage in legacy.stages if stage.key == "CLASSIFIER_POSITIVE_COVERAGE"
+    ).batching_policy == "PARTITIONED_SET"
 
 
 def test_review_program_permissions_are_assigned_to_expected_roles() -> None:
@@ -281,6 +313,8 @@ def test_create_multiple_independent_programs_from_one_template(
     assert {stage["key"] for stage in template["stages"] if stage["batching_policy"] == "AD_HOC_BATCH"} == {
         "DEFINITION_ASSESSMENT",
         "DISAGREEMENT_REVIEW",
+        "CLASSIFIER_POSITIVE_COVERAGE",
+        "NO_CODE_QC",
     }
 
     created_programs = []
@@ -479,7 +513,7 @@ def test_whole_collection_scoring_completion_advances_to_coverage_gate(
     assert coverage_action["decision_context"]["whole_collection_scoring"]["state"] == ("COMPLETED")
     coverage_plan = coverage_action["decision_context"]["coverage_plan"]
     assert coverage_plan["scope_type"] == "CLASSIFIER_POSITIVE_UNCOVERED"
-    assert coverage_plan["batching_policy"] == "PARTITIONED_SET"
+    assert coverage_plan["batching_policy"] == "AD_HOC_BATCH"
     assert (
         coverage_plan["maximum_candidate_model_document_count"]
         == (scoring_summary["aggregate_model_document_counts"]["scored_document_count"])
@@ -509,6 +543,85 @@ def test_classifier_positive_class_keys_respects_binary_positive_mapping() -> No
     )
     with pytest.raises(ReviewProgramError, match="positive-class provenance"):
         _classifier_positive_class_keys(missing_mapping, ["responsive"])
+
+
+def test_classifier_positive_coverage_minimum_confidence_validation() -> None:
+    assert _classifier_positive_coverage_minimum_confidence(0.7) == 0.7
+    assert _classifier_positive_coverage_minimum_confidence("0.85") == 0.85
+    with pytest.raises(ReviewProgramError, match="number from 0 to 1"):
+        _classifier_positive_coverage_minimum_confidence(1.01)
+    with pytest.raises(ReviewProgramError, match="number from 0 to 1"):
+        _classifier_positive_coverage_minimum_confidence(True)
+
+
+def test_classifier_positive_coverage_failure_tolerance_uses_original_population() -> None:
+    progress = {
+        "classifier_positive_coverage": {
+            "uncovered_document_count": 3,
+            "coverage_population_document_count": 924,
+        },
+        "classifier_positive_coverage_attempts": [
+            {"uncovered_document_count": 924},
+        ],
+    }
+
+    population = _classifier_positive_coverage_population_count(progress)
+
+    assert population == 924
+    assert _classifier_positive_coverage_failure_is_tolerable(
+        unresolved_document_count=3,
+        population_document_count=population,
+    )
+    assert not _classifier_positive_coverage_failure_is_tolerable(
+        unresolved_document_count=5,
+        population_document_count=population,
+    )
+    assert not _classifier_positive_coverage_failure_is_tolerable(
+        unresolved_document_count=1,
+        population_document_count=200,
+    )
+
+
+def test_classifier_positive_coverage_reuses_complete_partial_coding_results() -> None:
+    complete = SimpleNamespace(status="COMPLETED", coverage={}, source_content_hash="source-1")
+    evidence_partial = SimpleNamespace(
+        status="PARTIAL",
+        source_content_hash="source-1",
+        coverage={
+            "input_complete": True,
+            "question_complete": True,
+            "evidence_complete": False,
+        },
+    )
+    question_partial = SimpleNamespace(
+        status="PARTIAL",
+        source_content_hash="source-1",
+        coverage={
+            "input_complete": True,
+            "question_complete": False,
+            "evidence_complete": False,
+        },
+    )
+
+    assert _is_usable_qa_coding_result(complete)
+    assert _is_usable_qa_coding_result(evidence_partial)
+    assert not _is_usable_qa_coding_result(question_partial)
+    complete_profile_id = uuid.uuid4()
+    evidence_partial_profile_id = uuid.uuid4()
+    question_partial_profile_id = uuid.uuid4()
+    current = _current_usable_qa_results(
+        {
+            complete_profile_id: complete,
+            evidence_partial_profile_id: evidence_partial,
+            question_partial_profile_id: question_partial,
+        },
+        expected_source_hash="source-1",
+    )
+    assert set(current) == {complete_profile_id, evidence_partial_profile_id}
+    assert _current_usable_qa_results(
+        {complete_profile_id: complete},
+        expected_source_hash="different-source",
+    ) == {}
 
 
 def test_classifier_training_definition_ids_use_frozen_target_selection() -> None:
@@ -569,6 +682,216 @@ def test_classifier_training_can_be_manually_retried_after_cause_is_corrected() 
     )
 
 
+def test_classifier_positive_coverage_retry_archives_prior_batches(
+    client: TestClient,
+    root_token: str,
+    root_admin,
+) -> None:
+    _, _, matter, token = review_program_workspace(client, root_token)
+    program_response = client.post(
+        f"/v1/matters/{matter['id']}/review-programs",
+        headers=auth(token),
+        json={"key": "coverage-retry-archive", "name": "Coverage retry archive"},
+    )
+    assert program_response.status_code == 201, program_response.text
+    program_id = uuid.UUID(program_response.json()["id"])
+    run_response = client.post(
+        f"/v1/matters/{matter['id']}/review-programs/{program_id}/runs",
+        headers=auth(token),
+        json={"idempotency_key": "coverage-retry-archive-run"},
+    )
+    assert run_response.status_code == 201, run_response.text
+
+    with TestingSessionLocal() as db:
+        run = db.get(ReviewProgramRun, uuid.UUID(run_response.json()["id"]))
+        assert run is not None
+        attempt = db.scalar(
+            select(ReviewProgramStageAttempt).where(ReviewProgramStageAttempt.run_id == run.id)
+        )
+        assert attempt is not None
+        batches = [
+            ReviewBatch(
+                matter_id=uuid.UUID(matter["id"]),
+                name=f"Coverage attempt {ordinal}",
+                selection_type="EXPLICIT_DOCUMENTS",
+                selection_definition={"purpose": "CLASSIFIER_POSITIVE_QA_COVERAGE"},
+                reviewer_value_visibility="OWN_VALUES",
+                status="READY",
+                search_status="NOT_CONFIGURED",
+                workflow_id=f"test-coverage-retry:{uuid.uuid4()}",
+                document_count=0,
+                created_by_user_id=root_admin.id,
+            )
+            for ordinal in range(1, 3)
+        ]
+        db.add_all(batches)
+        db.flush()
+        db.add_all(
+            ReviewProgramChild(
+                run_id=run.id,
+                stage_attempt_id=attempt.id,
+                purpose="CLASSIFIER_POSITIVE_COVERAGE_BATCH",
+                child_type="REVIEW_BATCH",
+                child_id=batch.id,
+                status="READY",
+                derivation_key=f"coverage-retry-batch:{batch.id}",
+                context={"batching_policy": "AD_HOC_BATCH"},
+            )
+            for batch in batches
+        )
+        db.flush()
+
+        archived_ids = _archive_classifier_positive_coverage_children_for_retry(db, run=run)
+
+        assert set(archived_ids) == {batch.id for batch in batches}
+        assert all(batch.status == "ARCHIVED" for batch in batches)
+        children = list(
+            db.scalars(
+                select(ReviewProgramChild).where(
+                    ReviewProgramChild.run_id == run.id,
+                    ReviewProgramChild.purpose == "CLASSIFIER_POSITIVE_COVERAGE_BATCH",
+                )
+            )
+        )
+        assert all(child.status == "ARCHIVED" for child in children)
+        assert all(
+            child.context["archive_reason"] == "CLASSIFIER_POSITIVE_COVERAGE_RETRY"
+            for child in children
+        )
+
+
+def test_negative_population_qc_launch_retry_reuses_ready_batch(
+    client: TestClient,
+    root_token: str,
+    root_admin,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _, _, matter, token = review_program_workspace(client, root_token)
+    program_response = client.post(
+        f"/v1/matters/{matter['id']}/review-programs",
+        headers=auth(token),
+        json={"key": "negative-qc-retry", "name": "Negative QC retry"},
+    )
+    assert program_response.status_code == 201, program_response.text
+    run_response = client.post(
+        f"/v1/matters/{matter['id']}/review-programs/{program_response.json()['id']}/runs",
+        headers=auth(token),
+        json={"idempotency_key": "negative-qc-retry-run"},
+    )
+    assert run_response.status_code == 201, run_response.text
+    captured = {}
+    monkeypatch.setattr(
+        "app.review_programs.current_job_execution",
+        lambda *args, **kwargs: SimpleNamespace(status="COMPLETED"),
+    )
+    monkeypatch.setattr(
+        "app.review_programs.project_review_program_classifier_positive_coverage_batch_terminal",
+        lambda db, *, batch, workflow: captured.update(batch=batch, workflow=workflow),
+    )
+
+    with TestingSessionLocal() as db:
+        run = db.get(ReviewProgramRun, uuid.UUID(run_response.json()["id"]))
+        program = db.get(ReviewProgram, uuid.UUID(program_response.json()["id"]))
+        assert run is not None and program is not None
+        attempt = db.scalar(
+            select(ReviewProgramStageAttempt).where(
+                ReviewProgramStageAttempt.run_id == run.id
+            )
+        )
+        assert attempt is not None
+        run.status = "FAILED"
+        run.current_stage = "NO_CODE_QC"
+        run.current_stage_ordinal = 17
+        run.failure_code = "NO_CODE_QC_LAUNCH_FAILED"
+        run.failure_summary = "Legacy task rejected ad hoc execution"
+        run.failure_retriable = True
+        attempt.stage_key = "NO_CODE_QC"
+        attempt.stage_ordinal = 17
+        attempt.status = "FAILED"
+        attempt.error_code = run.failure_code
+        batch = ReviewBatch(
+            matter_id=uuid.UUID(matter["id"]),
+            name="Negative-population QC",
+            selection_type="EXPLICIT_DOCUMENTS",
+            selection_definition={"purpose": "NEGATIVE_POPULATION_QC"},
+            reviewer_value_visibility="OWN_VALUES",
+            status="READY",
+            search_status="NOT_CONFIGURED",
+            workflow_id=f"negative-qc-retry:{uuid.uuid4()}",
+            document_count=0,
+            created_by_user_id=root_admin.id,
+        )
+        db.add(batch)
+        db.flush()
+        db.add(
+            ReviewProgramChild(
+                run_id=run.id,
+                stage_attempt_id=attempt.id,
+                purpose="NEGATIVE_POPULATION_QC_BATCH",
+                child_type="REVIEW_BATCH",
+                child_id=batch.id,
+                status="READY",
+                derivation_key=f"negative-qc-retry:{attempt.id}",
+                context={"batching_policy": "AD_HOC_BATCH"},
+            )
+        )
+        db.flush()
+
+        resumed = _resume_negative_population_qc_launch_failure(
+            db,
+            program=program,
+            run=run,
+        )
+
+        assert resumed is True
+        assert run.status == "RUNNING"
+        assert run.failure_code is None
+        assert attempt.status == "RUNNING"
+        assert captured["batch"].id == batch.id
+
+
+def test_classifier_positive_coverage_retry_reuses_approved_input(monkeypatch) -> None:
+    action_id = uuid.uuid4()
+    action = SimpleNamespace(
+        id=action_id,
+        status="OPEN",
+        stage_key="CLASSIFIER_POSITIVE_COVERAGE",
+        action_type="CLASSIFIER_POSITIVE_COVERAGE",
+        preview_hash="preview-hash",
+    )
+    run = SimpleNamespace(
+        current_stage="CLASSIFIER_POSITIVE_COVERAGE",
+        status="WAITING_FOR_USER",
+        pending_action_id=action_id,
+        progress_summary={
+            "classifier_positive_coverage_state": "RETRYING",
+            "classifier_positive_coverage_attempts": [
+                {"attempt": 1, "minimum_confidence": 0.7},
+                {"attempt": 2, "minimum_confidence": 0.85},
+            ],
+        },
+    )
+    captured = {}
+
+    def resolve_action(_db, **kwargs):
+        captured.update(kwargs)
+
+    monkeypatch.setattr("app.review_programs.resolve_review_program_action", resolve_action)
+    db = SimpleNamespace(get=lambda model, identifier: action if identifier == action_id else None)
+
+    resumed = _resume_classifier_positive_coverage_retry(
+        db,
+        program=SimpleNamespace(),
+        run=run,
+        actor=SimpleNamespace(),
+    )
+
+    assert resumed is True
+    assert captured["choice_key"] == "RUN_COVERAGE"
+    assert captured["input_payload"] == {"minimum_confidence": 0.85}
+    assert _classifier_positive_coverage_retry_input({}) == {"minimum_confidence": 0.5}
+
+
 def test_final_alignment_status_distinguishes_agreement_and_missing_coverage() -> None:
     responsive = {"responsive:true"}
     privilege = {"privilege:true"}
@@ -580,6 +903,159 @@ def test_final_alignment_status_distinguishes_agreement_and_missing_coverage() -
     assert _alignment_status(responsive, responsive, None) == "INCOMPLETE"
 
 
+def test_final_alignment_source_status_separates_partial_from_source_mismatch() -> None:
+    profile_id = uuid.uuid4()
+    matching = SimpleNamespace(source_content_hash="current")
+    mismatching = SimpleNamespace(source_content_hash="older")
+
+    assert _final_alignment_source_status(
+        source_hash="current",
+        document_results={profile_id: matching},
+        current_results={profile_id: matching},
+        required_profile_count=2,
+    ) == "PARTIAL_OR_MISSING_PROFILE"
+    assert _final_alignment_source_status(
+        source_hash="current",
+        document_results={profile_id: mismatching},
+        current_results={},
+        required_profile_count=2,
+    ) == "SOURCE_VERSION_MISMATCH"
+    assert _final_alignment_source_status(
+        source_hash="current",
+        document_results={},
+        current_results={},
+        required_profile_count=2,
+    ) == "MISSING_QA"
+
+
+def test_final_alignment_population_uses_selected_coverage_threshold() -> None:
+    above = uuid.uuid4()
+    at = uuid.uuid4()
+    below = uuid.uuid4()
+    negative = uuid.uuid4()
+    unavailable = uuid.uuid4()
+
+    assert _final_alignment_population_ids(
+        {
+            above: {"issues": {"issue:true"}, "maximum_probability": 0.91},
+            at: {"issues": {"issue:true"}, "maximum_probability": 0.85},
+            below: {"issues": {"issue:true"}, "maximum_probability": 0.849},
+            negative: {"issues": set(), "maximum_probability": 0.99},
+            unavailable: {"issues": {"issue:true"}, "maximum_probability": None},
+        },
+        minimum_confidence=0.85,
+    ) == {above, at}
+
+
+def test_final_alignment_recalculation_is_a_one_time_upgrade() -> None:
+    historical_run = SimpleNamespace(
+        progress_summary={"final_alignment": {"state": "COMPLETED"}}
+    )
+    upgraded_run = SimpleNamespace(
+        progress_summary={
+            "final_alignment": {
+                "state": "COMPLETED",
+                "population_scope": "CLASSIFIER_POSITIVE_AT_OR_ABOVE_COVERAGE_THRESHOLD",
+            }
+        }
+    )
+    empty_run = SimpleNamespace(progress_summary={})
+
+    assert _final_alignment_report_requires_recalculation(historical_run) is True
+    assert _final_alignment_report_requires_recalculation(upgraded_run) is False
+    assert _final_alignment_report_requires_recalculation(empty_run) is False
+
+
+def test_final_alignment_codings_translate_frozen_keys_to_labels() -> None:
+    codings = _alignment_codings(
+        '["insurance_topics:reform","responsiveness:true"]',
+        issue_labels={
+            "insurance_topics:reform": "Insurance topics: Reform",
+            "responsiveness:true": "Responsiveness: Yes",
+        },
+    )
+
+    assert [item.model_dump() for item in codings] == [
+        {"key": "insurance_topics:reform", "label": "Insurance topics: Reform"},
+        {"key": "responsiveness:true", "label": "Responsiveness: Yes"},
+    ]
+
+
+def test_qa_population_statistics_extracts_selected_field_values() -> None:
+    result = SimpleNamespace(
+        recommendations={
+            "reform": {
+                "matched": True,
+                "metadata_definition_key": "insurance_topics",
+                "value": "reform",
+                "confidence": 0.91,
+            },
+            "duplicate": {
+                "matched": True,
+                "metadata_definition_key": "insurance_topics",
+                "value": "reform",
+                "confidence": 0.87,
+            },
+            "other_field": {
+                "matched": True,
+                "metadata_definition_key": "privilege",
+                "value": True,
+            },
+            "not_selected": {
+                "matched": False,
+                "metadata_definition_key": "insurance_topics",
+                "value": "operations",
+            },
+        }
+    )
+
+    value_keys, values, confidence = _qa_result_field_values(result, "insurance_topics")
+
+    assert value_keys == ("reform",)
+    assert values == ("reform",)
+    assert confidence == 0.91
+
+
+def test_qa_population_statistics_adds_classifier_and_human_sources() -> None:
+    document_id = uuid.uuid4()
+    classifier = _classifier_population_source_value(
+        {
+            "statuses": ["SUCCESS"],
+            "abstained": False,
+            "issues": {"insurance_topics:reform", "privilege:true"},
+            "maximum_candidate_probability": 0.93,
+            "field_results": {
+                "insurance_topics": {
+                    "statuses": ["SUCCESS"],
+                    "abstained": False,
+                    "issues": {"reform"},
+                    "maximum_candidate_probability": 0.93,
+                },
+                "privilege": {
+                    "statuses": ["SUCCESS"],
+                    "abstained": False,
+                    "issues": {"true"},
+                    "maximum_candidate_probability": 0.99,
+                },
+            },
+        },
+        "insurance_topics",
+    )
+    human = _human_population_source_value(
+        {document_id: {"insurance_topics:operations", "privilege:false"}},
+        document_id,
+        "insurance_topics",
+    )
+    unavailable_human = _human_population_source_value({}, document_id, "insurance_topics")
+
+    assert classifier.state == "EVALUATED"
+    assert classifier.value_keys == ("reform",)
+    assert classifier.top_confidence == 0.93
+    assert human.state == "EVALUATED"
+    assert human.value_keys == ("operations",)
+    assert unavailable_human.state == "NOT_EVALUATED"
+
+
 def test_negative_population_qc_gate_and_random_audit_interval() -> None:
     assert "NEGATIVE_POPULATION_QC_QA_PROFILE" in _QA_COVERAGE_PROFILE_PURPOSES
     stage = next(item for item in FIRST_PASS_REVIEW.stages if item.key == "NO_CODE_QC")
@@ -589,7 +1065,8 @@ def test_negative_population_qc_gate_and_random_audit_interval() -> None:
         negative_qc_state="",
     )
     assert title == "Configure Negative-population QC"
-    assert "random-audit" in explanation
+    assert "calculated no-code populations" in explanation
+    assert "Zero-count procedures cannot be launched" in explanation
     assert [choice["key"] for choice in choices] == ["START_QC", "STOP"]
 
     report_title, _, report_choices = _action_contract(
@@ -626,6 +1103,90 @@ def test_negative_population_qc_gate_and_random_audit_interval() -> None:
     assert interval is not None
     assert interval[0] < 0.05 < interval[1]
     assert _wilson_interval(0, 0) is None
+    assert _negative_population_qc_failure_is_tolerable(
+        unresolved_document_count=1,
+        population_document_count=300,
+    )
+    assert not _negative_population_qc_failure_is_tolerable(
+        unresolved_document_count=2,
+        population_document_count=300,
+    )
+
+
+def test_superseded_negative_population_qc_inventory_work_is_a_no_op(
+    client: TestClient,
+    root_token: str,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _, _, matter, token = review_program_workspace(client, root_token)
+    created = client.post(
+        f"/v1/matters/{matter['id']}/review-programs",
+        headers=auth(token),
+        json={"key": "stale-negative-qc", "name": "Stale negative QC"},
+    )
+    assert created.status_code == 201, created.text
+    started = client.post(
+        f"/v1/matters/{matter['id']}/review-programs/{created.json()['id']}/runs",
+        headers=auth(token),
+        json={"idempotency_key": "stale-negative-qc"},
+    )
+    assert started.status_code == 201, started.text
+    run_id = uuid.UUID(started.json()["id"])
+    with TestingSessionLocal() as db:
+        attempt = db.scalar(
+            select(ReviewProgramStageAttempt).where(
+                ReviewProgramStageAttempt.run_id == run_id
+            )
+        )
+        assert attempt is not None
+        attempt_id = attempt.id
+
+    monkeypatch.setattr("app.database.SessionLocal", TestingSessionLocal)
+    materialize_review_program_negative_population_qc_inventory(run_id, attempt_id)
+
+
+def test_negative_population_qc_setup_requires_explicit_selected_procedures() -> None:
+    payload = ReviewProgramNegativePopulationQCSetup.model_validate(
+        {
+            "preview_hash": "a" * 64,
+            "inventory_content_hash": "b" * 64,
+            "selected_procedures": ["RANDOM_AUDIT"],
+            "random_sample_size": 200,
+            "near_threshold_sample_size": 0,
+            "cohort_control_sample_size": 0,
+            "mandatory_review_limit": 0,
+        }
+    )
+    assert payload.selected_procedures == ["RANDOM_AUDIT"]
+
+    with pytest.raises(ValueError, match="requires a sample size"):
+        ReviewProgramNegativePopulationQCSetup.model_validate(
+            {
+                "preview_hash": "a" * 64,
+                "inventory_content_hash": "b" * 64,
+                "selected_procedures": ["NEAR_THRESHOLD"],
+                "random_sample_size": 0,
+                "near_threshold_sample_size": 0,
+                "cohort_control_sample_size": 0,
+                "mandatory_review_limit": 0,
+            }
+        )
+
+
+def test_negative_population_qc_record_types_require_record_type_control() -> None:
+    with pytest.raises(ValueError, match="Record types may be selected only"):
+        ReviewProgramNegativePopulationQCSetup.model_validate(
+            {
+                "preview_hash": "a" * 64,
+                "inventory_content_hash": "b" * 64,
+                "selected_procedures": ["RANDOM_AUDIT"],
+                "selected_record_types": ["EMAIL"],
+                "random_sample_size": 1,
+                "near_threshold_sample_size": 0,
+                "cohort_control_sample_size": 0,
+                "mandatory_review_limit": 0,
+            }
+        )
 
 
 def test_completion_freezes_report_and_closes_run(
@@ -1184,6 +1745,10 @@ def test_synthetic_run_advances_waits_resumes_retries_reconciles_and_cancels(
         task_version = db.get(MatterAnalysisTaskVersion, uuid.UUID(setup["task_version_id"]))
         workflow = db.get(WorkflowRun, uuid.UUID(setup["compiler_workflow_run_id"]))
         assert task_version is not None and workflow is not None
+        assert task_version.scope_policy == {
+            "allowed_modes": ["PARTITIONED_SET", "AD_HOC_BATCH"],
+            "default_mode": "PARTITIONED_SET",
+        }
         task_version.compilation_status = "READY"
         task_version.decision_specification = {}
         task_version.specification_content_hash = "b" * 64
@@ -1598,6 +2163,10 @@ def test_synthetic_run_advances_waits_resumes_retries_reconciles_and_cancels(
     assert support_state.json()["status"] == "WAITING_FOR_USER"
     assert support_state.json()["current_stage"] == "ISSUE_SUPPORT_DECISION"
     analysis = support_state.json()["progress_summary"]["discovery_analysis"]
+    assert len(analysis["source_batches"]) == analysis["batch_count"]
+    assert all(item["id"] and item["name"] for item in analysis["source_batches"])
+    assert len(analysis["execution_profiles"]) == 2
+    assert all(item["name"] and item["resolved_model"] for item in analysis["execution_profiles"])
     assert analysis["overall"] == {
         "exact_count": 0,
         "partial_count": 0,

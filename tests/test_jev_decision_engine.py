@@ -11,13 +11,17 @@ from typing import Any
 
 import httpx2
 import pytest
-from typesafe_sdk import Choice, Noul, Score, TypeSafeRateLimitError
+from typesafe_sdk import Choice, Noul, Score, TypeSafeAPIError, TypeSafeRateLimitError
 
 from app.config import Settings
 from app.decision_engine import DecisionEngineProviderError, DecisionRequest
 from app.decision_specifications import DecisionSpecification
 from app.jev_decision_engine import (
     TypeSafeJevDecisionEngine,
+    _minimum_window_target_tokens,
+    _payload_characters,
+    _payload_tokens,
+    _window_states,
     build_decision_engine_registry,
     get_shared_decision_engine_registry,
 )
@@ -211,6 +215,157 @@ def test_jev_adapter_translates_questions_and_preserves_provider_semantics() -> 
         "http_status": 200,
         "typesafe_request_id": "req_123",
     }
+
+
+def test_jev_adapter_partitions_only_the_document_and_aggregates_typed_answers() -> None:
+    request = _request().model_copy(
+        update={
+            "state": {
+                **_request().state,
+                "document": {
+                    "paragraphs": [
+                        {"paragraph_id": f"¶{index}", "text": character * 7_000}
+                        for index, character in enumerate(("A", "B", "C"), start=1)
+                    ]
+                },
+            }
+        }
+    )
+    states = _window_states(request, target_characters=10_000, maximum_windows=128)
+    assert len(states) >= 3
+    responses = []
+    for index in range(len(states)):
+        response = _response()
+        response.request_id = f"req_window_{index + 1}"
+        response.raw_http_response.headers["x-typesafe-request-id"] = response.request_id
+        response.answers = {**response.answers}
+        response.answers["privilege.legal_advice"] = {
+            "type": "noul",
+            "noul": (index + 1) / len(states),
+        }
+        response.answers["issue.responsiveness"] = {
+            **response.answers["issue.responsiveness"],
+            "confidence": (index + 1) / len(states),
+        }
+        response.answers["issue.strength"] = {
+            **response.answers["issue.strength"],
+            "score": float(index),
+        }
+        responses.append(response)
+    fake_client = _FakeClient(responses)
+    engine = TypeSafeJevDecisionEngine(
+        Settings(
+            typesafe_api_key="secret",
+            typesafe_request_target_characters=10_000,
+        ),
+        client_factory=lambda **_: _FakeClientContext(fake_client),
+        limiter=_FakeLimiter(),  # type: ignore[arg-type]
+    )
+
+    envelope = asyncio.run(engine.evaluate(request))
+
+    assert len(fake_client.calls) == len(states)
+    assert all(set(call["questions"]) == set(request.questions) for call in fake_client.calls)
+    assert all(call["state"]["matter"] == request.state["matter"] for call in fake_client.calls)
+    assert envelope.answers["privilege.legal_advice"].noul == 1.0  # type: ignore[union-attr]
+    assert envelope.answers["issue.responsiveness"].confidence == 1.0  # type: ignore[union-attr]
+    assert envelope.answers["issue.strength"].score == float(len(states) - 1)  # type: ignore[union-attr]
+    assert envelope.usage.request_count == len(states)
+    assert envelope.provider_metadata["windowed"] is True
+    assert envelope.provider_metadata["window_count"] == len(states)
+
+
+def test_jev_document_windows_keep_duplicate_representations_in_lockstep() -> None:
+    source_text = "A" * 60_000
+    request = _request().model_copy(
+        update={
+            "state": {
+                **_request().state,
+                "document": {
+                    "text": source_text,
+                    "paragraphs": [{"paragraph_id": "¶1", "text": source_text}],
+                },
+            }
+        }
+    )
+
+    states = _window_states(request, target_characters=10_000, maximum_windows=128)
+
+    assert 1 < len(states) < 128
+    assert all(len(state["document"]["text"]) < len(source_text) for state in states)
+    assert all(
+        sum(len(paragraph["text"]) for paragraph in state["document"]["paragraphs"])
+        < len(source_text)
+        for state in states
+    )
+    assert all(_payload_characters(request, state=state) <= 11_000 for state in states)
+
+
+def test_jev_document_windows_enforce_token_target_for_dense_text() -> None:
+    request = _request().model_copy(
+        update={
+            "state": {
+                **_request().state,
+                "document": {"text": "\x01Ä\n" * 5_000},
+            }
+        }
+    )
+
+    states = _window_states(
+        request,
+        target_characters=60_000,
+        target_tokens=1_000,
+        maximum_windows=128,
+    )
+
+    assert len(states) > 1
+    assert all(_payload_tokens(request, state=state) <= 1_000 for state in states)
+
+
+def test_jev_adapter_refines_document_after_provider_max_tokens_error() -> None:
+    request = _request().model_copy(
+        update={
+            "state": {
+                **_request().state,
+                "document": {
+                    "paragraphs": [
+                        {"paragraph_id": f"¶{index}", "text": character * 7_000}
+                        for index, character in enumerate(("A", "B", "C"), start=1)
+                    ]
+                },
+            }
+        }
+    )
+    refined_target = max(10_000, _payload_characters(request) // 2)
+    refined_target_tokens = max(_minimum_window_target_tokens(request), _payload_tokens(request) // 2)
+    refined_states = _window_states(
+        request,
+        target_characters=refined_target,
+        target_tokens=refined_target_tokens,
+        maximum_windows=128,
+    )
+    provider_error = TypeSafeAPIError(
+        400,
+        {"detail": {"error_type": "max_tokens_exceeded"}},
+        httpx2.Headers({"x-typesafe-request-id": "req_oversized"}),
+    )
+    fake_client = _FakeClient([provider_error, *[_response() for _ in refined_states]])
+    engine = TypeSafeJevDecisionEngine(
+        Settings(
+            typesafe_api_key="secret",
+            typesafe_request_target_characters=100_000,
+            typesafe_request_target_tokens=100_000,
+        ),
+        client_factory=lambda **_: _FakeClientContext(fake_client),
+        limiter=_FakeLimiter(),  # type: ignore[arg-type]
+    )
+
+    envelope = asyncio.run(engine.evaluate(request))
+
+    assert len(fake_client.calls) == 1 + len(refined_states)
+    assert len(fake_client.calls[0]["state"]["document"]["paragraphs"]) == 3
+    assert all(set(call["questions"]) == set(request.questions) for call in fake_client.calls[1:])
+    assert envelope.provider_metadata["windowed"] is True
 
 
 def test_jev_adapter_retries_429_and_reports_attempt_count() -> None:

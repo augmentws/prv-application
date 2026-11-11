@@ -13,6 +13,7 @@ from concurrent.futures import FIRST_COMPLETED, Future, ThreadPoolExecutor, wait
 from dataclasses import asdict, dataclass, field, replace
 from datetime import datetime, timezone
 from email import policy
+from fnmatch import fnmatchcase
 from pathlib import Path, PurePosixPath
 from typing import Any
 
@@ -26,6 +27,7 @@ EMAIL_SUBJECT_MAX_LENGTH = 10000
 EMAIL_MESSAGE_ID_MAX_LENGTH = 1000
 EMAIL_RECIPIENT_VALUE_MAX_LENGTH = 500
 EMAIL_RECIPIENTS_MAX_LENGTH = 10000
+SUPPORTED_RECORD_TYPES = ("EMAIL", "FILE", "CHAT", "TRANSCRIPT", "OTHER")
 
 
 @dataclass
@@ -40,6 +42,10 @@ class ImportReport:
     containers_uploaded: int = 0
     items_created: int = 0
     items_existing: int = 0
+    items_excluded: int = 0
+    excluded_by_record_type: dict[str, int] = field(default_factory=dict)
+    excluded_by_mime_type: dict[str, int] = field(default_factory=dict)
+    items_excluded_due_to_parent: int = 0
     bytes_submitted: int = 0
     failures: list[ImportFailure] = field(default_factory=list)
 
@@ -163,6 +169,36 @@ def _bounded_source_id(value: str) -> str:
     return f"{value[:478]}-{digest}"
 
 
+def original_mime_type(item: ImportItem) -> str:
+    """Return the native document MIME type, preferring its original filename."""
+    guessed_type, _ = mimetypes.guess_type(item.original_filename, strict=False)
+    media_type = guessed_type or item.media_type or "application/octet-stream"
+    return media_type.partition(";")[0].strip().casefold()
+
+
+def mime_type_matches(item: ImportItem, patterns: Iterable[str]) -> bool:
+    """Match a document's native MIME type against case-insensitive shell patterns."""
+    media_type = original_mime_type(item)
+    return any(
+        fnmatchcase(media_type, pattern.strip().casefold())
+        for pattern in patterns
+        if pattern.strip()
+    )
+
+
+def normalize_record_types(values: Iterable[str]) -> frozenset[str]:
+    record_types = frozenset(value.strip().upper() for value in values if value.strip())
+    invalid = sorted(record_types.difference(SUPPORTED_RECORD_TYPES))
+    if invalid:
+        raise ValueError(
+            "Unsupported record type: "
+            + ", ".join(invalid)
+            + ". Expected one of: "
+            + ", ".join(SUPPORTED_RECORD_TYPES)
+        )
+    return record_types
+
+
 class BaseImporter:
     """Dataset-neutral orchestration for Artifact Service collection imports."""
 
@@ -176,6 +212,9 @@ class BaseImporter:
         collection_name: str,
         collection_description: str | None = None,
         include_attachments: bool = True,
+        include_record_types: Iterable[str] = (),
+        exclude_mime_types: Iterable[str] = (),
+        store_source_containers: bool = False,
         workers: int = 1,
         progress: Callable[[str], None] | None = None,
     ) -> None:
@@ -188,6 +227,13 @@ class BaseImporter:
         self.collection_name = collection_name
         self.collection_description = collection_description
         self.include_attachments = include_attachments
+        self.include_record_types = normalize_record_types(include_record_types)
+        self.exclude_mime_types = tuple(
+            pattern.strip().casefold()
+            for pattern in exclude_mime_types
+            if pattern.strip()
+        )
+        self.store_source_containers = store_source_containers
         self.workers = workers
         self.progress = progress or (lambda _: None)
         self._custodians: dict[str, dict[str, Any]] = {}
@@ -205,7 +251,7 @@ class BaseImporter:
         collection = self._resolve_collection()
         self._load_custodians()
         report = ImportReport(collection_id=collection["id"])
-        source_artifacts: dict[str, str] = {}
+        source_artifacts: dict[str, str | None] = {}
         uploaded_items: dict[str, str] = {}
         submitted = 0
 
@@ -213,23 +259,26 @@ class BaseImporter:
             self.progress(f"Uploading with {self.workers} concurrent workers")
 
         for container in adapter.source_containers():
-            self.progress(f"Preserving source container {container.key}")
-            with container.path.open("rb") as content:
-                response = self.api.upload_source_container(
-                    collection["id"],
-                    container.path.name,
-                    content,
-                    container.media_type,
-                    container.original_source_path,
-                )
-            source_artifacts[container.key] = response["artifact"]["id"]
-            report.containers_uploaded += 1
+            source_artifacts[container.key] = None
+            if self.store_source_containers:
+                self.progress(f"Storing source container {container.key}")
+                with container.path.open("rb") as content:
+                    response = self.api.upload_source_container(
+                        collection["id"],
+                        container.path.name,
+                        content,
+                        container.media_type,
+                        container.original_source_path,
+                    )
+                source_artifacts[container.key] = response["artifact"]["id"]
+                report.containers_uploaded += 1
 
             items: Iterable[ImportItem] = self.iter_preprocessed_items(
                 adapter,
                 container,
                 include_attachments=self.include_attachments,
             )
+            items = self._exclude_items(items, report)
             if limit is not None:
                 items = itertools.islice(items, limit - submitted)
             batches = self._item_batches(items)
@@ -244,6 +293,36 @@ class BaseImporter:
             if limit is not None and submitted >= limit:
                 break
         return report
+
+    def _exclude_items(
+        self,
+        items: Iterable[ImportItem],
+        report: ImportReport,
+    ) -> Iterator[ImportItem]:
+        excluded_parent_ids: set[str] = set()
+        for item in items:
+            excluded_by_parent = item.parent_source_item_id in excluded_parent_ids
+            excluded_by_record_type = (
+                bool(self.include_record_types)
+                and item.record_type not in self.include_record_types
+            )
+            excluded_by_mime = mime_type_matches(item, self.exclude_mime_types)
+            if excluded_by_parent or excluded_by_record_type or excluded_by_mime:
+                excluded_parent_ids.add(item.source_item_id)
+                report.items_excluded += 1
+                if excluded_by_parent:
+                    report.items_excluded_due_to_parent += 1
+                elif excluded_by_record_type:
+                    report.excluded_by_record_type[item.record_type] = (
+                        report.excluded_by_record_type.get(item.record_type, 0) + 1
+                    )
+                else:
+                    media_type = original_mime_type(item)
+                    report.excluded_by_mime_type[media_type] = (
+                        report.excluded_by_mime_type.get(media_type, 0) + 1
+                    )
+                continue
+            yield item
 
     @staticmethod
     def _item_batches(items: Iterable[ImportItem]) -> Iterator[list[ImportItem]]:
@@ -271,7 +350,7 @@ class BaseImporter:
         self,
         collection_id: str,
         batches: Iterable[list[ImportItem]],
-        source_artifacts: dict[str, str],
+        source_artifacts: dict[str, str | None],
         uploaded_items: dict[str, str],
         report: ImportReport,
         *,
@@ -321,7 +400,7 @@ class BaseImporter:
         self,
         collection_id: str,
         batch: list[ImportItem],
-        source_artifacts: dict[str, str],
+        source_artifacts: dict[str, str | None],
         uploaded_items: dict[str, str],
         *,
         continue_on_error: bool,
@@ -575,7 +654,7 @@ class BaseImporter:
         self,
         collection_id: str,
         item: ImportItem,
-        source_artifacts: dict[str, str],
+        source_artifacts: dict[str, str | None],
         uploaded_items: dict[str, str],
     ) -> dict[str, Any]:
         try:

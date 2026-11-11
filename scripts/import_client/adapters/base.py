@@ -18,7 +18,7 @@ class DatasetAdapter(ABC):
 
     @abstractmethod
     def source_containers(self) -> Iterable[SourceContainer]:
-        """Return original aggregate files that must be preserved before extracted items."""
+        """Return aggregate files that contain the extracted import items."""
 
     def custom_items(self, source_container: SourceContainer) -> Iterable[ImportItem]:
         """Yield raw items only for a source shape the base importer cannot enumerate."""

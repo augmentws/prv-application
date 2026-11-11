@@ -39,7 +39,7 @@ First pass is complete only when:
 - a classifier version is accepted and scored across a frozen whole-collection population;
 - classifier-positive documents have the configured Q&A coverage;
 - final Q&A and classifier alignment has been reported;
-- a negative-population QC task-specific batch set has been reviewed by both Q&A models;
+- a frozen negative-population QC ad hoc batch has been reviewed by both Q&A models;
 - QC findings have been accepted or remediated; and
 - the program has a frozen completion report linking every source batch, run, model, decision, and unresolved item.
 
@@ -68,7 +68,7 @@ Matter Definition draft
     -> comparison with existing Q&A coding
     -> dual-Q&A coverage of classifier-positive documents without Q&A results
     -> final source-alignment report
-    -> negative-population QC task-specific batch set
+    -> frozen negative-population QC ad hoc batch
     -> blind dual-Q&A QC run and linked report
         -> remediation loop if required
     -> first-pass completion report
@@ -82,7 +82,7 @@ Matter Definition draft
 | Guided construction | A program starts with Matter Definition work. It creates and presents each required Analysis Task, batch, comparison, classifier, and report as the user reaches that phase; setup does not require the user to assemble the workflow in advance. |
 | Multiple programs | A matter may have multiple first-pass programs with different definitions, guidance, destination fields, model profiles, or policies. One nonterminal run is allowed per program, not per matter. |
 | Template versioning | Programs pin an immutable workflow-template version. Template changes do not alter existing programs; migration is explicit and compatibility-checked. |
-| Batching | Every automated Analysis Task population created by First Pass Review uses task-specific batching through an Analysis Task Batch Set with `PARTITIONED_SET` scope. Matter Definition assessment batches and comparison-derived difference or disagreement batches are ordinary `AD_HOC_BATCH` review batches. |
+| Batching | Discovery and improvement populations use task-specific Analysis Task Batch Sets with `PARTITIONED_SET` scope. Matter Definition assessments, comparison-derived difference review, classifier-positive Q&A coverage, and Negative-population QC use ordinary `AD_HOC_BATCH` review batches because they may overlap earlier task populations. |
 | Messaging | Child tasks report durable domain events to the Review Program coordinator. The coordinator uses the shared notification platform for human-facing attention only. Notification rows never drive workflow state. |
 | Child authority | Existing batches, task versions, runs, artifacts, classifier versions, and reviewer revisions remain authoritative. |
 | Q&A models | One shared Q&A specification is executed through two immutable model profiles against the same frozen documents. |
@@ -164,7 +164,7 @@ replayable while still using the agent where legal judgment and synthesis add th
 | Program event | A durable, machine-facing message that records a child or program transition and wakes the coordinator. It is not shown in the user notification inbox. |
 | User notification | A typed, human-facing projection created through the shared notification platform when a program event requires attention or communicates a meaningful completion. |
 | Task-specific batch set | An Analysis Task Batch Set pinned to one Analysis Task and task version. Its managed child Review Batches use `PARTITIONED_SET`, cover one frozen population exactly, and do not overlap within that set. |
-| Ad hoc review batch | An ordinary overlapping Review Batch using `AD_HOC_BATCH`. First Pass Review limits this to Matter Definition assessment and difference or disagreement review. |
+| Ad hoc review batch | An ordinary overlapping Review Batch using `AD_HOC_BATCH`. First Pass Review uses it for Matter Definition assessment, difference or disagreement review, and classifier-positive Q&A coverage. |
 | Discovery round | One retrieval batch followed by two Q&A runs and a support analysis. |
 | Training round | One immutable label snapshot and classifier build attempt. |
 | Q&A profile | A pinned provider, model, model policy, and skill binding used to execute one shared Q&A specification. |
@@ -509,11 +509,20 @@ The First Pass Review template uses:
 | Difference or disagreement review | `AD_HOC_BATCH` | Create an ordinary comparison-derived batch for human review. It may overlap its source sets and retains both source-run references. |
 | Classifier training | No Review Batch execution | Consume the immutable resolved-label artifact and dataset snapshot. |
 | Whole-collection classifier scoring | `WHOLE_MATTER` | Use the whole-matter input manifest rather than creating an `ALL_MATTER` Review Batch solely for execution. |
-| Q&A coverage of classifier positives | `PARTITIONED_SET` | Create a task-specific set from the frozen classifier-positive coverage manifest. |
-| Negative-population QC Q&A | `PARTITIONED_SET` | Create a task-specific set from the frozen, stratified QC selection manifest. |
+| Q&A coverage of classifier positives | `AD_HOC_BATCH` | Create one overlapping batch from the frozen classifier-positive coverage manifest, then run both pinned profiles directly against it while reusing current per-profile results. |
+| Negative-population QC Q&A | `AD_HOC_BATCH` | Create one overlapping batch from the frozen, stratified QC selection manifest, then run both pinned profiles directly against it. |
 
-No other workflow-created Review Batch may be run as `AD_HOC_BATCH`. A template for a future review program must
+No other First Pass Review workflow-created Review Batch may be run as `AD_HOC_BATCH`. A template for a future review program must
 declare its own stage policy, but it uses the same three platform modes and validation contract.
+
+While classifier-positive coverage is active, the program stage reports the frozen batch population and live totals
+for each pinned profile. Counts distinguish newly successful evaluations from current results reused by the execution
+policy and from failures. Its Jobs link filters Question Answering jobs by the linked Review Batch id.
+
+The generated Q&A task version permits both `PARTITIONED_SET` and `AD_HOC_BATCH`, with `PARTITIONED_SET` remaining
+the default. A compatibility guard permits an older Review Program task version to use ad hoc execution only when
+the parent is that Review Program and the batch is its frozen classifier-positive coverage or Negative-population
+QC population. Coverage additionally requires its per-profile reuse policy to match.
 
 Some first-pass populations are arbitrary document sets rather than one keyword search or an existing source batch.
 Extend Analysis Task Batch Set population sources with an immutable `INPUT_MANIFEST` source that pins:
@@ -1004,7 +1013,9 @@ not document-level storage failures.
 
 Whole-matter feature preparation uses bounded parallel object reads and vector pooling, configured independently by
 `CLASSIFICATION_FEATURE_LOAD_CONCURRENCY` (default `16`). Progress is committed after every 1,000 documents so the
-workspace can show checked, ready, skipped, and invalid counts while preparation is running.
+workspace can show checked, ready, skipped, and invalid counts while preparation is running. The Artifact Service's
+per-process S3/MinIO HTTP pool is controlled by `ARTIFACT_STORAGE_MAX_POOL_CONNECTIONS` (default `32`) and should
+remain above the highest concurrent artifact workload so completed connections can be reused instead of discarded.
 
 ## 16. Phase 9 Classifier and existing Q&A comparison
 
@@ -1043,15 +1054,24 @@ Stream the whole-collection prediction artifact and build an immutable coverage 
 Group counts by issue, confidence band, cohort, and missing Q&A profile. Distinguish absent Q&A from failed or stale
 Q&A.
 
+For this coverage gate, a successful Q&A coding result means that the source input and every typed coding question
+completed for the pinned profile. A result whose overall status is `PARTIAL` solely because conditional evidence
+localization was incomplete still supplies a reusable coding decision and must not be queued for duplicate Q&A.
+Results with incomplete input or coding questions, failed results, and results for stale source content do not count
+as coverage.
+
 ### 17.2 User gate
 
 Prompt the user with the number of documents and estimated dual-Q&A usage. The user may:
 
-- run all required Q&A coverage;
+- choose an inclusive minimum classifier-confidence threshold and run all required Q&A coverage at or above it;
 - narrow by an explicitly previewed policy and accept incomplete coverage; or
 - stop before first-pass completion.
 
 The default program policy requires all classifier-positive documents to receive both Q&A profiles.
+The coverage threshold defaults to 0.50 for backward compatibility and is frozen with the coverage manifest. It
+controls only which classifier-positive documents receive Q&A verification; it does not change the classifier's
+saved prediction-resolution policy or existing codings.
 
 ### 17.3 Batch-set materialization and execution
 
@@ -1063,8 +1083,10 @@ Materialize an Analysis Task Batch Set from the coverage manifest:
 - partition to bounded child batches; and
 - record an immutable allocation manifest.
 
-Run both Q&A profiles on every child batch. Use the existing run-all parent workflow, retry only failed children, and
-recompute coverage until every required document is covered or explicitly unresolved.
+Run both Q&A profile workflows over the same child batches, but evaluate a document only for the profiles listed as
+missing in the frozen coverage manifest. A matching current result for one pinned profile is recorded as reused for
+that profile while the other profile can still evaluate the document. Use the existing run-all parent workflow,
+retry only failed children, and recompute coverage until every required document is covered or explicitly unresolved.
 
 Classifier predictions do not appear in the Q&A prompt. The Q&A verification remains an independent application of
 the Matter Definition.
@@ -1091,7 +1113,7 @@ The report includes:
 The program may offer manual review of final disagreements, but it does not silently choose classifier or Q&A values.
 A final coding publication policy is a separate explicit workflow.
 
-## 19. Phase 12 Negative-population QC batch set and report
+## 19. Phase 12 Negative-population QC ad hoc batch and report
 
 ### 19.1 Define the no-code population
 
@@ -1104,7 +1126,7 @@ Using the frozen whole-collection scoring population and completed program Q&A r
 Do not treat feature exclusions, classifier failures, Q&A failures, partial Q&A, stale content, or mandatory-review
 routes as no-code negatives. Put them in a separate mandatory-resolution queue.
 
-### 19.2 Sampling design and task-specific materialization
+### 19.2 Sampling design and ad hoc materialization
 
 Create one immutable QC selection manifest with separately identified strata:
 
@@ -1120,19 +1142,18 @@ Create one immutable QC selection manifest with separately identified strata:
 Targeted strata measure error-discovery yield. They must not be combined with the random lane as an unweighted
 corpus error rate.
 
-Use the QC selection manifest as the `INPUT_MANIFEST` source for one task-specific Analysis Task Batch Set. Its
-managed children are the only Review Batches created for automated QC execution. Do not create an ordinary ad hoc QC
-source batch.
+Use the QC selection manifest to create one ordinary ad hoc Review Batch. The batch may overlap earlier task-specific
+sets, retains the immutable selection manifest as provenance, and is evaluated directly by both pinned Q&A profiles.
 
 ### 19.3 Blind Q&A QC
 
-Run both Q&A profiles across the same QC batch set and managed children without exposing classifier scores or
+Run both Q&A profiles across the same ad hoc QC batch without exposing classifier scores or
 no-code selection reasons in the model prompt. Store the selection stratum and probabilities separately for
 reporting.
 
 ### 19.4 QC report
 
-Link the report directly to the QC batch set, managed child batches, and both profile runs. Include:
+Link the report directly to the frozen QC selection manifest, ad hoc Review Batch, and both profile runs. Include:
 
 - batch and source coverage;
 - issue positives found by either or both models;
@@ -1449,9 +1470,9 @@ program version or a fresh child snapshot rather than mutating completed stages.
 
 ### 26.7 Final comparison and QC
 
-- Matter Definition assessments and comparison-derived difference or disagreement batches remain ad hoc.
-- No other first-pass Review Batch is created or executed ad hoc.
-- QC selection materializes as a task-specific batch set rather than an ad hoc staging batch.
+- Matter Definition assessments, comparison-derived difference or disagreement batches, classifier-positive
+  coverage, and Negative-population QC remain ad hoc.
+- QC selection materializes as one frozen ad hoc batch so it may overlap prior task-specific sets.
 - Training overlap, held-out, and adjudicated cohorts remain distinct.
 - No-code selection excludes failures, partials, stale content, and mandatory-review routes.
 - Random and targeted QC strata remain separately reportable.
@@ -1480,8 +1501,8 @@ Deliverables:
 
 - Define the reusable Review Workflow Template and immutable template-version contracts.
 - Define the First Pass Review template's ordered stages, generated artifact factories, gates, and transition rules.
-- Define each stage's `AD_HOC_BATCH`, `PARTITIONED_SET`, or `WHOLE_MATTER` policy and fixtures that prove the two ad
-  hoc exceptions.
+- Define each stage's `AD_HOC_BATCH`, `PARTITIONED_SET`, or `WHOLE_MATTER` policy and fixtures that prove the ad hoc
+  exceptions.
 - Lock program, version, run, stage, action, support, label-set, and completion-report contracts.
 - Define union, exact-agreement, overlapping-value, and adjudication semantics.
 - Define classifier readiness and weak-category policies.
@@ -1600,8 +1621,8 @@ Exit criteria:
 Deliverables:
 
 - Add the durable final comparison artifact and report.
-- Add no-code population calculation, stratified QC selection manifests, and task-specific QC batch sets.
-- Run blind dual-Q&A QC across managed batch-set children.
+- Add no-code population calculation, stratified QC selection manifests, and frozen ad hoc QC batches.
+- Run blind dual-Q&A QC across the same ad hoc QC population.
 - Add linked QC reports and remediation actions.
 
 Exit criteria:
@@ -1690,8 +1711,9 @@ The MVP is complete when:
 - human decisions, blocking attention, assignments, and completion use the shared typed notification platform with
   safe Review Program deep links;
 - program-managed child jobs do not emit one generic completion notification per child;
-- every automated Q&A Review Batch belongs to a task-specific `PARTITIONED_SET`;
-- only assessment and difference or disagreement review batches use `AD_HOC_BATCH`;
+- discovery and improvement Q&A batches belong to task-specific `PARTITIONED_SET`s;
+- assessment, difference review, classifier-positive coverage, and Negative-population QC batches use
+  `AD_HOC_BATCH`;
 - a published program version can coordinate one accepted Matter Definition revision;
 - one generated Q&A specification runs through two pinned model profiles on identical frozen task-specific batch
   sets;
@@ -1702,11 +1724,11 @@ The MVP is complete when:
 - the resulting label set is immutable, artifact-backed, and consumable by classifier dataset creation;
 - classifier builds produce per-category quality summaries and a bounded improvement loop;
 - one accepted model version can score a frozen whole-matter population;
-- classifier-positive documents lacking Q&A coverage can be materialized into batch sets and run through both Q&A
+- classifier-positive documents lacking Q&A coverage can be materialized into an ad hoc batch and run through both Q&A
   profiles;
 - the program produces a final multi-source alignment report without mislabeling agreement as accuracy;
-- a negative-population QC task-specific batch set uses separately identified random and targeted strata;
-- both Q&A profiles run blindly across the QC set's managed children and produce an evidence-linked QC report;
+- a negative-population QC ad hoc batch uses separately identified random and targeted strata;
+- both Q&A profiles run blindly across that batch and produce an evidence-linked QC report;
 - QC acceptance or remediation is a durable user decision;
 - completion produces an immutable provenance-complete report; and
 - retry, cancellation, authorization, idempotency, stale-preview, artifact-integrity, and scale tests pass.

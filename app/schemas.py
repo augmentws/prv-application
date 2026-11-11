@@ -448,8 +448,38 @@ class MatterRead(ORMModel):
     id: uuid.UUID
     client_id: uuid.UUID
     name: str
-    status: ResourceStatus
+    status: ResourceStatus | Literal["DELETING"]
     created_at: datetime
+
+
+class MatterDeletionJobRead(ORMModel):
+    id: uuid.UUID
+    matter_id: uuid.UUID
+    tenant_id: uuid.UUID
+    client_id: uuid.UUID
+    matter_name: str
+    status: Literal[
+        "QUEUED",
+        "VALIDATING",
+        "DELETING_SEARCH",
+        "DELETING_ARTIFACTS",
+        "DELETING_DATABASE_ROWS",
+        "COMPLETED",
+        "FAILED",
+    ]
+    workflow_id: str
+    attempt_count: int
+    document_count: int
+    artifact_count: int
+    deleted_index_count: int
+    deleted_artifact_count: int
+    deleted_blob_count: int
+    error_message: str | None
+    requested_by_user_id: uuid.UUID
+    started_at: datetime | None
+    completed_at: datetime | None
+    created_at: datetime
+    updated_at: datetime
 
 
 class ExternalProviderUsageRead(ORMModel):
@@ -1240,6 +1270,7 @@ ReviewBatchSelectionType = Literal[
     "CLASSIFICATION_PREDICTIONS",
     "COMPARISON_RESULT",
     "TASK_BATCH_PARTITION",
+    "EXPLICIT_DOCUMENTS",
 ]
 InteractiveReviewBatchSelectionType = Literal[
     "ALL_MATTER",
@@ -1873,10 +1904,12 @@ class ReviewBatchDisagreementDocumentRead(BaseModel):
 
 class ReviewBatchComparisonSourceOptionRead(BaseModel):
     id: uuid.UUID
-    source_type: Literal["REVIEWER", "RUN"]
+    source_type: Literal["REVIEWER", "RUN", "SCORING_RUN"]
     run_type: ReviewBatchRunType | None = None
     purpose: ReviewBatchRunPurpose | None = None
     status: ReviewBatchRunStatus | None = None
+    preparation_status: Literal["READY", "AVAILABLE", "PREPARING", "FAILED"] = "READY"
+    classification_scoring_run_id: uuid.UUID | None = None
     label: str
     detail: str | None
     metadata_definition_ids: list[uuid.UUID]
@@ -2950,9 +2983,7 @@ class MatterAnalysisTaskRead(ORMModel):
     published_version_details: MatterAnalysisTaskVersionRead | None = None
 
 
-AnalysisTaskBatchSetSourceType = Literal[
-    "ALL_MATTER", "SOURCE_BATCH", "SEARCH_QUERY", "SAVED_SEARCH", "INPUT_MANIFEST"
-]
+AnalysisTaskBatchSetSourceType = Literal["ALL_MATTER", "SOURCE_BATCH", "SEARCH_QUERY", "SAVED_SEARCH", "INPUT_MANIFEST"]
 AnalysisTaskBatchSetStatus = Literal["QUEUED", "BUILDING", "READY", "FAILED", "CANCELED", "ARCHIVED"]
 
 
@@ -3053,9 +3084,7 @@ class AnalysisTaskBatchSetRead(ORMModel):
     children: list[AnalysisTaskBatchSetChildRead] = Field(default_factory=list)
 
 
-AnalysisTaskBatchSetRunStatus = Literal[
-    "QUEUED", "RUNNING", "COMPLETED", "COMPLETED_WITH_ERRORS", "FAILED", "CANCELED"
-]
+AnalysisTaskBatchSetRunStatus = Literal["QUEUED", "RUNNING", "COMPLETED", "COMPLETED_WITH_ERRORS", "FAILED", "CANCELED"]
 AnalysisTaskBatchSetRunChildStatus = Literal[
     "PENDING", "QUEUED", "RUNNING", "COMPLETED", "COMPLETED_WITH_ERRORS", "FAILED", "CANCELED"
 ]
@@ -3078,6 +3107,7 @@ class AnalysisTaskBatchSetRunCreate(BaseModel):
         if not normalized:
             raise ValueError("Idempotency key is required")
         return normalized
+
 
 class AnalysisTaskBatchSetRunChildRead(ORMModel):
     id: uuid.UUID
@@ -5046,9 +5076,7 @@ class ReviewProgramDefinitionSetup(BaseModel):
     def validate_setup(self) -> "ReviewProgramDefinitionSetup":
         if self.assessment_control_sample_size > self.assessment_target_document_count:
             raise ValueError("Control sample size cannot exceed the assessment target")
-        if self.mode == "CREATE" and not (
-            self.definition_key and self.name and (self.content_markdown or "").strip()
-        ):
+        if self.mode == "CREATE" and not (self.definition_key and self.name and (self.content_markdown or "").strip()):
             raise ValueError("CREATE requires definition_key, name, and content_markdown")
         if self.mode in {"CLONE", "ADOPT"} and self.existing_definition_id is None:
             raise ValueError(f"{self.mode} requires existing_definition_id")
@@ -5119,10 +5147,7 @@ class ReviewProgramClassifierImprovementSetup(BaseModel):
 
     @model_validator(mode="after")
     def validate_improvement_setup(self) -> "ReviewProgramClassifierImprovementSetup":
-        targets = [
-            (query.metadata_definition_id, query.class_key)
-            for query in self.queries
-        ]
+        targets = [(query.metadata_definition_id, query.class_key) for query in self.queries]
         if len(targets) != len(set(targets)):
             raise ValueError("Classifier improvement targets must be unique")
         if sum(query.quota for query in self.queries) + self.control_sample_size > 100_000:
@@ -5130,25 +5155,57 @@ class ReviewProgramClassifierImprovementSetup(BaseModel):
         return self
 
 
+NegativePopulationQCProcedure = Literal[
+    "RANDOM_AUDIT",
+    "NEAR_THRESHOLD",
+    "RECORD_TYPE_CONTROL",
+    "PROCESSING_EXCEPTIONS",
+]
+
+
+class ReviewProgramNegativePopulationQCInventoryPrepare(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    preview_hash: str = Field(min_length=64, max_length=64)
+
+
 class ReviewProgramNegativePopulationQCSetup(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     preview_hash: str = Field(min_length=64, max_length=64)
+    inventory_content_hash: str = Field(min_length=64, max_length=64)
+    selected_procedures: list[NegativePopulationQCProcedure] = Field(
+        min_length=1,
+        max_length=4,
+    )
+    selected_record_types: list[str] = Field(default_factory=list, max_length=100)
     random_sample_size: int = Field(default=200, ge=0, le=25_000)
     near_threshold_sample_size: int = Field(default=100, ge=0, le=25_000)
     cohort_control_sample_size: int = Field(default=50, ge=0, le=25_000)
     mandatory_review_limit: int = Field(default=100, ge=0, le=25_000)
-    target_batch_size: int = Field(default=100, ge=1, le=10_000)
     keep_families_together: bool = True
 
     @model_validator(mode="after")
     def validate_negative_population_qc_setup(self) -> "ReviewProgramNegativePopulationQCSetup":
-        total = (
-            self.random_sample_size
-            + self.near_threshold_sample_size
-            + self.cohort_control_sample_size
-            + self.mandatory_review_limit
-        )
+        if len(self.selected_procedures) != len(set(self.selected_procedures)):
+            raise ValueError("Negative-population QC procedures must be unique")
+        selected_sizes = {
+            "RANDOM_AUDIT": self.random_sample_size,
+            "NEAR_THRESHOLD": self.near_threshold_sample_size,
+            "RECORD_TYPE_CONTROL": self.cohort_control_sample_size,
+            "PROCESSING_EXCEPTIONS": self.mandatory_review_limit,
+        }
+        if any(selected_sizes[procedure] < 1 for procedure in self.selected_procedures):
+            raise ValueError("Every selected Negative-population QC procedure requires a sample size")
+        if self.selected_record_types and "RECORD_TYPE_CONTROL" not in self.selected_procedures:
+            raise ValueError("Record types may be selected only when Record-type control QC is enabled")
+        normalized_record_types = [" ".join(value.split()) for value in self.selected_record_types]
+        if any(not value or len(value) > 200 for value in normalized_record_types):
+            raise ValueError("Selected record types must be non-empty and at most 200 characters")
+        if len(normalized_record_types) != len(set(normalized_record_types)):
+            raise ValueError("Selected record types must be unique")
+        self.selected_record_types = normalized_record_types
+        total = sum(selected_sizes[procedure] for procedure in self.selected_procedures)
         if total < 1:
             raise ValueError("Negative-population QC requires at least one selected document")
         if total > 100_000:
@@ -5172,6 +5229,59 @@ class ReviewProgramCompletionReportRead(ORMModel):
     completed_by_user_id: uuid.UUID
     completed_at: datetime
     created_at: datetime
+
+
+class ReviewProgramFinalAlignmentCodingRead(BaseModel):
+    key: str
+    label: str
+
+
+class ReviewProgramFinalAlignmentRowRead(BaseModel):
+    matter_document_id: uuid.UUID
+    collection_item_id: uuid.UUID
+    scope_ordinal: int
+    filename: str | None
+    input_status: str
+    classifier_codings: list[ReviewProgramFinalAlignmentCodingRead]
+    profile_a_codings: list[ReviewProgramFinalAlignmentCodingRead]
+    profile_b_codings: list[ReviewProgramFinalAlignmentCodingRead]
+    human_codings: list[ReviewProgramFinalAlignmentCodingRead]
+    alignment_status: str
+    source_status: str
+    confidence_band: str
+    training_overlap: bool
+    label_authority: str
+    family_id: uuid.UUID | None
+    record_type: str
+
+
+class ReviewProgramFinalAlignmentPageRead(BaseModel):
+    manifest_id: uuid.UUID
+    artifact_id: uuid.UUID
+    manifest_content_hash: str
+    population_scope: str | None
+    minimum_confidence: float | None
+    profile_a_name: str
+    profile_b_name: str
+    total: int
+    offset: int
+    limit: int
+    items: list[ReviewProgramFinalAlignmentRowRead]
+
+
+class ReviewProgramQAPopulationStatisticsRead(BaseModel):
+    run_id: uuid.UUID
+    task_version_id: uuid.UUID
+    document_count: int = Field(ge=0)
+    both_profiles_document_count: int = Field(ge=0)
+    one_profile_document_count: int = Field(ge=0)
+    fields: list[ReviewBatchComparisonFieldOptionRead]
+    selected_metadata_definition_id: uuid.UUID
+    available_sources: list[ReviewBatchComparisonSourceOptionRead]
+    sources: list[ReviewBatchComparisonSourceOptionRead]
+    source_summaries: list[ReviewBatchComparisonSourceSummaryRead]
+    multi_source_agreement: ReviewBatchMultiSourceAgreementRead
+    pairwise_agreements: list[ReviewBatchPairwiseAgreementRead]
 
 
 class ReviewProgramStageAttemptRead(ORMModel):

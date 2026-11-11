@@ -1,9 +1,10 @@
 from __future__ import annotations
 
 import uuid
+from collections import defaultdict
 from datetime import datetime, timezone
 
-from sqlalchemy import delete, func, or_, select, update
+from sqlalchemy import delete, func, insert, or_, select, update
 from sqlalchemy.orm import Session
 
 from artifact_service.models import (
@@ -27,7 +28,7 @@ from artifact_service.models import (
 from artifact_service.storage import BlobStorage
 
 DATABASE_BATCH_SIZE = 1_000
-BLOB_BATCH_SIZE = 250
+BLOB_BATCH_SIZE = 1_000
 ACTIVE_DELETION_STATUSES = (
     "QUEUED",
     "VALIDATING",
@@ -173,9 +174,20 @@ def _delete_artifacts_and_schedule_blobs(
 ) -> int:
     if not artifact_ids:
         return 0
-    blob_ids = list(
-        db.scalars(select(Artifact.content_blob_id).where(Artifact.id.in_(artifact_ids)).distinct())
+    blob_rows = list(
+        db.execute(
+            select(
+                ContentBlob.id,
+                ContentBlob.bucket_name,
+                ContentBlob.storage_key,
+                ContentBlob.byte_length,
+            )
+            .join(Artifact, Artifact.content_blob_id == ContentBlob.id)
+            .where(Artifact.id.in_(artifact_ids))
+            .distinct()
+        ).mappings()
     )
+    blob_ids = [row["id"] for row in blob_rows]
     db.execute(
         delete(ArtifactLineage).where(
             or_(
@@ -189,29 +201,32 @@ def _delete_artifacts_and_schedule_blobs(
     db.execute(delete(Artifact).where(Artifact.id.in_(artifact_ids)))
     db.flush()
 
-    scheduled = 0
-    for blob_id in blob_ids:
-        still_referenced = db.scalar(
-            select(Artifact.id).where(Artifact.content_blob_id == blob_id).limit(1)
+    referenced_blob_ids = set(
+        db.scalars(
+            select(Artifact.content_blob_id)
+            .where(Artifact.content_blob_id.in_(blob_ids))
+            .distinct()
         )
-        if still_referenced is not None:
-            continue
-        blob = db.get(ContentBlob, blob_id)
-        if blob is None:
-            continue
-        db.add(
-            CollectionDeletionBlob(
-                deletion_job_id=job.id,
-                content_blob_id=blob.id,
-                bucket_name=blob.bucket_name,
-                storage_key=blob.storage_key,
-                byte_length=blob.byte_length,
-                status="PENDING",
-            )
+    )
+    deletable_blobs = [row for row in blob_rows if row["id"] not in referenced_blob_ids]
+    if deletable_blobs:
+        db.execute(
+            insert(CollectionDeletionBlob),
+            [
+                {
+                    "id": uuid.uuid4(),
+                    "deletion_job_id": job.id,
+                    "content_blob_id": row["id"],
+                    "bucket_name": row["bucket_name"],
+                    "storage_key": row["storage_key"],
+                    "byte_length": row["byte_length"],
+                    "status": "PENDING",
+                }
+                for row in deletable_blobs
+            ],
         )
-        db.delete(blob)
-        scheduled += 1
-    job.blob_count += scheduled
+        db.execute(delete(ContentBlob).where(ContentBlob.id.in_([row["id"] for row in deletable_blobs])))
+    job.blob_count += len(deletable_blobs)
     return len(artifact_ids)
 
 
@@ -343,8 +358,12 @@ def delete_blob_batch(
             .limit(batch_size)
         )
     )
+    keys_by_bucket: dict[str, list[str]] = defaultdict(list)
     for blob in blobs:
-        storage.delete(blob.bucket_name, blob.storage_key)
+        keys_by_bucket[blob.bucket_name].append(blob.storage_key)
+    for bucket_name, storage_keys in keys_by_bucket.items():
+        storage.delete_many(bucket_name, storage_keys)
+    for blob in blobs:
         blob.status = "DELETED"
     job.deleted_blob_count += len(blobs)
     db.commit()

@@ -104,6 +104,9 @@ class Settings(BaseSettings):
     typesafe_max_retries: int = Field(default=5, ge=0, le=20)
     typesafe_retry_base_seconds: float = Field(default=1.0, gt=0, le=300)
     typesafe_retry_max_seconds: float = Field(default=120.0, gt=0, le=3600)
+    typesafe_request_target_characters: int = Field(default=60_000, ge=10_000, le=2_000_000)
+    typesafe_request_target_tokens: int = Field(default=8_000, ge=1_000, le=1_000_000)
+    typesafe_max_document_windows: int = Field(default=128, ge=2, le=1000)
     openai_api_key: str | None = None
     openai_base_url: str = "https://api.openai.com/v1"
     openai_decisions_timeout_seconds: float = Field(default=60.0, gt=0, le=600)

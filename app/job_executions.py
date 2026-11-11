@@ -800,7 +800,11 @@ def current_job_execution(
         .limit(1)
     )
     if for_update:
-        statement = statement.with_for_update()
+        # Workflow children hold a foreign-key KEY SHARE lock on their parent
+        # execution while provider calls are in flight. NO KEY UPDATE still
+        # serializes execution state transitions without making cancellation
+        # wait for those long-running provider calls to finish.
+        statement = statement.with_for_update(key_share=True)
     return db.scalar(statement)
 
 

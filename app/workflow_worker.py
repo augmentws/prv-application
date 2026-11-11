@@ -48,6 +48,7 @@ def main() -> None:
         fact_development,
         fact_specification_compilation,
         matter_definition_assessments,
+        matter_deletion,
         matter_embeddings,
         matter_import,
         matter_topics,

@@ -44,6 +44,21 @@ export function classificationModelHref(clientId: string, matterId: string, mode
   return `/app/clients/${clientId}/matters/${matterId}/classification-models/${modelId}`;
 }
 
+/** One completed matter-scoring result for a classification model. */
+export function classificationScoringRunHref(clientId: string, matterId: string, modelId: string, scoringRunId: string) {
+  return `${classificationModelHref(clientId, matterId, modelId)}/scoring-runs/${scoringRunId}`;
+}
+
+/** Population-level Q&A statistics for one Review Program run. */
+export function reviewProgramQAPopulationStatisticsHref(clientId: string, matterId: string, programId: string, runId: string) {
+  return `${matterHref(clientId, matterId, "review-programs")}/${programId}/runs/${runId}/qa-statistics`;
+}
+
+/** Frozen classifier-versus-Q&A alignment output for one Review Program run. */
+export function reviewProgramFinalAlignmentHref(clientId: string, matterId: string, programId: string, runId: string) {
+  return `${matterHref(clientId, matterId, "review-programs")}/${programId}/runs/${runId}/final-alignment`;
+}
+
 export type MatterJobType = "BULK_TAGGING" | "DOCUMENT_EMBEDDINGS" | "TOPIC_CLUSTERING" | "DOCUMENT_IMPORTS" | "QUESTION_ANSWERING" | "CLASSIFICATION_ANALYSIS" | "SEARCH_EXPORTS";
 
 /** Every job type, in menu order, with its route slug. */

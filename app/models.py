@@ -172,7 +172,7 @@ class Matter(TimestampMixin, Base):
     __tablename__ = "matter"
     __table_args__ = (
         UniqueConstraint("client_id", "name", name="uq_matter_client_name"),
-        CheckConstraint("status IN ('ACTIVE', 'SUSPENDED', 'ARCHIVED')", name="ck_matter_status"),
+        CheckConstraint("status IN ('ACTIVE', 'SUSPENDED', 'ARCHIVED', 'DELETING')", name="ck_matter_status"),
     )
 
     id: Mapped[uuid.UUID] = mapped_column(Uuid, primary_key=True, default=uuid.uuid4)
@@ -181,6 +181,57 @@ class Matter(TimestampMixin, Base):
     status: Mapped[str] = mapped_column(String(20), default="ACTIVE")
 
     client: Mapped[Client] = relationship()
+
+
+class MatterDeletionJob(TimestampMixin, Base):
+    __tablename__ = "matter_deletion_job"
+    __table_args__ = (
+        CheckConstraint(
+            "status IN ('QUEUED', 'VALIDATING', 'DELETING_SEARCH', 'DELETING_ARTIFACTS', "
+            "'DELETING_DATABASE_ROWS', 'COMPLETED', 'FAILED')",
+            name="ck_matter_deletion_job_status",
+        ),
+        CheckConstraint(
+            "document_count >= 0 AND artifact_count >= 0 AND deleted_index_count >= 0 AND "
+            "deleted_artifact_count >= 0 AND deleted_blob_count >= 0",
+            name="ck_matter_deletion_job_counts",
+        ),
+        Index("ix_matter_deletion_job_matter_created", "matter_id", "created_at"),
+        Index(
+            "uq_matter_deletion_job_active",
+            "matter_id",
+            unique=True,
+            postgresql_where=text(
+                "status IN ('QUEUED', 'VALIDATING', 'DELETING_SEARCH', "
+                "'DELETING_ARTIFACTS', 'DELETING_DATABASE_ROWS')"
+            ),
+            sqlite_where=text(
+                "status IN ('QUEUED', 'VALIDATING', 'DELETING_SEARCH', "
+                "'DELETING_ARTIFACTS', 'DELETING_DATABASE_ROWS')"
+            ),
+        ),
+    )
+
+    id: Mapped[uuid.UUID] = mapped_column(Uuid, primary_key=True, default=uuid.uuid4)
+    # Deliberately not a foreign key: the durable status/audit row outlives the matter.
+    matter_id: Mapped[uuid.UUID] = mapped_column(Uuid, index=True)
+    tenant_id: Mapped[uuid.UUID] = mapped_column(Uuid, index=True)
+    client_id: Mapped[uuid.UUID] = mapped_column(Uuid, index=True)
+    matter_name: Mapped[str] = mapped_column(String(200))
+    previous_matter_status: Mapped[str] = mapped_column(String(20))
+    status: Mapped[str] = mapped_column(String(40), default="QUEUED", index=True)
+    workflow_id: Mapped[str] = mapped_column(String(255), unique=True)
+    attempt_count: Mapped[int] = mapped_column(Integer, default=1)
+    document_count: Mapped[int] = mapped_column(BigInteger, default=0)
+    artifact_count: Mapped[int] = mapped_column(BigInteger, default=0)
+    deleted_index_count: Mapped[int] = mapped_column(Integer, default=0)
+    deleted_artifact_count: Mapped[int] = mapped_column(BigInteger, default=0)
+    deleted_blob_count: Mapped[int] = mapped_column(BigInteger, default=0)
+    artifact_scopes: Mapped[list[dict[str, str]]] = mapped_column(JSON, default=list)
+    error_message: Mapped[str | None] = mapped_column(Text)
+    requested_by_user_id: Mapped[uuid.UUID] = mapped_column(Uuid, index=True)
+    started_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    completed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
 
 
 class MatterMembership(Base):
