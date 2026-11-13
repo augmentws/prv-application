@@ -30,11 +30,11 @@ GET_REVIEWER_CODING = (
     "reviewer_coding_post"
 )
 REPLACE_VALUES = (
-    "replace_review_batch_reviewer_values_v1_matters__matter_id__review_batches__batch_id__reviewer_coding__"
+    "replace_review_batch_reviewer_values_v1_matters__matter_id__review_batches__batch_id__reviewer_coding_"
     "documents__document_id__values_put"
 )
 SKIP_DOCUMENT = (
-    "skip_review_batch_document_v1_matters__matter_id__review_batches__batch_id__reviewer_coding__"
+    "skip_review_batch_document_v1_matters__matter_id__review_batches__batch_id__reviewer_coding_"
     "documents__document_id__skip_post"
 )
 
@@ -358,7 +358,7 @@ class BatchCodingImporter:
                 )
                 if not continue_on_error:
                     raise RuntimeError(
-                        f"Import stopped at CSV line {row.source_line}; correct the row and rerun the import"
+                        f"Import stopped at CSV line {row.source_line}: {exc}"
                     ) from exc
             if progress:
                 progress(

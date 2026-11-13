@@ -161,36 +161,67 @@ Every adapter must expose its aggregate inputs as `SourceContainer` records. `Ba
 ## Import TREC Qrels into a matter
 
 Qrels are gold review judgments, not collection provenance. Import the EDRM
-corpus into a collection, add that collection's documents to the target matter,
-and then run the separate matter-scoped importer. It creates one judgment field
-and one sampling-probability field per selected topic. Only assessed rows (`0`
-or `1`) are imported; `-1` and `-2` rows remain unassessed and are reported as
-skipped.
+corpus into a collection, publish the desired evaluation set to the target
+matter, and create a review batch containing that set. Configure the batch with
+the single Boolean field `trec_priv_coding`, then run the Qrels importer while
+authenticated as the user who should own the gold reviewer coding. For Topic
+304, `1` becomes `true` and `0` becomes `false`; `-1` and `-2` rows are not
+coded.
 
-Inspect Topic 304 (the TREC 2010 privilege topic) without changing the matter:
+Create the Topic 304 evaluation publication with every assessed document and
+10,000 reproducibly sampled documents that have no `0` or `1` Topic 304 coding:
 
 ```bash
-pipenv run python -m scripts.trec_qrels_import \
+pipenv run python -m scripts.trec_matter_publish \
   --source /path/to/qrel_leg_int_2010_doc_post.txt \
   --topic 304 \
   --matter-id "matter UUID" \
   --collection-id "EDRM collection UUID" \
+  --uncoded-count 10000 \
+  --seed "trec-topic-304-uncoded-v1" \
+  --manifest-out ./topic-304-publication.json \
   --dry-run
 ```
 
-Import the judgments after the collection documents have been published to the
-matter:
+The dry run reads the collection, creates the complete audit manifest, and does
+not create an import job. Review its counts, then remove `--dry-run` to submit
+one exact matter document import. The script ranks otherwise uncoded documents
+by SHA-256 of the seed and source document ID, so the same collection, Qrels,
+and seed always produce the same sample. Rows coded `0` and `1` are both in the
+coded set; `-1`, `-2`, and documents absent from the Qrels are eligible for the
+uncoded sample. Families are not expanded.
+
+Validate the Topic 304 coding against the ready batch without changing reviewer
+coding:
 
 ```bash
 pipenv run python -m scripts.trec_qrels_import \
   --source /path/to/qrel_leg_int_2010_doc_post.txt \
   --topic 304 \
   --matter-id "matter UUID" \
-  --collection-id "EDRM collection UUID"
+  --batch-id "review batch UUID" \
+  --collection-id "EDRM collection UUID" \
+  --email "importing-reviewer@example.com" \
+  --dry-run
+```
+
+Import the judgments as the authenticated user's canonical reviewer coding:
+
+```bash
+pipenv run python -m scripts.trec_qrels_import \
+  --source /path/to/qrel_leg_int_2010_doc_post.txt \
+  --topic 304 \
+  --matter-id "matter UUID" \
+  --batch-id "review batch UUID" \
+  --collection-id "EDRM collection UUID" \
+  --email "importing-reviewer@example.com"
 ```
 
 The five Qrels columns are parsed as topic, iteration, TREC document ID,
-relevance judgment, and assessment sampling probability. Imports are
-idempotent. Missing collection documents and documents not yet present in the
-matter are reported and cause a nonzero exit status; no Qrels value is written
-to a collection item.
+relevance judgment, and the unused TREC assessment sampling probability. The
+probability is validated only as part of the source format; it is not retained
+in publication manifests or imported. The batch must be ready and either
+unassigned or assigned to the importing user. Imports are idempotent reviewer
+revisions with origin `IMPORT`. Missing collection documents or coded documents
+absent from the batch cause a nonzero exit status. No Qrels value is written to
+the collection or directly to matter metadata.

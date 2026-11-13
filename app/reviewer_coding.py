@@ -103,6 +103,10 @@ def append_reviewer_coding_revision(
             created_at=now,
         )
     )
+    # These immutable revision models intentionally do not expose ORM
+    # relationships. Flush each parent before its dependent row so SQLAlchemy
+    # cannot emit the composite-FK children first.
+    db.flush()
     db.add(
         ReviewBatchReviewerDocumentRevision(
             reviewer_coding_id=coding.id,
@@ -113,6 +117,7 @@ def append_reviewer_coding_revision(
             completed_at=now if status in {"COMPLETED", "SKIPPED"} else None,
         )
     )
+    db.flush()
 
     for definition, typed_values in prepared:
         db.add(
@@ -123,6 +128,7 @@ def append_reviewer_coding_revision(
                 metadata_definition_id=definition.id,
             )
         )
+        db.flush()
         db.execute(
             delete(ReviewBatchReviewerValue).where(
                 ReviewBatchReviewerValue.reviewer_coding_id == coding.id,

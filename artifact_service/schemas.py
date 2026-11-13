@@ -537,6 +537,16 @@ class CollectionItemSearchResponse(BaseModel):
     offset: int = Field(ge=0)
 
 
+class CollectionItemIdentity(BaseModel):
+    item_id: uuid.UUID
+    source_item_id: str
+
+
+class CollectionItemIdentityPage(BaseModel):
+    items: list[CollectionItemIdentity]
+    next_after_source_item_id: str | None = None
+
+
 class DateHistogramBucket(BaseModel):
     start: datetime
     count: int = Field(ge=0)
@@ -558,7 +568,7 @@ class CollectionSelectionCreate(BaseModel):
     processing_statuses: list[ProcessingStatus] = Field(default_factory=list, max_length=20)
     file_date_from: datetime | None = None
     file_date_to: datetime | None = None
-    item_ids: list[uuid.UUID] = Field(default_factory=list, max_length=5000)
+    item_ids: list[uuid.UUID] = Field(default_factory=list, max_length=25_000)
 
     @model_validator(mode="after")
     def validate_selection(self) -> "CollectionSelectionCreate":
