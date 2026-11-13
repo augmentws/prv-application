@@ -38,6 +38,7 @@ from app.document_evidence import (
     validate_document_map_citations,
 )
 from app.embedding_gateway import get_query_embedding_gateway
+from app.execution_accounting import refresh_workflow_execution_usage
 from app.matter_definition_assessments import (
     AssessmentError,
     RetrievalHit,
@@ -672,7 +673,11 @@ def retrieve_and_materialize(db: Session, assessment_id: uuid.UUID, settings: Se
         role_key="document_analysis",
         total_count=len(selected),
     )
-    analysis_step.status = "QUEUED"
+    # The parent owns the aggregate step lifecycle. Child document and provider
+    # batch workers must not update this shared row while performing model or
+    # artifact work.
+    analysis_step.status = "RUNNING"
+    analysis_step.started_at = analysis_step.started_at or utcnow()
 
     analysis_inputs: list[str] = []
     source_hashes: list[str] = []
@@ -764,8 +769,6 @@ def analyze_document(
         db.commit()
         return {"status": "SKIPPED", "reason": "EMPTY_TEXT_SOURCE"}
     step = _step(db, workflow, ordinal=3, role_key="document_analysis", total_count=assessment.selected_count)
-    step.status = "RUNNING"
-    step.started_at = step.started_at or utcnow()
     version = _skill_version(db, assessment, "document_analysis")
     settings = settings or get_settings()
     plan = build_document_map_plan(
@@ -955,6 +958,7 @@ async def _execute_document_analysis(
                 output_validators=(lambda result: validate_document_analysis_citations(result, paragraph_map),),
                 output_schema=DOCUMENT_ANALYSIS_MODEL_OUTPUT_SCHEMA,
                 additional_instructions=DOCUMENT_ANALYSIS_DOCUMENT_INSTRUCTIONS,
+                refresh_workflow_usage=False,
                 model=model,
             )
             output["coverage"] = document_map_coverage(
@@ -963,7 +967,7 @@ async def _execute_document_analysis(
                 successful_window_ids={plan.windows[0].window_id},
             )
             validate_structured_output(output, version.output_schema)
-            complete_skill_run(db, skill_run)
+            complete_skill_run(db, skill_run, refresh_workflow_usage=False)
             diagnostics = {
                 "mode": "DIRECT",
                 "window_count": 1,
@@ -1020,6 +1024,7 @@ async def _execute_document_analysis(
                 ),
                 output_schema=DOCUMENT_ANALYSIS_MAP_OUTPUT_SCHEMA,
                 additional_instructions=DOCUMENT_ANALYSIS_MAP_INSTRUCTIONS,
+                refresh_workflow_usage=False,
                 attempt=window.ordinal,
                 model=model,
             )
@@ -1056,13 +1061,14 @@ async def _execute_document_analysis(
             ),
             output_schema=DOCUMENT_ANALYSIS_MODEL_OUTPUT_SCHEMA,
             additional_instructions=DOCUMENT_ANALYSIS_REDUCE_INSTRUCTIONS,
+            refresh_workflow_usage=False,
             attempt=len(plan.windows) + 1,
             model=model,
         )
         output, pipeline_diagnostics = preserve_document_map_signals(output, map_results)
         output["coverage"] = reduce_input["coverage"]
         validate_structured_output(output, version.output_schema)
-        complete_skill_run(db, skill_run)
+        complete_skill_run(db, skill_run, refresh_workflow_usage=False)
         return output, skill_run, {
             "mode": "MAP_REDUCE",
             "window_count": len(plan.windows),
@@ -1073,8 +1079,27 @@ async def _execute_document_analysis(
         raise
 
 
-def refresh_progress(db: Session, assessment_id: uuid.UUID) -> dict[str, int]:
-    assessment, workflow, _, _ = _records(db, assessment_id)
+def refresh_progress(
+    db: Session,
+    assessment_id: uuid.UUID,
+    *,
+    commit: bool = True,
+) -> dict[str, int]:
+    # Every assessment aggregate writer takes this lock first. Document workers
+    # deliberately avoid aggregate writes, so concurrent provider finalizers
+    # serialize only for this short rollup instead of holding workflow-step
+    # locks while processing an entire provider batch.
+    with db.no_autoflush:
+        assessment = db.scalar(
+            select(MatterDefinitionAssessmentRun)
+            .where(MatterDefinitionAssessmentRun.id == assessment_id)
+            .with_for_update()
+        )
+    if assessment is None:
+        raise AssessmentError("Assessment not found")
+    workflow = db.get(WorkflowRun, assessment.workflow_run_id)
+    if workflow is None:
+        raise AssessmentError("Assessment workflow is unavailable")
     if assessment.review_batch_run_id is None:
         raise AssessmentError("Assessment batch run has not been created")
     counts = dict(
@@ -1093,7 +1118,9 @@ def refresh_progress(db: Session, assessment_id: uuid.UUID) -> dict[str, int]:
     step = _step(db, workflow, ordinal=3, role_key="document_analysis", total_count=assessment.selected_count)
     step.completed_count = assessment.summarized_count + assessment.skipped_count
     step.failed_count = assessment.failed_count
-    db.commit()
+    refresh_workflow_execution_usage(db, workflow.id)
+    if commit:
+        db.commit()
     return {key.lower(): int(value) for key, value in counts.items()}
 
 
@@ -1725,8 +1752,7 @@ def archive_superseded_assessments(
 
 def complete_assessment(db: Session, assessment_id: uuid.UUID) -> None:
     assessment, workflow, revision, matter = _records(db, assessment_id)
-    refresh_progress(db, assessment_id)
-    db.refresh(assessment)
+    refresh_progress(db, assessment_id, commit=False)
     now = utcnow()
     final_status = (
         "COMPLETED_WITH_ERRORS"
@@ -1780,7 +1806,14 @@ def complete_assessment(db: Session, assessment_id: uuid.UUID) -> None:
 
 
 def fail_assessment(db: Session, assessment_id: uuid.UUID, message: str) -> None:
-    assessment = db.get(MatterDefinitionAssessmentRun, assessment_id)
+    # Use the same first lock as progress/finalization so failure recording
+    # cannot deadlock with a concurrent provider-batch rollup.
+    with db.no_autoflush:
+        assessment = db.scalar(
+            select(MatterDefinitionAssessmentRun)
+            .where(MatterDefinitionAssessmentRun.id == assessment_id)
+            .with_for_update()
+        )
     if assessment is None or assessment.status == "CANCELED":
         return
     if assessment.status == "FAILED" and assessment.error_message:

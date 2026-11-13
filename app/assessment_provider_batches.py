@@ -5,6 +5,7 @@ from datetime import datetime, timezone
 from typing import Any
 
 from sqlalchemy import select
+from sqlalchemy.exc import SQLAlchemyError
 from sqlalchemy.orm import Session
 
 from app.artifact_gateway import get_preferred_text_source
@@ -62,6 +63,7 @@ SUCCESS_PROVIDER_STATES = {"JOB_STATE_SUCCEEDED", "JOB_STATE_PARTIALLY_SUCCEEDED
 # instructions, JSON schema, and request envelope added during submission.
 PROVIDER_BATCH_MAX_ESTIMATED_BYTES = 12_000_000
 PROVIDER_BATCH_REQUEST_OVERHEAD_BYTES = 50_000
+PROVIDER_BATCH_FINALIZATION_CHECKPOINT_SIZE = 10
 logger = logging.getLogger(__name__)
 
 
@@ -251,8 +253,6 @@ def submit_provider_batch(db: Session, batch_id: uuid.UUID, settings: Settings) 
         return batch.provider_status or "JOB_STATE_QUEUED"
     assessment, workflow, revision, _ = _records(db, batch.assessment_run_id)
     step = _step(db, workflow, ordinal=3, role_key="document_analysis", total_count=assessment.selected_count)
-    step.status = "RUNNING"
-    step.started_at = step.started_at or utcnow()
     version = _skill_version(db, assessment, "document_analysis")
     resolved_models = assessment.configuration_snapshot.get("resolved_models")
     selected_model = resolved_models.get("document_analysis") if isinstance(resolved_models, dict) else None
@@ -360,12 +360,29 @@ def finalize_provider_batch(db: Session, batch_id: uuid.UUID) -> dict[str, int]:
     manifest = batch.manifest.get("requests", []) if isinstance(batch.manifest, dict) else []
     completed = 0
     failed = 0
+    changed_since_checkpoint = 0
     for item in manifest:
         document_id = uuid.UUID(item["document_id"])
         skill_run = db.get(SkillRun, uuid.UUID(item["skill_run_id"]))
         run_document = db.get(ReviewBatchRunDocument, (batch.review_batch_run_id, document_id))
         document = db.get(MatterDocument, document_id)
         response_item = responses_by_id.get(item["custom_id"])
+        if (
+            skill_run is not None
+            and run_document is not None
+            and skill_run.status == "COMPLETED"
+            and run_document.status == "COMPLETED"
+        ):
+            completed += 1
+            continue
+        if (
+            skill_run is not None
+            and run_document is not None
+            and skill_run.status == "FAILED"
+            and run_document.status == "FAILED"
+        ):
+            failed += 1
+            continue
         try:
             if skill_run is None or run_document is None or document is None:
                 raise ValueError("Assessment batch result references a missing record")
@@ -435,7 +452,7 @@ def finalize_provider_batch(db: Session, batch_id: uuid.UUID) -> dict[str, int]:
                     },
                 ),
             )
-            complete_skill_run(db, skill_run)
+            complete_skill_run(db, skill_run, refresh_workflow_usage=False)
             persist_document_analysis(
                 db,
                 assessment=assessment,
@@ -462,14 +479,26 @@ def finalize_provider_batch(db: Session, batch_id: uuid.UUID) -> dict[str, int]:
                 },
             )
             completed += 1
+        except SQLAlchemyError:
+            # Database failures invalidate the transaction and must be retried
+            # by DBOS. Treating them as a document failure would leave the
+            # session unusable and could discard earlier document results.
+            db.rollback()
+            raise
         except Exception as exc:  # noqa: BLE001 - one invalid provider result must not discard the batch
             if skill_run is not None:
                 fail_skill_run(skill_run, exc)
-                refresh_skill_run_usage(db, skill_run)
+                refresh_skill_run_usage(db, skill_run, refresh_workflow_usage=False)
             if run_document is not None:
                 run_document.status = "FAILED"
                 run_document.completed_at = utcnow()
             failed += 1
+        changed_since_checkpoint += 1
+        if changed_since_checkpoint >= PROVIDER_BATCH_FINALIZATION_CHECKPOINT_SIZE:
+            db.commit()
+            changed_since_checkpoint = 0
+    if changed_since_checkpoint:
+        db.commit()
     batch.provider_status = state
     batch.status = "COMPLETED_WITH_ERRORS" if failed else "COMPLETED"
     batch.completed_at = utcnow()
@@ -496,7 +525,7 @@ def fail_provider_batch(db: Session, batch_id: uuid.UUID, message: str) -> None:
         skill_run = db.get(SkillRun, uuid.UUID(skill_run_id))
         if skill_run is not None and skill_run.status == "RUNNING":
             fail_skill_run(skill_run, RuntimeError(message))
-            refresh_skill_run_usage(db, skill_run)
+            refresh_skill_run_usage(db, skill_run, refresh_workflow_usage=False)
     for document_id in (uuid.UUID(value) for value in batch.document_ids):
         run_document = db.get(ReviewBatchRunDocument, (batch.review_batch_run_id, document_id))
         if run_document is not None and run_document.status not in {"COMPLETED", "SKIPPED"}:

@@ -201,7 +201,7 @@ def document_workflow(assessment_id: str, document_id: str) -> dict:
         return {"status": "FAILED", "error": str(exc)[:4000]}
 
 
-@DBOS.step(name="refresh_definition_assessment_progress")
+@DBOS.step(name="refresh_definition_assessment_progress", retries_allowed=True, max_attempts=5)
 def refresh(assessment_id: str) -> dict[str, int]:
     with SessionLocal() as db:
         return refresh_progress(db, uuid.UUID(assessment_id))
