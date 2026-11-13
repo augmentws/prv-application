@@ -100,6 +100,7 @@ import type {
   CollectionItemAnalysisInputSnapshotsRequest,
   CollectionItemGroupingSnapshot,
   CollectionItemGroupingSnapshotsRequest,
+  CollectionItemIdentityPage,
   CollectionItemRead,
   CollectionItemRelationshipReconcileRequest,
   CollectionItemRelationshipReconcileResponse,
@@ -164,6 +165,7 @@ import type {
   ListAuthorizationGrantsV1TenantsTenantIdAuthorizationGrantsGetParams,
   ListAvailableMatterAgentsV1MattersMatterIdAgentsGetParams,
   ListBulkTagJobsV1MattersMatterIdBulkTagJobsGetParams,
+  ListCollectionItemIdentitiesV1CollectionsCollectionIdItemIdentitiesGetParams,
   ListCollectionItemsV1CollectionsCollectionIdItemsGetParams,
   ListDocumentImportsV1MattersMatterIdDocumentImportsGetParams,
   ListEmbeddingJobsV1MattersMatterIdEmbeddingJobsGetParams,
@@ -21220,6 +21222,65 @@ export const listCollectionItemsV1CollectionsCollectionIdItemsGet = async (colle
 
   const data: listCollectionItemsV1CollectionsCollectionIdItemsGetResponse['data'] = body ? JSON.parse(body) : {}
   return { data, status: res.status, headers: res.headers } as listCollectionItemsV1CollectionsCollectionIdItemsGetResponse
+}
+
+
+
+export type listCollectionItemIdentitiesV1CollectionsCollectionIdItemIdentitiesGetResponse200 = {
+  data: CollectionItemIdentityPage
+  status: 200
+}
+
+export type listCollectionItemIdentitiesV1CollectionsCollectionIdItemIdentitiesGetResponse422 = {
+  data: HTTPValidationError
+  status: 422
+}
+
+export type listCollectionItemIdentitiesV1CollectionsCollectionIdItemIdentitiesGetResponseSuccess = (listCollectionItemIdentitiesV1CollectionsCollectionIdItemIdentitiesGetResponse200) & {
+  headers: Headers;
+};
+export type listCollectionItemIdentitiesV1CollectionsCollectionIdItemIdentitiesGetResponseError = (listCollectionItemIdentitiesV1CollectionsCollectionIdItemIdentitiesGetResponse422) & {
+  headers: Headers;
+};
+
+export type listCollectionItemIdentitiesV1CollectionsCollectionIdItemIdentitiesGetResponse = (listCollectionItemIdentitiesV1CollectionsCollectionIdItemIdentitiesGetResponseSuccess | listCollectionItemIdentitiesV1CollectionsCollectionIdItemIdentitiesGetResponseError)
+
+export const getListCollectionItemIdentitiesV1CollectionsCollectionIdItemIdentitiesGetUrl = (collectionId: string,
+    params?: ListCollectionItemIdentitiesV1CollectionsCollectionIdItemIdentitiesGetParams,) => {
+  const normalizedParams = new URLSearchParams();
+
+  Object.entries(params || {}).forEach(([key, value]) => {
+
+    if (value !== undefined) {
+      normalizedParams.append(key, value === null ? 'null' : String(value))
+    }
+  });
+
+  const stringifiedParams = normalizedParams.toString();
+
+  return stringifiedParams.length > 0 ? `/api/core/v1/collections/${collectionId}/item-identities?${stringifiedParams}` : `/api/core/v1/collections/${collectionId}/item-identities`
+}
+
+/**
+ * @summary List Collection Item Identities
+ */
+export const listCollectionItemIdentitiesV1CollectionsCollectionIdItemIdentitiesGet = async (collectionId: string,
+    params?: ListCollectionItemIdentitiesV1CollectionsCollectionIdItemIdentitiesGetParams, options?: RequestInit): Promise<listCollectionItemIdentitiesV1CollectionsCollectionIdItemIdentitiesGetResponse> => {
+
+  const res = await fetch(getListCollectionItemIdentitiesV1CollectionsCollectionIdItemIdentitiesGetUrl(collectionId,params),
+  {
+    ...options,
+    method: 'GET'
+
+
+  }
+)
+
+
+  const body = [204, 205, 304].includes(res.status) ? null : await res.text();
+
+  const data: listCollectionItemIdentitiesV1CollectionsCollectionIdItemIdentitiesGetResponse['data'] = body ? JSON.parse(body) : {}
+  return { data, status: res.status, headers: res.headers } as listCollectionItemIdentitiesV1CollectionsCollectionIdItemIdentitiesGetResponse
 }
 
 

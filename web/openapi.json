@@ -23153,6 +23153,82 @@
         }
       }
     },
+    "/v1/collections/{collection_id}/item-identities": {
+      "get": {
+        "tags": [
+          "artifacts"
+        ],
+        "summary": "List Collection Item Identities",
+        "operationId": "list_collection_item_identities_v1_collections__collection_id__item_identities_get",
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "collection_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid",
+              "title": "Collection Id"
+            }
+          },
+          {
+            "name": "after_source_item_id",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "After Source Item Id"
+            }
+          },
+          {
+            "name": "limit",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "integer",
+              "maximum": 5000,
+              "minimum": 1,
+              "default": 5000,
+              "title": "Limit"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/CollectionItemIdentityPage"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/v1/collections/{collection_id}/items/resolve-source-ids": {
       "post": {
         "tags": [
@@ -34870,6 +34946,52 @@
         ],
         "title": "CollectionItemGroupingSnapshotsRequest"
       },
+      "CollectionItemIdentity": {
+        "properties": {
+          "item_id": {
+            "type": "string",
+            "format": "uuid",
+            "title": "Item Id"
+          },
+          "source_item_id": {
+            "type": "string",
+            "title": "Source Item Id"
+          }
+        },
+        "type": "object",
+        "required": [
+          "item_id",
+          "source_item_id"
+        ],
+        "title": "CollectionItemIdentity"
+      },
+      "CollectionItemIdentityPage": {
+        "properties": {
+          "items": {
+            "items": {
+              "$ref": "#/components/schemas/CollectionItemIdentity"
+            },
+            "type": "array",
+            "title": "Items"
+          },
+          "next_after_source_item_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Next After Source Item Id"
+          }
+        },
+        "type": "object",
+        "required": [
+          "items"
+        ],
+        "title": "CollectionItemIdentityPage"
+      },
       "CollectionItemRead": {
         "properties": {
           "id": {
@@ -35691,7 +35813,7 @@
               "format": "uuid"
             },
             "type": "array",
-            "maxItems": 5000,
+            "maxItems": 25000,
             "title": "Item Ids"
           }
         },
@@ -43509,7 +43631,7 @@
               "format": "uuid"
             },
             "type": "array",
-            "maxItems": 5000,
+            "maxItems": 25000,
             "title": "Item Ids"
           }
         },
@@ -43737,6 +43859,46 @@
           "failed_count": {
             "type": "integer",
             "title": "Failed Count"
+          },
+          "search_projection_status": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Search Projection Status"
+          },
+          "search_projection_error_message": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Search Projection Error Message"
+          },
+          "search_projection_retry_available": {
+            "type": "boolean",
+            "title": "Search Projection Retry Available",
+            "default": false
+          },
+          "search_projection_skipped_count": {
+            "type": "integer",
+            "title": "Search Projection Skipped Count",
+            "default": 0
+          },
+          "search_projection_skipped_document_ids": {
+            "items": {
+              "type": "string",
+              "format": "uuid"
+            },
+            "type": "array",
+            "title": "Search Projection Skipped Document Ids"
           },
           "chunk_count": {
             "type": "integer",

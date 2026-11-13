@@ -233,6 +233,8 @@ export * from './collectionItemAnalysisInputSnapshotsRequest';
 export * from './collectionItemGroupingSnapshot';
 export * from './collectionItemGroupingSnapshotRecordType';
 export * from './collectionItemGroupingSnapshotsRequest';
+export * from './collectionItemIdentity';
+export * from './collectionItemIdentityPage';
 export * from './collectionItemRead';
 export * from './collectionItemReadProcessingStatus';
 export * from './collectionItemReadRawMetadata';
@@ -421,6 +423,7 @@ export * from './listAuthorizationGrantsV1TenantsTenantIdAuthorizationGrantsGetP
 export * from './listAvailableMatterAgentsV1MattersMatterIdAgentsGetParams';
 export * from './listAvailableMatterAgentsV1MattersMatterIdAgentsGetWorkflowType';
 export * from './listBulkTagJobsV1MattersMatterIdBulkTagJobsGetParams';
+export * from './listCollectionItemIdentitiesV1CollectionsCollectionIdItemIdentitiesGetParams';
 export * from './listCollectionItemsV1CollectionsCollectionIdItemsGetParams';
 export * from './listDocumentImportsV1MattersMatterIdDocumentImportsGetParams';
 export * from './listEmbeddingJobsV1MattersMatterIdEmbeddingJobsGetParams';

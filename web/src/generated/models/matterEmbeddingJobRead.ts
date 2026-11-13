@@ -25,6 +25,11 @@ export interface MatterEmbeddingJobRead {
   reused_count: number;
   skipped_count: number;
   failed_count: number;
+  search_projection_status?: string | null;
+  search_projection_error_message?: string | null;
+  search_projection_retry_available?: boolean;
+  search_projection_skipped_count?: number;
+  search_projection_skipped_document_ids?: string[];
   chunk_count: number;
   provider_request_count: number;
   input_tokens: number;
