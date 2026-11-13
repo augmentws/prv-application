@@ -82,6 +82,16 @@ class JobItemOutcome:
 
 
 @dataclass(frozen=True)
+class JobItemOutcomeOverride:
+    """A later job phase that changes the overall outcome of an existing item."""
+
+    outcome_status: OutcomeStatus
+    reason_code: str
+    message: str | None = None
+    payload: dict[str, Any] = field(default_factory=dict)
+
+
+@dataclass(frozen=True)
 class OutcomeScope:
     """The frozen identity of one logical job whose item outcomes are retained."""
 
@@ -454,11 +464,13 @@ def finalize_outcome_manifest(
     *,
     scope: OutcomeScope,
     chunks: list[OutcomeChunk],
+    outcome_overrides: dict[str, JobItemOutcomeOverride] | None = None,
 ) -> JobOutcomeManifest:
     """Verify every chunk's fragment and publish the final, ordered item-outcome artifact."""
 
     manifest = ensure_outcome_manifest(db, scope)
-    if manifest.manifest_status == "FINALIZED":
+    outcome_overrides = outcome_overrides or {}
+    if manifest.manifest_status == "FINALIZED" and not outcome_overrides:
         return manifest
     execution = db.get(WorkflowRun, manifest.producer_run_id)
     if execution is None:
@@ -478,6 +490,17 @@ def finalize_outcome_manifest(
         "matter_id": str(scope.matter_id),
         "configuration_hash": scope.configuration_hash,
     }
+    override_identity = {
+        item_id: {
+            "outcome_status": override.outcome_status,
+            "reason_code": override.reason_code,
+            "message": _sanitize_message(override.message),
+            "payload": override.payload,
+        }
+        for item_id, override in sorted(outcome_overrides.items())
+    }
+    if override_identity:
+        final_metadata["outcome_overrides_hash"] = canonical_hash(override_identity)
     output = tempfile.SpooledTemporaryFile(max_size=128 * 1024 * 1024, mode="w+b")  # noqa: SIM115
     writer = pq.ParquetWriter(
         output,
@@ -486,6 +509,7 @@ def finalize_outcome_manifest(
         use_dictionary=["item_kind", "outcome_status", "reason_code"],
     )
     ordinal = 0
+    unapplied_override_ids = set(outcome_overrides)
     try:
         for chunk in chunks:
             reference = find_outcome_fragment(scope, chunk)
@@ -513,6 +537,25 @@ def finalize_outcome_manifest(
                 )
             finally:
                 fragment_file.close()
+            for row in rows:
+                override = outcome_overrides.get(row["item_id"])
+                if override is None:
+                    continue
+                if (
+                    override.outcome_status not in OUTCOME_STATUSES
+                    or len(override.reason_code) > 200
+                    or OUTCOME_REASON_PATTERN.fullmatch(override.reason_code) is None
+                ):
+                    raise JobOutcomeError("Outcome override has an unsupported status or reason code")
+                existing_payload = json.loads(row["payload_json"])
+                row["outcome_status"] = override.outcome_status
+                row["reason_code"] = override.reason_code
+                row["message"] = _sanitize_message(override.message)
+                row["payload_json"] = _bounded_canonical_json(
+                    {**existing_payload, **override.payload},
+                    field_name="payload",
+                )
+                unapplied_override_ids.discard(row["item_id"])
             table = pa.Table.from_pylist(rows, schema=OUTCOME_ARROW_SCHEMA)
             writer.write_table(table, row_group_size=OUTCOME_ROW_GROUP_SIZE)
             status_counts.update(row["outcome_status"] for row in rows)
@@ -524,6 +567,9 @@ def finalize_outcome_manifest(
     if ordinal != scope.total_count:
         output.close()
         raise JobOutcomeError("Final job outcome row count does not match the frozen population")
+    if unapplied_override_ids:
+        output.close()
+        raise JobOutcomeError("Outcome overrides contain documents outside the frozen population")
     if sum(status_counts.values()) != scope.total_count or any(
         status not in OUTCOME_STATUSES for status in status_counts
     ):
@@ -539,6 +585,7 @@ def finalize_outcome_manifest(
         {
             "manifest_derivation": manifest.derivation_key,
             "fragment_hashes": fragment_hashes,
+            "outcome_overrides": override_identity,
         }
     )
     final_metadata["derivation_key"] = final_derivation
@@ -716,11 +763,17 @@ def _embedding_chunks(db: Session, job: MatterEmbeddingJob) -> list[tuple[Matter
     return chunks
 
 
-def finalize_embedding_outcome_manifest(db: Session, job: MatterEmbeddingJob) -> JobOutcomeManifest:
+def finalize_embedding_outcome_manifest(
+    db: Session,
+    job: MatterEmbeddingJob,
+    *,
+    outcome_overrides: dict[str, JobItemOutcomeOverride] | None = None,
+) -> JobOutcomeManifest:
     return finalize_outcome_manifest(
         db,
         scope=_embedding_scope(job),
         chunks=[chunk for _, chunk in _embedding_chunks(db, job)],
+        outcome_overrides=outcome_overrides,
     )
 
 

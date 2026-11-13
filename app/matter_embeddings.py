@@ -40,6 +40,7 @@ from app.job_executions import (
 )
 from app.job_outcomes import (
     JobItemOutcome,
+    JobItemOutcomeOverride,
     ensure_embedding_outcome_manifest,
     finalize_embedding_outcome_manifest,
     publish_embedding_outcome_fragment,
@@ -1782,11 +1783,54 @@ def refresh_job(job_id: uuid.UUID) -> None:
         db.commit()
 
 
+def _embedding_projection_outcome_overrides(
+    projection: SearchProjectionOperation | None,
+) -> dict[str, JobItemOutcomeOverride]:
+    skipped_documents = (
+        projection.payload.get("skipped_documents", [])
+        if projection is not None and isinstance(projection.payload, dict)
+        else []
+    )
+    overrides: dict[str, JobItemOutcomeOverride] = {}
+    for value in skipped_documents:
+        if not isinstance(value, dict) or not value.get("document_id"):
+            continue
+        document_id = str(value["document_id"])
+        error_type = str(value.get("error_type") or "SearchProjectionError")
+        message = str(
+            value.get("error_message")
+            or "Document was skipped because search projection failed"
+        )
+        reason_code = (
+            "embedding.search_projection_payload_too_large"
+            if error_type == "OpenSearchPayloadTooLarge"
+            else "embedding.search_projection_failed"
+        )
+        overrides[document_id] = JobItemOutcomeOverride(
+            outcome_status="FAILED",
+            reason_code=reason_code,
+            message=message,
+            payload={
+                "search_projection_failure": {
+                    "error_type": error_type,
+                    "message": message,
+                }
+            },
+        )
+    return overrides
+
+
 def complete_job(job_id: uuid.UUID) -> None:
     refresh_job(job_id)
     with SessionLocal() as db:
         job = db.get(MatterEmbeddingJob, job_id)
         if job is not None and job.status != "CANCELED":
+            projection = db.scalar(
+                select(SearchProjectionOperation).where(
+                    SearchProjectionOperation.workflow_id == f"embedding-index-job:{job.id}"
+                )
+            )
+            projection_outcome_overrides = _embedding_projection_outcome_overrides(projection)
             manifest = db.scalar(
                 select(JobOutcomeManifest).where(
                     JobOutcomeManifest.job_type == MATTER_EMBEDDING_JOB_TYPE,
@@ -1796,7 +1840,11 @@ def complete_job(job_id: uuid.UUID) -> None:
             # Jobs planned before item-outcome manifests were introduced remain
             # valid legacy jobs; they cannot truthfully reconstruct exact rows.
             if manifest is not None:
-                finalize_embedding_outcome_manifest(db, job)
+                finalize_embedding_outcome_manifest(
+                    db,
+                    job,
+                    outcome_overrides=projection_outcome_overrides,
+                )
             batch_errors = list(
                 db.scalars(
                     select(MatterEmbeddingBatch.error_message)
@@ -1808,13 +1856,24 @@ def complete_job(job_id: uuid.UUID) -> None:
                     .limit(10)
                 )
             )
-            failure_summary = "\n".join(batch_errors)[:4000] if batch_errors else None
+            skipped_projection_ids = list(projection_outcome_overrides)
+            summaries = list(batch_errors)
+            if skipped_projection_ids:
+                sample = ", ".join(skipped_projection_ids[:10])
+                suffix = "" if len(skipped_projection_ids) <= 10 else ", …"
+                summaries.append(
+                    "Search indexing skipped "
+                    f"{len(skipped_projection_ids)} document(s) whose individual payload could not be "
+                    f"indexed: {sample}{suffix}"
+                )
+            failure_summary = "\n".join(summaries)[:4000] if summaries else None
+            completed_with_errors = bool(job.failed_count or skipped_projection_ids)
             transition_job_execution(
                 db,
                 job_type=MATTER_EMBEDDING_JOB_TYPE,
                 job_id=job.id,
-                status="COMPLETED_WITH_ERRORS" if job.failed_count else "COMPLETED",
-                current_stage="COMPLETED_WITH_ERRORS" if job.failed_count else "COMPLETED",
+                status="COMPLETED_WITH_ERRORS" if completed_with_errors else "COMPLETED",
+                current_stage="COMPLETED_WITH_ERRORS" if completed_with_errors else "COMPLETED",
                 progress_completed=job.processed_count,
                 progress_total=job.total_count,
                 progress={
@@ -1824,8 +1883,9 @@ def complete_job(job_id: uuid.UUID) -> None:
                     "skipped_count": job.skipped_count,
                     "failed_count": job.failed_count,
                     "chunk_count": job.chunk_count,
+                    "search_projection_skipped_count": len(skipped_projection_ids),
                 },
-                failure_code=("MATTER_EMBEDDING_PARTIAL_FAILURE" if job.failed_count else None),
+                failure_code=("MATTER_EMBEDDING_PARTIAL_FAILURE" if completed_with_errors else None),
                 failure_summary=failure_summary,
                 failure_retriable=False,
             )

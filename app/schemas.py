@@ -573,7 +573,7 @@ class MatterDocumentSelection(BaseModel):
     processing_statuses: list[CollectionProcessingStatus] = Field(default_factory=list, max_length=20)
     file_date_from: datetime | None = None
     file_date_to: datetime | None = None
-    item_ids: list[uuid.UUID] = Field(default_factory=list, max_length=5000)
+    item_ids: list[uuid.UUID] = Field(default_factory=list, max_length=25_000)
 
     @model_validator(mode="after")
     def validate_selection(self) -> "MatterDocumentSelection":
@@ -713,6 +713,11 @@ class MatterEmbeddingJobRead(ORMModel):
     reused_count: int
     skipped_count: int
     failed_count: int
+    search_projection_status: str | None = None
+    search_projection_error_message: str | None = None
+    search_projection_retry_available: bool = False
+    search_projection_skipped_count: int = 0
+    search_projection_skipped_document_ids: list[uuid.UUID] = Field(default_factory=list)
     chunk_count: int
     provider_request_count: int
     input_tokens: int

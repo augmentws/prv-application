@@ -83,9 +83,38 @@ def _jobs_with_provider_usage(
         job_id: (int(request_count), int(input_tokens), int(output_tokens))
         for job_id, request_count, input_tokens, output_tokens in rows
     }
+    projection_rows = db.scalars(
+        select(SearchProjectionOperation).where(
+            SearchProjectionOperation.workflow_id.in_([f"embedding-index-job:{job.id}" for job in jobs])
+        )
+    )
+    projections_by_job: dict[uuid.UUID, SearchProjectionOperation] = {}
+    projection_skips_by_job: dict[uuid.UUID, list[uuid.UUID]] = {}
+    for projection in projection_rows:
+        embedding_job_id = projection.payload.get("embedding_job_id")
+        skipped_documents = projection.payload.get("skipped_documents", [])
+        if not isinstance(embedding_job_id, str) or not isinstance(skipped_documents, list):
+            continue
+        try:
+            parsed_job_id = uuid.UUID(embedding_job_id)
+        except ValueError:
+            continue
+        projections_by_job[parsed_job_id] = projection
+        parsed_document_ids: list[uuid.UUID] = []
+        for skipped_document in skipped_documents:
+            if not isinstance(skipped_document, dict) or not skipped_document.get("document_id"):
+                continue
+            try:
+                parsed_document_ids.append(uuid.UUID(str(skipped_document["document_id"])))
+            except ValueError:
+                continue
+        projection_skips_by_job[parsed_job_id] = parsed_document_ids
     reports: list[MatterEmbeddingJobRead] = []
     for job in jobs:
         request_count, input_tokens, output_tokens = usage_by_job.get(job.id, (0, 0, 0))
+        projection = projections_by_job.get(job.id)
+        projection_error = projection.error_message if projection is not None else None
+        skipped_projection_ids = projection_skips_by_job.get(job.id, [])
         reports.append(
             MatterEmbeddingJobRead.model_validate(job).model_copy(
                 update={
@@ -93,6 +122,16 @@ def _jobs_with_provider_usage(
                     "input_tokens": input_tokens,
                     "output_tokens": output_tokens,
                     "total_tokens": input_tokens + output_tokens,
+                    "search_projection_status": projection.status if projection is not None else None,
+                    "search_projection_error_message": projection_error,
+                    "search_projection_retry_available": bool(
+                        projection is not None
+                        and projection.status in {"RUNNING", "FAILED"}
+                        and projection_error
+                        and is_retryable_opensearch_error(OpenSearchError(projection_error))
+                    ),
+                    "search_projection_skipped_count": len(skipped_projection_ids),
+                    "search_projection_skipped_document_ids": skipped_projection_ids,
                 }
             )
         )
@@ -501,7 +540,19 @@ def retry_embedding_index(
     )
     if job is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Embedding job not found")
-    if job.status != "FAILED":
+    projection = db.scalar(
+        select(SearchProjectionOperation)
+        .where(SearchProjectionOperation.workflow_id == f"embedding-index-job:{job.id}")
+        .with_for_update()
+    )
+    projection_error = projection.error_message if projection is not None else None
+    retryable_projection_problem = bool(
+        projection is not None
+        and projection.status in {"RUNNING", "FAILED"}
+        and projection_error
+        and is_retryable_opensearch_error(OpenSearchError(projection_error))
+    )
+    if job.status != "FAILED" and not (job.status in ACTIVE_STATUSES and retryable_projection_problem):
         raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="Embedding job has not failed")
     active = db.scalar(
         select(MatterEmbeddingJob.id).where(
@@ -522,12 +573,6 @@ def retry_embedding_index(
             status_code=status.HTTP_409_CONFLICT,
             detail="Embedding generation did not complete; start a new embedding job instead",
         )
-    projection = db.scalar(
-        select(SearchProjectionOperation)
-        .where(SearchProjectionOperation.workflow_id == f"embedding-index-job:{job.id}")
-        .with_for_update()
-    )
-    projection_error = projection.error_message if projection is not None else None
     if projection is None or not projection_error or not is_retryable_opensearch_error(OpenSearchError(projection_error)):
         raise HTTPException(
             status_code=status.HTTP_409_CONFLICT,
@@ -545,6 +590,15 @@ def retry_embedding_index(
     )
     if prior_execution is None:
         raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="Embedding job has no common execution")
+    if job.status in ACTIVE_STATUSES:
+        try:
+            cancel_matter_embedding(job.workflow_id)
+        except Exception as exc:
+            logger.exception("Could not cancel superseded embedding workflow %s", job.workflow_id)
+            raise HTTPException(
+                status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+                detail="The running embedding attempt could not be stopped before retrying indexing",
+            ) from exc
     if prior_execution.status not in {"FAILED", "CANCELED"}:
         transition_job_execution(
             db,

@@ -1075,13 +1075,27 @@ class SearchIndexManager:
         indexed_count = checkpoint
         document_ids: list[uuid.UUID] = []
 
-        def save_progress(*, next_offset: int, failed_ids: list[str] | None = None) -> None:
+        def save_progress(
+            *,
+            next_offset: int,
+            failed_ids: list[str] | None = None,
+            skipped_failures: tuple[DocumentProjectionFailure, ...] = (),
+        ) -> None:
             if operation is None:
                 return
+            existing_skips = operation.payload.get("skipped_documents", [])
+            skips_by_document = {
+                str(value["document_id"]): value
+                for value in existing_skips
+                if isinstance(value, dict) and value.get("document_id")
+            }
+            for failure in skipped_failures:
+                skips_by_document[failure.document_id] = failure.as_dict()
             operation.payload = {
                 **operation.payload,
                 "next_document_offset": next_offset,
                 "retry_document_ids": failed_ids or [],
+                "skipped_documents": list(skips_by_document.values()),
             }
             self.db.commit()
 
@@ -1100,7 +1114,12 @@ class SearchIndexManager:
             )
             next_offset = indexed_count + len(attempted_ids) if advances_checkpoint else indexed_count
             try:
-                self._bulk_upsert(generation.index_name, documents, definitions)
+                result = self._bulk_upsert(
+                    generation.index_name,
+                    documents,
+                    definitions,
+                    continue_on_projection_error=True,
+                )
             except OpenSearchBulkError as exc:
                 # OpenSearch applies successful items in a partially failed bulk. Move
                 # the source cursor past the attempted page and retain only rejected
@@ -1110,7 +1129,10 @@ class SearchIndexManager:
                 raise
             if advances_checkpoint:
                 indexed_count = next_offset
-            save_progress(next_offset=indexed_count)
+            save_progress(
+                next_offset=indexed_count,
+                skipped_failures=result.failures if result is not None else (),
+            )
             document_ids.clear()
 
         if retry_document_ids:
@@ -1619,7 +1641,24 @@ class SearchIndexManager:
                 failures.extend(result for result in results if isinstance(result, DocumentProjectionFailure))
                 operations = [result for result in results if not isinstance(result, DocumentProjectionFailure)]
             if operations:
-                self.client.bulk(index_name, operations)
+                try:
+                    self.client.bulk(index_name, operations)
+                except OpenSearchBulkError as exc:
+                    if not continue_on_projection_error or exc.retryable:
+                        raise
+                    failed_document_ids = set(exc.failed_document_ids)
+                    failures.extend(
+                        DocumentProjectionFailure(
+                            document_id=document_id,
+                            error_type="OpenSearchPayloadTooLarge",
+                            error_message=(
+                                "Document was skipped during search projection because its individual "
+                                "OpenSearch payload exceeded the request-size limit"
+                            ),
+                        )
+                        for document_id in exc.failed_document_ids
+                    )
+                    operations = [operation for operation in operations if operation[1] not in failed_document_ids]
             indexed_count += len(operations)
             all_failures.extend(failures)
         return BulkProjectionResult(indexed_count=indexed_count, failures=tuple(all_failures))

@@ -12,7 +12,13 @@ from sqlalchemy.orm import Session
 from app.artifact_gateway import DerivedArtifactReference, EmbeddingTextSource
 from app.embeddings.chunking import semantic_chunks
 from app.embeddings.parquet import read_chunk_set, read_vector_set, write_chunk_set, write_vector_set
-from app.matter_embeddings import EmbeddingJobRuntime, _prepare_document, process_document, process_documents
+from app.matter_embeddings import (
+    EmbeddingJobRuntime,
+    _prepare_document,
+    complete_job,
+    process_document,
+    process_documents,
+)
 from app.models import MatterEmbeddingBatch, MatterEmbeddingJob, SearchProjectionOperation, User
 from app.provider_usage import record_external_provider_usage
 from embedding_service.schemas import EmbeddingResponse
@@ -192,6 +198,26 @@ def test_create_list_and_cancel_embedding_job(
         details={"embedding_batch_id": "batch-2"},
         **usage,
     )
+    search_skipped_document_id = uuid.uuid4()
+    db.add(
+        SearchProjectionOperation(
+            matter_id=uuid.UUID(matter["id"]),
+            kind="DOCUMENT_UPSERT",
+            payload={
+                "embedding_job_id": created.json()["id"],
+                "skipped_documents": [
+                    {
+                        "document_id": str(search_skipped_document_id),
+                        "error_type": "OpenSearchPayloadTooLarge",
+                        "error_message": "Individual payload exceeded the request-size limit",
+                    }
+                ],
+            },
+            status="COMPLETED",
+            workflow_id=f"embedding-index-job:{created.json()['id']}",
+            created_by_user_id=root_admin.id,
+        )
+    )
     db.commit()
 
     listed = client.get(f"/v1/matters/{matter['id']}/embedding-jobs", headers=headers)
@@ -201,6 +227,8 @@ def test_create_list_and_cancel_embedding_job(
     assert listed.json()[0]["input_tokens"] == 2_000
     assert listed.json()[0]["output_tokens"] == 0
     assert listed.json()[0]["total_tokens"] == 2_000
+    assert listed.json()[0]["search_projection_skipped_count"] == 1
+    assert listed.json()[0]["search_projection_skipped_document_ids"] == [str(search_skipped_document_id)]
 
     batches = client.get(
         f"/v1/matters/{matter['id']}/embedding-jobs/{created.json()['id']}/batches",
@@ -328,10 +356,96 @@ def test_embedding_job_read_reconciles_durable_failure_and_batch_totals(
     assert reconciled.completed_at.replace(tzinfo=timezone.utc) == completed_at
 
 
+def test_complete_embedding_job_reports_search_projection_skips(
+    client: TestClient,
+    root_token: str,
+    db: Session,
+    root_admin: User,
+    monkeypatch,
+) -> None:
+    headers = auth(root_token)
+    tenant_id = create_client_tenant(client, root_token)
+    client_record = client.post(
+        f"/v1/tenants/{tenant_id}/clients",
+        headers=headers,
+        json={"name": "Embedding Projection Skip Client"},
+    ).json()
+    matter = client.post(
+        f"/v1/clients/{client_record['id']}/matters",
+        headers=headers,
+        json={"name": "Embedding Projection Skip Matter"},
+    ).json()
+    created = client.post(f"/v1/matters/{matter['id']}/embedding-jobs", headers=headers).json()
+    job = db.get(MatterEmbeddingJob, uuid.UUID(created["id"]))
+    assert job is not None
+    skipped_document_id = uuid.uuid4()
+    job.status = "RUNNING"
+    job.total_count = 1
+    job.batch_count = 1
+    db.add(
+        MatterEmbeddingBatch(
+            job_id=job.id,
+            batch_number=0,
+            document_ids=[str(skipped_document_id)],
+            status="COMPLETED",
+            item_count=1,
+            processed_count=1,
+            embedded_count=1,
+            chunk_count=1,
+        )
+    )
+    db.add(
+        SearchProjectionOperation(
+            matter_id=job.matter_id,
+            kind="DOCUMENT_UPSERT",
+            payload={
+                "embedding_job_id": str(job.id),
+                "skipped_documents": [
+                    {
+                        "document_id": str(skipped_document_id),
+                        "error_type": "OpenSearchPayloadTooLarge",
+                        "error_message": "Individual payload exceeded the request-size limit",
+                    }
+                ],
+            },
+            status="COMPLETED",
+            workflow_id=f"embedding-index-job:{job.id}",
+            created_by_user_id=root_admin.id,
+        )
+    )
+    db.commit()
+
+    class ExistingSession:
+        def __enter__(self) -> Session:
+            return db
+
+        def __exit__(self, *_args) -> None:
+            return None
+
+    monkeypatch.setattr("app.matter_embeddings.SessionLocal", ExistingSession)
+
+    complete_job(job.id)
+
+    db.expire_all()
+    completed = db.get(MatterEmbeddingJob, job.id)
+    assert completed is not None
+    assert completed.status == "COMPLETED_WITH_ERRORS"
+    response = client.get(
+        f"/v1/matters/{matter['id']}/embedding-jobs/{job.id}",
+        headers=headers,
+    )
+    assert response.status_code == 200, response.text
+    assert response.json()["search_projection_skipped_count"] == 1
+    assert response.json()["search_projection_skipped_document_ids"] == [str(skipped_document_id)]
+    assert response.json()["execution"]["failure_code"] == "MATTER_EMBEDDING_PARTIAL_FAILURE"
+    assert "Search indexing skipped 1 document" in response.json()["execution"]["failure_summary"]
+
+
 def test_retry_embedding_index_reuses_completed_batches(
     client: TestClient,
     root_token: str,
     db: Session,
+    monkeypatch,
 ) -> None:
     headers = auth(root_token)
     tenant_id = create_client_tenant(client, root_token)
@@ -352,7 +466,7 @@ def test_retry_embedding_index_reuses_completed_batches(
     pressure_error = (
         "cluster_block_exception: index blocked because disk usage exceeded flood-stage watermark"
     )
-    job.status = "FAILED"
+    job.status = "RUNNING"
     job.batch_count = 1
     job.processed_count = 10
     job.embedded_count = 10
@@ -370,7 +484,7 @@ def test_retry_embedding_index_reuses_completed_batches(
         matter_id=job.matter_id,
         kind="DOCUMENT_UPSERT",
         payload={"embedding_job_id": str(job.id)},
-        status="FAILED",
+        status="RUNNING",
         workflow_id=f"embedding-index-job:{job.id}",
         created_by_user_id=job.created_by_user_id,
         attempt_count=5,
@@ -378,6 +492,17 @@ def test_retry_embedding_index_reuses_completed_batches(
     )
     db.add_all([batch, projection])
     db.commit()
+    cancel_workflow = Mock()
+    monkeypatch.setattr("app.routers.matter_embeddings.cancel_matter_embedding", cancel_workflow)
+
+    visible = client.get(
+        f"/v1/matters/{matter['id']}/embedding-jobs/{job.id}",
+        headers=headers,
+    )
+    assert visible.status_code == 200, visible.text
+    assert visible.json()["status"] == "RUNNING"
+    assert visible.json()["search_projection_status"] == "RUNNING"
+    assert visible.json()["search_projection_retry_available"] is True
 
     response = client.post(
         f"/v1/matters/{matter['id']}/embedding-jobs/{job.id}/retry-index",
@@ -389,6 +514,7 @@ def test_retry_embedding_index_reuses_completed_batches(
     assert response.json()["execution"]["attempt_number"] == 2
     assert response.json()["execution"]["retry_of_workflow_run_id"] is not None
     assert response.json()["execution"]["progress_completed"] == 10
+    cancel_workflow.assert_called_once_with(original_workflow_id)
     db.expire_all()
     retried = db.get(MatterEmbeddingJob, job.id)
     assert retried is not None
