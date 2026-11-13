@@ -573,7 +573,7 @@ class MatterDocumentSelection(BaseModel):
     processing_statuses: list[CollectionProcessingStatus] = Field(default_factory=list, max_length=20)
     file_date_from: datetime | None = None
     file_date_to: datetime | None = None
-    item_ids: list[uuid.UUID] = Field(default_factory=list, max_length=5000)
+    item_ids: list[uuid.UUID] = Field(default_factory=list, max_length=25_000)
 
     @model_validator(mode="after")
     def validate_selection(self) -> "MatterDocumentSelection":
@@ -660,6 +660,37 @@ class MatterDocumentRead(ORMModel):
     created_at: datetime
 
 
+class MatterDocumentMetadataImportItem(BaseModel):
+    collection_item_id: uuid.UUID
+    value: Any
+
+
+class MatterDocumentMetadataImportCreate(BaseModel):
+    metadata_definition_id: uuid.UUID
+    items: list[MatterDocumentMetadataImportItem] = Field(min_length=1, max_length=1000)
+
+    @field_validator("items")
+    @classmethod
+    def validate_unique_collection_items(
+        cls,
+        values: list[MatterDocumentMetadataImportItem],
+    ) -> list[MatterDocumentMetadataImportItem]:
+        item_ids = [item.collection_item_id for item in values]
+        if len(item_ids) != len(set(item_ids)):
+            raise ValueError("Each collection_item_id may appear only once")
+        return values
+
+
+class MatterDocumentMetadataImportRead(BaseModel):
+    requested_count: int = Field(ge=1)
+    matched_document_count: int = Field(ge=0)
+    created_event_count: int = Field(ge=0)
+    existing_event_count: int = Field(ge=0)
+    missing_collection_item_ids: list[uuid.UUID]
+    warnings: list[str]
+    search_operation_id: uuid.UUID | None = None
+
+
 class MatterOverviewCounts(BaseModel):
     document_count: int = Field(ge=0)
     custodian_count: int = Field(ge=0)
@@ -682,6 +713,11 @@ class MatterEmbeddingJobRead(ORMModel):
     reused_count: int
     skipped_count: int
     failed_count: int
+    search_projection_status: str | None = None
+    search_projection_error_message: str | None = None
+    search_projection_retry_available: bool = False
+    search_projection_skipped_count: int = 0
+    search_projection_skipped_document_ids: list[uuid.UUID] = Field(default_factory=list)
     chunk_count: int
     provider_request_count: int
     input_tokens: int

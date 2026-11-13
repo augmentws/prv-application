@@ -22,6 +22,6 @@ export interface MatterDocumentSelection {
   processing_statuses?: MatterDocumentSelectionProcessingStatusesItem[];
   file_date_from?: string | null;
   file_date_to?: string | null;
-  /** @maxItems 5000 */
+  /** @maxItems 25000 */
   item_ids?: string[];
 }

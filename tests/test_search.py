@@ -66,7 +66,12 @@ from app.search.query import (
     execute_search,
 )
 from app.search.schema import SearchReindexRequired, plan_schema_change
-from app.search.service import DocumentProjectionFailure, SearchIndexManager, build_document_projection
+from app.search.service import (
+    BulkProjectionResult,
+    DocumentProjectionFailure,
+    SearchIndexManager,
+    build_document_projection,
+)
 
 
 def test_keyword_search_scope_can_filter_a_later_semantic_query() -> None:
@@ -91,6 +96,8 @@ def auth(token: str) -> dict[str, str]:
 @pytest.mark.parametrize(
     "error",
     [
+        OpenSearchError("OpenSearch returned 413: request entity too large", status_code=413),
+        OpenSearchError("OpenSearch returned 413: request entity too large"),
         OpenSearchError("OpenSearch returned 429: too many requests", status_code=429),
         OpenSearchError("OpenSearch returned 507: insufficient storage", status_code=507),
         OpenSearchError("cluster_block_exception: disk usage exceeded flood-stage watermark"),
@@ -104,6 +111,14 @@ def test_opensearch_pressure_errors_are_retryable(error: OpenSearchError) -> Non
 
 def test_permanent_opensearch_errors_are_not_retried() -> None:
     assert not is_retryable_opensearch_error(OpenSearchError("mapper_parsing_exception: bad field"))
+    assert not is_retryable_opensearch_error(
+        OpenSearchBulkError(
+            "individual payload exceeded the request-size limit",
+            failed_document_ids=["large-document"],
+            retryable=False,
+            status_code=413,
+        )
+    )
     assert not is_retryable_opensearch_error(ValueError("bad request"))
 
 
@@ -1642,7 +1657,7 @@ def test_embedding_job_indexing_checkpoints_and_retries_only_failed_documents(
     monkeypatch.setattr(manager, "ensure", Mock(return_value=generation))
     bulk_upsert = Mock(
         side_effect=[
-            None,
+            BulkProjectionResult(indexed_count=2),
             OpenSearchBulkError(
                 "cluster_block_exception: disk usage exceeded flood-stage watermark",
                 failed_document_ids=[str(documents[2].id)],
@@ -1660,7 +1675,8 @@ def test_embedding_job_indexing_checkpoints_and_retries_only_failed_documents(
     assert operation.payload["retry_document_ids"] == [str(documents[2].id)]
     fake.refresh.assert_not_called()
 
-    bulk_upsert.reset_mock(side_effect=True)
+    bulk_upsert.reset_mock(side_effect=True, return_value=True)
+    bulk_upsert.return_value = BulkProjectionResult(indexed_count=1)
     indexed_count = manager.upsert_embedding_job(matter.id, embedding_job.id, operation=operation)
 
     assert indexed_count == 3
@@ -1671,6 +1687,101 @@ def test_embedding_job_indexing_checkpoints_and_retries_only_failed_documents(
     fake.refresh.assert_called_once_with("matter-embedding-index")
     fake.count.assert_called_once_with("matter-embedding-index")
     assert generation.document_count == 3
+
+
+def test_embedding_job_indexing_persists_irreducible_document_skips(
+    db: Session,
+    root_admin: User,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    client_record = Client(tenant_id=root_admin.tenant_id, name="Embedding Skip Client")
+    db.add(client_record)
+    db.flush()
+    matter = Matter(client_id=client_record.id, name="Embedding Skip Matter")
+    db.add(matter)
+    db.flush()
+    source_collection_id = uuid.uuid4()
+    import_job = MatterDocumentImportJob(
+        matter_id=matter.id,
+        source_collection_id=source_collection_id,
+        selection_type="EXPLICIT",
+        selection={},
+        selection_summary="Embedding skip test",
+        status="COMPLETED",
+        workflow_id=f"import:{uuid.uuid4()}",
+        created_by_user_id=root_admin.id,
+    )
+    db.add(import_job)
+    db.flush()
+    documents = [
+        MatterDocument(
+            matter_id=matter.id,
+            source_collection_id=source_collection_id,
+            collection_item_id=uuid.uuid4(),
+            added_by_import_job_id=import_job.id,
+        )
+        for _ in range(2)
+    ]
+    db.add_all(documents)
+    embedding_job = MatterEmbeddingJob(
+        matter_id=matter.id,
+        status="RUNNING",
+        workflow_id=f"embedding:{uuid.uuid4()}",
+        configuration_hash="f" * 64,
+        configuration={},
+        embedding_model="test-model",
+        embedding_model_revision="revision-1",
+        embedding_dimensions=32,
+        embedding_normalized=True,
+        created_by_user_id=root_admin.id,
+    )
+    db.add(embedding_job)
+    db.flush()
+    db.add(
+        MatterEmbeddingBatch(
+            job_id=embedding_job.id,
+            batch_number=0,
+            document_ids=[str(document.id) for document in documents],
+            status="COMPLETED",
+            item_count=2,
+            processed_count=2,
+            embedded_count=2,
+        )
+    )
+    operation = SearchProjectionOperation(
+        matter_id=matter.id,
+        kind="DOCUMENT_UPSERT",
+        payload={"embedding_job_id": str(embedding_job.id)},
+        status="RUNNING",
+        workflow_id=f"embedding-index-job:{embedding_job.id}",
+        created_by_user_id=root_admin.id,
+    )
+    db.add(operation)
+    db.commit()
+
+    skipped = DocumentProjectionFailure(
+        document_id=str(documents[0].id),
+        error_type="OpenSearchPayloadTooLarge",
+        error_message="Individual payload exceeded the request-size limit",
+    )
+    fake = Mock()
+    fake.count.return_value = 1
+    generation = SimpleNamespace(index_name="matter-embedding-index", document_count=0)
+    manager = SearchIndexManager(db, fake, Settings(search_bulk_batch_size=100))
+    monkeypatch.setattr(manager, "ensure", Mock(return_value=generation))
+    monkeypatch.setattr(
+        manager,
+        "_bulk_upsert",
+        Mock(return_value=BulkProjectionResult(indexed_count=1, failures=(skipped,))),
+    )
+
+    indexed_count = manager.upsert_embedding_job(matter.id, embedding_job.id, operation=operation)
+
+    assert indexed_count == 2
+    assert operation.payload["next_document_offset"] == 2
+    assert operation.payload["retry_document_ids"] == []
+    assert operation.payload["skipped_documents"] == [skipped.as_dict()]
+    fake.refresh.assert_called_once_with("matter-embedding-index")
 
 
 def test_topic_job_indexing_consolidates_batches_and_retries_only_failed_documents(
@@ -2019,6 +2130,66 @@ def test_full_rebuild_skips_a_document_projection_failure_and_continues(
         str(documents[0].id),
         str(documents[2].id),
     ]
+
+
+def test_bulk_upsert_reports_irreducible_opensearch_document_failure(
+    db: Session,
+    root_admin: User,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    client_record = Client(tenant_id=root_admin.tenant_id, name="Oversized Projection Client")
+    db.add(client_record)
+    db.flush()
+    matter = Matter(client_id=client_record.id, name="Oversized Projection Matter")
+    db.add(matter)
+    db.flush()
+    import_job = MatterDocumentImportJob(
+        matter_id=matter.id,
+        source_collection_id=uuid.uuid4(),
+        selection_type="EXPLICIT",
+        selection={},
+        selection_summary="Oversized projection test",
+        status="COMPLETED",
+        workflow_id=f"import:{uuid.uuid4()}",
+        created_by_user_id=root_admin.id,
+    )
+    db.add(import_job)
+    db.flush()
+    documents = [
+        MatterDocument(
+            matter_id=matter.id,
+            source_collection_id=import_job.source_collection_id,
+            collection_item_id=uuid.uuid4(),
+            added_by_import_job_id=import_job.id,
+        )
+        for _ in range(2)
+    ]
+    db.add_all(documents)
+    db.commit()
+
+    monkeypatch.setattr(
+        "app.search.service.build_document_projection",
+        lambda _db, document, _definitions, **_kwargs: {"document_id": str(document.id)},
+    )
+    fake = Mock()
+    fake.bulk.side_effect = OpenSearchBulkError(
+        "individual payload exceeded the request-size limit",
+        failed_document_ids=[str(documents[0].id)],
+        retryable=False,
+        status_code=413,
+    )
+    manager = SearchIndexManager(db, fake, Settings(search_bulk_batch_size=10))
+
+    result = manager._bulk_upsert(
+        "oversized-projection-index",
+        documents,
+        [],
+        continue_on_projection_error=True,
+    )
+
+    assert result.indexed_count == 1
+    assert [failure.document_id for failure in result.failures] == [str(documents[0].id)]
+    assert result.failures[0].error_type == "OpenSearchPayloadTooLarge"
 
 
 def test_index_manager_adds_metadata_mapping_and_backfills_in_place(db: Session) -> None:

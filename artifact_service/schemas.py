@@ -366,6 +366,27 @@ class CollectionItemRead(BaseModel):
     created_at: datetime
 
 
+class CollectionItemSourceIdResolveRequest(BaseModel):
+    source_item_ids: list[SourceItemId] = Field(min_length=1, max_length=5000)
+
+    @field_validator("source_item_ids")
+    @classmethod
+    def validate_unique_source_item_ids(cls, values: list[str]) -> list[str]:
+        if len(values) != len(set(values)):
+            raise ValueError("source_item_ids must be unique")
+        return values
+
+
+class CollectionItemSourceIdResolution(BaseModel):
+    source_item_id: str
+    collection_item_id: uuid.UUID
+
+
+class CollectionItemSourceIdResolveResponse(BaseModel):
+    items: list[CollectionItemSourceIdResolution]
+    missing_source_item_ids: list[str]
+
+
 class CollectionItemGroupingSnapshotsRequest(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
@@ -516,6 +537,16 @@ class CollectionItemSearchResponse(BaseModel):
     offset: int = Field(ge=0)
 
 
+class CollectionItemIdentity(BaseModel):
+    item_id: uuid.UUID
+    source_item_id: str
+
+
+class CollectionItemIdentityPage(BaseModel):
+    items: list[CollectionItemIdentity]
+    next_after_source_item_id: str | None = None
+
+
 class DateHistogramBucket(BaseModel):
     start: datetime
     count: int = Field(ge=0)
@@ -537,7 +568,7 @@ class CollectionSelectionCreate(BaseModel):
     processing_statuses: list[ProcessingStatus] = Field(default_factory=list, max_length=20)
     file_date_from: datetime | None = None
     file_date_to: datetime | None = None
-    item_ids: list[uuid.UUID] = Field(default_factory=list, max_length=5000)
+    item_ids: list[uuid.UUID] = Field(default_factory=list, max_length=25_000)
 
     @model_validator(mode="after")
     def validate_selection(self) -> "CollectionSelectionCreate":

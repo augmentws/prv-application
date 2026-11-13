@@ -25,6 +25,8 @@ worker.
 | `scripts.extract_eml_attachments` | Extract attachments from a local EML corpus and write an inventory | Local filesystem |
 | `scripts.extract_inventory_text` | Create searchable text sidecars from an attachment inventory | Local filesystem |
 | `scripts.import_client` | Preprocess supported datasets and upload them through the Core API | Dry-run available; Core and Artifact APIs otherwise |
+| `scripts.trec_matter_publish` | Publish a TREC coded set plus a deterministic uncoded sample to a matter | Manifest only with `--dry-run`; Core API otherwise |
+| `scripts.trec_qrels_import` | Import assessed TREC Qrels as the authenticated user's review-batch coding | Core API |
 | `scripts.voyage_embedding_harness` | Prepare and inspect Voyage embedding batch files or operate a Voyage batch | Local filesystem and, for provider commands, Voyage API |
 
 ## Database and search maintenance

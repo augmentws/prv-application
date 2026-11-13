@@ -1,10 +1,13 @@
 import json
+import logging
 from collections.abc import Iterable
 from typing import Any
 
 import httpx
 
 from app.config import Settings
+
+logger = logging.getLogger(__name__)
 
 
 class OpenSearchError(RuntimeError):
@@ -16,12 +19,20 @@ class OpenSearchError(RuntimeError):
 class OpenSearchBulkError(OpenSearchError):
     """A bulk request that reached OpenSearch but had rejected items."""
 
-    def __init__(self, message: str, *, failed_document_ids: list[str]) -> None:
-        super().__init__(message)
+    def __init__(
+        self,
+        message: str,
+        *,
+        failed_document_ids: list[str],
+        retryable: bool = True,
+        status_code: int | None = None,
+    ) -> None:
+        super().__init__(message, status_code=status_code)
         self.failed_document_ids = failed_document_ids
+        self.retryable = retryable
 
 
-_RETRYABLE_STATUS_CODES = {408, 429, 502, 503, 504, 507}
+_RETRYABLE_STATUS_CODES = {408, 413, 429, 502, 503, 504, 507}
 _RETRYABLE_PRESSURE_MARKERS = (
     "circuit_breaking_exception",
     "cluster_block_exception",
@@ -31,12 +42,18 @@ _RETRYABLE_PRESSURE_MARKERS = (
     "rejected_execution_exception",
     "too_many_requests",
     "unavailable_shards_exception",
+    # Projection failures retain only the message, not the structured status
+    # code. Recognize a persisted 413 so the completed embedding work can be
+    # retried with adaptive bulk splitting.
+    "opensearch returned 413",
 )
 
 
 def is_retryable_opensearch_error(exc: BaseException) -> bool:
-    """Return whether an OpenSearch failure may clear without changing the request."""
+    """Return whether an OpenSearch failure can be safely retried."""
     if not isinstance(exc, OpenSearchError):
+        return False
+    if isinstance(exc, OpenSearchBulkError) and not exc.retryable:
         return False
     if exc.status_code in _RETRYABLE_STATUS_CODES:
         return True
@@ -134,13 +151,58 @@ class OpenSearchClient:
         return sorted(result)
 
     def bulk(self, index: str, operations: Iterable[tuple[str, str, dict[str, Any] | None]]) -> None:
+        operation_list = list(operations)
+        if not operation_list:
+            return
+        oversized_document_ids = self._bulk_with_adaptive_split(index, operation_list)
+        if oversized_document_ids:
+            raise OpenSearchBulkError(
+                "OpenSearch skipped "
+                f"{len(oversized_document_ids)} document(s) whose individual payload exceeded "
+                "the request-size limit",
+                failed_document_ids=oversized_document_ids,
+                retryable=False,
+                status_code=413,
+            )
+
+    def _bulk_with_adaptive_split(
+        self,
+        index: str,
+        operations: list[tuple[str, str, dict[str, Any] | None]],
+    ) -> list[str]:
+        try:
+            self._bulk(index, operations)
+            return []
+        except OpenSearchError as exc:
+            if exc.status_code != 413:
+                raise
+            if len(operations) == 1:
+                document_id = operations[0][1]
+                logger.error(
+                    "OpenSearch rejected an individual document as too large; skipping index=%s document_id=%s",
+                    index,
+                    document_id,
+                )
+                return [document_id]
+            midpoint = len(operations) // 2
+            logger.warning(
+                "OpenSearch rejected bulk request as too large; splitting index=%s operations=%s into %s and %s",
+                index,
+                len(operations),
+                midpoint,
+                len(operations) - midpoint,
+            )
+            return [
+                *self._bulk_with_adaptive_split(index, operations[:midpoint]),
+                *self._bulk_with_adaptive_split(index, operations[midpoint:]),
+            ]
+
+    def _bulk(self, index: str, operations: list[tuple[str, str, dict[str, Any] | None]]) -> None:
         lines: list[str] = []
         for action, document_id, source in operations:
             lines.append(json.dumps({action: {"_id": document_id}}))
             if source is not None:
                 lines.append(json.dumps(source, default=str))
-        if not lines:
-            return
         result = self._request(
             "POST",
             f"/{index}/_bulk",

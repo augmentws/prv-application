@@ -35,6 +35,7 @@ async def execute_skill_run(
     output_validators: tuple[Callable[[dict[str, Any]], None], ...] = (),
     output_schema: dict[str, Any] | None = None,
     additional_instructions: str | None = None,
+    refresh_workflow_usage: bool = True,
     usage_job_type: str = "MATTER_DEFINITION_ASSESSMENT",
     model: Any | None = None,
 ) -> tuple[dict[str, Any], SkillRun]:
@@ -60,10 +61,15 @@ async def execute_skill_run(
             output_validators=output_validators,
             output_schema=output_schema,
             additional_instructions=additional_instructions,
+            refresh_workflow_usage=refresh_workflow_usage,
             usage_job_type=usage_job_type,
             model=model,
         )
-        complete_skill_run(db, skill_run)
+        complete_skill_run(
+            db,
+            skill_run,
+            refresh_workflow_usage=refresh_workflow_usage,
+        )
         return output, skill_run
     except Exception as exc:
         fail_skill_run(skill_run, exc)
@@ -116,6 +122,7 @@ async def execute_skill_call(
     output_validators: tuple[Callable[[dict[str, Any]], None], ...] = (),
     output_schema: dict[str, Any] | None = None,
     additional_instructions: str | None = None,
+    refresh_workflow_usage: bool = True,
     attempt: int = 1,
     usage_job_type: str = "MATTER_DEFINITION_ASSESSMENT",
     model: Any | None = None,
@@ -160,7 +167,11 @@ async def execute_skill_call(
         attempt=attempt,
         usage_context=usage_context,
     )
-    refresh_skill_run_usage(db, skill_run)
+    refresh_skill_run_usage(
+        db,
+        skill_run,
+        refresh_workflow_usage=refresh_workflow_usage,
+    )
     return envelope.output
 
 

@@ -1,6 +1,7 @@
 import asyncio
 import json
 import uuid
+from contextlib import nullcontext
 from datetime import datetime, timezone
 from types import SimpleNamespace
 from typing import get_args
@@ -22,6 +23,7 @@ from app.assessment_execution import (
     archive_superseded_assessments,
     collect_retrieval_hits,
     fail_assessment,
+    refresh_progress,
     retrieval_plan_feedback,
 )
 from app.assessment_guidance_refinement import create_guidance_revision
@@ -39,6 +41,7 @@ from app.matter_definition_assessments import (
 from app.models import (
     Matter,
     MatterDefinition,
+    MatterDefinitionAssessmentProviderBatch,
     MatterDefinitionAssessmentQuestion,
     MatterDefinitionAssessmentRun,
     MatterDefinitionRevision,
@@ -136,23 +139,44 @@ def test_provider_batch_finalization_refreshes_progress_immediately(
 ) -> None:
     batch_id = uuid.uuid4()
     assessment_id = uuid.uuid4()
+    document_id = uuid.uuid4()
+    skill_run_id = uuid.uuid4()
     batch = SimpleNamespace(
         id=batch_id,
         assessment_run_id=assessment_id,
+        review_batch_run_id=uuid.uuid4(),
         provider_batch_id="provider-batch-1",
         provider="google",
         provider_status="JOB_STATE_SUCCEEDED",
-        manifest={"requests": []},
+        manifest={
+            "requests": [
+                {
+                    "custom_id": str(document_id),
+                    "document_id": str(document_id),
+                    "skill_run_id": str(skill_run_id),
+                }
+            ]
+        },
         status="RUNNING",
         completed_at=None,
         error_message=None,
     )
     assessment = SimpleNamespace(id=assessment_id)
+    skill_run = SimpleNamespace(status="COMPLETED")
+    run_document = SimpleNamespace(status="COMPLETED")
+    document = SimpleNamespace(id=document_id)
 
     class StubSession:
         def get(self, model, record_id):
-            del model
-            return batch if record_id == batch_id else None
+            if model is MatterDefinitionAssessmentProviderBatch and record_id == batch_id:
+                return batch
+            if model is SkillRun and record_id == skill_run_id:
+                return skill_run
+            if model is ReviewBatchRunDocument and record_id == (batch.review_batch_run_id, document_id):
+                return run_document
+            if model is MatterDocument and record_id == document_id:
+                return document
+            return None
 
     class StubAdapter:
         def results(self, provider_batch_id):
@@ -184,9 +208,196 @@ def test_provider_batch_finalization_refreshes_progress_immediately(
 
     result = finalize_provider_batch(StubSession(), batch_id)  # type: ignore[arg-type]
 
-    assert result == {"completed": 0, "failed": 0}
+    assert result == {"completed": 1, "failed": 0}
     assert batch.status == "COMPLETED"
     assert refreshed == [assessment_id]
+
+
+def test_provider_batch_finalization_checkpoints_without_shared_usage_writes(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    batch_id = uuid.uuid4()
+    assessment_id = uuid.uuid4()
+    review_run_id = uuid.uuid4()
+    document_id = uuid.uuid4()
+    skill_run_id = uuid.uuid4()
+    batch = SimpleNamespace(
+        id=batch_id,
+        assessment_run_id=assessment_id,
+        review_batch_run_id=review_run_id,
+        provider_batch_id="provider-batch-1",
+        provider="google",
+        model="gemini-test",
+        provider_status="JOB_STATE_SUCCEEDED",
+        manifest={
+            "requests": [
+                {
+                    "custom_id": str(document_id),
+                    "document_id": str(document_id),
+                    "skill_run_id": str(skill_run_id),
+                    "model_configuration_hash": "a" * 64,
+                }
+            ]
+        },
+        status="RUNNING",
+        submitted_at=datetime.now(timezone.utc),
+        completed_at=None,
+        error_message=None,
+    )
+    assessment = SimpleNamespace(id=assessment_id, initiated_by_user_id=uuid.uuid4())
+    workflow = SimpleNamespace(
+        id=uuid.uuid4(),
+        tenant_id=uuid.uuid4(),
+        client_id=uuid.uuid4(),
+        matter_id=uuid.uuid4(),
+        initiated_by_user_id=uuid.uuid4(),
+        workflow_key="matter_definition_assessment_v2",
+        created_at=datetime.now(timezone.utc),
+    )
+    skill_run = SimpleNamespace(id=skill_run_id, status="RUNNING")
+    run_document = SimpleNamespace(status="IN_PROGRESS", completed_at=None)
+    document = SimpleNamespace(id=document_id, collection_item_id=uuid.uuid4())
+    source = SimpleNamespace(text="Evidence", artifact_id=uuid.uuid4(), content_hash="b" * 64)
+    version = SimpleNamespace(output_schema={})
+
+    class StubSession:
+        def __init__(self):
+            self.commits = 0
+
+        def get(self, model, record_id):
+            if model is MatterDefinitionAssessmentProviderBatch and record_id == batch_id:
+                return batch
+            if model is SkillRun and record_id == skill_run_id:
+                return skill_run
+            if model is ReviewBatchRunDocument and record_id == (review_run_id, document_id):
+                return run_document
+            if model is MatterDocument and record_id == document_id:
+                return document
+            return None
+
+        def commit(self):
+            self.commits += 1
+
+        def rollback(self):
+            pytest.fail("Successful finalization must not roll back")
+
+    class StubAdapter:
+        def results(self, provider_batch_id):
+            assert provider_batch_id == "provider-batch-1"
+            return "JOB_STATE_SUCCEEDED", [
+                SimpleNamespace(
+                    custom_id=str(document_id),
+                    error=None,
+                    output_text="{}",
+                    provider_request_id="request-1",
+                    input_tokens=10,
+                    cached_input_tokens=0,
+                    output_tokens=5,
+                )
+            ]
+
+    completed_with_shared_refresh: list[bool] = []
+    monkeypatch.setattr(
+        "app.assessment_provider_batches._records",
+        lambda *_args: (assessment, workflow, SimpleNamespace(), SimpleNamespace()),
+    )
+    monkeypatch.setattr("app.assessment_provider_batches._skill_version", lambda *_args: version)
+    monkeypatch.setattr("app.assessment_provider_batches.get_batch_adapter", lambda _provider: StubAdapter())
+    monkeypatch.setattr("app.assessment_provider_batches.validate_structured_output", lambda *_args: None)
+    monkeypatch.setattr("app.assessment_provider_batches.validate_document_analysis_citations", lambda *_args: None)
+    monkeypatch.setattr("app.assessment_provider_batches.get_preferred_text_source", lambda **_kwargs: source)
+    monkeypatch.setattr(
+        "app.assessment_provider_batches.segment_paragraphs",
+        lambda _text: SimpleNamespace(),
+    )
+    monkeypatch.setattr(
+        "app.assessment_provider_batches.build_document_map_plan",
+        lambda *_args, **_kwargs: SimpleNamespace(windows=[SimpleNamespace(window_id="w1")]),
+    )
+    monkeypatch.setattr("app.assessment_provider_batches.document_map_coverage", lambda *_args, **_kwargs: {})
+    monkeypatch.setattr("app.assessment_provider_batches.persist_model_invocations", lambda *_args, **_kwargs: None)
+
+    def complete_run(_db, received_skill_run, *, refresh_workflow_usage=True):
+        assert received_skill_run is skill_run
+        completed_with_shared_refresh.append(refresh_workflow_usage)
+        received_skill_run.status = "COMPLETED"
+
+    def persist_analysis(_db, **_kwargs):
+        run_document.status = "COMPLETED"
+
+    monkeypatch.setattr("app.assessment_provider_batches.complete_skill_run", complete_run)
+    monkeypatch.setattr("app.assessment_provider_batches.persist_document_analysis", persist_analysis)
+    monkeypatch.setattr("app.assessment_provider_batches.refresh_progress", lambda *_args: None)
+
+    session = StubSession()
+    result = finalize_provider_batch(session, batch_id)  # type: ignore[arg-type]
+
+    assert result == {"completed": 1, "failed": 0}
+    assert completed_with_shared_refresh == [False]
+    assert session.commits == 1
+    assert batch.status == "COMPLETED"
+
+
+def test_refresh_progress_locks_assessment_before_shared_rollup(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    assessment_id = uuid.uuid4()
+    workflow_id = uuid.uuid4()
+    review_run_id = uuid.uuid4()
+    assessment = SimpleNamespace(
+        id=assessment_id,
+        workflow_run_id=workflow_id,
+        review_batch_run_id=review_run_id,
+        selected_count=10,
+        summarized_count=0,
+        skipped_count=0,
+        failed_count=0,
+    )
+    workflow = SimpleNamespace(id=workflow_id)
+    review_run = SimpleNamespace(processed_document_count=0)
+    step = SimpleNamespace(completed_count=0, failed_count=0)
+
+    class StubSession:
+        def __init__(self):
+            self.no_autoflush = nullcontext()
+            self.commits = 0
+
+        def scalar(self, statement):
+            assert statement._for_update_arg is not None
+            return assessment
+
+        def get(self, model, record_id):
+            if model is WorkflowRun and record_id == workflow_id:
+                return workflow
+            if model is ReviewBatchRun and record_id == review_run_id:
+                return review_run
+            return None
+
+        def execute(self, _statement):
+            return SimpleNamespace(all=lambda: [("COMPLETED", 6), ("SKIPPED", 1), ("FAILED", 2)])
+
+        def commit(self):
+            self.commits += 1
+
+    session = StubSession()
+    refreshed_usage: list[uuid.UUID] = []
+    monkeypatch.setattr("app.assessment_execution._step", lambda *_args, **_kwargs: step)
+    monkeypatch.setattr(
+        "app.assessment_execution.refresh_workflow_execution_usage",
+        lambda _db, received_id: refreshed_usage.append(received_id),
+    )
+
+    result = refresh_progress(session, assessment_id)  # type: ignore[arg-type]
+
+    assert result == {"completed": 6, "skipped": 1, "failed": 2}
+    assert assessment.summarized_count == 6
+    assert assessment.skipped_count == 1
+    assert assessment.failed_count == 2
+    assert review_run.processed_document_count == 7
+    assert step.completed_count == 7
+    assert step.failed_count == 2
+    assert refreshed_usage == [workflow_id]
+    assert session.commits == 1
 
 
 def create_assessment_matter(client: TestClient, root_token: str, root_admin) -> str:
@@ -1763,6 +1974,10 @@ def test_long_document_map_reduce_uses_one_skill_run(
         assert diagnostics["restored_clarification_count"] == 1
         assert "coverage" not in map_output
         assert skill_run.status == "COMPLETED"
+        assert skill_run.request_count == len(plan.windows) + 1
+        # Document workers update only their own usage. The shared workflow
+        # aggregate is refreshed later under the assessment rollup lock.
+        assert step.request_count == 0
         assert len(list(db.scalars(select(SkillRun).where(SkillRun.scope_id == document.id)))) == 1
         invocations = list(db.scalars(select(ModelInvocation).where(ModelInvocation.skill_run_id == skill_run.id)))
         assert len(invocations) == len(plan.windows) + 1

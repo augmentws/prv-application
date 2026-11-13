@@ -8,9 +8,11 @@ from conftest import create_client_tenant
 from fastapi.testclient import TestClient
 from pydantic import ValidationError
 
+from app.schemas import MatterDocumentSelection
 from artifact_service.api import MAX_DATE_HISTOGRAM_BUCKETS, _fill_date_buckets
 from artifact_service.config import get_artifact_settings
 from artifact_service.schemas import (
+    CollectionSelectionCreate,
     CollectionTextProcessingTestRequest,
     DerivedArtifactUploadMetadata,
     EmailMetadataInput,
@@ -30,6 +32,24 @@ def test_collection_text_processing_test_accepts_up_to_25_items() -> None:
 
     with pytest.raises(ValidationError, match="at most 25 items"):
         CollectionTextProcessingTestRequest(item_ids=[uuid.uuid4() for _ in range(26)])
+
+
+def test_explicit_document_selections_accept_up_to_25_000_items() -> None:
+    item_ids = [uuid.uuid4() for _ in range(25_000)]
+
+    artifact_selection = CollectionSelectionCreate(request_id=uuid.uuid4(), mode="EXPLICIT", item_ids=item_ids)
+    matter_selection = MatterDocumentSelection(mode="EXPLICIT", item_ids=item_ids)
+
+    assert len(artifact_selection.item_ids) == 25_000
+    assert len(matter_selection.item_ids) == 25_000
+    with pytest.raises(ValidationError):
+        CollectionSelectionCreate(
+            request_id=uuid.uuid4(),
+            mode="EXPLICIT",
+            item_ids=[*item_ids, uuid.uuid4()],
+        )
+    with pytest.raises(ValidationError):
+        MatterDocumentSelection(mode="EXPLICIT", item_ids=[*item_ids, uuid.uuid4()])
 
 
 def test_email_upload_metadata_rejects_nul_characters_before_database_write() -> None:
@@ -348,6 +368,41 @@ def test_individual_email_upload_with_source_container(client: TestClient, root_
     )
     assert query_response.status_code == 200, query_response.text
     assert [item["source_item_id"] for item in query_response.json()] == ["allen-p/_sent_mail/1."]
+
+    identity_response = client.get(
+        f"/v1/collections/{collection_id}/item-identities",
+        headers=auth(root_token),
+        params={"limit": 1},
+    )
+    assert identity_response.status_code == 200, identity_response.text
+    assert identity_response.json() == {
+        "items": [
+            {
+                "item_id": payload["item"]["id"],
+                "source_item_id": metadata["source_item_id"],
+            }
+        ],
+        "next_after_source_item_id": None,
+    }
+
+    missing_source_id = "3.9999999.MISSING"
+    resolve_response = client.post(
+        f"/v1/collections/{collection_id}/items/resolve-source-ids",
+        headers=auth(root_token),
+        json={
+            "source_item_ids": [metadata["source_item_id"], missing_source_id]
+        },
+    )
+    assert resolve_response.status_code == 200, resolve_response.text
+    assert resolve_response.json() == {
+        "items": [
+            {
+                "source_item_id": metadata["source_item_id"],
+                "collection_item_id": payload["item"]["id"],
+            }
+        ],
+        "missing_source_item_ids": [missing_source_id],
+    }
 
     retry_response = client.post(
         f"/v1/collections/{collection_id}/items:upload",

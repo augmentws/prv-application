@@ -52,12 +52,17 @@ from artifact_service.schemas import (
     CollectionItemAnalysisInputSnapshotsRequest,
     CollectionItemGroupingSnapshot,
     CollectionItemGroupingSnapshotsRequest,
+    CollectionItemIdentity,
+    CollectionItemIdentityPage,
     CollectionItemRead,
     CollectionItemRelationshipReconcileRequest,
     CollectionItemRelationshipReconcileResponse,
     CollectionItemRelationshipSnapshot,
     CollectionItemRelationshipSnapshotsRequest,
     CollectionItemSearchResponse,
+    CollectionItemSourceIdResolution,
+    CollectionItemSourceIdResolveRequest,
+    CollectionItemSourceIdResolveResponse,
     CollectionItemUploadMetadata,
     CollectionItemUploadResponse,
     CollectionRead,
@@ -1452,6 +1457,70 @@ def build_router(
                 query = query.where(Artifact.byte_length <= max_size)
         items = list(db.scalars(query.order_by(CollectionItem.created_at, CollectionItem.id).offset(offset).limit(limit)))
         return [_item_read(db, item) for item in items]
+
+    @router.get(
+        "/collections/{collection_id}/item-identities",
+        response_model=CollectionItemIdentityPage,
+    )
+    def list_collection_item_identities(
+        collection_id: uuid.UUID,
+        after_source_item_id: str | None = None,
+        limit: Annotated[int, Query(ge=1, le=5000)] = 5000,
+        principal: ArtifactPrincipal = Depends(principal_dependency),
+        db: Session = Depends(get_artifact_db),
+    ) -> CollectionItemIdentityPage:
+        collection = _get_collection(db, collection_id, principal)
+        query = select(CollectionItem.id, CollectionItem.source_item_id).where(
+            CollectionItem.collection_id == collection.id
+        )
+        if after_source_item_id is not None:
+            query = query.where(CollectionItem.source_item_id > after_source_item_id)
+        rows = db.execute(query.order_by(CollectionItem.source_item_id).limit(limit + 1)).all()
+        has_more = len(rows) > limit
+        page_rows = rows[:limit]
+        return CollectionItemIdentityPage(
+            items=[
+                CollectionItemIdentity(item_id=item_id, source_item_id=source_item_id)
+                for item_id, source_item_id in page_rows
+            ],
+            next_after_source_item_id=(page_rows[-1][1] if has_more and page_rows else None),
+        )
+
+    @router.post(
+        "/collections/{collection_id}/items/resolve-source-ids",
+        response_model=CollectionItemSourceIdResolveResponse,
+    )
+    def resolve_collection_item_source_ids(
+        collection_id: uuid.UUID,
+        payload: CollectionItemSourceIdResolveRequest,
+        principal: ArtifactPrincipal = Depends(principal_dependency),
+        db: Session = Depends(get_artifact_db),
+    ) -> CollectionItemSourceIdResolveResponse:
+        collection = _get_collection(db, collection_id, principal)
+        resolved = {
+            item.source_item_id: item.id
+            for item in db.scalars(
+                select(CollectionItem).where(
+                    CollectionItem.collection_id == collection.id,
+                    CollectionItem.source_item_id.in_(payload.source_item_ids),
+                )
+            )
+        }
+        return CollectionItemSourceIdResolveResponse(
+            items=[
+                CollectionItemSourceIdResolution(
+                    source_item_id=source_item_id,
+                    collection_item_id=resolved[source_item_id],
+                )
+                for source_item_id in payload.source_item_ids
+                if source_item_id in resolved
+            ],
+            missing_source_item_ids=[
+                source_item_id
+                for source_item_id in payload.source_item_ids
+                if source_item_id not in resolved
+            ],
+        )
 
     @router.get("/collection-items/{collection_item_id}", response_model=CollectionItemRead)
     def get_collection_item(

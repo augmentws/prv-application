@@ -140,8 +140,9 @@ def _import_source_id(
     collection_item_id: uuid.UUID,
     definition: MetadataDefinition,
     value: Any,
+    source_namespace: str = "unmapped",
 ) -> str:
-    base = f"collection-item:{collection_item_id}:unmapped:{definition.key}"
+    base = f"collection-item:{collection_item_id}:{source_namespace}:{definition.key}"
     if definition.cardinality == "SINGLE":
         return base
     digest = hashlib.sha256(_canonical(value).encode("utf-8")).hexdigest()
@@ -156,12 +157,14 @@ def apply_imported_metadata_value(
     raw_value: Any,
     actor_id: uuid.UUID | None,
     collection_item_id: uuid.UUID,
+    source_namespace: str = "unmapped",
 ) -> ImportedMetadataApplication:
-    """Idempotently append collection metadata as IMPORT assertions.
+    """Idempotently append externally supplied metadata as IMPORT assertions.
 
-    Missing values remain implicit. Invalid source values are returned as
-    bounded warnings so one malformed external field does not discard the
-    document publication batch.
+    The collection item anchors an immutable source identity without requiring
+    the imported value to be stored on the collection item. Missing values
+    remain implicit. Invalid source values are returned as bounded warnings so
+    one malformed external field does not discard the import batch.
     """
     if definition.matter_id != document.matter_id:
         raise ValueError("Metadata definition does not belong to the document matter")
@@ -208,6 +211,7 @@ def apply_imported_metadata_value(
                     collection_item_id=collection_item_id,
                     definition=definition,
                     value=value,
+                    source_namespace=source_namespace,
                 ),
             )
         )

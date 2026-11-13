@@ -1,4 +1,5 @@
 import csv
+import json
 import uuid
 from pathlib import Path
 from typing import Any
@@ -62,6 +63,29 @@ def write_csv(path: Path, rows: list[dict[str, str]]) -> None:
         writer = csv.DictWriter(handle, fieldnames=list(rows[0]))
         writer.writeheader()
         writer.writerows(rows)
+
+
+def test_import_operation_ids_exist_in_generated_openapi() -> None:
+    document = json.loads(
+        (Path(__file__).resolve().parents[1] / "web" / "openapi.json").read_text(
+            encoding="utf-8"
+        )
+    )
+    operation_ids = {
+        operation["operationId"]
+        for methods in document["paths"].values()
+        for operation in methods.values()
+        if isinstance(operation, dict) and "operationId" in operation
+    }
+
+    assert {
+        GET_CURRENT_USER,
+        GET_BATCH,
+        LIST_BATCH_DOCUMENTS,
+        GET_REVIEWER_CODING,
+        REPLACE_VALUES,
+        SKIP_DOCUMENT,
+    } <= operation_ids
 
 
 def test_load_coding_rows_resolves_field_names_enum_labels_and_skips(tmp_path: Path) -> None:

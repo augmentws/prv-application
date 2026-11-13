@@ -100,12 +100,15 @@ import type {
   CollectionItemAnalysisInputSnapshotsRequest,
   CollectionItemGroupingSnapshot,
   CollectionItemGroupingSnapshotsRequest,
+  CollectionItemIdentityPage,
   CollectionItemRead,
   CollectionItemRelationshipReconcileRequest,
   CollectionItemRelationshipReconcileResponse,
   CollectionItemRelationshipSnapshot,
   CollectionItemRelationshipSnapshotsRequest,
   CollectionItemSearchResponse,
+  CollectionItemSourceIdResolveRequest,
+  CollectionItemSourceIdResolveResponse,
   CollectionItemUploadResponse,
   CollectionRead,
   CollectionSearchFacetV1CollectionsCollectionIdSearchFacetsFacetGetParams,
@@ -162,6 +165,7 @@ import type {
   ListAuthorizationGrantsV1TenantsTenantIdAuthorizationGrantsGetParams,
   ListAvailableMatterAgentsV1MattersMatterIdAgentsGetParams,
   ListBulkTagJobsV1MattersMatterIdBulkTagJobsGetParams,
+  ListCollectionItemIdentitiesV1CollectionsCollectionIdItemIdentitiesGetParams,
   ListCollectionItemsV1CollectionsCollectionIdItemsGetParams,
   ListDocumentImportsV1MattersMatterIdDocumentImportsGetParams,
   ListEmbeddingJobsV1MattersMatterIdEmbeddingJobsGetParams,
@@ -219,6 +223,8 @@ import type {
   MatterDocumentFactRead,
   MatterDocumentImportCreate,
   MatterDocumentImportRead,
+  MatterDocumentMetadataImportCreate,
+  MatterDocumentMetadataImportRead,
   MatterDocumentRead,
   MatterEmbeddingBatchRead,
   MatterEmbeddingJobRead,
@@ -7926,6 +7932,71 @@ export const listMatterDocumentsV1MattersMatterIdDocumentsGet = async (matterId:
 
   const data: listMatterDocumentsV1MattersMatterIdDocumentsGetResponse['data'] = body ? JSON.parse(body) : {}
   return { data, status: res.status, headers: res.headers } as listMatterDocumentsV1MattersMatterIdDocumentsGetResponse
+}
+
+
+
+export type importMatterDocumentMetadataV1MattersMatterIdDocumentMetadataImportsPostResponse200 = {
+  data: MatterDocumentMetadataImportRead
+  status: 200
+}
+
+export type importMatterDocumentMetadataV1MattersMatterIdDocumentMetadataImportsPostResponse422 = {
+  data: HTTPValidationError
+  status: 422
+}
+
+export type importMatterDocumentMetadataV1MattersMatterIdDocumentMetadataImportsPostResponseSuccess = (importMatterDocumentMetadataV1MattersMatterIdDocumentMetadataImportsPostResponse200) & {
+  headers: Headers;
+};
+export type importMatterDocumentMetadataV1MattersMatterIdDocumentMetadataImportsPostResponseError = (importMatterDocumentMetadataV1MattersMatterIdDocumentMetadataImportsPostResponse422) & {
+  headers: Headers;
+};
+
+export type importMatterDocumentMetadataV1MattersMatterIdDocumentMetadataImportsPostResponse = (importMatterDocumentMetadataV1MattersMatterIdDocumentMetadataImportsPostResponseSuccess | importMatterDocumentMetadataV1MattersMatterIdDocumentMetadataImportsPostResponseError)
+
+export const getImportMatterDocumentMetadataV1MattersMatterIdDocumentMetadataImportsPostUrl = (matterId: string,) => {
+
+
+
+
+  return `/api/core/v1/matters/${matterId}/document-metadata-imports`
+}
+
+/**
+ * @summary Import Matter Document Metadata
+ */
+export const importMatterDocumentMetadataV1MattersMatterIdDocumentMetadataImportsPost = async (matterId: string,
+    matterDocumentMetadataImportCreate: MatterDocumentMetadataImportCreate, options?: RequestInit): Promise<importMatterDocumentMetadataV1MattersMatterIdDocumentMetadataImportsPostResponse> => {
+
+    const getHeaders = (h?: NonNullable<RequestInit['headers']>): Record<string, string | readonly string[]> => {
+    if (!h) return {};
+    if (h instanceof Headers) return Object.fromEntries(h.entries());
+    if (Symbol.iterator in h) {
+      return Object.fromEntries(
+        Array.from(h as Iterable<Iterable<string>>, (entry) => Array.from(entry) as [string, string]),
+      );
+    }
+    const headers: Record<string, string | readonly string[]> = {};
+    for (const [name, value] of Object.entries<string | readonly string[] | undefined>(h)) {
+      if (value !== undefined) headers[name] = value;
+    }
+    return headers;
+  };
+const res = await fetch(getImportMatterDocumentMetadataV1MattersMatterIdDocumentMetadataImportsPostUrl(matterId),
+  {
+    ...options,
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json', ...getHeaders(options?.headers) },
+    body: JSON.stringify(matterDocumentMetadataImportCreate)
+  }
+)
+
+
+  const body = [204, 205, 304].includes(res.status) ? null : await res.text();
+
+  const data: importMatterDocumentMetadataV1MattersMatterIdDocumentMetadataImportsPostResponse['data'] = body ? JSON.parse(body) : {}
+  return { data, status: res.status, headers: res.headers } as importMatterDocumentMetadataV1MattersMatterIdDocumentMetadataImportsPostResponse
 }
 
 
@@ -21151,6 +21222,130 @@ export const listCollectionItemsV1CollectionsCollectionIdItemsGet = async (colle
 
   const data: listCollectionItemsV1CollectionsCollectionIdItemsGetResponse['data'] = body ? JSON.parse(body) : {}
   return { data, status: res.status, headers: res.headers } as listCollectionItemsV1CollectionsCollectionIdItemsGetResponse
+}
+
+
+
+export type listCollectionItemIdentitiesV1CollectionsCollectionIdItemIdentitiesGetResponse200 = {
+  data: CollectionItemIdentityPage
+  status: 200
+}
+
+export type listCollectionItemIdentitiesV1CollectionsCollectionIdItemIdentitiesGetResponse422 = {
+  data: HTTPValidationError
+  status: 422
+}
+
+export type listCollectionItemIdentitiesV1CollectionsCollectionIdItemIdentitiesGetResponseSuccess = (listCollectionItemIdentitiesV1CollectionsCollectionIdItemIdentitiesGetResponse200) & {
+  headers: Headers;
+};
+export type listCollectionItemIdentitiesV1CollectionsCollectionIdItemIdentitiesGetResponseError = (listCollectionItemIdentitiesV1CollectionsCollectionIdItemIdentitiesGetResponse422) & {
+  headers: Headers;
+};
+
+export type listCollectionItemIdentitiesV1CollectionsCollectionIdItemIdentitiesGetResponse = (listCollectionItemIdentitiesV1CollectionsCollectionIdItemIdentitiesGetResponseSuccess | listCollectionItemIdentitiesV1CollectionsCollectionIdItemIdentitiesGetResponseError)
+
+export const getListCollectionItemIdentitiesV1CollectionsCollectionIdItemIdentitiesGetUrl = (collectionId: string,
+    params?: ListCollectionItemIdentitiesV1CollectionsCollectionIdItemIdentitiesGetParams,) => {
+  const normalizedParams = new URLSearchParams();
+
+  Object.entries(params || {}).forEach(([key, value]) => {
+
+    if (value !== undefined) {
+      normalizedParams.append(key, value === null ? 'null' : String(value))
+    }
+  });
+
+  const stringifiedParams = normalizedParams.toString();
+
+  return stringifiedParams.length > 0 ? `/api/core/v1/collections/${collectionId}/item-identities?${stringifiedParams}` : `/api/core/v1/collections/${collectionId}/item-identities`
+}
+
+/**
+ * @summary List Collection Item Identities
+ */
+export const listCollectionItemIdentitiesV1CollectionsCollectionIdItemIdentitiesGet = async (collectionId: string,
+    params?: ListCollectionItemIdentitiesV1CollectionsCollectionIdItemIdentitiesGetParams, options?: RequestInit): Promise<listCollectionItemIdentitiesV1CollectionsCollectionIdItemIdentitiesGetResponse> => {
+
+  const res = await fetch(getListCollectionItemIdentitiesV1CollectionsCollectionIdItemIdentitiesGetUrl(collectionId,params),
+  {
+    ...options,
+    method: 'GET'
+
+
+  }
+)
+
+
+  const body = [204, 205, 304].includes(res.status) ? null : await res.text();
+
+  const data: listCollectionItemIdentitiesV1CollectionsCollectionIdItemIdentitiesGetResponse['data'] = body ? JSON.parse(body) : {}
+  return { data, status: res.status, headers: res.headers } as listCollectionItemIdentitiesV1CollectionsCollectionIdItemIdentitiesGetResponse
+}
+
+
+
+export type resolveCollectionItemSourceIdsV1CollectionsCollectionIdItemsResolveSourceIdsPostResponse200 = {
+  data: CollectionItemSourceIdResolveResponse
+  status: 200
+}
+
+export type resolveCollectionItemSourceIdsV1CollectionsCollectionIdItemsResolveSourceIdsPostResponse422 = {
+  data: HTTPValidationError
+  status: 422
+}
+
+export type resolveCollectionItemSourceIdsV1CollectionsCollectionIdItemsResolveSourceIdsPostResponseSuccess = (resolveCollectionItemSourceIdsV1CollectionsCollectionIdItemsResolveSourceIdsPostResponse200) & {
+  headers: Headers;
+};
+export type resolveCollectionItemSourceIdsV1CollectionsCollectionIdItemsResolveSourceIdsPostResponseError = (resolveCollectionItemSourceIdsV1CollectionsCollectionIdItemsResolveSourceIdsPostResponse422) & {
+  headers: Headers;
+};
+
+export type resolveCollectionItemSourceIdsV1CollectionsCollectionIdItemsResolveSourceIdsPostResponse = (resolveCollectionItemSourceIdsV1CollectionsCollectionIdItemsResolveSourceIdsPostResponseSuccess | resolveCollectionItemSourceIdsV1CollectionsCollectionIdItemsResolveSourceIdsPostResponseError)
+
+export const getResolveCollectionItemSourceIdsV1CollectionsCollectionIdItemsResolveSourceIdsPostUrl = (collectionId: string,) => {
+
+
+
+
+  return `/api/core/v1/collections/${collectionId}/items/resolve-source-ids`
+}
+
+/**
+ * @summary Resolve Collection Item Source Ids
+ */
+export const resolveCollectionItemSourceIdsV1CollectionsCollectionIdItemsResolveSourceIdsPost = async (collectionId: string,
+    collectionItemSourceIdResolveRequest: CollectionItemSourceIdResolveRequest, options?: RequestInit): Promise<resolveCollectionItemSourceIdsV1CollectionsCollectionIdItemsResolveSourceIdsPostResponse> => {
+
+    const getHeaders = (h?: NonNullable<RequestInit['headers']>): Record<string, string | readonly string[]> => {
+    if (!h) return {};
+    if (h instanceof Headers) return Object.fromEntries(h.entries());
+    if (Symbol.iterator in h) {
+      return Object.fromEntries(
+        Array.from(h as Iterable<Iterable<string>>, (entry) => Array.from(entry) as [string, string]),
+      );
+    }
+    const headers: Record<string, string | readonly string[]> = {};
+    for (const [name, value] of Object.entries<string | readonly string[] | undefined>(h)) {
+      if (value !== undefined) headers[name] = value;
+    }
+    return headers;
+  };
+const res = await fetch(getResolveCollectionItemSourceIdsV1CollectionsCollectionIdItemsResolveSourceIdsPostUrl(collectionId),
+  {
+    ...options,
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json', ...getHeaders(options?.headers) },
+    body: JSON.stringify(collectionItemSourceIdResolveRequest)
+  }
+)
+
+
+  const body = [204, 205, 304].includes(res.status) ? null : await res.text();
+
+  const data: resolveCollectionItemSourceIdsV1CollectionsCollectionIdItemsResolveSourceIdsPostResponse['data'] = body ? JSON.parse(body) : {}
+  return { data, status: res.status, headers: res.headers } as resolveCollectionItemSourceIdsV1CollectionsCollectionIdItemsResolveSourceIdsPostResponse
 }
 
 

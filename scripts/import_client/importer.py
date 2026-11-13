@@ -247,6 +247,11 @@ class BaseImporter:
         limit: int | None = None,
         continue_on_error: bool = False,
     ) -> ImportReport:
+        if self.store_source_containers and not adapter.store_source_containers_supported:
+            raise ValueError(
+                f"{adapter.dataset_name} uses extracted directory containers and does not "
+                "support --store-source-containers"
+            )
         self.api.ensure_storage(self.tenant_id, self.tenant_slug)
         collection = self._resolve_collection()
         self._load_custodians()

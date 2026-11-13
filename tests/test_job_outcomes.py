@@ -9,6 +9,7 @@ from sqlalchemy.orm import Session
 from app.artifact_gateway import WorkflowArtifactReference
 from app.job_outcomes import (
     JobItemOutcome,
+    JobItemOutcomeOverride,
     ensure_embedding_outcome_manifest,
     finalize_canceled_embedding_outcome_manifest,
     finalize_embedding_outcome_manifest,
@@ -172,6 +173,40 @@ def test_embedding_fragments_finalize_and_page_without_item_rows_in_core(
     assert rows[0]["item_id"] == document_ids[1]
     assert rows[0]["reason_code"] == "embedding.no_text_source"
 
+    manifest = finalize_embedding_outcome_manifest(
+        db,
+        job,
+        outcome_overrides={
+            document_ids[0]: JobItemOutcomeOverride(
+                outcome_status="FAILED",
+                reason_code="embedding.search_projection_payload_too_large",
+                message="The individual OpenSearch payload exceeded the request-size limit",
+                payload={"search_projection_failure": {"error_type": "OpenSearchPayloadTooLarge"}},
+            )
+        },
+    )
+    db.commit()
+
+    assert manifest.status_counts == {"FAILED": 1, "SKIPPED": 1}
+    assert manifest.reason_counts == {
+        "embedding.no_text_source": 1,
+        "embedding.search_projection_payload_too_large": 1,
+    }
+    failed_total, failed_rows = page_job_outcomes(
+        manifest,
+        actor_user_id=job.created_by_user_id,
+        status="FAILED",
+        reason_code=None,
+        offset=0,
+        limit=100,
+    )
+    assert failed_total == 1
+    assert failed_rows[0]["item_id"] == document_ids[0]
+    assert failed_rows[0]["metrics"] == {"chunk_count": 3}
+    assert failed_rows[0]["payload"]["search_projection_failure"] == {
+        "error_type": "OpenSearchPayloadTooLarge"
+    }
+
     api_page = client.get(
         f"/v1/matters/{matter['id']}/job-outcomes/MATTER_EMBEDDING_JOB/{job.id}/items",
         headers=auth(root_token),
@@ -179,6 +214,13 @@ def test_embedding_fragments_finalize_and_page_without_item_rows_in_core(
     )
     assert api_page.status_code == 200, api_page.text
     assert api_page.json()["items"][0]["item_id"] == document_ids[1]
+    failed_api_page = client.get(
+        f"/v1/matters/{matter['id']}/job-outcomes/MATTER_EMBEDDING_JOB/{job.id}/items",
+        headers=auth(root_token),
+        params={"status": "FAILED", "limit": 100},
+    )
+    assert failed_api_page.status_code == 200, failed_api_page.text
+    assert failed_api_page.json()["items"][0]["item_id"] == document_ids[0]
     csv_download = client.get(
         f"/v1/matters/{matter['id']}/job-outcomes/MATTER_EMBEDDING_JOB/{job.id}/download",
         headers=auth(root_token),

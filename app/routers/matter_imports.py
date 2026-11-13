@@ -17,6 +17,7 @@ from app.authorization import ResourceRef, can
 from app.config import Settings, get_settings
 from app.database import get_db
 from app.dependencies import Principal, get_principal
+from app.document_metadata import apply_imported_metadata_value
 from app.job_archives import job_not_archived
 from app.job_executions import (
     MATTER_DOCUMENT_IMPORT_JOB_TYPE,
@@ -34,13 +35,17 @@ from app.models import (
     MatterDocumentCustodian,
     MatterDocumentImportBatch,
     MatterDocumentImportJob,
+    MetadataDefinition,
 )
 from app.schemas import (
     MatterDocumentImportCreate,
     MatterDocumentImportRead,
+    MatterDocumentMetadataImportCreate,
+    MatterDocumentMetadataImportRead,
     MatterDocumentRead,
     MatterOverviewCounts,
 )
+from app.search.operations import create_search_operation
 from app.workflows.dispatcher import cancel_matter_import, enqueue_matter_import, get_dbos_client
 from artifact_service.auth import get_embedded_artifact_principal
 from artifact_service.database import get_artifact_db
@@ -544,6 +549,132 @@ def list_matter_documents(
             .offset(offset)
             .limit(limit)
         )
+    )
+
+
+@router.post(
+    "/matters/{matter_id}/document-metadata-imports",
+    response_model=MatterDocumentMetadataImportRead,
+)
+def import_matter_document_metadata(
+    matter_id: uuid.UUID,
+    payload: MatterDocumentMetadataImportCreate,
+    principal: Principal = Depends(get_principal),
+    db: Session = Depends(get_db),
+) -> MatterDocumentMetadataImportRead:
+    matter = _matter(db, matter_id, principal, "document.review")
+    if (
+        matter.status != "ACTIVE"
+        or matter.client.status != "ACTIVE"
+        or matter.client.tenant.status != "ACTIVE"
+    ):
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail="Matter, client, or tenant is not active",
+        )
+    definition = db.scalar(
+        select(MetadataDefinition).where(
+            MetadataDefinition.id == payload.metadata_definition_id,
+            MetadataDefinition.matter_id == matter.id,
+        )
+    )
+    if definition is None:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Metadata definition not found",
+        )
+    if definition.status != "ACTIVE" or definition.value_source != "ASSERTED":
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
+            detail="Imported metadata requires an active asserted metadata definition",
+        )
+
+    requested = {item.collection_item_id: item for item in payload.items}
+    documents = {
+        document.collection_item_id: document
+        for document in db.scalars(
+            select(MatterDocument).where(
+                MatterDocument.matter_id == matter.id,
+                MatterDocument.collection_item_id.in_(requested),
+            )
+        )
+    }
+    created_event_count = 0
+    existing_event_count = 0
+    changed_document_ids: set[uuid.UUID] = set()
+    warnings: list[str] = []
+    try:
+        for collection_item_id, item in requested.items():
+            document = documents.get(collection_item_id)
+            if document is None:
+                continue
+            application = apply_imported_metadata_value(
+                db,
+                document=document,
+                definition=definition,
+                raw_value=item.value,
+                actor_id=principal.user.id,
+                collection_item_id=collection_item_id,
+                source_namespace="matter-metadata-import",
+            )
+            warnings.extend(
+                f"{collection_item_id}: {message}"
+                for message in application.warnings
+            )
+            if not application.events and not application.warnings:
+                existing_event_count += 1
+            for event in application.events:
+                created_event_count += 1
+                changed_document_ids.add(document.id)
+                record_audit(
+                    db,
+                    tenant_id=matter.client.tenant_id,
+                    actor_user_id=principal.user.id,
+                    action="document.metadata_imported",
+                    target_type="metadata_event",
+                    target_id=event.id,
+                    details={
+                        "matter_id": str(matter.id),
+                        "document_id": str(document.id),
+                        "metadata_definition_id": str(definition.id),
+                        "field_key": definition.key,
+                        "collection_item_id": str(collection_item_id),
+                    },
+                )
+        search_operation_id = None
+        if changed_document_ids and definition.searchable:
+            operation = create_search_operation(
+                db,
+                matter_id=matter.id,
+                kind="DOCUMENT_UPSERT",
+                payload={
+                    "document_ids": sorted(
+                        str(document_id) for document_id in changed_document_ids
+                    )
+                },
+                created_by_user_id=principal.user.id,
+            )
+            search_operation_id = operation.id
+        db.commit()
+    except ValueError as exc:
+        db.rollback()
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
+            detail=str(exc),
+        ) from exc
+
+    return MatterDocumentMetadataImportRead(
+        requested_count=len(requested),
+        matched_document_count=len(documents),
+        created_event_count=created_event_count,
+        existing_event_count=existing_event_count,
+        missing_collection_item_ids=[
+            collection_item_id
+            for collection_item_id in requested
+            if collection_item_id not in documents
+        ],
+        warnings=warnings,
+        search_operation_id=search_operation_id,
     )
 
 
