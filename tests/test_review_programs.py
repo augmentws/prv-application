@@ -1459,6 +1459,7 @@ def test_synthetic_run_advances_waits_resumes_retries_reconciles_and_cancels(
         assert child.context["batching_policy"] == "AD_HOC_BATCH"
         first_assessment = db.get(MatterDefinitionAssessmentRun, child.child_id)
         assert first_assessment is not None
+        assert first_assessment.execution_mode == "EVIDENCE_FIRST_V1"
         workflow_run = db.get(WorkflowRun, first_assessment.workflow_run_id)
         assert workflow_run is not None
         assert workflow_run.notification_policy == "PARENT_MANAGED"

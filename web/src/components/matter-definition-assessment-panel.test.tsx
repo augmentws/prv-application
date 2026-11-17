@@ -713,7 +713,7 @@ describe("MatterDefinitionAssessmentPanel regeneration", () => {
     ));
   });
 
-  it("defaults new assessments to provider batching and sends the selected mode", async () => {
+  it("defaults new assessments to provider batching and evidence-first processing", async () => {
     let launchPayload: Record<string, unknown> | undefined;
     vi.mocked(coreApi).mockImplementation(async (path, init) => {
       if (path === "/v1/matters/matter-1/definition-assessments" && init?.method === "POST") {
@@ -746,11 +746,11 @@ describe("MatterDefinitionAssessmentPanel regeneration", () => {
     await waitFor(() => {
       expect(launchPayload?.use_batching).toBe(true);
       expect(launchPayload?.target_document_count).toBe(500);
-      expect(launchPayload?.execution_mode).toBe("DIRECT_V1");
+      expect(launchPayload?.execution_mode).toBe("EVIDENCE_FIRST_V1");
     });
   });
 
-  it("allows an operator to select the controlled evidence-first route", async () => {
+  it("allows an operator to select the direct rollback route", async () => {
     let launchPayload: Record<string, unknown> | undefined;
     vi.mocked(coreApi).mockImplementation(async (path, init) => {
       if (path === "/v1/matters/matter-1/definition-assessments" && init?.method === "POST") {
@@ -775,12 +775,12 @@ describe("MatterDefinitionAssessmentPanel regeneration", () => {
     );
 
     await user.click(await screen.findByRole("button", { name: "New" }));
-    await user.type(screen.getByLabelText("Assessment name"), "Evidence assessment");
+    await user.type(screen.getByLabelText("Assessment name"), "Direct rollback assessment");
     await user.click(screen.getByRole("combobox", { name: "Processing path" }));
-    await user.click(screen.getByRole("option", { name: "Evidence-first · controlled rollout" }));
+    await user.click(screen.getByRole("option", { name: "Direct analysis · rollback" }));
     await user.click(screen.getByRole("button", { name: "Start assessment" }));
 
-    await waitFor(() => expect(launchPayload?.execution_mode).toBe("EVIDENCE_FIRST_V1"));
+    await waitFor(() => expect(launchPayload?.execution_mode).toBe("DIRECT_V1"));
   });
 
   it("offers summary reuse or frozen-batch reanalysis", async () => {

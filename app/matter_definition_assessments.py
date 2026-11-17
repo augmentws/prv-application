@@ -192,7 +192,7 @@ def start_assessment(
     control_sample_size: int = 0,
     use_batching: bool = True,
     acknowledge_large_run_warning: bool = False,
-    execution_mode: str = "DIRECT_V1",
+    execution_mode: str = "EVIDENCE_FIRST_V1",
     notification_parent_type: str | None = None,
     notification_parent_id: uuid.UUID | None = None,
 ) -> MatterDefinitionAssessmentRun:

@@ -42389,7 +42389,7 @@
               "EVIDENCE_FIRST_V1"
             ],
             "title": "Execution Mode",
-            "default": "DIRECT_V1"
+            "default": "EVIDENCE_FIRST_V1"
           }
         },
         "type": "object",

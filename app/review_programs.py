@@ -1662,6 +1662,9 @@ def _launch_definition_assessment(
             control_sample_size=int(policy.get("assessment_control_sample_size", 0)),
             use_batching=bool(policy.get("assessment_use_batching", True)),
             acknowledge_large_run_warning=bool(policy.get("acknowledge_large_run_warning", False)),
+            execution_mode=str(
+                policy.get("assessment_execution_mode", "EVIDENCE_FIRST_V1")
+            ),
             notification_parent_type="REVIEW_PROGRAM_RUN",
             notification_parent_id=run.id,
         )
@@ -1729,6 +1732,7 @@ def _starting_configuration(
             "assessment_target_document_count": 500,
             "assessment_control_sample_size": 0,
             "assessment_use_batching": True,
+            "assessment_execution_mode": "EVIDENCE_FIRST_V1",
             "acknowledge_large_run_warning": False,
             "maximum_assessment_rounds": 3,
         },
@@ -2039,6 +2043,7 @@ def setup_review_program_definition(
                 "assessment_target_document_count": assessment_target_document_count,
                 "assessment_control_sample_size": assessment_control_sample_size,
                 "assessment_use_batching": assessment_use_batching,
+                "assessment_execution_mode": "EVIDENCE_FIRST_V1",
                 "acknowledge_large_run_warning": acknowledge_large_run_warning,
                 "maximum_assessment_rounds": 3,
             },

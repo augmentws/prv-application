@@ -955,7 +955,7 @@ def test_assessment_launch_pins_inputs_and_requires_large_run_acknowledgment(
         )
 
 
-def test_assessment_launch_routes_evidence_first_only_when_explicitly_enabled(
+def test_assessment_launch_defaults_to_evidence_first_and_retains_direct_rollback(
     client: TestClient,
     root_token: str,
     root_admin,
@@ -988,13 +988,13 @@ def test_assessment_launch_routes_evidence_first_only_when_explicitly_enabled(
         lambda *args, **kwargs: direct_calls.append((args, kwargs)),
     )
 
-    evidence = client.post(
+    evidence = client.post(base, headers=auth(root_token), json={"name": "Evidence default"})
+    assert evidence.status_code == 202, evidence.text
+    direct = client.post(
         base,
         headers=auth(root_token),
-        json={"name": "Evidence routed", "execution_mode": "EVIDENCE_FIRST_V1"},
+        json={"name": "Direct rollback", "execution_mode": "DIRECT_V1"},
     )
-    assert evidence.status_code == 202, evidence.text
-    direct = client.post(base, headers=auth(root_token), json={"name": "Direct default"})
     assert direct.status_code == 202, direct.text
 
     assert len(evidence_calls) == 1
@@ -1949,7 +1949,7 @@ def test_reconciliation_resumes_pending_parent_after_every_document_is_terminal(
     launched = client.post(
         f"/v1/matters/{matter_id}/definition-assessments",
         headers=auth(root_token),
-        json={"target_document_count": 2},
+        json={"target_document_count": 2, "execution_mode": "DIRECT_V1"},
     )
     assert launched.status_code == 202, launched.text
     assessment_id = uuid.UUID(launched.json()["id"])
@@ -2098,7 +2098,7 @@ def test_completed_assessment_can_reanalyze_same_frozen_batch(
     launched = client.post(
         f"/v1/matters/{matter_id}/definition-assessments",
         headers=auth(root_token),
-        json={"target_document_count": 2},
+        json={"target_document_count": 2, "execution_mode": "DIRECT_V1"},
     )
     assert launched.status_code == 202, launched.text
     assessment_id = uuid.UUID(launched.json()["id"])

@@ -3668,7 +3668,7 @@ class MatterDefinitionAssessmentCreate(BaseModel):
     control_sample_size: int = Field(default=0, ge=0, le=1_000_000)
     use_batching: bool = True
     acknowledge_large_run_warning: bool = False
-    execution_mode: Literal["DIRECT_V1", "EVIDENCE_FIRST_V1"] = "DIRECT_V1"
+    execution_mode: Literal["DIRECT_V1", "EVIDENCE_FIRST_V1"] = "EVIDENCE_FIRST_V1"
 
 
 class MatterDefinitionAssessmentUpdate(BaseModel):
