@@ -5,6 +5,7 @@
  * Phase-one Core API for authentication, hierarchical tenants, clients, matters, and matter metadata definitions.
  * OpenAPI spec version: 0.1.0
  */
+import type { MatterDefinitionAssessmentCreateExecutionMode } from './matterDefinitionAssessmentCreateExecutionMode';
 
 export interface MatterDefinitionAssessmentCreate {
   name?: string | null;
@@ -21,4 +22,5 @@ export interface MatterDefinitionAssessmentCreate {
   control_sample_size?: number;
   use_batching?: boolean;
   acknowledge_large_run_warning?: boolean;
+  execution_mode?: MatterDefinitionAssessmentCreateExecutionMode;
 }

@@ -1,13 +1,26 @@
+import re
 from copy import deepcopy
 
-DOCUMENT_ANALYSIS_PIPELINE_VERSION = "document-analysis-pipeline-v3"
+DOCUMENT_ANALYSIS_PIPELINE_VERSION = "document-analysis-pipeline-v4"
+
+EVIDENCE_METADATA_CITATION_PATTERN = (
+    r"^metadata:(?:original_filename|title|email\.(?:sender|subject|(?:to|cc|bcc):[1-9][0-9]*))$"
+)
+EVIDENCE_CITATION_PATTERN = (
+    r"^(?:¶[1-9][0-9]*|metadata:(?:original_filename|title|email\."
+    r"(?:sender|subject|(?:to|cc|bcc):[1-9][0-9]*)))$"
+)
+
+
+def is_supported_evidence_citation(value: object) -> bool:
+    return re.fullmatch(EVIDENCE_CITATION_PATTERN, str(value)) is not None
 
 PARAGRAPH_IDS_SCHEMA = {
     "type": "array",
     "minItems": 1,
     "maxItems": 30,
     "uniqueItems": True,
-    "items": {"type": "string", "pattern": "^¶[1-9][0-9]*$"},
+    "items": {"type": "string", "pattern": EVIDENCE_CITATION_PATTERN},
 }
 
 CITED_TEXT_SCHEMA = {

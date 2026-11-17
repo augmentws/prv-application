@@ -1,3 +1,4 @@
+import asyncio
 import json
 import logging
 import uuid
@@ -15,6 +16,10 @@ from app.assessment_execution import (
     _step,
     persist_document_analysis,
     refresh_progress,
+)
+from app.assessment_output_repair import (
+    normalize_or_repair_document_analysis,
+    safe_normalize_document_analysis,
 )
 from app.config import Settings, get_settings
 from app.document_analysis_schemas import (
@@ -36,6 +41,7 @@ from app.model_execution import (
     InvocationTelemetry,
     StructuredModelRequest,
     assemble_structured_prompt,
+    content_hash,
     validate_structured_output,
 )
 from app.models import (
@@ -77,13 +83,7 @@ def plan_provider_batches(
     document_ids: list[uuid.UUID],
     settings: Settings,
 ) -> dict[str, Any]:
-    assessment, _, _, matter = _records(db, assessment_id)
-    if not assessment.use_batching:
-        return {
-            "provider_batch_ids": [],
-            "realtime_document_ids": [str(value) for value in document_ids],
-            "poll_seconds": settings.definition_assessment_provider_batch_poll_seconds,
-        }
+    assessment, workflow, _, matter = _records(db, assessment_id)
     if assessment.review_batch_run_id is None:
         raise ValueError("Assessment batch run has not been created")
     document_ids = [
@@ -98,6 +98,32 @@ def plan_provider_batches(
         is not None
         and run_document.status not in {"COMPLETED", "SKIPPED"}
     ]
+    repair_summary = (
+        repair_failed_provider_batch_outputs(db, assessment_id, document_ids)
+        if ":retry:" in workflow.dbos_workflow_id
+        else {"normalized": 0, "focused_repair": 0, "fallback": 0}
+    )
+    # A retry may have recovered some or all documents from their stored provider
+    # output. Never schedule those documents for a second full analysis.
+    document_ids = [
+        document_id
+        for document_id in document_ids
+        if (
+            run_document := db.get(
+                ReviewBatchRunDocument,
+                (assessment.review_batch_run_id, document_id),
+            )
+        )
+        is not None
+        and run_document.status not in {"COMPLETED", "SKIPPED"}
+    ]
+    if not assessment.use_batching:
+        return {
+            "provider_batch_ids": [],
+            "realtime_document_ids": [str(value) for value in document_ids],
+            "poll_seconds": settings.definition_assessment_provider_batch_poll_seconds,
+            "repair_summary": repair_summary,
+        }
     resolved_models = assessment.configuration_snapshot.get("resolved_models")
     model_key = resolved_models.get("document_analysis") if isinstance(resolved_models, dict) else None
     if not isinstance(model_key, str):
@@ -105,6 +131,7 @@ def plan_provider_batches(
             "provider_batch_ids": [],
             "realtime_document_ids": [str(value) for value in document_ids],
             "poll_seconds": settings.definition_assessment_provider_batch_poll_seconds,
+            "repair_summary": repair_summary,
         }
     target_resolution = resolve_batch_target(model_key)
     if target_resolution is None:
@@ -114,6 +141,7 @@ def plan_provider_batches(
             "provider_batch_ids": [],
             "realtime_document_ids": [str(value) for value in document_ids],
             "poll_seconds": settings.definition_assessment_provider_batch_poll_seconds,
+            "repair_summary": repair_summary,
         }
     _, target = target_resolution
     all_existing = list(
@@ -133,6 +161,7 @@ def plan_provider_batches(
             "provider_batch_ids": [str(batch.id) for batch in existing],
             "realtime_document_ids": [str(value) for value in document_ids if value not in batched],
             "poll_seconds": settings.definition_assessment_provider_batch_poll_seconds,
+            "repair_summary": repair_summary,
         }
 
     eligible: list[tuple[uuid.UUID, int]] = []
@@ -201,6 +230,7 @@ def plan_provider_batches(
         "provider_batch_ids": [str(batch.id) for batch in provider_batches],
         "realtime_document_ids": [str(value) for value in realtime],
         "poll_seconds": settings.definition_assessment_provider_batch_poll_seconds,
+        "repair_summary": repair_summary,
     }
 
 
@@ -343,6 +373,228 @@ def poll_provider_batch(db: Session, batch_id: uuid.UUID) -> str:
     return state
 
 
+def _assessment_usage_context(workflow, *, provider_batch_id: str, repair: bool = False):
+    details: dict[str, str | int] = {
+        "workflow_key": workflow.workflow_key,
+        "role_key": "document_analysis",
+        "provider_batch_id": provider_batch_id,
+    }
+    if repair:
+        details["focused_repair"] = 1
+    return ProviderUsageContext(
+        tenant_id=workflow.tenant_id,
+        client_id=workflow.client_id,
+        matter_id=workflow.matter_id,
+        started_by_user_id=workflow.initiated_by_user_id,
+        job_type="MATTER_DEFINITION_ASSESSMENT",
+        job_id=workflow.id,
+        job_created_at=workflow.created_at,
+        details=details,
+    )
+
+
+def _prior_provider_results(
+    db: Session,
+    assessment_id: uuid.UUID,
+    document_ids: set[uuid.UUID],
+) -> dict[uuid.UUID, tuple[MatterDefinitionAssessmentProviderBatch, Any]]:
+    candidates: dict[uuid.UUID, tuple[MatterDefinitionAssessmentProviderBatch, Any]] = {}
+    batches = list(
+        db.scalars(
+            select(MatterDefinitionAssessmentProviderBatch)
+            .where(
+                MatterDefinitionAssessmentProviderBatch.assessment_run_id == assessment_id,
+                MatterDefinitionAssessmentProviderBatch.provider_batch_id.is_not(None),
+            )
+            .order_by(MatterDefinitionAssessmentProviderBatch.ordinal)
+        )
+    )
+    for batch in batches:
+        try:
+            state, responses = get_batch_adapter(batch.provider).results(batch.provider_batch_id)
+        except Exception:
+            logger.warning(
+                "Unable to read prior provider results for focused assessment repair batch_id=%s",
+                batch.id,
+                exc_info=True,
+            )
+            continue
+        if state not in SUCCESS_PROVIDER_STATES:
+            continue
+        for response in responses:
+            if not response.custom_id:
+                continue
+            try:
+                document_id = uuid.UUID(response.custom_id)
+            except (TypeError, ValueError):
+                continue
+            if document_id in document_ids:
+                candidates[document_id] = (batch, response)
+    return candidates
+
+
+def repair_failed_provider_batch_outputs(
+    db: Session,
+    assessment_id: uuid.UUID,
+    document_ids: list[uuid.UUID],
+) -> dict[str, int]:
+    """Recover retryable batch outputs before scheduling complete document reanalysis.
+
+    Every recovered document is checkpointed independently. Missing, unsupported, or
+    failed repairs remain queued and fall back to the normal analysis path.
+    """
+
+    assessment, workflow, revision, matter = _records(db, assessment_id)
+    if assessment.review_batch_run_id is None:
+        return {"normalized": 0, "focused_repair": 0, "fallback": len(document_ids)}
+    version = _skill_version(db, assessment, "document_analysis")
+    resolved_models = assessment.configuration_snapshot.get("resolved_models")
+    selected_model = resolved_models.get("document_analysis") if isinstance(resolved_models, dict) else None
+    if not isinstance(selected_model, str):
+        return {"normalized": 0, "focused_repair": 0, "fallback": len(document_ids)}
+    step = _step(db, workflow, ordinal=3, role_key="document_analysis", total_count=assessment.selected_count)
+    candidates = _prior_provider_results(db, assessment.id, set(document_ids))
+    summary = {"normalized": 0, "focused_repair": 0, "fallback": 0}
+
+    for document_id in document_ids:
+        candidate = candidates.get(document_id)
+        if candidate is None:
+            summary["fallback"] += 1
+            continue
+        batch, response_item = candidate
+        run_document = db.get(
+            ReviewBatchRunDocument,
+            (assessment.review_batch_run_id, document_id),
+        )
+        document = db.get(MatterDocument, document_id)
+        skill_run = None
+        try:
+            if run_document is None or document is None:
+                raise ValueError("Focused repair references a missing assessment document")
+            if run_document.status in {"COMPLETED", "SKIPPED"}:
+                continue
+            if response_item.error or not response_item.output_text:
+                raise ValueError(response_item.error or "Prior provider output is unavailable")
+            output = json.loads(response_item.output_text)
+            if not isinstance(output, dict):
+                raise TypeError("Prior provider output is not an object")
+            source = get_preferred_text_source(
+                collection_item_id=document.collection_item_id,
+                actor_user_id=assessment.initiated_by_user_id,
+                tenant_id=workflow.tenant_id,
+                client_id=workflow.client_id,
+            )
+            if source is None:
+                raise ValueError("Document text source is unavailable for focused repair")
+            paragraph_map = segment_paragraphs(source.text)
+            map_plan = build_document_map_plan(
+                paragraph_map,
+                max_characters=get_settings().definition_assessment_map_max_characters,
+            )
+            if len(map_plan.windows) != 1:
+                raise ValueError("Prior provider-batch document no longer fits in one analysis window")
+            skill_run = create_skill_run(
+                db,
+                workflow=workflow,
+                step=step,
+                skill_version=version,
+                scope_type="MATTER_DOCUMENT",
+                scope_id=document.id,
+                request_input={
+                    "recovery_mode": "FOCUSED_PROVIDER_OUTPUT_REPAIR",
+                    "provider_batch_id": batch.provider_batch_id,
+                    "raw_output_hash": content_hash(output),
+                },
+            )
+            outcome = asyncio.run(
+                normalize_or_repair_document_analysis(
+                    output=output,
+                    paragraph_map=paragraph_map,
+                    matter_definition=revision.content_markdown,
+                    model_key=version.model_key,
+                    model_policy=version.model_policy,
+                    limits=version.limits,
+                    cache_identity={
+                        "assessment_id": str(assessment.id),
+                        "matter_document_id": str(document.id),
+                        "provider_batch_id": str(batch.provider_batch_id),
+                        "recovery": True,
+                    },
+                    run_id=f"assessment-document-recovery:{assessment.id}:{document.id}",
+                    model=selected_model,
+                )
+            )
+            output = outcome.output
+            output["coverage"] = document_map_coverage(
+                paragraph_map,
+                map_plan,
+                successful_window_ids={map_plan.windows[0].window_id},
+            )
+            validate_structured_output(output, version.output_schema)
+            if outcome.envelope is not None:
+                persist_model_invocations(
+                    db,
+                    outcome.envelope.invocations,
+                    skill_run_id=skill_run.id,
+                    usage_context=_assessment_usage_context(
+                        workflow,
+                        provider_batch_id=str(batch.provider_batch_id),
+                        repair=True,
+                    ),
+                )
+                if outcome.assembly is not None:
+                    skill_run.cache_fingerprint = outcome.assembly.cache_fingerprint
+            complete_skill_run(db, skill_run, refresh_workflow_usage=False)
+            persist_document_analysis(
+                db,
+                assessment=assessment,
+                matter=matter,
+                revision=revision,
+                document=document,
+                run_document=run_document,
+                version=version,
+                source=source,
+                paragraph_map=paragraph_map,
+                output=output,
+                skill_run=skill_run,
+                pipeline_diagnostics={
+                    "mode": "RECOVERED_PROVIDER_BATCH_OUTPUT",
+                    "window_count": 1,
+                    "final_near_miss_count": sum(
+                        1
+                        for value in output.get("criterion_matches") or []
+                        if isinstance(value, dict) and value.get("match_type") == "NEAR_MISS"
+                    ),
+                    "final_clarification_count": len(output.get("clarification_requests") or []),
+                    "restored_near_miss_count": 0,
+                    "restored_clarification_count": 0,
+                    "output_repair": outcome.diagnostics(),
+                },
+            )
+            summary["focused_repair" if outcome.focused_repair_applied else "normalized"] += 1
+            db.commit()
+        except SQLAlchemyError:
+            db.rollback()
+            raise
+        except Exception as exc:  # noqa: BLE001 - unsupported repair falls back to full analysis
+            if skill_run is not None:
+                fail_skill_run(skill_run, exc)
+                refresh_skill_run_usage(db, skill_run, refresh_workflow_usage=False)
+            if run_document is not None and run_document.status not in {"COMPLETED", "SKIPPED"}:
+                run_document.status = "QUEUED"
+                run_document.completed_at = None
+            summary["fallback"] += 1
+            logger.info(
+                "Focused repair unavailable; document will receive complete analysis assessment_id=%s document_id=%s",
+                assessment.id,
+                document_id,
+            )
+            db.commit()
+    if summary["normalized"] or summary["focused_repair"]:
+        refresh_progress(db, assessment.id)
+    return summary
+
+
 def finalize_provider_batch(db: Session, batch_id: uuid.UUID) -> dict[str, int]:
     batch = db.get(MatterDefinitionAssessmentProviderBatch, batch_id)
     if batch is None or not batch.provider_batch_id:
@@ -393,7 +645,8 @@ def finalize_provider_batch(db: Session, batch_id: uuid.UUID) -> dict[str, int]:
             if not response_item.output_text:
                 raise ValueError("Batch API returned an empty document analysis")
             output = json.loads(response_item.output_text)
-            validate_structured_output(output, DOCUMENT_ANALYSIS_MODEL_OUTPUT_SCHEMA)
+            if not isinstance(output, dict):
+                raise TypeError("Batch API document analysis is not an object")
             source = get_preferred_text_source(
                 collection_item_id=document.collection_item_id,
                 actor_user_id=assessment.initiated_by_user_id,
@@ -403,6 +656,38 @@ def finalize_provider_batch(db: Session, batch_id: uuid.UUID) -> dict[str, int]:
             if source is None:
                 raise ValueError("Document text source is unavailable while finalizing its batch result")
             paragraph_map = segment_paragraphs(source.text)
+            output, normalization_changes = safe_normalize_document_analysis(output)
+            repair_outcome = None
+            try:
+                validate_structured_output(output, DOCUMENT_ANALYSIS_MODEL_OUTPUT_SCHEMA)
+            except ValueError:
+                resolved_models = assessment.configuration_snapshot.get("resolved_models")
+                selected_model = (
+                    resolved_models.get("document_analysis")
+                    if isinstance(resolved_models, dict)
+                    else None
+                )
+                if not isinstance(selected_model, str):
+                    raise TypeError("Assessment does not have a pinned document-analysis model")
+                repair_outcome = asyncio.run(
+                    normalize_or_repair_document_analysis(
+                        output=output,
+                        paragraph_map=paragraph_map,
+                        matter_definition=revision.content_markdown,
+                        model_key=version.model_key,
+                        model_policy=version.model_policy,
+                        limits=version.limits,
+                        cache_identity={
+                            "assessment_id": str(assessment.id),
+                            "matter_document_id": str(document.id),
+                            "provider_batch_id": str(batch.provider_batch_id),
+                        },
+                        run_id=f"assessment-document-repair:{assessment.id}:{document.id}",
+                        model=selected_model,
+                    )
+                )
+                output = repair_outcome.output
+                normalization_changes = list(repair_outcome.normalization_changes)
             validate_document_analysis_citations(output, paragraph_map)
             plan = build_document_map_plan(
                 paragraph_map,
@@ -417,6 +702,20 @@ def finalize_provider_batch(db: Session, batch_id: uuid.UUID) -> dict[str, int]:
             )
             validate_structured_output(output, version.output_schema)
             now = utcnow()
+            usage_context = ProviderUsageContext(
+                tenant_id=workflow.tenant_id,
+                client_id=workflow.client_id,
+                matter_id=workflow.matter_id,
+                started_by_user_id=workflow.initiated_by_user_id,
+                job_type="MATTER_DEFINITION_ASSESSMENT",
+                job_id=workflow.id,
+                job_created_at=workflow.created_at,
+                details={
+                    "workflow_key": workflow.workflow_key,
+                    "role_key": "document_analysis",
+                    "provider_batch_id": batch.provider_batch_id,
+                },
+            )
             persist_model_invocations(
                 db,
                 (
@@ -437,21 +736,16 @@ def finalize_provider_batch(db: Session, batch_id: uuid.UUID) -> dict[str, int]:
                     ),
                 ),
                 skill_run_id=skill_run.id,
-                usage_context=ProviderUsageContext(
-                    tenant_id=workflow.tenant_id,
-                    client_id=workflow.client_id,
-                    matter_id=workflow.matter_id,
-                    started_by_user_id=workflow.initiated_by_user_id,
-                    job_type="MATTER_DEFINITION_ASSESSMENT",
-                    job_id=workflow.id,
-                    job_created_at=workflow.created_at,
-                    details={
-                        "workflow_key": workflow.workflow_key,
-                        "role_key": "document_analysis",
-                        "provider_batch_id": batch.provider_batch_id,
-                    },
-                ),
+                usage_context=usage_context,
             )
+            if repair_outcome is not None and repair_outcome.envelope is not None:
+                persist_model_invocations(
+                    db,
+                    repair_outcome.envelope.invocations,
+                    skill_run_id=skill_run.id,
+                    attempt=2,
+                    usage_context=usage_context,
+                )
             complete_skill_run(db, skill_run, refresh_workflow_usage=False)
             persist_document_analysis(
                 db,
@@ -476,6 +770,16 @@ def finalize_provider_batch(db: Session, batch_id: uuid.UUID) -> dict[str, int]:
                     "final_clarification_count": len(output.get("clarification_requests") or []),
                     "restored_near_miss_count": 0,
                     "restored_clarification_count": 0,
+                    "output_repair": (
+                        repair_outcome.diagnostics()
+                        if repair_outcome is not None
+                        else {
+                            "normalization_changes": normalization_changes,
+                            "focused_repair_applied": False,
+                            "validation_errors": [],
+                            "repair_targets": None,
+                        }
+                    ),
                 },
             )
             completed += 1

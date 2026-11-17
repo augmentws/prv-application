@@ -24,7 +24,19 @@ worker.
 | `scripts.export_openapi` | Regenerate the web application's OpenAPI contract | `web/openapi.json` |
 | `scripts.extract_eml_attachments` | Extract attachments from a local EML corpus and write an inventory | Local filesystem |
 | `scripts.extract_inventory_text` | Create searchable text sidecars from an attachment inventory | Local filesystem |
+| `scripts.assessment_model_baseline` | Export read-only assessment model, schema, retry, timing, and usage diagnostics | Reads Core; local JSON report only |
+| `scripts.build_assessment_replay_corpus` | Freeze a content-free, stratified assessment replay corpus | Reads Core and Artifact; local JSON manifest only |
+| `scripts.focused_assessment_repair_test` | Plan or execute read-only focused repairs for failed assessment model outputs | Reads Core, Artifact, and provider results; optional model calls; local JSON report only |
 | `scripts.import_client` | Preprocess supported datasets and upload them through the Core API | Dry-run available; Core and Artifact APIs otherwise |
+| `scripts.replay_assessment_synthesis` | Compile and inspect a deterministic staged-synthesis manifest without model calls | No, unless `--output` writes a local manifest |
+| `scripts.run_assessment_replay` | Compare a candidate model against a frozen document-analysis corpus | Reads Core and Artifact; model calls and local JSON report only |
+| `scripts.run_evidence_extraction_conformance` | Exercise the evidence-first extraction contract over one frozen source window | Reads Core and Artifact; one model request and a local JSON report only |
+| `scripts.run_evidence_document_conformance` | Shadow one frozen document through extraction, deterministic aggregation, criterion adjudication, and decision | Reads Core and Artifact; bounded model requests and a local JSON report only |
+| `scripts.run_evidence_conformance_cohort` | Repeat selected evidence-first shadow documents and summarize stability | Reads Core and Artifact; bounded model requests and local JSON reports only |
+| `scripts.run_evidence_shadow` | Plan or explicitly execute artifact-backed evidence extraction for selected assessment documents | Dry-run reads Core and Artifact; `--execute` writes isolated workflow/artifact telemetry and makes bounded model calls |
+| `scripts.run_evidence_adjudication_shadow` | Plan or explicitly adjudicate one durable evidence-observations artifact | Dry-run reads Core and Artifact; `--execute` writes isolated workflow/artifact telemetry and makes bounded model calls only for non-empty criteria |
+| `scripts.run_evidence_narrative_shadow` | Plan or explicitly add optional prose to a completed evidence-first compatibility result | Dry-run reads Core and Artifact; `--execute` writes an isolated narrative artifact and makes at most one bounded model call |
+| `scripts.build_evidence_outcome_manifest` | Reconcile all evidence-first document stages for one assessment | Dry-run reads Core workflow state; `--publish` writes one immutable `ANALYSIS_OUTCOME_MANIFEST` artifact without model calls |
 | `scripts.trec_matter_publish` | Publish a TREC coded set plus a deterministic uncoded sample to a matter | Manifest only with `--dry-run`; Core API otherwise |
 | `scripts.trec_qrels_import` | Import assessed TREC Qrels as the authenticated user's review-batch coding | Core API |
 | `scripts.voyage_embedding_harness` | Prepare and inspect Voyage embedding batch files or operate a Voyage batch | Local filesystem and, for provider commands, Voyage API |
@@ -209,6 +221,279 @@ Missing tools are reported; affected files receive an appropriate report
 status.
 
 ## Developer tools
+
+### Export an assessment model baseline
+
+Export aggregate execution diagnostics without model calls or database writes:
+
+```bash
+pipenv run python -m scripts.assessment_model_baseline \
+  --assessment-id 4a1622f2-7859-474c-a9db-0b9dbe548f47 \
+  --output /tmp/assessment-model-baseline.json
+```
+
+Add `--include-documents` to include document and SkillRun identifiers with per-document request, repair, validation,
+timing, and token counters. The report never includes document text or model output. Historical runs created before
+structured validation telemetry was added will show empty validation categories; their request-sequence and usage
+totals remain available.
+
+### Build and run an assessment replay corpus
+
+Freeze a representative corpus from a completed assessment:
+
+```bash
+pipenv run python -m scripts.build_assessment_replay_corpus \
+  --assessment-id 4a1622f2-7859-474c-a9db-0b9dbe548f47 \
+  --target-size 24 \
+  --output /tmp/assessment-replay-corpus.json
+```
+
+Selection is deterministic and retains final failures, historical failed attempts, and replayed documents, then
+samples repair-heavy, multi-request, slow, and stable control cases. The manifest contains protected object identifiers, source and baseline artifact hashes,
+compact result signatures, and historical usage. It contains neither source text nor complete model output. The corpus
+hash covers the entire frozen contract and every case.
+
+Run the exact frozen direct/map-reduce contract against one candidate model:
+
+```bash
+pipenv run python -m scripts.run_assessment_replay \
+  --corpus /tmp/assessment-replay-corpus.json \
+  --extraction-model google:gemini-3.5-flash-lite \
+  --adjudication-model google:gemini-3.7-flash \
+  --output /tmp/assessment-replay-gemini-flash-lite.json
+```
+
+The runner verifies the corpus, source, baseline artifact, guidance, skill, schema, prompt settings, limits, splitter,
+and pipeline hashes before making model calls. It never writes assessment, workflow, SkillRun, invocation, or artifact
+state. Use `--max-cases 1` or repeat `--case-id` for a bounded smoke test. Complete candidate output is excluded by
+default; `--include-outputs` should be used only for a suitably protected local report.
+Use `--max-output-tokens 40000` to test the newly raised document-analysis budget against a corpus frozen under the
+former 20,000-token limit; the override is recorded in the report and does not mutate the assessment or skill version.
+
+Verify all protected references and hashes without calling a model:
+
+```bash
+pipenv run python -m scripts.run_assessment_replay \
+  --corpus /tmp/assessment-replay-corpus.json \
+  --verify-only \
+  --output /tmp/assessment-replay-verification.json
+```
+
+Exercise the evidence-first observation contract against one selected source window:
+
+```bash
+pipenv run python -m scripts.run_evidence_extraction_conformance \
+  --corpus /tmp/assessment-replay-corpus.json \
+  --case-id 1bd2cea7-9b40-4155-9486-0247be7f799e \
+  --window-ordinal 2 \
+  --model google:gemini-3.5-flash-lite \
+  --output /tmp/evidence-extraction-conformance.json
+```
+
+The command verifies the frozen source and baseline artifact, calls the model exactly once with no automatic output
+retry, and never changes assessment state. Local item-aware normalization preserves valid observations and reports
+invalid optional items individually. Source text and observation facts are excluded from the report by default; add
+`--include-observations` only for a suitably protected local report. Running the command sends the selected protected
+source window and review guidance to the named external model provider, so obtain the required authorization first.
+The provider-facing V2 contract uses one required primary citation and four nullable additional scalar citation slots;
+this makes admitted paragraph IDs and the five-citation ceiling enforceable even when a provider removes array
+`maxItems` constraints.
+
+Build production-shaped plans for explicit documents from an existing assessment without calling a model or writing
+database state:
+
+```bash
+pipenv run python -m scripts.run_evidence_shadow \
+  --actor-user-id <root-or-tenant-admin-user-id> \
+  --assessment-id 4a1622f2-7859-474c-a9db-0b9dbe548f47 \
+  --document-id 1bd2cea7-9b40-4155-9486-0247be7f799e \
+  --output /tmp/evidence-shadow-plan.json
+```
+
+The dry run is the default. The explicit actor must be an active root administrator or administrator of the matter's
+owning tenant. It verifies assessment-batch membership, resolves the isolated managed extraction binding,
+loads each immutable preferred text source, and reports source/plan hashes and unit counts without including source
+text. Use `--max-documents N` instead of `--document-id` for the first N batch documents; the launcher enforces a
+hard 25-document ceiling.
+
+Execution is deliberately separate and disabled by default. After explicitly setting
+`DEFINITION_ASSESSMENT_EVIDENCE_SHADOW_ENABLED=true`, add `--execute`. This creates or resumes an isolated shadow
+workflow, persists plans and unit fragments, records SkillRun/ModelInvocation usage, and writes compacted observation
+artifacts. It does not modify assessment results, document outcomes, synthesis, reviewer coding, or matter coding.
+Retryable model failures are persisted and automatically advance only that extraction unit up to the bounded attempt
+ceiling, including after restart; completed units are reused. Non-retryable, exhausted, and canceled units remain
+explicit partial outcomes. `--retry-failed` is the operator action that advances an otherwise terminal failed or
+canceled extraction unit. Executing sends the selected protected document text and Review Guidance to the configured
+external model provider and therefore requires the corresponding authorization.
+
+After an extraction shadow has produced an `ANALYSIS_OBSERVATIONS` artifact, build the separate criterion-adjudication
+plan without rereading source text or calling a model:
+
+```bash
+pipenv run python -m scripts.run_evidence_adjudication_shadow \
+  --actor-user-id <root-or-tenant-admin-user-id> \
+  --assessment-id 4a1622f2-7859-474c-a9db-0b9dbe548f47 \
+  --observations-artifact-id <analysis-observations-artifact-id> \
+  --adjudication-model google:gemini-3.7-flash \
+  --output /tmp/evidence-adjudication-plan.json
+```
+
+Dry-run remains the default. The launcher proves that the observations, extraction plan, frozen Review Guidance,
+criterion catalog, matter, and assessment all belong together. It reports only identities and counts. It creates one
+bounded packet per criterion (sharded at 32 observations); complete empty criteria become deterministic `NO_MATCH`
+without a provider request, while incomplete evidence makes them `INSUFFICIENT`.
+
+To execute, keep `DEFINITION_ASSESSMENT_EVIDENCE_SHADOW_ENABLED=true` and add `--execute`. The command persists an
+adjudication plan, one durable fragment per packet attempt, and a compacted criterion-decisions artifact. It does not
+modify the assessment, synthesis, document outcomes, reviewer coding, or matter coding. A rerun reuses completed
+packets. Retryable failures automatically advance only the affected packet up to the bounded attempt ceiling and
+resume after restart. `--execute --retry-failed` explicitly advances a terminal failed or canceled packet. The explicit
+3.7 Flash override is recommended for the first validation cohort because prior conformance work showed the
+adjudication role needs reliable distinction between a match and a related near miss; omitting the option uses the
+configured model pinned by the managed skill.
+
+After criterion compaction, the same execution now derives and persists `ANALYSIS_DOCUMENT_DECISION` without another
+model request. The initial code-owned policy supports positive inclusion criteria: any `MATCH` makes the document
+`RESPONSIVE`; absent a match, unresolved or incomplete evidence makes it `UNCLEAR`; otherwise it is
+`NON_RESPONSIVE`. `NEAR_MISS` is preserved as a criterion boundary but does not itself make the document responsive.
+`UNMAPPED` observations remain available in diagnostics but are not frozen criteria and cannot independently change
+the document determination.
+Guidance containing negative or contextual decision semantics is reported as `MODEL_FALLBACK_REQUIRED` rather than
+being forced through the positive-only rule.
+
+The final deterministic step writes `ANALYSIS_COMPATIBILITY_RESULT`. For a completed code-owned decision, its
+`output` validates against the existing `document-analysis-pipeline-v4` contract. Adjudicated matches and near misses
+become criterion matches, cited observation facts provide a bounded evidence digest, and extraction coverage is
+translated from the immutable evaluation plan. The artifact records field-level provenance and explicitly marks
+narrative as `NOT_REQUESTED`; it does not invent prose or clarification questions. If document-decider fallback is
+required, the compatibility artifact is stored as `BLOCKED` with reasons and no fabricated output. All three artifacts
+remain non-authoritative and cannot be projected into the assessment or coding by this command.
+
+After the deterministic compatibility result is complete, the optional narrative stage can be planned separately:
+
+```bash
+pipenv run python -m scripts.run_evidence_narrative_shadow \
+  --actor-user-id <root-or-tenant-admin-user-id> \
+  --assessment-id 4a1622f2-7859-474c-a9db-0b9dbe548f47 \
+  --compatibility-artifact-id <analysis-compatibility-result-artifact-id> \
+  --output /tmp/evidence-narrative-plan.json
+```
+
+Dry-run reports only identities and counts. Add `--execute` to make at most one model request over observations already
+admitted by criterion adjudication. The narrative model receives the frozen document decision, criterion decisions,
+and only material admitted observations; its output can reference only those observation IDs. The application resolves
+those references back to paragraph citations and produces a direct-schema `presented_output`. Determination,
+confidence, criterion matches, coverage, limitations, and all other decision fields remain byte-for-byte equivalent to
+the deterministic compatibility result.
+
+The stage writes `ANALYSIS_NARRATIVE_PROJECTION` and never replaces the deterministic compatibility artifact. Empty
+narrative lists retain the deterministic evidence digest. A model or schema failure ends the optional workflow as
+`COMPLETED_WITH_ERRORS`, reports the unchanged compatibility artifact as the fallback, and can be retried with
+`--execute --retry-failed`; it does not fail or re-run extraction, adjudication, or document decision. Executing sends
+selected protected evidence to the configured external model provider and therefore requires corresponding
+authorization. Apply artifact migration `0020_narrative_projection` before execution.
+
+Reconcile the selected assessment population into one operator-facing outcome summary without making model calls:
+
+```bash
+pipenv run python -m scripts.build_evidence_outcome_manifest \
+  --actor-user-id <root-or-tenant-admin-user-id> \
+  --assessment-id 4a1622f2-7859-474c-a9db-0b9dbe548f47 \
+  --output /tmp/evidence-outcome-manifest.json
+```
+
+The dry-run reports readiness and per-stage status counts plus deduplicated workflow usage. Add `--publish` to persist
+the same immutable snapshot as `ANALYSIS_OUTCOME_MANIFEST`. Each document records extraction, adjudication,
+code-owned decision, compatibility, and narrative state; bounded error summaries; exact artifact references; and the
+stage-specific retry actions that are safe. A completed narrative is selected for synthesis, a failed narrative
+selects the deterministic compatibility artifact as `READY_WITH_FALLBACK`, and a missing compatibility result is
+`PENDING` or `ACTION_REQUIRED`. The builder never re-runs a stage. Apply artifact migration
+`0021_analysis_outcome_manifest` before publishing.
+
+Run a complete read-only evidence-first shadow document after single-window conformance succeeds:
+
+```bash
+pipenv run python -m scripts.run_evidence_document_conformance \
+  --corpus /tmp/assessment-replay-corpus.json \
+  --case-id 1bd2cea7-9b40-4155-9486-0247be7f799e \
+  --extraction-model google:gemini-3.5-flash-lite \
+  --adjudication-model google:gemini-3.5-flash-lite \
+  --output /tmp/evidence-document-conformance.json
+```
+
+The command runs every frozen extraction window once, deduplicates exact overlap observations, adjudicates only
+criteria with observations, supplies deterministic `NO_MATCH` decisions for empty complete packets, and combines the
+positive criteria in code. It never performs output repair. A dropped observation marks evidence incomplete, makes a
+negative document conclusion `UNCLEAR`, and reports `COMPLETED_WITH_ADJUSTMENTS`; source coverage and evidence
+completeness are reported separately. Adjudication uses five disposition-neutral nullable scalar observation-reference
+slots limited to the admitted evidence packet. Every relationship except `INSUFFICIENT` requires provenance. If the
+model omits all references and the packet contains exactly one admitted observation, the runner attaches that sole
+reference and records a normalization adjustment; it never guesses among multiple observations. The default report
+excludes source text and observation facts.
+Use `--model` as a shortcut when both roles intentionally use the same model.
+
+Repeat a fixed cohort to measure output stability rather than relying on one successful run:
+
+```bash
+pipenv run python -m scripts.run_evidence_conformance_cohort \
+  --corpus /tmp/assessment-replay-corpus.json \
+  --case-id 19b1194c-1ca7-4e9e-9a94-35f48f116944 \
+  --case-id 1bd2cea7-9b40-4155-9486-0247be7f799e \
+  --case-id 247c3be1-5d40-42d6-b868-934894f99248 \
+  --case-id 18ffc4b4-2fdd-4ad0-9a89-174a4a8b7629 \
+  --case-id 17883d78-19c2-4f22-8579-04a62f30db8c \
+  --model google:gemini-3.5-flash-lite \
+  --repeats 3 \
+  --report-directory /tmp/evidence-cohort-runs \
+  --output /tmp/evidence-cohort-summary.json
+```
+
+Each child report excludes source text and observation facts by default. It uses the production compatibility
+assembler, validates `document-analysis-pipeline-v4`, and proves that the result can compile into the current
+synthesis manifest. The cohort summary compares determination stability, baseline and criterion agreement,
+material-decision differences, compatibility validity, synthesis-input compatibility, observation-count ranges,
+dropped observations, requests, tokens, and latency. This command sends every selected protected document and review
+guidance to the named providers once per repeat; obtain the required authorization first.
+
+Use `--all-cases` instead of individual `--case-id` options for a one-pass full-corpus calibration. The cohort also
+accepts `--extraction-model` and `--adjudication-model`; `--model` remains the shared-model shortcut. Add `--resume`
+to reuse only existing child reports whose corpus hash, contract version, case ID, and role-specific model bindings
+match the requested run.
+
+Compare one completed repeat with the frozen direct baseline artifacts without calling a model or changing the
+assessment:
+
+```bash
+pipenv run python -m scripts.compare_evidence_conformance \
+  --corpus /tmp/assessment-replay-corpus.json \
+  --report-directory /tmp/evidence-cohort-runs \
+  --repeat 1 \
+  --output /tmp/evidence-compatibility-backtest.json
+```
+
+The comparator verifies frozen baseline hashes, revalidates legacy content-free reports through the production
+compatibility assembler, separates document-decision disagreement from criterion-level differences, and compiles the
+complete direct and evidence-first populations into synthesis manifests. Its report contains identities, signatures,
+counts, and differences—not source text or complete direct baseline output.
+
+### Test focused repair of failed assessment outputs
+
+After a definition assessment reaches a terminal status, inspect every failed document without making model calls:
+
+```bash
+pipenv run python -m scripts.focused_assessment_repair_test \
+  --assessment-id b72ca17d-e307-49cb-9729-318802abebd1 \
+  --output /tmp/assessment-focused-repair-plan.json
+```
+
+Add `--execute-repairs` to run focused synchronous repairs using the assessment's pinned model. The harness supplies
+only the invalid JSON, exact validation errors, relevant schema fragment, referenced evidence paragraphs, and any
+guidance needed to repair the determination. It validates the complete repaired analysis but never updates the
+assessment, document outcomes, skill runs, or workflow state. Its only write is the requested local JSON report.
+
+Use `--max-documents` for an intentionally bounded diagnostic run. Use `--include-repaired-output` only when the
+local report may safely contain document-analysis content. A running assessment is rejected by default so the test
+uses the complete frozen failure set; `--allow-running` is available for read-only inspection.
 
 ### Regenerate the OpenAPI contract
 

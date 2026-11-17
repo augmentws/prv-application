@@ -231,7 +231,7 @@ def prepare_reanalysis(assessment_id: str) -> list[str]:
         return [str(document_id) for document_id in document_ids]
 
 
-@DBOS.step(name="synthesize_definition_assessment", retries_allowed=True, max_attempts=3)
+@DBOS.step(name="synthesize_definition_assessment", retries_allowed=False)
 def synthesize(assessment_id: str) -> dict:
     with SessionLocal() as db:
         return synthesize_assessment(db, uuid.UUID(assessment_id))

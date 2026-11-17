@@ -665,7 +665,7 @@ class WorkflowArtifactUploadMetadata(BaseModel):
     core_scope_kind: WorkflowArtifactScopeKind
     core_scope_id: uuid.UUID
     artifact_type: ArtifactType
-    schema_version: Literal[1] = 1
+    schema_version: int = Field(default=1, ge=1)
     derivation_key: Sha256
     content_hash: Sha256
     byte_length: int = Field(gt=0)

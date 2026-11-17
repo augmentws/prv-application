@@ -1,5 +1,8 @@
+import copy
 import uuid
 from collections import defaultdict
+from datetime import datetime, timezone
+from itertools import pairwise
 
 from fastapi import APIRouter, Depends, HTTPException, status
 from sqlalchemy import func, select
@@ -11,7 +14,9 @@ from app.assessment_workflow_reconciliation import reconcile_terminal_assessment
 from app.audit import record_audit
 from app.config import Settings, get_settings
 from app.database import get_db
-from app.dependencies import Principal, can_admin_matter, get_principal
+from app.dependencies import Principal, can_admin_matter, can_admin_tenant, get_principal
+from app.evidence_outcome_launcher import prepare_evidence_outcome_manifest
+from app.evidence_retry import EvidenceStageRetryError, schedule_evidence_stage_retry
 from app.matter_definition_assessments import (
     AssessmentError,
     regenerate_assessment_document_analyses,
@@ -26,6 +31,8 @@ from app.models import (
     MatterDefinitionAssessmentQuery,
     MatterDefinitionAssessmentQuestion,
     MatterDefinitionAssessmentRun,
+    MatterDefinitionAssessmentSynthesisAttempt,
+    MatterDefinitionAssessmentSynthesisUnit,
     MatterDefinitionRevision,
     ReviewBatch,
     ReviewBatchRunDocument,
@@ -34,6 +41,9 @@ from app.models import (
     WorkflowStepRun,
 )
 from app.schemas import (
+    EvidenceAnalysisOutcomeRead,
+    EvidenceStageRetryRead,
+    EvidenceStageRetryRequest,
     MatterDefinitionAssessmentArchiveFailed,
     MatterDefinitionAssessmentArchiveResult,
     MatterDefinitionAssessmentCreate,
@@ -41,6 +51,7 @@ from app.schemas import (
     MatterDefinitionAssessmentQuestionRead,
     MatterDefinitionAssessmentQuestionUpdate,
     MatterDefinitionAssessmentRead,
+    MatterDefinitionAssessmentSynthesisUnitRead,
     MatterDefinitionAssessmentUpdate,
     SkillRunExecutionRead,
     WorkflowExecutionRead,
@@ -55,6 +66,10 @@ guidance_router = APIRouter(
 )
 
 TERMINAL_STATUSES = {"COMPLETED", "COMPLETED_WITH_ERRORS", "FAILED", "CANCELED"}
+
+
+def _utc(value: datetime) -> datetime:
+    return value if value.tzinfo is not None else value.replace(tzinfo=timezone.utc)
 
 
 def _matter(db: Session, matter_id: uuid.UUID, principal: Principal) -> Matter:
@@ -97,6 +112,8 @@ def _guidance_audit_details(
 def _assessment_reads(
     db: Session,
     assessments: list[MatterDefinitionAssessmentRun],
+    *,
+    include_technical_diagnostics: bool = False,
 ) -> list[MatterDefinitionAssessmentRead]:
     revision_ids = (
         {assessment.matter_definition_revision_id for assessment in assessments}
@@ -134,6 +151,31 @@ def _assessment_reads(
     results: list[MatterDefinitionAssessmentRead] = []
     for assessment in assessments:
         result = MatterDefinitionAssessmentRead.model_validate(assessment)
+        if include_technical_diagnostics:
+            result = result.model_copy(update={"technical_diagnostics_visible": True})
+        else:
+            synthesis_result = copy.deepcopy(result.synthesis_result)
+            if isinstance(synthesis_result, dict):
+                synthesis_result.pop("other_unmapped_criteria", None)
+                synthesis_result.pop("synthesis_diagnostics", None)
+            operator_diagnostic_keys = {
+                "coverage_status",
+                "document_warnings",
+                "operator_message",
+                "finalization_error",
+            }
+            synthesis_diagnostics = {
+                key: copy.deepcopy(value)
+                for key, value in result.synthesis_diagnostics.items()
+                if key in operator_diagnostic_keys
+            }
+            result = result.model_copy(
+                update={
+                    "synthesis_result": synthesis_result,
+                    "synthesis_diagnostics": synthesis_diagnostics,
+                    "technical_diagnostics_visible": False,
+                }
+            )
         revision = revisions.get(assessment.matter_definition_revision_id)
         definition = guidance.get(revision.matter_definition_id) if revision else None
         if definition is not None:
@@ -146,15 +188,34 @@ def _assessment_reads(
             )
         if assessment.review_batch_run_id in live_counts:
             counts = live_counts[assessment.review_batch_run_id]
+            failed_count = counts.get("FAILED", 0)
+            effective_status = result.status
+            # Older runs treated an intentionally skipped, textless document as
+            # an execution error. Normalize those completed results at read time
+            # while preserving genuine document and synthesis failures.
+            if (
+                effective_status == "COMPLETED_WITH_ERRORS"
+                and failed_count == 0
+                and result.partial_coverage_count == 0
+                and result.invalid_result_count == 0
+                and result.synthesis_status == "COMPLETED"
+                and result.completion_disposition != "ACTION_REQUIRED"
+            ):
+                effective_status = "COMPLETED"
             result = result.model_copy(
                 update={
                     "summarized_count": counts.get("COMPLETED", 0),
                     "skipped_count": counts.get("SKIPPED", 0),
-                    "failed_count": counts.get("FAILED", 0),
+                    "failed_count": failed_count,
+                    "status": effective_status,
                 }
             )
         results.append(result)
     return results
+
+
+def _include_technical_diagnostics(principal: Principal, matter: Matter) -> bool:
+    return can_admin_tenant(principal, matter.client.tenant_id)
 
 
 def _workflow_step_reads(
@@ -198,6 +259,14 @@ def _create_assessment_for_guidance(
     principal: Principal,
     settings: Settings,
 ) -> MatterDefinitionAssessmentRun:
+    if payload.execution_mode == "EVIDENCE_FIRST_V1" and not can_admin_tenant(
+        principal,
+        matter.client.tenant_id,
+    ):
+        raise HTTPException(
+            status_code=403,
+            detail="Tenant administrator role required for evidence-first assessment routing",
+        )
     try:
         assessment = start_assessment(
             db,
@@ -211,6 +280,7 @@ def _create_assessment_for_guidance(
             control_sample_size=payload.control_sample_size,
             use_batching=payload.use_batching,
             acknowledge_large_run_warning=payload.acknowledge_large_run_warning,
+            execution_mode=payload.execution_mode,
         )
         db.commit()
     except AssessmentError as exc:
@@ -245,7 +315,11 @@ def create_guidance_assessment(
         principal=principal,
         settings=settings,
     )
-    return _assessment_reads(db, [assessment])[0]
+    return _assessment_reads(
+        db,
+        [assessment],
+        include_technical_diagnostics=_include_technical_diagnostics(principal, matter),
+    )[0]
 
 
 @guidance_router.get("", response_model=list[MatterDefinitionAssessmentRead])
@@ -257,7 +331,7 @@ def list_guidance_assessments(
     db: Session = Depends(get_db),
     settings: Settings = Depends(get_settings),
 ) -> list[MatterDefinitionAssessmentRead]:
-    _matter(db, matter_id, principal)
+    matter = _matter(db, matter_id, principal)
     guidance_exists = db.scalar(
         select(MatterDefinition.id).where(
             MatterDefinition.id == guidance_id,
@@ -282,7 +356,11 @@ def list_guidance_assessments(
         statement = statement.where(MatterDefinitionAssessmentRun.archived_at.is_(None))
     assessments = list(db.scalars(statement.order_by(MatterDefinitionAssessmentRun.created_at.desc())))
     reconcile_terminal_assessment_workflows(db, assessments, settings=settings)
-    return _assessment_reads(db, assessments)
+    return _assessment_reads(
+        db,
+        assessments,
+        include_technical_diagnostics=_include_technical_diagnostics(principal, matter),
+    )
 
 
 @router.post("", response_model=MatterDefinitionAssessmentRead, status_code=status.HTTP_202_ACCEPTED)
@@ -302,7 +380,11 @@ def create_assessment(
         principal=principal,
         settings=settings,
     )
-    return _assessment_reads(db, [assessment])[0]
+    return _assessment_reads(
+        db,
+        [assessment],
+        include_technical_diagnostics=_include_technical_diagnostics(principal, matter),
+    )[0]
 
 
 @router.patch("/{assessment_id}", response_model=MatterDefinitionAssessmentRead)
@@ -340,7 +422,11 @@ def update_assessment(
     )
     db.commit()
     db.refresh(assessment)
-    return _assessment_reads(db, [assessment])[0]
+    return _assessment_reads(
+        db,
+        [assessment],
+        include_technical_diagnostics=_include_technical_diagnostics(principal, matter),
+    )[0]
 
 
 @router.post("/archive-failed", response_model=MatterDefinitionAssessmentArchiveResult)
@@ -433,7 +519,11 @@ def restore_archived_assessment(
     )
     db.commit()
     db.refresh(assessment)
-    return _assessment_reads(db, [assessment])[0]
+    return _assessment_reads(
+        db,
+        [assessment],
+        include_technical_diagnostics=_include_technical_diagnostics(principal, matter),
+    )[0]
 
 
 @router.post("/{assessment_id}/retry", response_model=MatterDefinitionAssessmentRead, status_code=status.HTTP_202_ACCEPTED)
@@ -461,7 +551,11 @@ def retry_failed_assessment(
         db.rollback()
         raise HTTPException(status_code=409, detail=str(exc)) from exc
     db.refresh(assessment)
-    return _assessment_reads(db, [assessment])[0]
+    return _assessment_reads(
+        db,
+        [assessment],
+        include_technical_diagnostics=_include_technical_diagnostics(principal, matter),
+    )[0]
 
 
 @router.post(
@@ -493,7 +587,40 @@ def regenerate_synthesis(
         db.rollback()
         raise HTTPException(status_code=409, detail=str(exc)) from exc
     db.refresh(assessment)
-    return _assessment_reads(db, [assessment])[0]
+    return _assessment_reads(
+        db,
+        [assessment],
+        include_technical_diagnostics=_include_technical_diagnostics(principal, matter),
+    )[0]
+
+
+@router.get(
+    "/{assessment_id}/synthesis-units",
+    response_model=list[MatterDefinitionAssessmentSynthesisUnitRead],
+)
+def list_synthesis_units(
+    matter_id: uuid.UUID,
+    assessment_id: uuid.UUID,
+    principal: Principal = Depends(get_principal),
+    db: Session = Depends(get_db),
+) -> list[MatterDefinitionAssessmentSynthesisUnitRead]:
+    matter = _matter(db, matter_id, principal)
+    if not _include_technical_diagnostics(principal, matter):
+        raise HTTPException(status_code=403, detail="Tenant administrator role required")
+    assessment = _assessment(db, matter_id, assessment_id)
+    if assessment.current_synthesis_attempt_id is None:
+        return []
+    rows = list(
+        db.scalars(
+            select(MatterDefinitionAssessmentSynthesisUnit)
+            .where(
+                MatterDefinitionAssessmentSynthesisUnit.attempt_id
+                == assessment.current_synthesis_attempt_id
+            )
+            .order_by(MatterDefinitionAssessmentSynthesisUnit.ordinal)
+        )
+    )
+    return [MatterDefinitionAssessmentSynthesisUnitRead.model_validate(row) for row in rows]
 
 
 @router.post(
@@ -530,7 +657,11 @@ def regenerate_document_analyses(
         db.rollback()
         raise HTTPException(status_code=409, detail=str(exc)) from exc
     db.refresh(assessment)
-    return _assessment_reads(db, [assessment])[0]
+    return _assessment_reads(
+        db,
+        [assessment],
+        include_technical_diagnostics=_include_technical_diagnostics(principal, matter),
+    )[0]
 
 
 @router.get("", response_model=list[MatterDefinitionAssessmentRead])
@@ -541,7 +672,7 @@ def list_assessments(
     db: Session = Depends(get_db),
     settings: Settings = Depends(get_settings),
 ) -> list[MatterDefinitionAssessmentRead]:
-    _matter(db, matter_id, principal)
+    matter = _matter(db, matter_id, principal)
     statement = select(MatterDefinitionAssessmentRun).where(
         MatterDefinitionAssessmentRun.matter_id == matter_id
     )
@@ -549,7 +680,11 @@ def list_assessments(
         statement = statement.where(MatterDefinitionAssessmentRun.archived_at.is_(None))
     assessments = list(db.scalars(statement.order_by(MatterDefinitionAssessmentRun.created_at.desc())))
     reconcile_terminal_assessment_workflows(db, assessments, settings=settings)
-    return _assessment_reads(db, assessments)
+    return _assessment_reads(
+        db,
+        assessments,
+        include_technical_diagnostics=_include_technical_diagnostics(principal, matter),
+    )
 
 
 @router.get("/{assessment_id}", response_model=MatterDefinitionAssessmentRead)
@@ -560,10 +695,116 @@ def get_assessment(
     db: Session = Depends(get_db),
     settings: Settings = Depends(get_settings),
 ) -> MatterDefinitionAssessmentRead:
-    _matter(db, matter_id, principal)
+    matter = _matter(db, matter_id, principal)
     assessment = _assessment(db, matter_id, assessment_id)
     reconcile_terminal_assessment_workflows(db, [assessment], settings=settings)
-    return _assessment_reads(db, [assessment])[0]
+    return _assessment_reads(
+        db,
+        [assessment],
+        include_technical_diagnostics=_include_technical_diagnostics(principal, matter),
+    )[0]
+
+
+@router.get("/{assessment_id}/evidence-outcomes", response_model=EvidenceAnalysisOutcomeRead)
+def get_assessment_evidence_outcomes(
+    matter_id: uuid.UUID,
+    assessment_id: uuid.UUID,
+    principal: Principal = Depends(get_principal),
+    db: Session = Depends(get_db),
+) -> EvidenceAnalysisOutcomeRead:
+    matter = _matter(db, matter_id, principal)
+    _assessment(db, matter_id, assessment_id)
+    try:
+        prepared = prepare_evidence_outcome_manifest(
+            db,
+            actor_user_id=principal.user.id,
+            assessment_id=assessment_id,
+            require_operator_role=False,
+        )
+    except PermissionError as exc:
+        raise HTTPException(status_code=403, detail=str(exc)) from exc
+    except ValueError as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+    technical = _include_technical_diagnostics(principal, matter)
+    payload = prepared.manifest.model_dump(mode="json")
+    documents = payload["documents"]
+    if not technical:
+        for document in documents:
+            document["selected_output_artifact_id"] = None
+            for stage_name in (
+                "extraction",
+                "adjudication",
+                "document_decision",
+                "compatibility_projection",
+                "narrative",
+            ):
+                document[stage_name]["workflow_run_id"] = None
+                document[stage_name]["artifact_ids"] = {}
+    return EvidenceAnalysisOutcomeRead(
+        assessment_id=prepared.assessment.id,
+        document_count=prepared.manifest.document_count,
+        readiness_counts=prepared.manifest.readiness_counts,
+        stage_status_counts=prepared.manifest.stage_status_counts,
+        source_workflow_count=len(prepared.manifest.source_workflow_ids),
+        source_artifact_count=len(prepared.manifest.source_artifact_ids),
+        technical_diagnostics_visible=technical,
+        usage=prepared.manifest.usage.model_dump(mode="json") if technical else None,
+        documents=documents,
+    )
+
+
+@router.post(
+    "/{assessment_id}/evidence-outcomes/{matter_document_id}/retry",
+    response_model=EvidenceStageRetryRead,
+    status_code=status.HTTP_202_ACCEPTED,
+)
+def retry_assessment_evidence_stage(
+    matter_id: uuid.UUID,
+    assessment_id: uuid.UUID,
+    matter_document_id: uuid.UUID,
+    payload: EvidenceStageRetryRequest,
+    principal: Principal = Depends(get_principal),
+    db: Session = Depends(get_db),
+) -> EvidenceStageRetryRead:
+    matter = _matter(db, matter_id, principal)
+    _assessment(db, matter_id, assessment_id)
+    if not _include_technical_diagnostics(principal, matter):
+        raise HTTPException(
+            status_code=403,
+            detail="Tenant administrator role required for evidence-stage retries",
+        )
+    try:
+        retry = schedule_evidence_stage_retry(
+            db,
+            actor_user_id=principal.user.id,
+            assessment_id=assessment_id,
+            matter_document_id=matter_document_id,
+            stage=payload.stage,
+        )
+        db.commit()
+    except (EvidenceStageRetryError, PermissionError, TypeError, ValueError) as exc:
+        db.rollback()
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+    return EvidenceStageRetryRead(
+        assessment_id=retry.assessment_id,
+        matter_document_id=retry.matter_document_id,
+        stage=retry.stage,
+        target_workflow_run_id=retry.target_workflow_run_id,
+        operation_workflow_id=retry.operation_workflow_id,
+        reused_completed_work=retry.reused_completed_work,
+        operator_message=(
+            f"{retry.stage.title()} retry queued. Completed durable work will be reused. "
+            + (
+                "Adjudication and narrative will be rebuilt from the repaired extraction."
+                if retry.stage == "EXTRACTION"
+                else (
+                    "Narrative will be rebuilt from the repaired adjudication."
+                    if retry.stage == "ADJUDICATION"
+                    else "The deterministic adjudication decision will not be reopened."
+                )
+            )
+        ),
+    )
 
 
 @router.get("/{assessment_id}/execution", response_model=WorkflowExecutionRead)
@@ -599,6 +840,28 @@ def get_assessment_execution(
         if include_skill_runs
         else []
     )
+    now = utcnow()
+    elapsed_seconds = max(
+        0,
+        int(
+            (
+                _utc(workflow.completed_at or now)
+                - _utc(workflow.started_at or workflow.created_at)
+            ).total_seconds()
+        ),
+    )
+    attempts = list(
+        db.scalars(
+            select(MatterDefinitionAssessmentSynthesisAttempt)
+            .where(MatterDefinitionAssessmentSynthesisAttempt.assessment_run_id == assessment.id)
+            .order_by(MatterDefinitionAssessmentSynthesisAttempt.started_at)
+        )
+    )
+    operator_wait_seconds = sum(
+        max(0, int((_utc(current.started_at) - _utc(previous.completed_at)).total_seconds()))
+        for previous, current in pairwise(attempts)
+        if previous.completed_at is not None
+    )
     return WorkflowExecutionRead(
         id=workflow.id,
         workflow_key=workflow.workflow_key,
@@ -612,6 +875,9 @@ def get_assessment_execution(
         error_message=workflow.error_message,
         started_at=workflow.started_at,
         completed_at=workflow.completed_at,
+        elapsed_seconds=elapsed_seconds,
+        processing_seconds=max(0, elapsed_seconds - operator_wait_seconds),
+        operator_wait_seconds=operator_wait_seconds,
         steps=_workflow_step_reads(db, assessment, steps),
         skill_runs=[SkillRunExecutionRead.model_validate(run) for run in skill_runs],
     )
@@ -627,7 +893,11 @@ def cancel_assessment(
     matter = _matter(db, matter_id, principal)
     assessment = _assessment(db, matter_id, assessment_id)
     if assessment.status in TERMINAL_STATUSES:
-        return _assessment_reads(db, [assessment])[0]
+        return _assessment_reads(
+            db,
+            [assessment],
+            include_technical_diagnostics=_include_technical_diagnostics(principal, matter),
+        )[0]
     now = utcnow()
     assessment.status = "CANCELED"
     assessment.canceled_at = now
@@ -653,7 +923,11 @@ def cancel_assessment(
     if workflow is not None:
         cancel_definition_assessment(workflow.dbos_workflow_id)
     db.refresh(assessment)
-    return _assessment_reads(db, [assessment])[0]
+    return _assessment_reads(
+        db,
+        [assessment],
+        include_technical_diagnostics=_include_technical_diagnostics(principal, matter),
+    )[0]
 
 
 @router.get("/{assessment_id}/queries", response_model=list[MatterDefinitionAssessmentQueryRead])

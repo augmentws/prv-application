@@ -2307,6 +2307,7 @@ class SkillRun(TimestampMixin, Base):
     output_tokens: Mapped[int] = mapped_column(BigInteger, default=0)
     error_code: Mapped[str | None] = mapped_column(String(80))
     error_message: Mapped[str | None] = mapped_column(Text)
+    error_details: Mapped[dict[str, Any]] = mapped_column(JSON, default=dict)
     started_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     completed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
 
@@ -5347,12 +5348,26 @@ class MatterDefinitionAssessmentRun(TimestampMixin, Base):
             "guidance_refinement_status IN ('NOT_READY', 'QUEUED', 'RUNNING', 'COMPLETED', 'NOT_REQUIRED', 'FAILED')",
             name="ck_definition_assessment_guidance_refinement_status",
         ),
+        CheckConstraint(
+            "synthesis_status IN ('NOT_STARTED', 'RUNNING', 'COMPLETED', 'PARTIAL', 'FAILED')",
+            name="ck_definition_assessment_synthesis_status",
+        ),
+        CheckConstraint(
+            "completion_disposition IS NULL OR completion_disposition IN "
+            "('READY', 'READY_WITH_WARNINGS', 'ACTION_REQUIRED')",
+            name="ck_definition_assessment_completion_disposition",
+        ),
         Index("ix_definition_assessment_matter_created", "matter_id", "created_at"),
         Index("ix_definition_assessment_matter", "matter_id"),
         Index("ix_definition_assessment_revision", "matter_definition_revision_id"),
         Index("ix_definition_assessment_generation", "search_index_generation_id"),
         Index("ix_definition_assessment_status", "status"),
         Index("ix_definition_assessment_matter_archived", "matter_id", "archived_at"),
+        Index("ix_definition_assessment_archived_by_user_id", "archived_by_user_id"),
+        Index(
+            "ix_definition_assessment_superseded_by_assessment_id",
+            "superseded_by_assessment_id",
+        ),
         Index("ix_definition_assessment_initiator", "initiated_by_user_id"),
     )
 
@@ -5399,6 +5414,10 @@ class MatterDefinitionAssessmentRun(TimestampMixin, Base):
     invalid_result_count: Mapped[int] = mapped_column(Integer, default=0)
     coverage_snapshot: Mapped[dict[str, Any] | None] = mapped_column(JSON)
     synthesis_result: Mapped[dict[str, Any] | None] = mapped_column(JSON)
+    synthesis_status: Mapped[str] = mapped_column(String(30), default="NOT_STARTED")
+    completion_disposition: Mapped[str | None] = mapped_column(String(30), nullable=True)
+    current_synthesis_attempt_id: Mapped[uuid.UUID | None] = mapped_column(Uuid, nullable=True)
+    synthesis_diagnostics: Mapped[dict[str, Any]] = mapped_column(JSON, default=dict)
     guidance_refinement_status: Mapped[str] = mapped_column(String(30), default="NOT_READY")
     guidance_refinement_workflow_run_id: Mapped[uuid.UUID | None] = mapped_column(
         Uuid, ForeignKey("workflow_run.id", ondelete="SET NULL"), nullable=True, unique=True
@@ -5415,19 +5434,108 @@ class MatterDefinitionAssessmentRun(TimestampMixin, Base):
     canceled_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     archived_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     archived_by_user_id: Mapped[uuid.UUID | None] = mapped_column(
-        Uuid, ForeignKey("app_user.id", ondelete="RESTRICT"), nullable=True, index=True
+        Uuid, ForeignKey("app_user.id", ondelete="RESTRICT"), nullable=True
     )
     archive_reason: Mapped[str | None] = mapped_column(String(30), nullable=True)
     superseded_by_assessment_id: Mapped[uuid.UUID | None] = mapped_column(
         Uuid,
         ForeignKey("matter_definition_assessment_run.id", ondelete="SET NULL"),
         nullable=True,
-        index=True,
     )
 
     @property
     def use_batching(self) -> bool:
         return self.configuration_snapshot.get("use_batching", True) is not False
+
+    @property
+    def execution_mode(self) -> str:
+        value = self.configuration_snapshot.get("assessment_execution_mode", "DIRECT_V1")
+        return value if value in {"DIRECT_V1", "EVIDENCE_FIRST_V1"} else "DIRECT_V1"
+
+
+class MatterDefinitionAssessmentSynthesisAttempt(TimestampMixin, Base):
+    __tablename__ = "matter_definition_assessment_synthesis_attempt"
+    __table_args__ = (
+        CheckConstraint(
+            "status IN ('RUNNING', 'COMPLETED', 'COMPLETED_WITH_ERRORS', 'FAILED')",
+            name="ck_definition_assessment_synthesis_attempt_status",
+        ),
+        CheckConstraint(
+            "completion_disposition IS NULL OR completion_disposition IN "
+            "('READY', 'READY_WITH_WARNINGS', 'ACTION_REQUIRED')",
+            name="ck_definition_assessment_synthesis_attempt_disposition",
+        ),
+        CheckConstraint(
+            "total_unit_count >= 0 AND completed_unit_count >= 0 AND failed_unit_count >= 0",
+            name="ck_definition_assessment_synthesis_attempt_counts",
+        ),
+        Index(
+            "ix_definition_assessment_synthesis_attempt_assessment_run_id",
+            "assessment_run_id",
+        ),
+        Index("ix_definition_assessment_synthesis_attempt_run", "assessment_run_id", "created_at"),
+        Index("ix_definition_assessment_synthesis_attempt_status", "status"),
+    )
+
+    id: Mapped[uuid.UUID] = mapped_column(Uuid, primary_key=True, default=uuid.uuid4)
+    assessment_run_id: Mapped[uuid.UUID] = mapped_column(
+        Uuid, ForeignKey("matter_definition_assessment_run.id", ondelete="CASCADE")
+    )
+    manifest_version: Mapped[str] = mapped_column(String(100))
+    manifest_hash: Mapped[str] = mapped_column(String(64))
+    manifest: Mapped[dict[str, Any]] = mapped_column(JSON)
+    manifest_summary: Mapped[dict[str, Any]] = mapped_column(JSON, default=dict)
+    workflow_version: Mapped[str] = mapped_column(String(100))
+    status: Mapped[str] = mapped_column(String(30), default="RUNNING")
+    completion_disposition: Mapped[str | None] = mapped_column(String(30), nullable=True)
+    total_unit_count: Mapped[int] = mapped_column(Integer, default=0)
+    completed_unit_count: Mapped[int] = mapped_column(Integer, default=0)
+    failed_unit_count: Mapped[int] = mapped_column(Integer, default=0)
+    result: Mapped[dict[str, Any] | None] = mapped_column(JSON)
+    diagnostics: Mapped[dict[str, Any]] = mapped_column(JSON, default=dict)
+    started_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+    completed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+
+
+class MatterDefinitionAssessmentSynthesisUnit(TimestampMixin, Base):
+    __tablename__ = "matter_definition_assessment_synthesis_unit"
+    __table_args__ = (
+        UniqueConstraint(
+            "attempt_id", "unit_type", "unit_key", name="uq_definition_assessment_synthesis_unit"
+        ),
+        CheckConstraint(
+            "status IN ('QUEUED', 'RUNNING', 'COMPLETED', 'FAILED')",
+            name="ck_definition_assessment_synthesis_unit_status",
+        ),
+        CheckConstraint(
+            "ordinal > 0 AND attempt_count >= 0",
+            name="ck_definition_assessment_synthesis_unit_counts",
+        ),
+        Index("ix_definition_assessment_synthesis_unit_attempt_id", "attempt_id"),
+        Index("ix_definition_assessment_synthesis_unit_attempt", "attempt_id", "ordinal"),
+        Index("ix_definition_assessment_synthesis_unit_status", "status"),
+    )
+
+    id: Mapped[uuid.UUID] = mapped_column(Uuid, primary_key=True, default=uuid.uuid4)
+    attempt_id: Mapped[uuid.UUID] = mapped_column(
+        Uuid,
+        ForeignKey("matter_definition_assessment_synthesis_attempt.id", ondelete="CASCADE"),
+    )
+    unit_type: Mapped[str] = mapped_column(String(50))
+    unit_key: Mapped[str] = mapped_column(String(200))
+    ordinal: Mapped[int] = mapped_column(Integer)
+    status: Mapped[str] = mapped_column(String(30), default="QUEUED")
+    attempt_count: Mapped[int] = mapped_column(Integer, default=0)
+    input_hash: Mapped[str] = mapped_column(String(64))
+    output: Mapped[dict[str, Any] | None] = mapped_column(JSON)
+    skill_run_id: Mapped[uuid.UUID | None] = mapped_column(
+        Uuid, ForeignKey("skill_run.id", ondelete="SET NULL"), nullable=True
+    )
+    error_code: Mapped[str | None] = mapped_column(String(100))
+    error_message: Mapped[str | None] = mapped_column(Text)
+    error_details: Mapped[dict[str, Any]] = mapped_column(JSON, default=dict)
+    started_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    completed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
 
 
 class MatterDefinitionAssessmentProviderBatch(TimestampMixin, Base):

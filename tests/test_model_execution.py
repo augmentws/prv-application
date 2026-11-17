@@ -11,6 +11,7 @@ from app.model_execution import (
     ModelExecutionError,
     StructuredModelRequest,
     StructuredOutputValidationError,
+    apply_explicit_provider_cache,
     assemble_structured_prompt,
     execute_structured_model,
     run_model,
@@ -53,6 +54,76 @@ def test_prompt_cache_prefix_and_fingerprint_exclude_document_values() -> None:
     assert isinstance(first.prompt[1], CachePoint)
     assert first.model_settings["openai_prompt_cache_key"] == first.cache_fingerprint
     assert first.model_settings["openai_prompt_cache_options"]["mode"] == "explicit"
+
+
+def test_prompt_cache_fingerprint_uses_fixed_provider_schema() -> None:
+    provider_schema = request_for("doc-1").output_schema
+    first = request_for("doc-1")
+    second = request_for("doc-2")
+    first = StructuredModelRequest(
+        **{
+            **first.__dict__,
+            "output_schema": {
+                **first.output_schema,
+                "properties": {"answer": {"type": "string", "const": "doc-1"}},
+            },
+            "provider_output_schema": provider_schema,
+        }
+    )
+    second = StructuredModelRequest(
+        **{
+            **second.__dict__,
+            "output_schema": {
+                **second.output_schema,
+                "properties": {"answer": {"type": "string", "const": "doc-2"}},
+            },
+            "provider_output_schema": provider_schema,
+        }
+    )
+
+    first_assembly = assemble_structured_prompt(first, resolved_model="google:gemini-test")
+    second_assembly = assemble_structured_prompt(second, resolved_model="google:gemini-test")
+
+    assert first_assembly.cache_fingerprint == second_assembly.cache_fingerprint
+    with pytest.raises(StructuredOutputValidationError, match="doc-1"):
+        validate_structured_output({"answer": "doc-2"}, first.output_schema)
+
+
+def test_google_explicit_cache_replaces_only_stable_prefix(monkeypatch: pytest.MonkeyPatch) -> None:
+    request = request_for("doc-1")
+    request = StructuredModelRequest(
+        **{
+            **request.__dict__,
+            "stable_context": {"guidance": "x" * 20_000},
+            "cache_policy": {
+                "enabled": True,
+                "explicit_provider_cache": True,
+                "ttl": "10m",
+            },
+        }
+    )
+    assembly = assemble_structured_prompt(request, resolved_model="google:gemini-test")
+
+    class Cached:
+        name = "cachedContents/test"
+
+    async def fake_get_or_create(**_kwargs: Any) -> Cached:
+        return Cached()
+
+    monkeypatch.setattr("app.model_execution.google_prompt_cache.get_or_create", fake_get_or_create)
+    cached = asyncio.run(
+        apply_explicit_provider_cache(
+            assembly,
+            request,
+            resolved_model="google:gemini-test",
+        )
+    )
+
+    assert cached.instructions == ()
+    assert cached.prompt == assembly.dynamic_payload
+    assert cached.model_settings["google_cached_content"] == "cachedContents/test"
+    assert "doc-1" in cached.prompt
+    assert "doc-1" not in assembly.stable_prefix
 
 
 def test_structured_output_schema_validation_is_strict() -> None:
@@ -108,6 +179,28 @@ def test_structured_executor_returns_invocation_telemetry() -> None:
     assert envelope.invocations[0].input_tokens == envelope.input_tokens
 
 
+def test_structured_executor_normalizes_before_application_validation() -> None:
+    request = request_for("doc-1")
+    validated: list[dict[str, Any]] = []
+    request = StructuredModelRequest(
+        **{
+            **request.__dict__,
+            "output_normalizers": (lambda output: {"answer": output["answer"].strip()},),
+            "output_validators": (lambda output: validated.append(output.copy()),),
+        }
+    )
+
+    envelope, _ = asyncio.run(
+        execute_structured_model(
+            request,
+            model=TestModel(custom_output_args={"answer": "  responsive  "}),
+        )
+    )
+
+    assert envelope.output == {"answer": "responsive"}
+    assert validated == [{"answer": "responsive"}]
+
+
 def test_structured_executor_reports_output_validation_failures() -> None:
     request = request_for("doc-1")
     request = StructuredModelRequest(
@@ -117,8 +210,65 @@ def test_structured_executor_reports_output_validation_failures() -> None:
         }
     )
 
-    with pytest.raises(ModelExecutionError, match="Output validation failures:.*required property"):
+    with pytest.raises(ModelExecutionError, match="Output validation failures:.*required property") as caught:
         asyncio.run(execute_structured_model(request, model=TestModel(custom_output_args={})))
+
+    assert caught.value.code == "INVALID_OUTPUT"
+    assert len(caught.value.invocations) == 2
+    assert {invocation.error_code for invocation in caught.value.invocations} == {"ANALYSIS_OUTPUT_SCHEMA_INVALID"}
+    assert caught.value.details["validation_failures"] == [
+        {
+            "category": "ANALYSIS_OUTPUT_SCHEMA_INVALID",
+            "message": "Structured output failed validation: $: 'answer' is a required property",
+        },
+        {
+            "category": "ANALYSIS_OUTPUT_SCHEMA_INVALID",
+            "message": "Structured output failed validation: $: 'answer' is a required property",
+        },
+    ]
+
+
+def test_structured_executor_retains_validation_category_after_successful_repair() -> None:
+    class RepairingModel(TestModel):
+        request_number = 0
+
+        async def request(self, messages, model_settings, model_request_parameters):
+            self.request_number += 1
+            self.custom_output_args = {} if self.request_number == 1 else {"answer": "responsive"}
+            return await super().request(messages, model_settings, model_request_parameters)
+
+    envelope, _ = asyncio.run(execute_structured_model(request_for("doc-1"), model=RepairingModel()))
+
+    assert envelope.output == {"answer": "responsive"}
+    assert len(envelope.invocations) == 2
+    assert envelope.invocations[0].error_code == "ANALYSIS_OUTPUT_SCHEMA_INVALID"
+    assert envelope.invocations[1].error_code is None
+
+
+def test_structured_executor_classifies_application_semantic_validation() -> None:
+    def reject_answer(_output: dict[str, Any]) -> None:
+        raise ValueError("answer is not supported by the supplied evidence")
+
+    request = request_for("doc-1")
+    request = StructuredModelRequest(
+        **{
+            **request.__dict__,
+            "output_validators": (reject_answer,),
+        }
+    )
+
+    with pytest.raises(ModelExecutionError) as caught:
+        asyncio.run(
+            execute_structured_model(
+                request,
+                model=TestModel(custom_output_args={"answer": "responsive"}),
+            )
+        )
+
+    assert {invocation.error_code for invocation in caught.value.invocations} == {"ANALYSIS_OUTPUT_SEMANTIC_INVALID"}
+    assert {failure["category"] for failure in caught.value.details["validation_failures"]} == {
+        "ANALYSIS_OUTPUT_SEMANTIC_INVALID"
+    }
 
 
 def test_run_model_omits_runtime_hooks_when_rate_limit_capability_is_registered() -> None:
@@ -174,3 +324,27 @@ def test_run_model_classifies_provider_http_retries(status_code: int, retryable:
 
     assert caught.value.retryable is retryable
     assert caught.value.code == ("MODEL_FAILURE" if retryable else "INVALID_REQUEST")
+    assert caught.value.details["exception_type"] == "ModelHTTPError"
+
+
+def test_run_model_preserves_exception_type_when_provider_message_is_empty() -> None:
+    class FailingAgent:
+        async def run(self, *args: Any, **kwargs: Any):
+            raise TimeoutError()
+
+    with pytest.raises(ModelExecutionError) as caught:
+        asyncio.run(
+            run_model(
+                FailingAgent(),  # type: ignore[arg-type]
+                prompt="hello",
+                instructions=["Respond briefly."],
+                model="google:gemini-test",
+                model_settings={},
+                limits={"max_requests": 2},
+                model_configuration_hash="test-hash",
+            )
+        )
+
+    assert str(caught.value) == ""
+    assert caught.value.code == "MODEL_FAILURE"
+    assert caught.value.details == {"exception_type": "TimeoutError"}

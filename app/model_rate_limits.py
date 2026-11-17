@@ -194,10 +194,19 @@ class ProviderModelRequestController:
         handler: Callable[[ModelRequestContext], Awaitable[ModelResponse]],
         *,
         trace: ModelCallTrace | None = None,
+        on_response: Callable[[ModelRequestContext, ModelResponse, datetime, datetime], None] | None = None,
     ) -> ModelResponse:
         key = _provider_model_key(request_context)
+        async def execute_request() -> ModelResponse:
+            started_at = datetime.now(timezone.utc)
+            response = await handler(request_context)
+            completed_at = datetime.now(timezone.utc)
+            if on_response is not None:
+                on_response(request_context, response, started_at, completed_at)
+            return response
+
         if key[0] in {"test", "unknown"}:
-            return await handler(request_context)
+            return await execute_request()
         estimated_tokens = estimate_model_request_input_tokens(
             request_context,
             characters_per_token=self._policy.characters_per_token,
@@ -228,7 +237,7 @@ class ProviderModelRequestController:
                         },
                     )
             try:
-                return await handler(request_context)
+                return await execute_request()
             except ModelHTTPError as exc:
                 if exc.status_code != 429 or attempt >= self._policy.max_retries:
                     raise
@@ -265,10 +274,16 @@ class ProviderModelRequestController:
 _MODEL_RATE_LIMITER = ProviderModelRateLimiter()
 
 
-def model_rate_limit_hooks(settings: Settings, *, trace: ModelCallTrace | None = None) -> Hooks[Any]:
+def model_rate_limit_hooks(
+    settings: Settings,
+    *,
+    policy: ModelRateLimitPolicy | None = None,
+    trace: ModelCallTrace | None = None,
+    on_response: Callable[[ModelRequestContext, ModelResponse, datetime, datetime], None] | None = None,
+) -> Hooks[Any]:
     controller = ProviderModelRequestController(
         limiter=_MODEL_RATE_LIMITER,
-        policy=ModelRateLimitPolicy.from_settings(settings),
+        policy=policy or ModelRateLimitPolicy.from_settings(settings),
     )
 
     async def limited_model_request(
@@ -282,6 +297,7 @@ def model_rate_limit_hooks(settings: Settings, *, trace: ModelCallTrace | None =
             request_context,
             handler,
             trace=trace or current_model_call_trace(),
+            on_response=on_response,
         )
 
     return Hooks(model_request=limited_model_request, id="provider_model_rate_limit")

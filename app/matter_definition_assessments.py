@@ -12,6 +12,7 @@ from sqlalchemy.orm import Session
 from app.agent_models import resolve_agent_model
 from app.audit import record_audit
 from app.config import Settings, get_settings
+from app.evidence_routing import EVIDENCE_FIRST_SYNTHESIS_SOURCE, SYNTHESIS_DOCUMENT_SOURCE_KEY
 from app.matter_definitions import MatterDefinitionError, get_guidance, resolve_legacy_guidance
 from app.models import (
     Matter,
@@ -33,6 +34,7 @@ from app.workflows.dispatcher import (
     enqueue_definition_assessment,
     enqueue_definition_assessment_reanalysis,
     enqueue_definition_assessment_synthesis,
+    enqueue_evidence_assessment,
 )
 
 RRF_CONSTANT = 60
@@ -190,6 +192,7 @@ def start_assessment(
     control_sample_size: int = 0,
     use_batching: bool = True,
     acknowledge_large_run_warning: bool = False,
+    execution_mode: str = "EVIDENCE_FIRST_V1",
     notification_parent_type: str | None = None,
     notification_parent_id: uuid.UUID | None = None,
 ) -> MatterDefinitionAssessmentRun:
@@ -199,6 +202,10 @@ def start_assessment(
         raise AssessmentError("Target document count must be positive")
     if control_sample_size < 0 or control_sample_size > target_document_count:
         raise AssessmentError("Control sample size must not exceed the target document count")
+    if execution_mode not in {"DIRECT_V1", "EVIDENCE_FIRST_V1"}:
+        raise AssessmentError("Unknown assessment execution mode")
+    if execution_mode == "EVIDENCE_FIRST_V1" and not settings.definition_assessment_evidence_shadow_enabled:
+        raise AssessmentError("Evidence-first assessment routing is disabled by configuration")
     warning_required = target_document_count > settings.definition_assessment_warning_document_count
     if warning_required and not acknowledge_large_run_warning:
         raise AssessmentError(
@@ -253,6 +260,7 @@ def start_assessment(
         "target_document_count": target_document_count,
         "control_sample_size": control_sample_size,
         "use_batching": use_batching,
+        "assessment_execution_mode": execution_mode,
         "resolved_models": resolved_models,
         "large_run_warning_threshold": settings.definition_assessment_warning_document_count,
         "large_run_warning_acknowledged": acknowledge_large_run_warning,
@@ -329,10 +337,20 @@ def start_assessment(
             "target_document_count": target_document_count,
             "control_sample_size": control_sample_size,
             "use_batching": use_batching,
+            "assessment_execution_mode": execution_mode,
         },
     )
     db.flush()
-    enqueue_definition_assessment(db, workflow_id, str(assessment.id))
+    if execution_mode == "EVIDENCE_FIRST_V1":
+        enqueue_evidence_assessment(
+            db,
+            workflow_id,
+            assessment_id=str(assessment.id),
+            actor_user_id=str(initiated_by_user_id),
+            attempt_id="initial",
+        )
+    else:
+        enqueue_definition_assessment(db, workflow_id, str(assessment.id))
     return assessment
 
 
@@ -385,6 +403,7 @@ def retry_assessment(
     assessment.synthesis_result = None
 
     workflow.dbos_workflow_id = f"definition-assessment:{assessment.id}:retry:{attempt_id}"
+    workflow.code_version = MATTER_DEFINITION_ASSESSMENT_SPEC.code_version
     workflow.status = "QUEUED"
     workflow.error_message = None
     workflow.completed_at = None
@@ -416,12 +435,30 @@ def retry_assessment(
         )
 
     db.flush()
-    enqueue_definition_assessment(
-        db,
-        workflow.dbos_workflow_id,
-        str(assessment.id),
-        attempt_id=attempt_id,
+    evidence_first = (
+        assessment.configuration_snapshot.get("assessment_execution_mode") == "EVIDENCE_FIRST_V1"
+        or assessment.configuration_snapshot.get(SYNTHESIS_DOCUMENT_SOURCE_KEY)
+        == EVIDENCE_FIRST_SYNTHESIS_SOURCE
     )
+    if evidence_first:
+        if not get_settings().definition_assessment_evidence_shadow_enabled:
+            raise AssessmentError("Evidence-first assessment routing is disabled by configuration")
+        orchestration = assessment.configuration_snapshot.get("evidence_first_orchestration")
+        frozen_actor_id = (orchestration or {}).get("actor_user_id") if isinstance(orchestration, dict) else None
+        enqueue_evidence_assessment(
+            db,
+            workflow.dbos_workflow_id,
+            assessment_id=str(assessment.id),
+            actor_user_id=str(frozen_actor_id or initiated_by_user_id),
+            attempt_id=attempt_id,
+        )
+    else:
+        enqueue_definition_assessment(
+            db,
+            workflow.dbos_workflow_id,
+            str(assessment.id),
+            attempt_id=attempt_id,
+        )
     return assessment
 
 
@@ -431,8 +468,8 @@ def regenerate_assessment_synthesis(
     *,
     initiated_by_user_id: uuid.UUID,
 ) -> MatterDefinitionAssessmentRun:
-    if assessment.status not in {"COMPLETED", "COMPLETED_WITH_ERRORS"}:
-        raise AssessmentError("Only completed assessments can regenerate refinement questions")
+    if assessment.status not in {"COMPLETED", "COMPLETED_WITH_ERRORS", "FAILED"}:
+        raise AssessmentError("Only completed or failed assessments can retry synthesis")
     if assessment.summarized_count <= 0:
         raise AssessmentError("This assessment has no completed document analyses")
     workflow = db.get(WorkflowRun, assessment.workflow_run_id)
@@ -440,12 +477,25 @@ def regenerate_assessment_synthesis(
     if workflow is None or matter is None:
         raise AssessmentError("Assessment workflow record is unavailable")
 
+    previous_synthesis_status = assessment.synthesis_status
+    previous_disposition = assessment.completion_disposition
+    previous_binding_version_id = (assessment.binding_snapshot.get("assessment_synthesis") or {}).get(
+        "skill_definition_version_id"
+    )
     resolved = resolve_workflow_skill_bindings(
         db,
         workflow_key=MATTER_DEFINITION_ASSESSMENT_SPEC.key,
         tenant_id=matter.client.tenant_id,
     )
     current_bindings = binding_snapshot(resolved)
+    current_binding_version_id = current_bindings["assessment_synthesis"].get(
+        "skill_definition_version_id"
+    )
+    resume_partial_attempt = (
+        previous_synthesis_status in {"RUNNING", "PARTIAL", "FAILED"}
+        and assessment.current_synthesis_attempt_id is not None
+        and previous_binding_version_id == current_binding_version_id
+    )
     assessment.binding_snapshot = {
         **assessment.binding_snapshot,
         "assessment_synthesis": current_bindings["assessment_synthesis"],
@@ -468,6 +518,8 @@ def regenerate_assessment_synthesis(
                 "regenerated_at": regenerated_at.isoformat(),
                 "regenerated_by_user_id": str(initiated_by_user_id),
                 "previous_synthesis_status": (assessment.synthesis_result or {}).get("status"),
+                "previous_completion_disposition": previous_disposition,
+                "resumed_partial_attempt": resume_partial_attempt,
             },
         ],
     }
@@ -476,6 +528,11 @@ def regenerate_assessment_synthesis(
     assessment.completed_at = None
     assessment.canceled_at = None
     assessment.synthesis_result = None
+    assessment.synthesis_status = "NOT_STARTED"
+    assessment.completion_disposition = None
+    assessment.synthesis_diagnostics = {}
+    if not resume_partial_attempt:
+        assessment.current_synthesis_attempt_id = None
 
     workflow.dbos_workflow_id = f"definition-assessment:{assessment.id}:synthesis:{attempt_id}"
     workflow.code_version = MATTER_DEFINITION_ASSESSMENT_SPEC.code_version
@@ -518,6 +575,14 @@ def regenerate_assessment_document_analyses(
     *,
     initiated_by_user_id: uuid.UUID,
 ) -> MatterDefinitionAssessmentRun:
+    if (
+        assessment.configuration_snapshot.get("assessment_execution_mode") == "EVIDENCE_FIRST_V1"
+        or assessment.configuration_snapshot.get(SYNTHESIS_DOCUMENT_SOURCE_KEY)
+        == EVIDENCE_FIRST_SYNTHESIS_SOURCE
+    ):
+        raise AssessmentError(
+            "Evidence-first assessments reuse durable stage results; retry failed stages or start a new assessment"
+        )
     if assessment.status not in {"COMPLETED", "COMPLETED_WITH_ERRORS"}:
         raise AssessmentError("Only completed assessments can regenerate document analyses")
     if assessment.review_batch_id is None or assessment.review_batch_run_id is None:

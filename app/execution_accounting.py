@@ -79,7 +79,9 @@ def persist_model_invocations(
                 cache_write_tokens=item.cache_write_tokens,
                 output_tokens=item.output_tokens,
                 latency_ms=item.latency_ms,
-                status="COMPLETED",
+                status=item.status,
+                error_code=item.error_code,
+                error_message=item.error_message,
                 started_at=item.started_at,
                 completed_at=item.completed_at,
             )

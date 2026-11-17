@@ -6,6 +6,71 @@ import pytest
 from app.workflows import dispatcher
 
 
+def test_evidence_stage_retries_use_transactional_worker_owned_workflow(monkeypatch) -> None:
+    settings = SimpleNamespace(
+        dbos_enabled=True,
+        dbos_application_name="test-application",
+    )
+    dbos_client = Mock()
+    db = Mock()
+    monkeypatch.setattr(dispatcher, "get_settings", lambda: settings)
+    monkeypatch.setattr(dispatcher, "get_dbos_client", lambda: dbos_client)
+
+    dispatcher.enqueue_evidence_stage_retry(
+        db,
+        "evidence-stage-retry:run-id:attempt-id",
+        assessment_id="assessment-id",
+        target_workflow_run_id="run-id",
+        stage="NARRATIVE",
+        actor_user_id="actor-id",
+        matter_document_id="document-id",
+    )
+
+    options = dbos_client.enqueue_in_transaction.call_args.args[1]
+    assert options["workflow_name"] == "matter_definition_evidence_stage_retry_v1"
+    assert options["queue_name"] == "evidence-stage-retries"
+    assert options["workflow_id"] == "evidence-stage-retry:run-id:attempt-id"
+    dbos_client.enqueue_in_transaction.assert_called_once_with(
+        db,
+        options,
+        "assessment-id",
+        "run-id",
+        "NARRATIVE",
+        "actor-id",
+        "document-id",
+    )
+
+
+def test_evidence_assessment_parent_is_gated_behind_its_own_dispatcher(monkeypatch) -> None:
+    settings = SimpleNamespace(
+        dbos_enabled=True,
+        dbos_application_name="test-application",
+    )
+    dbos_client = Mock()
+    db = Mock()
+    monkeypatch.setattr(dispatcher, "get_settings", lambda: settings)
+    monkeypatch.setattr(dispatcher, "get_dbos_client", lambda: dbos_client)
+
+    dispatcher.enqueue_evidence_assessment(
+        db,
+        "definition-evidence-assessment:assessment-id:attempt-id",
+        assessment_id="assessment-id",
+        actor_user_id="actor-id",
+        attempt_id="attempt-id",
+    )
+
+    options = dbos_client.enqueue_in_transaction.call_args.args[1]
+    assert options["workflow_name"] == "matter_definition_evidence_assessment_v3"
+    assert options["queue_name"] == "evidence-assessments"
+    dbos_client.enqueue_in_transaction.assert_called_once_with(
+        db,
+        options,
+        "assessment-id",
+        "actor-id",
+        "attempt-id",
+    )
+
+
 def test_new_embedding_jobs_use_versioned_provider_aware_workflow(monkeypatch) -> None:
     settings = SimpleNamespace(
         dbos_enabled=True,

@@ -4,8 +4,15 @@ from conftest import TestingSessionLocal, create_client_tenant
 from fastapi.testclient import TestClient
 from sqlalchemy import select
 
+from app.agent_models import (
+    CRITERION_ADJUDICATION_MODEL_KEY,
+    EVIDENCE_EXTRACTION_MODEL_KEY,
+    EVIDENCE_NARRATIVE_MODEL_KEY,
+)
+from app.document_analysis_schemas import EVIDENCE_CITATION_PATTERN
+from app.model_execution import validate_structured_output
 from app.models import SkillDefinition, SkillDefinitionVersion, Tenant, WorkflowSkillBinding
-from app.standard_skills import ensure_standard_assessment_skills
+from app.standard_skills import SYNTHESIS_EVIDENCE_SCHEMA, ensure_standard_assessment_skills
 from app.workflow_specs import binding_snapshot, get_workflow_spec, resolve_workflow_skill_bindings
 
 
@@ -239,12 +246,18 @@ def test_standard_assessment_skills_are_idempotent(db, root_admin) -> None:
     skills = list(db.scalars(select(SkillDefinition).where(SkillDefinition.scope == "SYSTEM")))
     bindings = list(db.scalars(select(WorkflowSkillBinding).where(WorkflowSkillBinding.scope == "SYSTEM")))
     assert {skill.key for skill in skills} == {
+        "matter_definition_criterion_adjudication",
+        "matter_definition_evidence_extraction",
+        "matter_definition_evidence_narrative",
         "matter_definition_retrieval_plan",
         "matter_definition_document_analysis",
         "matter_definition_assessment_synthesis",
         "matter_definition_guidance_refinement",
     }
     assert {binding.role_key for binding in bindings} == {
+        "criterion_adjudication",
+        "evidence_extraction",
+        "narrative",
         "retrieval_planner",
         "document_analysis",
         "assessment_synthesis",
@@ -274,14 +287,74 @@ def test_standard_assessment_skills_are_idempotent(db, root_admin) -> None:
     )
     assert document_analysis.output_schema_key == "document_analysis_v3"
     assert document_analysis.limits["max_output_retries"] == 4
+    assert document_analysis.limits["max_output_tokens"] == 40_000
     assert "coverage" in document_analysis.output_schema["properties"]
+    evidence_extraction = next(
+        version
+        for version in db.scalars(select(SkillDefinitionVersion))
+        if version.output_schema_key == "matter_definition_evidence_extraction_output_v1"
+    )
+    assert evidence_extraction.limits == {
+        "max_requests": 1,
+        "max_output_tokens": 8_000,
+        "max_output_retries": 0,
+    }
+    assert evidence_extraction.model_key == EVIDENCE_EXTRACTION_MODEL_KEY
+    evidence_binding = next(binding for binding in bindings if binding.role_key == "evidence_extraction")
+    assert evidence_binding.workflow_key == "matter_definition_evidence_shadow_v1"
+    adjudication = next(
+        version
+        for version in db.scalars(select(SkillDefinitionVersion))
+        if version.output_schema_key == "matter_definition_criterion_adjudication_output_v1"
+    )
+    assert adjudication.limits == {
+        "max_requests": 1,
+        "max_output_tokens": 8_000,
+        "max_output_retries": 0,
+    }
+    assert adjudication.model_key == CRITERION_ADJUDICATION_MODEL_KEY
+    adjudication_binding = next(
+        binding for binding in bindings if binding.role_key == "criterion_adjudication"
+    )
+    assert (
+        adjudication_binding.workflow_key
+        == "matter_definition_evidence_adjudication_shadow_v1"
+    )
+    narrative = next(
+        version
+        for version in db.scalars(select(SkillDefinitionVersion))
+        if version.output_schema_key == "matter_definition_evidence_narrative_output_v1"
+    )
+    assert narrative.limits == {
+        "max_requests": 1,
+        "max_output_tokens": 4_000,
+        "max_output_retries": 0,
+    }
+    assert narrative.model_key == EVIDENCE_NARRATIVE_MODEL_KEY
+    assert "presentation task only" in narrative.instructions
+    narrative_binding = next(binding for binding in bindings if binding.role_key == "narrative")
+    assert narrative_binding.workflow_key == "matter_definition_evidence_narrative_shadow_v1"
     synthesis = next(
         version
         for version in db.scalars(select(SkillDefinitionVersion))
-        if version.output_schema_key == "matter_definition_assessment_synthesis_output_v4"
+        if version.output_schema_key == "matter_definition_assessment_synthesis_output_v5"
     )
     assert "Never use a bare reference such as" in synthesis.instructions
     assert "Issue 6: Legislative and Policy Reforms" in synthesis.instructions
+
+
+def test_synthesis_evidence_schema_accepts_paragraph_and_metadata_citations() -> None:
+    assert SYNTHESIS_EVIDENCE_SCHEMA["properties"]["paragraph_ids"]["items"]["pattern"] == (
+        EVIDENCE_CITATION_PATTERN
+    )
+    validate_structured_output(
+        {
+            "matter_document_id": str(uuid.uuid4()),
+            "paragraph_ids": ["¶1", "metadata:email.sender", "metadata:email.to:1"],
+            "reason": "The email metadata identifies the participants.",
+        },
+        SYNTHESIS_EVIDENCE_SCHEMA,
+    )
 
 
 def test_standard_assessment_skills_publish_new_version_when_limits_change(db, root_admin) -> None:

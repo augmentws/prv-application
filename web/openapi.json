@@ -18501,6 +18501,68 @@
         }
       }
     },
+    "/v1/matters/{matter_id}/definition-assessments/{assessment_id}/synthesis-units": {
+      "get": {
+        "tags": [
+          "matter definition assessments"
+        ],
+        "summary": "List Synthesis Units",
+        "operationId": "list_synthesis_units_v1_matters__matter_id__definition_assessments__assessment_id__synthesis_units_get",
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "matter_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid",
+              "title": "Matter Id"
+            }
+          },
+          {
+            "name": "assessment_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid",
+              "title": "Assessment Id"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "array",
+                  "items": {
+                    "$ref": "#/components/schemas/MatterDefinitionAssessmentSynthesisUnitRead"
+                  },
+                  "title": "Response List Synthesis Units V1 Matters  Matter Id  Definition Assessments  Assessment Id  Synthesis Units Get"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/v1/matters/{matter_id}/definition-assessments/{assessment_id}/regenerate-document-analyses": {
       "post": {
         "tags": [
@@ -18542,6 +18604,142 @@
               "application/json": {
                 "schema": {
                   "$ref": "#/components/schemas/MatterDefinitionAssessmentRead"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v1/matters/{matter_id}/definition-assessments/{assessment_id}/evidence-outcomes": {
+      "get": {
+        "tags": [
+          "matter definition assessments"
+        ],
+        "summary": "Get Assessment Evidence Outcomes",
+        "operationId": "get_assessment_evidence_outcomes_v1_matters__matter_id__definition_assessments__assessment_id__evidence_outcomes_get",
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "matter_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid",
+              "title": "Matter Id"
+            }
+          },
+          {
+            "name": "assessment_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid",
+              "title": "Assessment Id"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/EvidenceAnalysisOutcomeRead"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v1/matters/{matter_id}/definition-assessments/{assessment_id}/evidence-outcomes/{matter_document_id}/retry": {
+      "post": {
+        "tags": [
+          "matter definition assessments"
+        ],
+        "summary": "Retry Assessment Evidence Stage",
+        "operationId": "retry_assessment_evidence_stage_v1_matters__matter_id__definition_assessments__assessment_id__evidence_outcomes__matter_document_id__retry_post",
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "matter_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid",
+              "title": "Matter Id"
+            }
+          },
+          {
+            "name": "assessment_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid",
+              "title": "Assessment Id"
+            }
+          },
+          {
+            "name": "matter_document_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid",
+              "title": "Matter Document Id"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/EvidenceStageRetryRequest"
+              }
+            }
+          }
+        },
+        "responses": {
+          "202": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/EvidenceStageRetryRead"
                 }
               }
             }
@@ -29619,6 +29817,16 @@
         "type": "string",
         "enum": [
           "ANALYSIS_INPUT_MANIFEST",
+          "ANALYSIS_EVALUATION_PLAN",
+          "ANALYSIS_ADJUDICATION_PLAN",
+          "ANALYSIS_OBSERVATION_FRAGMENT",
+          "ANALYSIS_OBSERVATIONS",
+          "ANALYSIS_CRITERION_ADJUDICATION_FRAGMENT",
+          "ANALYSIS_CRITERION_DECISIONS",
+          "ANALYSIS_DOCUMENT_DECISION",
+          "ANALYSIS_COMPATIBILITY_RESULT",
+          "ANALYSIS_NARRATIVE_PROJECTION",
+          "ANALYSIS_OUTCOME_MANIFEST",
           "CLASSIFICATION_POPULATION",
           "CLASSIFICATION_FEATURES",
           "CLASSIFICATION_LABELS",
@@ -37474,6 +37682,249 @@
         ],
         "title": "EnumValue"
       },
+      "EvidenceAnalysisDocumentOutcomeRead": {
+        "properties": {
+          "matter_document_id": {
+            "type": "string",
+            "format": "uuid",
+            "title": "Matter Document Id"
+          },
+          "extraction": {
+            "$ref": "#/components/schemas/EvidenceAnalysisStageOutcomeRead"
+          },
+          "adjudication": {
+            "$ref": "#/components/schemas/EvidenceAnalysisStageOutcomeRead"
+          },
+          "document_decision": {
+            "$ref": "#/components/schemas/EvidenceAnalysisStageOutcomeRead"
+          },
+          "compatibility_projection": {
+            "$ref": "#/components/schemas/EvidenceAnalysisStageOutcomeRead"
+          },
+          "narrative": {
+            "$ref": "#/components/schemas/EvidenceAnalysisStageOutcomeRead"
+          },
+          "synthesis_readiness": {
+            "type": "string",
+            "enum": [
+              "PENDING",
+              "READY",
+              "READY_WITH_FALLBACK",
+              "ACTION_REQUIRED"
+            ],
+            "title": "Synthesis Readiness"
+          },
+          "selected_output_kind": {
+            "anyOf": [
+              {
+                "type": "string",
+                "enum": [
+                  "DETERMINISTIC_COMPATIBILITY",
+                  "NARRATIVE_PRESENTATION"
+                ]
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Selected Output Kind"
+          },
+          "selected_output_artifact_id": {
+            "anyOf": [
+              {
+                "type": "string",
+                "format": "uuid"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Selected Output Artifact Id"
+          },
+          "retryable_stages": {
+            "items": {
+              "type": "string",
+              "enum": [
+                "EXTRACTION",
+                "ADJUDICATION",
+                "NARRATIVE"
+              ]
+            },
+            "type": "array",
+            "title": "Retryable Stages"
+          }
+        },
+        "type": "object",
+        "required": [
+          "matter_document_id",
+          "extraction",
+          "adjudication",
+          "document_decision",
+          "compatibility_projection",
+          "narrative",
+          "synthesis_readiness",
+          "selected_output_kind",
+          "retryable_stages"
+        ],
+        "title": "EvidenceAnalysisDocumentOutcomeRead"
+      },
+      "EvidenceAnalysisOutcomeRead": {
+        "properties": {
+          "result_version": {
+            "type": "string",
+            "const": "evidence-analysis-outcome-api-v1",
+            "title": "Result Version",
+            "default": "evidence-analysis-outcome-api-v1"
+          },
+          "authoritative": {
+            "type": "boolean",
+            "const": false,
+            "title": "Authoritative",
+            "default": false
+          },
+          "assessment_id": {
+            "type": "string",
+            "format": "uuid",
+            "title": "Assessment Id"
+          },
+          "document_count": {
+            "type": "integer",
+            "title": "Document Count"
+          },
+          "readiness_counts": {
+            "additionalProperties": {
+              "type": "integer"
+            },
+            "type": "object",
+            "title": "Readiness Counts"
+          },
+          "stage_status_counts": {
+            "additionalProperties": {
+              "additionalProperties": {
+                "type": "integer"
+              },
+              "type": "object"
+            },
+            "type": "object",
+            "title": "Stage Status Counts"
+          },
+          "source_workflow_count": {
+            "type": "integer",
+            "title": "Source Workflow Count"
+          },
+          "source_artifact_count": {
+            "type": "integer",
+            "title": "Source Artifact Count"
+          },
+          "technical_diagnostics_visible": {
+            "type": "boolean",
+            "title": "Technical Diagnostics Visible"
+          },
+          "usage": {
+            "anyOf": [
+              {
+                "additionalProperties": {
+                  "type": "integer"
+                },
+                "type": "object"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Usage"
+          },
+          "documents": {
+            "items": {
+              "$ref": "#/components/schemas/EvidenceAnalysisDocumentOutcomeRead"
+            },
+            "type": "array",
+            "title": "Documents"
+          }
+        },
+        "type": "object",
+        "required": [
+          "assessment_id",
+          "document_count",
+          "readiness_counts",
+          "stage_status_counts",
+          "source_workflow_count",
+          "source_artifact_count",
+          "technical_diagnostics_visible",
+          "documents"
+        ],
+        "title": "EvidenceAnalysisOutcomeRead"
+      },
+      "EvidenceAnalysisStageOutcomeRead": {
+        "properties": {
+          "status": {
+            "type": "string",
+            "title": "Status"
+          },
+          "completed_count": {
+            "type": "integer",
+            "title": "Completed Count"
+          },
+          "failed_count": {
+            "type": "integer",
+            "title": "Failed Count"
+          },
+          "retryable": {
+            "type": "boolean",
+            "title": "Retryable"
+          },
+          "error_code": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Error Code"
+          },
+          "error_summary": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Error Summary"
+          },
+          "workflow_run_id": {
+            "anyOf": [
+              {
+                "type": "string",
+                "format": "uuid"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Workflow Run Id"
+          },
+          "artifact_ids": {
+            "additionalProperties": {
+              "type": "string",
+              "format": "uuid"
+            },
+            "type": "object",
+            "title": "Artifact Ids"
+          }
+        },
+        "type": "object",
+        "required": [
+          "status",
+          "completed_count",
+          "failed_count",
+          "retryable"
+        ],
+        "title": "EvidenceAnalysisStageOutcomeRead"
+      },
       "EvidenceMetadataFilter": {
         "properties": {
           "field_key": {
@@ -37550,6 +38001,93 @@
         ],
         "title": "EvidenceMetadataFilter",
         "description": "Match facts with an active quote from a document whose Core metadata field matches."
+      },
+      "EvidenceStageRetryRead": {
+        "properties": {
+          "result_version": {
+            "type": "string",
+            "const": "evidence-stage-retry-api-v1",
+            "title": "Result Version",
+            "default": "evidence-stage-retry-api-v1"
+          },
+          "authoritative": {
+            "type": "boolean",
+            "const": false,
+            "title": "Authoritative",
+            "default": false
+          },
+          "assessment_id": {
+            "type": "string",
+            "format": "uuid",
+            "title": "Assessment Id"
+          },
+          "matter_document_id": {
+            "type": "string",
+            "format": "uuid",
+            "title": "Matter Document Id"
+          },
+          "stage": {
+            "type": "string",
+            "enum": [
+              "EXTRACTION",
+              "ADJUDICATION",
+              "NARRATIVE"
+            ],
+            "title": "Stage"
+          },
+          "target_workflow_run_id": {
+            "type": "string",
+            "format": "uuid",
+            "title": "Target Workflow Run Id"
+          },
+          "operation_workflow_id": {
+            "type": "string",
+            "title": "Operation Workflow Id"
+          },
+          "status": {
+            "type": "string",
+            "const": "QUEUED",
+            "title": "Status",
+            "default": "QUEUED"
+          },
+          "reused_completed_work": {
+            "type": "boolean",
+            "title": "Reused Completed Work"
+          },
+          "operator_message": {
+            "type": "string",
+            "title": "Operator Message"
+          }
+        },
+        "type": "object",
+        "required": [
+          "assessment_id",
+          "matter_document_id",
+          "stage",
+          "target_workflow_run_id",
+          "operation_workflow_id",
+          "reused_completed_work",
+          "operator_message"
+        ],
+        "title": "EvidenceStageRetryRead"
+      },
+      "EvidenceStageRetryRequest": {
+        "properties": {
+          "stage": {
+            "type": "string",
+            "enum": [
+              "EXTRACTION",
+              "ADJUDICATION",
+              "NARRATIVE"
+            ],
+            "title": "Stage"
+          }
+        },
+        "type": "object",
+        "required": [
+          "stage"
+        ],
+        "title": "EvidenceStageRetryRequest"
       },
       "ExternalProviderUsageRead": {
         "properties": {
@@ -41843,6 +42381,15 @@
             "type": "boolean",
             "title": "Acknowledge Large Run Warning",
             "default": false
+          },
+          "execution_mode": {
+            "type": "string",
+            "enum": [
+              "DIRECT_V1",
+              "EVIDENCE_FIRST_V1"
+            ],
+            "title": "Execution Mode",
+            "default": "EVIDENCE_FIRST_V1"
           }
         },
         "type": "object",
@@ -42178,6 +42725,14 @@
             "type": "boolean",
             "title": "Use Batching"
           },
+          "execution_mode": {
+            "type": "string",
+            "enum": [
+              "DIRECT_V1",
+              "EVIDENCE_FIRST_V1"
+            ],
+            "title": "Execution Mode"
+          },
           "large_run_warning_acknowledged": {
             "type": "boolean",
             "title": "Large Run Warning Acknowledged"
@@ -42312,6 +42867,55 @@
               }
             ],
             "title": "Synthesis Result"
+          },
+          "synthesis_status": {
+            "type": "string",
+            "enum": [
+              "NOT_STARTED",
+              "RUNNING",
+              "COMPLETED",
+              "PARTIAL",
+              "FAILED"
+            ],
+            "title": "Synthesis Status"
+          },
+          "completion_disposition": {
+            "anyOf": [
+              {
+                "type": "string",
+                "enum": [
+                  "READY",
+                  "READY_WITH_WARNINGS",
+                  "ACTION_REQUIRED"
+                ]
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Completion Disposition"
+          },
+          "current_synthesis_attempt_id": {
+            "anyOf": [
+              {
+                "type": "string",
+                "format": "uuid"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Current Synthesis Attempt Id"
+          },
+          "synthesis_diagnostics": {
+            "additionalProperties": true,
+            "type": "object",
+            "title": "Synthesis Diagnostics"
+          },
+          "technical_diagnostics_visible": {
+            "type": "boolean",
+            "title": "Technical Diagnostics Visible",
+            "default": false
           },
           "guidance_refinement_status": {
             "type": "string",
@@ -42505,6 +43109,7 @@
           "requested_document_count",
           "control_sample_size",
           "use_batching",
+          "execution_mode",
           "large_run_warning_acknowledged",
           "warning_acknowledged_by_user_id",
           "warning_acknowledged_at",
@@ -42522,6 +43127,10 @@
           "invalid_result_count",
           "coverage_snapshot",
           "synthesis_result",
+          "synthesis_status",
+          "completion_disposition",
+          "current_synthesis_attempt_id",
+          "synthesis_diagnostics",
           "guidance_refinement_status",
           "guidance_refinement_workflow_run_id",
           "refined_matter_definition_revision_id",
@@ -42540,6 +43149,156 @@
           "updated_at"
         ],
         "title": "MatterDefinitionAssessmentRead"
+      },
+      "MatterDefinitionAssessmentSynthesisUnitRead": {
+        "properties": {
+          "id": {
+            "type": "string",
+            "format": "uuid",
+            "title": "Id"
+          },
+          "attempt_id": {
+            "type": "string",
+            "format": "uuid",
+            "title": "Attempt Id"
+          },
+          "unit_type": {
+            "type": "string",
+            "title": "Unit Type"
+          },
+          "unit_key": {
+            "type": "string",
+            "title": "Unit Key"
+          },
+          "ordinal": {
+            "type": "integer",
+            "title": "Ordinal"
+          },
+          "status": {
+            "type": "string",
+            "enum": [
+              "QUEUED",
+              "RUNNING",
+              "COMPLETED",
+              "FAILED"
+            ],
+            "title": "Status"
+          },
+          "attempt_count": {
+            "type": "integer",
+            "title": "Attempt Count"
+          },
+          "input_hash": {
+            "type": "string",
+            "title": "Input Hash"
+          },
+          "output": {
+            "anyOf": [
+              {
+                "additionalProperties": true,
+                "type": "object"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Output"
+          },
+          "skill_run_id": {
+            "anyOf": [
+              {
+                "type": "string",
+                "format": "uuid"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Skill Run Id"
+          },
+          "error_code": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Error Code"
+          },
+          "error_message": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Error Message"
+          },
+          "error_details": {
+            "additionalProperties": true,
+            "type": "object",
+            "title": "Error Details"
+          },
+          "started_at": {
+            "anyOf": [
+              {
+                "type": "string",
+                "format": "date-time"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Started At"
+          },
+          "completed_at": {
+            "anyOf": [
+              {
+                "type": "string",
+                "format": "date-time"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Completed At"
+          },
+          "created_at": {
+            "type": "string",
+            "format": "date-time",
+            "title": "Created At"
+          },
+          "updated_at": {
+            "type": "string",
+            "format": "date-time",
+            "title": "Updated At"
+          }
+        },
+        "type": "object",
+        "required": [
+          "id",
+          "attempt_id",
+          "unit_type",
+          "unit_key",
+          "ordinal",
+          "status",
+          "attempt_count",
+          "input_hash",
+          "output",
+          "skill_run_id",
+          "error_code",
+          "error_message",
+          "error_details",
+          "started_at",
+          "completed_at",
+          "created_at",
+          "updated_at"
+        ],
+        "title": "MatterDefinitionAssessmentSynthesisUnitRead"
       },
       "MatterDefinitionAssessmentUpdate": {
         "properties": {
@@ -58752,6 +59511,24 @@
             ],
             "title": "Completed At"
           },
+          "elapsed_seconds": {
+            "type": "integer",
+            "title": "Elapsed Seconds"
+          },
+          "processing_seconds": {
+            "type": "integer",
+            "title": "Processing Seconds"
+          },
+          "operator_wait_seconds": {
+            "type": "integer",
+            "title": "Operator Wait Seconds"
+          },
+          "timing_method": {
+            "type": "string",
+            "const": "SYNTHESIS_ATTEMPT_GAPS_V1",
+            "title": "Timing Method",
+            "default": "SYNTHESIS_ATTEMPT_GAPS_V1"
+          },
           "steps": {
             "items": {
               "$ref": "#/components/schemas/WorkflowStepExecutionRead"
@@ -58781,6 +59558,9 @@
           "error_message",
           "started_at",
           "completed_at",
+          "elapsed_seconds",
+          "processing_seconds",
+          "operator_wait_seconds",
           "steps",
           "skill_runs"
         ],
