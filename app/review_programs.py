@@ -860,7 +860,9 @@ def _definition_stage_context(
         "selected_count": assessment.selected_count,
         "summarized_count": assessment.summarized_count,
         "failed_count": assessment.failed_count,
-        "synthesis_status": (assessment.synthesis_result or {}).get("status"),
+        "synthesis_status": assessment.synthesis_status,
+        "completion_disposition": assessment.completion_disposition,
+        "synthesis_diagnostics": assessment.synthesis_diagnostics,
         "guidance_refinement_status": assessment.guidance_refinement_status,
         "refined_matter_definition_revision_id": (
             str(assessment.refined_matter_definition_revision_id)
@@ -4399,7 +4401,9 @@ def project_review_program_assessment_terminal(
         "selected_count": assessment.selected_count,
         "summarized_count": assessment.summarized_count,
         "failed_count": assessment.failed_count,
-        "synthesis_status": (assessment.synthesis_result or {}).get("status"),
+        "synthesis_status": assessment.synthesis_status,
+        "completion_disposition": assessment.completion_disposition,
+        "synthesis_diagnostics": assessment.synthesis_diagnostics,
     }
     run = db.get(ReviewProgramRun, child.run_id)
     attempt = db.get(ReviewProgramStageAttempt, child.stage_attempt_id)
@@ -4410,7 +4414,43 @@ def project_review_program_assessment_terminal(
         return None
     if attempt.id != _current_stage_attempt(db, run).id:
         return None
-    if assessment.status in {"COMPLETED", "COMPLETED_WITH_ERRORS"}:
+    if (
+        assessment.status in {"COMPLETED", "COMPLETED_WITH_ERRORS"}
+        and assessment.completion_disposition == "ACTION_REQUIRED"
+    ):
+        failed_units = assessment.synthesis_diagnostics.get("failed_units") or []
+        attempt.status = "RUNNING"
+        attempt.error_code = None
+        attempt.error_summary = None
+        attempt.completed_at = None
+        attempt.result_summary = {
+            "assessment_id": str(assessment.id),
+            "status": assessment.status,
+            "completion_disposition": assessment.completion_disposition,
+            "failed_units": failed_units,
+        }
+        run.progress_summary = {
+            **run.progress_summary,
+            "definition_assessment_synthesis": {
+                "state": "ACTION_REQUIRED",
+                "assessment_id": str(assessment.id),
+                "failed_unit_count": len(failed_units),
+                "message": "Retry the failed synthesis units before continuing.",
+            },
+        }
+        _publish_run_notification(
+            db,
+            program=program,
+            run=run,
+            type_key="review_program.attention_required",
+            template_data={
+                "program_name": _notification_program_name(program),
+                "stage_name": _stage_for_run(program, run).name,
+            },
+            occurrence_key=f"assessment-synthesis:{assessment.id}",
+        )
+        return None
+    elif assessment.status in {"COMPLETED", "COMPLETED_WITH_ERRORS"}:
         attempt.status = "COMPLETED"
         attempt.completed_at = assessment.completed_at or utcnow()
         attempt.result_summary = {
@@ -4423,6 +4463,16 @@ def project_review_program_assessment_terminal(
             "summarized_count": assessment.summarized_count,
             "failed_count": assessment.failed_count,
             "coverage": assessment.coverage_snapshot,
+            "completion_disposition": assessment.completion_disposition,
+            "synthesis_diagnostics": assessment.synthesis_diagnostics,
+        }
+        run.progress_summary = {
+            **run.progress_summary,
+            "definition_assessment_synthesis": {
+                "state": assessment.completion_disposition or "READY",
+                "assessment_id": str(assessment.id),
+                "failed_unit_count": 0,
+            },
         }
         event = publish_review_program_event(
             db,

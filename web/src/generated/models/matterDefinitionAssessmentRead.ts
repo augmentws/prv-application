@@ -6,11 +6,15 @@
  * OpenAPI spec version: 0.1.0
  */
 import type { MatterDefinitionAssessmentReadArchiveReason } from './matterDefinitionAssessmentReadArchiveReason';
+import type { MatterDefinitionAssessmentReadCompletionDisposition } from './matterDefinitionAssessmentReadCompletionDisposition';
 import type { MatterDefinitionAssessmentReadConfigurationSnapshot } from './matterDefinitionAssessmentReadConfigurationSnapshot';
 import type { MatterDefinitionAssessmentReadCoverageSnapshot } from './matterDefinitionAssessmentReadCoverageSnapshot';
+import type { MatterDefinitionAssessmentReadExecutionMode } from './matterDefinitionAssessmentReadExecutionMode';
 import type { MatterDefinitionAssessmentReadGuidanceRefinementStatus } from './matterDefinitionAssessmentReadGuidanceRefinementStatus';
 import type { MatterDefinitionAssessmentReadStatus } from './matterDefinitionAssessmentReadStatus';
+import type { MatterDefinitionAssessmentReadSynthesisDiagnostics } from './matterDefinitionAssessmentReadSynthesisDiagnostics';
 import type { MatterDefinitionAssessmentReadSynthesisResult } from './matterDefinitionAssessmentReadSynthesisResult';
+import type { MatterDefinitionAssessmentReadSynthesisStatus } from './matterDefinitionAssessmentReadSynthesisStatus';
 
 export interface MatterDefinitionAssessmentRead {
   id: string;
@@ -29,6 +33,7 @@ export interface MatterDefinitionAssessmentRead {
   requested_document_count: number;
   control_sample_size: number;
   use_batching: boolean;
+  execution_mode: MatterDefinitionAssessmentReadExecutionMode;
   large_run_warning_acknowledged: boolean;
   warning_acknowledged_by_user_id: string | null;
   warning_acknowledged_at: string | null;
@@ -46,6 +51,11 @@ export interface MatterDefinitionAssessmentRead {
   invalid_result_count: number;
   coverage_snapshot: MatterDefinitionAssessmentReadCoverageSnapshot;
   synthesis_result: MatterDefinitionAssessmentReadSynthesisResult;
+  synthesis_status: MatterDefinitionAssessmentReadSynthesisStatus;
+  completion_disposition: MatterDefinitionAssessmentReadCompletionDisposition;
+  current_synthesis_attempt_id: string | null;
+  synthesis_diagnostics: MatterDefinitionAssessmentReadSynthesisDiagnostics;
+  technical_diagnostics_visible?: boolean;
   guidance_refinement_status: MatterDefinitionAssessmentReadGuidanceRefinementStatus;
   guidance_refinement_workflow_run_id: string | null;
   refined_matter_definition_revision_id: string | null;

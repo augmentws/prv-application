@@ -28,6 +28,16 @@ import { cn } from "@/lib/utils";
 
 const ACTIVE_RUN_STATUSES = new Set(["QUEUED", "RUNNING", "WAITING_FOR_USER"]);
 const ACTIONABLE_RUN_STATUSES = new Set([...ACTIVE_RUN_STATUSES, "FAILED"]);
+const TERMINAL_DEFINITION_ASSESSMENT_STATUSES = new Set(["COMPLETED", "COMPLETED_WITH_ERRORS", "FAILED", "CANCELED"]);
+
+export function definitionAssessmentStageDisplayStatus(
+  assessment: Pick<MatterDefinitionAssessmentRead, "status" | "completion_disposition"> | null,
+  attemptStatus?: string | null,
+): string {
+  if (assessment?.completion_disposition === "ACTION_REQUIRED") return "NEEDS_ATTENTION";
+  if (assessment && TERMINAL_DEFINITION_ASSESSMENT_STATUSES.has(assessment.status)) return assessment.status;
+  return attemptStatus ?? "UPCOMING";
+}
 
 function preferredReviewProgramRun(
   runs: ReviewProgramRunRead[],
@@ -412,7 +422,19 @@ function ProgramWorkspace({ clientId, matterId, program, run, stages, canManage,
       const skipped = skippedStageKeys.has(stage.key)
         || (!attempt && !isDefinitionReassessment && stage.ordinal < run.current_stage_ordinal);
       const upcoming = !skipped && (isDefinitionReassessment ? stage.ordinal > 3 : stage.ordinal > run.current_stage_ordinal);
-      const isRunning = attempt?.status === "RUNNING" || (isCurrent && run.status === "RUNNING" && attempt?.status !== "FAILED");
+      const containsCurrentAssessment = isCurrent
+        && (stage.key === "DEFINITION_ASSESSMENT" || containsCurrentReassessment)
+        && currentAssessment !== null;
+      const assessmentDisplayStatus = definitionAssessmentStageDisplayStatus(
+        containsCurrentAssessment ? currentAssessment : null,
+        attempt?.status,
+      );
+      const assessmentNeedsAttention = containsCurrentAssessment && assessmentDisplayStatus === "NEEDS_ATTENTION";
+      const assessmentIsTerminal = containsCurrentAssessment
+        && currentAssessment !== null
+        && TERMINAL_DEFINITION_ASSESSMENT_STATUSES.has(currentAssessment.status);
+      const isRunning = !assessmentIsTerminal
+        && (attempt?.status === "RUNNING" || (isCurrent && run.status === "RUNNING" && attempt?.status !== "FAILED"));
       const showsRunFailure = isCurrent && run.status === "FAILED";
       const showsAttemptFailure = isCurrent && attempt?.status === "FAILED";
       const showsStageFailure = showsRunFailure || showsAttemptFailure;
@@ -420,11 +442,11 @@ function ProgramWorkspace({ clientId, matterId, program, run, stages, canManage,
       const showsDiscoveryTask = isCurrent && stage.key === "DISCOVERY_QA" && Boolean(run.progress_summary?.discovery_qa);
       const showsWholeCollectionScoring = isCurrent && stage.key === "WHOLE_COLLECTION_SCORING";
       const showsClassifierPositiveCoverage = isCurrent && stage.key === "CLASSIFIER_POSITIVE_COVERAGE" && Boolean(run.progress_summary?.classifier_positive_coverage);
-      return <li key={stage.key} className={cn("flex items-start gap-3 rounded-lg border p-3", isCurrent && "border-primary/50 bg-primary/5", upcoming && "opacity-55", (isRunning || showsDiscoveryTask || showsWholeCollectionScoring || showsClassifierPositiveCoverage || showsStageFailure) && "sm:col-span-2")}>
+      return <li key={stage.key} className={cn("flex items-start gap-3 rounded-lg border p-3", isCurrent && "border-primary/50 bg-primary/5", upcoming && "opacity-55", (isRunning || assessmentNeedsAttention || showsDiscoveryTask || showsWholeCollectionScoring || showsClassifierPositiveCoverage || showsStageFailure) && "sm:col-span-2")}>
         <span className="grid size-7 shrink-0 place-items-center rounded-full bg-muted text-xs font-semibold">{stage.ordinal}</span>
         <div className="min-w-0 flex-1">
           <div className="flex items-start justify-between gap-2"><p className="text-sm font-medium">{stage.name}</p><ProgramStageTooltip stage={stage} /></div>
-          <div className="mt-1 flex flex-wrap gap-1">{attempt ? <StatusBadge status={attempt.status} /> : skipped ? <Badge variant="outline">Skipped</Badge> : <Badge variant="outline">Upcoming</Badge>}<Badge variant="outline">{friendly(effectiveStageBatchingPolicy(stage))}</Badge>{stage.requires_human_gate && !skipped ? <Badge variant="outline">Decision</Badge> : null}</div>
+          <div className="mt-1 flex flex-wrap gap-1">{assessmentNeedsAttention ? <Badge variant="outline" className="border-amber-500/40 text-amber-700 dark:text-amber-300">Needs attention</Badge> : assessmentIsTerminal ? <StatusBadge status={assessmentDisplayStatus} /> : attempt ? <StatusBadge status={attempt.status} /> : skipped ? <Badge variant="outline">Skipped</Badge> : <Badge variant="outline">Upcoming</Badge>}<Badge variant="outline">{friendly(effectiveStageBatchingPolicy(stage))}</Badge>{stage.requires_human_gate && !skipped ? <Badge variant="outline">Decision</Badge> : null}</div>
           {skipped ? <p className="mt-2 text-xs text-muted-foreground">Not requested; the accepted classifiers continue directly to whole-collection scoring.</p> : null}
           {showsStageFailure ? <div className="mt-3 rounded-lg border border-destructive/30 bg-destructive/5 p-3">
             <p className="text-sm font-medium text-destructive">{stage.name} failed</p>
@@ -439,7 +461,7 @@ function ProgramWorkspace({ clientId, matterId, program, run, stages, canManage,
           {showsDiscoveryTask ? <DiscoveryQAProgress clientId={clientId} matterId={matterId} run={run} canManage={canManage} busy={busy} onCancel={onCancelDiscovery} onReset={onResetDiscovery} /> : null}
           {showsWholeCollectionScoring ? <WholeCollectionScoringProgress run={run} openAction={openAction} /> : null}
           {showsClassifierPositiveCoverage ? <ClassifierPositiveCoverageProgress clientId={clientId} matterId={matterId} run={run} openAction={openAction} /> : null}
-          {containsCurrentReassessment ? <div className="mt-2 flex items-center justify-between gap-2 rounded-md border border-primary/30 bg-background/80 px-2 py-1.5"><span className="text-xs font-medium">Reassessment · Round {definitionAssessmentRound}</span><StatusBadge status={currentDefinitionAssessmentAttempt?.status ?? run.status} /></div> : null}
+          {containsCurrentReassessment ? <div className="mt-2 flex items-center justify-between gap-2 rounded-md border border-primary/30 bg-background/80 px-2 py-1.5"><span className="text-xs font-medium">Reassessment · Round {definitionAssessmentRound}</span>{assessmentNeedsAttention ? <Badge variant="outline" className="border-amber-500/40 text-amber-700 dark:text-amber-300">Needs attention</Badge> : <StatusBadge status={definitionAssessmentStageDisplayStatus(currentAssessment, currentDefinitionAssessmentAttempt?.status ?? run.status)} />}</div> : null}
         </div>
       </li>;
     })}</ol></CardContent></Card> : null}
@@ -1114,9 +1136,15 @@ function DefinitionAssessmentProgress({ clientId, matterId, run, assessment }: {
   const round = Number(run.progress_summary?.definition_assessment_round ?? 1);
   const processed = assessment.summarized_count + assessment.skipped_count + assessment.failed_count;
   const total = assessment.selected_count || assessment.requested_document_count;
+  const synthesisProgressRaw = run.progress_summary?.definition_assessment_synthesis;
+  const synthesisProgress = synthesisProgressRaw && typeof synthesisProgressRaw === "object" && !Array.isArray(synthesisProgressRaw)
+    ? synthesisProgressRaw as Record<string, unknown>
+    : {};
+  const synthesisNeedsAttention = assessment.completion_disposition === "ACTION_REQUIRED";
+  const failedSynthesisUnitCount = Number(synthesisProgress.failed_unit_count ?? 0);
   const parameters = new URLSearchParams({ assessment: assessment.id });
   if (assessment.guidance_id) parameters.set("guidance", assessment.guidance_id);
-  return <Card className="border-primary/30 bg-primary/5"><CardHeader><div className="flex flex-wrap items-start justify-between gap-3"><div><CardTitle>Definition reassessment · Round {round}</CardTitle><CardDescription>{assessment.status === "SUMMARIZING" ? "Analyzing documents against the newly published Matter Definition." : `Current activity: ${friendly(assessment.status)}.`}</CardDescription></div><StatusBadge status={assessment.status} /></div></CardHeader><CardContent><div className="flex flex-wrap items-center justify-between gap-3"><div><p className="text-sm font-medium tabular-nums">{processed.toLocaleString()} of {total.toLocaleString()} documents processed</p><p className="mt-1 text-xs text-muted-foreground">{assessment.summarized_count.toLocaleString()} summarized · {assessment.skipped_count.toLocaleString()} skipped · {assessment.failed_count.toLocaleString()} failed</p></div><Button asChild size="sm" variant="outline"><Link href={`/app/clients/${clientId}/matters/${matterId}/definition?${parameters.toString()}`}><BookOpen />Open current assessment</Link></Button></div></CardContent></Card>;
+  return <Card className={cn("border-primary/30 bg-primary/5", synthesisNeedsAttention && "border-amber-500/40 bg-amber-500/5")}><CardHeader><div className="flex flex-wrap items-start justify-between gap-3"><div><CardTitle>Definition reassessment · Round {round}</CardTitle><CardDescription>{synthesisNeedsAttention ? "Document analysis finished, but synthesis needs operator attention." : assessment.status === "SUMMARIZING" ? "Analyzing documents against the newly published Matter Definition." : `Current activity: ${friendly(assessment.status)}.`}</CardDescription></div>{synthesisNeedsAttention ? <Badge variant="outline" className="border-amber-500/40 text-amber-700 dark:text-amber-300">Needs attention</Badge> : <StatusBadge status={assessment.status} />}</div></CardHeader><CardContent><div className="flex flex-wrap items-center justify-between gap-3"><div><p className="text-sm font-medium tabular-nums">{processed.toLocaleString()} of {total.toLocaleString()} documents processed</p><p className="mt-1 text-xs text-muted-foreground">{assessment.summarized_count.toLocaleString()} summarized · {assessment.skipped_count.toLocaleString()} skipped · {assessment.failed_count.toLocaleString()} failed</p>{synthesisNeedsAttention ? <p className="mt-2 max-w-2xl text-xs text-amber-800 dark:text-amber-200">{failedSynthesisUnitCount > 0 ? `${failedSynthesisUnitCount} bounded synthesis unit${failedSynthesisUnitCount === 1 ? "" : "s"} need retry. ` : "One or more synthesis units need retry. "}The Review Program remains at this stage until synthesis is usable. Completed document analyses will be reused.</p> : null}</div><Button asChild size="sm" variant="outline"><Link href={`/app/clients/${clientId}/matters/${matterId}/definition?${parameters.toString()}`}><BookOpen />{synthesisNeedsAttention ? "Review and retry synthesis" : "Open current assessment"}</Link></Button></div></CardContent></Card>;
 }
 
 export function definitionAssessmentHref(clientId: string, matterId: string, action: ReviewProgramActionRead): string {

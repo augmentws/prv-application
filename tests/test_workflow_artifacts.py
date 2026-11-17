@@ -50,9 +50,17 @@ def content_for(artifact_type: ArtifactType) -> tuple[bytes, str]:
     if artifact_type == ArtifactType.CLASSIFICATION_MODEL_PACKAGE:
         return package_bytes(), "application/zip"
     if artifact_type in {
+        ArtifactType.ANALYSIS_EVALUATION_PLAN,
         ArtifactType.CLASSIFICATION_EVALUATION,
         ArtifactType.CLASSIFICATION_RESULT_MANIFEST,
         ArtifactType.REVIEW_PROGRAM_COMPLETION_REPORT,
+        ArtifactType.ANALYSIS_ADJUDICATION_PLAN,
+        ArtifactType.ANALYSIS_CRITERION_ADJUDICATION_FRAGMENT,
+        ArtifactType.ANALYSIS_CRITERION_DECISIONS,
+        ArtifactType.ANALYSIS_DOCUMENT_DECISION,
+        ArtifactType.ANALYSIS_COMPATIBILITY_RESULT,
+        ArtifactType.ANALYSIS_NARRATIVE_PROJECTION,
+        ArtifactType.ANALYSIS_OUTCOME_MANIFEST,
     }:
         return json.dumps({"artifact_type": artifact_type.value, "schema_version": 1}).encode(), "application/json"
     return parquet_bytes(artifact_type.value), "application/vnd.apache.parquet"
@@ -151,7 +159,7 @@ def delegated_headers(
     return auth(token)
 
 
-def test_all_classification_workflow_artifact_types_are_stored_and_resolved(
+def test_all_workflow_artifact_types_are_stored_and_resolved(
     client: TestClient,
     root_token: str,
     root_admin,
@@ -162,7 +170,7 @@ def test_all_classification_workflow_artifact_types_are_stored_and_resolved(
 
     for index, artifact_type in enumerate(ArtifactType):
         content, _ = content_for(artifact_type)
-        derivation_key = f"{index + 1:064x}"
+        derivation_key = sha256(f"{scope_id}:{index}".encode())
         metadata = workflow_metadata(
             tenant_id=tenant_id,
             client_id=client_id,
@@ -206,6 +214,28 @@ def test_all_classification_workflow_artifact_types_are_stored_and_resolved(
     assert listed.status_code == 200, listed.text
     assert len(listed.json()) == 1
     assert listed.json()[0]["artifact_type"] == ArtifactType.SEARCH_RESULT_EXPORT.value
+
+
+def test_workflow_artifact_upload_accepts_versioned_observation_fragments(
+    client: TestClient,
+    root_token: str,
+    root_admin,
+) -> None:
+    tenant_id, client_id = provision_core_scope(client, root_token, root_admin)
+    content, _ = content_for(ArtifactType.ANALYSIS_OBSERVATION_FRAGMENT)
+    metadata = workflow_metadata(
+        tenant_id=tenant_id,
+        client_id=client_id,
+        artifact_type=ArtifactType.ANALYSIS_OBSERVATION_FRAGMENT,
+        content=content,
+        derivation_key=sha256(b"analysis-observation-fragment-v2"),
+    )
+    metadata["schema_version"] = 2
+
+    response = upload_workflow_artifact(client, auth(root_token), metadata, content)
+
+    assert response.status_code == 201, response.text
+    assert response.json()["artifact"]["schema_version"] == 2
 
 
 def test_workflow_artifact_retry_lineage_content_and_conflict(

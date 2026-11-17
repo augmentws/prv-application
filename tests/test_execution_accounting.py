@@ -120,6 +120,8 @@ def test_skill_invocations_aggregate_and_reconcile_with_provider_usage(db, root_
             latency_ms=100,
             started_at=started,
             completed_at=started + timedelta(milliseconds=100),
+            error_code="ANALYSIS_OUTPUT_SCHEMA_INVALID",
+            error_message="$.answer is required",
         ),
     )
     usage_context = ProviderUsageContext(
@@ -156,6 +158,13 @@ def test_skill_invocations_aggregate_and_reconcile_with_provider_usage(db, root_
     assert workflow.input_tokens == 1400
     assert db.query(ModelInvocation).count() == 2
     assert db.query(ExternalProviderUsage).count() == 2
+    failed_output = db.scalar(
+        select(ModelInvocation).where(ModelInvocation.request_sequence == 2)
+    )
+    assert failed_output is not None
+    assert failed_output.status == "COMPLETED"
+    assert failed_output.error_code == "ANALYSIS_OUTPUT_SCHEMA_INVALID"
+    assert failed_output.error_message == "$.answer is required"
     reconciled = reconcile_invocation_usage(db, [invocation.id for invocation in invocations])
     assert reconciled == aggregate
     assert db.scalar(select(func.sum(ExternalProviderUsage.cached_input_tokens))) == 800

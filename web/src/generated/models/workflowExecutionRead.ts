@@ -21,6 +21,10 @@ export interface WorkflowExecutionRead {
   error_message: string | null;
   started_at: string | null;
   completed_at: string | null;
+  elapsed_seconds: number;
+  processing_seconds: number;
+  operator_wait_seconds: number;
+  timing_method?: 'SYNTHESIS_ATTEMPT_GAPS_V1';
   steps: WorkflowStepExecutionRead[];
   skill_runs: SkillRunExecutionRead[];
 }

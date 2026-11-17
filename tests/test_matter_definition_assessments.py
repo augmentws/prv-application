@@ -13,6 +13,7 @@ from pydantic_ai.models.test import TestModel
 from sqlalchemy import select
 
 from app.assessment_execution import (
+    _assessment_terminal_status,
     _coverage_envelope,
     _enforce_named_issue_references,
     _execute_document_analysis,
@@ -20,6 +21,7 @@ from app.assessment_execution import (
     _synthesis_context,
     _validate_retrieval_plan,
     _validate_synthesis_refinement,
+    analyze_document,
     archive_superseded_assessments,
     collect_retrieval_hits,
     fail_assessment,
@@ -27,7 +29,12 @@ from app.assessment_execution import (
     retrieval_plan_feedback,
 )
 from app.assessment_guidance_refinement import create_guidance_revision
-from app.assessment_provider_batches import _structured_request, finalize_provider_batch
+from app.assessment_provider_batches import (
+    _structured_request,
+    finalize_provider_batch,
+    plan_provider_batches,
+    repair_failed_provider_batch_outputs,
+)
 from app.assessment_workflow_reconciliation import reconcile_terminal_assessment_workflows
 from app.config import get_settings
 from app.document_evidence import build_document_map_plan, segment_paragraphs
@@ -54,6 +61,7 @@ from app.models import (
     SkillDefinitionVersion,
     SkillRun,
     Tenant,
+    User,
     WorkflowRun,
     WorkflowStepRun,
 )
@@ -132,6 +140,89 @@ def test_assessment_batch_search_projection_failure_is_non_blocking(
         "status": "FAILED",
         "error": "Search schema changes require a confirmed full reindex",
     }
+
+
+@pytest.mark.parametrize(
+    ("source", "expected_code", "expected_message"),
+    [
+        (None, "NO_TEXT_SOURCE", "Document has no analyzable text source"),
+        (SimpleNamespace(text="\n"), "EMPTY_TEXT_SOURCE", "Document text source is empty"),
+    ],
+)
+def test_document_without_analyzable_text_is_skipped_with_reason(
+    monkeypatch: pytest.MonkeyPatch,
+    source,
+    expected_code: str,
+    expected_message: str,
+) -> None:
+    assessment_id = uuid.uuid4()
+    review_run_id = uuid.uuid4()
+    document_id = uuid.uuid4()
+    run_document = SimpleNamespace(
+        status="QUEUED",
+        failure_code="OLD_ERROR",
+        failure_message="Old error",
+        failure_retriable=True,
+        completed_at=None,
+    )
+    document = SimpleNamespace(id=document_id, collection_item_id=uuid.uuid4())
+    assessment = SimpleNamespace(
+        id=assessment_id,
+        status="SUMMARIZING",
+        review_batch_run_id=review_run_id,
+        initiated_by_user_id=uuid.uuid4(),
+    )
+    matter = SimpleNamespace(
+        client=SimpleNamespace(tenant_id=uuid.uuid4()),
+        client_id=uuid.uuid4(),
+    )
+
+    class StubSession:
+        def __init__(self):
+            self.commits = 0
+
+        def get(self, model, record_id):
+            if model is ReviewBatchRunDocument and record_id == (review_run_id, document_id):
+                return run_document
+            if model is MatterDocument and record_id == document_id:
+                return document
+            return None
+
+        def commit(self):
+            self.commits += 1
+
+    monkeypatch.setattr(
+        "app.assessment_execution._records",
+        lambda *_args: (assessment, SimpleNamespace(), SimpleNamespace(), matter),
+    )
+    monkeypatch.setattr(
+        "app.assessment_execution.get_preferred_text_source",
+        lambda **_kwargs: source,
+    )
+
+    result = analyze_document(StubSession(), assessment_id, document_id)  # type: ignore[arg-type]
+
+    assert result == {"status": "SKIPPED", "reason": expected_code}
+    assert run_document.status == "SKIPPED"
+    assert run_document.failure_code == expected_code
+    assert run_document.failure_message == expected_message
+    assert run_document.failure_retriable is False
+    assert run_document.completed_at is not None
+
+
+def test_skipped_only_assessment_completes_without_errors() -> None:
+    assessment = SimpleNamespace(
+        failed_count=0,
+        skipped_count=1,
+        partial_coverage_count=0,
+        invalid_result_count=0,
+        synthesis_status="COMPLETED",
+        completion_disposition="READY_WITH_WARNINGS",
+    )
+
+    assert _assessment_terminal_status(assessment) == "COMPLETED"
+    assessment.failed_count = 1
+    assert _assessment_terminal_status(assessment) == "COMPLETED_WITH_ERRORS"
 
 
 def test_provider_batch_finalization_refreshes_progress_immediately(
@@ -338,6 +429,359 @@ def test_provider_batch_finalization_checkpoints_without_shared_usage_writes(
     assert batch.status == "COMPLETED"
 
 
+def test_provider_batch_finalization_repairs_supported_invalid_output(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    batch_id = uuid.uuid4()
+    assessment_id = uuid.uuid4()
+    review_run_id = uuid.uuid4()
+    document_id = uuid.uuid4()
+    skill_run_id = uuid.uuid4()
+    batch = SimpleNamespace(
+        id=batch_id,
+        assessment_run_id=assessment_id,
+        review_batch_run_id=review_run_id,
+        provider_batch_id="provider-batch-1",
+        provider="google",
+        model="gemini-test",
+        provider_status="JOB_STATE_SUCCEEDED",
+        manifest={
+            "requests": [
+                {
+                    "custom_id": str(document_id),
+                    "document_id": str(document_id),
+                    "skill_run_id": str(skill_run_id),
+                    "model_configuration_hash": "a" * 64,
+                }
+            ]
+        },
+        status="RUNNING",
+        submitted_at=datetime.now(timezone.utc),
+        completed_at=None,
+        error_message=None,
+    )
+    assessment = SimpleNamespace(
+        id=assessment_id,
+        initiated_by_user_id=uuid.uuid4(),
+        configuration_snapshot={"resolved_models": {"document_analysis": "google:gemini-test"}},
+    )
+    workflow = SimpleNamespace(
+        id=uuid.uuid4(),
+        tenant_id=uuid.uuid4(),
+        client_id=uuid.uuid4(),
+        matter_id=uuid.uuid4(),
+        initiated_by_user_id=uuid.uuid4(),
+        workflow_key="matter_definition_assessment_v1",
+        created_at=datetime.now(timezone.utc),
+    )
+    revision = SimpleNamespace(content_markdown="Review guidance")
+    version = SimpleNamespace(
+        model_key="document-analysis",
+        model_policy={},
+        limits={"max_output_tokens": 20_000},
+        output_schema={},
+    )
+    skill_run = SimpleNamespace(id=skill_run_id, status="RUNNING")
+    run_document = SimpleNamespace(status="IN_PROGRESS", completed_at=None)
+    document = SimpleNamespace(id=document_id, collection_item_id=uuid.uuid4())
+    source = SimpleNamespace(text="Evidence", artifact_id=uuid.uuid4(), content_hash="b" * 64)
+    invalid_output = {
+        "summary": [{"text": "Summary", "citation_ids": ["¶1"]}],
+        "determination": "NOT_PRIVILEGED",
+        "confidence": 0.9,
+        "responsiveness_summary": [{"text": "Outside scope", "citation_ids": ["¶1"]}],
+        "criterion_matches": [],
+        "scope_analysis": [],
+        "countervailing_considerations": [],
+        "clarification_requests": [],
+        "limitations": [],
+    }
+    repaired_output = {**invalid_output, "determination": "NON_RESPONSIVE"}
+
+    class StubSession:
+        def get(self, model, record_id):
+            if model is MatterDefinitionAssessmentProviderBatch and record_id == batch_id:
+                return batch
+            if model is SkillRun and record_id == skill_run_id:
+                return skill_run
+            if model is ReviewBatchRunDocument and record_id == (review_run_id, document_id):
+                return run_document
+            if model is MatterDocument and record_id == document_id:
+                return document
+            return None
+
+        def commit(self):
+            return None
+
+        def rollback(self):
+            pytest.fail("Successful repair must not roll back")
+
+    class StubAdapter:
+        def results(self, provider_batch_id):
+            assert provider_batch_id == "provider-batch-1"
+            return "JOB_STATE_SUCCEEDED", [
+                SimpleNamespace(
+                    custom_id=str(document_id),
+                    error=None,
+                    output_text=json.dumps(invalid_output),
+                    provider_request_id="request-1",
+                    input_tokens=10,
+                    cached_input_tokens=0,
+                    output_tokens=5,
+                )
+            ]
+
+    repair_calls: list[dict] = []
+
+    async def fake_repair(**kwargs):
+        repair_calls.append(kwargs)
+        return SimpleNamespace(
+            output=repaired_output,
+            normalization_changes=(),
+            envelope=SimpleNamespace(invocations=()),
+            diagnostics=lambda: {
+                "normalization_changes": [],
+                "focused_repair_applied": True,
+                "validation_errors": ["determination is invalid"],
+                "repair_targets": {"determination": True, "citation_paths": []},
+            },
+        )
+
+    invocation_attempts: list[int] = []
+    persisted_diagnostics: list[dict] = []
+    monkeypatch.setattr(
+        "app.assessment_provider_batches._records",
+        lambda *_args: (assessment, workflow, revision, SimpleNamespace()),
+    )
+    monkeypatch.setattr("app.assessment_provider_batches._skill_version", lambda *_args: version)
+    monkeypatch.setattr("app.assessment_provider_batches.get_batch_adapter", lambda _provider: StubAdapter())
+    monkeypatch.setattr(
+        "app.assessment_provider_batches.normalize_or_repair_document_analysis",
+        fake_repair,
+    )
+    monkeypatch.setattr("app.assessment_provider_batches.get_preferred_text_source", lambda **_kwargs: source)
+    monkeypatch.setattr("app.assessment_provider_batches.segment_paragraphs", lambda _text: SimpleNamespace())
+    monkeypatch.setattr(
+        "app.assessment_provider_batches.validate_document_analysis_citations",
+        lambda *_args: None,
+    )
+    monkeypatch.setattr(
+        "app.assessment_provider_batches.build_document_map_plan",
+        lambda *_args, **_kwargs: SimpleNamespace(windows=[SimpleNamespace(window_id="w1")]),
+    )
+    monkeypatch.setattr("app.assessment_provider_batches.document_map_coverage", lambda *_args, **_kwargs: {})
+    monkeypatch.setattr(
+        "app.assessment_provider_batches.persist_model_invocations",
+        lambda *_args, **kwargs: invocation_attempts.append(kwargs.get("attempt", 1)),
+    )
+    monkeypatch.setattr(
+        "app.assessment_provider_batches.complete_skill_run",
+        lambda _db, run, **_kwargs: setattr(run, "status", "COMPLETED"),
+    )
+
+    def persist_analysis(_db, **kwargs):
+        persisted_diagnostics.append(kwargs["pipeline_diagnostics"])
+        run_document.status = "COMPLETED"
+
+    monkeypatch.setattr("app.assessment_provider_batches.persist_document_analysis", persist_analysis)
+    monkeypatch.setattr("app.assessment_provider_batches.refresh_progress", lambda *_args: None)
+
+    result = finalize_provider_batch(StubSession(), batch_id)  # type: ignore[arg-type]
+
+    assert result == {"completed": 1, "failed": 0}
+    assert len(repair_calls) == 1
+    assert repair_calls[0]["output"]["determination"] == "NOT_PRIVILEGED"
+    assert invocation_attempts == [1, 2]
+    assert persisted_diagnostics[0]["output_repair"]["focused_repair_applied"] is True
+    assert run_document.status == "COMPLETED"
+
+
+def test_retry_plan_does_not_reanalyze_recovered_provider_outputs(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    assessment_id = uuid.uuid4()
+    review_run_id = uuid.uuid4()
+    document_id = uuid.uuid4()
+    run_document = SimpleNamespace(status="QUEUED")
+    assessment = SimpleNamespace(
+        id=assessment_id,
+        review_batch_run_id=review_run_id,
+        use_batching=False,
+    )
+    workflow = SimpleNamespace(dbos_workflow_id=f"definition-assessment:{assessment_id}:retry:1")
+
+    class StubSession:
+        def get(self, model, record_id):
+            if model is ReviewBatchRunDocument and record_id == (review_run_id, document_id):
+                return run_document
+            return None
+
+    def recover(_db, received_assessment_id, document_ids):
+        assert received_assessment_id == assessment_id
+        assert document_ids == [document_id]
+        run_document.status = "COMPLETED"
+        return {"normalized": 1, "focused_repair": 0, "fallback": 0}
+
+    monkeypatch.setattr(
+        "app.assessment_provider_batches._records",
+        lambda *_args: (assessment, workflow, SimpleNamespace(), SimpleNamespace()),
+    )
+    monkeypatch.setattr(
+        "app.assessment_provider_batches.repair_failed_provider_batch_outputs",
+        recover,
+    )
+
+    result = plan_provider_batches(
+        StubSession(),  # type: ignore[arg-type]
+        assessment_id,
+        [document_id],
+        get_settings(),
+    )
+
+    assert result["realtime_document_ids"] == []
+    assert result["provider_batch_ids"] == []
+    assert result["repair_summary"] == {
+        "normalized": 1,
+        "focused_repair": 0,
+        "fallback": 0,
+    }
+
+
+def test_retry_recovers_stored_provider_output_and_falls_back_only_when_unavailable(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    assessment_id = uuid.uuid4()
+    review_run_id = uuid.uuid4()
+    recovered_document_id = uuid.uuid4()
+    fallback_document_id = uuid.uuid4()
+    run_document = SimpleNamespace(status="QUEUED", completed_at=None)
+    document = SimpleNamespace(id=recovered_document_id, collection_item_id=uuid.uuid4())
+    assessment = SimpleNamespace(
+        id=assessment_id,
+        review_batch_run_id=review_run_id,
+        selected_count=2,
+        initiated_by_user_id=uuid.uuid4(),
+        configuration_snapshot={"resolved_models": {"document_analysis": "google:gemini-test"}},
+    )
+    workflow = SimpleNamespace(
+        id=uuid.uuid4(),
+        tenant_id=uuid.uuid4(),
+        client_id=uuid.uuid4(),
+        matter_id=uuid.uuid4(),
+        initiated_by_user_id=uuid.uuid4(),
+        workflow_key="matter_definition_assessment_v1",
+        created_at=datetime.now(timezone.utc),
+    )
+    revision = SimpleNamespace(content_markdown="Review guidance")
+    matter = SimpleNamespace()
+    version = SimpleNamespace(
+        model_key="document-analysis",
+        model_policy={},
+        limits={"max_output_tokens": 20_000},
+        output_schema={},
+    )
+    batch = SimpleNamespace(provider_batch_id="provider-batch-1")
+    response = SimpleNamespace(
+        error=None,
+        output_text=json.dumps({"determination": "NOT_RESPONSIVE"}),
+    )
+    source = SimpleNamespace(text="Evidence", artifact_id=uuid.uuid4(), content_hash="c" * 64)
+    skill_run = SimpleNamespace(id=uuid.uuid4(), cache_fingerprint=None, status="RUNNING")
+
+    class StubSession:
+        def __init__(self):
+            self.commits = 0
+
+        def get(self, model, record_id):
+            if model is ReviewBatchRunDocument and record_id == (
+                review_run_id,
+                recovered_document_id,
+            ):
+                return run_document
+            if model is MatterDocument and record_id == recovered_document_id:
+                return document
+            return None
+
+        def commit(self):
+            self.commits += 1
+
+        def rollback(self):
+            pytest.fail("Successful recovery must not roll back")
+
+    async def normalize_recovered_output(**_kwargs):
+        return SimpleNamespace(
+            output={"determination": "NON_RESPONSIVE"},
+            envelope=None,
+            assembly=None,
+            focused_repair_applied=False,
+            diagnostics=lambda: {
+                "normalization_changes": [
+                    {
+                        "path": "determination",
+                        "from": "NOT_RESPONSIVE",
+                        "to": "NON_RESPONSIVE",
+                    }
+                ],
+                "focused_repair_applied": False,
+                "validation_errors": [],
+                "repair_targets": None,
+            },
+        )
+
+    persisted: list[dict] = []
+    refreshed: list[uuid.UUID] = []
+    monkeypatch.setattr(
+        "app.assessment_provider_batches._records",
+        lambda *_args: (assessment, workflow, revision, matter),
+    )
+    monkeypatch.setattr("app.assessment_provider_batches._skill_version", lambda *_args: version)
+    monkeypatch.setattr("app.assessment_provider_batches._step", lambda *_args, **_kwargs: SimpleNamespace())
+    monkeypatch.setattr(
+        "app.assessment_provider_batches._prior_provider_results",
+        lambda *_args: {recovered_document_id: (batch, response)},
+    )
+    monkeypatch.setattr("app.assessment_provider_batches.get_preferred_text_source", lambda **_kwargs: source)
+    monkeypatch.setattr("app.assessment_provider_batches.segment_paragraphs", lambda _text: SimpleNamespace())
+    monkeypatch.setattr(
+        "app.assessment_provider_batches.build_document_map_plan",
+        lambda *_args, **_kwargs: SimpleNamespace(windows=[SimpleNamespace(window_id="w1")]),
+    )
+    monkeypatch.setattr("app.assessment_provider_batches.document_map_coverage", lambda *_args, **_kwargs: {})
+    monkeypatch.setattr(
+        "app.assessment_provider_batches.normalize_or_repair_document_analysis",
+        normalize_recovered_output,
+    )
+    monkeypatch.setattr("app.assessment_provider_batches.validate_structured_output", lambda *_args: None)
+    monkeypatch.setattr("app.assessment_provider_batches.create_skill_run", lambda *_args, **_kwargs: skill_run)
+    monkeypatch.setattr(
+        "app.assessment_provider_batches.complete_skill_run",
+        lambda _db, run, **_kwargs: setattr(run, "status", "COMPLETED"),
+    )
+
+    def persist_analysis(_db, **kwargs):
+        persisted.append(kwargs)
+        run_document.status = "COMPLETED"
+
+    monkeypatch.setattr("app.assessment_provider_batches.persist_document_analysis", persist_analysis)
+    monkeypatch.setattr(
+        "app.assessment_provider_batches.refresh_progress",
+        lambda _db, received_id: refreshed.append(received_id),
+    )
+
+    session = StubSession()
+    result = repair_failed_provider_batch_outputs(
+        session,  # type: ignore[arg-type]
+        assessment_id,
+        [recovered_document_id, fallback_document_id],
+    )
+
+    assert result == {"normalized": 1, "focused_repair": 0, "fallback": 1}
+    assert run_document.status == "COMPLETED"
+    assert persisted[0]["pipeline_diagnostics"]["mode"] == "RECOVERED_PROVIDER_BATCH_OUTPUT"
+    assert refreshed == [assessment_id]
+    assert session.commits == 1
+
+
 def test_refresh_progress_locks_assessment_before_shared_rollup(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -509,6 +953,61 @@ def test_assessment_launch_pins_inputs_and_requires_large_run_acknowledgment(
             == {"retrieval_planner", "document_analysis", "assessment_synthesis", "guidance_refinement"}
             for record in records
         )
+
+
+def test_assessment_launch_routes_evidence_first_only_when_explicitly_enabled(
+    client: TestClient,
+    root_token: str,
+    root_admin,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    matter_id = create_assessment_matter(client, root_token, root_admin)
+    base = f"/v1/matters/{matter_id}/definition-assessments"
+    settings = get_settings()
+    monkeypatch.setattr(settings, "definition_assessment_evidence_shadow_enabled", False)
+
+    disabled = client.post(
+        base,
+        headers=auth(root_token),
+        json={"name": "Evidence disabled", "execution_mode": "EVIDENCE_FIRST_V1"},
+    )
+    assert disabled.status_code == 409
+    assert "disabled by configuration" in disabled.json()["error"]["message"]
+
+    evidence_calls: list[dict[str, str]] = []
+    direct_calls: list[tuple[tuple, dict]] = []
+    monkeypatch.setattr(settings, "definition_assessment_evidence_shadow_enabled", True)
+    monkeypatch.setattr(
+        "app.matter_definition_assessments.enqueue_evidence_assessment",
+        lambda _db, workflow_id, **kwargs: evidence_calls.append(
+            {"workflow_id": workflow_id, **kwargs}
+        ),
+    )
+    monkeypatch.setattr(
+        "app.matter_definition_assessments.enqueue_definition_assessment",
+        lambda *args, **kwargs: direct_calls.append((args, kwargs)),
+    )
+
+    evidence = client.post(
+        base,
+        headers=auth(root_token),
+        json={"name": "Evidence routed", "execution_mode": "EVIDENCE_FIRST_V1"},
+    )
+    assert evidence.status_code == 202, evidence.text
+    direct = client.post(base, headers=auth(root_token), json={"name": "Direct default"})
+    assert direct.status_code == 202, direct.text
+
+    assert len(evidence_calls) == 1
+    assert evidence_calls[0]["assessment_id"] == evidence.json()["id"]
+    assert evidence_calls[0]["actor_user_id"] == str(root_admin.id)
+    assert evidence_calls[0]["attempt_id"] == "initial"
+    assert len(direct_calls) == 1
+    with TestingSessionLocal() as db:
+        evidence_record = db.get(MatterDefinitionAssessmentRun, uuid.UUID(evidence.json()["id"]))
+        direct_record = db.get(MatterDefinitionAssessmentRun, uuid.UUID(direct.json()["id"]))
+        assert evidence_record is not None and direct_record is not None
+        assert evidence_record.configuration_snapshot["assessment_execution_mode"] == "EVIDENCE_FIRST_V1"
+        assert direct_record.configuration_snapshot["assessment_execution_mode"] == "DIRECT_V1"
 
 
 def test_failed_assessments_can_be_archived_and_restored(
@@ -722,6 +1221,9 @@ def test_assessment_reads_use_live_document_counts(
     assert created.status_code == 202, created.text
     assessment = SimpleNamespace(**created.json())
     assessment.review_batch_run_id = uuid.uuid4()
+    assessment.status = "COMPLETED_WITH_ERRORS"
+    assessment.synthesis_status = "COMPLETED"
+    assessment.completion_disposition = "READY_WITH_WARNINGS"
 
     class StubSession:
         def execute(self, statement):
@@ -737,6 +1239,222 @@ def test_assessment_reads_use_live_document_counts(
     assert result.summarized_count == 7
     assert result.skipped_count == 1
     assert result.failed_count == 2
+    assert result.status == "COMPLETED_WITH_ERRORS"
+
+    assessment.partial_coverage_count = 0
+    assessment.invalid_result_count = 0
+
+    class SkippedOnlySession:
+        def execute(self, statement):
+            del statement
+            return [
+                (assessment.review_batch_run_id, "COMPLETED", 9),
+                (assessment.review_batch_run_id, "SKIPPED", 1),
+            ]
+
+    skipped_only = _assessment_reads(SkippedOnlySession(), [assessment])[0]  # type: ignore[arg-type]
+    assert skipped_only.status == "COMPLETED"
+    assert skipped_only.skipped_count == 1
+    assert skipped_only.failed_count == 0
+
+
+def test_assessment_reads_redact_technical_diagnostics_for_non_tenant_admins(
+    client: TestClient,
+    root_token: str,
+    root_admin,
+) -> None:
+    matter_id = create_assessment_matter(client, root_token, root_admin)
+    created = client.post(
+        f"/v1/matters/{matter_id}/definition-assessments",
+        headers=auth(root_token),
+        json={"target_document_count": 10},
+    )
+    assert created.status_code == 202, created.text
+    assessment = SimpleNamespace(**created.json())
+    assessment.synthesis_result = {
+        "findings": [{"topic_key": "privilege", "finding": "Supported finding"}],
+        "other_unmapped_criteria": {"items": [{"source_key": "model_only_label"}]},
+        "synthesis_diagnostics": {"manifest_hash": "secret-technical-hash"},
+    }
+    assessment.synthesis_diagnostics = {
+        "operator_message": "Retry failed documents.",
+        "normalization_warnings": [{"code": "OUTPUT_NORMALIZED"}],
+        "canonicalization": {"unmapped": [{"source_key": "model_only_label"}]},
+    }
+
+    class StubSession:
+        pass
+
+    operator_read = _assessment_reads(StubSession(), [assessment])[0]  # type: ignore[arg-type]
+    admin_read = _assessment_reads(
+        StubSession(),
+        [assessment],
+        include_technical_diagnostics=True,
+    )[0]  # type: ignore[arg-type]
+
+    assert operator_read.technical_diagnostics_visible is False
+    assert operator_read.synthesis_result is not None
+    assert operator_read.synthesis_result["findings"] == assessment.synthesis_result["findings"]
+    assert "other_unmapped_criteria" not in operator_read.synthesis_result
+    assert "synthesis_diagnostics" not in operator_read.synthesis_result
+    assert operator_read.synthesis_diagnostics == {"operator_message": "Retry failed documents."}
+    assert admin_read.technical_diagnostics_visible is True
+    assert admin_read.synthesis_result == assessment.synthesis_result
+    assert admin_read.synthesis_diagnostics == assessment.synthesis_diagnostics
+
+
+def test_synthesis_diagnostics_require_tenant_administrator_role(
+    client: TestClient,
+    root_token: str,
+    root_admin,
+    monkeypatch,
+) -> None:
+    matter_id = create_assessment_matter(client, root_token, root_admin)
+    with TestingSessionLocal() as db:
+        matter = db.get(Matter, uuid.UUID(matter_id))
+        assert matter is not None
+        tenant_id = matter.client.tenant_id
+        tenant_admin = db.scalar(
+            select(User).where(User.tenant_id == tenant_id, User.tenant_role == "ADMIN")
+        )
+        assert tenant_admin is not None
+        tenant_admin_email = tenant_admin.email
+
+    created = client.post(
+        f"/v1/matters/{matter_id}/definition-assessments",
+        headers=auth(root_token),
+        json={"target_document_count": 10},
+    )
+    assert created.status_code == 202, created.text
+    assessment_id = created.json()["id"]
+    retry_document_id = uuid.uuid4()
+    retry_target_id = uuid.uuid4()
+    monkeypatch.setattr(
+        "app.routers.matter_definition_assessments.schedule_evidence_stage_retry",
+        lambda *_args, **kwargs: SimpleNamespace(
+            assessment_id=uuid.UUID(assessment_id),
+            matter_document_id=kwargs["matter_document_id"],
+            stage=kwargs["stage"],
+            target_workflow_run_id=retry_target_id,
+            operation_workflow_id="evidence-stage-retry:test",
+            reused_completed_work=True,
+        ),
+    )
+
+    user_response = client.post(
+        f"/v1/tenants/{tenant_id}/users",
+        headers=auth(root_token),
+        json={
+            "email": "assessment-matter-admin@example.com",
+            "display_name": "Assessment Matter Admin",
+            "password": "assessment-matter-admin-password",
+        },
+    )
+    assert user_response.status_code == 201, user_response.text
+    user_id = user_response.json()["id"]
+    roles_response = client.get(f"/v1/tenants/{tenant_id}/roles", headers=auth(root_token))
+    assert roles_response.status_code == 200, roles_response.text
+    matter_admin_role = next(
+        role for role in roles_response.json() if role["key"] == "MATTER_ADMINISTRATOR"
+    )
+    grant_response = client.post(
+        f"/v1/tenants/{tenant_id}/authorization-grants",
+        headers=auth(root_token),
+        json={
+            "subject": {"type": "USER", "id": user_id},
+            "role_id": matter_admin_role["id"],
+            "scope": {"type": "MATTER", "id": matter_id},
+        },
+    )
+    assert grant_response.status_code == 201, grant_response.text
+    login_response = client.post(
+        "/v1/auth/login",
+        json={
+            "email": "assessment-matter-admin@example.com",
+            "password": "assessment-matter-admin-password",
+        },
+    )
+    assert login_response.status_code == 200, login_response.text
+    matter_admin_token = login_response.json()["access_token"]
+
+    operator_list = client.get(
+        f"/v1/matters/{matter_id}/definition-assessments",
+        headers=auth(matter_admin_token),
+    )
+    assert operator_list.status_code == 200, operator_list.text
+    assert operator_list.json()[0]["technical_diagnostics_visible"] is False
+    operator_outcomes = client.get(
+        f"/v1/matters/{matter_id}/definition-assessments/{assessment_id}/evidence-outcomes",
+        headers=auth(matter_admin_token),
+    )
+    assert operator_outcomes.status_code == 200, operator_outcomes.text
+    assert operator_outcomes.json()["technical_diagnostics_visible"] is False
+    assert operator_outcomes.json()["usage"] is None
+    assert operator_outcomes.json()["documents"] == []
+    synthesis_units = client.get(
+        f"/v1/matters/{matter_id}/definition-assessments/{assessment_id}/synthesis-units",
+        headers=auth(matter_admin_token),
+    )
+    assert synthesis_units.status_code == 403
+    assert "Tenant administrator role required" in synthesis_units.text
+    operator_retry = client.post(
+        f"/v1/matters/{matter_id}/definition-assessments/{assessment_id}/evidence-outcomes/{retry_document_id}/retry",
+        headers=auth(matter_admin_token),
+        json={"stage": "NARRATIVE"},
+    )
+    assert operator_retry.status_code == 403
+    monkeypatch.setattr(
+        get_settings(),
+        "definition_assessment_evidence_shadow_enabled",
+        True,
+    )
+    operator_launch = client.post(
+        f"/v1/matters/{matter_id}/definition-assessments",
+        headers=auth(matter_admin_token),
+        json={"name": "Unauthorized evidence route", "execution_mode": "EVIDENCE_FIRST_V1"},
+    )
+    assert operator_launch.status_code == 403
+    assert "Tenant administrator role required" in operator_launch.text
+
+    tenant_admin_login = client.post(
+        "/v1/auth/login",
+        json={"email": tenant_admin_email, "password": "client-tenant-password-123"},
+    )
+    assert tenant_admin_login.status_code == 200, tenant_admin_login.text
+    tenant_admin_token = tenant_admin_login.json()["access_token"]
+    tenant_admin_launch = client.post(
+        f"/v1/matters/{matter_id}/definition-assessments",
+        headers=auth(tenant_admin_token),
+        json={"name": "Authorized evidence route", "execution_mode": "EVIDENCE_FIRST_V1"},
+    )
+    assert tenant_admin_launch.status_code == 202, tenant_admin_launch.text
+    assert tenant_admin_launch.json()["execution_mode"] == "EVIDENCE_FIRST_V1"
+    tenant_admin_list = client.get(
+        f"/v1/matters/{matter_id}/definition-assessments",
+        headers=auth(tenant_admin_token),
+    )
+    assert tenant_admin_list.status_code == 200, tenant_admin_list.text
+    assert tenant_admin_list.json()[0]["technical_diagnostics_visible"] is True
+    tenant_admin_outcomes = client.get(
+        f"/v1/matters/{matter_id}/definition-assessments/{assessment_id}/evidence-outcomes",
+        headers=auth(tenant_admin_token),
+    )
+    assert tenant_admin_outcomes.status_code == 200, tenant_admin_outcomes.text
+    assert tenant_admin_outcomes.json()["technical_diagnostics_visible"] is True
+    assert tenant_admin_outcomes.json()["usage"]["workflow_count"] == 0
+    tenant_admin_retry = client.post(
+        f"/v1/matters/{matter_id}/definition-assessments/{assessment_id}/evidence-outcomes/{retry_document_id}/retry",
+        headers=auth(tenant_admin_token),
+        json={"stage": "NARRATIVE"},
+    )
+    assert tenant_admin_retry.status_code == 202, tenant_admin_retry.text
+    assert tenant_admin_retry.json()["target_workflow_run_id"] == str(retry_target_id)
+    assert tenant_admin_retry.json()["reused_completed_work"] is True
+    tenant_admin_units = client.get(
+        f"/v1/matters/{matter_id}/definition-assessments/{assessment_id}/synthesis-units",
+        headers=auth(tenant_admin_token),
+    )
+    assert tenant_admin_units.status_code == 200, tenant_admin_units.text
 
 
 def test_execution_step_reads_use_live_document_counts() -> None:
@@ -1312,10 +2030,12 @@ def test_reconciliation_resumes_pending_parent_after_every_document_is_terminal(
         ]
 
 
-def test_completed_assessment_can_regenerate_only_synthesis(
+@pytest.mark.parametrize("terminal_status", ["COMPLETED", "FAILED"])
+def test_terminal_assessment_can_regenerate_only_synthesis(
     client: TestClient,
     root_token: str,
     root_admin,
+    terminal_status: str,
 ) -> None:
     matter_id = create_assessment_matter(client, root_token, root_admin)
     launched = client.post(
@@ -1330,14 +2050,14 @@ def test_completed_assessment_can_regenerate_only_synthesis(
         assert assessment is not None
         workflow = db.get(WorkflowRun, assessment.workflow_run_id)
         assert workflow is not None
-        assessment.status = "COMPLETED"
+        assessment.status = terminal_status
         assessment.selected_count = 5
         assessment.summarized_count = 5
         assessment.synthesis_result = {
             "status": "COMPLETED",
             "clarification_questions": [],
         }
-        workflow.status = "COMPLETED"
+        workflow.status = terminal_status
         db.commit()
 
     regenerated = client.post(
@@ -1354,10 +2074,10 @@ def test_completed_assessment_can_regenerate_only_synthesis(
         workflow = db.get(WorkflowRun, assessment.workflow_run_id)
         assert workflow is not None
         assert ":synthesis:" in workflow.dbos_workflow_id
-        assert workflow.code_version == "11"
+        assert workflow.code_version == "13"
         assert (
             assessment.binding_snapshot["assessment_synthesis"]["output_schema_key"]
-            == "matter_definition_assessment_synthesis_output_v4"
+            == "matter_definition_assessment_synthesis_output_v5"
         )
         step = db.scalar(
             select(WorkflowStepRun).where(
@@ -1473,7 +2193,7 @@ def test_completed_assessment_can_reanalyze_same_frozen_batch(
             )
         ) == {"COMPLETED"}
         assert ":analysis:" in workflow.dbos_workflow_id
-        assert workflow.code_version == "11"
+        assert workflow.code_version == "13"
         history = assessment.configuration_snapshot["document_analysis_regeneration_history"]
         assert history[-1]["previous_review_batch_run_id"] == str(previous_review_run_id)
         steps = list(
@@ -1849,7 +2569,7 @@ def test_synthesis_expands_bare_issue_references_and_rejects_wrong_names() -> No
         _enforce_named_issue_references(wrong_name, matter_definition)
 
 
-def test_long_document_map_reduce_uses_one_skill_run(
+def test_long_document_uses_one_query_directed_skill_run(
     client: TestClient,
     root_token: str,
     root_admin,
@@ -1916,39 +2636,6 @@ def test_long_document_map_reduce_uses_one_skill_run(
             "clarification_requests": [],
             "limitations": [],
         }
-        map_output = {
-            "findings": [{"text": "The window contains evidence.", "citation_ids": ["¶1"]}],
-            "criterion_matches": [
-                {
-                    "criterion_key": "issue_5",
-                    "label": "Citizens operations",
-                    "match_type": "NEAR_MISS",
-                    "reasoning": "The document presents an employment-boundary question.",
-                    "citation_ids": ["¶1"],
-                }
-            ],
-            "scope_analysis": [],
-            "countervailing_considerations": [],
-            "clarification_requests": [
-                {
-                    "question": "Should internal employment grievances involving Citizens be responsive?",
-                    "rationale": "The current boundary is ambiguous.",
-                    "blocking": False,
-                    "instruction_references": ["Issue 5"],
-                    "citation_ids": ["¶1"],
-                }
-            ],
-            "limitations": [],
-        }
-
-        class StageAwareModel(TestModel):
-            request_number = 0
-
-            async def request(self, messages, model_settings, model_request_parameters):
-                self.request_number += 1
-                self.custom_output_args = map_output if self.request_number <= len(plan.windows) else output
-                return await super().request(messages, model_settings, model_request_parameters)
-
         result, skill_run, diagnostics = asyncio.run(
             _execute_document_analysis(
                 db,
@@ -1961,27 +2648,23 @@ def test_long_document_map_reduce_uses_one_skill_run(
                 source=SimpleNamespace(artifact_id=uuid.uuid4(), content_hash="b" * 64),
                 paragraph_map=paragraph_map,
                 plan=plan,
-                model=StageAwareModel(),
+                model=TestModel(custom_output_args=output),
             )
         )
         db.commit()
-        assert result["coverage"]["window_count"] == len(plan.windows)
+        assert result["coverage"]["status"] == "PARTIAL"
         assert result["coverage"]["analyzed_paragraph_ids"] == ["¶1"]
-        assert result["criterion_matches"] == map_output["criterion_matches"]
-        assert result["clarification_requests"] == map_output["clarification_requests"]
-        assert diagnostics["mode"] == "MAP_REDUCE"
-        assert diagnostics["restored_near_miss_count"] == 1
-        assert diagnostics["restored_clarification_count"] == 1
-        assert "coverage" not in map_output
+        assert diagnostics["mode"] == "QUERY_DIRECTED_LARGE_DOCUMENT"
+        assert diagnostics["selection_kind"] == "CONTROL_SAMPLE"
         assert skill_run.status == "COMPLETED"
-        assert skill_run.request_count == len(plan.windows) + 1
+        assert skill_run.request_count == 1
         # Document workers update only their own usage. The shared workflow
         # aggregate is refreshed later under the assessment rollup lock.
         assert step.request_count == 0
         assert len(list(db.scalars(select(SkillRun).where(SkillRun.scope_id == document.id)))) == 1
         invocations = list(db.scalars(select(ModelInvocation).where(ModelInvocation.skill_run_id == skill_run.id)))
-        assert len(invocations) == len(plan.windows) + 1
-        assert {item.attempt for item in invocations} == set(range(1, len(plan.windows) + 2))
+        assert len(invocations) == 1
+        assert {item.attempt for item in invocations} == {1}
 
 
 def test_provider_batch_document_request_uses_final_model_schema_without_coverage() -> None:

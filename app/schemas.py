@@ -3668,6 +3668,7 @@ class MatterDefinitionAssessmentCreate(BaseModel):
     control_sample_size: int = Field(default=0, ge=0, le=1_000_000)
     use_batching: bool = True
     acknowledge_large_run_warning: bool = False
+    execution_mode: Literal["DIRECT_V1", "EVIDENCE_FIRST_V1"] = "DIRECT_V1"
 
 
 class MatterDefinitionAssessmentUpdate(BaseModel):
@@ -3710,6 +3711,7 @@ class MatterDefinitionAssessmentRead(ORMModel):
     requested_document_count: int
     control_sample_size: int
     use_batching: bool
+    execution_mode: Literal["DIRECT_V1", "EVIDENCE_FIRST_V1"]
     large_run_warning_acknowledged: bool
     warning_acknowledged_by_user_id: uuid.UUID | None
     warning_acknowledged_at: datetime | None
@@ -3727,6 +3729,11 @@ class MatterDefinitionAssessmentRead(ORMModel):
     invalid_result_count: int
     coverage_snapshot: dict[str, Any] | None
     synthesis_result: dict[str, Any] | None
+    synthesis_status: Literal["NOT_STARTED", "RUNNING", "COMPLETED", "PARTIAL", "FAILED"]
+    completion_disposition: Literal["READY", "READY_WITH_WARNINGS", "ACTION_REQUIRED"] | None
+    current_synthesis_attempt_id: uuid.UUID | None
+    synthesis_diagnostics: dict[str, Any]
+    technical_diagnostics_visible: bool = False
     guidance_refinement_status: Literal["NOT_READY", "QUEUED", "RUNNING", "COMPLETED", "NOT_REQUIRED", "FAILED"]
     guidance_refinement_workflow_run_id: uuid.UUID | None
     refined_matter_definition_revision_id: uuid.UUID | None
@@ -3741,6 +3748,81 @@ class MatterDefinitionAssessmentRead(ORMModel):
     archived_by_user_id: uuid.UUID | None
     archive_reason: Literal["MANUAL", "SUPERSEDED"] | None
     superseded_by_assessment_id: uuid.UUID | None
+    created_at: datetime
+    updated_at: datetime
+
+
+class EvidenceAnalysisStageOutcomeRead(BaseModel):
+    status: str
+    completed_count: int
+    failed_count: int
+    retryable: bool
+    error_code: str | None = None
+    error_summary: str | None = None
+    workflow_run_id: uuid.UUID | None = None
+    artifact_ids: dict[str, uuid.UUID] = Field(default_factory=dict)
+
+
+class EvidenceAnalysisDocumentOutcomeRead(BaseModel):
+    matter_document_id: uuid.UUID
+    extraction: EvidenceAnalysisStageOutcomeRead
+    adjudication: EvidenceAnalysisStageOutcomeRead
+    document_decision: EvidenceAnalysisStageOutcomeRead
+    compatibility_projection: EvidenceAnalysisStageOutcomeRead
+    narrative: EvidenceAnalysisStageOutcomeRead
+    synthesis_readiness: Literal["PENDING", "READY", "READY_WITH_FALLBACK", "ACTION_REQUIRED"]
+    selected_output_kind: Literal["DETERMINISTIC_COMPATIBILITY", "NARRATIVE_PRESENTATION"] | None
+    selected_output_artifact_id: uuid.UUID | None = None
+    retryable_stages: list[Literal["EXTRACTION", "ADJUDICATION", "NARRATIVE"]]
+
+
+class EvidenceAnalysisOutcomeRead(BaseModel):
+    result_version: Literal["evidence-analysis-outcome-api-v1"] = "evidence-analysis-outcome-api-v1"
+    authoritative: Literal[False] = False
+    assessment_id: uuid.UUID
+    document_count: int
+    readiness_counts: dict[str, int]
+    stage_status_counts: dict[str, dict[str, int]]
+    source_workflow_count: int
+    source_artifact_count: int
+    technical_diagnostics_visible: bool
+    usage: dict[str, int] | None = None
+    documents: list[EvidenceAnalysisDocumentOutcomeRead]
+
+
+class EvidenceStageRetryRequest(BaseModel):
+    stage: Literal["EXTRACTION", "ADJUDICATION", "NARRATIVE"]
+
+
+class EvidenceStageRetryRead(BaseModel):
+    result_version: Literal["evidence-stage-retry-api-v1"] = "evidence-stage-retry-api-v1"
+    authoritative: Literal[False] = False
+    assessment_id: uuid.UUID
+    matter_document_id: uuid.UUID
+    stage: Literal["EXTRACTION", "ADJUDICATION", "NARRATIVE"]
+    target_workflow_run_id: uuid.UUID
+    operation_workflow_id: str
+    status: Literal["QUEUED"] = "QUEUED"
+    reused_completed_work: bool
+    operator_message: str
+
+
+class MatterDefinitionAssessmentSynthesisUnitRead(ORMModel):
+    id: uuid.UUID
+    attempt_id: uuid.UUID
+    unit_type: str
+    unit_key: str
+    ordinal: int
+    status: Literal["QUEUED", "RUNNING", "COMPLETED", "FAILED"]
+    attempt_count: int
+    input_hash: str
+    output: dict[str, Any] | None
+    skill_run_id: uuid.UUID | None
+    error_code: str | None
+    error_message: str | None
+    error_details: dict[str, Any]
+    started_at: datetime | None
+    completed_at: datetime | None
     created_at: datetime
     updated_at: datetime
 
@@ -3859,6 +3941,10 @@ class WorkflowExecutionRead(BaseModel):
     error_message: str | None
     started_at: datetime | None
     completed_at: datetime | None
+    elapsed_seconds: int
+    processing_seconds: int
+    operator_wait_seconds: int
+    timing_method: Literal["SYNTHESIS_ATTEMPT_GAPS_V1"] = "SYNTHESIS_ATTEMPT_GAPS_V1"
     steps: list[WorkflowStepExecutionRead]
     skill_runs: list[SkillRunExecutionRead]
 

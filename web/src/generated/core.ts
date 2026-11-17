@@ -134,6 +134,9 @@ import type {
   EffectivePermissionsRead,
   EmailDomainUpdateRead,
   EnsureArtifactStorageV1TenantsTenantIdArtifactStorageEnsurePost201,
+  EvidenceAnalysisOutcomeRead,
+  EvidenceStageRetryRead,
+  EvidenceStageRetryRequest,
   ExplainAuthorizationV1AuthorizationExplainGetParams,
   ExportReviewBatchCodingComparisonV1MattersMatterIdReviewBatchesBatchIdCodingComparisonExportGetParams,
   ExternalProviderUsageRead,
@@ -212,6 +215,7 @@ import type {
   MatterDefinitionAssessmentQuestionRead,
   MatterDefinitionAssessmentQuestionUpdate,
   MatterDefinitionAssessmentRead,
+  MatterDefinitionAssessmentSynthesisUnitRead,
   MatterDefinitionAssessmentUpdate,
   MatterDefinitionCloneCreate,
   MatterDefinitionCreate,
@@ -17436,6 +17440,58 @@ export const regenerateSynthesisV1MattersMatterIdDefinitionAssessmentsAssessment
 
 
 
+export type listSynthesisUnitsV1MattersMatterIdDefinitionAssessmentsAssessmentIdSynthesisUnitsGetResponse200 = {
+  data: MatterDefinitionAssessmentSynthesisUnitRead[]
+  status: 200
+}
+
+export type listSynthesisUnitsV1MattersMatterIdDefinitionAssessmentsAssessmentIdSynthesisUnitsGetResponse422 = {
+  data: HTTPValidationError
+  status: 422
+}
+
+export type listSynthesisUnitsV1MattersMatterIdDefinitionAssessmentsAssessmentIdSynthesisUnitsGetResponseSuccess = (listSynthesisUnitsV1MattersMatterIdDefinitionAssessmentsAssessmentIdSynthesisUnitsGetResponse200) & {
+  headers: Headers;
+};
+export type listSynthesisUnitsV1MattersMatterIdDefinitionAssessmentsAssessmentIdSynthesisUnitsGetResponseError = (listSynthesisUnitsV1MattersMatterIdDefinitionAssessmentsAssessmentIdSynthesisUnitsGetResponse422) & {
+  headers: Headers;
+};
+
+export type listSynthesisUnitsV1MattersMatterIdDefinitionAssessmentsAssessmentIdSynthesisUnitsGetResponse = (listSynthesisUnitsV1MattersMatterIdDefinitionAssessmentsAssessmentIdSynthesisUnitsGetResponseSuccess | listSynthesisUnitsV1MattersMatterIdDefinitionAssessmentsAssessmentIdSynthesisUnitsGetResponseError)
+
+export const getListSynthesisUnitsV1MattersMatterIdDefinitionAssessmentsAssessmentIdSynthesisUnitsGetUrl = (matterId: string,
+    assessmentId: string,) => {
+
+
+
+
+  return `/api/core/v1/matters/${matterId}/definition-assessments/${assessmentId}/synthesis-units`
+}
+
+/**
+ * @summary List Synthesis Units
+ */
+export const listSynthesisUnitsV1MattersMatterIdDefinitionAssessmentsAssessmentIdSynthesisUnitsGet = async (matterId: string,
+    assessmentId: string, options?: RequestInit): Promise<listSynthesisUnitsV1MattersMatterIdDefinitionAssessmentsAssessmentIdSynthesisUnitsGetResponse> => {
+
+  const res = await fetch(getListSynthesisUnitsV1MattersMatterIdDefinitionAssessmentsAssessmentIdSynthesisUnitsGetUrl(matterId,assessmentId),
+  {
+    ...options,
+    method: 'GET'
+
+
+  }
+)
+
+
+  const body = [204, 205, 304].includes(res.status) ? null : await res.text();
+
+  const data: listSynthesisUnitsV1MattersMatterIdDefinitionAssessmentsAssessmentIdSynthesisUnitsGetResponse['data'] = body ? JSON.parse(body) : {}
+  return { data, status: res.status, headers: res.headers } as listSynthesisUnitsV1MattersMatterIdDefinitionAssessmentsAssessmentIdSynthesisUnitsGetResponse
+}
+
+
+
 export type regenerateDocumentAnalysesV1MattersMatterIdDefinitionAssessmentsAssessmentIdRegenerateDocumentAnalysesPostResponse202 = {
   data: MatterDefinitionAssessmentRead
   status: 202
@@ -17484,6 +17540,127 @@ export const regenerateDocumentAnalysesV1MattersMatterIdDefinitionAssessmentsAss
 
   const data: regenerateDocumentAnalysesV1MattersMatterIdDefinitionAssessmentsAssessmentIdRegenerateDocumentAnalysesPostResponse['data'] = body ? JSON.parse(body) : {}
   return { data, status: res.status, headers: res.headers } as regenerateDocumentAnalysesV1MattersMatterIdDefinitionAssessmentsAssessmentIdRegenerateDocumentAnalysesPostResponse
+}
+
+
+
+export type getAssessmentEvidenceOutcomesV1MattersMatterIdDefinitionAssessmentsAssessmentIdEvidenceOutcomesGetResponse200 = {
+  data: EvidenceAnalysisOutcomeRead
+  status: 200
+}
+
+export type getAssessmentEvidenceOutcomesV1MattersMatterIdDefinitionAssessmentsAssessmentIdEvidenceOutcomesGetResponse422 = {
+  data: HTTPValidationError
+  status: 422
+}
+
+export type getAssessmentEvidenceOutcomesV1MattersMatterIdDefinitionAssessmentsAssessmentIdEvidenceOutcomesGetResponseSuccess = (getAssessmentEvidenceOutcomesV1MattersMatterIdDefinitionAssessmentsAssessmentIdEvidenceOutcomesGetResponse200) & {
+  headers: Headers;
+};
+export type getAssessmentEvidenceOutcomesV1MattersMatterIdDefinitionAssessmentsAssessmentIdEvidenceOutcomesGetResponseError = (getAssessmentEvidenceOutcomesV1MattersMatterIdDefinitionAssessmentsAssessmentIdEvidenceOutcomesGetResponse422) & {
+  headers: Headers;
+};
+
+export type getAssessmentEvidenceOutcomesV1MattersMatterIdDefinitionAssessmentsAssessmentIdEvidenceOutcomesGetResponse = (getAssessmentEvidenceOutcomesV1MattersMatterIdDefinitionAssessmentsAssessmentIdEvidenceOutcomesGetResponseSuccess | getAssessmentEvidenceOutcomesV1MattersMatterIdDefinitionAssessmentsAssessmentIdEvidenceOutcomesGetResponseError)
+
+export const getGetAssessmentEvidenceOutcomesV1MattersMatterIdDefinitionAssessmentsAssessmentIdEvidenceOutcomesGetUrl = (matterId: string,
+    assessmentId: string,) => {
+
+
+
+
+  return `/api/core/v1/matters/${matterId}/definition-assessments/${assessmentId}/evidence-outcomes`
+}
+
+/**
+ * @summary Get Assessment Evidence Outcomes
+ */
+export const getAssessmentEvidenceOutcomesV1MattersMatterIdDefinitionAssessmentsAssessmentIdEvidenceOutcomesGet = async (matterId: string,
+    assessmentId: string, options?: RequestInit): Promise<getAssessmentEvidenceOutcomesV1MattersMatterIdDefinitionAssessmentsAssessmentIdEvidenceOutcomesGetResponse> => {
+
+  const res = await fetch(getGetAssessmentEvidenceOutcomesV1MattersMatterIdDefinitionAssessmentsAssessmentIdEvidenceOutcomesGetUrl(matterId,assessmentId),
+  {
+    ...options,
+    method: 'GET'
+
+
+  }
+)
+
+
+  const body = [204, 205, 304].includes(res.status) ? null : await res.text();
+
+  const data: getAssessmentEvidenceOutcomesV1MattersMatterIdDefinitionAssessmentsAssessmentIdEvidenceOutcomesGetResponse['data'] = body ? JSON.parse(body) : {}
+  return { data, status: res.status, headers: res.headers } as getAssessmentEvidenceOutcomesV1MattersMatterIdDefinitionAssessmentsAssessmentIdEvidenceOutcomesGetResponse
+}
+
+
+
+export type retryAssessmentEvidenceStageV1MattersMatterIdDefinitionAssessmentsAssessmentIdEvidenceOutcomesMatterDocumentIdRetryPostResponse202 = {
+  data: EvidenceStageRetryRead
+  status: 202
+}
+
+export type retryAssessmentEvidenceStageV1MattersMatterIdDefinitionAssessmentsAssessmentIdEvidenceOutcomesMatterDocumentIdRetryPostResponse422 = {
+  data: HTTPValidationError
+  status: 422
+}
+
+export type retryAssessmentEvidenceStageV1MattersMatterIdDefinitionAssessmentsAssessmentIdEvidenceOutcomesMatterDocumentIdRetryPostResponseSuccess = (retryAssessmentEvidenceStageV1MattersMatterIdDefinitionAssessmentsAssessmentIdEvidenceOutcomesMatterDocumentIdRetryPostResponse202) & {
+  headers: Headers;
+};
+export type retryAssessmentEvidenceStageV1MattersMatterIdDefinitionAssessmentsAssessmentIdEvidenceOutcomesMatterDocumentIdRetryPostResponseError = (retryAssessmentEvidenceStageV1MattersMatterIdDefinitionAssessmentsAssessmentIdEvidenceOutcomesMatterDocumentIdRetryPostResponse422) & {
+  headers: Headers;
+};
+
+export type retryAssessmentEvidenceStageV1MattersMatterIdDefinitionAssessmentsAssessmentIdEvidenceOutcomesMatterDocumentIdRetryPostResponse = (retryAssessmentEvidenceStageV1MattersMatterIdDefinitionAssessmentsAssessmentIdEvidenceOutcomesMatterDocumentIdRetryPostResponseSuccess | retryAssessmentEvidenceStageV1MattersMatterIdDefinitionAssessmentsAssessmentIdEvidenceOutcomesMatterDocumentIdRetryPostResponseError)
+
+export const getRetryAssessmentEvidenceStageV1MattersMatterIdDefinitionAssessmentsAssessmentIdEvidenceOutcomesMatterDocumentIdRetryPostUrl = (matterId: string,
+    assessmentId: string,
+    matterDocumentId: string,) => {
+
+
+
+
+  return `/api/core/v1/matters/${matterId}/definition-assessments/${assessmentId}/evidence-outcomes/${matterDocumentId}/retry`
+}
+
+/**
+ * @summary Retry Assessment Evidence Stage
+ */
+export const retryAssessmentEvidenceStageV1MattersMatterIdDefinitionAssessmentsAssessmentIdEvidenceOutcomesMatterDocumentIdRetryPost = async (matterId: string,
+    assessmentId: string,
+    matterDocumentId: string,
+    evidenceStageRetryRequest: EvidenceStageRetryRequest, options?: RequestInit): Promise<retryAssessmentEvidenceStageV1MattersMatterIdDefinitionAssessmentsAssessmentIdEvidenceOutcomesMatterDocumentIdRetryPostResponse> => {
+
+    const getHeaders = (h?: NonNullable<RequestInit['headers']>): Record<string, string | readonly string[]> => {
+    if (!h) return {};
+    if (h instanceof Headers) return Object.fromEntries(h.entries());
+    if (Symbol.iterator in h) {
+      return Object.fromEntries(
+        Array.from(h as Iterable<Iterable<string>>, (entry) => Array.from(entry) as [string, string]),
+      );
+    }
+    const headers: Record<string, string | readonly string[]> = {};
+    for (const [name, value] of Object.entries<string | readonly string[] | undefined>(h)) {
+      if (value !== undefined) headers[name] = value;
+    }
+    return headers;
+  };
+const res = await fetch(getRetryAssessmentEvidenceStageV1MattersMatterIdDefinitionAssessmentsAssessmentIdEvidenceOutcomesMatterDocumentIdRetryPostUrl(matterId,assessmentId,matterDocumentId),
+  {
+    ...options,
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json', ...getHeaders(options?.headers) },
+    body: JSON.stringify(evidenceStageRetryRequest)
+  }
+)
+
+
+  const body = [204, 205, 304].includes(res.status) ? null : await res.text();
+
+  const data: retryAssessmentEvidenceStageV1MattersMatterIdDefinitionAssessmentsAssessmentIdEvidenceOutcomesMatterDocumentIdRetryPostResponse['data'] = body ? JSON.parse(body) : {}
+  return { data, status: res.status, headers: res.headers } as retryAssessmentEvidenceStageV1MattersMatterIdDefinitionAssessmentsAssessmentIdEvidenceOutcomesMatterDocumentIdRetryPostResponse
 }
 
 

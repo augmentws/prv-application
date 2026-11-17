@@ -6,9 +6,7 @@ from sqlalchemy.orm import Session
 
 from app.models import SkillDefinition, SkillDefinitionVersion, WorkflowSkillBinding
 
-SUPPORTED_SKILL_CAPABILITIES = frozenset(
-    {"structured_output", "prompt_caching", "long_context", "typed_decision"}
-)
+SUPPORTED_SKILL_CAPABILITIES = frozenset({"structured_output", "prompt_caching", "long_context", "typed_decision"})
 
 
 @dataclass(frozen=True)
@@ -37,7 +35,7 @@ class WorkflowSpec:
 
 MATTER_DEFINITION_ASSESSMENT_SPEC = WorkflowSpec(
     key="matter_definition_assessment_v1",
-    code_version="11",
+    code_version="13",
     name="Matter Definition assessment",
     description="Builds a diagnostic batch, analyzes its documents, and synthesizes clarification questions.",
     roles=(
@@ -58,7 +56,7 @@ MATTER_DEFINITION_ASSESSMENT_SPEC = WorkflowSpec(
         WorkflowRoleSpec(
             key="assessment_synthesis",
             input_schema_key="matter_definition_assessment_synthesis_input_v2",
-            output_schema_key="matter_definition_assessment_synthesis_output_v4",
+            output_schema_key="matter_definition_assessment_synthesis_output_v5",
             allowed_capabilities=frozenset({"structured_output", "long_context"}),
             allowed_tool_keys=frozenset(),
         ),
@@ -67,6 +65,54 @@ MATTER_DEFINITION_ASSESSMENT_SPEC = WorkflowSpec(
             input_schema_key="matter_definition_guidance_refinement_input_v1",
             output_schema_key="matter_definition_guidance_refinement_output_v1",
             allowed_capabilities=frozenset({"structured_output", "long_context"}),
+            allowed_tool_keys=frozenset(),
+        ),
+    ),
+)
+
+MATTER_DEFINITION_EVIDENCE_SHADOW_SPEC = WorkflowSpec(
+    key="matter_definition_evidence_shadow_v1",
+    code_version="1",
+    name="Matter Definition evidence shadow",
+    description=("Runs evidence-first extraction beside the authoritative assessment path without publishing results."),
+    roles=(
+        WorkflowRoleSpec(
+            key="evidence_extraction",
+            input_schema_key="matter_definition_evidence_extraction_input_v2",
+            output_schema_key="matter_definition_evidence_extraction_output_v1",
+            allowed_capabilities=frozenset({"structured_output", "prompt_caching", "long_context"}),
+            allowed_tool_keys=frozenset(),
+        ),
+    ),
+)
+
+MATTER_DEFINITION_EVIDENCE_ADJUDICATION_SHADOW_SPEC = WorkflowSpec(
+    key="matter_definition_evidence_adjudication_shadow_v1",
+    code_version="3",
+    name="Matter Definition evidence adjudication shadow",
+    description=("Adjudicates durable evidence observations without publishing assessment or coding results."),
+    roles=(
+        WorkflowRoleSpec(
+            key="criterion_adjudication",
+            input_schema_key="matter_definition_criterion_adjudication_input_v1",
+            output_schema_key="matter_definition_criterion_adjudication_output_v1",
+            allowed_capabilities=frozenset({"structured_output", "prompt_caching", "long_context"}),
+            allowed_tool_keys=frozenset(),
+        ),
+    ),
+)
+
+MATTER_DEFINITION_EVIDENCE_NARRATIVE_SHADOW_SPEC = WorkflowSpec(
+    key="matter_definition_evidence_narrative_shadow_v1",
+    code_version="1",
+    name="Matter Definition evidence narrative shadow",
+    description=("Optionally presents admitted evidence observations without changing adjudicated decisions."),
+    roles=(
+        WorkflowRoleSpec(
+            key="narrative",
+            input_schema_key="matter_definition_evidence_narrative_input_v1",
+            output_schema_key="matter_definition_evidence_narrative_output_v1",
+            allowed_capabilities=frozenset({"structured_output", "prompt_caching", "long_context"}),
             allowed_tool_keys=frozenset(),
         ),
     ),
@@ -161,6 +207,9 @@ FACT_DEVELOPMENT_SPEC = WorkflowSpec(
 
 WORKFLOW_SPECS = {
     MATTER_DEFINITION_ASSESSMENT_SPEC.key: MATTER_DEFINITION_ASSESSMENT_SPEC,
+    MATTER_DEFINITION_EVIDENCE_SHADOW_SPEC.key: MATTER_DEFINITION_EVIDENCE_SHADOW_SPEC,
+    MATTER_DEFINITION_EVIDENCE_ADJUDICATION_SHADOW_SPEC.key: (MATTER_DEFINITION_EVIDENCE_ADJUDICATION_SHADOW_SPEC),
+    MATTER_DEFINITION_EVIDENCE_NARRATIVE_SHADOW_SPEC.key: (MATTER_DEFINITION_EVIDENCE_NARRATIVE_SHADOW_SPEC),
     MATTER_ANALYSIS_TASK_COMPILATION_SPEC.key: MATTER_ANALYSIS_TASK_COMPILATION_SPEC,
     MATTER_ANALYSIS_TASK_PLAYGROUND_SPEC.key: MATTER_ANALYSIS_TASK_PLAYGROUND_SPEC,
     MATTER_ANALYSIS_TASK_BATCH_SPEC.key: MATTER_ANALYSIS_TASK_BATCH_SPEC,

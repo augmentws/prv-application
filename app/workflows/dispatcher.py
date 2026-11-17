@@ -355,6 +355,64 @@ def enqueue_definition_assessment_guidance_refinement(
     get_dbos_client().enqueue_in_transaction(db, options, assessment_id)
 
 
+def enqueue_evidence_stage_retry(
+    db: Session,
+    workflow_id: str,
+    *,
+    assessment_id: str,
+    target_workflow_run_id: str,
+    stage: str,
+    actor_user_id: str,
+    matter_document_id: str,
+) -> None:
+    settings = get_settings()
+    if not settings.dbos_enabled:
+        return
+    options: EnqueueOptions = {
+        "workflow_name": "matter_definition_evidence_stage_retry_v1",
+        "queue_name": "evidence-stage-retries",
+        "workflow_id": workflow_id,
+        "application_name": settings.dbos_application_name,
+    }
+    get_dbos_client().enqueue_in_transaction(
+        db,
+        options,
+        assessment_id,
+        target_workflow_run_id,
+        stage,
+        actor_user_id,
+        matter_document_id,
+    )
+
+
+def enqueue_evidence_assessment(
+    db: Session,
+    workflow_id: str,
+    *,
+    assessment_id: str,
+    actor_user_id: str,
+    attempt_id: str,
+) -> None:
+    """Queue the gated evidence-first parent without changing default routing."""
+
+    settings = get_settings()
+    if not settings.dbos_enabled:
+        return
+    options: EnqueueOptions = {
+        "workflow_name": "matter_definition_evidence_assessment_v3",
+        "queue_name": "evidence-assessments",
+        "workflow_id": workflow_id,
+        "application_name": settings.dbos_application_name,
+    }
+    get_dbos_client().enqueue_in_transaction(
+        db,
+        options,
+        assessment_id,
+        actor_user_id,
+        attempt_id,
+    )
+
+
 def enqueue_analysis_task_compilation(
     db: Session,
     workflow_id: str,

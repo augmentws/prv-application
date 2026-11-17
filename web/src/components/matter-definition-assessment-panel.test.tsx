@@ -38,7 +38,594 @@ describe("assessmentCanRetry", () => {
   });
 });
 
+describe("MatterDefinitionAssessmentPanel cancellation", () => {
+  it("confirms and cancels a running assessment", async () => {
+    const assessment = {
+      id: "assessment-running",
+      name: "Running evidence assessment",
+      status: "SUMMARIZING",
+      execution_mode: "EVIDENCE_FIRST_V1",
+      synthesis_status: "NOT_STARTED",
+      completion_disposition: null,
+      current_synthesis_attempt_id: null,
+      technical_diagnostics_visible: true,
+      synthesis_diagnostics: {},
+      guidance_refinement_status: "NOT_READY",
+      selected_count: 250,
+      summarized_count: 0,
+      skipped_count: 0,
+      failed_count: 0,
+      partial_coverage_count: 0,
+      invalid_result_count: 0,
+      coverage_snapshot: null,
+      synthesis_result: null,
+      configuration_snapshot: {},
+    };
+    vi.mocked(coreApi).mockImplementation(async (path, init) => {
+      if (path === "/v1/matters/matter-1/definition-assessments") return [assessment] as never;
+      if (path.endsWith("/queries") || path.endsWith("/questions")) return [] as never;
+      if (path.includes("/execution?include_skill_runs=true")) return {
+        request_count: 0,
+        input_tokens: 0,
+        cached_input_tokens: 0,
+        cache_write_tokens: 0,
+        output_tokens: 0,
+        steps: [],
+        skill_runs: [],
+      } as never;
+      if (path.endsWith("/evidence-outcomes")) return {
+        readiness_counts: { READY: 127, PENDING: 123 },
+        stage_status_counts: {},
+        source_workflow_count: 127,
+        source_artifact_count: 0,
+        technical_diagnostics_visible: true,
+        usage: { request_count: 0 },
+        documents: [],
+      } as never;
+      if (path.endsWith("/cancel") && init?.method === "POST") return {
+        ...assessment,
+        status: "CANCELED",
+      } as never;
+      throw new Error(`Unexpected API request: ${path}`);
+    });
+    const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false }, mutations: { retry: false } } });
+    const user = userEvent.setup();
+    render(
+      <QueryClientProvider client={queryClient}>
+        <MatterDefinitionAssessmentPanel
+          matterId="matter-1"
+          revisions={[{ revision: 1 } as never]}
+          publishedRevision={1}
+          onReviewDraft={() => undefined}
+          onViewDraftDifferences={() => undefined}
+        />
+      </QueryClientProvider>,
+    );
+
+    expect(await screen.findByText("127 / 250")).toBeInTheDocument();
+    expect(screen.getByText("Evidence created")).toBeInTheDocument();
+    expect(screen.queryByText("Documents summarized")).not.toBeInTheDocument();
+    await user.click(await screen.findByRole("button", { name: "Cancel" }));
+    expect(screen.getByRole("heading", { name: "Cancel assessment?" })).toBeInTheDocument();
+    await user.click(screen.getByRole("button", { name: "Cancel assessment" }));
+
+    await waitFor(() => expect(coreApi).toHaveBeenCalledWith(
+      "/v1/matters/matter-1/definition-assessments/assessment-running/cancel",
+      { method: "POST" },
+    ));
+  });
+});
+
 describe("MatterDefinitionAssessmentPanel regeneration", () => {
+  it("shows only actionable evidence outcomes and keeps workflow diagnostics collapsed", async () => {
+    const assessment = {
+      id: "assessment-evidence",
+      name: "Evidence assessment",
+      status: "COMPLETED",
+      synthesis_status: "COMPLETED",
+      completion_disposition: "READY_WITH_WARNINGS",
+      current_synthesis_attempt_id: null,
+      technical_diagnostics_visible: true,
+      synthesis_diagnostics: {},
+      guidance_refinement_status: "NOT_REQUIRED",
+      selected_count: 2,
+      summarized_count: 2,
+      skipped_count: 0,
+      failed_count: 0,
+      partial_coverage_count: 0,
+      invalid_result_count: 0,
+      coverage_snapshot: { status: "SUFFICIENT" },
+      synthesis_result: { status: "COMPLETED" },
+    };
+    vi.mocked(coreApi).mockImplementation(async (path, init) => {
+      if (path === "/v1/matters/matter-1/definition-assessments") return [assessment] as never;
+      if (path.endsWith("/queries") || path.endsWith("/questions")) return [] as never;
+      if (path.includes("/execution?include_skill_runs=false")) return {
+        request_count: 0,
+        input_tokens: 0,
+        cached_input_tokens: 0,
+        cache_write_tokens: 0,
+        output_tokens: 0,
+        steps: [],
+        skill_runs: [],
+      } as never;
+      if (path.endsWith("/evidence-outcomes")) return {
+        assessment_id: assessment.id,
+        document_count: 2,
+        readiness_counts: { READY: 1, READY_WITH_FALLBACK: 1 },
+        stage_status_counts: {
+          extraction: { COMPLETED: 2 },
+          adjudication: { COMPLETED: 2 },
+          document_decision: { COMPLETED: 2 },
+          compatibility_projection: { COMPLETED: 2 },
+          narrative: { COMPLETED: 1, COMPLETED_WITH_ERRORS: 1 },
+        },
+        source_workflow_count: 5,
+        source_artifact_count: 8,
+        technical_diagnostics_visible: true,
+        usage: { request_count: 6 },
+        documents: [
+          {
+            matter_document_id: "11111111-1111-4111-8111-111111111111",
+            extraction: { status: "COMPLETED", completed_count: 1, failed_count: 0, retryable: false, artifact_ids: {} },
+            adjudication: { status: "COMPLETED", completed_count: 1, failed_count: 0, retryable: false, artifact_ids: {} },
+            document_decision: { status: "COMPLETED", completed_count: 1, failed_count: 0, retryable: false, artifact_ids: {} },
+            compatibility_projection: { status: "COMPLETED", completed_count: 1, failed_count: 0, retryable: false, artifact_ids: {} },
+            narrative: { status: "COMPLETED", completed_count: 1, failed_count: 0, retryable: false, artifact_ids: {} },
+            synthesis_readiness: "READY",
+            selected_output_kind: "NARRATIVE_PRESENTATION",
+            retryable_stages: [],
+          },
+          {
+            matter_document_id: "22222222-2222-4222-8222-222222222222",
+            extraction: { status: "COMPLETED", completed_count: 1, failed_count: 0, retryable: false, artifact_ids: {} },
+            adjudication: { status: "COMPLETED", completed_count: 1, failed_count: 0, retryable: false, artifact_ids: {} },
+            document_decision: { status: "COMPLETED", completed_count: 1, failed_count: 0, retryable: false, artifact_ids: {} },
+            compatibility_projection: { status: "COMPLETED", completed_count: 1, failed_count: 0, retryable: false, artifact_ids: {} },
+            narrative: { status: "COMPLETED_WITH_ERRORS", completed_count: 0, failed_count: 1, retryable: true, error_summary: "Optional narrative exceeded its output budget.", artifact_ids: {} },
+            synthesis_readiness: "READY_WITH_FALLBACK",
+            selected_output_kind: "DETERMINISTIC_COMPATIBILITY",
+            retryable_stages: ["NARRATIVE"],
+          },
+        ],
+      } as never;
+      if (path.endsWith("/retry") && init?.method === "POST") return {
+        assessment_id: assessment.id,
+        matter_document_id: "22222222-2222-4222-8222-222222222222",
+        stage: "NARRATIVE",
+        target_workflow_run_id: "33333333-3333-4333-8333-333333333333",
+        operation_workflow_id: "evidence-stage-retry:test",
+        status: "QUEUED",
+        reused_completed_work: true,
+        operator_message: "Narrative retry queued. Completed durable work will be reused.",
+      } as never;
+      throw new Error(`Unexpected API request: ${path}`);
+    });
+    const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+    const user = userEvent.setup();
+    render(
+      <QueryClientProvider client={queryClient}>
+        <MatterDefinitionAssessmentPanel
+          matterId="matter-1"
+          revisions={[{ revision: 1 } as never]}
+          publishedRevision={1}
+          onReviewDraft={() => undefined}
+          onViewDraftDifferences={() => undefined}
+        />
+      </QueryClientProvider>,
+    );
+
+    expect(await screen.findByText(/Retry narrative\. Completed stages will be reused/)).toBeInTheDocument();
+    expect(screen.getByText("Documents summarized")).toBeInTheDocument();
+    expect(screen.queryByText("Evidence created")).not.toBeInTheDocument();
+    expect(screen.queryByRole("heading", { name: "Evidence-first analysis" })).not.toBeInTheDocument();
+    expect(screen.queryByText("Narrative fallback used.")).not.toBeInTheDocument();
+    const affectedOutcomes = screen.getByText(/Retry narrative\. Completed stages will be reused/).closest("details");
+    await user.click(affectedOutcomes?.querySelector("summary") as HTMLElement);
+    expect(screen.getByText(/Optional narrative exceeded its output budget/)).toBeInTheDocument();
+    await user.click(screen.getByRole("button", { name: "Actions for document 22222222" }));
+    await user.click(await screen.findByText("Retry narrative"));
+    await waitFor(() => expect(coreApi).toHaveBeenCalledWith(
+      "/v1/matters/matter-1/definition-assessments/assessment-evidence/evidence-outcomes/22222222-2222-4222-8222-222222222222/retry",
+      { method: "POST", body: JSON.stringify({ stage: "NARRATIVE" }) },
+    ));
+    const diagnostics = screen.getByRole("heading", { name: "Technical diagnostics" }).closest("details");
+    expect(diagnostics).not.toHaveAttribute("open");
+    await user.click(diagnostics?.querySelector("summary") as HTMLElement);
+    expect(await screen.findByText("Evidence-first workflow diagnostics")).toBeInTheDocument();
+  });
+
+  it("explains why a document needs attention and gives an operator next step", async () => {
+    const assessment = {
+      id: "assessment-evidence-failure",
+      name: "Evidence assessment with one failed document",
+      review_batch_id: "batch-evidence-failure",
+      status: "COMPLETED_WITH_ERRORS",
+      synthesis_status: "COMPLETED",
+      completion_disposition: "READY_WITH_WARNINGS",
+      current_synthesis_attempt_id: null,
+      technical_diagnostics_visible: true,
+      synthesis_diagnostics: {},
+      guidance_refinement_status: "NOT_REQUIRED",
+      selected_count: 250,
+      summarized_count: 249,
+      skipped_count: 0,
+      failed_count: 1,
+      partial_coverage_count: 0,
+      invalid_result_count: 0,
+      coverage_snapshot: { status: "SUFFICIENT" },
+      synthesis_result: { status: "COMPLETED" },
+    };
+    vi.mocked(coreApi).mockImplementation(async (path) => {
+      if (path === "/v1/matters/matter-1/definition-assessments") return [assessment] as never;
+      if (path.endsWith("/queries") || path.endsWith("/questions")) return [] as never;
+      if (path.includes("/execution?include_skill_runs=false")) return { steps: [], skill_runs: [] } as never;
+      if (path.endsWith("/evidence-outcomes")) return {
+        assessment_id: assessment.id,
+        document_count: 250,
+        readiness_counts: { READY: 249, ACTION_REQUIRED: 1 },
+        stage_status_counts: { extraction: { COMPLETED: 249, FAILED: 1 } },
+        source_workflow_count: 249,
+        source_artifact_count: 249,
+        technical_diagnostics_visible: true,
+        usage: { request_count: 249 },
+        documents: [{
+          matter_document_id: "869cce0b-c9df-44c1-b053-f194169f1330",
+          extraction: { status: "FAILED", completed_count: 0, failed_count: 1, retryable: false, error_code: "EXTRACTION_DBOS_MAX_RETRIES", error_summary: "Selected document has no preferred text source", artifact_ids: {} },
+          adjudication: { status: "NOT_STARTED", completed_count: 0, failed_count: 0, retryable: false, artifact_ids: {} },
+          document_decision: { status: "NOT_STARTED", completed_count: 0, failed_count: 0, retryable: false, artifact_ids: {} },
+          compatibility_projection: { status: "NOT_STARTED", completed_count: 0, failed_count: 0, retryable: false, artifact_ids: {} },
+          narrative: { status: "NOT_REQUESTED", completed_count: 0, failed_count: 0, retryable: false, artifact_ids: {} },
+          synthesis_readiness: "ACTION_REQUIRED",
+          selected_output_kind: null,
+          retryable_stages: [],
+        }],
+      } as never;
+      throw new Error(`Unexpected API request: ${path}`);
+    });
+    const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+    const user = userEvent.setup();
+    render(
+      <QueryClientProvider client={queryClient}>
+        <MatterDefinitionAssessmentPanel
+          matterId="matter-1"
+          revisions={[{ revision: 1 } as never]}
+          publishedRevision={1}
+          onReviewDraft={() => undefined}
+          onViewDraftDifferences={() => undefined}
+        />
+      </QueryClientProvider>,
+    );
+
+    expect(await screen.findByText(/1 failed document can be retried without reprocessing the 249 completed summaries/i)).toBeInTheDocument();
+    await user.click(await screen.findByText("1 document outcome needing attention"));
+    expect(screen.getByText(/Why it needs attention:/).closest("p")).toHaveTextContent("Extraction failed. Selected document has no preferred text source");
+    expect(screen.getByText(/Impact:/).closest("p")).toHaveTextContent("This document was not included in the assessment synthesis");
+    expect(screen.getByText(/Next step:/).closest("p")).toHaveTextContent("Open the document to confirm the missing content, add or regenerate its preferred text source");
+    expect(screen.getByRole("link", { name: "Open document" })).toHaveAttribute("href", "/review/matters/matter-1?batch=batch-evidence-failure&document=869cce0b-c9df-44c1-b053-f194169f1330");
+    expect(screen.queryByText("Operator review required")).not.toBeInTheDocument();
+  });
+
+  it("explains a required synthesis failure and retries only synthesis", async () => {
+    const assessment = {
+      id: "assessment-1",
+      name: "Privilege assessment",
+      status: "FAILED",
+      synthesis_status: "PARTIAL",
+      completion_disposition: "ACTION_REQUIRED",
+      current_synthesis_attempt_id: "attempt-1",
+      technical_diagnostics_visible: true,
+      synthesis_diagnostics: { required_failure_count: 1 },
+      guidance_refinement_status: "NOT_READY",
+      selected_count: 250,
+      summarized_count: 239,
+      skipped_count: 11,
+      failed_count: 1,
+      partial_coverage_count: 0,
+      invalid_result_count: 0,
+      coverage_snapshot: { status: "SUFFICIENT" },
+      synthesis_result: { status: "COMPLETED_WITH_ERRORS" },
+    };
+    vi.mocked(coreApi).mockImplementation(async (path, init) => {
+      if (path === "/v1/matters/matter-1/definition-assessments") return [assessment] as never;
+      if (path.endsWith("/queries") || path.endsWith("/questions")) return [] as never;
+      if (path.endsWith("/synthesis-units")) return [{
+        id: "unit-1",
+        unit_type: "REFINEMENT_DIMENSION",
+        unit_key: "TEMPORAL_SCOPE",
+        status: "FAILED",
+        error_code: "USAGE_LIMIT_EXCEEDED",
+        error_message: "Output limit exceeded",
+        attempt_count: 1,
+      }] as never;
+      if (path.includes("/execution?include_skill_runs=true")) return {
+        request_count: 0,
+        input_tokens: 0,
+        cached_input_tokens: 0,
+        cache_write_tokens: 0,
+        output_tokens: 0,
+        steps: [],
+        skill_runs: [],
+      } as never;
+      if (path.endsWith("/regenerate-synthesis") && init?.method === "POST") {
+        return { ...assessment, status: "QUEUED", synthesis_status: "NOT_STARTED" } as never;
+      }
+      throw new Error(`Unexpected API request: ${path}`);
+    });
+    const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false }, mutations: { retry: false } } });
+    const user = userEvent.setup();
+    render(
+      <QueryClientProvider client={queryClient}>
+        <MatterDefinitionAssessmentPanel
+          matterId="matter-1"
+          revisions={[{ revision: 1 } as never]}
+          publishedRevision={1}
+          onReviewDraft={() => undefined}
+          onViewDraftDifferences={() => undefined}
+        />
+      </QueryClientProvider>,
+    );
+
+    const diagnosticsHeading = await screen.findByRole("heading", { name: "Technical diagnostics" });
+    const diagnostics = diagnosticsHeading.closest("details");
+    expect(diagnostics).not.toHaveAttribute("open");
+    expect(diagnostics).toHaveClass("order-last");
+    await user.click(diagnostics?.querySelector("summary") as HTMLElement);
+    expect(diagnostics).toHaveAttribute("open");
+    expect(await screen.findByText("Synthesis health · action required")).toBeInTheDocument();
+    expect(await screen.findByText(/usage_limit_exceeded: Output limit exceeded/i)).toBeInTheDocument();
+    expect(screen.getByText(/completed units will be reused/i)).toBeInTheDocument();
+    expect(screen.queryByText("Assessment failed")).not.toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "Retry assessment" })).not.toBeInTheDocument();
+    expect(screen.getAllByRole("button", { name: "Retry synthesis" })).toHaveLength(1);
+    await user.click(screen.getByRole("button", { name: "Retry synthesis" }));
+    await waitFor(() => expect(coreApi).toHaveBeenCalledWith(
+      "/v1/matters/matter-1/definition-assessments/assessment-1/regenerate-synthesis",
+      { method: "POST" },
+    ));
+  });
+
+  it("shows reporting-only unmapped criteria with retained evidence and synthesis guidance", async () => {
+    const assessment = {
+      id: "assessment-unmapped",
+      name: "Guidance assessment",
+      status: "COMPLETED",
+      synthesis_status: "COMPLETED",
+      completion_disposition: "READY_WITH_WARNINGS",
+      current_synthesis_attempt_id: "attempt-unmapped",
+      technical_diagnostics_visible: true,
+      synthesis_diagnostics: {},
+      guidance_refinement_status: "NOT_REQUIRED",
+      selected_count: 10,
+      summarized_count: 10,
+      skipped_count: 0,
+      failed_count: 0,
+      partial_coverage_count: 0,
+      invalid_result_count: 0,
+      coverage_snapshot: { status: "SUFFICIENT" },
+      synthesis_result: {
+        status: "COMPLETED",
+        other_unmapped_criteria: {
+          criterion_key: "other_unmapped_criteria",
+          label: "Other / unmapped criteria",
+          reporting_only: true,
+          occurrence_count: 2,
+          document_count: 1,
+          items: [{
+            source_key: "novel_scope",
+            occurrence_count: 2,
+            document_count: 1,
+            match_type_counts: { NEAR_MISS: 2 },
+            representative_evidence: [{
+              matter_document_id: "11111111-1111-4111-8111-111111111111",
+              label: "Novel scope",
+              match_type: "NEAR_MISS",
+              confidence: 0.76,
+              evidence: [{ reason: "The document presents an uncatalogued scope issue.", paragraph_ids: ["¶4"] }],
+            }],
+          }],
+          synthesis: {
+            disposition: "QUESTION_PROPOSED",
+            rationale: "The unmatched label may identify a guidance gap.",
+            question: "Should novel-scope documents be included?",
+          },
+        },
+      },
+    };
+    vi.mocked(coreApi).mockImplementation(async (path) => {
+      if (path === "/v1/matters/matter-1/definition-assessments") return [assessment] as never;
+      if (path.endsWith("/queries") || path.endsWith("/questions")) return [] as never;
+      if (path.endsWith("/synthesis-units")) return [{
+        id: "unit-unmapped",
+        unit_type: "SIGNAL_DISPOSITION",
+        unit_key: "OTHER_UNMAPPED_CRITERIA",
+        status: "COMPLETED",
+        attempt_count: 1,
+      }] as never;
+      if (path.includes("/execution?include_skill_runs=true")) return {
+        request_count: 0,
+        input_tokens: 0,
+        cached_input_tokens: 0,
+        cache_write_tokens: 0,
+        output_tokens: 0,
+        steps: [],
+        skill_runs: [],
+      } as never;
+      throw new Error(`Unexpected API request: ${path}`);
+    });
+    const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false }, mutations: { retry: false } } });
+    const user = userEvent.setup();
+    render(
+      <QueryClientProvider client={queryClient}>
+        <MatterDefinitionAssessmentPanel
+          matterId="matter-1"
+          revisions={[{ revision: 1 } as never]}
+          publishedRevision={1}
+          onReviewDraft={() => undefined}
+          onViewDraftDifferences={() => undefined}
+        />
+      </QueryClientProvider>,
+    );
+
+    const diagnosticsHeading = await screen.findByRole("heading", { name: "Technical diagnostics" });
+    await user.click(diagnosticsHeading.closest("details")?.querySelector("summary") as HTMLElement);
+    expect(await screen.findByRole("heading", { name: "Other / unmapped criteria" })).toBeInTheDocument();
+    expect(screen.getByText(/retained for review but are not counted as guidance topics/i)).toBeInTheDocument();
+    expect(screen.getByText(/synthesis recommendation · question proposed/i)).toBeInTheDocument();
+    expect(screen.getByText(/should novel-scope documents be included/i)).toBeInTheDocument();
+    await user.click(screen.getByText("novel_scope"));
+    expect(screen.getByText(/uncatalogued scope issue/i)).toBeInTheDocument();
+    expect(screen.getByText(/near miss 2/i)).toBeInTheDocument();
+  });
+
+  it("explains recoverable synthesis output adjustments", async () => {
+    const assessment = {
+      id: "assessment-normalized",
+      name: "Normalized assessment",
+      status: "COMPLETED_WITH_ERRORS",
+      synthesis_status: "COMPLETED",
+      completion_disposition: "READY_WITH_WARNINGS",
+      current_synthesis_attempt_id: "attempt-normalized",
+      technical_diagnostics_visible: true,
+      synthesis_diagnostics: {
+        normalization_warning_count: 1,
+        normalization_warnings: [{
+          unit_type: "SIGNAL_DISPOSITION",
+          unit_key: "NEAR_MISS_GENERAL",
+          code: "INAPPLICABLE_QUESTION_CONTENT_DROPPED",
+          path: "question",
+          message: "Question content was removed because the disposition does not propose a question.",
+          original_value: "Should we add a rule?",
+          normalized_value: "",
+        }],
+      },
+      guidance_refinement_status: "NOT_REQUIRED",
+      selected_count: 10,
+      summarized_count: 10,
+      skipped_count: 0,
+      failed_count: 0,
+      partial_coverage_count: 0,
+      invalid_result_count: 0,
+      coverage_snapshot: { status: "SUFFICIENT" },
+      synthesis_result: { status: "COMPLETED" },
+    };
+    vi.mocked(coreApi).mockImplementation(async (path) => {
+      if (path === "/v1/matters/matter-1/definition-assessments") return [assessment] as never;
+      if (path.endsWith("/queries") || path.endsWith("/questions")) return [] as never;
+      if (path.endsWith("/synthesis-units")) return [{
+        id: "unit-normalized",
+        unit_type: "SIGNAL_DISPOSITION",
+        unit_key: "NEAR_MISS_GENERAL",
+        status: "COMPLETED",
+        attempt_count: 1,
+      }] as never;
+      if (path.includes("/execution?include_skill_runs=true")) return {
+        request_count: 0,
+        input_tokens: 0,
+        cached_input_tokens: 0,
+        cache_write_tokens: 0,
+        output_tokens: 0,
+        steps: [],
+        skill_runs: [],
+      } as never;
+      throw new Error(`Unexpected API request: ${path}`);
+    });
+    const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+    const user = userEvent.setup();
+    render(
+      <QueryClientProvider client={queryClient}>
+        <MatterDefinitionAssessmentPanel
+          matterId="matter-1"
+          revisions={[{ revision: 1 } as never]}
+          publishedRevision={1}
+          onReviewDraft={() => undefined}
+          onViewDraftDifferences={() => undefined}
+        />
+      </QueryClientProvider>,
+    );
+
+    expect(await screen.findByText("Assessment synthesis · completed")).toBeInTheDocument();
+    const diagnosticsHeading = await screen.findByRole("heading", { name: "Technical diagnostics" });
+    await user.click(diagnosticsHeading.closest("details")?.querySelector("summary") as HTMLElement);
+    expect(screen.getByText("Synthesis health · ready with warnings")).toBeInTheDocument();
+    await user.click(screen.getByText("1 model output adjustment"));
+    expect(screen.getByText(/Question content was removed/)).toBeInTheDocument();
+    expect(screen.getByText(/INAPPLICABLE_QUESTION_CONTENT_DROPPED/)).toBeInTheDocument();
+  });
+
+  it("shows operator conclusions while withholding tenant technical diagnostics", async () => {
+    const assessment = {
+      id: "assessment-operator",
+      name: "Operator assessment",
+      status: "COMPLETED",
+      synthesis_status: "COMPLETED",
+      completion_disposition: "READY_WITH_WARNINGS",
+      current_synthesis_attempt_id: "attempt-operator",
+      technical_diagnostics_visible: false,
+      synthesis_diagnostics: {},
+      guidance_refinement_status: "NOT_REQUIRED",
+      selected_count: 250,
+      summarized_count: 239,
+      skipped_count: 0,
+      failed_count: 11,
+      partial_coverage_count: 0,
+      invalid_result_count: 0,
+      coverage_snapshot: { status: "SUFFICIENT" },
+      synthesis_result: {
+        status: "COMPLETED",
+        narrative: "The assessed documents support two privilege conclusions.",
+        findings: [{
+          topic_key: "attorney_client_privilege",
+          label: "Attorney-client privilege",
+          finding: "The sample contains communications seeking legal advice.",
+          limitations: ["The conclusion is limited to the assessed sample."],
+          evidence: [{ matter_document_id: "document-1", paragraph_ids: ["¶1"], reason: "Legal advice requested." }],
+        }],
+        topics: [
+          { topic_key: "attorney_client_privilege", label: "Attorney-client privilege" },
+          { topic_key: "work_product", label: "Work product" },
+        ],
+        clarification_questions: [],
+      },
+    };
+    vi.mocked(coreApi).mockImplementation(async (path) => {
+      if (path === "/v1/matters/matter-1/definition-assessments") return [assessment] as never;
+      if (path.endsWith("/queries") || path.endsWith("/questions")) return [] as never;
+      if (path.endsWith("/synthesis-units")) throw new Error("Operator must not request synthesis units");
+      if (path.includes("/execution?include_skill_runs=true")) return {
+        request_count: 0,
+        input_tokens: 0,
+        cached_input_tokens: 0,
+        cache_write_tokens: 0,
+        output_tokens: 0,
+        steps: [],
+        skill_runs: [],
+      } as never;
+      throw new Error(`Unexpected API request: ${path}`);
+    });
+    const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+    render(
+      <QueryClientProvider client={queryClient}>
+        <MatterDefinitionAssessmentPanel
+          matterId="matter-1"
+          revisions={[{ revision: 1 } as never]}
+          publishedRevision={1}
+          onReviewDraft={() => undefined}
+          onViewDraftDifferences={() => undefined}
+        />
+      </QueryClientProvider>,
+    );
+
+    expect(await screen.findByRole("heading", { name: "Assessment conclusions" })).toBeInTheDocument();
+    expect(screen.getByText("Attorney-client privilege")).toBeInTheDocument();
+    expect(screen.getByText("The sample contains communications seeking legal advice.")).toBeInTheDocument();
+    expect(screen.getByText("1 criterion with no separate finding")).toBeInTheDocument();
+    expect(screen.getByText("Assessment synthesis · completed with document errors")).toBeInTheDocument();
+    expect(screen.queryByRole("heading", { name: "Technical diagnostics" })).not.toBeInTheDocument();
+    expect(screen.queryByRole("heading", { name: "Other / unmapped criteria" })).not.toBeInTheDocument();
+    expect(coreApi).not.toHaveBeenCalledWith(expect.stringContaining("/synthesis-units"));
+  });
+
   it("archives failed assessments and can reveal and restore history", async () => {
     const failed = {
       id: "assessment-failed",
@@ -159,14 +746,48 @@ describe("MatterDefinitionAssessmentPanel regeneration", () => {
     await waitFor(() => {
       expect(launchPayload?.use_batching).toBe(true);
       expect(launchPayload?.target_document_count).toBe(500);
+      expect(launchPayload?.execution_mode).toBe("DIRECT_V1");
     });
+  });
+
+  it("allows an operator to select the controlled evidence-first route", async () => {
+    let launchPayload: Record<string, unknown> | undefined;
+    vi.mocked(coreApi).mockImplementation(async (path, init) => {
+      if (path === "/v1/matters/matter-1/definition-assessments" && init?.method === "POST") {
+        launchPayload = JSON.parse(String(init.body));
+        return { id: "assessment-evidence" } as never;
+      }
+      if (path === "/v1/matters/matter-1/definition-assessments") return [] as never;
+      throw new Error(`Unexpected API request: ${path}`);
+    });
+    const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false }, mutations: { retry: false } } });
+    const user = userEvent.setup();
+    render(
+      <QueryClientProvider client={queryClient}>
+        <MatterDefinitionAssessmentPanel
+          matterId="matter-1"
+          revisions={[{ id: "revision-1", revision: 1 } as never]}
+          publishedRevision={1}
+          onReviewDraft={() => undefined}
+          onViewDraftDifferences={() => undefined}
+        />
+      </QueryClientProvider>,
+    );
+
+    await user.click(await screen.findByRole("button", { name: "New" }));
+    await user.type(screen.getByLabelText("Assessment name"), "Evidence assessment");
+    await user.click(screen.getByRole("combobox", { name: "Processing path" }));
+    await user.click(screen.getByRole("option", { name: "Evidence-first · controlled rollout" }));
+    await user.click(screen.getByRole("button", { name: "Start assessment" }));
+
+    await waitFor(() => expect(launchPayload?.execution_mode).toBe("EVIDENCE_FIRST_V1"));
   });
 
   it("offers summary reuse or frozen-batch reanalysis", async () => {
     const assessment = {
       id: "assessment-1",
       name: "Coverage assessment",
-      status: "COMPLETED_WITH_ERRORS",
+      status: "COMPLETED",
       review_batch_id: "batch-1",
       selected_count: 12,
       summarized_count: 11,
@@ -216,7 +837,10 @@ describe("MatterDefinitionAssessmentPanel regeneration", () => {
     );
 
     const coverageHeading = await screen.findByText("Coverage: sufficient");
-    expect(within(coverageHeading.parentElement as HTMLElement).getByText("completed with errors")).toBeInTheDocument();
+    expect(within(coverageHeading.parentElement as HTMLElement).getByText("completed")).toBeInTheDocument();
+    expect(screen.getByText("Documents skipped")).toBeInTheDocument();
+    expect(screen.getByText(/1 selected document was skipped because no analyzable text was available/i)).toBeInTheDocument();
+    expect(screen.getByText(/This was not a model failure/i)).toBeInTheDocument();
     expect(screen.getByRole("link", { name: "Run analysis" })).toHaveAttribute(
       "href",
       "/review/matters/matter-1?batch=batch-1&analysis=run",

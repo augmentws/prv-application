@@ -45,6 +45,8 @@ def main() -> None:
         classification_scoring,
         collection_deletion,
         collection_text_processing,
+        evidence_assessments,
+        evidence_stage_retries,
         fact_development,
         fact_specification_compilation,
         matter_definition_assessments,

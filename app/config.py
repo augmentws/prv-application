@@ -70,6 +70,9 @@ class Settings(BaseSettings):
     fact_duplicate_threshold: float = Field(default=0.85, gt=0, le=1)
     fact_merge_suggestion_threshold: float = Field(default=0.9, gt=0, le=1)
     agent_default_model: str | None = None
+    agent_evidence_extraction_model: str = "google:gemini-3.5-flash-lite"
+    agent_criterion_adjudication_model: str = "google:gemini-3.7-flash"
+    agent_evidence_narrative_model: str = "google:gemini-3.7-flash"
     agent_turn_queue_concurrency: int = Field(default=4, ge=1, le=100)
     agent_approval_timeout_seconds: int = Field(default=7 * 24 * 60 * 60, ge=60, le=30 * 24 * 60 * 60)
     agent_batch_chat_document_max_characters: int = Field(default=20_000, ge=1_000, le=2_000_000)
@@ -90,6 +93,10 @@ class Settings(BaseSettings):
     model_rate_limit_retry_base_seconds: float = Field(default=1.0, gt=0, le=300)
     model_rate_limit_retry_max_seconds: float = Field(default=120.0, gt=0, le=3600)
     model_rate_limit_characters_per_token: float = Field(default=3.0, ge=1, le=10)
+    google_explicit_prompt_cache_enabled: bool = True
+    # Avoid a provider cache-create round trip for prefixes that cannot meet
+    # Google's minimum cached-context size. The provider remains authoritative.
+    google_explicit_prompt_cache_min_characters: int = Field(default=12_000, ge=1_000, le=1_000_000)
     # DBOS-global limits for question-answering orchestration. Provider-specific
     # concurrency and rate limits are applied separately inside each decision engine.
     qa_batch_concurrency: int = Field(default=2, ge=1, le=64)
@@ -128,10 +135,21 @@ class Settings(BaseSettings):
     chunk_overlap_characters: int = Field(default=200, ge=0, le=5000)
     definition_assessment_warning_document_count: int = Field(default=1000, ge=1)
     definition_assessment_document_concurrency: int = Field(default=8, ge=1, le=32)
+    definition_assessment_evidence_document_concurrency: int = Field(default=16, ge=1, le=128)
+    definition_assessment_evidence_extraction_concurrency: int = Field(default=8, ge=1, le=32)
+    definition_assessment_evidence_adjudication_concurrency: int = Field(default=4, ge=1, le=32)
+    definition_assessment_evidence_narrative_concurrency: int = Field(default=4, ge=1, le=32)
+    definition_assessment_evidence_extraction_requests_per_minute: int = Field(
+        default=60, ge=1, le=100_000
+    )
+    definition_assessment_evidence_extraction_input_tokens_per_minute: int = Field(
+        default=1_000_000, ge=1, le=1_000_000_000
+    )
     definition_assessment_map_max_characters: int = Field(default=60_000, ge=10_000, le=500_000)
     definition_assessment_provider_batch_size: int = Field(default=50, ge=1, le=100)
     definition_assessment_provider_batch_concurrency: int = Field(default=8, ge=1, le=64)
     definition_assessment_provider_batch_poll_seconds: float = Field(default=15.0, ge=1, le=300)
+    definition_assessment_evidence_shadow_enabled: bool = False
 
     jwt_secret: str = Field(min_length=32)
     jwt_issuer: str = "priv-view-core"

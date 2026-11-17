@@ -3,7 +3,7 @@ import { cleanup, render, screen, waitFor, within } from "@testing-library/react
 import userEvent from "@testing-library/user-event";
 import { afterEach, describe, expect, it, vi } from "vitest";
 
-import { ReviewProgramsSection } from "@/components/matter/sections/review-programs-section";
+import { definitionAssessmentStageDisplayStatus, ReviewProgramsSection } from "@/components/matter/sections/review-programs-section";
 import { coreApi } from "@/lib/api-client";
 
 vi.mock("@/lib/api-client", () => ({ coreApi: vi.fn() }));
@@ -30,6 +30,29 @@ function renderSection() {
   const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false }, mutations: { retry: false } } });
   render(<QueryClientProvider client={queryClient}><ReviewProgramsSection /></QueryClientProvider>);
 }
+
+describe("definitionAssessmentStageDisplayStatus", () => {
+  it("shows operator attention instead of a stale running attempt", () => {
+    expect(definitionAssessmentStageDisplayStatus({
+      status: "COMPLETED_WITH_ERRORS",
+      completion_disposition: "ACTION_REQUIRED",
+    }, "RUNNING")).toBe("NEEDS_ATTENTION");
+  });
+
+  it("uses a terminal assessment status once synthesis is usable", () => {
+    expect(definitionAssessmentStageDisplayStatus({
+      status: "COMPLETED_WITH_ERRORS",
+      completion_disposition: "READY_WITH_WARNINGS",
+    }, "RUNNING")).toBe("COMPLETED_WITH_ERRORS");
+  });
+
+  it("keeps the stage attempt status while assessment work is active", () => {
+    expect(definitionAssessmentStageDisplayStatus({
+      status: "SUMMARIZING",
+      completion_disposition: null,
+    }, "RUNNING")).toBe("RUNNING");
+  });
+});
 
 function mockReplayProgramApi() {
   vi.mocked(coreApi).mockImplementation(async (path) => {
